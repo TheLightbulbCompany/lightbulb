@@ -42,6 +42,17 @@ logger = logging.getLogger(__name__)
 # it if $disconnect is never called (crashed tab, dropped connection, etc).
 _TTL_WINDOW_SECONDS = 7200  # 2 hours
 
+# Gateway-liveness freshness window: a gateway-liveness row counts as
+# "connected" only if a live GatewayConnection refreshed its lease
+# (``refresh_gateway_liveness``) within this window. Must be comfortably
+# larger than the connection's refresh cadence (``_LIVENESS_REFRESH_SECONDS``
+# in connection_pool, 60s) so a couple of missed/slow refreshes don't flap a
+# healthy connection to "not connected", but small enough that a dead or
+# crashed gateway (whose refresh loop stopped) reads as disconnected quickly
+# rather than lingering as a false "ready" until the ttl sweep. 3 missed
+# refreshes.
+_LIVENESS_STALE_SECONDS = 180
+
 # touch_connection in-process throttle: skip the DynamoDB write if the same
 # connection_id was touched more recently than this. The frontend pings
 # every ~30s, so this collapses roughly every other ping into a no-op.
@@ -56,6 +67,23 @@ _LIVE_WINDOW_SECONDS = 120
 # rather than evicted entry-by-entry -- simplest bound that still keeps
 # memory flat across a long-running process life.
 _TOUCH_THROTTLE_MAX_ENTRIES = 10_000
+
+# Synthetic connectionId namespace for the gateway-liveness rows (see
+# mark_gateway_connected). One row per owner_id, keyed
+# "gateway#{owner_id}" so it can never collide with a real API Gateway
+# connectionId (those are opaque IDs API Gateway mints, never containing
+# "#"). This is readiness store R4's replacement: the per-process
+# GatewayConnectionPool.is_user_connected read (core/gateway/connection_pool.py)
+# moved here so ANY backend instance -- not just the one currently holding
+# the WS to the user's OpenClaw container -- can answer "is the gateway
+# connected" durably. See
+# docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §2
+# (Readiness composition) and core/services/readiness_state.py.
+_GATEWAY_LIVENESS_PREFIX = "gateway#"
+
+
+def _gateway_liveness_key(owner_id: str) -> str:
+    return f"{_GATEWAY_LIVENESS_PREFIX}{owner_id}"
 
 
 class ConnectionServiceError(Exception):
@@ -544,6 +572,189 @@ class ConnectionService:
                 f"Failed to delete connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
 
+    async def mark_gateway_connected(self, owner_id: str, *, conn_token: str) -> None:
+        """Record a live, handshake-verified OpenClaw gateway connection for
+        ``owner_id`` -- the durable (cross-instance) liveness signal that
+        replaces the in-process ``GatewayConnectionPool.is_user_connected``
+        read (readiness store R4). Called by ``GatewayConnection`` at every
+        point its own ``is_alive`` flips True: initial ``connect()``
+        success and a successful ``reopen()`` (which calls ``connect()``
+        internally).
+
+        ``conn_token`` is the owning ``GatewayConnection``'s per-instance
+        identity. It is stamped on the row so ``mark_gateway_disconnected``
+        can delete ONLY the marker this connection wrote: when a stale
+        connection is replaced (or two backend instances overlap during a
+        rolling deploy), the replacement's fresh row carries a DIFFERENT
+        token, and the old connection's terminal delete -- conditioned on the
+        token -- no-ops instead of removing the live marker. An unconditional
+        put here is correct: the newest connect claims ownership of the row.
+
+        Best-effort: a DDB write failure is logged and swallowed -- this
+        must never break the gateway connect path itself.
+        """
+        now = int(time.time())
+        item = {
+            "connectionId": {"S": _gateway_liveness_key(owner_id)},
+            "userId": {"S": owner_id},
+            "orgId": {"S": ""},
+            "ownerId": {"S": owner_id},
+            "connectedAt": {"S": datetime.now(timezone.utc).isoformat()},
+            "connectionType": {"S": "gateway"},
+            "connToken": {"S": conn_token},
+            "lastPingAt": {"N": str(now)},
+            "ttl": {"N": str(now + _TTL_WINDOW_SECONDS)},
+        }
+
+        def _put() -> None:
+            self._client.put_item(TableName=self.table_name, Item=item)
+
+        try:
+            await asyncio.to_thread(_put)
+        except ClientError as e:
+            logger.warning(
+                "mark_gateway_connected failed for owner %s (best-effort, swallowed): %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+
+    async def mark_gateway_disconnected(self, owner_id: str, *, conn_token: str) -> None:
+        """Clear THIS connection's gateway-liveness row for ``owner_id``.
+
+        Called by ``GatewayConnection`` at every point its own ``is_alive``
+        flips False: the dead branch of ``_on_reader_loop_exit`` (reader
+        loop died with no active runs), the parked-watchdog's long-idle
+        escalation to dead, and ``close()``. Deliberately NOT called when a
+        connection merely parks (``is_alive`` stays True while parked with
+        active runs -- see ``GatewayConnection.is_alive``) so a transient
+        ping-timeout mid-turn doesn't flip ``/container/status`` back to
+        "starting" underneath a live chat.
+
+        CONDITIONED on ``connToken == conn_token``: a replacement connection
+        (or a rolling-deploy overlap) will have already written the row with
+        ITS token, and this old connection's delete must NOT remove that live
+        marker -- the condition makes it a no-op. A missing row (already
+        cleared) also fails the condition and is swallowed.
+
+        Best-effort, same swallow posture as ``mark_gateway_connected``.
+        """
+
+        def _delete() -> None:
+            self._client.delete_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                ConditionExpression="connToken = :t",
+                ExpressionAttributeValues={":t": {"S": conn_token}},
+            )
+
+        try:
+            await asyncio.to_thread(_delete)
+        except ClientError as e:
+            # ConditionalCheckFailed = a newer connection owns the row (or it's
+            # already gone) -- the expected benign case, not worth a warning.
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                logger.warning(
+                    "mark_gateway_disconnected failed for owner %s (best-effort, swallowed): %s",
+                    owner_id,
+                    e.response["Error"]["Message"],
+                )
+
+    async def refresh_gateway_liveness(self, owner_id: str, *, conn_token: str) -> None:
+        """Extend THIS connection's gateway-liveness lease (lastPingAt + ttl) on
+        the periodic tick, WITHOUT stealing ownership.
+
+        Distinct from ``mark_gateway_connected`` (an unconditional put that
+        CLAIMS the row -- the newest connect wins): a refresh is conditioned on
+        the row being ABSENT or still owned by ``conn_token``. That gives two
+        properties at once:
+          * missed-connect recovery -- if the initial put was throttled/lost the
+            row is absent, so the upsert recreates it as ours; and
+          * replacement safety -- a stale-but-still-alive connection (rolling
+            deploy overlap) whose refresh fires AFTER a replacement claimed the
+            row (newer token) is a conditional no-op, so it can't overwrite the
+            row back to the old token and then delete the live replacement's
+            marker.
+
+        Best-effort: ConditionalCheckFailed (a newer connection owns it) is the
+        expected benign case; other errors are swallowed (next tick retries).
+        """
+        now = int(time.time())
+
+        def _refresh() -> None:
+            self._client.update_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                UpdateExpression=(
+                    "SET lastPingAt = :p, #ttl = :t, connToken = :tok, connectionType = :ct, ownerId = :o, userId = :o"
+                ),
+                ConditionExpression="attribute_not_exists(connToken) OR connToken = :tok",
+                ExpressionAttributeNames={"#ttl": "ttl"},
+                ExpressionAttributeValues={
+                    ":p": {"N": str(now)},
+                    ":t": {"N": str(now + _TTL_WINDOW_SECONDS)},
+                    ":tok": {"S": conn_token},
+                    ":ct": {"S": "gateway"},
+                    ":o": {"S": owner_id},
+                },
+            )
+
+        try:
+            await asyncio.to_thread(_refresh)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                logger.warning(
+                    "refresh_gateway_liveness failed for owner %s (best-effort, swallowed): %s",
+                    owner_id,
+                    e.response["Error"]["Message"],
+                )
+
+    async def is_gateway_connected(self, owner_id: str) -> bool:
+        """Whether the gateway-liveness row for ``owner_id`` is present AND
+        fresh.
+
+        The sole read side of the R4 kill -- consumed by
+        ``core.services.readiness_state.compute_status`` (and its
+        ``_safe_phase``-equivalent fallback) instead of the old in-process
+        ``GatewayConnectionPool.is_user_connected``.
+
+        Freshness matters because DynamoDB's TTL sweep is best-effort and can
+        lag hours: an expired row (crashed/uncleanly-torn-down gateway whose
+        refresh loop stopped) can linger and would otherwise read as
+        connected. So a row counts as connected only if its ``lastPingAt`` is
+        within ``_LIVENESS_STALE_SECONDS`` -- i.e. a live ``GatewayConnection``
+        has refreshed the lease recently. Row missing OR stale OR read failure
+        all read as "not connected" (fail toward the cold-start UI rather than
+        a false ``ready``, mirroring the fail-closed posture of the rest of
+        the gate machinery in this codebase).
+        """
+        now_epoch = int(time.time())
+
+        def _get() -> bool:
+            resp = self._client.get_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                ProjectionExpression="lastPingAt",
+            )
+            item = resp.get("Item")
+            if item is None:
+                return False
+            last_ping_raw = item.get("lastPingAt", {}).get("N")
+            if last_ping_raw is None:
+                # A row with no lastPingAt predates the lease refresh -- treat
+                # as fresh-enough-if-present is unsafe, so require the stamp.
+                return False
+            return (now_epoch - int(last_ping_raw)) < _LIVENESS_STALE_SECONDS
+
+        try:
+            return await asyncio.to_thread(_get)
+        except ClientError as e:
+            logger.warning(
+                "is_gateway_connected read failed for owner %s (defaulting False): %s",
+                owner_id,
+                e.response["Error"]["Message"],
+            )
+            return False
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton + thin async wrappers
@@ -573,3 +784,13 @@ async def delete_all_for_user(user_id: str) -> int:
 async def count_for_user(user_id: str) -> int:
     """Module-level helper: count every WS connection row for ``user_id``."""
     return await _get_singleton().count_for_user(user_id)
+
+
+async def is_gateway_connected(owner_id: str) -> bool:
+    """Module-level helper: the readiness composer's liveness read.
+
+    ``core.services.readiness_state`` imports this rather than
+    instantiating its own ``ConnectionService`` so it shares the one
+    process-wide singleton (and its boto3 client) with every other caller.
+    """
+    return await _get_singleton().is_gateway_connected(owner_id)

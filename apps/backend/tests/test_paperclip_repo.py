@@ -399,6 +399,21 @@ async def test_resolve_owner_row_org_finds_creator_row_via_gsi(repo):
     assert resolved.onboarding_generation == "01CREATOR"
 
 
+async def test_find_owner_row_hydrates_from_gsi_without_a_second_get(repo):
+    """The by-org-id GSI is ProjectionType.ALL, so find_owner_row must build the
+    row from the query item -- NOT do a second base-table get() -- keeping the
+    hot /container/status org poll to a single physical read."""
+    from unittest.mock import patch
+
+    now = datetime.now(timezone.utc)
+    await repo.put(_make_company(user_id="user_creator", org_id="org_acme", created_at=now))
+
+    with patch.object(repo, "get", side_effect=AssertionError("find_owner_row must not call get()")) as spy:
+        resolved = await repo.find_owner_row("org_acme")
+    spy.assert_not_called()
+    assert resolved is not None and resolved.user_id == "user_creator"
+
+
 async def test_resolve_owner_row_org_skips_non_active_rows(repo):
     """A provisioning/failed/disabled row is not sign-in-able and must never
     be picked over a genuinely active one, even if it's older."""
@@ -443,16 +458,89 @@ async def test_claim_funnel_submission_second_caller_gets_already_submitted(repo
     assert result is FunnelClaimResult.ALREADY_SUBMITTED
 
 
-async def test_claim_funnel_submission_concurrent_exactly_one_wins(repo):
+async def test_claim_funnel_submission_retries_when_peer_reverts(repo):
+    """Revert-race regression: a peer WON then reverted its claim (failed
+    downstream seed) back to ``not_started`` on the SAME generation. A racing
+    caller whose first CAS lost must RETRY and win -- NOT be mislabeled
+    ALREADY_SUBMITTED, which would strand its client believing onboarding is
+    done while the company has no goal/project.
+
+    The row starts ``submitted`` so the first CAS fails; the patched re-read
+    simulates the peer's revert (flips the real row back to ``not_started``)
+    so the bounded retry's next CAS wins.
+    """
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="submitted"))
+    real_get = repo.get
+    flipped = {"done": False}
+
+    async def flipping_get(user_id, *, consistent_read=False):
+        if not flipped["done"]:
+            flipped["done"] = True
+            # The peer reverts its failed claim between our CAS failure and re-read.
+            await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+        return await real_get(user_id, consistent_read=consistent_read)
+
+    with patch.object(repo, "get", flipping_get):
+        result = await repo.claim_funnel_submission("u1", onboarding_generation="01G")
+
+    assert result is FunnelClaimResult.WON
+    assert (await repo.get("u1")).funnel_state == "submitted"
+
+
+async def test_claim_funnel_submission_concurrent_leaves_row_consistent(repo):
     """Two tabs submitting at once — the CAS write itself is the
-    serialization point (no separate claim item, no stale-steal window)."""
+    serialization point (no separate claim item, no stale-steal window).
+
+    On real DynamoDB the conditional writes serialize, so exactly one caller
+    WONs and the other reads back ALREADY_SUBMITTED. moto does NOT lock
+    truly-parallel conditional writes (each `run_in_thread` call reads,
+    checks, and writes on its own thread with no cross-thread atomicity), so
+    under a warm thread pool BOTH can observe `funnel_state == not_started`
+    and report WON. That's a moto fidelity gap, not a repo bug -- the
+    deterministic CAS-rejection guarantee is pinned by
+    ``test_claim_funnel_submission_second_caller_gets_already_submitted``
+    above. Here we assert only the invariants moto DOES model faithfully:
+    at least one caller wins, and the row converges to a single consistent
+    ``submitted`` state (no lost update, never stuck at not_started)."""
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     results = await asyncio.gather(
         repo.claim_funnel_submission("u1", onboarding_generation="01G"),
         repo.claim_funnel_submission("u1", onboarding_generation="01G"),
     )
-    assert set(results) == {FunnelClaimResult.WON, FunnelClaimResult.ALREADY_SUBMITTED}
-    assert (await repo.get("u1")).funnel_state == "submitted"
+    assert FunnelClaimResult.WON in results
+    assert set(results) <= {FunnelClaimResult.WON, FunnelClaimResult.ALREADY_SUBMITTED}
+    row = await repo.get("u1")
+    assert row.funnel_state == "submitted"
+    assert row.funnel_submitted_at is not None
+
+
+async def test_get_onboarding_state_surfaces_failed_org_seed(repo):
+    """COMPOSER P2: an org whose Paperclip seed FAILED has only a
+    status="failed" owner row. get_onboarding_state must still resolve it (via
+    include_inactive) so teams_state="failed" surfaces -- the active-only
+    sign-in resolver would drop it and hide the Teams-degraded affordance."""
+    await repo.put(
+        _make_company(
+            user_id="creator",
+            org_id="org_x",
+            status="failed",
+            seeded_agent_ids=["friday_id"],
+            onboarding_generation="01G",
+            funnel_state="not_started",
+        )
+    )
+    state = await repo.get_onboarding_state("org_x")
+    assert state["teams_state"] == "failed"
+    assert state["onboarding_generation"] == "01G"
+
+
+async def test_find_owner_row_include_inactive_returns_failed_provisioner(repo):
+    await repo.put(_make_company(user_id="creator", org_id="org_y", status="failed", seeded_agent_ids=["friday_id"]))
+    # Default (sign-in) resolver hides the non-active row...
+    assert await repo.find_owner_row("org_y") is None
+    # ...but the status reader can still resolve it.
+    row = await repo.find_owner_row("org_y", include_inactive=True)
+    assert row is not None and row.status == "failed"
 
 
 async def test_claim_funnel_submission_stale_generation_is_a_silent_no_op(repo):

@@ -29,6 +29,16 @@ export type {
   ClassifiedStatus,
   ContainerStatusBody,
 } from "./hooks/containerStatus";
+export { deriveUIPhase } from "./hooks/statusContract";
+export type {
+  BootstrapState,
+  DerivedUIPhase,
+  FunnelState,
+  Lifecycle,
+  RuntimePhase,
+  StatusContract,
+  UIPhase,
+} from "./hooks/statusContract";
 export {
   PROVISION_IDEAS,
   PROVISION_IDEA_ROTATION_MS,

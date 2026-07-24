@@ -6,7 +6,6 @@ and a manual retry-provision endpoint.
 
 import asyncio
 import logging
-import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -20,6 +19,7 @@ from core.containers.ecs_manager import (
     EcsManagerError,
 )
 from core.services import container_wake, wake_policy
+from core.services import readiness_state
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
@@ -35,29 +35,6 @@ from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_re
 from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
-
-# Per-owner dispatch guards for the status poll's pool self-heal. The pool
-# serializes ALL connect I/O behind one process-wide lock — and every chat
-# RPC (send_rpc → ensure_connection) queues on that same lock — while the
-# absent-create path has no reconnect floor. So the dispatch site must not
-# let the ~5s poll cadence pile up dials: the in-flight set stops duplicate
-# dispatches while one is outstanding, and the cooldown stops a wedged
-# container (running row + unreachable IP) from eating a fresh
-# handshake-timeout lock hold per poll. A chat send still dials immediately
-# through its own path — the cooldown only paces this background repair.
-_SELF_HEAL_DIAL_COOLDOWN_S = 60.0
-_self_heal_inflight: set[str] = set()
-_self_heal_last_dial: dict[str, float] = {}
-
-
-def _self_heal_dial_allowed(owner_id: str) -> bool:
-    """True when no self-heal dial is outstanding for *owner_id* and the
-    last attempt is at least the cooldown ago (or never happened)."""
-    if owner_id in _self_heal_inflight:
-        return False
-    last = _self_heal_last_dial.get(owner_id)
-    return last is None or (time.monotonic() - last) >= _SELF_HEAL_DIAL_COOLDOWN_S
-
 
 # A start refusal carries the SAME code as the provision gate's, so each maps
 # straight to the gate that renders it. Keeping them in one map means a new
@@ -111,76 +88,16 @@ def _dispatch_watched(coro) -> None:
         task.add_done_callback(_watch_provision_task)
 
 
-async def _resolve_teams_status(user_id: str) -> str | None:
-    """Best-effort read of the polling user's Paperclip-company seed state.
-
-    Returns ``"failed"`` when the user's ``paperclip-companies`` row is in the
-    failed state — Friday/Atlas seeding failed, recorded by
-    ``paperclip_provisioning._mark_failed`` — else ``None`` (the field is then
-    omitted from the response). This is a NON-BLOCKING degraded signal: the
-    seed failing does not stop the container from serving chat, so the caller
-    surfaces ``teams_status="failed"`` alongside a normal ``phase`` (e.g.
-    ``"ready"``) and the client shows a "Teams needs attention / retry"
-    affordance rather than a hard block.
-
-    Keyed on the polling user's OWN ``user_id`` — ``paperclip-companies`` rows
-    are per-user (keyed by Clerk ``user_id``), matching how the Teams BFF reads
-    company state. For a personal owner ``user_id == owner_id`` (the
-    provisioner row that ``_mark_failed`` downgrades). For an org member it
-    reflects that member's own Teams provisioning, which is coherent: a member
-    cannot be ``active`` against a company whose seed failed.
-
-    Any read failure returns ``None`` — a degraded hint must never break
-    ``/container/status``.
-    """
-    try:
-        from core.repositories.paperclip_repo import PaperclipRepo
-
-        company = await PaperclipRepo(table_name="paperclip-companies").get(user_id)
-    except Exception:  # noqa: BLE001 — degraded signal must never break /status
-        logger.info("teams_status read failed for user %s", user_id, exc_info=True)
-        return None
-    if company is not None and company.status == "failed":
-        return "failed"
-    return None
-
-
-async def _resolve_onboarded(owner_id: str) -> bool:
-    """Best-effort read of whether the first-run funnel is DONE for this
-    owner (per architecture spec §2 -- supersedes the old
-    ``containers.onboarded_at`` stamp, S2).
-
-    ``True`` iff the paperclip-companies OWNER row's ``funnel_state`` is
-    ``"complete"``. Resolved via ``PaperclipRepo.resolve_owner_row``
-    (``owner_id`` for personal owners, the by-org-id GSI owner lookup for
-    orgs) — NOT the calling user's own row, and NOT the ``containers`` row:
-    onboarding is company-scoped, so every member of an org sees the SAME
-    answer regardless of which member's tab wins the /brief claim.
-
-    Deliberately does NOT read ``funnel_state == "submitted"`` as onboarded:
-    a submitted-but-not-yet-delivered funnel still shows the "your brief was
-    received" UI (client-side), and "complete" is what stops the funnel from
-    being offered again. Any read failure returns ``False`` (the safe
-    default -- worst case a returning owner sees the funnel prompt once more
-    rather than a degraded signal breaking ``/container/status``).
-    """
-    try:
-        from core.repositories.paperclip_repo import PaperclipRepo
-
-        owner_row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    except Exception:  # noqa: BLE001 — degraded signal must never break /status
-        logger.info("onboarded read failed for owner %s", owner_id, exc_info=True)
-        return False
-    return owner_row is not None and owner_row.funnel_state == "complete"
-
-
 def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> str:
-    """Map (DDB container.status, gateway pool connection state) -> phase.
-
-    Phases the frontend renders as a stepper. The gap between
-    `provisioning` and `ready` is normally ~12 min today (5+ min wedge in
-    upstream's sidecars.channels phase), so showing the user *something*
-    during that window is the whole point of this surface.
+    """LEGACY pure (status, pool) -> phase map — retained ONLY because
+    ``TestColdStartPhaseResolver`` (tests/unit/routers/test_container_status.py)
+    still imports and calls it directly with a duck-typed pool. Nothing in
+    production calls this anymore: the real mapping now lives in
+    ``core.services.readiness_state.resolve_runtime_phase`` (INV-1 — a
+    router may not itself compose the containers-status + gateway-liveness
+    inputs), fed a plain bool sourced from the connection-service DDB table
+    instead of an in-process pool object. Safe to delete alongside that
+    test class in a follow-up cleanup.
 
     Returns:
       - "provisioning"  ECS task PROVISIONING / PENDING / STOPPED / error
@@ -332,26 +249,27 @@ async def container_status(
                 detail="team workspace pending",
             )
 
-        # Owner role: dispatch ensure_user_ready and return a synthetic
-        # provisioning response. Shape mirrors the existing 200-OK return
-        # below so the frontend's phase=="provisioning" UI handles this
-        # without schema drift.
+        # Owner role: dispatch ensure_user_ready and return a provisioning
+        # response composed through compute_status (which handles
+        # container=None -> runtime_phase="provisioning") rather than a
+        # hand-built stub. Two reasons this must NOT hardcode onboarded=False:
+        #  1. Container-only recreation (G1 bumped, the company + G2 onboarding
+        #     preserved) transiently has no container row; hardcoding False
+        #     here would re-show a COMPLETED funnel. compute_status reads the
+        #     preserved onboarding state (funnel_state=="complete") independent
+        #     of the container, so onboarded rides correctly.
+        #  2. Wire-shape parity: the has-container return below emits the full
+        #     StatusContract; this path must too, or a no-container poll gives
+        #     deriveUIPhase a different (legacy-only) shape.
+        # We reflect the just-issued dispatch on the (still-absent) row's
+        # status fields; lifecycle/runtime_phase/onboarded stay as composed
+        # (e.g. an org owner with no provider correctly surfaces
+        # provider_selection_required rather than a false "provisioning").
         _dispatch_watched(ensure_user_ready(auth))
-        return {
-            "service_name": None,
-            "status": "provisioning",
-            "substatus": "ensure_user_ready",
-            "created_at": None,
-            "updated_at": None,
-            "region": settings.AWS_REGION,
-            "last_error": None,
-            "last_error_at": None,
-            "phase": "provisioning",
-            # Still provisioning -> definitionally not onboarded yet. The
-            # first-run funnel gates on this; a container mid-provision has
-            # no goal/project, so the funnel should show once it's ready.
-            "onboarded": False,
-        }
+        contract = await readiness_state.compute_status(owner_id, container=None)
+        contract["container_status"] = "provisioning"
+        contract["container_substatus"] = "ensure_user_ready"
+        return _status_response(contract)
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
     # renewed) trial owner's container row may still carry bedrock_revoked
@@ -398,14 +316,20 @@ async def container_status(
     #     rate-limited to at most once per guard window.
     conversion_active = await maybe_resume_stuck_conversion(owner_id, container)
 
-    # Degraded Teams signal (non-blocking): if this user's Paperclip company
-    # seed failed, a running container still serves chat — surface
-    # teams_status="failed" alongside the normal phase so the client can render
-    # a "Teams needs attention / retry" affordance instead of a hard block.
-    # Best-effort (wrapped); never gates. Computed once here so every
-    # _status_response return below carries it.
-    teams_status = await _resolve_teams_status(auth.user_id)
-    onboarded = await _resolve_onboarded(owner_id)
+    # Single readiness+onboarding read (INV-1): compute_status is the SOLE
+    # composer of the containers/billing/gateway-liveness/paperclip-companies
+    # inputs — see core/services/readiness_state.py. Passing the
+    # already-fetched `container` skips a redundant containers-row read and
+    # lets the contract reflect the LOCAL (pre-commit) mutations the
+    # auto-retry branch below makes to `container["status"]` — see
+    # `_sync_contract_with_container`, called after each such mutation.
+    #
+    # Includes the degraded Teams signal (non-blocking): if this owner's
+    # Paperclip company seed failed, a running container still serves chat —
+    # `contract["teams_state"] == "failed"` surfaces alongside a normal
+    # phase so the client can render a "Teams needs attention / retry"
+    # affordance instead of a hard block. Never gates.
+    contract = await readiness_state.compute_status(owner_id, container=container)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
     # currently afford to provision, trigger re-provisioning in the
@@ -468,6 +392,7 @@ async def container_status(
                 if container.get("retryable", True):
                     asyncio.create_task(_background_provision(owner_id, auth.user_id))
                     container["substatus"] = "error_retrying"
+                    _sync_contract_with_container(contract, container)
             else:
                 # stopped / stale-provisioning lease: UNCHANGED silent auto-wake.
                 # Wake-on-intent gate — applies ONLY to a healthy parked trial
@@ -481,9 +406,7 @@ async def container_status(
                     # Read-only poll from a presence-aware client: report the
                     # parked state, start nothing.
                     wake_policy.note_wake_suppressed(owner_id, container, door="status_poll", reason="gated")
-                    return _status_response(
-                        container, owner_id, parked=True, teams_status=teams_status, onboarded=onboarded
-                    )
+                    return _status_response(contract, parked=True)
                 if parked and wake is None:
                     # Legacy client (pre-gate bundle, never reloaded): preserve
                     # wake-on-read but bound it to the daily budget so a zombie
@@ -492,7 +415,7 @@ async def container_status(
                         wake_policy.note_wake_suppressed(owner_id, container, door="status_legacy", reason="budget")
                         # Legacy-shaped response: old bundles get today's field
                         # set (plain stopped), never the new parked fields.
-                        return _status_response(container, owner_id, teams_status=teams_status, onboarded=onboarded)
+                        return _status_response(contract)
                     wake_policy.note_wake_dispatched(door="status_legacy", intent="poll")
                 elif parked:
                     wake_policy.note_wake_dispatched(door="status_poll", intent="explicit")
@@ -508,6 +431,7 @@ async def container_status(
                 asyncio.create_task(_background_provision(owner_id, auth.user_id))
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"
+                _sync_contract_with_container(contract, container)
 
     # Re-dispatch ensure_user_ready(provision_container=False) on the running-container
     # poll for: (a) EVERY org-context user — idempotent paperclip-membership-add (a
@@ -518,81 +442,117 @@ async def container_status(
     # self-heal. Gating personal on teams_status=="failed" keeps the happy path free of a
     # per-poll re-seed. provision_container=False: the container is already running and
     # provision_user_container would force-restart it (ecs_manager scenario 3).
-    if auth.is_org_context or teams_status == "failed":
+    if auth.is_org_context or contract["teams_state"] == "failed":
         _dispatch_watched(ensure_user_ready(auth, provision_container=False))
 
-    # phase "ready" requires THIS task's in-memory pool to hold the user's
-    # gateway connection — but the pool is per-process. After a rolling deploy
-    # (or an idle reap) the container is up and serving chat while the task
-    # answering this poll holds no connection, so the poll reports "starting"
-    # over a perfectly working workspace until a chat send happens to land
-    # here. Self-heal: dial in the background so the NEXT poll tells the
-    # truth. wake=0 (backgrounded read-only poll) never dials. The phase
-    # check encodes the rest of the guard: "starting" only ever means
-    # status=="running" + pool reachable + not locally connected (the
-    # pool-uninitialized fallback never returns it).
-    if (
-        wake != "0"
-        and container_ip
-        and container.get("gateway_token")
-        and _self_heal_dial_allowed(owner_id)
-        and _safe_phase(container, owner_id) == "starting"
-    ):
-        _self_heal_inflight.add(owner_id)
-        _self_heal_last_dial[owner_id] = time.monotonic()
-        asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
-
-    return _status_response(container, owner_id, teams_status=teams_status, onboarded=onboarded)
+    # Gateway liveness now lives on the connection-service DDB table (see
+    # core/services/connection_service.py's mark_gateway_connected /
+    # mark_gateway_disconnected, written by core/gateway/connection_pool.py
+    # at every is_alive transition) instead of the per-process
+    # GatewayConnectionPool (readiness store R4). That in-process pool used
+    # to blind THIS backend instance to a connection a DIFFERENT instance
+    # was holding (e.g. after a rolling deploy), which is exactly what made
+    # the self-heal dial below necessary — PR #1364. Liveness is durable
+    # and instance-independent now, so the next poll simply reads the
+    # truth; there is nothing left to self-heal here.
+    return _status_response(contract)
 
 
-def _status_response(
-    container: dict,
-    owner_id: str,
-    *,
-    parked: bool = False,
-    teams_status: str | None = None,
-    onboarded: bool = False,
-) -> dict:
-    """The one 200 shape for /container/status.
+def _sync_contract_with_container(contract: dict, container: dict) -> dict:
+    """Refresh the container-derived fields on an already-computed
+    ``contract`` after a LOCAL (pre-commit) mutation to ``container`` --
+    the auto-retry branch above optimistically flips
+    ``container["status"]``/``["substatus"]`` before the row itself
+    catches up, so THIS response should reflect that mutation without a
+    second ``readiness_state.compute_status`` call (which would re-read
+    billing/gateway-liveness/paperclip-companies for no reason -- none of
+    those changed).
+
+    Both mutation sites this is called from only ever set
+    ``status`` to ``"provisioning"`` or leave it ``"error"`` — neither is
+    ``"running"``, so ``runtime_phase`` is unconditionally
+    ``"provisioning"`` here; this intentionally does NOT re-derive that
+    from ``readiness_state.resolve_runtime_phase`` to avoid pretending a
+    gateway-liveness read happened when it didn't.
+    """
+    status = container.get("status")
+    contract["container_status"] = status
+    contract["container_substatus"] = container.get("substatus")
+    contract["lifecycle"] = "error" if status == "error" else "provisioning"
+    contract["runtime_phase"] = "provisioning"
+    contract["chat_available"] = False
+    return contract
+
+
+def _status_response(contract: dict, *, parked: bool = False) -> dict:
+    """The one 200 shape for /container/status, built from the composed
+    ``StatusContract`` (see core/services/readiness_state.compute_status).
 
     ``parked=True`` is additive: same base fields (so no consumer schema
     drift) plus ``parked``/``wake_retry_after_s`` and ``phase="parked"`` —
     the phase every stepper consumer must treat as ready-equivalent (a parked
     box is healthy and one intent away from running, not mid-provision).
+    Explicit caller-supplied flag (not read off ``contract["parked"]``) so
+    the legacy-wake-denied caller can render the OLD plain-stopped shape
+    even when the contract itself already knows the box is parked.
 
     ``teams_status`` is additive too: a NON-BLOCKING degraded signal. When the
     owner's Paperclip company seed failed it is ``"failed"`` (surfaced ALONGSIDE
     a healthy ``phase`` — chat still works); otherwise it is omitted entirely,
     so unaffected containers keep today's exact field set.
+
+    The legacy flat fields above (``phase``/``status``/``onboarded``/
+    ``teams_status``) are joined by the composed ``StatusContract`` proper
+    (``lifecycle``/``runtime_phase``/``chat_available``/``funnel``/
+    ``bootstrap``/``generations``/``teams_state``/``provider``), additive
+    and untouched by ``parked`` overrides, so web/mobile's
+    ``deriveUIPhase`` (packages/shared/src/hooks/statusContract.ts) has a
+    real wire payload to render from — not just an internal Python shape.
+    Old bundles that only read the legacy flat fields are unaffected.
     """
     body = {
-        "service_name": container.get("service_name"),
-        "status": container.get("status"),
-        "substatus": container.get("substatus"),
-        "created_at": container.get("created_at"),
-        "updated_at": container.get("updated_at"),
+        "service_name": contract.get("service_name"),
+        "status": contract.get("container_status"),
+        "substatus": contract.get("container_substatus"),
+        "created_at": contract.get("created_at"),
+        "updated_at": contract.get("updated_at"),
         "region": settings.AWS_REGION,
-        "last_error": container.get("last_error"),
-        "last_error_at": container.get("last_error_at"),
-        # Cold-start phase for the frontend stepper. See
-        # _resolve_cold_start_phase for the (status, pool) -> phase map.
-        "phase": _safe_phase(container, owner_id),
-        # Per-COMPANY onboarding fact (architecture spec §2 -- supersedes the
-        # old containers.onboarded_at stamp, S2): funnel_state == "complete"
-        # on the paperclip-companies OWNER row, resolved by
-        # _resolve_onboarded and passed in by the caller. An org shares one
-        # owner row, so this is the whole org's "funnel done" signal -- the
-        # frontend gates the funnel on it, so a second org member never
-        # re-sees it. A container-only recreation never touches this row
-        # (G1 vs G2 fencing), so it survives reprovisioning by construction.
-        "onboarded": onboarded,
+        "last_error": contract.get("last_error"),
+        "last_error_at": contract.get("last_error_at"),
+        # Cold-start phase for the frontend stepper -- sourced from the
+        # composed contract's runtime_phase (INV-6: SOLELY runtime, never
+        # onboarding/funnel/teams state). See
+        # core.services.readiness_state.resolve_runtime_phase.
+        "phase": contract.get("runtime_phase"),
+        # Per-CONTAINER onboarding fact. RECONCILE-WITH-ONBOARD: this was
+        # `container.get("onboarded_at") is not None` before this PR; the
+        # composer now derives it as `funnel_state == "complete"` once
+        # ONBOARD's writers exist, falling back to the legacy onboarded_at
+        # stamp until then -- see readiness_state.compute_status.
+        "onboarded": contract.get("onboarded", False),
+        # --- StatusContract proper (additive) ---
+        "lifecycle": contract.get("lifecycle"),
+        "runtime_phase": contract.get("runtime_phase"),
+        "chat_available": contract.get("chat_available"),
+        "container_status": contract.get("container_status"),
+        "container_substatus": contract.get("container_substatus"),
+        "generations": contract.get("generations"),
+        "funnel": contract.get("funnel"),
+        "bootstrap": contract.get("bootstrap"),
+        "provider": contract.get("provider"),
+        "teams_state": contract.get("teams_state"),
     }
     if parked:
         body["phase"] = "parked"
         body["parked"] = True
         body["wake_retry_after_s"] = 30
-    if teams_status is not None:
-        body["teams_status"] = teams_status
+    # Wire contract preserved EXACTLY: `teams_status` is surfaced only when
+    # the seed genuinely failed, never for "active"/"provisioning"/etc, so
+    # an unaffected container keeps today's exact field set even though the
+    # composed contract's own `teams_state` now always carries the raw
+    # underlying value.
+    if contract.get("teams_state") == "failed":
+        body["teams_status"] = "failed"
     return body
 
 
@@ -624,50 +584,23 @@ async def container_wake_endpoint(
     return {"outcome": result.outcome}
 
 
-async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
-    """Background dial for the status poll's pool self-heal.
-
-    Same (owner, ip, token) triple and ensure_connection primitive the chat
-    send path uses — idempotent, fast-paths when a racing dial already won.
-    The dial races real container state (mid-deploy handoff, task just
-    died), so failures are logged and swallowed: the poll it came from has
-    already answered, and the next poll simply reports whatever is true.
-    Always clears the per-owner in-flight marker the dispatch site set —
-    the cooldown (stamped at dispatch) paces the next attempt.
-    """
-    try:
-        pool = get_gateway_pool()
-        if pool.is_user_connected(owner_id):
-            return
-        await pool.ensure_connection(owner_id, ip, token)
-    except Exception as exc:
-        logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
-    finally:
-        _self_heal_inflight.discard(owner_id)
-
-
 def _safe_phase(container: dict, owner_id: str) -> str:
-    """Wrap _resolve_cold_start_phase so a not-yet-initialized gateway
-    pool doesn't 500 the status endpoint. Status must always answer.
+    """LEGACY — retained ONLY as a patch target for existing test doubles
+    (``patch("routers.container._safe_phase", ...)`` / ``monkeypatch.
+    setattr(container, "_safe_phase", ...)`` across
+    tests/unit/routers/test_container_status*.py) that stub this out to
+    isolate themselves from gateway-pool internals. Nothing in production
+    calls this anymore — the real phase now comes from
+    ``readiness_state.compute_status``'s ``runtime_phase`` (gateway
+    liveness sourced from the connection-service DDB table, not the
+    in-process pool; see ``_pool_self_heal_connect``'s deletion note in
+    this PR). Safe to delete alongside those patches in a follow-up
+    cleanup once nothing references it.
 
     On pool init failure (ManagementApiClientError when
     WS_MANAGEMENT_API_URL is unset — typically test envs that skip the
-    lifespan handler) we fall back to a *container-only* phase mapping
-    instead of forcing "starting":
-
-      - ECS RUNNING  -> "ready"        (best guess; chat may or may
-                                        not work — but the frontend will
-                                        surface the real chat error
-                                        instead of trapping the user
-                                        in a never-ending stepper)
-      - anything else -> "provisioning"
-
-    Returning "starting" here keeps users stuck in the cold-start UI
-    indefinitely even when the container itself is healthy and usable.
-
-    Anything other than ManagementApiClientError bubbles up as a real
-    bug. Logs once per process so a production misconfiguration shows
-    up in CloudWatch.
+    lifespan handler) falls back to a container-only phase mapping instead
+    of forcing "starting".
     """
     try:
         pool = get_gateway_pool()

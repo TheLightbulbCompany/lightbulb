@@ -278,13 +278,24 @@ class PaperclipRepo:
         )
         if "Item" not in resp:
             return None
-        item = resp["Item"]
-        # The credential trio defaults to "" rather than strict-indexing: a
-        # durable ``failed`` marker (put_failed_marker_if_absent) deliberately
-        # carries NO credentials — its only job is to make a net-new seed
-        # failure visible (so /teams returns an honest 503) — and get() must
-        # still read it back as a status="failed" row rather than KeyError.
-        # Real provisioned rows always carry all three (put() writes them).
+        return self._item_to_company(resp["Item"])
+
+    @staticmethod
+    def _item_to_company(item: dict) -> PaperclipCompany:
+        """Raw DDB item -> ``PaperclipCompany``. Factored out of ``get`` so
+        ``get_onboarding_state``'s org-owner fallback (which resolves the
+        provisioner's row via the ``by-org-id`` GSI's ``ProjectionType=ALL``
+        query results, not a base-table ``get_item``) can build the same
+        dataclass from a GSI-projected item without a second base-table
+        read.
+
+        The credential trio defaults to "" rather than strict-indexing: a
+        durable ``failed`` marker (put_failed_marker_if_absent) deliberately
+        carries NO credentials — its only job is to make a net-new seed
+        failure visible (so /teams returns an honest 503) — and this must
+        still read it back as a status="failed" row rather than KeyError.
+        Real provisioned rows always carry all three (put() writes them).
+        """
         return PaperclipCompany(
             user_id=item["user_id"],
             org_id=item["org_id"],
@@ -323,6 +334,103 @@ class PaperclipRepo:
             ),
             bootstrap_last_error=item.get("bootstrap_last_error"),
         )
+
+    async def get_onboarding_state(self, owner_id: str) -> dict:
+        """RECONCILE-WITH-ONBOARD: read-only accessor for the
+        COMPOSER/ONBOARD interface contract.
+
+        Returns the 11 spec-fixed onboarding keys (see the dataclass note
+        above) PLUS three additive keys -- ``teams_state`` (this row's raw
+        ``status``), ``company_id``, and ``paperclip_user_id`` -- so
+        ``core.services.readiness_state.compute_status`` gets everything it
+        needs from the paperclip-companies row in exactly ONE physical read
+        rather than a second `get_item` just for onboarding fields. See
+        docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
+        §2 ("one read, not two").
+
+        ``owner_id`` is the CONTAINER owner (org_id for an org, else the
+        user_id) -- NOT necessarily a row key. This table's PK is a Clerk
+        user_id (see module docstring): for a personal owner
+        (user_id == owner_id) ``self.get(owner_id)`` already resolves the
+        right row directly (the common case, ONE physical read). For an
+        ORG owner (``owner_id`` is an ``org_`` id) there is no row keyed by
+        org_id itself, so this falls back to the ``by-org-id`` GSI (also
+        ONE physical read -- ``ProjectionType=ALL``, no base-table chain
+        read needed) and returns the PROVISIONER's row -- the one row
+        ``seeded_agent_ids`` was stamped on at provision time -- since
+        onboarding facts (funnel/bootstrap) are company-wide, not
+        per-member. Falls back to the first row if none carries
+        ``seeded_agent_ids`` (defensive; shouldn't happen for an
+        actively-provisioned org).
+
+        Owner-row resolution is delegated to ``resolve_owner_row`` -- the
+        single canonical "which row is THE owner row" path shared with
+        ``routers/onboarding.py`` and ``routers/container.py`` -- so org vs.
+        personal resolution has exactly one implementation.
+
+        A row that doesn't exist yet, or that predates ONBOARD's writers,
+        returns every onboarding field at its "genuinely not started"
+        default -- never raises (read failures are the caller's
+        responsibility to guard, matching every other method here).
+        """
+        # include_inactive=True: a status reader must still resolve a
+        # FAILED org seed row so teams_state="failed" surfaces (the sign-in
+        # resolver's active-only filter would hide it). Personal owners already
+        # resolve via a status-agnostic get.
+        company = await self.resolve_owner_row(owner_id, include_inactive=True)
+        if company is None:
+            return {
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+            }
+
+        # getattr(..., default) rather than direct attribute access: real
+        # PaperclipCompany instances always have every field (defaulted by
+        # the dataclass), but a handful of existing test doubles construct
+        # a bare SimpleNamespace(status=...) standing in for `repo.get`'s
+        # return value -- getattr keeps this method correct against both
+        # without forcing every such test double to be rewritten into a
+        # full PaperclipCompany just to add a status field.
+        # ONBOARD's dataclass carries funnel/bootstrap timestamps as
+        # ``datetime`` and defaults the state literals to ``None`` (not the
+        # "not_started" string). This accessor is the COMPOSER/ONBOARD bridge:
+        # it normalizes those to the contract's string-typed shape -- ISO
+        # strings for timestamps, "not_started" for an unset state -- so
+        # ``compute_status`` and the StatusContract never see a bare datetime
+        # or a null state.
+        def _iso(value):
+            return value.isoformat() if hasattr(value, "isoformat") else value
+
+        return {
+            "onboarding_generation": getattr(company, "onboarding_generation", None),
+            "funnel_state": getattr(company, "funnel_state", None) or "not_started",
+            "funnel_submitted_at": _iso(getattr(company, "funnel_submitted_at", None)),
+            "funnel_completed_at": _iso(getattr(company, "funnel_completed_at", None)),
+            "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
+            "onboarding_project_id": getattr(company, "onboarding_project_id", None),
+            "bootstrap_state": getattr(company, "bootstrap_state", None) or "not_started",
+            "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
+            "bootstrap_dispatched_at": _iso(getattr(company, "bootstrap_dispatched_at", None)),
+            "bootstrap_delivered_at": _iso(getattr(company, "bootstrap_delivered_at", None)),
+            "bootstrap_attempts": getattr(company, "bootstrap_attempts", None) or 0,
+            "bootstrap_last_error": getattr(company, "bootstrap_last_error", None),
+            "teams_state": getattr(company, "status", None),
+            "company_id": getattr(company, "company_id", None),
+            "paperclip_user_id": getattr(company, "paperclip_user_id", None),
+        }
 
     async def get_org_company_id(self, org_id: str) -> Optional[str]:
         """Return the shared ``company_id`` for any one user in this org.
@@ -645,7 +753,7 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def find_owner_row(self, org_id: str) -> Optional[PaperclipCompany]:
+    async def find_owner_row(self, org_id: str, *, include_inactive: bool = False) -> Optional[PaperclipCompany]:
         """Find the ORG owner row (oldest ACTIVE ``created_at`` for this org_id).
 
         Deliberately a separate, repo-level implementation of the same
@@ -661,7 +769,17 @@ class PaperclipRepo:
         ``find_org_owner``: a disabled/provisioning/failed row is not
         sign-in-able and must never be selected over a genuinely active one.
 
-        Returns None if the org has no active rows.
+        ``include_inactive`` (default False) relaxes that for onboarding/teams
+        STATUS readers (``get_onboarding_state``): an org whose Paperclip seed
+        FAILED has only a ``status="failed"`` owner row, and the caller needs
+        it to surface ``teams_state="failed"`` (the Teams-degraded affordance).
+        When no active row exists and ``include_inactive`` is set, the
+        provisioner's row (the one carrying ``seeded_agent_ids``, else the
+        oldest) is returned regardless of status. The sign-in path leaves this
+        False so a non-active row is never selected over an active one.
+
+        Returns None if the org has no rows (or no active row when
+        ``include_inactive`` is False).
         """
         items: list[dict] = []
         last_evaluated_key: Optional[dict] = None
@@ -679,17 +797,33 @@ class PaperclipRepo:
             if not last_evaluated_key:
                 break
 
-        active_items = [it for it in items if it.get("status") == "active"]
-        if not active_items:
-            return None
-
         def _sort_key(it: dict) -> str:
             return it.get("created_at", "")
 
-        oldest = min(active_items, key=_sort_key)
-        return await self.get(oldest["user_id"])
+        active_items = [it for it in items if it.get("status") == "active"]
+        if active_items:
+            chosen = min(active_items, key=_sort_key)
+        elif include_inactive and items:
+            # No active row -- return the provisioner's row (carries
+            # seeded_agent_ids) if present, else the oldest, so a failed-seed
+            # org still resolves to a row carrying its onboarding/teams truth.
+            chosen = next((it for it in items if it.get("seeded_agent_ids")), None) or min(items, key=_sort_key)
+        else:
+            return None
+        # Hydrate straight from the GSI query item -- the by-org-id index is
+        # ProjectionType.ALL, so `chosen` already carries every attribute
+        # _item_to_company needs (that helper was factored out of get() for
+        # exactly this). Avoids a second base-table read on the hot
+        # /container/status org poll (get_onboarding_state calls this on every
+        # ~3s poll). Same eventual-consistency tier the base get() had on the
+        # org path (the GSI can't be a consistent read anyway -- see
+        # resolve_owner_row); the brief-flow CAS write fences on generation, so
+        # a briefly-stale read can't corrupt the claim.
+        return self._item_to_company(chosen)
 
-    async def resolve_owner_row(self, owner_id: str) -> Optional[PaperclipCompany]:
+    async def resolve_owner_row(
+        self, owner_id: str, *, consistent_read: bool = False, include_inactive: bool = False
+    ) -> Optional[PaperclipCompany]:
         """Resolve an ``owner_id`` (Clerk org_id for orgs, Clerk user_id for
         personal owners) to the paperclip-companies OWNER row that carries
         onboarding truth.
@@ -705,10 +839,22 @@ class PaperclipRepo:
         (``routers/onboarding.py``, ``routers/container.py``'s ``onboarded``
         computation) should use, so "which row is THE owner row" has one
         answer.
+
+        ``consistent_read`` defaults to False (eventually-consistent). The
+        HOT caller is ``get_onboarding_state`` on every ``/container/status``
+        poll (~3s/owner), where ``onboarded`` is best-effort and a briefly
+        stale ``False`` is harmless -- a strong read there would double the
+        ``paperclip-companies`` RCU cost fleet-wide for a field that flips
+        once. The one caller that needs strong consistency is
+        ``POST /onboarding/brief`` (the funnel claim reads then writes the
+        SAME row); it passes ``consistent_read=True``. NOTE: the org path
+        goes through the ``by-org-id`` GSI, which is eventually consistent by
+        construction -- ``consistent_read`` only strengthens the personal
+        (base-table ``get``) path.
         """
         if is_org_owner_id(owner_id):
-            return await self.find_owner_row(owner_id)
-        return await self.get(owner_id, consistent_read=True)
+            return await self.find_owner_row(owner_id, include_inactive=include_inactive)
+        return await self.get(owner_id, consistent_read=consistent_read)
 
     async def claim_funnel_submission(self, user_id: str, *, onboarding_generation: str) -> FunnelClaimResult:
         """Conditional ``funnel_state: not_started -> submitted``, fenced on
@@ -725,33 +871,58 @@ class PaperclipRepo:
         out -- mirrors the old ``release_onboarding_claim`` contract.
         """
         table = self._table()
-        now = datetime.now(timezone.utc).isoformat()
-        try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": user_id},
-                UpdateExpression="SET funnel_state = :submitted, funnel_submitted_at = :t, updated_at = :u",
-                ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
-                ExpressionAttributeValues={
-                    ":submitted": "submitted",
-                    ":not_started": "not_started",
-                    ":gen": onboarding_generation,
-                    ":t": now,
-                    ":u": now,
-                },
-            )
-            return FunnelClaimResult.WON
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
+        # Bounded retry loop: the CAS itself is the serialization point, but a
+        # peer can WIN the claim and then ``revert_funnel_submission`` it back
+        # to ``not_started`` on the SAME generation if its downstream seed
+        # fails. A single re-read that only distinguished generation-mismatch
+        # from "not not_started" would then report ALREADY_SUBMITTED to a
+        # racing caller even though the row is claimable again -- leaving the
+        # client believing onboarding is done while the company has no
+        # goal/project and no recovery path. So on a CAS failure we re-read
+        # and, if the row is back at ``not_started`` on our generation, RETRY
+        # the claim instead of mislabeling it. Bounded so a pathologically
+        # flapping peer can't spin here forever.
+        for _attempt in range(3):
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                await run_in_thread(
+                    table.update_item,
+                    Key={"user_id": user_id},
+                    UpdateExpression="SET funnel_state = :submitted, funnel_submitted_at = :t, updated_at = :u",
+                    ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
+                    ExpressionAttributeValues={
+                        ":submitted": "submitted",
+                        ":not_started": "not_started",
+                        ":gen": onboarding_generation,
+                        ":t": now,
+                        ":u": now,
+                    },
+                )
+                return FunnelClaimResult.WON
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                pass
 
-        current = await self.get(user_id, consistent_read=True)
-        if current is None or current.onboarding_generation != onboarding_generation:
-            # Superseded generation (or the row vanished) -- per INV-4 a
-            # silent no-op from the caller's point of view; the caller was
-            # holding a stale view of the company, not colliding with a
-            # duplicate submit.
-            return FunnelClaimResult.STALE_GENERATION
-        return FunnelClaimResult.ALREADY_SUBMITTED
+            current = await self.get(user_id, consistent_read=True)
+            if current is None or current.onboarding_generation != onboarding_generation:
+                # Superseded generation (or the row vanished) -- per INV-4 a
+                # silent no-op from the caller's point of view; the caller was
+                # holding a stale view of the company, not colliding with a
+                # duplicate submit.
+                return FunnelClaimResult.STALE_GENERATION
+            if current.funnel_state == "not_started":
+                # A peer won then reverted (failed seed): the row is claimable
+                # again on this same generation. Retry rather than reporting a
+                # false ALREADY_SUBMITTED.
+                continue
+            # funnel_state is submitted/complete on our generation -- a peer's
+            # submission genuinely won and is still standing.
+            return FunnelClaimResult.ALREADY_SUBMITTED
+
+        # Exhausted retries -- a peer is actively claim/revert-thrashing (its
+        # seed keeps failing). Report STALE_GENERATION so the caller retries
+        # (409 -> re-poll) rather than a false ALREADY_SUBMITTED that would
+        # strand the client on an empty company.
+        return FunnelClaimResult.STALE_GENERATION
 
     async def record_onboarding_ids(
         self, user_id: str, *, onboarding_generation: str, goal_id: str, project_id: str

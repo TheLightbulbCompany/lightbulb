@@ -82,19 +82,62 @@ def _stub_personal_trial_default():
         yield stub
 
 
+def _onboarding_state_stub(status: str | None = None) -> dict:
+    """The all-defaults `get_onboarding_state` return shape, with `teams_state`
+    overridable -- mirrors readiness_state.compute_status's ONE paperclip-
+    companies read (core.repositories.paperclip_repo.PaperclipRepo.
+    get_onboarding_state). Every PaperclipRepo test double in this file must
+    configure BOTH `.get` (legacy callers) and `.get_onboarding_state`
+    (compute_status's own accessor) -- patching the whole class replaces the
+    instance with a bare MagicMock, so `.get_onboarding_state` is never the
+    real method unless a test explicitly stubs it here."""
+    return {
+        "onboarding_generation": None,
+        "funnel_state": "not_started",
+        "funnel_submitted_at": None,
+        "funnel_completed_at": None,
+        "onboarding_goal_id": None,
+        "onboarding_project_id": None,
+        "bootstrap_state": "not_started",
+        "bootstrap_dispatch_id": None,
+        "bootstrap_dispatched_at": None,
+        "bootstrap_delivered_at": None,
+        "bootstrap_attempts": 0,
+        "bootstrap_last_error": None,
+        "teams_state": status,
+        "company_id": None,
+        "paperclip_user_id": None,
+    }
+
+
+def _paperclip_repo_stub(status: str | None = None) -> MagicMock:
+    """A PaperclipRepo test double with BOTH `.get` (legacy direct readers)
+    and `.get_onboarding_state` (compute_status) configured consistently
+    off the same `status`."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=SimpleNamespace(status=status) if status is not None else None)
+    repo.get_onboarding_state = AsyncMock(return_value=_onboarding_state_stub(status))
+    # resolve_owner_row is the canonical owner-row resolver compute_status
+    # (via get_onboarding_state) delegates to. Kept on the stub so any test
+    # that patches PaperclipRepo directly gets a coherent double even though
+    # the router itself no longer calls it (it goes through get_onboarding_state).
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(status=status, funnel_state=None) if status is not None else None
+    )
+    return repo
+
+
 @pytest.fixture(autouse=True)
 def _stub_teams_status_repo():
-    """The status path reads the polling user's paperclip-companies seed
-    state to surface a NON-BLOCKING teams_status (Part C), AND (spec PR-4 /
-    ONBOARD-TABLE) resolves the owner row to surface `onboarded` (funnel_state
-    == "complete"). Stub PaperclipRepo to an empty read by default (no row ->
-    teams_status=None, onboarded=False) so this file's tests exercise the real
-    _resolve_teams_status / _resolve_onboarded without hitting DynamoDB; tests
-    that care re-patch PaperclipRepo inline (an active/failed row, a
+    """The status path now reads the polling user's paperclip-companies seed
+    state (via readiness_state.compute_status) to surface a NON-BLOCKING
+    teams_status AND the company-scoped `onboarded` fact (funnel_state ==
+    "complete"), both composed inside compute_status/get_onboarding_state.
+    Stub PaperclipRepo to an empty read by default so this file's tests
+    exercise the real composition without hitting DynamoDB; the tests that
+    care re-patch PaperclipRepo inline (an active/failed row, a
     funnel_state=="complete" row, or a raising read)."""
-    repo = MagicMock()
-    repo.get = AsyncMock(return_value=None)
-    repo.resolve_owner_row = AsyncMock(return_value=None)
+    repo = _paperclip_repo_stub(None)
     with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
         yield repo
 
@@ -136,9 +179,9 @@ class TestContainerStatusPhaseField:
     """Verify the /status response actually carries the phase."""
 
     @pytest.mark.asyncio
-    @patch("routers.container.get_gateway_pool")
+    @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
     @patch("routers.container.get_ecs_manager")
-    async def test_phase_starting_when_running_but_no_pool(self, mock_get_ecs, mock_get_pool, async_client):
+    async def test_phase_starting_when_running_but_no_pool(self, mock_get_ecs, mock_gateway_connected, async_client):
         mock_ecs = AsyncMock()
         mock_get_ecs.return_value = mock_ecs
         mock_ecs.resolve_running_container = AsyncMock(
@@ -152,16 +195,16 @@ class TestContainerStatusPhaseField:
                 "10.0.1.5",
             )
         )
-        mock_get_pool.return_value = SimpleNamespace(is_user_connected=lambda _u: False)
+        mock_gateway_connected.return_value = False
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         assert response.json()["phase"] == "starting"
 
     @pytest.mark.asyncio
-    @patch("routers.container.get_gateway_pool")
+    @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
     @patch("routers.container.get_ecs_manager")
-    async def test_phase_ready_when_pool_connected(self, mock_get_ecs, mock_get_pool, async_client):
+    async def test_phase_ready_when_pool_connected(self, mock_get_ecs, mock_gateway_connected, async_client):
         mock_ecs = AsyncMock()
         mock_get_ecs.return_value = mock_ecs
         mock_ecs.resolve_running_container = AsyncMock(
@@ -175,7 +218,7 @@ class TestContainerStatusPhaseField:
                 "10.0.1.5",
             )
         )
-        mock_get_pool.return_value = SimpleNamespace(is_user_connected=lambda _u: True)
+        mock_gateway_connected.return_value = True
 
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
@@ -422,6 +465,37 @@ class TestContainerStatusGate:
         assert len(captured) == 1
 
     @pytest.mark.asyncio
+    async def test_no_container_preserves_onboarded_during_recreation(self):
+        """Container-only recreation (no container row yet, but the company +
+        G2 onboarding preserved) must NOT re-show a completed funnel: the
+        synthetic provisioning response resolves onboarded from the preserved
+        onboarding state via compute_status, not a hardcoded False. Pins the
+        #1416 P2 fix folded into COMPOSER."""
+        from routers.container import container_status
+
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=None)
+        repo.get_onboarding_state = AsyncMock(
+            return_value=_onboarding_state_with(funnel_state="complete", onboarding_generation="onb_g")
+        )
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.ensure_user_ready", new=AsyncMock()),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close() or c),
+        ):
+            result = await container_status(auth=_personal_auth())
+
+        assert result["status"] == "provisioning"
+        assert result["onboarded"] is True  # NOT re-funneled
+
+    @pytest.mark.asyncio
     async def test_existing_container_skips_gate(self):
         """Container exists -> gate is NOT consulted; response is unchanged."""
         from routers.container import container_status
@@ -455,8 +529,8 @@ class TestContainerStatusGate:
             ) as mock_gate,
             patch("routers.container.resolve_owner_id", return_value="user_x"),
             patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
             ),
         ):
             result = await container_status(auth=mock_auth)
@@ -539,8 +613,8 @@ class TestContainerStatusGate:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
             ),
         ):
             result = await container_status(auth=_personal_auth())
@@ -1054,282 +1128,6 @@ class TestContainerStatusOrgMemberDispatchOnExisting:
         )
 
 
-class TestContainerStatusPoolSelfHeal:
-    """GET /container/status vs. the pool's instance-local blind spot.
-
-    phase "ready" requires THIS process's in-memory pool to hold the user's
-    gateway connection — but the pool is per-task. After a rolling deploy (or
-    an idle reap) the container is up and serving chat while the task
-    answering the poll holds no connection, so /status reports "starting"
-    over a perfectly working workspace until a chat send happens to land on
-    this task. The poll must self-heal: dial in the background so the NEXT
-    poll tells the truth.
-
-    The dispatch is paced per owner: the pool serializes all connect I/O
-    (and every chat RPC) behind one process-wide lock and has no reconnect
-    floor on the absent-create path, so the poll cadence must not pile up
-    dials — one in flight at a time, cooldown between attempts.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_self_heal_guards(self):
-        """The dispatch guards are module-level state — isolate every test."""
-        import routers.container as rc
-
-        rc._self_heal_inflight.clear()
-        rc._self_heal_last_dial.clear()
-        yield
-        rc._self_heal_inflight.clear()
-        rc._self_heal_last_dial.clear()
-
-    @staticmethod
-    def _running_row():
-        return {
-            "service_name": "openclaw-abc",
-            "status": "running",
-            "substatus": None,
-            "gateway_token": "gw-token",
-            "created_at": "2026-01-15T12:00:00+00:00",
-            "updated_at": "2026-01-15T12:00:00+00:00",
-        }
-
-    @pytest.mark.asyncio
-    async def test_starting_phase_dispatches_background_pool_connect(self):
-        """The core self-heal: running + IP in hand + no local connection →
-        dispatch a background dial; the response still reports the honest
-        "starting" for THIS poll (the next one finds the truth)."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
-        )
-        pool = SimpleNamespace(is_user_connected=lambda _u: False)
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.get_gateway_pool", return_value=pool),
-            patch("routers.container.resolve_owner_id", return_value="user_x"),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_personal_auth())
-
-        assert result["phase"] == "starting"
-        assert captured == ["_pool_self_heal_connect"], (
-            f"expected a background pool dial on a starting poll, got {captured}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_connected_pool_does_not_dispatch(self):
-        """Ready polls (pool already connected) must not churn tasks."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
-        )
-        pool = SimpleNamespace(is_user_connected=lambda _u: True)
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.get_gateway_pool", return_value=pool),
-            patch("routers.container.resolve_owner_id", return_value="user_x"),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_personal_auth())
-
-        assert result["phase"] == "ready"
-        assert captured == []
-
-    @pytest.mark.asyncio
-    async def test_wake0_readonly_poll_never_dials(self):
-        """wake=0 is the backgrounded read-only poll: report, start nothing —
-        the same contract the parked-wake gate honors."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
-        )
-        pool = SimpleNamespace(is_user_connected=lambda _u: False)
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.get_gateway_pool", return_value=pool),
-            patch("routers.container.resolve_owner_id", return_value="user_x"),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        ):
-            result = await container_status(_personal_auth(), wake="0")
-
-        assert result["phase"] == "starting"
-        assert captured == []
-
-    @pytest.mark.asyncio
-    async def test_no_ip_or_no_token_does_not_dispatch(self):
-        """A zombie running row (no live task → no IP) or a row missing its
-        gateway_token has nothing to dial — never dispatch."""
-        from routers.container import container_status
-
-        captured: list[str] = []
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        pool = SimpleNamespace(is_user_connected=lambda _u: False)
-        no_token = self._running_row()
-        del no_token["gateway_token"]
-        for row, ip in ((self._running_row(), None), (no_token, "10.0.1.5")):
-            fake_ecs = MagicMock(
-                resolve_running_container=AsyncMock(return_value=(row, ip)),
-            )
-            with (
-                patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-                patch("routers.container.get_gateway_pool", return_value=pool),
-                patch("routers.container.resolve_owner_id", return_value="user_x"),
-                patch("routers.container.asyncio.create_task", side_effect=capture_task),
-            ):
-                await container_status(_personal_auth())
-
-        assert captured == []
-
-    @pytest.mark.asyncio
-    async def test_self_heal_connect_swallows_failures(self):
-        """The dial races real container state (mid-deploy, task just died) —
-        it must never propagate. And on success it hands ensure_connection
-        exactly the (owner, ip, token) triple the chat path uses."""
-        from routers.container import _pool_self_heal_connect
-
-        raising_pool = SimpleNamespace(
-            is_user_connected=lambda _u: False,
-            ensure_connection=AsyncMock(side_effect=RuntimeError("boom")),
-        )
-        with patch("routers.container.get_gateway_pool", return_value=raising_pool):
-            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")  # must not raise
-
-        ok_pool = SimpleNamespace(
-            is_user_connected=lambda _u: False,
-            ensure_connection=AsyncMock(),
-        )
-        with patch("routers.container.get_gateway_pool", return_value=ok_pool):
-            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
-        ok_pool.ensure_connection.assert_awaited_once_with("user_x", "10.0.1.5", "gw-token")
-
-    @pytest.mark.asyncio
-    async def test_self_heal_connect_skips_when_already_connected(self):
-        """Racing polls: a second dispatched dial finds the first one won and
-        returns without re-dialing."""
-        from routers.container import _pool_self_heal_connect
-
-        pool = SimpleNamespace(
-            is_user_connected=lambda _u: True,
-            ensure_connection=AsyncMock(),
-        )
-        with patch("routers.container.get_gateway_pool", return_value=pool):
-            await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
-        pool.ensure_connection.assert_not_awaited()
-
-    def _poll_ctx(self, captured: list[str]):
-        """Patch stack for a starting-phase poll that records dispatches."""
-
-        def capture_task(coro):
-            captured.append(coro.__qualname__)
-            coro.close()
-            return MagicMock()
-
-        fake_ecs = MagicMock(
-            resolve_running_container=AsyncMock(return_value=(self._running_row(), "10.0.1.5")),
-        )
-        pool = SimpleNamespace(is_user_connected=lambda _u: False)
-        return (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.get_gateway_pool", return_value=pool),
-            patch("routers.container.resolve_owner_id", return_value="user_x"),
-            patch("routers.container.asyncio.create_task", side_effect=capture_task),
-        )
-
-    @pytest.mark.asyncio
-    async def test_dial_in_flight_blocks_repeat_dispatch(self):
-        """While a dial is outstanding, the ~5s poll cadence must not queue
-        duplicates behind the pool's process-wide lock."""
-        import routers.container as rc
-        from routers.container import container_status
-
-        captured: list[str] = []
-        p1, p2, p3, p4 = self._poll_ctx(captured)
-        with p1, p2, p3, p4:
-            await container_status(_personal_auth())
-            assert captured == ["_pool_self_heal_connect"]
-            assert "user_x" in rc._self_heal_inflight
-            await container_status(_personal_auth())
-
-        assert captured == ["_pool_self_heal_connect"], (
-            f"expected exactly one dispatch while the first dial is in flight, got {captured}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_cooldown_blocks_redial_until_elapsed(self):
-        """A completed-but-failed dial (wedged container: running row,
-        unreachable IP) must not be retried every poll — only after the
-        cooldown. A chat send still dials immediately via its own path."""
-        import time as time_mod
-
-        import routers.container as rc
-        from routers.container import container_status
-
-        captured: list[str] = []
-        p1, p2, p3, p4 = self._poll_ctx(captured)
-
-        # Dial finished (in-flight cleared) moments ago and failed.
-        rc._self_heal_last_dial["user_x"] = time_mod.monotonic()
-        with p1, p2, p3, p4:
-            await container_status(_personal_auth())
-        assert captured == []
-
-        # Cooldown elapsed → the poll may try again.
-        rc._self_heal_last_dial["user_x"] = time_mod.monotonic() - rc._SELF_HEAL_DIAL_COOLDOWN_S - 1.0
-        with p1, p2, p3, p4:
-            await container_status(_personal_auth())
-        assert captured == ["_pool_self_heal_connect"]
-
-    @pytest.mark.asyncio
-    async def test_self_heal_connect_clears_inflight_marker(self):
-        """The dispatch site sets the in-flight marker; the dial must clear
-        it on success, on failure, and on the already-connected fast path."""
-        import routers.container as rc
-        from routers.container import _pool_self_heal_connect
-
-        pools = (
-            SimpleNamespace(is_user_connected=lambda _u: False, ensure_connection=AsyncMock()),
-            SimpleNamespace(
-                is_user_connected=lambda _u: False,
-                ensure_connection=AsyncMock(side_effect=RuntimeError("boom")),
-            ),
-            SimpleNamespace(is_user_connected=lambda _u: True, ensure_connection=AsyncMock()),
-        )
-        for pool in pools:
-            rc._self_heal_inflight.add("user_x")
-            with patch("routers.container.get_gateway_pool", return_value=pool):
-                await _pool_self_heal_connect("user_x", "10.0.1.5", "gw-token")
-            assert "user_x" not in rc._self_heal_inflight
-
-
 class TestGatewayRestart:
     """Test POST /api/v1/container/gateway/restart."""
 
@@ -1673,21 +1471,31 @@ class TestContainerStatusTrialBedrockRestore:
     @pytest.mark.asyncio
     async def test_not_revoked_row_makes_no_billing_call_for_restore(self):
         """The overwhelmingly common poll: no bedrock_revoked flag at all —
-        the restore trigger must not even read the billing row."""
+        maybe_restore_trial_bedrock's OWN (second, gated) billing read must
+        not fire.
+
+        readiness_state.compute_status now reads the billing row on EVERY
+        poll (it's one of the composer's four inputs — see
+        core/services/readiness_state.py), so `billing_repo.get_by_owner_id`
+        as a whole is no longer a no-call assertion; what stays true, and
+        stays worth pinning, is that the restore trigger's OWN conditional
+        read (short-circuited by the `bedrock_revoked` flag check before it
+        touches billing at all) never fires."""
         from routers.container import container_status
 
         row = {"service_name": "svc", "status": "running", "substatus": None}
-        billing_read = AsyncMock()
 
         with (
             patch("routers.container.get_ecs_manager", return_value=self._ecs(row)),
-            patch("core.services.provision_gate.billing_repo.get_by_owner_id", new=billing_read),
+            patch(
+                "core.services.provision_gate.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value=None),
+            ),
             patch("core.billing.bedrock_aip.restore_owner_bedrock", new=AsyncMock()) as restore,
             patch("routers.container._safe_phase", return_value="ready"),
         ):
             result = await container_status(_personal_auth())
 
-        billing_read.assert_not_called()
         restore.assert_not_awaited()
         assert result["status"] == "running"
 
@@ -1975,40 +1783,13 @@ class TestContainerStatusTeamsStatus:
     serves chat — phase stays "ready" — while teams_status="failed" tells the
     client to show a "Teams needs attention / retry" affordance. The paperclip
     read is best-effort: any failure omits the field, never breaks /status.
+
+    The pure "does a Paperclip row's status become the composed contract's
+    teams_state" logic moved to readiness_state.compute_status (spec PR-5,
+    COMPOSER) — the direct _resolve_teams_status unit tests below were
+    ported to test_readiness_state.py's TestTeamsState. This class keeps
+    only the end-to-end /container/status wire-contract assertions.
     """
-
-    @pytest.mark.asyncio
-    async def test_resolve_teams_status_returns_failed_for_failed_row(self):
-        from routers.container import _resolve_teams_status
-
-        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_teams_status("user_x") == "failed"
-
-    @pytest.mark.asyncio
-    async def test_resolve_teams_status_returns_none_for_active_row(self):
-        from routers.container import _resolve_teams_status
-
-        repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_teams_status("user_x") is None
-
-    @pytest.mark.asyncio
-    async def test_resolve_teams_status_returns_none_when_no_row(self):
-        from routers.container import _resolve_teams_status
-
-        repo = MagicMock(get=AsyncMock(return_value=None))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_teams_status("user_x") is None
-
-    @pytest.mark.asyncio
-    async def test_resolve_teams_status_swallows_read_error(self):
-        """A paperclip read failure must NOT break /status — it returns None."""
-        from routers.container import _resolve_teams_status
-
-        repo = MagicMock(get=AsyncMock(side_effect=RuntimeError("ddb down")))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_teams_status("user_x") is None  # must not raise
 
     @pytest.mark.asyncio
     async def test_running_container_with_failed_seed_is_ready_plus_teams_failed(self):
@@ -2024,13 +1805,13 @@ class TestContainerStatusTeamsStatus:
         fake_ecs.resolve_running_container = AsyncMock(
             return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
         )
-        failed_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        failed_repo = _paperclip_repo_stub("failed")
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.resolve_owner_id", return_value="user_x"),
             patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -2051,13 +1832,13 @@ class TestContainerStatusTeamsStatus:
         fake_ecs.resolve_running_container = AsyncMock(
             return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
         )
-        active_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        active_repo = _paperclip_repo_stub("active")
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.resolve_owner_id", return_value="user_x"),
             patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
         ):
@@ -2087,13 +1868,13 @@ class TestContainerStatusTeamsStatus:
         fake_ecs.resolve_running_container = AsyncMock(
             return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
         )
-        failed_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="failed")))
+        failed_repo = _paperclip_repo_stub("failed")
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.resolve_owner_id", return_value="user_x"),
             patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=failed_repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -2123,13 +1904,13 @@ class TestContainerStatusTeamsStatus:
         fake_ecs.resolve_running_container = AsyncMock(
             return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
         )
-        active_repo = MagicMock(get=AsyncMock(return_value=SimpleNamespace(status="active")))
+        active_repo = _paperclip_repo_stub("active")
         with (
             patch("routers.container.get_ecs_manager", return_value=fake_ecs),
             patch("routers.container.resolve_owner_id", return_value="user_x"),
             patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+                "core.services.connection_service.is_gateway_connected",
+                new=AsyncMock(return_value=True),
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=active_repo),
             patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
@@ -2141,63 +1922,44 @@ class TestContainerStatusTeamsStatus:
         assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
 
 
+def _onboarding_state_with(
+    *, funnel_state: str, onboarding_generation: str | None, teams_state: str | None = None
+) -> dict:
+    """`get_onboarding_state` return shape with funnel_state/onboarding_generation
+    overridden -- for the onboarded-fact tests. compute_status derives
+    `onboarded` as `funnel_state == "complete"` when onboarding_generation is
+    set (ONBOARD's writers have run), else the legacy containers.onboarded_at
+    stamp -- see readiness_state.compute_status."""
+    state = _onboarding_state_stub(teams_state)
+    state["funnel_state"] = funnel_state
+    state["onboarding_generation"] = onboarding_generation
+    return state
+
+
 class TestContainerStatusOnboarded:
     """GET /container/status surfaces `onboarded` from the paperclip-companies
     OWNER row's funnel_state (spec PR-4 / ONBOARD-TABLE — supersedes the old
-    containers.onboarded_at stamp, S2). Resolved via
-    PaperclipRepo.resolve_owner_row(owner_id), NOT the calling user's own row
-    and NOT the containers row -- see _resolve_onboarded's docstring.
-    """
+    containers.onboarded_at stamp, S2). The fact is composed INSIDE
+    readiness_state.compute_status via get_onboarding_state -> resolve_owner_row
+    (company-scoped: an org shares one owner row), NOT the calling user's own
+    row and NOT the containers row. The router no longer resolves it itself
+    (INV-1: compute_status is the sole composer)."""
 
-    @pytest.mark.asyncio
-    async def test_resolve_onboarded_true_when_funnel_complete(self):
-        from routers.container import _resolve_onboarded
-
-        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="complete")))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_onboarded("owner_x") is True
-
-    @pytest.mark.asyncio
-    async def test_resolve_onboarded_false_when_funnel_submitted_not_complete(self):
-        """Submitted-but-not-yet-delivered must NOT read as onboarded --
-        only "complete" stops the funnel from being offered again."""
-        from routers.container import _resolve_onboarded
-
-        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="submitted")))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_onboarded("owner_x") is False
-
-    @pytest.mark.asyncio
-    async def test_resolve_onboarded_false_when_no_owner_row(self):
-        from routers.container import _resolve_onboarded
-
-        repo = MagicMock(resolve_owner_row=AsyncMock(return_value=None))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_onboarded("owner_x") is False
-
-    @pytest.mark.asyncio
-    async def test_resolve_onboarded_swallows_read_error(self):
-        """A paperclip read failure must NOT break /status — it returns False."""
-        from routers.container import _resolve_onboarded
-
-        repo = MagicMock(resolve_owner_row=AsyncMock(side_effect=RuntimeError("ddb down")))
-        with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
-            assert await _resolve_onboarded("owner_x") is False  # must not raise
-
-    @pytest.mark.asyncio
-    async def test_running_container_with_complete_funnel_reports_onboarded_true(self):
-        from routers.container import container_status
-
+    def _running_ecs(self):
         fake_ecs = AsyncMock()
         fake_ecs.resolve_running_container = AsyncMock(
             return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
         )
-        repo = MagicMock(
-            get=AsyncMock(return_value=SimpleNamespace(status="active")),
-            resolve_owner_row=AsyncMock(return_value=SimpleNamespace(funnel_state="complete")),
-        )
+        return fake_ecs
+
+    async def _status_with_onboarding(self, onboarding_state: dict) -> dict:
+        from routers.container import container_status
+
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
+        repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
         with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.get_ecs_manager", return_value=self._running_ecs()),
             patch("routers.container.resolve_owner_id", return_value="user_x"),
             patch(
                 "routers.container.get_gateway_pool",
@@ -2205,36 +1967,34 @@ class TestContainerStatusOnboarded:
             ),
             patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
         ):
-            result = await container_status(_personal_auth())
+            return await container_status(_personal_auth())
 
+    @pytest.mark.asyncio
+    async def test_running_container_with_complete_funnel_reports_onboarded_true(self):
+        result = await self._status_with_onboarding(
+            _onboarding_state_with(funnel_state="complete", onboarding_generation="onb_gen_x")
+        )
         assert result["onboarded"] is True
+
+    @pytest.mark.asyncio
+    async def test_submitted_but_not_complete_reports_onboarded_false(self):
+        """Submitted-but-not-yet-delivered must NOT read as onboarded --
+        only "complete" stops the funnel from being offered again."""
+        result = await self._status_with_onboarding(
+            _onboarding_state_with(funnel_state="submitted", onboarding_generation="onb_gen_x")
+        )
+        assert result["onboarded"] is False
 
     @pytest.mark.asyncio
     async def test_running_container_with_no_owner_row_reports_onboarded_false(self):
         """Additive, safe default: no row yet (fresh signup) reports
         onboarded=False, not a missing/omitted field -- unlike teams_status,
-        `onboarded` is part of the base response shape every consumer reads."""
-        from routers.container import container_status
-
-        fake_ecs = AsyncMock()
-        fake_ecs.resolve_running_container = AsyncMock(
-            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        `onboarded` is part of the base response shape every consumer reads.
+        With no onboarding_generation the composer falls back to the legacy
+        containers.onboarded_at stamp (absent here -> False)."""
+        result = await self._status_with_onboarding(
+            _onboarding_state_with(funnel_state="not_started", onboarding_generation=None)
         )
-        repo = MagicMock(
-            get=AsyncMock(return_value=None),
-            resolve_owner_row=AsyncMock(return_value=None),
-        )
-        with (
-            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
-            patch("routers.container.resolve_owner_id", return_value="user_x"),
-            patch(
-                "routers.container.get_gateway_pool",
-                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
-            ),
-            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
-        ):
-            result = await container_status(_personal_auth())
-
         assert result["onboarded"] is False
 
 

@@ -244,7 +244,9 @@ def test_claim_and_record_use_the_owner_rows_user_id_and_generation(client):
     resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
 
     assert resp.status_code == 200
-    client.resolve_owner_row.assert_awaited_once_with("user_abc")  # ctx.owner_id
+    # Strong read on the claim path (read-then-write the same row); the
+    # per-poll get_onboarding_state path stays eventually consistent.
+    client.resolve_owner_row.assert_awaited_once_with("user_abc", consistent_read=True)  # ctx.owner_id
     client.claim.assert_awaited_once_with("owner-row-user", onboarding_generation="01GEN")
     client.record.assert_awaited_once_with(
         "owner-row-user", onboarding_generation="01GEN", goal_id="goal-1", project_id="proj-1"

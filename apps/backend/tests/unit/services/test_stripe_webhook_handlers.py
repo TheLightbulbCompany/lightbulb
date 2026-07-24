@@ -57,11 +57,26 @@ def mock_repo():
 def mock_container_repo():
     """The trial-conversion branch stamps the container row before it dispatches
     the reprovision. Stub the repo for EVERY test in this module so no handler
-    path reaches real DynamoDB."""
+    path reaches real DynamoDB. Marker writes go through the SCOPED
+    ``update_conversion_fields`` (never the get→put ``update_fields`` — that
+    was the lease-erasing clobber, see the repo helper's docstring)."""
     with patch.object(handlers, "container_repo") as repo:
+        repo.update_conversion_fields = AsyncMock(return_value=None)
         repo.update_fields = AsyncMock(return_value=None)
         repo.get_by_owner_id = AsyncMock(return_value=None)
         yield repo
+
+
+@pytest.fixture(autouse=True)
+def conversion_entry(monkeypatch):
+    """Single-flight conversion-entry CAS (#1428). Default every test to
+    WINNING the entry claim; individual tests flip the mock to ALREADY_SEEN
+    to exercise the duplicate-event no-op. Returns (record_mock, delete_mock)."""
+    record = AsyncMock(return_value=handlers.webhook_dedup.WebhookDedupResult.RECORDED)
+    delete = AsyncMock()
+    monkeypatch.setattr(handlers.webhook_dedup, "record_event_or_skip", record)
+    monkeypatch.setattr(handlers.webhook_dedup, "delete_event", delete)
+    return record, delete
 
 
 @pytest.mark.asyncio
@@ -691,10 +706,11 @@ async def test_trial_converted_telemetry_failure_does_not_break_webhook(mock_rep
 # container row BEFORE the stop so the status path knows a conversion owns it.
 
 
-def _stamped_fields(update_fields_mock) -> dict:
-    """Merge every field dict the handler wrote through container_repo."""
+def _stamped_fields(update_conversion_fields_mock) -> dict:
+    """Merge every marker-field dict the handler wrote through
+    container_repo.update_conversion_fields (the scoped, lease-safe writer)."""
     merged: dict = {}
-    for call in update_fields_mock.await_args_list:
+    for call in update_conversion_fields_mock.await_args_list:
         merged.update(call.args[1] if len(call.args) > 1 else call.kwargs["fields"])
     return merged
 
@@ -713,7 +729,7 @@ async def test_conversion_stamps_row_before_dispatching_reprovision(mock_repo, m
         }
     )
     order: list[str] = []
-    mock_container_repo.update_fields = AsyncMock(side_effect=lambda *_a, **_k: order.append("stamp"))
+    mock_container_repo.update_conversion_fields = AsyncMock(side_effect=lambda *_a, **_k: order.append("stamp"))
 
     captured: list[str] = []
 
@@ -732,7 +748,7 @@ async def test_conversion_stamps_row_before_dispatching_reprovision(mock_repo, m
 
     assert order == ["stamp", "dispatch"], f"marker must be written before the dispatch, got {order}"
     assert captured == ["run_conversion_reprovision"]
-    fields = _stamped_fields(mock_container_repo.update_fields)
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["conversion_pending"] is True
     assert fields["substatus"] == handlers.CONVERTING_SUBSTATUS
     assert fields["conversion_started_at"]
@@ -742,7 +758,7 @@ async def test_conversion_stamps_row_before_dispatching_reprovision(mock_repo, m
 async def test_non_conversion_event_does_not_stamp_the_container_row(mock_repo, mock_container_repo):
     """An ordinary active->active renewal never touches the container row."""
     await _run_state_capturing_reprovision(mock_repo, "active", "active")
-    mock_container_repo.update_fields.assert_not_awaited()
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -755,7 +771,7 @@ async def test_reprovision_success_clears_substatus_and_pending(mock_container_r
         await handlers.run_conversion_reprovision("org_x")
 
     mgr.reprovision_for_user.assert_awaited_once_with("org_x")
-    fields = _stamped_fields(mock_container_repo.update_fields)
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["substatus"] is None
     assert fields["conversion_pending"] is False
 
@@ -771,7 +787,7 @@ async def test_reprovision_failure_clears_substatus_but_keeps_pending(mock_conta
     with patch("core.containers.get_ecs_manager", return_value=mgr):
         await handlers.run_conversion_reprovision("org_x")  # must not raise
 
-    fields = _stamped_fields(mock_container_repo.update_fields)
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["substatus"] is None
     assert "conversion_pending" not in fields, "a failed conversion must stay pending so the self-heal re-fires it"
 
@@ -836,7 +852,7 @@ async def test_self_heal_redispatches_stuck_conversion(mock_repo, mock_container
 
     assert held is True, "a re-dispatched conversion owns the row — the caller must not auto-retry"
     assert captured == ["run_conversion_reprovision"]
-    fields = _stamped_fields(mock_container_repo.update_fields)
+    fields = _stamped_fields(mock_container_repo.update_conversion_fields)
     assert fields["conversion_started_at"], "the re-dispatch must re-stamp the rate-limit anchor"
     assert container["substatus"] == handlers.CONVERTING_SUBSTATUS
 
@@ -855,7 +871,7 @@ async def test_self_heal_is_rate_limited_inside_the_guard_window(mock_repo, mock
 
     assert held is True
     assert captured == []
-    mock_container_repo.update_fields.assert_not_awaited()
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -872,7 +888,7 @@ async def test_self_heal_drops_pending_when_billing_is_no_longer_paid(mock_repo,
 
     assert held is False
     assert captured == []
-    assert _stamped_fields(mock_container_repo.update_fields) == {"conversion_pending": False}
+    assert _stamped_fields(mock_container_repo.update_conversion_fields) == {"conversion_pending": False}
 
 
 @pytest.mark.asyncio
@@ -884,7 +900,7 @@ async def test_self_heal_noop_on_a_row_with_no_conversion_marker(mock_repo, mock
 
     assert held is False
     mock_repo.get_by_owner_id.assert_not_awaited()
-    mock_container_repo.update_fields.assert_not_awaited()
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
 
 
 def test_conversion_guard_self_releases_when_the_conversion_dies():
@@ -925,6 +941,177 @@ def test_conversion_guard_self_releases_when_the_conversion_dies():
     )
     # ...and the stop wiping the substatus does not release it early.
     assert conversion_guard_active({"conversion_started_at": fresh}) is True
+
+
+# ---------------------------------------------------------------------------
+# #1428 layer 1: single-flight the conversion ENTRY across concurrent events
+# ---------------------------------------------------------------------------
+#
+# Stripe delivers several events per subscription change (.updated,
+# invoice-driven .updated, metadata-stamping .updated ...), unordered and
+# near-simultaneous — possibly on two backend tasks. Each handler reads the
+# billing row's old_status before any of them persists the new one, so more
+# than one event can see trial_local -> active and enter the conversion
+# branch. The entry CAS (webhook-dedup conditional put keyed on
+# owner + subscription id) admits exactly one.
+
+
+@pytest.mark.asyncio
+async def test_conversion_entry_claim_uses_owner_and_subscription_key(mock_repo, conversion_entry):
+    """The CAS key is (owner, subscription id) — per subscription TRANSITION,
+    so a later re-subscribe (new sub id) gets a fresh claim."""
+    record, _delete = conversion_entry
+    await _run_state_capturing_reprovision(mock_repo, "trial_local", "active")
+
+    record.assert_awaited_once_with("trial-conversion:org_x:sub_x", source="stripe-trial-conversion")
+
+
+@pytest.mark.asyncio
+async def test_second_conversion_event_noops_when_entry_already_claimed(
+    mock_repo, mock_container_repo, conversion_entry
+):
+    """THE #1428 double-entry: a sibling event that finds the entry claim
+    already recorded must no-op the WHOLE conversion block — no stamp, no
+    reprovision dispatch, no duplicate trial_converted capture — while the
+    ordinary subscription-state sync still runs."""
+    record, _delete = conversion_entry
+    record.return_value = handlers.webhook_dedup.WebhookDedupResult.ALREADY_SEEN
+
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_x",
+            "owner_type": "org",
+            "stripe_customer_id": "cus_x",
+            "subscription_status": "trial_local",
+        }
+    )
+    event = _subscription_event(default_payment_method=None, status="active")
+    event["type"] = "customer.subscription.updated"
+    captured: list = []
+    with (
+        patch("core.containers.get_ecs_manager", return_value=MagicMock()),
+        patch.object(
+            handlers.asyncio,
+            "create_task",
+            side_effect=lambda coro: captured.append(coro.__qualname__) or coro.close() or MagicMock(),
+        ),
+        patch.object(handlers, "capture_product_event") as capture,
+    ):
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    assert captured == [], "duplicate event must not dispatch a second reprovision"
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
+    assert [c for c in capture.call_args_list if c.kwargs.get("event") == "trial_converted"] == []
+    # The state sync itself is untouched by the dedup.
+    mock_repo.set_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_conversion_entry_cas_failure_fails_open(mock_repo, conversion_entry):
+    """A DDB blip in the entry CAS must not strand a paying owner on the trial
+    box: the conversion proceeds un-deduped (the provision lease is the next
+    single-flight layer down)."""
+    record, _delete = conversion_entry
+    record.side_effect = RuntimeError("ddb down")
+
+    reprovision, created = await _run_state_capturing_reprovision(mock_repo, "trial_local", "active")
+
+    reprovision.assert_called_once_with("org_x")
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_conversion_entry_rolled_back_when_stamp_fails(mock_repo, mock_container_repo, conversion_entry):
+    """If the awaited stamp blows up before the dispatch, the entry claim is
+    rolled back (delete_event) so a sibling event / Stripe redelivery can
+    re-enter instead of finding the claim of a conversion that never started."""
+    _record, delete = conversion_entry
+    mock_container_repo.update_conversion_fields = AsyncMock(side_effect=RuntimeError("ddb down"))
+
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_x",
+            "owner_type": "org",
+            "stripe_customer_id": "cus_x",
+            "subscription_status": "trial_local",
+        }
+    )
+    event = _subscription_event(default_payment_method=None, status="active")
+    with (
+        patch("core.containers.get_ecs_manager", return_value=MagicMock()),
+        patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
+    ):
+        # Must not raise (best-effort posture).
+        await handlers.handle_subscription_state(event, MagicMock())
+
+    delete.assert_awaited_once_with("trial-conversion:org_x:sub_x")
+
+
+# ---------------------------------------------------------------------------
+# #1428 layer 3: the stranded illegal steady-state must not hide behind the
+# conversion guard
+# ---------------------------------------------------------------------------
+#
+# Terminal state observed live: status="stopped", ALL lease fields cleared,
+# last_error null, conversion_pending dropped, guard window still fresh —
+# nothing running and nothing scheduled. Honouring the guard there stands the
+# poll's wake path down for the full window on a row nobody owns.
+
+
+@pytest.mark.asyncio
+async def test_stranded_stopped_row_releases_the_guard(mock_repo, mock_container_repo):
+    """stopped + no claim + no last_error + guard fresh + pending dropped ==
+    the #1428 strand. maybe_resume must return False so the caller's wake
+    branch (single-flight underneath) heals it NOW, not after the window."""
+    container = {"status": "stopped", "conversion_pending": False, "conversion_started_at": _fresh_ts()}
+
+    held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is False
+    # Costs nothing: no billing read, no row write.
+    mock_repo.get_by_owner_id.assert_not_awaited()
+    mock_container_repo.update_conversion_fields.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stopped_row_with_successor_claim_keeps_the_guard(mock_repo):
+    """A claim on the row means an SFN execution owns it — the guard holds so
+    the poll cannot race a provision on top of the successor."""
+    container = {
+        "status": "stopped",
+        "conversion_pending": False,
+        "conversion_started_at": _fresh_ts(),
+        "provision_claim_id": "claim-successor",
+    }
+    assert await handlers.maybe_resume_stuck_conversion("org_x", container) is True
+
+
+@pytest.mark.asyncio
+async def test_stopped_row_with_last_error_keeps_the_guard(mock_repo):
+    """A recorded error means some release already landed — the ordinary error
+    auto-retry owns recovery once the guard lapses; no early release needed."""
+    container = {
+        "status": "stopped",
+        "conversion_pending": False,
+        "conversion_started_at": _fresh_ts(),
+        "last_error": "Paperclip 502: upstream",
+    }
+    assert await handlers.maybe_resume_stuck_conversion("org_x", container) is True
+
+
+@pytest.mark.asyncio
+async def test_drain_window_is_not_exposed_by_the_stranded_release(mock_repo):
+    """During the conversion's drain the row is stopped + no claim — but
+    conversion_pending is still True, which routes through the pending branch
+    (rate-limited stand-down), NOT the stranded release. The EFS-WAL
+    single-writer guarantee stays intact."""
+    container = {"status": "stopped", "conversion_pending": True, "conversion_started_at": _fresh_ts()}
+    captured: list = []
+    with patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: captured.append(coro)):
+        held = await handlers.maybe_resume_stuck_conversion("org_x", container)
+
+    assert held is True
+    assert captured == []
 
 
 @pytest.mark.asyncio

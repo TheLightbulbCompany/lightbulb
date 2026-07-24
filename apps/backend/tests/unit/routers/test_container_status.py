@@ -465,6 +465,37 @@ class TestContainerStatusGate:
         assert len(captured) == 1
 
     @pytest.mark.asyncio
+    async def test_no_container_preserves_onboarded_during_recreation(self):
+        """Container-only recreation (no container row yet, but the company +
+        G2 onboarding preserved) must NOT re-show a completed funnel: the
+        synthetic provisioning response resolves onboarded from the preserved
+        onboarding state via compute_status, not a hardcoded False. Pins the
+        #1416 P2 fix folded into COMPOSER."""
+        from routers.container import container_status
+
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=None)
+        repo.get_onboarding_state = AsyncMock(
+            return_value=_onboarding_state_with(funnel_state="complete", onboarding_generation="onb_g")
+        )
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock, return_value=None),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch("routers.container.ensure_user_ready", new=AsyncMock()),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.asyncio.create_task", side_effect=lambda c: c.close() or c),
+        ):
+            result = await container_status(auth=_personal_auth())
+
+        assert result["status"] == "provisioning"
+        assert result["onboarded"] is True  # NOT re-funneled
+
+    @pytest.mark.asyncio
     async def test_existing_container_skips_gate(self):
         """Container exists -> gate is NOT consulted; response is unchanged."""
         from routers.container import container_status

@@ -251,26 +251,27 @@ async def container_status(
                 detail="team workspace pending",
             )
 
-        # Owner role: dispatch ensure_user_ready and return a synthetic
-        # provisioning response. Shape mirrors the existing 200-OK return
-        # below so the frontend's phase=="provisioning" UI handles this
-        # without schema drift.
+        # Owner role: dispatch ensure_user_ready and return a provisioning
+        # response composed through compute_status (which handles
+        # container=None -> runtime_phase="provisioning") rather than a
+        # hand-built stub. Two reasons this must NOT hardcode onboarded=False:
+        #  1. Container-only recreation (G1 bumped, the company + G2 onboarding
+        #     preserved) transiently has no container row; hardcoding False
+        #     here would re-show a COMPLETED funnel. compute_status reads the
+        #     preserved onboarding state (funnel_state=="complete") independent
+        #     of the container, so onboarded rides correctly.
+        #  2. Wire-shape parity: the has-container return below emits the full
+        #     StatusContract; this path must too, or a no-container poll gives
+        #     deriveUIPhase a different (legacy-only) shape.
+        # We reflect the just-issued dispatch on the (still-absent) row's
+        # status fields; lifecycle/runtime_phase/onboarded stay as composed
+        # (e.g. an org owner with no provider correctly surfaces
+        # provider_selection_required rather than a false "provisioning").
         _dispatch_watched(ensure_user_ready(auth))
-        return {
-            "service_name": None,
-            "status": "provisioning",
-            "substatus": "ensure_user_ready",
-            "created_at": None,
-            "updated_at": None,
-            "region": settings.AWS_REGION,
-            "last_error": None,
-            "last_error_at": None,
-            "phase": "provisioning",
-            # Still provisioning -> definitionally not onboarded yet. The
-            # first-run funnel gates on this; a container mid-provision has
-            # no goal/project, so the funnel should show once it's ready.
-            "onboarded": False,
-        }
+        contract = await readiness_state.compute_status(owner_id, container=None)
+        contract["container_status"] = "provisioning"
+        contract["container_substatus"] = "ensure_user_ready"
+        return _status_response(contract)
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
     # renewed) trial owner's container row may still carry bedrock_revoked

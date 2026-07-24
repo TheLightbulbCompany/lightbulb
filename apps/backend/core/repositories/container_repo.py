@@ -99,11 +99,17 @@ async def scan_all() -> list[dict]:
 async def upsert(owner_id: str, fields: dict) -> dict:
     """Create or update a container record. Preserves id and created_at on existing items.
 
-    Also preserves the provision lease (``provision_claim_id`` +
-    ``provision_claimed_at``): this put_item REPLACES the whole item, and
+    Also preserves the FULL provision lease (``provision_claim_id`` +
+    ``provision_claimed_at`` + ``provision_attempt_token`` +
+    ``provision_execution_name``): this put_item REPLACES the whole item, and
     create_user_service upserts mid-provision — dropping the lease here would
     make the in-flight provision look stale/unowned and re-claimable while it
-    is still running. (PR 2 replaces this whole-item write with a scoped
+    is still running. The SFN fields matter just as much as the claim:
+    dropping ``provision_execution_name`` blinds Branch-A redispatch to the
+    live execution, and dropping ``provision_attempt_token`` makes every
+    attempt-token fence permissive (they all allow
+    ``attribute_not_exists``), letting a superseded straggler pass its next
+    checkpoint. (PR 2 replaces this whole-item write with a scoped
     UpdateItem, which removes the need to preserve anything.)
     """
     table = _get_table()
@@ -117,7 +123,12 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         "updated_at": now,
         **fields,
     }
-    for lease_field in ("provision_claim_id", "provision_claimed_at"):
+    for lease_field in (
+        "provision_claim_id",
+        "provision_claimed_at",
+        "provision_attempt_token",
+        "provision_execution_name",
+    ):
         if existing and lease_field in existing and lease_field not in fields:
             item[lease_field] = existing[lease_field]
     # Ensure owner_id is not overridden by fields

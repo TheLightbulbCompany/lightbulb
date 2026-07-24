@@ -89,6 +89,41 @@ async def test_upsert_preserves_id_and_created_at(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_upsert_preserves_full_sfn_provision_lease(dynamodb_table):
+    """create_user_service upserts MID-provision, and upsert's put_item
+    replaces the whole item — it must carry the ENTIRE lease through, not
+    just claim_id/claimed_at. Dropping provision_execution_name blinds
+    Branch-A redispatch to the live execution; dropping
+    provision_attempt_token makes every attempt-token fence permissive
+    (they all allow attribute_not_exists), letting a superseded straggler
+    pass its next checkpoint."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_lease",
+        claim_id="claim-uuid-1",
+        execution_name="provision-user_lease-claimuui",
+    )
+    assert claim == "claim-uuid-1"
+
+    # The mid-provision upsert (create_user_service's row-creating write).
+    row = await container_repo.upsert(
+        "user_lease",
+        {"gateway_token": "tok_abc", "status": "provisioning"},
+    )
+
+    assert row["provision_claim_id"] == "claim-uuid-1"
+    assert row["provision_attempt_token"] == "claim-uuid-1"
+    assert row["provision_execution_name"] == "provision-user_lease-claimuui"
+    assert "provision_claimed_at" in row
+
+    # And the persisted item, independently re-read, agrees.
+    fetched = await container_repo.get_by_owner_id("user_lease")
+    assert fetched["provision_attempt_token"] == "claim-uuid-1"
+    assert fetched["provision_execution_name"] == "provision-user_lease-claimuui"
+
+
+@pytest.mark.asyncio
 async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):
     """create_user_service (the sole caller of upsert) mints a fresh
     provision_generation on every row-creating write -- this repo function

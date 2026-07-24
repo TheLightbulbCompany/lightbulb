@@ -2544,6 +2544,65 @@ class TestProvisionUserContainer:
             mock_await.assert_called_with("user_test_123")
 
     @pytest.mark.asyncio
+    async def test_full_provision_refreshes_generation_after_mint(self, manager, mock_ecs_client, mock_efs_client):
+        """An EXISTING row whose ECS service is missing takes the
+        full-provision path, where create_user_service's upsert MINTS a new
+        provision_generation. The caller-supplied generation fence (read off
+        the row pre-mint by the SFN runner) must be refreshed after the mint
+        — otherwise the Step-3/Step-4 fenced writes compare stale-vs-new and
+        this run raises ProvisionSuperseded against ITSELF, exiting
+        "superseded" with resources created and the row wedged."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        row_state = {"gen": "gen-OLD"}
+
+        async def _get(owner_id):
+            row = _make_container_dict(status="stopped")
+            row["provision_generation"] = row_state["gen"]
+            return row
+
+        async def _upsert(owner_id, fields):
+            row_state["gen"] = fields["provision_generation"]
+            row = _make_container_dict(status="provisioning")
+            row.update(fields)
+            return row
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=_get)
+            mock_repo.upsert = AsyncMock(side_effect=_upsert)
+            mock_repo.update_fields = AsyncMock()
+            mock_repo.update_status = AsyncMock()
+            mock_repo.update_container_leased = AsyncMock()
+
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="bedrock_claude",
+                claim_id="claim-1",
+                generation="gen-OLD",
+                attempt_token="tok-1",
+            )
+
+            minted = row_state["gen"]
+            assert minted != "gen-OLD", "create_user_service should have minted a fresh generation"
+
+            # Every fenced write AFTER the mint must fence on the MINTED
+            # generation — the last leased write (start_user_service's or
+            # the Step-3 checkpoint's) is necessarily post-mint. The lease
+            # writes go through the lazily-imported real module (stubbed by
+            # the autouse _provision_lease_stub), not the ecs_manager-bound
+            # container_repo name.
+            import core.repositories.container_repo as real_repo
+
+            leased = real_repo.update_container_leased
+            assert leased.call_count >= 1
+            last = leased.call_args_list[-1]
+            assert last.kwargs["generation"] == minted
+
+    @pytest.mark.asyncio
     async def test_redeploying_branch_enables_circuit_breaker(self, manager, mock_ecs_client):
         """The redeploying branch (desired=1, running>0) issues an
         update_service(forceNewDeployment=True). That call must carry the

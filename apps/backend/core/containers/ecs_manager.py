@@ -2546,6 +2546,20 @@ class EcsManager:
             attempt_token=attempt_token,
         )
 
+        # create_user_service's upsert MINTED a fresh provision_generation
+        # (the single mint point — a full create IS a new incarnation).
+        # A caller-supplied ``generation`` predates that mint (the SFN
+        # runner reads it off the row at startup), so without refreshing it
+        # here every generation-fenced checkpoint below would compare
+        # stale-vs-new and raise ProvisionSuperseded against THIS SAME run
+        # — the task would exit "superseded" with resources created and the
+        # row wedged in "provisioning". Safe to adopt blindly: claim_id
+        # (and attempt_token) remain the primary fences on every write, so
+        # a genuinely superseded run still stops at its next checkpoint.
+        if generation is not None:
+            refreshed_row = await container_repo.get_by_owner_id(user_id)
+            generation = (refreshed_row or {}).get("provision_generation")
+
         # Step 3: Write configs to EFS
         try:
             # CHECKPOINT before the config write — the poison write in the

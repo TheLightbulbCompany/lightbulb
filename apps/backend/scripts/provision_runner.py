@@ -100,6 +100,16 @@ async def run(owner_id: str, claim_id: str) -> int:
             generation=generation,
             attempt_token=attempt_token,
         )
+        # The full-provision path (create_user_service) MINTS a fresh
+        # provision_generation — for a brand-new owner AND for an existing
+        # row whose ECS service was missing/INACTIVE. Re-read so
+        # wait_for_running fences on the CURRENT incarnation, not the
+        # pre-create value read above (which would make its own running
+        # write raise ProvisionSuperseded against this very run and wedge
+        # the row in "provisioning"). claim_id/attempt_token stay the
+        # primary fences.
+        post_row = await container_repo.get_by_owner_id(owner_id)
+        generation = (post_row or {}).get("provision_generation")
         await manager.wait_for_running(
             owner_id,
             claim_id=claim_id,

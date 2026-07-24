@@ -101,6 +101,31 @@ async def test_reads_generation_off_the_row_not_the_cli(monkeypatch, manager, re
     assert kwargs["generation"] == "01ARZGENERATION"
 
 
+async def test_wait_for_running_fences_on_post_mint_generation(monkeypatch, manager, repo):
+    """The full-provision path (existing row, missing/INACTIVE service — or a
+    brand-new owner) MINTS a fresh provision_generation inside
+    provision_user_container. wait_for_running must fence on the CURRENT
+    (post-mint) value, not the pre-create read — fencing on the stale one
+    would make the runner's own running write raise ProvisionSuperseded
+    against itself and wedge the row in "provisioning"."""
+    repo.get_by_owner_id = AsyncMock(
+        side_effect=[
+            {"provision_generation": "gen-OLD"},  # pre-provision read
+            {"provision_generation": "gen-MINTED"},  # post-provision re-read
+        ]
+    )
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+
+    # provision_user_container got the pre-mint value (correct — the row
+    # still carried it when the run started)...
+    assert manager.provision_user_container.await_args.kwargs["generation"] == "gen-OLD"
+    # ...and wait_for_running fences on the refreshed, post-mint value.
+    manager.wait_for_running.assert_awaited_once_with(
+        "user_a", claim_id="claim", generation="gen-MINTED", attempt_token="claim"
+    )
+
+
 async def test_attempt_token_from_env_overrides_claim_id_fallback(monkeypatch, manager, repo):
     monkeypatch.setenv("PROVISION_ATTEMPT_TOKEN", "fresh-retry-token")
     _row(monkeypatch, {"status": "running"})

@@ -271,6 +271,7 @@ class EcsManagerError(Exception):
 START_REFUSED_CAP = "trial_daily_cap"
 START_REFUSED_EXPIRED = "trial_expired"
 START_REFUSED_CONVERTING = "conversion_in_flight"
+START_REFUSED_REPROVISIONING = "reprovision_in_flight"
 
 # Copy for each trial refusal. Keyed by the reason ``trial_cap.trial_block_reason``
 # returns, so a new reason cannot be added without giving the owner words.
@@ -1144,6 +1145,25 @@ class EcsManager:
                 START_REFUSED_CONVERTING,
                 user_id,
                 "A subscription upgrade is reprovisioning this container; it will come back on its own.",
+            )
+
+        # 3. PROVIDER-CHANGE REPROVISION IN FLIGHT. change_provider's cold
+        #    path stops the container (stop_reason="reprovision") and then
+        #    drains before dispatching the provision. A direct start inside
+        #    that window (POST /container/provision's restart door) would
+        #    set desiredCount=1 on the STALE task def, and the later
+        #    provision claim would then see a desired/running service and
+        #    take the branch that rewrites nothing — silently dropping the
+        #    provider switch. Refusing here is safe: the status poll's wake
+        #    path dispatches background_provision (force=True internally),
+        #    bypasses this guard, and applies the switch properly — so the
+        #    row always converges even if the drain task died.
+        if container and container.get("status") == "stopped" and container.get("stop_reason") == "reprovision":
+            put_metric("container.start.refused", dimensions={"reason": START_REFUSED_REPROVISIONING})
+            raise ContainerStartRefused(
+                START_REFUSED_REPROVISIONING,
+                user_id,
+                "A provider change is reprovisioning this container; it will come back on its own.",
             )
 
         # ONE read covering both ways a free-tier owner runs out of runway.

@@ -1225,12 +1225,17 @@ async def change_provider(
     # drain_then_dispatch_provision) or it would clobber the poll's claim
     # and break exactly this guarantee.
     from core.containers import get_ecs_manager
-    from core.containers.ecs_manager import EcsManagerError
 
     manager = get_ecs_manager()
     try:
         await manager.stop_user_service(owner_id, reason="reprovision")
-    except EcsManagerError as e:
+    except Exception as e:
+        # Any stop-path failure, not just the wrapped ECS call
+        # (EcsManagerError): stop_user_service's row writes after the ECS
+        # call (update_status / stamp_stop_reason) propagate raw DDB
+        # exceptions, and skipping the revert for those would leave the
+        # provider row committed with no dispatch and no convergence path
+        # — the exact poisoned-no-op state the revert exists to prevent.
         # A genuine ECS failure (throttle, cluster outage — not-found is
         # already idempotent success inside stop_user_service). The new
         # provider is committed but the container was NOT stopped, so

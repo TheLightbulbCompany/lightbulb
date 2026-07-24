@@ -376,3 +376,32 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
     kwargs = env["ecs"].provision_user_container.await_args.kwargs
     assert kwargs["provider_choice"] == "byo_key"
     assert kwargs["byo_provider"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
+    """The revert must cover the WHOLE stop path, not just the wrapped ECS
+    call: stop_user_service's row writes after desiredCount=0 (update_status /
+    stamp_stop_reason) propagate raw DDB exceptions, and skipping the revert
+    for those would leave the provider row committed with no dispatch and no
+    convergence path."""
+    env = cold_change_env
+    env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
+
+    with patch(
+        "core.repositories.container_repo.update_status",
+        new=AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "InternalServerError", "Message": "ddb blip"}},
+                "UpdateItem",
+            )
+        ),
+    ):
+        with pytest.raises(billing_service.ChangeProviderError) as exc:
+            await _run_cold_change(env["created"])
+    assert exc.value.code == "reprovision_stop_failed"
+
+    # Reverted + nothing dispatched — same contract as the ECS-failure case.
+    account = await billing_service.billing_repo.get_by_owner_id("user_cold")
+    assert account["provider_choice"] == "bedrock_claude"
+    assert env["created"] == []

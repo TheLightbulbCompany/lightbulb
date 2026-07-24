@@ -958,6 +958,43 @@ class TestStartUserServiceGuards:
         with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
             await manager.start_user_service("user_test_123")
 
+    @pytest.mark.asyncio
+    async def test_reprovision_stopped_row_refuses_direct_start(self, manager, mock_ecs_client, monkeypatch):
+        """A row stopped by a provider-change reprovision
+        (stop_reason="reprovision") refuses a DIRECT start: waking the STALE
+        task def inside the drain window would make the later provision claim
+        see a desired/running service and take the branch that rewrites
+        nothing — silently dropping the provider switch. The status poll's
+        wake path (background_provision → force=True start) bypasses this
+        guard and converges the row properly."""
+        from core.containers.ecs_manager import START_REFUSED_REPROVISIONING
+
+        self._billing(monkeypatch, subscription_status="active", spent_microcents=0)
+        row = _make_container_dict(status="stopped")
+        row["stop_reason"] = "reprovision"
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(ContainerStartRefused) as exc:
+                await manager.start_user_service("user_test_123")
+
+        assert exc.value.reason == START_REFUSED_REPROVISIONING
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_manually_stopped_row_still_starts(self, manager, mock_ecs_client, monkeypatch):
+        """Control: an admin/manual stop (stop_reason="manual") keeps the
+        direct-restart door open — only the reprovision window is fenced."""
+        self._billing(monkeypatch, subscription_status="active", spent_microcents=0)
+        row = _make_container_dict(status="stopped")
+        row["stop_reason"] = "manual"
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            await manager.start_user_service("user_test_123")
+
+        mock_ecs_client.update_service.assert_called_once()
+
         mock_ecs_client.update_service.assert_called_once()
 
     @pytest.mark.asyncio

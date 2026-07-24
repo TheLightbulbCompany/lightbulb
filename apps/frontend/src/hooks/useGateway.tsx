@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
+import { mutate } from "swr";
 import {
   useGatewayConnection,
   type GatewayConnectionValue,

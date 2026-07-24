@@ -1251,6 +1251,27 @@ async def change_provider(
         # back (the repo validates the value); its retry-noop exposure
         # requires that compound (never-chosen provider AND ECS failing)
         # so it is accepted.
+        #
+        # Partial-stop shape: a raw (non-EcsManagerError) exception means
+        # the ECS call SUCCEEDED and only the row write after it failed —
+        # the service is scaling to 0 while the row still says "running",
+        # which neither the poll nor a claim can heal. Best-effort
+        # re-stamp "stopped" so the wake path restores the (reverted) old
+        # provider. An EcsManagerError means the stop was NOT applied, so
+        # no stamp (stamping a genuinely-running container would trigger
+        # a pointless restart cycle on a transient ECS throttle). If the
+        # re-stamp also fails (the same DDB that just failed),
+        # convergence still exists via /recover's no-IP branch; a fuller
+        # partial-stop state machine is not worth its weight for a
+        # compound transient.
+        from core.containers.ecs_manager import EcsManagerError
+        from core.repositories import container_repo
+
+        if not isinstance(e, EcsManagerError):
+            try:
+                await container_repo.update_status(owner_id, "stopped")
+            except Exception:  # noqa: BLE001 — best-effort by design
+                logger.warning("change_provider: best-effort stopped re-stamp failed for %s", owner_id)
         if current_choice is not None:
             await billing_repo.set_provider_choice(
                 owner_id,

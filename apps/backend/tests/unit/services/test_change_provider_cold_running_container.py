@@ -360,6 +360,12 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
     assert account["provider_choice"] == "bedrock_claude"
     assert env["created"] == []
 
+    # The stop was NOT applied (ECS itself failed), so the row must NOT be
+    # re-stamped "stopped" — that would trigger a pointless restart cycle
+    # of a genuinely-running container on a transient ECS throttle.
+    row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
+    assert row["status"] == "running"
+
     # Retry once ECS recovers: NOT a noop — the full switch re-runs and the
     # provision executor applies the new provider.
     env["manager"]._ecs.update_service.side_effect = None
@@ -388,15 +394,13 @@ async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
     env = cold_change_env
     env["table"].put_item(Item={"owner_id": "user_cold", "status": "running", "service_name": "openclaw-user_cold-abc"})
 
-    with patch(
-        "core.repositories.container_repo.update_status",
-        new=AsyncMock(
-            side_effect=ClientError(
-                {"Error": {"Code": "InternalServerError", "Message": "ddb blip"}},
-                "UpdateItem",
-            )
-        ),
-    ):
+    update_status_mock = AsyncMock(
+        side_effect=ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "ddb blip"}},
+            "UpdateItem",
+        )
+    )
+    with patch("core.repositories.container_repo.update_status", new=update_status_mock):
         with pytest.raises(billing_service.ChangeProviderError) as exc:
             await _run_cold_change(env["created"])
     assert exc.value.code == "reprovision_stop_failed"
@@ -405,3 +409,10 @@ async def test_stop_row_write_failure_also_reverts_commit(cold_change_env):
     account = await billing_service.billing_repo.get_by_owner_id("user_cold")
     assert account["provider_choice"] == "bedrock_claude"
     assert env["created"] == []
+
+    # The ECS stop DID land in this shape, so the handler attempted the
+    # best-effort "stopped" re-stamp (a second update_status call — here it
+    # fails too, which is tolerated; /recover remains the backstop). The
+    # ECS-failure case must NOT re-stamp — pinned by the running-row status
+    # assert in the retry-works test above.
+    assert update_status_mock.call_count == 2

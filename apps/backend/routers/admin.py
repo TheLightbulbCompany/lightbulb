@@ -28,6 +28,7 @@ from core.auth import AuthContext, is_org_owner_id, require_platform_admin
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.repositories import (  # noqa: F401 — admin_actions_repo is patch target for tests
     admin_actions_repo,
+    container_repo,
     update_repo,
     user_repo,
 )
@@ -49,12 +50,25 @@ from core.services.admin_audit import audit_admin_action
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
+from core.services.provision_dispatch import dispatch_provision
 from core.services.update_service import apply_update, reapply_owner_config
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _paperclip_repo():
+    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
+    (the pattern every existing test double in this codebase already uses)
+    keeps working -- mirrors ``admin_service``'s own local-import idiom
+    (``core/services/admin_service.py:264-273``, itself mirroring
+    ``readiness_state.py:102-110``).
+    """
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    return PaperclipRepo(table_name="paperclip-companies")
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +516,103 @@ async def admin_container_reapply_config(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return {"status": "reapplied", **result}
+
+
+# ---------------------------------------------------------------------------
+# Provisioning (Task 4: 1 read + 2 levers)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/users/{user_id}/provisioning",
+    description=(
+        "Provisioning truth for one owner: readiness contract "
+        "(compute_status), containers-row error/lease fields, Paperclip "
+        "company + funnel/bootstrap state, provision-gate decision "
+        "(metric-free probe), and the SFN execution status. Read-only."
+    ),
+)
+async def admin_user_provisioning(
+    user_id: str,
+    auth: AuthContext = Depends(require_admin_read_access),
+):
+    return await admin_service.get_provisioning(user_id)
+
+
+@router.post(
+    "/users/{user_id}/provisioning/retry",
+    description=(
+        "Re-dispatch provisioning through the PROVISION executor. Covers the "
+        "error-row retry AND the stale-claim wedge rescue (a 'provisioning' "
+        "row whose SFN execution closed without a terminal write) — "
+        "dispatch_provision's Branch A/B logic decides which. Unlike the "
+        "owner /container/retry, no billing gate: this is an operator "
+        "break-glass, audited. Idempotency-Key supported."
+    ),
+)
+@idempotency()
+@audit_admin_action("provision.retry")
+async def admin_provision_retry(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    row = await container_repo.get_by_owner_id(owner_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="No container row for this owner")
+    status = row.get("status")
+    if status == "running":
+        raise HTTPException(status_code=409, detail="Container is running — nothing to retry")
+    if status == "provisioning" and not container_repo.is_provision_claim_stale(row):
+        raise HTTPException(
+            status_code=409,
+            detail="A provision attempt is in flight (fresh claim); refusing a concurrent dispatch",
+        )
+    await dispatch_provision(owner_id)
+    fresh = await container_repo.get_by_owner_id(owner_id)
+    return {
+        "ok": True,
+        "status": (fresh or {}).get("status"),
+        "substatus": (fresh or {}).get("substatus"),
+        "provision_claim_id": (fresh or {}).get("provision_claim_id"),
+    }
+
+
+@router.post(
+    "/users/{user_id}/provisioning/reset-bootstrap",
+    description=(
+        "Re-arm a permanently-failed onboarding kickoff: conditional "
+        "bootstrap_state failed->not_started fenced on the row's current "
+        "onboarding_generation, resetting the attempt counter. The next "
+        "owner /container/status poll re-dispatches the kickoff (delivery "
+        "needs the owner's chat surface online). Idempotency-Key supported."
+    ),
+)
+@idempotency()
+@audit_admin_action("provision.reset_bootstrap")
+async def admin_reset_bootstrap(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    repo = _paperclip_repo()
+    company = await repo.get(owner_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="No Paperclip company row for this owner")
+    if company.bootstrap_state != "failed" or not company.onboarding_generation:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bootstrap is '{company.bootstrap_state}', not 'failed' — nothing to reset",
+        )
+    landed = await repo.reset_bootstrap_for_retry(owner_id, onboarding_generation=company.onboarding_generation)
+    if not landed:
+        raise HTTPException(
+            status_code=409,
+            detail="Reset did not land — row changed under us (new generation or state); re-read and retry",
+        )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

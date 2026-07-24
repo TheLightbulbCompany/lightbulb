@@ -18,45 +18,58 @@ import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 export { agentDisplayName, getAgentModelString };
 export type { Agent, AgentModelRef };
 
-// Raw-interval cadence for the empty-roster backstop below. Matches the RPC
-// hook's dedupingInterval so overlapping mounts collapse to one fetch.
-const EMPTY_ROSTER_BACKSTOP_MS = 10_000;
+// The onboarding empty-roster latch, fixed at the fetch altitude. While the
+// container is still provisioning, `agents.list` resolves empty; keep the key
+// polling until Friday/Atlas land, then stop so steady-state never polls. This
+// is SWR's *functional* refreshInterval — SWR re-evaluates it against the
+// latest cached data on every poll cycle (empty/undefined → keep polling,
+// populated → 0). Every provisioned owner has Friday/Atlas, so a persistently
+// empty roster is precisely the latch this heals.
+const EMPTY_ROSTER_POLL_MS = 3000;
+function rosterRefreshInterval(latest: AgentsListResponse | undefined): number {
+  return (latest?.agents?.length ?? 0) === 0 ? EMPTY_ROSTER_POLL_MS : 0;
+}
 
 export function useAgents() {
-  const { data, error, isLoading, mutate } =
-    useGatewayRpc<AgentsListResponse>("agents.list");
+  // ---- Roster freshness repair (the onboarding empty-roster latch) ----
+  //
+  // Root cause: during onboarding `agents.list` rejects with "No container
+  // provisioned." — which the shared RPC fetcher deliberately resolves to
+  // `undefined` as a 404-equivalent SUCCESS (many useGatewayRpc consumers rely
+  // on `data === undefined` meaning "no container yet, render empty not
+  // error"). SWR then settles the key permanently: revalidateOnFocus is off,
+  // there's no error to retry, and no gateway event is named "agents.*", so
+  // nothing re-asks and the roster latches at 0 until a manual reload.
+  //
+  // Fix at the right altitude: keep the not-ready key revalidating via SWR's
+  // own refreshInterval (see rosterRefreshInterval — active while empty,
+  // self-disabling once agents land), not a bespoke timer bolted on here.
+  const { data, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>(
+    "agents.list",
+    undefined,
+    { refreshInterval: rosterRefreshInterval },
+  );
   const callRpc = useGatewayRpcMutation();
-  const { onEvent, isConnected, isParked } = useGateway();
+  const { onEvent, isConnected } = useGateway();
 
   const agents = data?.agents ?? [];
   const defaultId = data?.defaultId;
 
-  // ---- Roster freshness repair (the onboarding empty-roster latch) ----
-  //
-  // During onboarding the container doesn't exist yet, so `agents.list`
-  // rejects with "No container provisioned." — which the shared RPC fetcher
-  // deliberately resolves to `undefined` as a SUCCESS (404-equivalent). SWR
-  // then considers the key settled: no error-retry, no refreshInterval, no
-  // revalidateOnFocus, and no gateway event named "agents.*" ever arrives —
-  // so the roster latches at 0 agents until a manual reload. Other startup
-  // errors ("Container is starting up…") exhaust the fixed-cadence retry
-  // budget (~5min) with the same latched outcome. Same disease family as the
-  // throttle-killed SWR chains useOnboardingStatus documents.
-  //
-  // Repair = revalidate on every signal that the runtime just became
-  // reachable, plus a raw-interval backstop while the roster is still empty:
-  //  1. `status_change` state=HEALTHY — the backend pool pushes this at the
-  //     exact moment its container handshake completes (same instant-ready
-  //     push ProvisioningStepper rides for /container/status).
+  // Instant-hydration path: revalidate the moment the runtime becomes
+  // reachable, ahead of the poll above. These are throttle-safe WS pushes
+  // (delivered on message-receipt, not a self-rescheduling SWR chain), so they
+  // ALSO cover an occluded tab whose refreshInterval chain Chrome throttled
+  // dead — the same occlusion-throttle #1398 and the Teams board keeper
+  // document. Because a populated roster always coincides with one of these
+  // pushes, that throttle death cannot re-latch here (which is why no raw
+  // fixed-cadence backstop is needed):
+  //  1. `status_change` state=HEALTHY — GatewayConnection pushes this the
+  //     instant its container handshake completes (same ready signal
+  //     ProvisioningStepper rides for /container/status).
   //  2. `onboarding_status_changed` — the durable-write status push; fires
   //     when runtime_phase/chat readiness flips on the composed contract.
   //  3. Browser-WS reconnect rising edge — a fresh socket means every
   //     settled-empty/errored-out key predates the current connection.
-  //  4. Empty-roster backstop — a raw setInterval (independent of SWR's
-  //     promise chain, per the established backstop pattern) that re-asks
-  //     while mounted+connected and the roster is still empty. Self-stops
-  //     the moment agents arrive; every provisioned owner has Friday/Atlas,
-  //     so a persistently empty roster is precisely the latch this heals.
   const mutateRef = useRef(mutate);
   mutateRef.current = mutate;
 
@@ -78,15 +91,6 @@ export function useAgents() {
     prevConnectedRef.current = isConnected;
     if (!wasConnected && isConnected) void mutateRef.current();
   }, [isConnected]);
-
-  const rosterEmpty = (data?.agents?.length ?? 0) === 0;
-  useEffect(() => {
-    if (!rosterEmpty || !isConnected || isParked) return;
-    const id = setInterval(() => {
-      void mutateRef.current();
-    }, EMPTY_ROSTER_BACKSTOP_MS);
-    return () => clearInterval(id);
-  }, [rosterEmpty, isConnected, isParked]);
 
   const createAgent = useCallback(
     // OpenClaw's agents.create requires a non-empty `workspace` string

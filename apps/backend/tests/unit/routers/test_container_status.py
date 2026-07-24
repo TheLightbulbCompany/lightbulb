@@ -117,6 +117,13 @@ def _paperclip_repo_stub(status: str | None = None) -> MagicMock:
     repo = MagicMock()
     repo.get = AsyncMock(return_value=SimpleNamespace(status=status) if status is not None else None)
     repo.get_onboarding_state = AsyncMock(return_value=_onboarding_state_stub(status))
+    # resolve_owner_row is the canonical owner-row resolver compute_status
+    # (via get_onboarding_state) delegates to. Kept on the stub so any test
+    # that patches PaperclipRepo directly gets a coherent double even though
+    # the router itself no longer calls it (it goes through get_onboarding_state).
+    repo.resolve_owner_row = AsyncMock(
+        return_value=SimpleNamespace(status=status, funnel_state=None) if status is not None else None
+    )
     return repo
 
 
@@ -124,10 +131,12 @@ def _paperclip_repo_stub(status: str | None = None) -> MagicMock:
 def _stub_teams_status_repo():
     """The status path now reads the polling user's paperclip-companies seed
     state (via readiness_state.compute_status) to surface a NON-BLOCKING
-    teams_status (Part C). Stub PaperclipRepo to an empty read by default so
-    this file's tests exercise the real composition without hitting
-    DynamoDB; the Part C tests re-patch PaperclipRepo inline (an
-    active/failed row, or a raising read)."""
+    teams_status AND the company-scoped `onboarded` fact (funnel_state ==
+    "complete"), both composed inside compute_status/get_onboarding_state.
+    Stub PaperclipRepo to an empty read by default so this file's tests
+    exercise the real composition without hitting DynamoDB; the tests that
+    care re-patch PaperclipRepo inline (an active/failed row, a
+    funnel_state=="complete" row, or a raising read)."""
     repo = _paperclip_repo_stub(None)
     with patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo):
         yield repo
@@ -1880,6 +1889,82 @@ class TestContainerStatusTeamsStatus:
 
         assert "teams_status" not in result
         assert captured == [], f"a healthy personal seed must not re-dispatch, got {captured}"
+
+
+def _onboarding_state_with(
+    *, funnel_state: str, onboarding_generation: str | None, teams_state: str | None = None
+) -> dict:
+    """`get_onboarding_state` return shape with funnel_state/onboarding_generation
+    overridden -- for the onboarded-fact tests. compute_status derives
+    `onboarded` as `funnel_state == "complete"` when onboarding_generation is
+    set (ONBOARD's writers have run), else the legacy containers.onboarded_at
+    stamp -- see readiness_state.compute_status."""
+    state = _onboarding_state_stub(teams_state)
+    state["funnel_state"] = funnel_state
+    state["onboarding_generation"] = onboarding_generation
+    return state
+
+
+class TestContainerStatusOnboarded:
+    """GET /container/status surfaces `onboarded` from the paperclip-companies
+    OWNER row's funnel_state (spec PR-4 / ONBOARD-TABLE — supersedes the old
+    containers.onboarded_at stamp, S2). The fact is composed INSIDE
+    readiness_state.compute_status via get_onboarding_state -> resolve_owner_row
+    (company-scoped: an org shares one owner row), NOT the calling user's own
+    row and NOT the containers row. The router no longer resolves it itself
+    (INV-1: compute_status is the sole composer)."""
+
+    def _running_ecs(self):
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=({"service_name": "svc", "status": "running", "substatus": None}, "10.0.1.5")
+        )
+        return fake_ecs
+
+    async def _status_with_onboarding(self, onboarding_state: dict) -> dict:
+        from routers.container import container_status
+
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=SimpleNamespace(status="active"))
+        repo.get_onboarding_state = AsyncMock(return_value=onboarding_state)
+        with (
+            patch("routers.container.get_ecs_manager", return_value=self._running_ecs()),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+        ):
+            return await container_status(_personal_auth())
+
+    @pytest.mark.asyncio
+    async def test_running_container_with_complete_funnel_reports_onboarded_true(self):
+        result = await self._status_with_onboarding(
+            _onboarding_state_with(funnel_state="complete", onboarding_generation="onb_gen_x")
+        )
+        assert result["onboarded"] is True
+
+    @pytest.mark.asyncio
+    async def test_submitted_but_not_complete_reports_onboarded_false(self):
+        """Submitted-but-not-yet-delivered must NOT read as onboarded --
+        only "complete" stops the funnel from being offered again."""
+        result = await self._status_with_onboarding(
+            _onboarding_state_with(funnel_state="submitted", onboarding_generation="onb_gen_x")
+        )
+        assert result["onboarded"] is False
+
+    @pytest.mark.asyncio
+    async def test_running_container_with_no_owner_row_reports_onboarded_false(self):
+        """Additive, safe default: no row yet (fresh signup) reports
+        onboarded=False, not a missing/omitted field -- unlike teams_status,
+        `onboarded` is part of the base response shape every consumer reads.
+        With no onboarding_generation the composer falls back to the legacy
+        containers.onboarded_at stamp (absent here -> False)."""
+        result = await self._status_with_onboarding(
+            _onboarding_state_with(funnel_state="not_started", onboarding_generation=None)
+        )
+        assert result["onboarded"] is False
 
 
 class TestProvisionTaskObservability:

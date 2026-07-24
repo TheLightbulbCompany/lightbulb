@@ -11,17 +11,21 @@ versa):
   ``EcsManager.create_user_service``'s row-creating write. Preserved by
   scale-from-zero, force-redeploy, restart, provider hot-swap, Bedrock
   revoke/restore, and Stripe conversion -- see INV-2.
-- ``onboarding_generation`` (future ``onboarding-state`` row, PK
-  ``owner_id``) -- the company-incarnation fence. Minted exactly once, at
-  event **G2**, inside ``paperclip_provisioning.provision_org``'s
-  fresh-create branch -- NOT on reconcile-adopt of an existing
-  ``company_id`` and NOT on ``provision_member`` (an org seat) -- see INV-3.
+- ``onboarding_generation`` (the ``paperclip-companies`` OWNER row --
+  co-located, per the 2026-07-24 owner decision, NOT a dedicated table --
+  see ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``
+  §2's "load-bearing safety requirement") -- the company-incarnation fence.
+  Minted exactly once, at event **G2**, inside
+  ``paperclip_provisioning.provision_org``'s fresh-create branch -- NOT on
+  reconcile-adopt of an existing ``company_id`` and NOT on
+  ``provision_member`` (an org seat) -- see INV-3.
 
-THIS MODULE IS INERT as of PR-3 (GEN): it only mints ids. No consumer reads
-either generation yet, and the ``onboarding-state`` table does not exist yet
-(it lands in the ONBOARD-TABLE PR). ``bump_onboarding_generation`` here is
-just the id-minting primitive that PR will wire into a conditioned
-``UpdateItem``.
+As of the ONBOARD-TABLE PR, ``bump_onboarding_generation`` is wired into
+``provision_org``'s row-creating write (the SAME ``PaperclipRepo.put`` that
+persists the freshly-confirmed company), and onboarding facts on that row
+are written through ``PaperclipRepo``'s generation-conditioned ``UpdateItem``
+methods (``claim_funnel_submission`` / ``record_onboarding_ids`` /
+``revert_funnel_submission``) -- see that module for INV-4 enforcement.
 """
 
 from ulid import ULID
@@ -40,10 +44,10 @@ def new_provision_generation() -> str:
 def bump_onboarding_generation() -> str:
     """Mint a fresh ``onboarding_generation`` ULID.
 
-    Call this from EXACTLY ONE place, once the ``onboarding-state`` table
-    lands: ``provision_org``'s fresh-create branch (event G2), never on
-    reconcile-adopt of an existing company nor on a seat-only
-    ``provision_member``. See INV-3. Unused by any caller as of this PR
-    (GEN) -- the table it will be stamped onto doesn't exist yet.
+    Call this from EXACTLY ONE place: ``provision_org``'s fresh-create
+    branch (event G2), right after a genuinely-new Paperclip company is
+    confirmed (``create_company`` actually ran -- never on reconcile-adopt
+    of an existing ``company_id``) and never on a seat-only
+    ``provision_member``. See INV-3.
     """
     return str(ULID())

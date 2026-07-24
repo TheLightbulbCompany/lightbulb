@@ -369,7 +369,10 @@ export function WorkspaceShell(): React.ReactElement {
         <CommandPaletteProvider>
           <DesktopPermissionsGate />
           <div className="workspace-shell">
-            <WorkspaceSidebar onRecoveryReprovision={() => setRecoveryTriggered(true)} />
+            <WorkspaceSidebar
+              chatReady={chatReady}
+              onRecoveryReprovision={() => setRecoveryTriggered(true)}
+            />
             <div className="workspace-main">
               <WorkspaceHeader onResetLayout={handleResetLayout} />
               <div className="workspace-content">

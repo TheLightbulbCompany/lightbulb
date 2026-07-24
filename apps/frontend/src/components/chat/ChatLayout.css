@@ -136,8 +136,14 @@
   cursor: pointer;
   transition: background 0.15s;
 }
-.create-pill__seg:hover {
+.create-pill__seg:hover:not(:disabled) {
   background: #0a5138;
+}
+/* Disabled while the workspace is still provisioning — dimmed, no hover
+   lightening, default cursor. */
+.create-pill__seg:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .create-pill__seg:focus-visible {
   outline: 2px solid #faf7f2;

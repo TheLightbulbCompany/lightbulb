@@ -5,8 +5,8 @@
  * trial box is ECS-stopped and socket-closed, so without this branch it would
  * derive CONTAINER_DOWN / GATEWAY_DOWN_DEAD (red dot + Restart CTA) over a
  * chat surface the stepper simultaneously renders as ready. These tests lock
- * both the client-park (isParked) and backend-park (phase="parked") paths so a
- * future reorder of that chain can't ship silently.
+ * both the client-park (isParked) and backend-park (lifecycle="parked") paths
+ * so a future reorder of that chain can't ship silently.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
@@ -19,7 +19,7 @@ const gateway = {
   isParked: false,
   onEvent: () => () => {},
 };
-let container: Record<string, unknown> = { status: "running", phase: "ready" };
+let container: Record<string, unknown> = { container_status: "running", lifecycle: "ready" };
 
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({
@@ -45,7 +45,7 @@ describe("useSystemHealth parked", () => {
   beforeEach(() => {
     gateway.isConnected = true;
     gateway.isParked = false;
-    container = { status: "running", phase: "ready" };
+    container = { container_status: "running", lifecycle: "ready" };
   });
 
   it("client-parked (isParked) with socket closed maps to PARKED, not GATEWAY_DOWN_DEAD", () => {
@@ -58,10 +58,10 @@ describe("useSystemHealth parked", () => {
     expect(result.current.canRecover).toBe(false);
   });
 
-  it("backend-parked (phase=parked, status=stopped) maps to PARKED, not CONTAINER_DOWN", () => {
+  it("backend-parked (lifecycle=parked, container_status=stopped) maps to PARKED, not CONTAINER_DOWN", () => {
     gateway.isParked = false;
     gateway.isConnected = false;
-    container = { status: "stopped", phase: "parked" };
+    container = { container_status: "stopped", lifecycle: "parked" };
     const { result } = renderHook(() => useSystemHealth());
     expect(result.current.state).toBe("PARKED");
     expect(result.current.canRecover).toBe(false);
@@ -69,7 +69,7 @@ describe("useSystemHealth parked", () => {
 
   it("a genuinely stopped (non-parked) box still maps to CONTAINER_DOWN", () => {
     gateway.isConnected = false;
-    container = { status: "stopped", phase: "provisioning" };
+    container = { container_status: "stopped", lifecycle: "provisioning" };
     const { result } = renderHook(() => useSystemHealth());
     expect(result.current.state).toBe("CONTAINER_DOWN");
     expect(result.current.canRecover).toBe(true);

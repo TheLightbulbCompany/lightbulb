@@ -13,10 +13,9 @@ import {
 import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { readFirstRun } from "@/lib/firstRun";
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 import { useBilling } from "@/hooks/useBilling";
-import { useProvisioningState, type ColdStartPhase, type BlockedPayload } from "@/hooks/useProvisioningState";
+import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
@@ -36,12 +35,12 @@ import {
   PROVISION_TIMEOUT_MS as TIMEOUT_MS,
   formatProvisionElapsed as formatElapsed,
   deriveUIPhase,
-  type StatusContract,
+  type UIPhase,
 } from "@isol8/shared";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
-// container.status="running" / gateway pool not-yet-connected window —
+// container_status="running" / gateway pool not-yet-connected window —
 // the backend can only distinguish provisioning / starting / ready.
 // We split that "starting" window into three visible UI steps via
 // elapsed time so the user sees concrete progress during the 5+min
@@ -268,70 +267,25 @@ export function ProvisioningStepper({
     return () => clearTimeout(timer);
   }, [providerStepDone]);
 
-  // Whether the canonical /container/status poller is running, mirrored into
-  // state so SWR's number-typed refreshInterval can consume it. The cadence we
-  // want depends on the container THIS hook returns (a one-hook input<->output
-  // cycle that can't be passed inline), so we converge this mirror during
-  // render right after the hook — see shouldPollContainer below. Pure function
-  // of the live phase: no effect, no lag, auto-re-arming.
-  const [pollActive, setPollActive] = useState(true);
-
-  // Single canonical /container/status poller. Gate-driven cadence
-  // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
-  // the user sees fast progress through phase transitions.
-  // No `enabled` gate here: an admin with a `past_due` / `canceled` /
-  // `unpaid` / `paused` billing row has `isSubscribed === false`, but
-  // we still need /container/status to fire so the backend's 402
-  // subscription_required / payment_past_due gate surfaces. The
-  // refreshInterval below already throttles non-blocked polling for
-  // unsubscribed users (interval=0 when !shouldPollContainer); the
-  // gate-driven cadence (5s/30s) still wins for pending states. An
-  // `enabled: isSubscribed` gate would bypass the entire fetch for
-  // inactive subscriptions and lose the /settings/billing reactivation
-  // CTA.
+  // The single canonical `/container/status` reader — a pure consumer of the
+  // ONE shared `useOnboardingStatus` bounded loop (spec PR-9, CLIENT-HOOK).
+  // This call site used to own its own SWR poll (3s cold-start cadence,
+  // `revalidateOnFocus: true`, and a mirrored `pollActive`/`shouldPollContainer`
+  // state machine to zero the interval once ready) — all deleted. Cadence,
+  // visibility gating, and the resume-on-focus/visible kick now live once,
+  // shared by every consumer, inside `useOnboardingStatus` itself.
   const {
     phase: gatePhase,
     blocked,
     container,
     refresh,
-  } = useProvisioningState({
-    refreshInterval: pollActive ? 3000 : 0,
-    // Self-heal latched/backgrounded tabs: an offline->online or
-    // background->foreground focus revalidates /container/status, so a tab
-    // that missed the instant-ready WS push (or regressed while hidden)
-    // recovers on the next focus instead of freezing. Only THIS call site
-    // opts in — the hook default stays false so other consumers
-    // (useSystemHealth etc.) keep their own chosen semantics. All instances
-    // share the SWR key, so this one revalidating instance heals every reader.
-    revalidateOnFocus: true,
-  });
-
-  // Poll /container/status while the CURRENT phase is pre-ready. Derived, not
-  // latched: an earlier one-way `reachedReady` latch turned polling off forever
-  // after the first ready — so a later regression (reprovision / wipe /
-  // scale-to-zero) rendered the cold-start UI with polling permanently dead
-  // (verified prod incident: frozen 15+ min over a ready backend). Deriving
-  // from the live phase re-arms automatically on regression and stops at
-  // ready/parked (the WS is the live channel there). `container == null`
-  // (first mount, transient blips) counts as pre-ready: polling is the only
-  // way out of that state, and a few extra requests over live chat during a
-  // blip are harmless.
-  const backendPhaseNow = container?.phase;
-  const shouldPollContainer =
-    (isSubscribed || isTrialLocal) &&
-    backendPhaseNow !== "ready" &&
-    backendPhaseNow !== "parked";
-  // Converge the poll-active mirror during render (React's adjust-state-in-
-  // render — the same pattern useProvisioningState uses internally). Zero-lag:
-  // the hook re-runs synchronously with the new interval before commit, so
-  // polling re-arms in the very render the regression lands — no dead-poll gap.
-  if (pollActive !== shouldPollContainer) setPollActive(shouldPollContainer);
+  } = useProvisioningState();
 
   // Instant-ready: the backend's connection pool pushes
   // status_change("HEALTHY") over the WebSocket at the exact moment the
   // container handshake completes. Revalidate /container/status right then
   // so the stepper flips to ready in one round trip instead of waiting out
-  // the remainder of the 3s poll interval.
+  // the remainder of the shared bounded loop's cadence.
   const { onEvent } = useGateway();
   useEffect(() => {
     return onEvent((event, payload) => {
@@ -357,30 +311,58 @@ export function ProvisioningStepper({
   // Provisioning is now driven by /container/status: when the gate clears
   // and no container exists, the backend's status endpoint fires
   // ensure_user_ready itself. The frontend stepper is purely passive — it
-  // polls /container/status (every 3s during pre-ready) and renders the
-  // appropriate phase. No explicit POST /container/provision from here.
+  // reads the ONE shared bounded-loop poll (see useProvisioningState above)
+  // and renders the appropriate phase. No explicit POST /container/provision
+  // from here.
 
-  const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
+  const containerReady =
+    container?.container_status === "running" || container?.container_substatus === "gateway_healthy";
 
-  // Honest /container/status error contract (all additive): status="error" is
-  // a REAL failure — previously masked as "provisioning" so a dead container
-  // spun a stepper forever. The UI keys off `substatus`, NEVER `phase` (which
-  // still resolves to a cold-start value like "container" for an error row, so
-  // it could never tell a dead container from a live one).
+  // Honest /container/status error contract: container_status="error" is a
+  // REAL failure — previously masked as "provisioning" so a dead container
+  // spun a stepper forever. The UI keys off `container_substatus`, NEVER
+  // `runtime_phase` (which still resolves to a cold-start value like
+  // "provisioning" for an error row, so it could never tell a dead
+  // container from a live one).
   //
   // Error is TERMINAL by DEFAULT — `error_retrying` is the ONLY non-terminal
   // exception. Keying "terminal" off a specific substatus (e.g. only
   // `provision_failed`) is too narrow: the backend also emits terminal rows
   // with `deployment_failed` (rollout circuit breaker) and a bare
-  // `status:"error"` with NO substatus (auto-retry gated / standing down), and
-  // those would fall through to the plain spinner with no Retry/Support CTA —
-  // the exact endless-spinner bug this contract exists to kill. Treating any
-  // non-retrying error as terminal restores the old catch-all's coverage and
-  // absorbs any future terminal substatus. `last_error` carries the reason.
+  // `container_status:"error"` with NO substatus (auto-retry gated /
+  // standing down), and those would fall through to the plain spinner with
+  // no Retry/Support CTA — the exact endless-spinner bug this contract
+  // exists to kill. Treating any non-retrying error as terminal restores the
+  // old catch-all's coverage and absorbs any future terminal substatus.
+  // `last_error` carries the reason.
   const isRetryingError =
-    container?.status === "error" && container?.substatus === "error_retrying";
+    container?.container_status === "error" && container?.container_substatus === "error_retrying";
   const isTerminalError =
-    container?.status === "error" && !isRetryingError;
+    container?.container_status === "error" && !isRetryingError;
+
+  // Readiness decision (backend runtime_phase="provisioning"/"starting"/
+  // "ready", lifecycle="parked"/"error"/…) is sourced from the ONE shared
+  // deriveUIPhase (packages/shared/src/hooks/statusContract.ts) instead of
+  // being reconstructed here — the useMemo ladder this replaced was the
+  // web-specific half of the byte-forked duplicate mobile's
+  // containerStatus.ts carried (mobile onboarding-parity Slice 1/COMPOSER).
+  // `/container/status`'s 200 body IS the composed StatusContract verbatim
+  // (see routers/container.py::_status_response — no legacy flat
+  // duplicates), so the SWR hook's `container` value already IS one.
+  const derived = container ? deriveUIPhase(container) : null;
+
+  // Poll /container/status while the CURRENT phase is pre-ready. Derived,
+  // not latched: an earlier one-way `reachedReady` latch turned polling off
+  // forever after the first ready — so a later regression (reprovision /
+  // wipe / scale-to-zero) rendered the cold-start UI with polling
+  // permanently dead (verified prod incident: frozen 15+ min over a ready
+  // backend). Deriving from the live phase re-arms automatically on
+  // regression and stops at ready/parked (the WS is the live channel
+  // there). This only gates the gateway-health RPC below now — the shared
+  // `useOnboardingStatus` bounded loop behind `useProvisioningState` polls
+  // unconditionally on its own cadence regardless of this flag.
+  const shouldPollContainer =
+    (isSubscribed || isTrialLocal) && derived?.phase !== "ready" && derived?.phase !== "parked";
 
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
@@ -397,35 +379,26 @@ export function ProvisioningStepper({
   // render commits. Without this regression detection, the stepper
   // would flash "agent" / "timed out" for a single frame before
   // settling onto the correct early sub-phase.
-  const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
+  //
+  // Sourced from `derived.phase` (the ONE shared deriveUIPhase output),
+  // NOT the deleted legacy flat `container.phase` field — "parked" is a
+  // `Lifecycle` refinement in the contract, not a `RuntimePhase` value, so
+  // `derived.phase` (which folds both in) is the correct read here.
+  const previousBackendPhaseRef = useRef<UIPhase | undefined>(undefined);
   const isRegressingFromReady =
     // eslint-disable-next-line react-hooks/refs
     (previousBackendPhaseRef.current === "ready" || previousBackendPhaseRef.current === "parked") &&
-    container?.phase !== undefined &&
-    container.phase !== "ready" &&
+    derived?.phase !== undefined &&
+    derived.phase !== "ready" &&
     // Parked is ready-equivalent: a healthy box the backend put to sleep,
     // one intent away from running. Treating ready->parked (or parked
     // holding steady) as a regression would swap the whole chat surface
     // for a cold-start stepper over a perfectly readable page.
-    container.phase !== "parked";
+    derived.phase !== "parked";
   // Mutate the ref during render — refs are React-blessed for this
   // pattern (derived state from prop transitions).
   // eslint-disable-next-line react-hooks/refs
-  previousBackendPhaseRef.current = container?.phase;
-
-  // Readiness decision (backend phase="provisioning"/"starting"/"ready"/
-  // "parked"/error) is now sourced from the ONE shared deriveUIPhase
-  // (packages/shared/src/hooks/statusContract.ts) instead of being
-  // reconstructed here — the useMemo ladder this replaced was the
-  // web-specific half of the byte-forked duplicate mobile's
-  // containerStatus.ts carried (mobile onboarding-parity Slice 1/COMPOSER).
-  // `/container/status`'s 200 body carries the full StatusContract
-  // additively (see routers/container.py::_status_response), so the SWR
-  // hook's `container` value already IS one, modulo the cast below (the
-  // hook's own `ContainerInfo` type predates the composer and is
-  // deliberately loose — `[key: string]: unknown` — so this is a narrowing
-  // cast, not a shape change).
-  const derived = container ? deriveUIPhase(container as unknown as StatusContract) : null;
+  previousBackendPhaseRef.current = derived?.phase;
 
   // Derive phase purely from data. The cold-start window (backend
   // runtimePhase="starting", roughly ECS RUNNING through gateway-connected)
@@ -460,7 +433,7 @@ export function ProvisioningStepper({
       // substatus "task_running" = the ECS task is RUNNING with an IP but
       // the gateway port hasn't opened yet (image pulled, OpenClaw
       // booting) — the real "gateway" window.
-      return container.substatus === "task_running" ? "gateway" : "container";
+      return container.container_substatus === "task_running" ? "gateway" : "container";
     }
     if (!containerReady && derived.runtimePhase !== "starting") return "container";
 
@@ -503,10 +476,10 @@ export function ProvisioningStepper({
   // first-activation milestone, so it must fire at most once per browser, ever.
   const sawColdStartRef = useRef(false);
   useEffect(() => {
-    if (container?.phase === "provisioning" || container?.phase === "starting") {
+    if (container?.runtime_phase === "provisioning" || container?.runtime_phase === "starting") {
       sawColdStartRef.current = true;
     }
-  }, [container?.phase]);
+  }, [container?.runtime_phase]);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
@@ -657,31 +630,15 @@ export function ProvisioningStepper({
     }
   }, [phase]);
 
-  // Poll watchdog. SWR drives /container/status via a SELF-RESCHEDULING
-  // refreshInterval chain: each revalidation schedules the next only after it
-  // resolves. When Chrome throttles a backgrounded OR merely occlusion-throttled
-  // tab, a single dropped tick ends that chain permanently — the configured 3s
-  // cadence simply stops firing and the tab makes near-zero /container/status
-  // fetches. revalidateOnFocus can't heal a VISIBLE-but-throttled tab either: it
-  // never gets a focus TRANSITION to fire on. Verified live on dev, twice: a
-  // throttled-but-visible tab managed ~1 status poll in 3+ minutes, funnel and
-  // stepper frozen on stale data while the backend already answered
-  // onboarded/ready. The elapsed timer's 1s setInterval below provably SURVIVES
-  // that throttling — its on-screen counter kept counting through the freeze —
-  // so we ride it: fire refresh() at most once / 10s while a pre-ready cold-start
-  // card is displayed. It is a SEPARATE timer issuing an out-of-band mutate(), so
-  // it is not subject to the dead SWR chain — the only self-heal that reaches a
-  // visible-but-throttled tab.
-  //
-  // Cost: during a HEALTHY cold start the live 3s poll is still running and SWR's
-  // dedupingInterval collapses most overlaps, so this adds ~1 extra request / 10s
-  // against a cheap endpoint for at most a few minutes; once the chain is
-  // throttle-killed the watchdog is the ONLY thing still asking. Seeded to mount
-  // time inside the effect below (not here) so Date.now() is never called during
-  // render; first fire lands ~10s in, never an immediate double-fetch on the
-  // first poll.
-  const lastWatchdogRef = useRef<number | null>(null);
-
+  // Elapsed-time tick ONLY — the poll-watchdog half of this effect (an
+  // out-of-band `refresh()` fired at most once/10s to route around a
+  // throttled SWR chain) is DELETED (spec PR-9, CLIENT-HOOK). That was a
+  // compensating layer for the 3s-poll `useProvisioningState` call this
+  // stepper used to own; the shared `useOnboardingStatus` bounded loop
+  // behind it now has its own belt-and-suspenders backstop (a raw
+  // `setInterval`, independent of SWR's self-rescheduling chain, plus a
+  // fetch-timeout so a genuinely hung request can't wedge it either — see
+  // that hook's module doc) instead of each consumer improvising its own.
   useEffect(() => {
     if (
       phase !== "container" &&
@@ -694,39 +651,17 @@ export function ProvisioningStepper({
     if (provisioningStartRef.current === null) {
       provisioningStartRef.current = Date.now();
     }
-    // Seed the watchdog clock on first cold-start entry (kept out of render to
-    // stay pure). Deliberately NOT reset on sub-phase transitions, so the 10s
-    // cadence holds across container -> gateway -> channels-sidecars -> agent.
-    if (lastWatchdogRef.current === null) {
-      lastWatchdogRef.current = Date.now();
-    }
     const tick = () => {
       const start = provisioningStartRef.current;
       if (start === null) return;
       const ms = Date.now() - start;
       setElapsedMs(ms);
       if (ms > TIMEOUT_MS) setTimedOut(true);
-      // Poll watchdog (see lastWatchdogRef above), throttled to once / 10s. The
-      // phase guard already scopes us to the pre-ready cold-start cards; we
-      // further require a normal gate — never re-poll a blocked / team-pending /
-      // needs-signup state, which owns the hook's 5s/30s cadence and whose 30s
-      // backoff a 10s re-bump would defeat — and a non-terminal container (the
-      // Setup-failed card is not a live cold start).
-      const lastWatchdog = lastWatchdogRef.current;
-      if (
-        lastWatchdog !== null &&
-        gatePhase === "normal" &&
-        !isTerminalError &&
-        Date.now() - lastWatchdog > 10_000
-      ) {
-        lastWatchdogRef.current = Date.now();
-        refresh();
-      }
     };
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [phase, gatePhase, isTerminalError, refresh]);
+  }, [phase]);
 
   // First-run funnel: whoever first reaches a ready company — trial_local
   // free-tier signup or an org owner/member — describes the business here
@@ -745,46 +680,22 @@ export function ProvisioningStepper({
   // "Have we onboarded?" is a PER-CONTAINER fact, not per-user: an org
   // shares one container, so onboarding happens once for the whole org. The
   // backend stamps it on the container row and surfaces it as
-  // `container.onboarded` on /container/status (already polled above), so
-  // once anyone on this container completes the funnel, no one on it sees
-  // the funnel again — including a second org member whose own per-user
-  // marker is empty. No extra request: it rides on the poll we already do.
+  // `container.onboarded` on /container/status, so once anyone on this
+  // container completes the funnel, no one on it sees the funnel again —
+  // including a second org member whose own per-user marker is empty.
   // `container.onboarded` is the SOLE durable authority for "have we
-  // onboarded?": the backend resets it when a container is wiped/reprovisioned,
-  // so a legitimately reprovisioned owner re-onboards. `firstRun.briefSubmitted`
-  // is DURABLE Clerk metadata (`user.unsafeMetadata`) that survives a container
-  // wipe and that nothing ever clears — so reading it as a gate suppressed the
-  // funnel FOREVER for any owner who onboarded once: a returning owner whose
-  // container was reprovisioned has `container.onboarded === false` (fresh) but
-  // a stale `briefSubmitted === true`, and the funnel never showed again. That
-  // is the "returning owner never re-onboards" bug; `briefSubmitted` is NOT a
-  // durable suppressor.
+  // onboarded?": the backend resets it when a container is wiped/
+  // reprovisioned, so a legitimately reprovisioned owner re-onboards.
   //
-  // It survives here only as a SAME-SESSION flash-bridge: when the funnel's
-  // submit writes `briefSubmitted: true`, `useUser` re-renders and we arm an
-  // in-memory latch on that false->true edge, dismissing the funnel at once
-  // instead of leaving it up until the next /container/status poll flips
-  // `onboarded` true. `briefBaselineRef` captures the flag's value at the first
-  // loaded Clerk user, so the async user-load (undefined -> loaded) is never
-  // mistaken for a submit and a stale `true` already present at mount does NOT
-  // arm the latch — the funnel shows for a reprovisioned container, and
-  // `container.onboarded` reasserts durable suppression on the next poll. The
-  // refs are read/written during render (not via an effect, which would land a
-  // commit late and flash the funnel for one frame) — same idiom as
-  // `previousBackendPhaseRef` above.
-  const firstRun = readFirstRun(user);
+  // No SAME-SESSION flash-bridge anymore (spec PR-9, CLIENT-HOOK deleted
+  // the `briefBaselineRef`/`sessionBriefSubmittedRef` latch): the funnel
+  // dismisses purely on the backend's own `container.onboarded` flipping
+  // true on the next shared bounded-loop poll (<=5s while unsettled, per
+  // `useOnboardingStatus`'s cadence) rather than an in-memory guess at
+  // Clerk's `firstRun.briefSubmitted` re-render. `FirstRunFunnel` itself
+  // stays in its "submitting"/"waiting" busy state across that short
+  // window, so there is no flash back to the empty form.
   const containerOnboarded = container?.onboarded === true;
-  const briefSubmittedNow = !!user && firstRun.briefSubmitted === true;
-  const briefBaselineRef = useRef<boolean | null>(null);
-  const sessionBriefSubmittedRef = useRef(false);
-  // eslint-disable-next-line react-hooks/refs
-  if (user && briefBaselineRef.current === null) {
-    briefBaselineRef.current = briefSubmittedNow;
-    // eslint-disable-next-line react-hooks/refs
-  } else if (briefSubmittedNow && briefBaselineRef.current === false) {
-    // eslint-disable-next-line react-hooks/refs
-    sessionBriefSubmittedRef.current = true;
-  }
   if (
     !!user &&
     gatePhase === "normal" &&
@@ -793,9 +704,7 @@ export function ProvisioningStepper({
     // dead end. (A retrying error is NOT terminal, so it still shows the
     // funnel/provisioning UI like any live cold start.)
     !isTerminalError &&
-    !containerOnboarded &&
-    // eslint-disable-next-line react-hooks/refs
-    !sessionBriefSubmittedRef.current
+    !containerOnboarded
   ) {
     return <FirstRunFunnel />;
   }
@@ -831,15 +740,8 @@ export function ProvisioningStepper({
   // Hold a neutral loader until `user` resolves so the funnel — not the dock —
   // wins. On the auth-gated chat surface `user === null` is never "signed out"
   // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
-  // resolves; an onboarded or this-session-submitted container falls through to
-  // children below.
-  if (
-    phase === "ready" &&
-    !user &&
-    !containerOnboarded &&
-    // eslint-disable-next-line react-hooks/refs
-    !sessionBriefSubmittedRef.current
-  ) {
+  // resolves; an onboarded container falls through to children below.
+  if (phase === "ready" && !user && !containerOnboarded) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -847,16 +749,16 @@ export function ProvisioningStepper({
     );
   }
 
-  // Ready — render children. `teams_status: "failed"` is a TOP-LEVEL,
-  // non-blocking signal on the honest contract: Teams (Friday/Atlas) seeding
-  // failed but the container itself is healthy and chat works — so we render
-  // the app as normal and layer a small dismissible "Teams needs attention"
+  // Ready — render children. `teams_state: "failed"` is a NON-BLOCKING
+  // signal on the composed contract: Teams (Friday/Atlas) seeding failed
+  // but the container itself is healthy and chat works — so we render the
+  // app as normal and layer a small dismissible "Teams needs attention"
   // notice over it, never a blocking interstitial.
   if (phase === "ready") {
     return (
       <>
         {children}
-        {container?.teams_status === "failed" && <TeamsDegradedNotice />}
+        {container?.teams_state === "failed" && <TeamsDegradedNotice />}
       </>
     );
   }
@@ -1726,7 +1628,7 @@ export function ProvisioningStepper({
 
 /**
  * Non-blocking "Teams needs attention" affordance layered over the ready app
- * when /container/status reports `teams_status: "failed"` — Teams (Friday/Atlas)
+ * when /container/status reports `teams_state: "failed"` — Teams (Friday/Atlas)
  * seeding failed but the container is healthy and chat works. Fixed, small, and
  * dismissible so it never blocks the app. Owns its own dismiss state so the
  * ready branch stays a plain `children` return with no extra parent hook.

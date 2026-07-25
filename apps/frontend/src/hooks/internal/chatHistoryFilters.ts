@@ -1,7 +1,18 @@
 // apps/frontend/src/hooks/internal/chatHistoryFilters.ts
 //
-// Mirrors upstream OpenClaw's `shouldHideHistoryMessage` at
-// `~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:225-232`.
+// Mirrors upstream OpenClaw's `shouldHideHistoryMessage`, which lives at
+// `ui/src/pages/chat/chat-history.ts` in the fork checkout (~/Desktop/agent).
+// The old header pointed at `ui/src/ui/controllers/chat.ts`, a path that no
+// longer exists — so nobody re-syncing ever diffed against the real thing,
+// and this file's `isEmptyUserTextOnlyMessage` silently drifted into hiding
+// every plain-text user message. Keep this pointer accurate.
+//
+// The load-bearing difference to preserve: upstream decides visibility on a
+// message's EXTRACTED TEXT, never on whether `content` happens to be an array
+// (`isTextOnlyContent` returns true for a bare string, then the verdict comes
+// from `extractText`). See HistoryMessage.content in ./types for the three
+// wire shapes that forces.
+//
 // Kept as an extractable helper so it's unit-testable and easy to
 // re-sync if upstream's filter logic evolves.
 
@@ -25,6 +36,13 @@ const SYNTHETIC_EXEC_WRAPPER_MARKERS = [
 ] as const;
 
 function extractFirstText(m: HistoryMessage): string {
+  // A bare-string `content` IS the message body (see HistoryMessage.content).
+  // Checked first, and load-bearing for isSyntheticExecWrapper below: OpenClaw's
+  // post-exec wrapper messages arrive in exactly this shape, and until the
+  // string case was handled they were only ever hidden as collateral damage of
+  // isEmptyUserTextOnlyMessage's array check. With that check fixed, this is
+  // the sole thing still keeping them out of the transcript.
+  if (typeof m.content === "string") return m.content;
   if (typeof m.text === "string") return m.text;
   if (!Array.isArray(m.content)) return "";
   for (const b of m.content) {
@@ -63,7 +81,23 @@ export function isSyntheticTranscriptRepairToolResult(m: HistoryMessage): boolea
 
 export function isEmptyUserTextOnlyMessage(m: HistoryMessage): boolean {
   if (lowerRole(m) !== "user") return false;
-  if (!Array.isArray(m.content) || m.content.length === 0) return true;
+  // Decide on the message's TEXT, never on the shape of its container.
+  //
+  // This predicate used to open with `if (!Array.isArray(m.content)) return true`,
+  // which reads OpenClaw's bare-string `content` — the shape it persists for
+  // every plain-text turn — as "empty" and hid it. That silently deleted the
+  // user's own words from every history refetch, and made the server-dispatched
+  // onboarding kickoff invisible from the very first paint (it has no optimistic
+  // local bubble to mask the loss, so Friday's transcript opened on her first
+  // tool call with nothing to explain what she was answering).
+  //
+  // Upstream decides the same question on extracted text, not container shape
+  // (`isEmptyUserTextOnlyMessage`, ui/src/pages/chat/chat-history.ts) — mirror it.
+  if (typeof m.content === "string") return m.content.trim().length === 0;
+  // No block array: the body may still be on the sibling `text` field.
+  if (!Array.isArray(m.content) || m.content.length === 0) {
+    return (m.text ?? "").trim().length === 0;
+  }
   // Reject if any non-text block exists (attachments, images, etc.)
   const allTextBlocks = m.content.every(
     (b) => b && typeof b === "object" && typeof b.type === "string" &&

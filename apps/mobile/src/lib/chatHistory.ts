@@ -34,7 +34,11 @@ export interface ContentBlock {
 
 export interface HistoryMessage {
   role?: string;
-  content?: ContentBlock[];
+  /** Block array, a BARE STRING (OpenClaw's persisted shape for any plain-text
+   *  turn — `buildPersistedUserTurnMessage`, src/sessions/user-turn-transcript.ts),
+   *  or absent with the body on `text`. Never branch on `Array.isArray` alone;
+   *  use `resolveMessageBlocks`. */
+  content?: ContentBlock[] | string;
   text?: string;
   timestamp?: number;
   runId?: string;
@@ -73,7 +77,23 @@ function lowerRole(m: HistoryMessage): string {
   return typeof m.role === "string" ? m.role.toLowerCase() : "";
 }
 
+/** Normalize the three wire shapes of a message body to a block array. */
+export function resolveMessageBlocks(m: HistoryMessage): ContentBlock[] {
+  const { content } = m;
+  if (Array.isArray(content) && content.length > 0) return content;
+  if (typeof content === "string" && content.length > 0) {
+    return [{ type: "text", text: content }];
+  }
+  if (typeof m.text === "string" && m.text.length > 0) {
+    return [{ type: "text", text: m.text }];
+  }
+  return [];
+}
+
 function extractFirstText(m: HistoryMessage): string {
+  // Bare-string content IS the body — checked first, and load-bearing for
+  // isSyntheticExecWrapper (exec wrappers arrive in exactly this shape).
+  if (typeof m.content === "string") return m.content;
   if (typeof m.text === "string") return m.text;
   if (!Array.isArray(m.content)) return "";
   for (const b of m.content) {
@@ -108,7 +128,14 @@ function isSyntheticTranscriptRepairToolResult(m: HistoryMessage): boolean {
 
 function isEmptyUserTextOnlyMessage(m: HistoryMessage): boolean {
   if (lowerRole(m) !== "user") return false;
-  if (!Array.isArray(m.content) || m.content.length === 0) return true;
+  // Decide on TEXT, not container shape: OpenClaw persists every plain-text
+  // turn with `content` as a bare string, and reading that as "empty" hid the
+  // user's own words on a history refetch (and made the server-dispatched
+  // onboarding kickoff invisible from the first paint).
+  if (typeof m.content === "string") return m.content.trim().length === 0;
+  if (!Array.isArray(m.content) || m.content.length === 0) {
+    return (m.text ?? "").trim().length === 0;
+  }
   // Reject if any non-text block exists (attachments, images, etc.)
   const allTextBlocks = m.content.every(
     (b) => b && typeof b === "object" && TEXT_TYPES.has(lowerType(b)),
@@ -217,7 +244,7 @@ export function projectHistoryToChatItems(payload: unknown): ProjectedHistory {
     if (m.__openclaw?.kind === "compaction") return;
 
     const role = lowerRole(m);
-    const blocks = Array.isArray(m.content) ? m.content : [];
+    const blocks = resolveMessageBlocks(m);
 
     // Tool-result-role messages only attach results — they emit no items.
     if (role === "tool" || role === "toolresult" || role === "tool_result") {

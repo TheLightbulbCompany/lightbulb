@@ -729,17 +729,29 @@ def _wake_refusal_payload(gate: dict, *, req_id: Any) -> dict:
     THE ONE PLACE this wire shape is constructed — every wake refusal goes
     through here so retuning it is a single edit.
 
-    **The shape is PENDING FORK-CONTRACT CONFIRMATION.** What is confirmed
-    from the adapter source: `GatewayWsClient.handleMessage` (execute.ts:782-811)
-    rejects the pending request on `ok: false`, reading `error.message`,
-    `error.code` and `error.details` into a thrown `GatewayResponseError`. Its
-    own retry classifier (execute.ts:1452-1457) is a SUBSTRING match on that
-    message — it retries only `econnrefused` / `econnreset` / `socket hang up` /
-    `timeout`. Our gate messages contain none of those, so the adapter itself
-    does not retry a refusal. What is NOT yet confirmed is whether the outer
-    Paperclip routine dispatcher (the fork's circuit-breaker patch) treats the
-    resulting `exitCode: 1` as PARKED or re-dispatches it. If it re-dispatches,
-    the fix belongs in this function — not scattered across call sites.
+    Shape CONFIRMED against the deployed fork (`isol8/2026.6-circuit-breaker`)
+    at both layers that could re-arm a retry:
+
+    1. **The adapter.** `GatewayWsClient.handleMessage` rejects the pending
+       request on `ok: false`, reading `error.message` / `error.code` /
+       `error.details` into a thrown `GatewayResponseError`. Its retry
+       classifier is a SUBSTRING match on that message — it retries only
+       `econnrefused` / `econnreset` / `socket hang up` / `timeout`. Our gate
+       messages contain none of those (pinned by a test), so the adapter does
+       not retry a refusal; it returns `exitCode: 1`.
+    2. **Paperclip's wake scheduler.** `scheduleBoundedRetryForRun` fires only
+       when `errorFamily == "transient_upstream"` (or the codex/claude
+       transient errorCodes, or max-turn exhaustion). The openclaw-gateway
+       adapter NEVER sets `errorFamily`/`retryNotBefore` — verified zero
+       occurrences in its `execute.ts` — so its failures are terminal by
+       construction. A refusal PARKS; nothing re-dispatches it.
+
+    Downstream consequence worth knowing: the routine circuit breaker counts
+    the parked run toward `consecutiveFailureCount`, so enough refusals pause
+    the whole routine (`autoPauseReason="consecutive_failures"`), which then
+    needs a manual resume even after the cap resets.
+
+    Keep the shape here regardless — one edit site is the point.
     """
     code = gate.get("code", "blocked")
     return {

@@ -98,12 +98,47 @@ message** — it retries only `econnrefused` / `econnreset` / `socket hang up` /
 not retry a refusal. (A test pins this: a gate message must never contain one of
 those markers.)
 
-**Still pending confirmation:** whether the OUTER Paperclip routine dispatcher
-(the fork's circuit-breaker patch) treats the resulting `exitCode: 1` /
-`errorCode: "openclaw_gateway_request_failed"` as PARKED or re-dispatches it.
-That is why the whole wire shape is built in ONE helper,
-`_wake_refusal_payload()` — retuning it is a single edit, not a hunt across call
-sites.
+**Now also confirmed — the refusal PARKS.** Paperclip's
+`scheduleBoundedRetryForRun` fires only when `errorFamily == "transient_upstream"`
+(or the codex/claude transient errorCodes, or max-turn exhaustion). The
+openclaw-gateway adapter **never sets `errorFamily`/`retryNotBefore`** — verified
+zero occurrences in its `execute.ts` — so its failures are terminal by
+construction. Nothing re-dispatches a refused wake. The wire shape still lives in
+ONE helper, `_wake_refusal_payload()`, so retuning it stays a single edit.
+
+**Downstream consequence:** the routine circuit breaker
+(`routine-circuit-breaker.ts`) counts each parked run toward
+`consecutiveFailureCount`, and at `autoPauseThreshold` pauses the whole routine
+with `autoPauseReason: "consecutive_failures"`. That halts the storm — but the
+routine then needs a MANUAL resume even after the cap resets or the owner
+upgrades. Consistent with the "park requires user action" decision, but it
+pauses the routine, not just the wake.
+
+### Discovered during implementation: a dormant purpose-built hook
+
+The fork adapter already contains **`evaluateRunAllowance`** (`execute.ts:1055+`),
+an "Isol8 free-tier pre-run allowance gate" that GETs an
+`adapterConfig.runAllowanceUrl`, blocks on `{"allowed": false}` with
+`errorCode: "isol8_run_blocked"` **before dialing the gateway**, and fails open on
+error/timeout/non-200 — the same fail-open philosophy adopted here. Its own
+comment argues `execute()` is the single funnel every Paperclip-initiated run
+passes through.
+
+**It is inert: `runAllowanceUrl` appears NOWHERE in this repo** (zero matches
+across `apps/backend` and `apps/infra`), so the hook returns immediately and has
+never gated anything. That is a large part of why #1426 happened.
+
+The two mechanisms are complementary, not redundant:
+
+- The relay gate (this change) needs no fork change, no image rebuild and no
+  per-agent config migration, and covers agents whose `adapterConfig` was seeded
+  long ago and will never be updated — the recurring legacy-config trap.
+- `runAllowanceUrl` blocks earlier (before the WS dial + device-auth handshake),
+  so a refused wake costs nothing, but wiring it needs a new backend endpoint
+  **and** a re-seed of every existing agent's `adapterConfig`.
+
+Recommend shipping the relay gate now and treating `runAllowanceUrl` as a
+separate follow-up decision.
 
 ### Error handling (gate read fails)
 

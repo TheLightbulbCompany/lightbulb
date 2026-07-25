@@ -238,8 +238,13 @@ next reconcile re-derives and re-applies.
 | # | Site | Covers | Needs a browser tab? |
 |---|---|---|---|
 | 1 | `paperclip_provisioning.provision_org`, after the row goes `active` | initial arming; reprovision of an already-capped owner | no |
-| 2 | `provision_gate.evaluate_provision_gate` (the `/container/status` poll, ~3s) | trial cap crossed mid-session, UTC-midnight reset, trial→paid upgrade, subscription cancel | yes |
+| 2 | `provision_gate.evaluate_provision_gate` | trial cap crossed mid-session, UTC-midnight reset, trial→paid upgrade, subscription cancel | mostly |
 | 3 | `metronome_gate.apply_fresh_balance` — "the single *a fresh Metronome balance just arrived* hook" | paid-Bedrock credit exhaustion **and** top-up restore | **no** |
+
+Trigger 2 is broader than its name suggests: `evaluate_provision_gate` is
+the shared gate for `/container/status` (`routers/container.py`), the
+wake-on-intent path (`core/services/container_wake.py`) and the Teams agent
+surface (`routers/teams/agents.py`), so the tick rides all three.
 
 Trigger 3 is the important one: it is fed by the Metronome low-balance
 webhook and by the gate's own lazy refresh, both of which fire without any

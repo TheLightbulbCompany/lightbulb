@@ -400,7 +400,22 @@ async def evaluate_provision_gate(
     queries the {env,service} stream and — per EMF's one-stream-per-dim-set
     rule — can only match a no-dim stream) AND a ``provision.gate.blocked{code}``
     for the per-reason dashboard/Insights breakdown.
+
+    It is also the ``/container/status`` poll's reconcile tick for the
+    Paperclip budget fence (``core/services/paperclip_budget_fence.py``).
+    This is the natural home: the poll runs every ~3s for any owner with a
+    tab open, so it catches the trial cap being crossed mid-session, the
+    UTC-midnight cap reset, and the trial→paid upgrade — while the fence's
+    own DDB stamp keeps the steady state at one read and zero Paperclip
+    calls. The dispatch is fire-and-forget and swallows everything, so it
+    cannot add latency to, or fail, the gate decision. It runs on BOTH
+    branches (blocked and not) because lifting a stale fence matters as
+    much as setting one.
     """
+    from core.services.paperclip_budget_fence import schedule_reconcile
+
+    schedule_reconcile(owner_id)
+
     gate = await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
     if gate is not None:
         # Bounded ``code`` set → safe metric dimension. Best-effort: a metrics

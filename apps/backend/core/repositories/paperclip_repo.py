@@ -137,6 +137,7 @@ class BootstrapClaimResult(str, Enum):
 PaperclipCompanyStatus = Literal["seeding", "provisioning", "active", "failed", "disabled"]
 FunnelState = Literal["not_started", "submitted", "complete"]
 BootstrapState = Literal["not_started", "dispatched", "delivered", "failed"]
+BudgetFenceState = Literal["open", "fenced"]
 
 
 # Reserved user_id namespace for per-org "company create" claim sentinels.
@@ -268,6 +269,33 @@ class PaperclipCompany:
     bootstrap_delivered_at: Optional[datetime] = None
     bootstrap_attempts: Optional[int] = None
     bootstrap_last_error: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Paperclip budget fence (see core/services/paperclip_budget_fence.py)
+    # ------------------------------------------------------------------
+
+    budget_fence_state: Optional[BudgetFenceState] = None
+    """Last fence state Isol8 successfully APPLIED to the Paperclip company
+    (``"fenced"`` = we paused it, ``"open"``/absent = we did not).
+
+    This is a record of OUR OWN writes, not a mirror of Paperclip's
+    ``companies.status``. That distinction is load-bearing: it is what lets
+    ``reconcile`` resume only a pause it created. Paperclip's own budget
+    subsystem also pauses companies (``budgets.pauseAndCancelScopeForBudget``),
+    and ``GET /api/companies/{id}`` does not project ``pauseReason``, so
+    there is no way to tell the two apart over the wire.
+
+    Deliberately NOT written by ``put()``: a whole-item re-put (reprovision)
+    drops the stamp back to "open", which is the safe direction — the next
+    reconcile re-derives the desired state and re-applies it."""
+
+    budget_fence_reason: Optional[str] = None
+    """The ``paperclip_budget_fence.fence_reason`` code that justified the
+    last ``fenced`` transition (``trial_daily_cap``, ``trial_expired``,
+    ``credits_exhausted``, ``subscription_inactive``). Operator breadcrumb
+    only — nothing reads it to make a decision."""
+
+    budget_fence_updated_at: Optional[datetime] = None
 
 
 class PaperclipRepo:
@@ -418,6 +446,11 @@ class PaperclipRepo:
                 int(item["bootstrap_attempts"]) if item.get("bootstrap_attempts") is not None else None
             ),
             bootstrap_last_error=item.get("bootstrap_last_error"),
+            budget_fence_state=item.get("budget_fence_state"),
+            budget_fence_reason=item.get("budget_fence_reason"),
+            budget_fence_updated_at=(
+                datetime.fromisoformat(item["budget_fence_updated_at"]) if item.get("budget_fence_updated_at") else None
+            ),
         )
 
     async def get_onboarding_state(self, owner_id: str) -> dict:
@@ -693,6 +726,45 @@ class PaperclipRepo:
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
+
+    async def set_budget_fence_state(
+        self,
+        user_id: str,
+        *,
+        state: BudgetFenceState,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Stamp the Paperclip budget fence's LAST APPLIED state on a row.
+
+        Written ONLY after the corresponding ``PATCH /api/companies/{id}``
+        landed — the stamp means "Paperclip is in this state because we put
+        it there", which is what lets ``paperclip_budget_fence.reconcile``
+        resume a pause it created and leave anyone else's alone.
+
+        A targeted ``UpdateItem`` (not ``put``) so it can never clobber the
+        onboarding fields. Guarded on ``attribute_exists(user_id)`` so a row
+        deleted underneath a reconcile is not resurrected as a fence-only
+        stub; the ConditionalCheckFailed is swallowed because there is
+        nothing left to stamp.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET budget_fence_state = :s, budget_fence_reason = :r, "
+                    "budget_fence_updated_at = :t, updated_at = :t"
+                ),
+                ConditionExpression="attribute_exists(user_id)",
+                ExpressionAttributeValues={
+                    ":s": state,
+                    ":r": reason or "",
+                    ":t": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info("set_budget_fence_state: row %s no longer exists; skipping stamp", user_id)
 
     async def put_failed_marker_if_absent(
         self,

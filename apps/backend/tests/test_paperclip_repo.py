@@ -1076,3 +1076,56 @@ async def test_reset_bootstrap_for_retry_returns_false_on_condition_fail(repo):
     assert fetched.bootstrap_state == "failed"
     assert fetched.bootstrap_attempts == 1
     assert fetched.bootstrap_dispatch_id == dispatch_id
+
+
+# ---------------------------------------------------------------------------
+# Budget fence stamp (core/services/paperclip_budget_fence.py)
+# ---------------------------------------------------------------------------
+
+
+async def test_set_budget_fence_state_round_trips(repo):
+    await repo.put(_make_company(user_id="u1"))
+    assert (await repo.get("u1")).budget_fence_state is None
+
+    await repo.set_budget_fence_state("u1", state="fenced", reason="trial_daily_cap")
+    fetched = await repo.get("u1")
+    assert fetched.budget_fence_state == "fenced"
+    assert fetched.budget_fence_reason == "trial_daily_cap"
+    assert fetched.budget_fence_updated_at is not None
+
+    await repo.set_budget_fence_state("u1", state="open", reason=None)
+    assert (await repo.get("u1")).budget_fence_state == "open"
+
+
+async def test_set_budget_fence_state_preserves_onboarding_fields(repo):
+    """Targeted UpdateItem, not a whole-item put -- the stamp must never
+    clobber the generation-fenced onboarding attributes."""
+    await repo.put(
+        _make_company(
+            user_id="u1",
+            onboarding_generation="01G",
+            funnel_state="submitted",
+            bootstrap_state="dispatched",
+        )
+    )
+    await repo.set_budget_fence_state("u1", state="fenced", reason="credits_exhausted")
+    fetched = await repo.get("u1")
+    assert fetched.onboarding_generation == "01G"
+    assert fetched.funnel_state == "submitted"
+    assert fetched.bootstrap_state == "dispatched"
+
+
+async def test_set_budget_fence_state_on_missing_row_is_a_noop(repo):
+    """A row deleted under a reconcile must not be resurrected as a
+    fence-only stub."""
+    await repo.set_budget_fence_state("ghost", state="fenced", reason="trial_daily_cap")
+    assert await repo.get("ghost") is None
+
+
+async def test_put_does_not_carry_the_fence_stamp(repo):
+    """Deliberate: a reprovision re-put drops the stamp back to "open", the
+    safe direction -- the next reconcile re-derives and re-applies."""
+    await repo.put(_make_company(user_id="u1"))
+    await repo.set_budget_fence_state("u1", state="fenced", reason="trial_daily_cap")
+    await repo.put(_make_company(user_id="u1"))
+    assert (await repo.get("u1")).budget_fence_state is None

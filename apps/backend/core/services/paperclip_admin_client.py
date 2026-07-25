@@ -2682,13 +2682,24 @@ class PaperclipAdminClient:
         company_id: str,
         body: dict,
     ) -> dict:
-        """Patch the company record. Body is whitelisted by the BFF
-        to ``name`` and ``description`` only.
+        """Patch the company record.
 
         Maps to ``PATCH /api/companies/{companyId}``, governed by
         ``updateCompanySchema``. That schema strips unknown keys
         silently, so the body's keys must match Paperclip's field names
         exactly or the patch no-ops without raising.
+
+        Two callers, deliberately different bodies:
+
+          * the Teams BFF settings route, whose body is whitelisted to
+            ``name`` and ``description``; and
+          * ``core/services/paperclip_budget_fence``, which sends
+            ``{"status": "paused"|"active"}`` to arm/disarm Paperclip's
+            native pre-run budget fence. ``pauseReason`` is deliberately
+            NOT sent — ``updateCompanySchema`` has no such field, and the
+            resulting NULL is what keeps Paperclip's own
+            ``resumeScopeFromBudget`` (which filters on
+            ``pauseReason = 'budget'``) from lifting our fence.
         """
         return await self._patch(
             f"/api/companies/{company_id}",

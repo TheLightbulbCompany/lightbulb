@@ -830,6 +830,18 @@ class PaperclipProvisioning:
                     company_id,
                     owner_user_id,
                 )
+                # Arm Paperclip's native budget fence for the freshly-active
+                # company. A brand-new owner is normally under their cap, so
+                # this is usually a no-op — but a REPROVISION of an owner who
+                # is already capped or credit-exhausted would otherwise come
+                # back unfenced and immediately start dispatching wakes into a
+                # container whose inference the bedrock-gate refuses. The
+                # ``put`` above also resets ``budget_fence_state`` (it is not a
+                # ``put`` field), so this is the write that re-establishes it.
+                # Fire-and-forget: provisioning must never fail on the fence.
+                from core.services.paperclip_budget_fence import schedule_reconcile
+
+                schedule_reconcile(owner_id)
             else:
                 logger.warning(
                     "paperclip_provisioning.provision_org: owner_id %s company=%s created but CEO "

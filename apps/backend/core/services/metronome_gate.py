@@ -108,6 +108,14 @@ async def apply_fresh_balance(
     pull-based restore can never diverge between the two read paths.
     Best-effort throughout — must never raise into a gate read or the
     balance endpoint.
+
+    It is also where the Paperclip budget fence
+    (``core/services/paperclip_budget_fence.py``) is reconciled for the paid
+    Bedrock cohort. This hook is the ONE place revoke and restore already
+    share a chokepoint, and — unlike the ``/container/status`` tick — it is
+    driven by the Metronome low-balance webhook and this module's own lazy
+    refresh, so it fires with no user present. That is what stops a
+    credits-exhausted owner's routines from storming overnight.
     """
     if gate is None:
         gate = MetronomeFastGate()
@@ -117,6 +125,15 @@ async def apply_fresh_balance(
         # The fresh number still answers THIS read; the row rewrite is only
         # the cache for the next one.
         logger.warning("Fast-gate rewrite failed for owner %s after refresh", owner_id, exc_info=True)
+
+    # Dispatched BEFORE the branch so both directions (drained -> fence,
+    # topped-up -> lift) get one tick. The fence re-reads the fast-gate row
+    # we just wrote, so it sees this balance, and it self-gates on
+    # provider_choice — an OAuth/BYOK owner with a stray Metronome customer
+    # is never fenced here.
+    from core.services.paperclip_budget_fence import schedule_reconcile
+
+    schedule_reconcile(owner_id)
 
     if remaining_microcents > 0:
         await _maybe_restore_bedrock(owner_id)

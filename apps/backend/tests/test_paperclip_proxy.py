@@ -755,7 +755,7 @@ def test_paperclip_session_rejects_wrong_kind(monkeypatch):
 def _stub_handshake_repo_and_dispatch(monkeypatch, row, container=True):
     """Stub the /__handshake__ readiness check's container lookup + repo row
     + the dispatch; returns the list the dispatch stub records (user_id,
-    org_id, provision_container) into."""
+    org_id) into."""
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_get_container(owner_id: str):
@@ -774,8 +774,8 @@ def _stub_handshake_repo_and_dispatch(monkeypatch, row, container=True):
 
     calls: list = []
 
-    def _fake_ensure_user_ready(auth, *, provision_container=True):
-        calls.append((auth.user_id, auth.org_id, provision_container))
+    def _fake_ensure_user_ready(auth):
+        calls.append((auth.user_id, auth.org_id))
 
         async def _noop():
             return None
@@ -822,7 +822,7 @@ def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
 
     # No row yet → the same canonical readiness dispatch the ?__t= handoff
     # uses fired here too (personal context, paperclip-seed only).
-    assert calls == [("user_handshake", None, False)]
+    assert calls == [("user_handshake", None)]
 
 
 def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch):
@@ -859,7 +859,7 @@ def test_handshake_org_context_dispatches_repair_for_mismatched_row(monkeypatch)
     assert resp.status_code == 204
 
     # The repair was dispatched under the org context...
-    assert calls == [("user_org_member", "org_acme", False)]
+    assert calls == [("user_org_member", "org_acme")]
 
     # ...and the minted cookie carries that same org context.
     set_cookie = resp.headers.get("set-cookie", "")
@@ -1128,14 +1128,14 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
 
     calls = []
 
-    def _fake_ensure_user_ready(auth, *, provision_container=True):
+    def _fake_ensure_user_ready(auth):
         # Regular (non-async) stub so the call args are recorded
         # synchronously — exactly when the real ``asyncio.create_task(...)``
-        # call site evaluates ``ensure_user_ready(auth, provision_container=...)``
-        # to produce the coroutine it schedules — independent of whether the
-        # background task actually gets a turn on the loop before the test
-        # inspects the response.
-        calls.append((auth.user_id, provision_container))
+        # call site evaluates ``ensure_user_ready(auth)`` to produce the
+        # coroutine it schedules — independent of whether the background task
+        # actually gets a turn on the loop before the test inspects the
+        # response.
+        calls.append(auth.user_id)
 
         async def _noop():
             return None
@@ -1154,10 +1154,10 @@ def test_http_handoff_autoprovision_routes_through_canonical_trigger(monkeypatch
     assert resp.status_code == 302
 
     # Dispatched through the canonical trigger, keyed on owner_id (personal
-    # context here: owner_id == user_id), with provision_container=False —
-    # the handoff already verified the container exists, so this call must
-    # seed Paperclip only, never re-dispatch container provisioning.
-    assert calls == [("user_trigger_fold", False)]
+    # context here: owner_id == user_id). No container flag: ensure_user_ready
+    # reads the row itself and resolves an already-running box to a seed-only
+    # reconcile (see user_provision._provision_or_reconcile).
+    assert calls == ["user_trigger_fold"]
 
 
 @pytest.mark.parametrize(
@@ -1215,8 +1215,8 @@ def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, row_org_id
 
     calls = []
 
-    def _fake_ensure_user_ready(auth, *, provision_container=True):
-        calls.append((auth.user_id, auth.org_id, provision_container))
+    def _fake_ensure_user_ready(auth):
+        calls.append((auth.user_id, auth.org_id))
 
         async def _noop():
             return None
@@ -1237,7 +1237,7 @@ def test_http_handoff_active_row_readiness_is_org_scoped(monkeypatch, row_org_id
     assert resp.status_code == 302
 
     if expect_dispatch:
-        assert calls == [("user_org_member", "org_acme", False)]
+        assert calls == [("user_org_member", "org_acme")]
     else:
         assert calls == []
 
@@ -1291,8 +1291,8 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
 
     calls = []
 
-    def _fake_ensure_user_ready(auth, *, provision_container=True):
-        calls.append((auth.user_id, auth.org_id, provision_container))
+    def _fake_ensure_user_ready(auth):
+        calls.append((auth.user_id, auth.org_id))
 
         async def _noop():
             return None
@@ -1315,7 +1315,7 @@ def test_http_handoff_token_wins_over_stale_session_cookie(monkeypatch):
     # personal one: container looked up by org_id, and the org-scoped
     # readiness check dispatched the repair.
     assert container_lookups == ["org_acme"]
-    assert calls == [("user_org_member", "org_acme", False)]
+    assert calls == [("user_org_member", "org_acme")]
 
     # And the freshly minted cookie PRESERVES the org context, so the
     # established-session requests that follow keep resolving the org

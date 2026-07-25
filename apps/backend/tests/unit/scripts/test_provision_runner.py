@@ -18,12 +18,23 @@ def manager(monkeypatch):
     mgr = MagicMock()
     mgr.provision_user_container = AsyncMock(return_value="svc-name")
     mgr.wait_for_running = AsyncMock()
+    # Container-leg liveness probe: default to "nothing discoverable" so every
+    # pre-existing test still takes the full-provision path. The skip tests
+    # below drive these explicitly.
+    mgr.resolve_running_container = AsyncMock(return_value=(None, None))
+    mgr.is_healthy = MagicMock(return_value=False)
     monkeypatch.setattr(provision_runner, "_get_manager", lambda: mgr)
     monkeypatch.setattr(
         provision_runner,
         "_resolve_provider",
         AsyncMock(return_value=("bedrock_claude", None)),
     )
+    # Step 0 (the owner Paperclip seed) is unconditional, so every run() test
+    # traverses it. Neutralize it here so the container-work tests below stay
+    # about the container work; the step-0 tests re-patch it with their own
+    # double, and the _seed_owner_paperclip helper tests never take this
+    # fixture (they call the real function directly).
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", AsyncMock(return_value=provision_runner.EXIT_OK))
     return mgr
 
 
@@ -246,35 +257,109 @@ async def test_external_state_change_exits_zero(monkeypatch, manager, repo):
 
 
 # ---------------------------------------------------------------------------
-# Step 0: owner Paperclip seed under the executor single-flight (SEED_IN_EXECUTOR)
+# Container leg: skipped when the owner's box is already up and healthy
 # ---------------------------------------------------------------------------
 #
-# When the flag is ON the OWNER company-create seed runs in the runner, BEFORE
-# the container work, so it inherits try_claim_provision's single-flight (one
-# execution per owner) — closing the duplicate-company race (#1442) at its
-# source. Default OFF: the seed never runs here (poll thread owns it), so every
-# test above (which does not touch the flag) is a flag-OFF regression proof.
+# Every claimable row shape (absent / error / stopped / stale provisioning) can
+# sit on top of a healthy live task — the commonest case being a step-0 seed
+# failure, which flips a RUNNING owner's row to error while the box keeps
+# serving chat. Re-running provision_user_container there rotates the owner's
+# bedrock-gate token, re-puts IAM, rewrites configs and force-redeploys. So the
+# runner probes first and skips straight to the terminal transition. This is
+# what makes ONE dispatch safe for a caller who only needs the seed.
 
 
-async def test_seed_step_0_not_run_when_flag_off(monkeypatch, manager, repo):
-    """Default (flag OFF): the runner NEVER seeds — byte-identical to today.
-    The poll thread owns the seed; the runner only does the container work."""
-    seed = AsyncMock(return_value=provision_runner.EXIT_OK)
-    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", False)
+def _live_box(manager, ip="10.0.0.7", healthy=True):
+    manager.resolve_running_container = AsyncMock(return_value=({"status": "error"}, ip))
+    manager.is_healthy = MagicMock(return_value=healthy)
+
+
+async def test_container_leg_skipped_when_box_already_healthy(monkeypatch, manager, repo):
+    """Healthy live task → NO provision_user_container, but wait_for_running
+    still runs: it is the fenced writer of the terminal running transition, so
+    the claimed row must not be left sitting in "provisioning"."""
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a", "provision_generation": "gen-1"})
+    _live_box(manager)
     _row(monkeypatch, {"status": "running"})
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
-    seed.assert_not_awaited()
+    manager.provision_user_container.assert_not_awaited()
+    manager.wait_for_running.assert_awaited_once_with(
+        "user_a", claim_id="claim", generation="gen-1", attempt_token="claim"
+    )
+
+
+async def test_seed_still_runs_when_container_leg_is_skipped(monkeypatch, manager, repo):
+    """The whole point: an owner whose box is already up still gets step 0.
+    Skipping the container work must never skip the seed."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_OK)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    _live_box(manager)
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    seed.assert_awaited_once_with("user_a")
+    manager.provision_user_container.assert_not_awaited()
+
+
+async def test_container_leg_runs_for_brand_new_owner(monkeypatch, manager, repo):
+    """No service_name on the row (a first provision) → no probe, full
+    provision, exactly as before."""
+    repo.get_by_owner_id = AsyncMock(return_value=None)
+    _live_box(manager)  # would say "healthy" if it were ever consulted
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    manager.resolve_running_container.assert_not_awaited()
     manager.provision_user_container.assert_awaited_once()
 
 
-async def test_seed_step_0_success_then_provisions_container(monkeypatch, manager, repo):
-    """Flag ON, seed OK → the runner continues to the container work exactly as
-    before (step 0 is an ADDITIONAL first step, not a replacement), and the seed
+async def test_container_leg_runs_when_task_is_undiscoverable(monkeypatch, manager, repo):
+    """Service exists but ECS has no task IP → provision (this is the crashed
+    box the self-heal is for)."""
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    manager.resolve_running_container = AsyncMock(return_value=({"status": "error"}, None))
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    manager.provision_user_container.assert_awaited_once()
+
+
+async def test_container_leg_runs_when_gateway_is_unhealthy(monkeypatch, manager, repo):
+    """Task is up but the gateway port never opened (the wedged-box signature).
+    The redeploy is the ONLY thing that heals that, so the skip must not
+    trigger — this is why the probe is is_healthy and not has_live_service
+    (an ACTIVE service with desiredCount>0 is true for a wedged box)."""
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    _live_box(manager, healthy=False)
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    manager.provision_user_container.assert_awaited_once()
+
+
+async def test_container_leg_runs_when_probe_raises(monkeypatch, manager, repo):
+    """An indeterminate probe (ECS throttle, describe blip) provisions as
+    today — the skip is the special case, never the fallback."""
+    repo.get_by_owner_id = AsyncMock(return_value={"service_name": "openclaw-user_a"})
+    manager.resolve_running_container = AsyncMock(side_effect=RuntimeError("throttled"))
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    manager.provision_user_container.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Step 0: owner Paperclip seed under the executor single-flight
+# ---------------------------------------------------------------------------
+#
+# The OWNER company-create seed runs in the runner, BEFORE the container work,
+# so it inherits try_claim_provision's single-flight (one execution per owner)
+# — closing the duplicate-company race (#1442) at its source. Unconditional:
+# there is no flag and no poll-thread alternative.
+
+
+async def test_seed_step_0_always_runs_then_provisions_container(monkeypatch, manager, repo):
+    """Seed OK → the runner continues to the container work (step 0 is an
+    ADDITIONAL first step, not a replacement). The seed is unconditional and
     runs AFTER claim_attempt (a taken-over straggler stands down first)."""
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
     _row(monkeypatch, {"status": "running"})
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
     seed.assert_awaited_once_with("user_a")
@@ -283,12 +368,11 @@ async def test_seed_step_0_success_then_provisions_container(monkeypatch, manage
 
 
 async def test_seed_step_0_deterministic_fail_exits_10_skips_container_surfaces_error(monkeypatch, manager, repo):
-    """Flag ON, seed deterministic-fail (10): exit 10 WITHOUT touching the
-    container, and the row is flipped to error(retryable=False) so the poll
-    SURFACES the failure instead of looping it."""
+    """Seed deterministic-fail (10): exit 10 WITHOUT touching the container,
+    and the row is flipped to error(retryable=False) so the poll SURFACES the
+    failure instead of looping it."""
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
     manager.provision_user_container.assert_not_awaited()
     repo.release_provision_to_error.assert_awaited_once()
@@ -298,11 +382,10 @@ async def test_seed_step_0_deterministic_fail_exits_10_skips_container_surfaces_
 
 
 async def test_seed_step_0_transient_fail_exits_11_skips_container_retryable_error(monkeypatch, manager, repo):
-    """Flag ON, seed transient-fail (11): exit 11 (SFN retries) WITHOUT the
-    container, row flipped to error(retryable=True) for the poll's auto-retry."""
+    """Seed transient-fail (11): exit 11 (SFN retries) WITHOUT the container,
+    row flipped to error(retryable=True) for the poll's auto-retry."""
     seed = AsyncMock(return_value=provision_runner.EXIT_TRANSIENT)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_TRANSIENT
     manager.provision_user_container.assert_not_awaited()
     repo.release_provision_to_error.assert_awaited_once()
@@ -314,7 +397,6 @@ async def test_seed_step_0_error_release_failure_still_returns_exit_code(monkeyp
     not change the exit-code ABI the machine reads."""
     seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
     repo.release_provision_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
     manager.provision_user_container.assert_not_awaited()
@@ -325,7 +407,6 @@ async def test_seed_step_0_superseded_claim_stands_down_before_seeding(monkeypat
     (like the container work) never runs, and the runner exits 20."""
     seed = AsyncMock(return_value=provision_runner.EXIT_OK)
     monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
-    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
     repo.claim_attempt = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
     seed.assert_not_awaited()

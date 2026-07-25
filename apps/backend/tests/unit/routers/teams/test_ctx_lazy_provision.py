@@ -102,14 +102,6 @@ async def test_ctx_passes_reconcile_to_resolver():
     assert callable(reconcile)
 
 
-def _ecs_mock(*, container):
-    """ECS manager double whose resolve_running_container returns
-    ``(container, ip)``. ``container=None`` => no running container."""
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(return_value=(container, None))
-    return ecs
-
-
 @pytest.mark.asyncio
 async def test_self_heal_reconcile_backgrounds_provision_when_gate_clear():
     """Gate clear → return None (→ 202 keep-polling) and schedule the actual
@@ -155,57 +147,20 @@ async def test_self_heal_reconcile_returns_payload_and_skips_provision_when_gate
 
 
 @pytest.mark.asyncio
-async def test_provision_after_gate_starts_container_when_none_running():
-    """No running container (owner's first entry point is /teams) →
-    provision_container=True so the container actually gets created. Otherwise
-    the Paperclip row goes active, polling stops, and agents can't run until
-    the owner visits /chat (Codex P2)."""
+async def test_provision_after_gate_calls_ensure_user_ready_with_no_flag():
+    """The /teams self-heal hands the WHOLE decision to ensure_user_ready — no
+    caller-derived container flag. The old ``provision_container`` kwarg made
+    this call site re-derive "is the box up?" from ECS, and its
+    already-running/parked answers silently skipped the SEED too, which is how
+    an owner entering via /teams on a running container sat on 202 forever.
+    ensure_user_ready now reads the same row and reconciles the seed itself."""
     from routers.teams import agents as agents_mod
 
     auth = _auth(user_id="owner1")
-    with (
-        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
-    ):
+    with patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire:
         await agents_mod._provision_after_gate(auth, "owner1")
 
-    mock_fire.assert_awaited_once_with(auth, provision_container=True)
-
-
-@pytest.mark.asyncio
-async def test_provision_after_gate_does_not_restart_running_container():
-    """A container is already running (existing multi-admin/joined-org case) →
-    provision_container=False so /teams self-heal NEVER force-redeploys the
-    live shared container (Codex P1)."""
-    from routers.teams import agents as agents_mod
-
-    auth = _auth(user_id="admin1", org_id="org_x", is_org_context=True)
-    running = {"status": "running"}
-    with (
-        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=running)),
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
-    ):
-        await agents_mod._provision_after_gate(auth, "org_x")
-
-    mock_fire.assert_awaited_once_with(auth, provision_container=False)
-
-
-@pytest.mark.asyncio
-async def test_provision_after_gate_falls_back_to_no_restart_on_ecs_error():
-    """If container state can't be determined, fall back to the safe
-    no-restart path (Paperclip-only); the /chat poll backstops the container."""
-    from routers.teams import agents as agents_mod
-
-    ecs = MagicMock()
-    ecs.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
-    auth = _auth(user_id="owner1")
-    with (
-        patch.object(agents_mod, "get_ecs_manager", return_value=ecs),
-        patch.object(agents_mod, "ensure_user_ready", new_callable=AsyncMock) as mock_fire,
-    ):
-        await agents_mod._provision_after_gate(auth, "owner1")
-
-    mock_fire.assert_awaited_once_with(auth, provision_container=False)
+    mock_fire.assert_awaited_once_with(auth)
 
 
 @pytest.mark.asyncio
@@ -216,14 +171,11 @@ async def test_provision_after_gate_swallows_ensure_user_ready_failure():
     from routers.teams import agents as agents_mod
 
     auth = _auth(user_id="owner1")
-    with (
-        patch.object(agents_mod, "get_ecs_manager", return_value=_ecs_mock(container=None)),
-        patch.object(
-            agents_mod,
-            "ensure_user_ready",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("paperclip 503"),
-        ),
+    with patch.object(
+        agents_mod,
+        "ensure_user_ready",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("paperclip 503"),
     ):
         # Does not raise.
         await agents_mod._provision_after_gate(auth, "owner1")

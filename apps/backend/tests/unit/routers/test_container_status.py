@@ -61,13 +61,12 @@ def _org_admin_auth(
     )
 
 
-async def _noop_ensure_user_ready(auth, *, provision_container=True):
+async def _noop_ensure_user_ready(auth):
     """No-op stand-in with the real qualname so capture_task can verify
     we dispatched the right coroutine. Using AsyncMock here would yield
     coro.__qualname__ == 'AsyncMockMixin._execute_mock_call', which
-    defeats the contract assertion. Accepts ``provision_container`` to
-    mirror the real ensure_user_ready signature (the running-container
-    branch passes provision_container=False)."""
+    defeats the contract assertion. Mirrors the real ensure_user_ready
+    signature — one positional AuthContext, no flags."""
     return None
 
 
@@ -1857,8 +1856,9 @@ class TestContainerStatusTeamsStatus:
     @pytest.mark.asyncio
     async def test_personal_running_container_with_failed_seed_redispatches_ensure_user_ready(self):
         """A PERSONAL owner whose running container has a FAILED Teams seed must
-        re-dispatch ensure_user_ready(provision_container=False) on the poll, so a
-        transient seed blip self-heals. Before this fix the running-container
+        re-dispatch ensure_user_ready on the poll, so a transient seed blip
+        self-heals (ensure_user_ready itself resolves the running row to a seed
+        reconcile rather than a re-provision). Before this fix the running-container
         re-dispatch was gated org-only, leaving a personal seed failure stuck at
         teams_status="failed" forever with no retry (T1 made the seed failure
         non-fatal to the container). No seat-sync precedes it because the owner is

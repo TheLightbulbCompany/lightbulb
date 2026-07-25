@@ -384,51 +384,24 @@ async def _self_heal_reconcile(auth: AuthContext) -> dict | None:
 async def _provision_after_gate(auth: AuthContext, owner_id: str) -> None:
     """Background half of the self-heal (runs after the gate has cleared).
 
-    Decides the container flag from live ECS state, then runs
-    ``ensure_user_ready``. Off the request path so transient failures stay
-    retryable rather than 500-ing /teams (see ``_self_heal_reconcile``).
+    Off the request path so transient failures stay retryable rather than
+    500-ing /teams (see ``_self_heal_reconcile``).
 
-    **Container flag from STATE**, mirroring ``/container/status`` — a static
-    flag can't be right for both cases:
-      - Container already running -> ``provision_container=False``. Calling
-        ``provision_user_container`` on a running service force-redeploys it
-        (``forceNewDeployment=True``); doing that on every /teams poll would
-        interrupt everyone in the org. (Codex P1.)
-      - No running container yet -> ``provision_container=True``. For an owner
-        whose FIRST entry point is /teams (never visited /chat), the container
-        must be created here, or the Paperclip row goes active, polling stops,
-        and agents can't run until they happen to open /chat. (Codex P2.)
+    This used to derive a ``provision_container`` flag from live ECS state
+    (skip the container start when the box is already up, and again when it is
+    a deliberately parked trial box that a /teams READ must not wake). That
+    decision now lives inside ``ensure_user_ready`` itself
+    (``_provision_or_reconcile``), which reads the same row and additionally
+    keeps the SEED running in the cases where no provision is dispatched —
+    the half the flag silently skipped, which is why an owner entering via
+    /teams on a running container could sit on 202 forever.
 
     Org members are excluded from container provisioning by ensure_user_ready
     itself (the role guard at user_provision.py: members ride the owner's
-    shared container), so the flag only matters for personal owners / admins.
+    shared container).
     """
     try:
-        container, _ip = await get_ecs_manager().resolve_running_container(owner_id)
-    except Exception:
-        # Container state indeterminate -> safe no-restart path (Paperclip
-        # only); the /chat poll remains the backstop for the container.
-        container = object()  # sentinel: treat as "exists", skip container start
-    if container is None:
-        # resolve_running_container is None for a STOPPED row too — and a
-        # deliberately parked trial box (stop_reason=trial_idle) must not be
-        # woken by a /teams read. Reads render fine from Paperclip; the wake
-        # belongs to explicit intent (POST /container/wake, chat send). Its
-        # own try/except so an indeterminate parked-check fails OPEN to
-        # provision_container=True — missing and crashed rows must never lose
-        # their first-provision/self-heal to this guard.
-        try:
-            from core.repositories import container_repo
-            from core.services import wake_policy
-
-            row = await container_repo.get_by_owner_id(owner_id)
-            if await wake_policy.is_parked_trial(owner_id, row):
-                wake_policy.note_wake_suppressed(owner_id, row, door="teams", reason="gated")
-                container = object()  # sentinel: exists, skip container start
-        except Exception:
-            logger.debug("teams parked-check failed for %s — provisioning proceeds", owner_id, exc_info=True)
-    try:
-        await ensure_user_ready(auth, provision_container=container is None)
+        await ensure_user_ready(auth)
     except Exception:
         # Background task: log and swallow so a transient failure doesn't
         # surface as an unretrieved-task error. The next /teams poll re-fires.

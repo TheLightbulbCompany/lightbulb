@@ -37,6 +37,15 @@ description: >
      is its workspace, NOT the skill root, so relative `scripts/...` commands
      fail with "not found" and the first-run kickoff silently loses its board
      writes. Keep paths absolute when re-vendoring.
+  6. EXPLICIT create status ("Creating work for someone else" + the create/
+     subtask rows): paperclip-api.sh sends an explicit `backlog` when a create
+     passes --assignee with no --status, instead of letting the server pick.
+     Paperclip's own default promotes that case to `todo`
+     (resolveCreateIssueStatusDefault), and assignee + non-backlog is exactly
+     what dispatches an agent run — then a 30s reconciler re-dispatches it
+     until it escalates to `blocked`. Upstream's docs are silent on this, so
+     an agent filing a few assigned tasks in one heartbeat starts a run storm.
+     Keep both the helper default and the doc wording on re-vendor.
 -->
 
 # Paperclip Skill
@@ -71,13 +80,30 @@ Every write you do in a heartbeat has a subcommand:
 | Update status / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--blocked-by "id1,id2"]` (optional comment on stdin) |
 | Checkout | `/app/skills/paperclip/scripts/paperclip-api.sh checkout <issueId>` |
 | Release | `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>` |
-| Create subtask | `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional description on stdin) |
-| Create top-level issue | `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>] [--assignee <agentId>]` (optional description on stdin) |
+| Create subtask | `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id> --status backlog\|todo` (optional description on stdin) |
+| Create top-level issue | `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>] [--assignee <agentId>] --status backlog\|todo` (optional description on stdin) |
 | Any other write (no subcommand) | `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` (jq-built JSON body on stdin) |
 | `request_confirmation` interaction | `/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt P` (optional details markdown on stdin) |
 | Accept / reject / respond an interaction | `/app/skills/paperclip/scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>` |
 
 Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag list, and add `--dry-run` to print the JSON it would send without making the request. **Reads (GET) stay plain `curl`** as documented below. For the rare write kinds without a dedicated subcommand (board approvals, `request_checkbox_confirmation` / `ask_user_questions` / `suggest_tasks` creates, issue documents), use `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` with the JSON body on stdin — build the body with `jq -n` from the exact shape in `references/api-reference.md`, never as a hand-typed one-line JSON string. `raw` validates that the body parses before sending and sets the same auth/run-id headers as every other subcommand; **never fall back to hand-rolled `curl` for a write**.
+
+### Creating work for someone else — always say the status
+
+**A new issue with an assignee and a status other than `backlog` STARTS AN AGENT RUN immediately** — and a server-side reconciler re-dispatches it every ~30s until it escalates to `blocked`. That is not a one-off cost: file three assigned tasks with the wrong status and you have started three runs the owner never asked for, over and over.
+
+So on **every** `create` / `subtask` that names an `--assignee`, pass `--status` and mean it:
+
+| You want | Pass | What happens |
+| -------- | ---- | ------------ |
+| Put it on the board for later (the normal case) | `--status backlog` | Filed, visible, assigned. **No run.** Someone moves it to `todo` when it is time. |
+| Assign it AND start it right now | `--status todo` | Assignee is woken immediately and works it. Spends money. |
+
+Omitting `--status` on an assigned create is **not neutral**: Paperclip's API silently promotes it to `todo` and starts the run. `paperclip-api.sh` defends against this by sending an explicit `backlog` (and printing a notice) whenever you pass `--assignee` with no `--status` — but rely on the guard only as a backstop. Say what you mean.
+
+Planning output — "here are your next three moves", a decomposition, a proposal — goes to **`backlog`**. Only file to `todo` when starting the work *now* is the thing being asked for.
+
+Creates with **no** assignee are unaffected: leaving `--status` off is fine, and lands the issue in `backlog`.
 
 ## The Heartbeat Procedure
 
@@ -184,15 +210,15 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 
 ### Status Quick Guide
 
-- `backlog` — parked/unscheduled, not something you're about to start this heartbeat.
-- `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout.
+- `backlog` — parked/unscheduled, not something you're about to start this heartbeat. **The right status for work you are filing for later, even when you assign it** — it is the only status that does not wake the assignee.
+- `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout. On an assigned issue this **starts a run**, so choose it only when you mean "work this now".
 - `in_progress` — actively owned, execution-backed work.
 - `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
 - `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
-**Step 9 — Delegate if needed.** Create subtasks with `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>` (optional markdown description on stdin). Always set `parentId` and `goalId`. For a non-child follow-up that needs to stay on the same code change, pass `--inherit-workspace <sourceIssueId>`; use `--billing-code CODE` for cross-team work. Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag set.
+**Step 9 — Delegate if needed.** Create subtasks with `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id> --status backlog|todo` (optional markdown description on stdin). Always set `parentId` and `goalId`, and — whenever you also pass `--assignee` — always set `--status` explicitly: `backlog` files it for later, `todo` wakes the assignee and starts a run right now (see "Creating work for someone else"). For a non-child follow-up that needs to stay on the same code change, pass `--inherit-workspace <sourceIssueId>`; use `--billing-code CODE` for cross-team work. Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag set.
 
 ## Issue Dependencies (Blockers)
 
@@ -455,8 +481,8 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment (write)                   | `POST /api/issues/:issueId/comments` — `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (body on stdin)                            |
 | Issue-thread interactions             | `GET /api/issues/:issueId/interactions` (read) • write via `/app/skills/paperclip/scripts/paperclip-api.sh {confirm,accept,reject,respond}`           |
-| Create subtask (write)                | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id>`    |
-| Create top-level issue (write)        | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>]`                 |
+| Create subtask (write)                | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id> --status backlog\|todo` |
+| Create top-level issue (write)        | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>] --status backlog\|todo`              |
 | Release task (write)                  | `POST /api/issues/:issueId/release` — `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>`                                              |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
 | Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |

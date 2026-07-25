@@ -5,6 +5,13 @@ Exit codes are the machine's ABI (spec §7 / design doc §3): 0 provisioned+
 healthy, 10 deterministic failure (no retry), 11 transient failure (machine
 retries), 20 superseded by a deliberate reprovision (machine stops quietly).
 
+Two legs, in order: step 0 seeds the owner's Paperclip company (see
+``_seed_owner_paperclip``), then the container leg provisions ECS — and the
+container leg is a NO-OP when the owner's box is already up and healthy (see
+``_container_already_healthy``). That is what makes the single dispatch safe
+for callers whose container is already running: they get the seed reconcile
+without a force-redeploy.
+
 The runner owns the provisioning -> running transition in the FOREGROUND
 (wait_for_running) — the detached create_task pollers ecs_manager fires
 internally for non-provisioning paths (wake, resize) never run inside this
@@ -41,12 +48,6 @@ import logging
 import os
 import sys
 
-# Module-level (unlike the runner's otherwise-lazy core.* imports): the
-# SEED_IN_EXECUTOR flag is read on every run() and core.config is the lightest,
-# most universally-imported module in the app — no import-graph cost, and it
-# keeps the flag check patchable via provision_runner.settings in tests.
-from core.config import settings
-
 EXIT_OK = 0
 EXIT_DETERMINISTIC = 10
 EXIT_TRANSIENT = 11
@@ -73,18 +74,56 @@ async def _get_row(owner_id: str):
     return await container_repo.get_by_owner_id(owner_id)
 
 
+async def _container_already_healthy(manager, owner_id: str, row: dict | None) -> bool:
+    """True when this owner ALREADY has a reachable container: an ECS task the
+    service discovery can find AND whose gateway port answers.
+
+    The container leg's short-circuit. Every claimable row shape (absent,
+    ``error``, ``stopped``, stale ``provisioning`` — see
+    ``container_repo.try_claim_provision``) can still sit on top of a perfectly
+    healthy live task: the commonest case is a seed (step 0) failure, which
+    flips a RUNNING owner's row to ``error`` while the box keeps serving chat.
+    Re-running ``provision_user_container`` there is not a no-op — it rotates
+    the per-owner bedrock-gate token, re-puts the IAM policy, rewrites the
+    configs and issues a ``forceNewDeployment`` — i.e. it restarts a healthy
+    container and re-mints credentials the running task already holds. So when
+    the box is up we skip straight to ``wait_for_running``, which observes the
+    same healthy task and writes the fenced terminal transition.
+
+    Reuses ``resolve_running_container`` (read-only ECS task discovery, see its
+    docstring) + ``is_healthy`` (the gateway TCP probe) rather than
+    ``has_live_service``: "an ACTIVE service with desiredCount > 0" is TRUE for
+    a wedged box whose task is up but whose gateway never opened, and skipping
+    the provision there would remove the one thing that heals it. Anything
+    indeterminate (no service yet, no IP, probe error) answers False, so the
+    runner provisions exactly as it does today — the skip is the special case,
+    never the fallback.
+    """
+    if not (row or {}).get("service_name"):
+        return False  # brand-new owner: nothing to discover, full provision
+    try:
+        container, ip = await manager.resolve_running_container(owner_id)
+        if not container or not ip:
+            return False
+        return bool(manager.is_healthy(ip))
+    except Exception:  # noqa: BLE001 — an indeterminate probe must provision, not skip
+        logger.warning("container liveness probe failed for owner %s — provisioning", owner_id, exc_info=True)
+        return False
+
+
 async def _seed_owner_paperclip(owner_id: str) -> int:
-    """Step 0 (SEED_IN_EXECUTOR only): run the OWNER Paperclip seed under the
-    executor's single-flight, BEFORE the container work. Returns an exit code
-    from the runner's ABI (0 ok / 10 deterministic / 11 transient).
+    """Step 0: run the OWNER Paperclip seed under the executor's single-flight,
+    BEFORE the container work. Returns an exit code from the runner's ABI
+    (0 ok / 10 deterministic / 11 transient).
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + Friday/Atlas) on the poll thread, where load-balanced
     poll fan-out double-ran it and double-created the company (#1442). The
     executor elects exactly one runner per owner (try_claim_provision), so
     seeding here inherits that single-flight — one runner, one provision_org,
-    structurally no duplicate company. Gated behind settings.SEED_IN_EXECUTOR;
-    when OFF this is never called and the poll thread seeds exactly as before.
+    structurally no duplicate company. This is now THE owner-seed path: the
+    poll thread keeps only the org member JOIN (see
+    ``core.services.user_provision.ensure_user_ready``).
 
     Reuses the SAME service helpers ensure_user_ready uses
     (``_ensure_paperclip_for_owner`` / ``_ensure_paperclip_for_org``) — no seed
@@ -180,11 +219,10 @@ async def run(owner_id: str, claim_id: str) -> int:
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
 
-        # Step 0 (SEED_IN_EXECUTOR): the OWNER Paperclip seed runs HERE, under
-        # the executor's single-flight (this is the ONLY runner for this
-        # owner's claim), BEFORE the container work — killing the
-        # duplicate-company race (#1442) at its source. Inert unless the flag is
-        # on (default OFF -> the poll thread seeds, byte-identical to today).
+        # Step 0: the OWNER Paperclip seed runs HERE, under the executor's
+        # single-flight (this is the ONLY runner for this owner's claim),
+        # BEFORE the container work — killing the duplicate-company race
+        # (#1442) at its source.
         #
         # Placed AFTER claim_attempt so a straggler whose claim was taken over
         # stands down (ProvisionSuperseded) before it seeds. On a genuine seed
@@ -194,20 +232,19 @@ async def run(owner_id: str, claim_id: str) -> int:
         # same release_provision_to_error pattern provision_user_container uses
         # for its own failures — so seed success is tied to the execution rather
         # than silently swallowed.
-        if settings.SEED_IN_EXECUTOR:
-            seed_exit = await _seed_owner_paperclip(owner_id)
-            if seed_exit != EXIT_OK:
-                try:
-                    await container_repo.release_provision_to_error(
-                        owner_id,
-                        claim_id,
-                        last_error="provision seed: owner paperclip company seed failed",
-                        retryable=(seed_exit == EXIT_TRANSIENT),
-                        attempt_token=attempt_token,
-                    )
-                except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
-                    logger.exception("seed step 0: error release failed for owner %s", owner_id)
-                return seed_exit
+        seed_exit = await _seed_owner_paperclip(owner_id)
+        if seed_exit != EXIT_OK:
+            try:
+                await container_repo.release_provision_to_error(
+                    owner_id,
+                    claim_id,
+                    last_error="provision seed: owner paperclip company seed failed",
+                    retryable=(seed_exit == EXIT_TRANSIENT),
+                    attempt_token=attempt_token,
+                )
+            except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
+                logger.exception("seed step 0: error release failed for owner %s", owner_id)
+            return seed_exit
 
         # Read the container-incarnation fence off the row (see module
         # docstring for why this is NOT threaded through the SFN input).
@@ -216,27 +253,41 @@ async def run(owner_id: str, claim_id: str) -> int:
         pre_row = await container_repo.get_by_owner_id(owner_id)
         generation = (pre_row or {}).get("provision_generation")
 
-        provider_choice, byo_provider = await _resolve_provider(owner_id)
-        owner_type = "org" if is_org_owner_id(owner_id) else "personal"
-        await manager.provision_user_container(
-            owner_id,
-            provider_choice=provider_choice,
-            byo_provider=byo_provider,
-            owner_type=owner_type,
-            claim_id=claim_id,
-            generation=generation,
-            attempt_token=attempt_token,
-        )
-        # The full-provision path (create_user_service) MINTS a fresh
-        # provision_generation — for a brand-new owner AND for an existing
-        # row whose ECS service was missing/INACTIVE. Re-read so
-        # wait_for_running fences on the CURRENT incarnation, not the
-        # pre-create value read above (which would make its own running
-        # write raise ProvisionSuperseded against this very run and wedge
-        # the row in "provisioning"). claim_id/attempt_token stay the
-        # primary fences.
-        post_row = await container_repo.get_by_owner_id(owner_id)
-        generation = (post_row or {}).get("provision_generation")
+        # CONTAINER LEG — skipped entirely when the owner's box is already up
+        # and healthy (see _container_already_healthy). This is what makes ONE
+        # dispatch safe to fire at an owner who needs only the seed: a
+        # self-heal run for a failed Teams workspace no longer force-redeploys
+        # a healthy container (nor re-mints its gate token / IAM). The row is
+        # still "provisioning" (the claim put it there), so wait_for_running
+        # below writes the terminal fenced transition on BOTH paths.
+        if await _container_already_healthy(manager, owner_id, pre_row):
+            logger.info(
+                "container leg: owner %s already healthy — skipping provision (seed-only run)",
+                owner_id,
+            )
+        else:
+            provider_choice, byo_provider = await _resolve_provider(owner_id)
+            owner_type = "org" if is_org_owner_id(owner_id) else "personal"
+            await manager.provision_user_container(
+                owner_id,
+                provider_choice=provider_choice,
+                byo_provider=byo_provider,
+                owner_type=owner_type,
+                claim_id=claim_id,
+                generation=generation,
+                attempt_token=attempt_token,
+            )
+            # The full-provision path (create_user_service) MINTS a fresh
+            # provision_generation — for a brand-new owner AND for an existing
+            # row whose ECS service was missing/INACTIVE. Re-read so
+            # wait_for_running fences on the CURRENT incarnation, not the
+            # pre-create value read above (which would make its own running
+            # write raise ProvisionSuperseded against this very run and wedge
+            # the row in "provisioning"). claim_id/attempt_token stay the
+            # primary fences. The skip path mints nothing, so its pre-read
+            # value is already current.
+            post_row = await container_repo.get_by_owner_id(owner_id)
+            generation = (post_row or {}).get("provision_generation")
         await manager.wait_for_running(
             owner_id,
             claim_id=claim_id,

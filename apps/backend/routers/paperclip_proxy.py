@@ -856,7 +856,7 @@ async def handshake(request: Request) -> Response:
         ):
             from routers.container import _dispatch_watched
 
-            _dispatch_watched(ensure_user_ready(auth, provision_container=False))
+            _dispatch_watched(ensure_user_ready(auth))
 
     session_jwt = _mint_paperclip_session(
         user_id=user_id,
@@ -1091,8 +1091,10 @@ async def proxy(path: str, request: Request) -> Response:
         # free: an org member hitting Teams now correctly JOINS the
         # org's shared company instead of a personal-only provision_org
         # call attempting to CREATE one keyed on their own user_id. The
-        # container already exists (checked above), so
-        # provision_container=False — this call seeds Paperclip only.
+        # container already exists (checked above); ensure_user_ready reads
+        # that row itself and resolves this to a seed reconcile rather than a
+        # provision, so the running box is never force-redeployed from here
+        # (see user_provision._provision_or_reconcile).
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
         # "Already provisioned" must be org-scoped, not status-only — the
@@ -1113,7 +1115,7 @@ async def proxy(path: str, request: Request) -> Response:
             # provision-error metric.
             from routers.container import _dispatch_watched
 
-            _dispatch_watched(ensure_user_ready(auth, provision_container=False))
+            _dispatch_watched(ensure_user_ready(auth))
 
         # Mint cookie + 302 to clean URL. The cookie carries the org
         # context the handshake was validated under, so the established-

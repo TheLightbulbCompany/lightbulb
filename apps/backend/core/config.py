@@ -58,21 +58,6 @@ class Settings(BaseSettings):
     # machine supervises, never in-process in this backend.
     PROVISION_STATE_MACHINE_ARN: str = os.getenv("PROVISION_STATE_MACHINE_ARN", "")
 
-    # SEED_IN_EXECUTOR — move the OWNER Paperclip seed (provision_org: the
-    # company-create leg) off the /container/status poll thread and INTO the
-    # provisioning executor's runner (scripts.provision_runner step 0). Default
-    # OFF: the seed runs on the poll thread exactly as today (byte-identical).
-    # ON: ensure_user_ready stops seeding the owner inline and only dispatches;
-    # the runner does the seed under the executor's try_claim_provision
-    # single-flight, so the duplicate-company race (#1442 — a load-balanced
-    # poll fan-out double-running provision_org) becomes structurally
-    # impossible rather than merely narrowed by the seed fence. The org member
-    # JOIN and the gate-up member branch (#1435) always stay on the poll thread
-    # regardless of the flag — only the owner company-create relocates. INERT
-    # until flipped; dev-first -> validate -> prod (see
-    # docs/superpowers/specs/2026-07-25-seed-leg-executor-design.md).
-    SEED_IN_EXECUTOR: bool = os.getenv("SEED_IN_EXECUTOR", "").lower() in ("1", "true", "yes")
-
     # --- Cloud Map ---
     CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
     CLOUD_MAP_NAMESPACE_NAME: str = os.getenv("CLOUD_MAP_NAMESPACE_NAME", "")

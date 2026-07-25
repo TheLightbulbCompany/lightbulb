@@ -1,7 +1,9 @@
 """The /container/status running-container branch must dispatch
 ensure_user_ready for EVERY org-context user (admins included) so a co-admin
-joining an already-running org gets their Paperclip workspace — and it must
-pass provision_container=False so the running box is never force-restarted."""
+joining an already-running org gets their Paperclip workspace. Safe on a
+running box without a flag: ensure_user_ready reads the container row and
+resolves it to a seed reconcile instead of an executor dispatch (see
+user_provision._provision_or_reconcile)."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 

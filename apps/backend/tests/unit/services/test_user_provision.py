@@ -56,6 +56,27 @@ def _stub_arm_nightly():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def _no_container_row():
+    """``_provision_or_reconcile`` reads the containers row to decide between
+    "dispatch the executor" and "reconcile the seed here". Default to NO row
+    (a brand-new owner → dispatch), which is what every pre-existing
+    orchestration test assumes; the running-container tests override it."""
+    with patch(
+        "core.services.user_provision.container_repo.get_by_owner_id",
+        new=AsyncMock(return_value=None),
+    ) as mock:
+        yield mock
+
+
+@pytest.fixture
+def _container_running(_no_container_row):
+    """Owner already has a RUNNING container: try_claim_provision refuses that
+    row, so no executor run — the seed must be reconciled on this thread."""
+    _no_container_row.return_value = {"status": "running", "service_name": "openclaw-x"}
+    return _no_container_row
+
+
 @pytest.fixture
 def _stub_trial_default():
     """Neutralize the unconditional trial-default prelude for tests that
@@ -179,7 +200,7 @@ async def test_gate_up_org_member_still_gets_membership_add():
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"), provision_container=False)
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     fake_provisioning.provision_member.assert_awaited_once_with(
         owner_id="org_o",
         user_id="user_m",
@@ -242,7 +263,7 @@ async def test_gate_up_membership_add_409_is_idempotent_no_op():
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
     ):
         # Should NOT raise.
-        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"), provision_container=False)
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     fake_provisioning.provision_member.assert_awaited_once()
 
 
@@ -273,7 +294,7 @@ async def test_gate_up_membership_add_failure_is_swallowed_and_metered():
         patch("core.services.user_provision.put_metric") as mock_metric,
     ):
         # Should NOT raise.
-        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"), provision_container=False)
+        await ensure_user_ready(_org_member_auth("user_m", "org_o", "m@example.com"))
     mock_metric.assert_any_call("paperclip.seed.error")
 
 
@@ -298,16 +319,20 @@ async def test_gate_up_personal_owner_stays_a_pure_no_op():
     mock_container.assert_not_awaited()
 
 
+# The owner company-CREATE helpers below are exercised DIRECTLY: their sole
+# production caller is scripts.provision_runner._seed_owner_paperclip (step 0
+# of the provisioning executor's runner), not ensure_user_ready. The runner's
+# own wiring — org-vs-personal resolution, the Clerk-creator bootstrap identity
+# and the exit-code classification — is covered in
+# tests/unit/scripts/test_provision_runner.py.
+
+
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_personal_calls_provision_org(_stub_trial_default):
-    """Personal user → provision_org with owner_id == user_id."""
+async def test_ensure_paperclip_for_owner_personal_calls_provision_org():
+    """Personal owner → provision_org with owner_id == user_id."""
     fake_provisioning = MagicMock()
     fake_provisioning.provision_org = AsyncMock()
     with (
-        patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
         patch(
             "core.services.user_provision.build_paperclip_provisioning",
             new=AsyncMock(return_value=fake_provisioning),
@@ -316,13 +341,13 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org(_stub_tri
             "core.services.user_provision.close_paperclip_provisioning",
             new=AsyncMock(),
         ),
-        patch(
-            "core.services.user_provision.background_provision",
-            new=AsyncMock(),
-        ),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c),
     ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+        await _ensure_paperclip_for_owner(
+            owner_id="user_p",
+            owner_user_id="user_p",
+            owner_email="p@example.com",
+            org_id=None,
+        )
     fake_provisioning.provision_org.assert_awaited_once_with(
         owner_id="user_p",
         owner_user_id="user_p",
@@ -332,8 +357,7 @@ async def test_ensure_paperclip_for_owner_personal_calls_provision_org(_stub_tri
 
 @pytest.mark.asyncio
 async def test_org_admin_with_no_company_creates_it():
-    """Org admin + org has NO active Paperclip company yet → provision_org
-    (create), and container provisioning is dispatched (admin owns the box).
+    """Org has NO active Paperclip company yet → provision_org (create).
     Decided by company existence, not role."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
@@ -343,21 +367,14 @@ async def test_org_admin_with_no_company_creates_it():
     fake_provisioning.provision_member = AsyncMock()
     # Post-create verification sees the active row for THIS org → claim kept.
     fake_provisioning.get_company_row = AsyncMock(return_value=MagicMock(status="active", org_id="org_xyz"))
-    captured: list[str] = []
-
-    def capture_task(coro):
-        captured.append(coro.__qualname__)
-        coro.close()
 
     with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
             "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
         ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+        await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
     fake_provisioning.try_acquire_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
     fake_provisioning.provision_org.assert_awaited_once_with(
         owner_id="org_xyz",
@@ -366,7 +383,6 @@ async def test_org_admin_with_no_company_creates_it():
     )
     fake_provisioning.provision_member.assert_not_awaited()
     fake_provisioning.release_org_create_claim.assert_not_awaited()
-    assert captured == ["background_provision"], f"admin-create should dispatch container, got {captured}"
 
 
 @pytest.mark.asyncio
@@ -386,14 +402,12 @@ async def test_org_admin_create_without_active_row_releases_claim():
     fake_provisioning.provision_member = AsyncMock()
 
     with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
             "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
         ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+        await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
     fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
 
 
@@ -416,53 +430,38 @@ async def test_org_admin_create_personal_row_mismatch_releases_claim():
     fake_provisioning.provision_member = AsyncMock()
 
     with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
             "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
         ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+        await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
     fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
 
 
 @pytest.mark.asyncio
 async def test_org_admin_create_claim_lost_skips_paperclip_create():
-    """Cross-instance race: admin sees no company but LOSES the create claim
-    (another backend instance is bootstrapping) → must NOT call provision_org
-    or provision_member; it joins on a later poll once the winner's company is
-    visible. Container provisioning is a SEPARATE, idempotent concern gated on
-    admin/personal, so background_provision is still dispatched (the winner
-    dispatches it too; concurrent provision_user_container on an absent service
-    is exception-safe)."""
+    """Cross-instance race: the caller sees no company but LOSES the create
+    claim (another runner/instance is bootstrapping) → must NOT call
+    provision_org or provision_member; the org resolves to the join path once
+    the winner's company is visible."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=False)
     fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.provision_member = AsyncMock()
-    captured: list[str] = []
-
-    def capture_task(coro):
-        captured.append(coro.__qualname__)
-        coro.close()
 
     with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
             "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
         ),
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+        await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
     fake_provisioning.provision_org.assert_not_awaited()
     fake_provisioning.provision_member.assert_not_awaited()
     fake_provisioning.release_org_create_claim.assert_not_awaited()
-    assert captured == ["background_provision"], (
-        f"claim-loser skips paperclip create but still dispatches container, got {captured}"
-    )
 
 
 @pytest.mark.asyncio
@@ -740,7 +739,7 @@ async def test_ensure_user_ready_dispatches_container_for_org_admin():
 
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
@@ -844,18 +843,12 @@ async def test_ensure_paperclip_for_member_reraises_non_409_paperclip_error():
 
 
 @pytest.mark.asyncio
-async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409(_stub_trial_default):
+async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409():
     """provision_org raising PaperclipApiError(409) must be treated as
-    success — the canonical /container/status trigger
-    may fire this on every owner poll until container exists, so duplicate
-    calls must be idempotent.
-
-    For owners with no container row yet, the new /container/status poll
-    keeps dispatching ensure_user_ready until ECS creates the row. A slow
-    first run (~2-3s) followed by a fast second poll could collide on
-    Paperclip's sign_up_user (Better Auth 409 on duplicate email). Without
-    the 409 swallow the duplicate Better Auth call would surface as a
-    PaperclipApiError on every poll until the race resolves.
+    success — a concurrent seed (a superseded runner attempt still in flight,
+    or the legacy paperclip-proxy self-provision door) can collide on
+    Paperclip's sign_up_user (Better Auth 409 on duplicate email). Without the
+    409 swallow that duplicate would fail the whole provision execution.
 
     Mirrors the member-path fix from commit 6bd01b82 (see
     test_ensure_paperclip_for_member_idempotent_on_duplicate_409).
@@ -872,14 +865,6 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409(_stub_tria
     )
     with (
         patch(
-            "core.services.user_provision.evaluate_provision_gate",
-            new=AsyncMock(return_value=None),
-        ),
-        patch(
-            "core.services.user_provision.lookup_owner_email",
-            new=AsyncMock(return_value="o@example.com"),
-        ),
-        patch(
             "core.services.user_provision.build_paperclip_provisioning",
             new=AsyncMock(return_value=fake_provisioning),
         ),
@@ -887,14 +872,14 @@ async def test_ensure_paperclip_for_owner_idempotent_on_duplicate_409(_stub_tria
             "core.services.user_provision.close_paperclip_provisioning",
             new=AsyncMock(),
         ),
-        patch(
-            "core.services.user_provision.background_provision",
-            new=AsyncMock(),
-        ),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
         # Should NOT raise.
-        await ensure_user_ready(_personal_auth())
+        await _ensure_paperclip_for_owner(
+            owner_id="user_123",
+            owner_user_id="user_123",
+            owner_email="u@example.com",
+            org_id=None,
+        )
     fake_provisioning.provision_org.assert_awaited_once()
 
 
@@ -1054,11 +1039,12 @@ async def test_member_joins_company_but_does_not_dispatch_container():
 
 
 @pytest.mark.asyncio
-async def test_provision_container_false_skips_container_dispatch_for_admin():
-    """RUNNING-container poll path: ensure_user_ready(provision_container=False)
-    must run paperclip provisioning but NOT dispatch background_provision —
-    otherwise provision_user_container would force-restart the running
-    container on every ~3s poll."""
+async def test_running_container_skips_container_dispatch_for_admin(_container_running):
+    """RUNNING-container poll path: the org admin's poll must run paperclip
+    provisioning but NOT dispatch the executor. try_claim_provision refuses a
+    running row anyway, so the dispatch could only lose its claim — and the old
+    caller-passed provision_container=False flag is gone; the decision comes
+    from the row."""
     fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
@@ -1078,20 +1064,73 @@ async def test_provision_container_false_skips_container_dispatch_for_admin():
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
-        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"), provision_container=False)
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
     fake_provisioning.provision_member.assert_awaited_once()
-    assert captured == [], f"provision_container=False must skip container dispatch, got {captured}"
+    assert captured == [], f"a running container must skip the executor dispatch, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_running_container_org_admin_with_company_does_not_recreate(_container_running):
+    """The seed reconcile on a running org container is CREATE-ONLY: the
+    role-blind JOIN already ran on this thread, so an org whose company exists
+    must not re-issue the member-add (a Paperclip round trip + Clerk email
+    lookup on every ~3s poll of a healthy org)."""
+    fake_owner_row = MagicMock(status="active", company_id="co_1", user_id="user_first")
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=fake_owner_row)
+    fake_provisioning.provision_member = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()) as mock_org,
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    # JOIN ran exactly once (the inline member-add), CREATE did not.
+    fake_provisioning.provision_member.assert_awaited_once()
+    mock_org.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_running_container_org_admin_without_company_creates_it(_container_running):
+    """Legacy org: container already running but the org has NO paperclip
+    company. No provision can run (running rows are unclaimable), so the CREATE
+    must happen on this thread or the org sits on /teams 202 forever."""
+    fake_provisioning = MagicMock()
+    fake_provisioning.find_org_owner = AsyncMock(return_value=None)
+    fake_provisioning.provision_member = AsyncMock()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.lookup_owner_email", new=AsyncMock(return_value="o@example.com")),
+        patch(
+            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
+        ),
+        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()) as mock_org,
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    mock_org.assert_awaited_once_with(
+        org_id="org_xyz",
+        user_id="user_admin",
+        email="a@example.com",
+        is_admin=True,
+    )
 
 
 @pytest.mark.asyncio
 async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metronome_customer, _stub_trial_default):
     """A Metronome 5xx (or any error) on the inline customer-provision call is
-    best-effort: paperclip provisioning + container dispatch still run, and
-    nothing raises. The short-circuit keys on the persisted
-    metronome_customer_id, so the next /container/status poll retries."""
+    best-effort: the container dispatch still runs and nothing raises. The
+    short-circuit keys on the persisted metronome_customer_id, so the next
+    /container/status poll retries."""
     _mock_ensure_metronome_customer.side_effect = RuntimeError("metronome 503")
-    fake_provisioning = MagicMock()
-    fake_provisioning.provision_org = AsyncMock()
     captured: list[str] = []
 
     def capture_task(coro):
@@ -1100,25 +1139,25 @@ async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metron
 
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.user_provision.build_paperclip_provisioning", new=AsyncMock(return_value=fake_provisioning)
-        ),
-        patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
     _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
-    fake_provisioning.provision_org.assert_awaited_once()
     assert captured == ["background_provision"]
 
 
 @pytest.mark.asyncio
 async def test_seed_failure_does_not_block_container_dispatch():
-    """Org-admin path: a Paperclip (Teams) seed failure is best-effort — it
-    must NOT abort provisioning. background_provision is STILL dispatched (the
-    box boots and ecs_manager falls back to the legacy `main` agent when no
-    company exists) and the failure is recorded via put_metric, never swallowed
-    as success. Mirrors test_metronome_failure_does_not_block_provisioning."""
+    """Org-admin path: a Paperclip (Teams) member-JOIN failure is best-effort —
+    it must NOT abort provisioning. background_provision is STILL dispatched
+    (the box boots and ecs_manager falls back to the legacy `main` agent when
+    no company exists) and the failure is recorded via put_metric, never
+    swallowed as success. Mirrors test_metronome_failure_does_not_block_provisioning.
+
+    The owner company-CREATE has no equivalent guard here by design: it runs in
+    the provisioning runner's step 0, where a genuine failure is classified into
+    the exit-code ABI instead of swallowed — see
+    tests/unit/scripts/test_provision_runner.py."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
     seed_error = PaperclipApiError(
@@ -1131,7 +1170,7 @@ async def test_seed_failure_does_not_block_container_dispatch():
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch(
-            "core.services.user_provision._ensure_paperclip_for_org",
+            "core.services.user_provision._ensure_paperclip_for_member",
             new=AsyncMock(side_effect=seed_error),
         ) as mock_seed,
         patch("core.services.user_provision.background_provision", new=MagicMock()) as mock_bg,
@@ -1149,41 +1188,6 @@ async def test_seed_failure_does_not_block_container_dispatch():
     mock_bg.assert_called_once_with("org_xyz", "user_admin")
     assert len(dispatched) == 1
     # Failure recorded — not silently swallowed as success.
-    mock_metric.assert_any_call("paperclip.seed.error")
-
-
-@pytest.mark.asyncio
-async def test_personal_seed_failure_does_not_block_container_dispatch(_stub_trial_default):
-    """Personal path: the same best-effort contract for _ensure_paperclip_for_owner.
-    A seed failure records the metric and still reaches the container dispatch,
-    keyed on the personal owner_id (== user_id)."""
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    seed_error = PaperclipApiError(
-        "POST /api/auth/sign-up/email -> 502",
-        status_code=502,
-        body='{"message":"bad gateway"}',
-    )
-    dispatched: list = []
-
-    with (
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.user_provision._ensure_paperclip_for_owner",
-            new=AsyncMock(side_effect=seed_error),
-        ) as mock_seed,
-        patch("core.services.user_provision.background_provision", new=MagicMock()) as mock_bg,
-        patch(
-            "core.services.user_provision.asyncio.create_task",
-            side_effect=lambda coro: dispatched.append(coro),
-        ),
-        patch("core.services.user_provision.put_metric") as mock_metric,
-    ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
-
-    mock_seed.assert_awaited_once()
-    mock_bg.assert_called_once_with("user_p", "user_p")
-    assert len(dispatched) == 1
     mock_metric.assert_any_call("paperclip.seed.error")
 
 
@@ -1734,7 +1738,7 @@ async def test_ensure_user_ready_invokes_arm_for_org_admin(_stub_arm_nightly):
     """Org admin path → arm awaited with the ORG owner_id."""
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_paperclip_for_org", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
         patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
@@ -1763,20 +1767,21 @@ async def test_ensure_user_ready_does_not_invoke_arm_for_org_member(_stub_arm_ni
 
 
 # ---------------------------------------------------------------------------
-# SEED_IN_EXECUTOR ON — the OWNER company-create seed moves to the executor's
-# runner (scripts.provision_runner step 0). ensure_user_ready stops seeding the
-# owner inline; the org member JOIN and the gate-up member branch (#1435) STAY
-# on the poll thread unchanged. This is the #1442 fix at the poll boundary: the
-# duplicate-company source (a load-balanced poll fan-out each running
-# provision_org) is removed.
+# Owner seed placement. The OWNER company-create normally runs in the
+# executor's runner (scripts.provision_runner step 0) — that is the #1442 fix:
+# the duplicate-company source (a load-balanced poll fan-out each running
+# provision_org) is gone from the poll thread. The ONE case that stays here is
+# the state where no provision will run at all: the container is already
+# running (try_claim_provision refuses that row) or is a deliberately parked
+# trial box (which a passive read must not wake).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_flag_on_personal_skips_inline_owner_seed_only_dispatches(_stub_trial_default):
-    """Flag ON, personal owner: NO inline owner seed (the runner's step 0 does
-    it), NO member call (personal has no join), and the container is dispatched
-    exactly once."""
+async def test_personal_no_container_skips_inline_owner_seed_only_dispatches(_stub_trial_default):
+    """No container row yet (the new-signup path): NO inline owner seed (the
+    runner's step 0 does it), NO member call (personal has no join), and the
+    container is dispatched exactly once."""
     captured: list[str] = []
 
     def capture_task(coro):
@@ -1787,7 +1792,6 @@ async def test_flag_on_personal_skips_inline_owner_seed_only_dispatches(_stub_tr
     inline_org = AsyncMock()
     inline_member = AsyncMock()
     with (
-        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
         patch("core.services.user_provision._ensure_paperclip_for_org", new=inline_org),
@@ -1802,11 +1806,10 @@ async def test_flag_on_personal_skips_inline_owner_seed_only_dispatches(_stub_tr
 
 
 @pytest.mark.asyncio
-async def test_flag_on_org_admin_does_member_join_never_inline_create(_stub_trial_default):
-    """Flag ON, org admin: the poll thread does the role-blind member JOIN
-    (member-add STAYS here) and NEVER the inline company create/`_ensure_
-    paperclip_for_org` — the runner's step 0 owns the create. Container still
-    dispatched (admin owns the box)."""
+async def test_org_admin_does_member_join_never_inline_create(_stub_trial_default):
+    """Org admin, no container row: the poll thread does the role-blind member
+    JOIN (member-add STAYS here) and NEVER the inline company create — the
+    runner's step 0 owns it. Container still dispatched (admin owns the box)."""
     captured: list[str] = []
 
     def capture_task(coro):
@@ -1817,7 +1820,6 @@ async def test_flag_on_org_admin_does_member_join_never_inline_create(_stub_tria
     inline_owner = AsyncMock()
     inline_member = AsyncMock()
     with (
-        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision._ensure_paperclip_for_org", new=inline_org),
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
@@ -1836,13 +1838,11 @@ async def test_flag_on_org_admin_does_member_join_never_inline_create(_stub_tria
 
 
 @pytest.mark.asyncio
-async def test_flag_on_gate_up_org_member_branch_is_unchanged():
-    """The gate-up member branch (#1435) is orthogonal to SEED_IN_EXECUTOR:
-    with the flag ON and the gate UP, an org member still gets the idempotent
-    membership-add and no container is dispatched. The flag relocates only the
-    OWNER company-create, never member-add."""
+async def test_gate_up_org_member_branch_is_unchanged():
+    """The gate-up member branch (#1435) is orthogonal to where the owner seed
+    runs: with the gate UP, an org member still gets the idempotent
+    membership-add and no container is dispatched."""
     with (
-        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=_up_gate())),
         patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as member,
         patch("core.services.user_provision.background_provision", new=AsyncMock()) as container,
@@ -1857,32 +1857,12 @@ async def test_flag_on_gate_up_org_member_branch_is_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_flag_off_still_seeds_owner_inline_regression(_stub_trial_default):
-    """Flag OFF (default): the OWNER seed still runs inline on the poll thread —
-    byte-identical to today. The explicit False guards against a default flip."""
-    inline_owner = AsyncMock()
-    with (
-        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", False),
-        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
-        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
-        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
-    ):
-        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
-    inline_owner.assert_awaited_once_with(
-        owner_id="user_p",
-        owner_user_id="user_p",
-        owner_email="p@example.com",
-        org_id=None,
-    )
-
-
-@pytest.mark.asyncio
-async def test_flag_on_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
-    """The #1442 fix at the poll boundary: under the flag, 15 concurrent
-    /container/status polls run ZERO inline provision_org — the duplicate
-    -company source is gone. Each poll instead dispatches, and the executor's
-    try_claim_provision (proven in test_provision_dispatch) collapses the 15
-    dispatches to one execution -> one runner -> one seed."""
+async def test_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
+    """The #1442 fix at the poll boundary: 15 concurrent /container/status polls
+    for an owner with no container run ZERO inline provision_org — the
+    duplicate-company source is gone. Each poll instead dispatches, and the
+    executor's try_claim_provision (proven in test_provision_dispatch) collapses
+    the 15 dispatches to one execution -> one runner -> one seed."""
     dispatched: list[str] = []
 
     def capture_task(coro):
@@ -1891,7 +1871,6 @@ async def test_flag_on_concurrent_polls_run_no_inline_owner_seed(_stub_trial_def
 
     inline_owner = AsyncMock()
     with (
-        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
         patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
@@ -1899,3 +1878,106 @@ async def test_flag_on_concurrent_polls_run_no_inline_owner_seed(_stub_trial_def
         await asyncio.gather(*[ensure_user_ready(_personal_auth("user_race")) for _ in range(15)])
     inline_owner.assert_not_awaited()
     assert dispatched == ["background_provision"] * 15
+
+
+# ---------------------------------------------------------------------------
+# Self-heal on a box that is already up: the two regressions this design
+# exists to prevent. Both used to be served by an INLINE seed reached through
+# ensure_user_ready(provision_container=False); with the seed in the executor
+# and the executor refusing a running row, "dispatch and hope" seeds nothing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_running_container_personal_owner_seed_is_reconciled(_stub_trial_default, _container_running):
+    """REGRESSION (/container/status): a PERSONAL owner with a running container
+    and teams_state == "failed" is re-dispatched on every poll. The executor
+    cannot help (running rows are unclaimable), so the seed must run HERE or a
+    failed personal Teams seed never heals."""
+    inline_owner = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    inline_owner.assert_awaited_once_with(
+        owner_id="user_p",
+        owner_user_id="user_p",
+        owner_email="p@example.com",
+        org_id=None,
+    )
+    assert captured == [], f"a running container must not be re-provisioned, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_parked_trial_box_seeds_without_waking_the_container(_stub_trial_default, _no_container_row):
+    """REGRESSION (/teams): a personal owner entering Teams on a deliberately
+    parked trial box must get the seed WITHOUT a container start — a passive
+    read never wakes a parked box (wake_policy is the single predicate), but it
+    must not leave the workspace unseeded either (that was the infinite 202)."""
+    _no_container_row.return_value = {"status": "stopped", "stop_reason": "trial_idle"}
+    inline_owner = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision.wake_policy.is_parked_trial", new=AsyncMock(return_value=True)),
+        patch("core.services.user_provision.wake_policy.note_wake_suppressed") as note,
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    inline_owner.assert_awaited_once()
+    note.assert_called_once()
+    assert captured == [], f"a parked trial box must never be woken by a passive read, got {captured}"
+
+
+@pytest.mark.asyncio
+async def test_stopped_but_not_parked_container_still_dispatches(_stub_trial_default, _no_container_row):
+    """A crashed/stopped-but-NOT-parked box keeps its poll-driven self-heal: the
+    executor is dispatched (and its step 0 does the seed), so nothing is seeded
+    on this thread."""
+    _no_container_row.return_value = {"status": "stopped"}
+    inline_owner = AsyncMock()
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    inline_owner.assert_not_awaited()
+    assert captured == ["background_provision"]
+
+
+@pytest.mark.asyncio
+async def test_running_container_seed_failure_is_swallowed_and_metered(_stub_trial_default, _container_running):
+    """The reconcile is best-effort like every other Paperclip step here: a
+    failure records paperclip.seed.error and never escapes the poll."""
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_owner",
+            new=AsyncMock(side_effect=RuntimeError("paperclip 502")),
+        ),
+        patch("core.services.user_provision.put_metric") as mock_metric,
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    mock_metric.assert_any_call("paperclip.seed.error")

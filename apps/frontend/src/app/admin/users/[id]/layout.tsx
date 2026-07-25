@@ -7,6 +7,7 @@ const TABS: UserTab[] = [
   { label: "Agents", segment: "agents" },
   { label: "Billing", segment: "billing" },
   { label: "Container", segment: "container" },
+  { label: "Provisioning", segment: "provisioning" },
   { label: "Activity", segment: "activity" },
   { label: "Actions", segment: "actions" },
   { label: "Logs", segment: "logs" },

@@ -498,6 +498,186 @@ class TestContainerReapplyConfig:
 
 
 # ===========================================================================
+# Provisioning actions (read + retry/reset-bootstrap levers)
+# ===========================================================================
+
+
+class TestProvisionRetry:
+    """POST /api/v1/admin/users/{user_id}/provisioning/retry.
+
+    Re-dispatches provisioning through dispatch_provision (never raises).
+    Covers the error-row retry AND the stale-claim wedge rescue — unlike
+    the owner-facing /container/retry, there is no billing gate here: this
+    is an operator break-glass, audited.
+    """
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_404_when_no_container_row(self, async_client, admin_env):
+        with patch("routers.admin.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_409_when_running(self, async_client, admin_env):
+        row = {"status": "running", "substatus": None}
+        with patch("routers.admin.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_409_when_provisioning_with_fresh_claim(self, async_client, admin_env):
+        row = {"status": "provisioning", "provision_claim_id": "claim-1"}
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
+            patch("routers.admin.container_repo.is_provision_claim_stale", return_value=False),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_200_dispatches_when_error(self, async_client, admin_env):
+        before = {"status": "error", "substatus": "boom"}
+        after = {"status": "provisioning", "substatus": None, "provision_claim_id": "claim-2"}
+        mock_get = AsyncMock(side_effect=[before, after])
+        mock_dispatch = AsyncMock(return_value=None)
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
+            patch("routers.admin.dispatch_provision", new=mock_dispatch),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 200
+        mock_dispatch.assert_awaited_once_with("u_target")
+        body = res.json()
+        assert body["ok"] is True
+        assert body["status"] == "provisioning"
+        assert body["provision_claim_id"] == "claim-2"
+
+    @pytest.mark.asyncio
+    async def test_200_dispatches_when_provisioning_and_stale(self, async_client, admin_env):
+        before = {"status": "provisioning", "provision_claim_id": "claim-old"}
+        after = {"status": "provisioning", "substatus": None, "provision_claim_id": "claim-new"}
+        mock_get = AsyncMock(side_effect=[before, after])
+        mock_dispatch = AsyncMock(return_value=None)
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
+            patch("routers.admin.container_repo.is_provision_claim_stale", return_value=True),
+            patch("routers.admin.dispatch_provision", new=mock_dispatch),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 200
+        mock_dispatch.assert_awaited_once_with("u_target")
+
+    @pytest.mark.asyncio
+    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
+        before = {"status": "error", "substatus": "boom"}
+        after = {"status": "provisioning", "substatus": None, "provision_claim_id": "claim-2"}
+        mock_get = AsyncMock(side_effect=[before, after])
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
+            patch("routers.admin.dispatch_provision", new=AsyncMock(return_value=None)),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 200
+        mock_audit_repo.assert_awaited_once()
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "provision.retry"
+        assert kwargs["target_user_id"] == "u_target"
+
+
+class TestResetBootstrap:
+    """POST /api/v1/admin/users/{user_id}/provisioning/reset-bootstrap.
+
+    Re-arms a permanently-failed onboarding kickoff: conditional
+    bootstrap_state failed->not_started fenced on onboarding_generation.
+    """
+
+    @staticmethod
+    def _company(*, bootstrap_state="failed", onboarding_generation="01G"):
+        from datetime import datetime, timezone
+
+        from core.repositories.paperclip_repo import PaperclipCompany
+
+        return PaperclipCompany(
+            user_id="u_target",
+            org_id="",
+            company_id="company_1",
+            paperclip_user_id="pc_user_1",
+            paperclip_password_encrypted="SECRET-PW",
+            service_token_encrypted="SECRET-ST",
+            status="active",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            funnel_state="submitted",
+            bootstrap_state=bootstrap_state,
+            onboarding_generation=onboarding_generation,
+        )
+
+    @staticmethod
+    def _mock_repo(company, *, reset_result=True):
+        repo = MagicMock()
+        repo.get = AsyncMock(return_value=company)
+        repo.reset_bootstrap_for_retry = AsyncMock(return_value=reset_result)
+        return repo
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_404_when_no_paperclip_row(self, async_client, admin_env):
+        repo = self._mock_repo(None)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_409_when_bootstrap_not_failed(self, async_client, admin_env):
+        company = self._company(bootstrap_state="delivered")
+        repo = self._mock_repo(company)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 409
+        repo.reset_bootstrap_for_retry.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_409_when_reset_loses_race(self, async_client, admin_env):
+        company = self._company(bootstrap_state="failed")
+        repo = self._mock_repo(company, reset_result=False)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 409
+        repo.reset_bootstrap_for_retry.assert_awaited_once_with("u_target", onboarding_generation="01G")
+
+    @pytest.mark.asyncio
+    async def test_200_when_reset_lands(self, async_client, admin_env, mock_audit_repo):
+        company = self._company(bootstrap_state="failed")
+        repo = self._mock_repo(company, reset_result=True)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 200
+        assert res.json()["ok"] is True
+        repo.reset_bootstrap_for_retry.assert_awaited_once_with("u_target", onboarding_generation="01G")
+
+    @pytest.mark.asyncio
+    async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
+        company = self._company(bootstrap_state="failed")
+        repo = self._mock_repo(company, reset_result=True)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 200
+        mock_audit_repo.assert_awaited_once()
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "provision.reset_bootstrap"
+        assert kwargs["target_user_id"] == "u_target"
+
+
+# ===========================================================================
 # Billing actions
 # ===========================================================================
 

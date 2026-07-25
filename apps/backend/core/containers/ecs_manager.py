@@ -451,7 +451,7 @@ class EcsManager:
         company-deploy gate uses it to refuse seeding a >10-agent Ultra company
         onto a box the upgrade-webhook resize never actually enlarged (a
         swallowed transient resize leaves ``plan=ultra_pro`` on the standard
-        0.5 vCPU / 2 GB box, which would OOM under a big roster).
+        1 vCPU / 4 GB box, which would OOM under a big roster).
         """
         container = await container_repo.get_by_owner_id(owner_id)
         if not container or not container.get("task_definition_arn"):

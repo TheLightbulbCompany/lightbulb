@@ -1253,6 +1253,49 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
+    async def reset_bootstrap_for_retry(self, user_id: str, *, onboarding_generation: str) -> bool:
+        """Admin lever: conditional ``bootstrap_state: failed -> not_started``.
+
+        ``mark_bootstrap_failed`` deliberately leaves the funnel ``submitted``
+        so a later reset can re-arm the kickoff (its own docstring names the
+        not-yet-built reconciliation_worker as that "later"). This is the
+        manual stand-in: fenced on the SAME onboarding_generation the operator
+        read, and only from a genuinely failed bootstrap on a still-submitted
+        funnel -- a superseded or already-recovered row is a no-op (False).
+        Distinct from ``rearm_bootstrap_dispatch``, the automatic transient
+        re-arm for a still-``dispatched`` row: this lever recovers a row the
+        pipeline has already declared terminally ``failed``.
+        ``bootstrap_last_error`` is kept as history; ``bootstrap_attempts``
+        resets so MAX_BOOTSTRAP_ATTEMPTS re-arms. The next owner
+        ``/container/status`` poll re-dispatches.
+
+        Returns True if the write landed.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET bootstrap_state = :ns, bootstrap_attempts = :zero, updated_at = :u "
+                    "REMOVE bootstrap_dispatch_id"
+                ),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND funnel_state = :submitted AND bootstrap_state = :failed"
+                ),
+                ExpressionAttributeValues={
+                    ":ns": "not_started",
+                    ":zero": 0,
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":submitted": "submitted",
+                    ":failed": "failed",
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
     async def claim_funnel_submission(
         self, user_id: str, *, onboarding_generation: str, submitted_by: str, owner_id: Optional[str] = None
     ) -> FunnelClaimResult:

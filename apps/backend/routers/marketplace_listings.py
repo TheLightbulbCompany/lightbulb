@@ -407,7 +407,7 @@ async def deploy_listing(
             # Size reconcile BEFORE dispatch. The Ultra upgrade webhook's
             # up-resize (standard -> 2 vCPU / 8 GB) is best-effort/swallowed;
             # if it failed transiently the owner is plan=ultra_pro but their
-            # container is still the standard 0.5 vCPU / 2 GB box. Seeding a
+            # container is still the standard 1 vCPU / 4 GB box. Seeding a
             # >10-agent company onto that box OOMs. A resize restarts the
             # container, so we CANNOT resize mid-deploy — instead we compare
             # the running box's ACTUAL size against Ultra and, on a mismatch,

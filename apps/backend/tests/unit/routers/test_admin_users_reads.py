@@ -623,3 +623,44 @@ class TestCloudWatchUrl:
             },
         )
         assert res.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/admin/users/{user_id}/provisioning
+# ---------------------------------------------------------------------------
+
+
+class TestUserProvisioning:
+    """GET /api/v1/admin/users/{user_id}/provisioning — thin wrapper over
+    admin_service.get_provisioning (Task 3's composition layer)."""
+
+    _RESULT = {
+        "owner_id": "user_abc",
+        "org": None,
+        "status_contract": "ready",
+        "container": {"status": "running"},
+        "paperclip": {"status": "active", "bootstrap_state": "delivered"},
+        "gate": None,
+        "sfn_execution": None,
+    }
+
+    @pytest.mark.asyncio
+    @patch("routers.admin.admin_service.get_provisioning", new_callable=AsyncMock)
+    async def test_provisioning_calls_admin_service_with_user_id(self, mock_prov, async_client, app):
+        _admit_test_user(app)
+        mock_prov.return_value = self._RESULT
+
+        res = await async_client.get("/api/v1/admin/users/user_abc/provisioning")
+
+        assert res.status_code == 200
+        mock_prov.assert_awaited_once()
+        args, kwargs = mock_prov.await_args
+        passed = args[0] if args else kwargs.get("user_id")
+        assert passed == "user_abc"
+        assert res.json() == self._RESULT
+
+    @pytest.mark.asyncio
+    async def test_provisioning_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
+        res = await async_client.get("/api/v1/admin/users/user_abc/provisioning")
+        assert res.status_code == 403

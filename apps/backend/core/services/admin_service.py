@@ -3,6 +3,8 @@
 Read-side aggregation for /api/v1/admin/* endpoints. Covers:
 - list_users (Clerk + container_repo join)
 - get_overview (Clerk + Stripe DDB row + container DDB row + usage)
+- get_provisioning (readiness contract + containers row + Paperclip company +
+  provision-gate + SFN execution, all allowlist-narrowed)
 - list_user_agents (gateway RPC, with timeout + stopped detection)
 - get_agent_detail (4-way gateway parallel + S3 redaction)
 - get_logs (delegates to cloudwatch_logs)
@@ -30,6 +32,9 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.repositories import admin_actions_repo, billing_repo, container_repo, usage_repo
 from core.services import clerk_admin, cloudwatch_logs, cloudwatch_url, posthog_admin
 from core.services.admin_redact import redact_openclaw_config
+from core.services.provision_dispatch import describe_dispatch_execution
+from core.services.provision_gate import Gate, probe_provision_gate
+from core.services.readiness_state import compute_status
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +258,193 @@ async def get_overview(user_id: str) -> dict:
         "billing": billing,
         "usage": usage,
         "org": org_context,
+    }
+
+
+def _paperclip_repo():
+    """Local import so ``patch("core.repositories.paperclip_repo.PaperclipRepo", ...)``
+    (the pattern every existing test double in this codebase already uses)
+    keeps working -- mirrors ``core.services.readiness_state``'s own
+    local-import idiom (``readiness_state.py:102-110``).
+    """
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    return PaperclipRepo(table_name="paperclip-companies")
+
+
+_CONTAINER_PROVISION_FIELDS = (
+    "status",
+    "substatus",
+    "last_error",
+    "last_error_at",
+    "retryable",
+    "provision_generation",
+    "provision_claim_id",
+    "provision_claimed_at",
+    "provision_attempt_token",
+    "provision_execution_name",
+    "onboarded_at",
+    "bedrock_revoked",
+    "stop_reason",
+    "service_name",
+    "created_at",
+    "updated_at",
+)
+
+# ALLOWLIST — every name verified against the PaperclipCompany dataclass
+# (paperclip_repo.py:157-256). ``paperclip_password_encrypted`` and
+# ``service_token_encrypted`` must never cross the admin wire, even
+# Fernet-encrypted, so they are deliberately absent here — narrowing through
+# an allowlist (rather than blocklisting those two fields) means a future
+# field added to the dataclass is excluded by default, not leaked by default.
+_PAPERCLIP_PROVISION_FIELDS = (
+    "status",
+    "company_id",
+    "org_id",
+    "paperclip_user_id",
+    "last_error",
+    "seeded_agent_ids",
+    "scheduled_purge_at",
+    "onboarding_generation",
+    "funnel_state",
+    "funnel_submitted_at",
+    "funnel_completed_at",
+    "onboarding_goal_id",
+    "onboarding_project_id",
+    "onboarding_submitted_by",
+    "bootstrap_state",
+    "bootstrap_attempts",
+    "bootstrap_dispatch_id",
+    "bootstrap_dispatched_at",
+    "bootstrap_delivered_at",
+    "bootstrap_last_error",
+    "created_at",
+    "updated_at",
+)
+
+
+def _iso(value: Any) -> Any:
+    """``datetime`` -> ISO string; every other value passes through unchanged.
+
+    Shared by ``_narrow_paperclip`` (the PaperclipCompany dataclass stores
+    real ``datetime`` objects) and ``_narrow_execution`` (boto3's
+    DescribeExecution response does the same for start/stop dates) so both
+    narrowers hand back a JSON-safe dict rather than leaking a bare datetime
+    onto the admin wire.
+    """
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _read_failed(value: Any, *, label: str) -> bool:
+    """True iff ``value`` is the ``{"error", "source"}`` sentinel
+    ``_with_timeout`` returns on a timeout/exception for THIS specific
+    ``label`` -- as opposed to a genuine result (for every caller here that's
+    ``dict | None``, never a two-key dict whose ``source`` happens to equal
+    the label we passed).
+
+    Same class of fix as the ``isinstance(gate, Gate)`` guard below:
+    ``_with_timeout``'s failure sentinel is truthy, so a bare ``if value``
+    can't tell "row exists" from "read failed". For the container read
+    specifically, threading the sentinel into ``compute_status`` as if it
+    were a real row would silently fabricate a plausible-looking
+    ``lifecycle`` instead of surfacing that the read itself failed -- on
+    exactly the diagnostic tool built for investigating provisioning
+    problems.
+    """
+    return isinstance(value, dict) and "error" in value and value.get("source") == label
+
+
+def _narrow_container(row: dict | None) -> dict | None:
+    """containers row -> allowlisted provisioning fields (drops gateway_token)."""
+    if not row:
+        return None
+    out = {k: row.get(k) for k in _CONTAINER_PROVISION_FIELDS}
+    out["claim_stale"] = container_repo.is_provision_claim_stale(row)
+    return out
+
+
+def _narrow_paperclip(company: Any) -> dict | None:
+    """PaperclipCompany -> allowlisted onboarding/teams fields (drops the
+    encrypted-credential pair: ``paperclip_password_encrypted`` and
+    ``service_token_encrypted``)."""
+    if company is None:
+        return None
+    return {k: _iso(getattr(company, k, None)) for k in _PAPERCLIP_PROVISION_FIELDS}
+
+
+def _narrow_execution(resp: dict | None) -> dict | None:
+    """SFN DescribeExecution response -> the four fields the admin tab needs
+    (drops ResponseMetadata, executionArn, input/output)."""
+    if not resp:
+        return None
+    return {
+        "name": resp.get("name"),
+        "status": resp.get("status"),
+        "start_date": _iso(resp.get("startDate")),
+        "stop_date": _iso(resp.get("stopDate")),
+    }
+
+
+async def get_provisioning(user_id: str) -> dict:
+    """Provisioning truth for one owner: the readiness contract, the raw
+    containers-row provisioning fields, the Paperclip company + onboarding
+    state machines, the provision-gate decision, and the SFN execution --
+    each read best-effort so a degraded store can't blank the page.
+
+    Uses ``probe_provision_gate`` (metric-free), NOT ``evaluate_provision_gate``
+    -- a diagnostic admin read must not inflate the ``provision.gate.blocked``
+    spike-alarm stream.
+
+    The containers row is read once and threaded into ``compute_status`` as
+    its documented ``container=`` override (``readiness_state.py:169-176``)
+    so this doesn't issue a second DDB read for the same row. That override
+    contract only anticipates an already-fetched row OR an explicit ``None``
+    -- never ``_with_timeout``'s failure sentinel -- so a failed/timed-out
+    container read is translated to ``None`` before being threaded through,
+    and the ``container`` field in the returned payload keeps the raw
+    sentinel (distinguishable from a genuinely absent row, which is
+    ``None``) so an operator can tell "read failed" from "no row" apart.
+
+    The Paperclip company read and the SFN execution read get the identical
+    treatment via the same ``_read_failed`` sentinel check: ``_narrow_paperclip``
+    and ``_narrow_execution`` only special-case ``None`` (genuinely no row), so
+    threading a failed-read sentinel through them unnarrowed would produce an
+    all-``None`` fields dict that looks exactly like a present-but-empty row.
+    The ``paperclip``/``sfn_execution`` fields keep the raw sentinel on a failed
+    read, same convention as ``container``.
+    """
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
+
+    container_raw = await _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers")
+    container_read_failed = _read_failed(container_raw, label="ddb_containers")
+    container = None if container_read_failed else container_raw
+
+    status_contract, paperclip_row, gate = await asyncio.gather(
+        _with_timeout(compute_status(owner_id, container=container), "readiness_status"),
+        _with_timeout(_paperclip_repo().get(owner_id), "ddb_paperclip"),
+        _with_timeout(probe_provision_gate(owner_id=owner_id), "provision_gate"),
+    )
+    paperclip_read_failed = _read_failed(paperclip_row, label="ddb_paperclip")
+
+    sfn = None
+    claim_id = (container or {}).get("provision_claim_id")
+    if claim_id and (container or {}).get("provision_execution_name"):
+        sfn = await _with_timeout(describe_dispatch_execution(owner_id, claim_id), "sfn_execution")
+    sfn_read_failed = _read_failed(sfn, label="sfn_execution")
+
+    return {
+        "owner_id": owner_id,
+        "org": org_context,
+        "status_contract": status_contract,
+        "container": container_raw if container_read_failed else _narrow_container(container),
+        "paperclip": paperclip_row if paperclip_read_failed else _narrow_paperclip(paperclip_row),
+        # isinstance guard, not a truthiness check: on timeout/error
+        # _with_timeout hands back an {"error", "source"} dict rather than
+        # None, and that dict is truthy — a bare `if gate else None` would
+        # call .to_payload() on it and crash (AttributeError) on exactly the
+        # degraded-upstream case this composer exists to survive.
+        "gate": gate.to_payload()["blocked"] if isinstance(gate, Gate) else None,
+        "sfn_execution": sfn if sfn_read_failed else _narrow_execution(sfn),
     }
 
 

@@ -146,6 +146,7 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
             "funnel_completed_at": None,
             "onboarding_goal_id": None,
             "onboarding_project_id": None,
+            "onboarding_brief_text": None,
             "onboarding_submitted_by": None,
             "bootstrap_state": "not_started",
             "bootstrap_dispatch_id": None,

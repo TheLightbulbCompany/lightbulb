@@ -1,8 +1,12 @@
 """Server-owned bootstrap dispatch -- INV-5, spec PR-6 (BOOTSTRAP).
 
-Friday's first-run kickoff (``FIRST_RUN_PROMPT``) is dispatched by the
-BACKEND, exactly once per ``onboarding_generation``, with no browser tab
-required. This replaces the client-side latch it used to depend on
+Friday's first-run kickoff is dispatched by the BACKEND, exactly once per
+``onboarding_generation``, with no browser tab required. The kickoff message
+is the USER'S OWN BRIEF (``onboarding_brief.build_first_run_message`` woven
+from the ``onboarding_brief_text`` persisted at ``/onboarding/brief`` submit),
+so Friday's chat opens with the user's ask -- not a canned prompt. See
+``docs/superpowers/specs/2026-07-25-onboarding-first-message-design.md``
+(Option A). This replaces the client-side latch it used to depend on
 (``useFirstRunKickoff`` + Clerk ``firstRun.started``/``completed``) and the
 thread-emptiness reconcile that latch needed to self-heal (#1391) -- both
 deleted in this same PR. See
@@ -142,15 +146,9 @@ import logging
 from uuid import uuid4
 
 from core.repositories.paperclip_repo import BootstrapClaimResult
+from core.services.onboarding_brief import build_first_run_message
 
 logger = logging.getLogger(__name__)
-
-FIRST_RUN_PROMPT = (
-    "Friday — I just set up my company. Read BRIEF.md, then really dig into my business and "
-    "market and write up what you learn (a market-research doc and a mission doc). Once you "
-    "get it, put my three best next moves on the board as tasks. Talk me through it as you go — "
-    "I'm watching."
-)
 
 # A caller checks this BEFORE claiming (the repo's CAS itself carries no
 # attempts guard). Bounds the total number of dispatches a transient re-arm
@@ -393,13 +391,19 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
             # degrade rather than dispatch a kickoff with no completion path.
             raise RuntimeError("gateway connection unavailable for run-completion registration")
         pool.mark_run_active(owner_id, session_key, friday_agent_id, member_id=submitted_by)
+        # The ONLY thing that changes per-owner: the message CONTENT is the
+        # user's own brief (build_first_run_message), not a constant. The
+        # claim/CAS/connect-retry/re-arm machinery and the session_key routing
+        # above are unchanged. Absent brief_text (the "you pick" path, or a
+        # legacy row) degrades to FIRST_RUN_NO_BRIEF_MESSAGE inside the builder.
+        message = build_first_run_message(onboarding.get("onboarding_brief_text"))
         await pool.send_rpc(
             user_id=owner_id,
             req_id=f"bootstrap-dispatch-{dispatch_id}",
             method="chat.send",
             params={
                 "sessionKey": session_key,
-                "message": FIRST_RUN_PROMPT,
+                "message": message,
                 "idempotencyKey": run_id,
                 "deliver": False,
             },

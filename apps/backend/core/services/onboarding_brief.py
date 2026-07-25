@@ -148,6 +148,103 @@ def project_name_for(first_name: str) -> str:
     return f"{first_name}'s Company"
 
 
+# ---------------------------------------------------------------------------
+# First-run kickoff message — the user's OWN words as their visible first
+# message in Friday's chat.
+#
+# Two functions, one source of truth for the wording:
+#
+#   * ``build_onboarding_brief_text`` — runs at ``/onboarding/brief`` submit
+#     time (where the funnel ``path`` is known) and produces the natural-
+#     language brief phrase persisted on the paperclip-companies owner row
+#     (``onboarding_brief_text``, written in ``claim_funnel_submission``'s CAS).
+#   * ``build_first_run_message`` — runs in ``bootstrap_dispatcher`` and wraps
+#     that persisted phrase into the chat.send the server dispatches as
+#     Friday's first-run kickoff. The dispatcher only sees the row (no funnel
+#     ``path``), so the phrase must already read correctly after "I'm starting
+#     " on BOTH funnel paths — which is why the phrase, not the wrapper, is
+#     where the new-vs-grow verb lives.
+#
+# This replaces the old generic ``FIRST_RUN_PROMPT`` ("Friday — I just set up
+# my company. Read BRIEF.md…"), which showed a canned instruction (or nothing)
+# instead of the user's own ask. See
+# ``docs/superpowers/specs/2026-07-25-onboarding-first-message-design.md``
+# (Option A).
+# ---------------------------------------------------------------------------
+
+# No idea given ("I don't know yet — you pick"): there is no brief to lead
+# with, so the visible first message still reads in the user's voice and still
+# carries the same research → write-up → three-next-moves-on-the-board ask the
+# with-brief message does. BRIEF.md (staged pre-boot) carries the email lead +
+# "job zero" instructions Friday needs to actually choose one.
+# NB: the kickoff must leave the three tasks in the BACKLOG and NOT start them.
+# Starting a task wakes the assignee to work it, and that auto-work (on tasks
+# the user never prioritized) is what burned the trial's daily cap and produced
+# the round-1 retry storm (Isol8AI/isol8#1426). The user prioritizes; Friday
+# only does the research/write-up the user is watching, then hands the board
+# back. "in the backlog … don't start any yet … tell me which to tackle first"
+# makes the (nondeterministic) good round-2 behavior deterministic.
+FIRST_RUN_NO_BRIEF_MESSAGE = (
+    "I'm not sure what to build yet — take a look and pick something promising for "
+    "me, then dig into it, write up what you find, and put my three best next moves "
+    "in the backlog. Don't start any of them yet — just tell me which to tackle "
+    "first. I'm watching."
+)
+
+
+def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: str | None) -> str | None:
+    """The natural-language brief phrase persisted on the owner row and later
+    woven into Friday's first-run kickoff message (``build_first_run_message``).
+
+    Returns ``None`` on the "you pick" path (``user_input`` absent/blank) — the
+    row simply carries no brief text and the dispatcher falls back to
+    ``FIRST_RUN_NO_BRIEF_MESSAGE``.
+
+    The phrase is written to slot after "I'm starting " and read correctly on
+    both funnel paths, since the dispatcher has only the persisted text (not the
+    ``path``) to work from:
+
+      * ``new`` — the user's verbatim idea, with the optional "who's it for"
+        audience (``detail``) woven in naturally when present. Their words are
+        the seed, so they are kept verbatim.
+      * ``grow`` — the funnel input is a website, not an idea, so "I'm starting
+        {website}" would misread; phrase it as "work on {domain}" so the
+        kickoff reads "I'm starting work on {domain}" for an existing business.
+        (``detail`` is not collected on the grow path.)
+    """
+    idea = (user_input or "").strip()
+    if not idea:
+        return None
+    if path == "grow":
+        return f"work on {_domain_of(idea)}"
+    audience = (detail or "").strip()
+    if audience:
+        return f"{idea} — it's for {audience}"
+    return idea
+
+
+def build_first_run_message(brief_text: str | None) -> str:
+    """Friday's first-run kickoff chat.send message — the VISIBLE first user
+    message in her chat.
+
+    ``brief_text`` is the persisted ``onboarding_brief_text``
+    (``build_onboarding_brief_text``'s output). When present, the message leads
+    with the user's own ask and carries the research → write-up → three-next-
+    moves instruction in that same message (deterministic, not a hoped-for
+    system-prompt behavior). When absent/blank (the "you pick" path, or a legacy
+    row with no persisted brief), it falls back to ``FIRST_RUN_NO_BRIEF_MESSAGE``
+    — so a missing field degrades to a sensible default, never an empty send.
+    """
+    brief = (brief_text or "").strip()
+    if not brief:
+        return FIRST_RUN_NO_BRIEF_MESSAGE
+    return (
+        f"I'm starting {brief}. Dig into the business and market, write it up, and put "
+        "my three best next moves in the backlog — don't start any of them yet, just "
+        "tell me which to tackle first. I'm watching."
+    )
+
+
 async def seed_goal_and_project(
     *,
     admin,

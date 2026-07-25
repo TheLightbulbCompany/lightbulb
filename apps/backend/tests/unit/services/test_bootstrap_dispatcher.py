@@ -20,6 +20,7 @@ import pytest
 
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services import bootstrap_dispatcher
+from core.services.onboarding_brief import FIRST_RUN_NO_BRIEF_MESSAGE, build_first_run_message
 
 
 def _onboarding(**overrides) -> dict:
@@ -231,7 +232,8 @@ async def test_won_claim_dispatches_chat_send_addressed_at_the_submitting_member
     pool.send_rpc.assert_awaited_once()
     send_kwargs = pool.send_rpc.call_args.kwargs
     assert send_kwargs["method"] == "chat.send"
-    assert send_kwargs["params"]["message"] == bootstrap_dispatcher.FIRST_RUN_PROMPT
+    # No brief on this fixture -> the no-brief default, still in the user's voice.
+    assert send_kwargs["params"]["message"] == FIRST_RUN_NO_BRIEF_MESSAGE
     assert send_kwargs["params"]["deliver"] is False
     assert send_kwargs["ip"] == "10.0.0.5"
     assert send_kwargs["token"] == "tok-123"
@@ -241,6 +243,25 @@ async def test_won_claim_dispatches_chat_send_addressed_at_the_submitting_member
     pool.register_run_completion_callback.assert_called_once()
     reg_args = pool.register_run_completion_callback.call_args.args
     assert reg_args[0] == "user_owner"
+
+
+@pytest.mark.asyncio
+async def test_kickoff_message_leads_with_the_users_brief_when_present():
+    """Option A: the dispatched chat.send carries the USER's own brief
+    (build_first_run_message woven from onboarding_brief_text), not a canned
+    prompt -- this is the whole point of the first-message fix."""
+    brief = "a social media agency for small restaurants — it's for busy owners"
+    onboarding = _onboarding(onboarding_brief_text=brief)
+    _, _, pool, _ = await _run(onboarding)
+
+    pool.send_rpc.assert_awaited_once()
+    message = pool.send_rpc.call_args.kwargs["params"]["message"]
+    assert message == build_first_run_message(brief)
+    # The user's verbatim idea leads the message; the ask is woven in.
+    assert brief in message
+    assert message.startswith("I'm starting ")
+    assert "three best next moves" in message
+    assert "I'm watching" in message
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,7 @@ from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
 from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.onboarding_brief import (
+    build_onboarding_brief_text,
     derive_goal_title,
     project_name_for,
     render_brief_md,
@@ -138,6 +139,13 @@ async def submit_brief(
         raise HTTPException(status_code=409, detail="not_ready")
     generation = owner_row.onboarding_generation
 
+    # The user's own words for what they want built, in the natural-language
+    # form the bootstrap dispatcher weaves into Friday's visible first message
+    # (build_first_run_message). None on the "you pick" path. Computed BEFORE
+    # the claim so it can be stamped on the SAME CAS write -- see
+    # build_onboarding_brief_text / claim_funnel_submission.
+    brief_text = build_onboarding_brief_text(path=body.path, user_input=body.input, detail=body.detail)
+
     # owner_row.user_id is the paperclip row PK (the org CREATOR's id for an
     # org). ctx.owner_id is the broadcast key the org's tabs register under, so
     # the realtime nudge must ride that, not the row PK. submitted_by is the
@@ -149,6 +157,7 @@ async def submit_brief(
         onboarding_generation=generation,
         submitted_by=auth.user_id,
         owner_id=ctx.owner_id,
+        brief_text=brief_text,
     )
     if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
         # Durable: the row is still on the generation we just read, but
@@ -358,6 +367,10 @@ async def submit_brief(
                 "bootstrap_attempts": owner_row.bootstrap_attempts or 0,
                 "user_id": owner_row.user_id,
                 "onboarding_submitted_by": auth.user_id,
+                # The brief-text the claim above just stamped on the row (same
+                # CAS) -- passed inline so the dispatcher leads Friday's kickoff
+                # with the user's ask without re-reading the row.
+                "onboarding_brief_text": brief_text,
             },
         )
     )

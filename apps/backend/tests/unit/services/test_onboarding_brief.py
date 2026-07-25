@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from core.services.onboarding_brief import (
+    FIRST_RUN_NO_BRIEF_MESSAGE,
+    build_first_run_message,
+    build_onboarding_brief_text,
     derive_goal_title,
     project_name_for,
     render_brief_md,
@@ -102,6 +105,64 @@ def test_goal_title_no_idea_path_describes_the_actual_situation():
 
 def test_project_name_is_never_a_placeholder():
     assert project_name_for("Max") == "Max's Company"
+
+
+# --- First-run kickoff message: the user's own words as their first message ---
+
+
+def test_brief_text_new_path_keeps_the_idea_verbatim():
+    assert (
+        build_onboarding_brief_text(path="new", user_input="a social media agency for small restaurants", detail=None)
+        == "a social media agency for small restaurants"
+    )
+
+
+def test_brief_text_new_path_weaves_in_the_audience_when_present():
+    """The optional "who's it for" (detail) is woven in naturally so the
+    kickoff message carries the full ask."""
+    text = build_onboarding_brief_text(path="new", user_input="a social media agency", detail="busy restaurant owners")
+    assert text == "a social media agency — it's for busy restaurant owners"
+
+
+def test_brief_text_grow_path_reads_as_work_on_the_existing_business():
+    """The grow input is a website, not an idea -- "I'm starting {website}"
+    would misread, so it becomes "work on {domain}"."""
+    assert (
+        build_onboarding_brief_text(path="grow", user_input="https://www.ferrosocial.com/pricing", detail=None)
+        == "work on ferrosocial.com"
+    )
+
+
+def test_brief_text_is_none_on_the_you_pick_path():
+    assert build_onboarding_brief_text(path="new", user_input=None, detail=None) is None
+    # Blank/whitespace-only is the same signal.
+    assert build_onboarding_brief_text(path="new", user_input="   ", detail=None) is None
+
+
+def test_first_run_message_with_brief_leads_with_the_users_ask():
+    brief = "a social media agency for small restaurants — it's for busy owners"
+    msg = build_first_run_message(brief)
+    assert msg.startswith(f"I'm starting {brief}.")
+    # The research → write-up → three-next-moves ask is woven into the SAME
+    # message (deterministic, not a hoped-for system-prompt behavior).
+    assert "Dig into the business and market" in msg
+    assert "three best next moves on the board" in msg
+    assert "I'm watching" in msg
+
+
+def test_first_run_message_grow_brief_reads_naturally():
+    msg = build_first_run_message("work on ferrosocial.com")
+    assert msg.startswith("I'm starting work on ferrosocial.com.")
+
+
+def test_first_run_message_no_brief_falls_back_to_the_you_pick_default():
+    assert build_first_run_message(None) == FIRST_RUN_NO_BRIEF_MESSAGE
+    assert build_first_run_message("") == FIRST_RUN_NO_BRIEF_MESSAGE
+    assert build_first_run_message("   ") == FIRST_RUN_NO_BRIEF_MESSAGE
+    # The default still reads as the user and still names the same ask.
+    assert "I'm not sure what to build yet" in FIRST_RUN_NO_BRIEF_MESSAGE
+    assert "three best next moves" in FIRST_RUN_NO_BRIEF_MESSAGE
+    assert "I'm watching" in FIRST_RUN_NO_BRIEF_MESSAGE
 
 
 @pytest.mark.asyncio

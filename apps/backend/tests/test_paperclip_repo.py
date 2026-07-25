@@ -545,6 +545,46 @@ async def test_revert_funnel_submission_clears_onboarding_submitted_by(repo):
     assert (await repo.get("u1")).onboarding_submitted_by == "member_2"
 
 
+async def test_claim_funnel_submission_persists_brief_text(repo):
+    """The user's brief is stamped on the SAME CAS write as the claim, so a
+    winning claim always carries it (never a separate write that could persist
+    a brief for a claim that lost)."""
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    result = await repo.claim_funnel_submission(
+        "u1",
+        onboarding_generation="01G",
+        submitted_by="member_1",
+        brief_text="a social media agency for small restaurants",
+    )
+    assert result is FunnelClaimResult.WON
+    fetched = await repo.get("u1")
+    assert fetched.onboarding_brief_text == "a social media agency for small restaurants"
+    # And it surfaces on the get_onboarding_state bridge dict the dispatcher reads.
+    state = await repo.get_onboarding_state("u1")
+    assert state["onboarding_brief_text"] == "a social media agency for small restaurants"
+
+
+async def test_claim_funnel_submission_without_brief_text_leaves_field_absent(repo):
+    """The "you pick" path supplies no brief -- the attribute is simply not
+    set, and reads back as None (the builder then falls back to its default)."""
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    result = await repo.claim_funnel_submission("u1", onboarding_generation="01G", submitted_by="member_1")
+    assert result is FunnelClaimResult.WON
+    assert (await repo.get("u1")).onboarding_brief_text is None
+    assert (await repo.get_onboarding_state("u1"))["onboarding_brief_text"] is None
+
+
+async def test_revert_funnel_submission_clears_brief_text(repo):
+    """A reverted claim must not leave a stale brief behind for the next
+    submitter -- revert drops it alongside the other claim-scoped fields."""
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
+    await repo.claim_funnel_submission(
+        "u1", onboarding_generation="01G", submitted_by="member_1", brief_text="a coffee subscription box"
+    )
+    await repo.revert_funnel_submission("u1", onboarding_generation="01G")
+    assert (await repo.get("u1")).onboarding_brief_text is None
+
+
 async def test_claim_funnel_submission_second_caller_gets_already_submitted(repo):
     await repo.put(_make_company(user_id="u1", onboarding_generation="01G", funnel_state="not_started"))
     assert (

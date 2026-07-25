@@ -261,7 +261,13 @@ def test_claim_and_record_use_the_owner_rows_user_id_and_generation(client):
     # org broadcast key). For an org all three are genuinely distinct values;
     # in this personal-owner fixture submitted_by == owner_id == "user_abc".
     client.claim.assert_awaited_once_with(
-        "owner-row-user", onboarding_generation="01GEN", submitted_by="user_abc", owner_id="user_abc"
+        "owner-row-user",
+        onboarding_generation="01GEN",
+        submitted_by="user_abc",
+        owner_id="user_abc",
+        # The user's brief is stamped on the SAME claim write (new path, no
+        # audience -> the verbatim idea).
+        brief_text="An agency",
     )
     client.record.assert_awaited_once_with(
         "owner-row-user", onboarding_generation="01GEN", goal_id="goal-1", project_id="proj-1", owner_id="user_abc"
@@ -399,6 +405,7 @@ def test_successful_submit_kicks_off_bootstrap_dispatch(client):
             "bootstrap_attempts": 0,
             "user_id": "owner-row-user",
             "onboarding_submitted_by": "user_abc",  # auth.user_id -- the actual submitter
+            "onboarding_brief_text": "An agency",  # the user's brief, threaded inline
         },
     )
 

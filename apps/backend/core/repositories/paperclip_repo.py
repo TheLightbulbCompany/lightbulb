@@ -228,6 +228,22 @@ class PaperclipCompany:
     onboarding_goal_id: Optional[str] = None
     onboarding_project_id: Optional[str] = None
 
+    onboarding_brief_text: Optional[str] = None
+    """The user's own words for what they want built — the natural-language
+    brief phrase (idea + optional "who's it for" audience for the ``new`` path,
+    or "work on {domain}" for the ``grow`` path) that ``build_first_run_message``
+    weaves into Friday's first-run kickoff chat.send, so the visible first
+    message is the USER'S ask rather than a canned prompt. Written by
+    ``claim_funnel_submission`` on the SAME CAS write as the claim (see
+    ``build_onboarding_brief_text`` in ``core.services.onboarding_brief``).
+    Absent on the "I don't know yet — you pick" path (``user_input`` blank) and
+    on legacy rows that predate this field — both of which fall back to
+    ``FIRST_RUN_NO_BRIEF_MESSAGE``. Additive/backward-compatible: an absent
+    field reads back as ``None`` and is simply not carried into the
+    StatusContract (``compute_status`` selects onboarding keys explicitly, so a
+    new key is inert there). Cleared by ``revert_funnel_submission`` alongside
+    the other claim-scoped fields."""
+
     onboarding_submitted_by: Optional[str] = None
     """The Clerk MEMBER ID of whoever actually POSTed ``/onboarding/brief``
     -- written by ``claim_funnel_submission`` on the SAME write as the
@@ -318,6 +334,8 @@ class PaperclipRepo:
             item["onboarding_goal_id"] = company.onboarding_goal_id
         if company.onboarding_project_id is not None:
             item["onboarding_project_id"] = company.onboarding_project_id
+        if company.onboarding_brief_text is not None:
+            item["onboarding_brief_text"] = company.onboarding_brief_text
         if company.onboarding_submitted_by is not None:
             item["onboarding_submitted_by"] = company.onboarding_submitted_by
         if company.bootstrap_state is not None:
@@ -386,6 +404,7 @@ class PaperclipRepo:
             ),
             onboarding_goal_id=item.get("onboarding_goal_id"),
             onboarding_project_id=item.get("onboarding_project_id"),
+            onboarding_brief_text=item.get("onboarding_brief_text"),
             onboarding_submitted_by=item.get("onboarding_submitted_by"),
             bootstrap_state=item.get("bootstrap_state"),
             bootstrap_dispatch_id=item.get("bootstrap_dispatch_id"),
@@ -405,10 +424,13 @@ class PaperclipRepo:
         """RECONCILE-WITH-ONBOARD: read-only accessor for the
         COMPOSER/ONBOARD interface contract.
 
-        Returns the 12 spec-fixed onboarding keys (see the dataclass note
-        above, including ``onboarding_submitted_by``) PLUS four additive
-        keys -- ``teams_state`` (this row's raw ``status``), ``company_id``,
-        ``paperclip_user_id``, and ``user_id`` (this ROW's PK -- the org
+        Returns the spec-fixed onboarding keys (see the dataclass note
+        above, including ``onboarding_submitted_by`` and
+        ``onboarding_brief_text`` -- the latter read by
+        ``core.services.bootstrap_dispatcher`` to build Friday's kickoff
+        message) PLUS four additive keys -- ``teams_state`` (this row's raw
+        ``status``), ``company_id``, ``paperclip_user_id``, and ``user_id``
+        (this ROW's PK -- the org
         CREATOR for an org owner, NOT necessarily ``owner_id``; callers that
         need to address a write at this specific row, e.g. the bootstrap
         dispatcher's ``claim_bootstrap_dispatch``, need this since
@@ -459,6 +481,7 @@ class PaperclipRepo:
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
                 "onboarding_project_id": None,
+                "onboarding_brief_text": None,
                 "onboarding_submitted_by": None,
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
@@ -496,6 +519,7 @@ class PaperclipRepo:
             "funnel_completed_at": _iso(getattr(company, "funnel_completed_at", None)),
             "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
             "onboarding_project_id": getattr(company, "onboarding_project_id", None),
+            "onboarding_brief_text": getattr(company, "onboarding_brief_text", None),
             "onboarding_submitted_by": getattr(company, "onboarding_submitted_by", None),
             "bootstrap_state": getattr(company, "bootstrap_state", None) or "not_started",
             "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
@@ -1297,7 +1321,13 @@ class PaperclipRepo:
             return False
 
     async def claim_funnel_submission(
-        self, user_id: str, *, onboarding_generation: str, submitted_by: str, owner_id: Optional[str] = None
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        submitted_by: str,
+        owner_id: Optional[str] = None,
+        brief_text: Optional[str] = None,
     ) -> FunnelClaimResult:
         """Conditional ``funnel_state: not_started -> submitted``, fenced on
         ``onboarding_generation`` (INV-4). Replaces the ``__onboarded__``
@@ -1322,6 +1352,16 @@ class PaperclipRepo:
         a personal owner ``submitted_by == user_id`` always (there is only
         one member), so this is a no-op change in that case.
 
+        ``brief_text`` is the user's own words for what they want built
+        (``build_onboarding_brief_text``), stamped onto
+        ``onboarding_brief_text`` on the SAME CAS write so the bootstrap
+        dispatcher can lead Friday's visible first message with the user's
+        ask rather than a canned prompt. ``None`` (the "you pick" path, or a
+        caller that supplies no brief) simply leaves the attribute unset — the
+        SET clause omits it entirely; the ConditionExpression fence
+        (generation + ``not_started``) is UNCHANGED either way, so the added
+        field can never weaken the claim's atomicity.
+
         Callers MUST ``revert_funnel_submission`` on a later failure (before
         ``record_onboarding_ids`` lands) so a retry isn't permanently locked
         out -- mirrors the old ``release_onboarding_claim`` contract.
@@ -1338,25 +1378,36 @@ class PaperclipRepo:
         # and, if the row is back at ``not_started`` on our generation, RETRY
         # the claim instead of mislabeling it. Bounded so a pathologically
         # flapping peer can't spin here forever.
+        # The brief-text write is folded into the SAME SET clause as the claim
+        # so it lands atomically with (and only with) a winning claim -- never a
+        # separate write that could persist a brief for a claim that lost. When
+        # absent ("you pick" path), the attribute is simply not set; the
+        # ConditionExpression fence below is byte-for-byte unchanged in both
+        # cases, so the added field cannot weaken the claim's atomicity.
+        brief = (brief_text or "").strip()
+        brief_set = ", onboarding_brief_text = :brief" if brief else ""
         for _attempt in range(3):
             now = datetime.now(timezone.utc).isoformat()
+            values: dict = {
+                ":submitted": "submitted",
+                ":not_started": "not_started",
+                ":gen": onboarding_generation,
+                ":sub": submitted_by,
+                ":t": now,
+                ":u": now,
+            }
+            if brief:
+                values[":brief"] = brief
             try:
                 await run_in_thread(
                     table.update_item,
                     Key={"user_id": user_id},
                     UpdateExpression=(
                         "SET funnel_state = :submitted, funnel_submitted_at = :t, "
-                        "onboarding_submitted_by = :sub, updated_at = :u"
+                        "onboarding_submitted_by = :sub, updated_at = :u" + brief_set
                     ),
                     ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
-                    ExpressionAttributeValues={
-                        ":submitted": "submitted",
-                        ":not_started": "not_started",
-                        ":gen": onboarding_generation,
-                        ":sub": submitted_by,
-                        ":t": now,
-                        ":u": now,
-                    },
+                    ExpressionAttributeValues=values,
                 )
                 publish_status_changed(owner_id or user_id)
                 return FunnelClaimResult.WON
@@ -1458,7 +1509,7 @@ class PaperclipRepo:
                 UpdateExpression=(
                     "SET funnel_state = :not_started, updated_at = :u "
                     "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id, "
-                    "onboarding_submitted_by"
+                    "onboarding_submitted_by, onboarding_brief_text"
                 ),
                 ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
                 ExpressionAttributeValues={

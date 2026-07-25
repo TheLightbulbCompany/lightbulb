@@ -49,9 +49,14 @@ import { openChatPanel, openPanel, closeChatPanelIfOpen, useWorkspaceState } fro
 
 interface WorkspaceSidebarProps {
   onRecoveryReprovision: () => void; // wires HealthIndicator → shell's recovery state
+  /** Shell-derived "chat surface is live" signal (runtime_phase ready or
+   * parked). While false — the whole provisioning window — the create pill
+   * is disabled: there's no roster to add an agent to and no Teams
+   * workspace to file a task in yet. */
+  chatReady: boolean;
 }
 
-export function WorkspaceSidebar({ onRecoveryReprovision }: WorkspaceSidebarProps): React.ReactElement {
+export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: WorkspaceSidebarProps): React.ReactElement {
   const { userId: clerkUserId } = useAuth();
   const { user } = useUser();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
@@ -165,6 +170,8 @@ export function WorkspaceSidebar({ onRecoveryReprovision }: WorkspaceSidebarProp
           className="create-pill__seg"
           onClick={() => setCreateFormOpen(true)}
           aria-label="New agent"
+          disabled={!chatReady}
+          title={chatReady ? undefined : "Available once your workspace is ready"}
         >
           <Plus size={13} />
           Agent
@@ -175,6 +182,8 @@ export function WorkspaceSidebar({ onRecoveryReprovision }: WorkspaceSidebarProp
           className="create-pill__seg"
           onClick={() => openPanel("teams-issues", {}, { pushUrl: true, oneShots: { new: "task" } })}
           aria-label="New task"
+          disabled={!chatReady}
+          title={chatReady ? undefined : "Available once your workspace is ready"}
         >
           <Plus size={13} />
           Task

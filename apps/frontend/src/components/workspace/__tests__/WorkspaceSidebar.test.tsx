@@ -141,7 +141,7 @@ describe("WorkspaceSidebar", () => {
   it("roster row click opens the chat panel via the controller + captures", () => {
     agents = [{ id: "agent-ceo", name: "Friday" }];
     defaultId = "agent-ceo";
-    render(<WorkspaceSidebar onRecoveryReprovision={vi.fn()} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     fireEvent.click(screen.getByText("Friday"));
 
@@ -155,7 +155,7 @@ describe("WorkspaceSidebar", () => {
       { id: "a2", name: "Two" },
     ];
     snapshot = { activePanelId: "chat:a2", focusedChatAgentId: "a2" };
-    render(<WorkspaceSidebar onRecoveryReprovision={vi.fn()} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     expect(screen.getByText("Two").closest(".agent-item")?.className).toContain("active");
     expect(screen.getByText("One").closest(".agent-item")?.className).not.toContain("active");
@@ -163,7 +163,7 @@ describe("WorkspaceSidebar", () => {
 
   it("CompanyNav change routes through openPanel with pushUrl", () => {
     snapshot = { activePanelId: "teams-inbox", focusedChatAgentId: null };
-    render(<WorkspaceSidebar onRecoveryReprovision={vi.fn()} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     const nav = screen.getByTestId("companynav");
     // Store's teams panel id flows through to CompanyNav's activePanel.
@@ -175,13 +175,13 @@ describe("WorkspaceSidebar", () => {
 
   it("passes activePanel=undefined to CompanyNav when the active panel is not a teams id", () => {
     snapshot = { activePanelId: "agent-inspector", focusedChatAgentId: null };
-    render(<WorkspaceSidebar onRecoveryReprovision={vi.fn()} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     expect(screen.getByTestId("companynav").getAttribute("data-active-panel")).toBe("");
   });
 
   it("Task create-pill routes to the tasks panel with the new=task one-shot", () => {
-    render(<WorkspaceSidebar onRecoveryReprovision={vi.fn()} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     fireEvent.click(screen.getByLabelText("New task"));
     expect(openPanel).toHaveBeenCalledWith(
@@ -191,10 +191,20 @@ describe("WorkspaceSidebar", () => {
     );
   });
 
+  it("create-pill buttons are disabled while the workspace is provisioning", () => {
+    render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);
+
+    expect(screen.getByLabelText("New agent")).toBeDisabled();
+    expect(screen.getByLabelText("New task")).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText("New task"));
+    expect(openPanel).not.toHaveBeenCalled();
+  });
+
   it("per-row action buttons deep-link into inspector + tasks via openPanel", () => {
     agents = [{ id: "agent-ceo", name: "Friday" }];
     defaultId = "agent-ceo";
-    render(<WorkspaceSidebar onRecoveryReprovision={vi.fn()} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
 
     fireEvent.click(screen.getByLabelText("Inspect Friday"));
     expect(openPanel).toHaveBeenCalledWith(
@@ -213,7 +223,7 @@ describe("WorkspaceSidebar", () => {
 
   it("HealthIndicator recovery bubbles to the onRecoveryReprovision prop", () => {
     const onRecoveryReprovision = vi.fn();
-    render(<WorkspaceSidebar onRecoveryReprovision={onRecoveryReprovision} />);
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={onRecoveryReprovision} />);
 
     fireEvent.click(screen.getByTestId("health"));
     expect(onRecoveryReprovision).toHaveBeenCalledTimes(1);

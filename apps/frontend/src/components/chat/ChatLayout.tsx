@@ -314,6 +314,8 @@ export function ChatLayout({
               className="create-pill__seg"
               onClick={handleCreateAgent}
               aria-label="New agent"
+              disabled={!chatReady}
+              title={chatReady ? undefined : "Available once your workspace is ready"}
             >
               <Plus size={13} />
               Agent
@@ -324,6 +326,8 @@ export function ChatLayout({
               className="create-pill__seg"
               onClick={() => onNewTask?.()}
               aria-label="New task"
+              disabled={!chatReady}
+              title={chatReady ? undefined : "Available once your workspace is ready"}
             >
               <Plus size={13} />
               Task

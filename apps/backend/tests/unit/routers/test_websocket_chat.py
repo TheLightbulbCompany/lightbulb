@@ -796,7 +796,7 @@ class TestOperatorRelayRouting:
 
     @pytest.mark.asyncio
     async def test_operator_noncon_frame_relays_to_upstream(
-        self, test_app, mock_connection_service, mock_management_api
+        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
     ):
         """Steady-state adapter frames (agent runs) relay verbatim upstream."""
         mock_connection_service.get_connection.return_value = {
@@ -806,6 +806,12 @@ class TestOperatorRelayRouting:
         }
 
         from unittest.mock import AsyncMock as _AM
+
+        # `agent` starts a run, so it now passes the wake-admission gate first
+        # (see test_websocket_chat_wake_gate.py). Admit explicitly — this test
+        # is about the relay, and leaving it to the gate's fail-open branch
+        # would pass for the wrong reason.
+        mock_gateway_pool.gate_chat = _AM(return_value={"blocked": False})
 
         with (
             patch("routers.websocket_chat.is_operator_connection", return_value=True),

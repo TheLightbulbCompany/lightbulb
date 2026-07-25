@@ -295,6 +295,19 @@ _RUN_DISPATCH_ALTERNATIVE = {
     "agent": "agent_chat",
 }
 
+# Wake-admission gate scope. Deliberately the SAME set as above: that frozenset
+# is this codebase's single answer to "does this method start an agent run", and
+# the two doors must never disagree about it. The proxy REFUSES these outright
+# (they belong to the typed chat path); the operator relay ADMITS them subject
+# to budget — same question, different verdicts.
+#
+# In practice the Paperclip openclaw-gateway adapter only ever sends `agent`
+# (paperclip/packages/adapters/openclaw-gateway/src/server/execute.ts:1289).
+# `agent.wait` (:1319) is the separate call that AWAITS an already-started run
+# and is deliberately NOT gated — refusing it would strand a live run rather
+# than prevent one, and the spend it represents is already committed.
+_WAKE_GATED_METHODS = _RUN_DISPATCH_METHODS
+
 
 def _slim_sessions_list_previews(result):
     """Cap per-row lastMessage previews so sessions.list stays frame-sized."""
@@ -710,6 +723,109 @@ async def ws_disconnect(
     return Response(status_code=200)
 
 
+def _wake_refusal_payload(gate: dict, *, req_id: Any) -> dict:
+    """Build the frame that refuses a budget-blocked agent wake.
+
+    THE ONE PLACE this wire shape is constructed — every wake refusal goes
+    through here so retuning it is a single edit.
+
+    **The shape is PENDING FORK-CONTRACT CONFIRMATION.** What is confirmed
+    from the adapter source: `GatewayWsClient.handleMessage` (execute.ts:782-811)
+    rejects the pending request on `ok: false`, reading `error.message`,
+    `error.code` and `error.details` into a thrown `GatewayResponseError`. Its
+    own retry classifier (execute.ts:1452-1457) is a SUBSTRING match on that
+    message — it retries only `econnrefused` / `econnreset` / `socket hang up` /
+    `timeout`. Our gate messages contain none of those, so the adapter itself
+    does not retry a refusal. What is NOT yet confirmed is whether the outer
+    Paperclip routine dispatcher (the fork's circuit-breaker patch) treats the
+    resulting `exitCode: 1` as PARKED or re-dispatches it. If it re-dispatches,
+    the fix belongs in this function — not scattered across call sites.
+    """
+    code = gate.get("code", "blocked")
+    return {
+        "type": "res",
+        "id": req_id,
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": gate.get("message", "Agent wake blocked"),
+            "details": {"reason": "wake_admission_gate", "code": code},
+        },
+    }
+
+
+async def _admit_operator_wake(
+    *,
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    body: Dict[str, Any],
+) -> Optional[dict]:
+    """Budget-check a Paperclip-originated agent wake (#1426).
+
+    Paperclip's seed agents (Friday/Atlas) drive their runs through the operator
+    relay, which short-circuits ABOVE both the RPC proxy and the typed
+    `agent_chat` handler. That made the agent-wake door the one entrance to
+    inference that was never budget-checked: a capped-out free-trial owner got a
+    wall of instantly-dead runs (12 in ~3 minutes) instead of one clear
+    "out for today, upgrade" signal.
+
+    This calls the SAME ``pool.gate_chat`` the human ``agent_chat`` path calls, so
+    wakes and human sends obey one contract. Reusing it is load-bearing for
+    provider safety: gate_chat is already provider-aware, so ChatGPT-OAuth and
+    BYOK owners — who consume no Isol8 budget — can never be blocked on one,
+    while paid Bedrock owners are blocked only on genuinely exhausted credits.
+    A trial-only predicate here would have been the WRONG primitive.
+
+    Returns ``None`` to admit the wake, or the refusal frame to send instead of
+    relaying it upstream.
+    """
+    if body.get("method") not in _WAKE_GATED_METHODS:
+        return None
+
+    params = body.get("params")
+    session_key = params.get("sessionKey") if isinstance(params, dict) else None
+
+    try:
+        pool = get_gateway_pool()
+        gate = await pool.gate_chat(
+            user_id=user_id,
+            owner_id=owner_id,
+            session_key=session_key or "",
+        )
+    except Exception:
+        # FAIL OPEN — the deliberate inverse of the chat path, where gate_chat's
+        # raise propagates and the send is refused. The failure modes differ: a
+        # dropped chat send is a visible error the human retries, but a dropped
+        # wake is silently lost work for a paying customer. And spend is not
+        # actually fenced here — the bedrock-gate's synchronous pre-flight
+        # reservation is the real fence — so a transient DDB/network blip must
+        # not cost an owner their automation.
+        logger.warning(
+            "[%s] wake gate read failed owner=%s conn=%s — ADMITTING wake (fail-open)",
+            user_id,
+            owner_id,
+            connection_id[:12] if connection_id else "?",
+            exc_info=True,
+        )
+        put_metric("wake.admission", dimensions={"outcome": "gate_error"})
+        return None
+
+    if not gate.get("blocked"):
+        return None
+
+    code = gate.get("code", "blocked")
+    logger.info(
+        "[%s] agent wake BLOCKED owner=%s conn=%s code=%s",
+        user_id,
+        owner_id,
+        connection_id[:12] if connection_id else "?",
+        code,
+    )
+    put_metric("wake.admission", dimensions={"outcome": "blocked", "reason": code})
+    return _wake_refusal_payload(gate, req_id=body.get("id"))
+
+
 @router.post(
     "/message",
     status_code=200,
@@ -830,6 +946,25 @@ async def ws_message(
             if msg_type == "req" and body.get("method") == "connect":
                 submit_operator_signed_connect(x_connection_id, body)
             else:
+                # Wake-admission gate (#1426): a relay `req` that would START an
+                # agent run is budget-checked with the same predicate as a human
+                # chat send. Everything else — `agent.wait`, status reads,
+                # history fetches, non-`req` frames — relays untouched, so the
+                # Teams surface is undisturbed.
+                refusal = (
+                    await _admit_operator_wake(
+                        connection_id=x_connection_id,
+                        user_id=user_id,
+                        owner_id=owner_id,
+                        body=body,
+                    )
+                    if msg_type == "req"
+                    else None
+                )
+                if refusal is not None:
+                    management_api = await get_management_api_client()
+                    await management_api.send_message_async(x_connection_id, refusal)
+                    return Response(status_code=200)
                 await handle_operator_message(x_connection_id, body)
         else:
             # Relay upstream isn't on this task (cross-task / post-rollover).

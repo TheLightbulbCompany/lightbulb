@@ -178,6 +178,10 @@ function BillingPanel() {
   const [portalLoading, setPortalLoading] = useState(false);
   const [subscribeLoading, setSubscribeLoading] = useState(false);
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
+  // Mount-time snapshot for the trial-expired check below: render must stay
+  // pure (the react-compiler lint rejects Date.now() during render), and the
+  // 3-day expiry granularity makes a per-mount timestamp plenty fresh.
+  const [nowMs] = useState(() => Date.now());
 
   const handlePortal = useCallback(async () => {
     capture("billing_portal_opened");
@@ -242,7 +246,7 @@ function BillingPanel() {
   const isTrialExpired =
     isTrialLocal &&
     account?.trial_end != null &&
-    account.trial_end * 1000 < Date.now();
+    account.trial_end * 1000 < nowMs;
   // Display mapping for the status chip — the raw enum must never render
   // ("trial_local" would capitalize to "Trial_local"). Other statuses keep
   // the capitalize treatment.

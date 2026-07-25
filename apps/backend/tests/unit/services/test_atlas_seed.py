@@ -82,7 +82,7 @@ async def test_seeds_atlas_files_keyed_by_uuid(workspace_stub, fake_files_dir):
     ]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" in paths
+    assert "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json" in paths
     assert "workspace-uuid-atlas/IDENTITY.md" in paths
     assert "workspace-uuid-atlas/build.lobster" in paths
     assert "workspace-uuid-atlas/skills/fast-io/SKILL.md" in paths
@@ -147,12 +147,12 @@ async def test_state_file_written_first(workspace_stub, fake_files_dir):
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert paths[0] == "workspace-uuid-atlas/.openclaw/workspace-state.json", f"state first, got: {paths}"
+    assert paths[0] == "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json", f"state first, got: {paths}"
 
 
 @pytest.mark.asyncio
 async def test_state_file_timestamps_are_js_canonical(captured_ws, fake_files_dir):
-    """Atlas's seeded workspace-state.json timestamps must be JS-canonical
+    """Atlas's seeded setup-state sentinel timestamps must be JS-canonical
     (``YYYY-MM-DDTHH:MM:SS.mmmZ``) so OpenClaw 7.2's boot migration accepts them.
     Python's ``.isoformat()`` (6-digit micros + ``+00:00``) is rejected — the
     migration aborts and every agent run throws ``Legacy workspace setup state
@@ -162,7 +162,7 @@ async def test_state_file_timestamps_are_js_canonical(captured_ws, fake_files_di
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
 
-    state = _json.loads(captured_ws.written["workspace-uuid-atlas/.openclaw/workspace-state.json"])
+    state = _json.loads(captured_ws.written["workspace-uuid-atlas/.openclaw/isol8-setup-seed.json"])
     _assert_js_canonical_roundtrip(state["bootstrapSeededAt"])
     _assert_js_canonical_roundtrip(state["setupCompletedAt"])
 
@@ -304,9 +304,9 @@ async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
     """force=True overwrites every staged BUNDLE file via write_file even when
     the file already exists (where write_file_if_missing would skip) — so an
     existing container picks up the rewritten bundle. write_file_if_missing is
-    never used. The workspace-state.json marker is EXEMPT: force targets an
-    existing (booted, migrated) workspace, and re-writing the marker there
-    bricks every agent run (#1429)."""
+    never used. The setup-state sentinel is EXEMPT: force targets an existing
+    (booted, migrated) workspace whose sentinel the fork already consumed, and
+    re-seeding setup state there is exactly the one-shot rule (#1429)."""
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
     # Force path NEVER touches the skip-if-exists writer.
@@ -314,7 +314,10 @@ async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
     # IDENTITY.md exists (write_if_missing would return False) yet was overwritten.
     assert "workspace-uuid-atlas/IDENTITY.md" in force_ws.overwrote
     # The 3 bundle files (IDENTITY.md, build.lobster, skills/fast-io/SKILL.md)
-    # force-written; the one-shot state marker is NOT.
+    # force-written; the one-shot state marker is NOT -- checked for BOTH the
+    # native sentinel we write today and the retired legacy name, so this stays
+    # meaningful rather than vacuously passing on a renamed file.
+    assert "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json" not in force_ws.overwrote
     assert "workspace-uuid-atlas/.openclaw/workspace-state.json" not in force_ws.overwrote
     assert result["force"] is True
     assert result["reason"] is None
@@ -328,9 +331,12 @@ async def test_force_never_rewrites_workspace_state(force_ws, fake_files_dir):
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
 
-    state_rel = "workspace-uuid-atlas/.openclaw/workspace-state.json"
-    assert state_rel not in force_ws.overwrote
-    assert state_rel not in force_ws.if_missing_calls
+    for state_rel in (
+        "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json",
+        "workspace-uuid-atlas/.openclaw/workspace-state.json",
+    ):
+        assert state_rel not in force_ws.overwrote
+        assert state_rel not in force_ws.if_missing_calls
     force_ws.delete_file.assert_not_called()
 
 

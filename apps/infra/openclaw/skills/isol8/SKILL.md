@@ -28,7 +28,7 @@ description: >
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
-  - Email reply ............. scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
+  - Email reply ............. /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
 -->
 
 # The Isol8 Platform
@@ -114,11 +114,13 @@ claim to have an email address or offer to reply by email.
 When you have one, and a message you receive begins with an email header
 block that includes a `Reply-Token:` line, that message reached you as an
 inbound email. You can reply to the sender by running
-`scripts/isol8-mail.sh <reply-token>` (a relative path — resolved against
-this skill's directory) with the reply body piped on stdin:
+`/app/skills/isol8/scripts/isol8-mail.sh <reply-token>` (absolute path — the
+skill is baked at /app/skills/isol8; relative invocations fail because your
+working directory is the agent workspace, not the skill directory) with the
+reply body piped on stdin:
 
 ```
-printf '%s' "Thanks -- I've booked that for Tuesday." | scripts/isol8-mail.sh "<the-reply-token>"
+printf '%s' "Thanks -- I've booked that for Tuesday." | /app/skills/isol8/scripts/isol8-mail.sh "<the-reply-token>"
 ```
 
 Rules:

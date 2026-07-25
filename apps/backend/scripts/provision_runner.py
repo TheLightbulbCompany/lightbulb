@@ -41,6 +41,12 @@ import logging
 import os
 import sys
 
+# Module-level (unlike the runner's otherwise-lazy core.* imports): the
+# SEED_IN_EXECUTOR flag is read on every run() and core.config is the lightest,
+# most universally-imported module in the app — no import-graph cost, and it
+# keeps the flag check patchable via provision_runner.settings in tests.
+from core.config import settings
+
 EXIT_OK = 0
 EXIT_DETERMINISTIC = 10
 EXIT_TRANSIENT = 11
@@ -67,6 +73,97 @@ async def _get_row(owner_id: str):
     return await container_repo.get_by_owner_id(owner_id)
 
 
+async def _seed_owner_paperclip(owner_id: str) -> int:
+    """Step 0 (SEED_IN_EXECUTOR only): run the OWNER Paperclip seed under the
+    executor's single-flight, BEFORE the container work. Returns an exit code
+    from the runner's ABI (0 ok / 10 deterministic / 11 transient).
+
+    WHY here: GET /container/status used to run provision_org (Better-Auth
+    signup + company + Friday/Atlas) on the poll thread, where load-balanced
+    poll fan-out double-ran it and double-created the company (#1442). The
+    executor elects exactly one runner per owner (try_claim_provision), so
+    seeding here inherits that single-flight — one runner, one provision_org,
+    structurally no duplicate company. Gated behind settings.SEED_IN_EXECUTOR;
+    when OFF this is never called and the poll thread seeds exactly as before.
+
+    Reuses the SAME service helpers ensure_user_ready uses
+    (``_ensure_paperclip_for_owner`` / ``_ensure_paperclip_for_org``) — no seed
+    logic is duplicated. Those helpers keep their own swallows: 409 (a benign
+    concurrent-seed no-op) and 422 (a duplicate-email orphan, recorded as a
+    paperclip-row failure — Teams degraded, but the container must still boot,
+    so it is NOT a reason to fail the whole provision). Only a GENUINE seed
+    failure — a non-409/422 Paperclip error, a timeout/connection error, or a
+    config bug — propagates here, where it is classified into the exit-code ABI
+    exactly like a container failure (``classify_provision_error``): transient
+    -> EXIT_TRANSIENT (SFN retries), deterministic -> EXIT_DETERMINISTIC (SFN
+    stops). This ties seed success to the execution instead of the old
+    poll-thread swallow that booted the box regardless.
+
+    Org-vs-personal is derived from the ``owner_id`` prefix
+    (``is_org_owner_id``). The dispatch carries ONLY owner_id
+    (``background_provision`` drops the triggering user_id, and threading it
+    into the execution input would break Branch-A idempotency — the input must
+    stay byte-identical across a claim's re-issues, but the triggering admin
+    can differ between two polls). So the org path resolves the company's
+    bootstrap identity from Clerk: the org CREATOR
+    (``get_organization().created_by``) — always an admin, and a STABLE
+    per-org choice the executor's determinism prefers over "whichever admin's
+    poll won the race". ``owner_email`` is resolved via ``lookup_owner_email``
+    (the runner has Clerk creds), the same fallback the helpers use for a JWT
+    without an email claim; passing it in avoids a redundant second lookup
+    inside the helper.
+    """
+    from core.auth import is_org_owner_id
+    from core.repositories.container_repo import classify_provision_error
+    from core.services import clerk_admin
+    from core.services.paperclip_owner_email import lookup_owner_email
+    from core.services.user_provision import (
+        _ensure_paperclip_for_org,
+        _ensure_paperclip_for_owner,
+    )
+
+    try:
+        if is_org_owner_id(owner_id):
+            org = await clerk_admin.get_organization(owner_id)
+            creator_user_id = (org or {}).get("created_by")
+            if not creator_user_id:
+                # No resolvable bootstrap identity for the org. A Clerk hiccup
+                # (or an unset CLERK_SECRET_KEY in a misconfigured env) is the
+                # likely cause — a genuinely creator-less Clerk org is
+                # vanishingly rare — so treat it as transient and let SFN retry
+                # rather than fail the provision on a momentary blip.
+                logger.warning(
+                    "seed step 0: org %s has no resolvable Clerk creator — deferring (transient)",
+                    owner_id,
+                )
+                return EXIT_TRANSIENT
+            owner_email = await lookup_owner_email(org_id=owner_id, fallback_user_id=creator_user_id) or ""
+            # is_admin=True: the org creator is definitionally an org admin, so
+            # the create branch of _ensure_paperclip_for_org is authorized. When
+            # the company already exists (an idempotent re-run) this same call
+            # falls through to the JOIN path and no-ops on the creator's already
+            # -active owner row.
+            await _ensure_paperclip_for_org(
+                org_id=owner_id,
+                user_id=creator_user_id,
+                email=owner_email,
+                is_admin=True,
+            )
+        else:
+            owner_email = await lookup_owner_email(org_id=None, fallback_user_id=owner_id) or ""
+            await _ensure_paperclip_for_owner(
+                owner_id=owner_id,
+                owner_user_id=owner_id,
+                owner_email=owner_email,
+                org_id=None,
+            )
+    except Exception as exc:  # noqa: BLE001 — classified into the exit-code ABI
+        logger.exception("seed step 0 (owner paperclip) failed for owner %s", owner_id)
+        _, retryable = classify_provision_error(exc)
+        return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
+    return EXIT_OK
+
+
 async def run(owner_id: str, claim_id: str) -> int:
     from core.auth import is_org_owner_id
     from core.observability.logging import bind_log_context
@@ -82,6 +179,36 @@ async def run(owner_id: str, claim_id: str) -> int:
     attempt_token = os.environ.get("PROVISION_ATTEMPT_TOKEN") or claim_id
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)
+
+        # Step 0 (SEED_IN_EXECUTOR): the OWNER Paperclip seed runs HERE, under
+        # the executor's single-flight (this is the ONLY runner for this
+        # owner's claim), BEFORE the container work — killing the
+        # duplicate-company race (#1442) at its source. Inert unless the flag is
+        # on (default OFF -> the poll thread seeds, byte-identical to today).
+        #
+        # Placed AFTER claim_attempt so a straggler whose claim was taken over
+        # stands down (ProvisionSuperseded) before it seeds. On a genuine seed
+        # failure we make the container row HONEST: flip it to error with the
+        # classified retryability (transient -> re-claimable/SFN-retried,
+        # deterministic -> surfaced) BEFORE returning the mapped exit code — the
+        # same release_provision_to_error pattern provision_user_container uses
+        # for its own failures — so seed success is tied to the execution rather
+        # than silently swallowed.
+        if settings.SEED_IN_EXECUTOR:
+            seed_exit = await _seed_owner_paperclip(owner_id)
+            if seed_exit != EXIT_OK:
+                try:
+                    await container_repo.release_provision_to_error(
+                        owner_id,
+                        claim_id,
+                        last_error="provision seed: owner paperclip company seed failed",
+                        retryable=(seed_exit == EXIT_TRANSIENT),
+                        attempt_token=attempt_token,
+                    )
+                except Exception:  # noqa: BLE001 — release is best-effort; the exit code is the ABI
+                    logger.exception("seed step 0: error release failed for owner %s", owner_id)
+                return seed_exit
+
         # Read the container-incarnation fence off the row (see module
         # docstring for why this is NOT threaded through the SFN input).
         # Absent for a brand-new owner -- create_user_service mints it later,

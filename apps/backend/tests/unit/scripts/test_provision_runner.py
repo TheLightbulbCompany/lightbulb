@@ -40,6 +40,7 @@ def repo(monkeypatch):
     monkeypatch.setattr(_repo_module, "claim_attempt", AsyncMock())
     monkeypatch.setattr(_repo_module, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(_repo_module, "release_stranded_stop_to_error", AsyncMock(return_value=True))
+    monkeypatch.setattr(_repo_module, "release_provision_to_error", AsyncMock())
     return _repo_module
 
 
@@ -242,3 +243,192 @@ async def test_error_row_maps_by_retryable_field(monkeypatch, manager, repo):
 async def test_external_state_change_exits_zero(monkeypatch, manager, repo):
     _row(monkeypatch, {"status": "stopped"})  # admin stop mid-wait: not ours to fight
     assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+
+
+# ---------------------------------------------------------------------------
+# Step 0: owner Paperclip seed under the executor single-flight (SEED_IN_EXECUTOR)
+# ---------------------------------------------------------------------------
+#
+# When the flag is ON the OWNER company-create seed runs in the runner, BEFORE
+# the container work, so it inherits try_claim_provision's single-flight (one
+# execution per owner) — closing the duplicate-company race (#1442) at its
+# source. Default OFF: the seed never runs here (poll thread owns it), so every
+# test above (which does not touch the flag) is a flag-OFF regression proof.
+
+
+async def test_seed_step_0_not_run_when_flag_off(monkeypatch, manager, repo):
+    """Default (flag OFF): the runner NEVER seeds — byte-identical to today.
+    The poll thread owns the seed; the runner only does the container work."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_OK)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", False)
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    seed.assert_not_awaited()
+    manager.provision_user_container.assert_awaited_once()
+
+
+async def test_seed_step_0_success_then_provisions_container(monkeypatch, manager, repo):
+    """Flag ON, seed OK → the runner continues to the container work exactly as
+    before (step 0 is an ADDITIONAL first step, not a replacement), and the seed
+    runs AFTER claim_attempt (a taken-over straggler stands down first)."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_OK)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
+    _row(monkeypatch, {"status": "running"})
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_OK
+    seed.assert_awaited_once_with("user_a")
+    repo.claim_attempt.assert_awaited_once()
+    manager.provision_user_container.assert_awaited_once()
+
+
+async def test_seed_step_0_deterministic_fail_exits_10_skips_container_surfaces_error(monkeypatch, manager, repo):
+    """Flag ON, seed deterministic-fail (10): exit 10 WITHOUT touching the
+    container, and the row is flipped to error(retryable=False) so the poll
+    SURFACES the failure instead of looping it."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    manager.provision_user_container.assert_not_awaited()
+    repo.release_provision_to_error.assert_awaited_once()
+    kwargs = repo.release_provision_to_error.await_args.kwargs
+    assert kwargs["retryable"] is False
+    assert kwargs["attempt_token"] == "claim"
+
+
+async def test_seed_step_0_transient_fail_exits_11_skips_container_retryable_error(monkeypatch, manager, repo):
+    """Flag ON, seed transient-fail (11): exit 11 (SFN retries) WITHOUT the
+    container, row flipped to error(retryable=True) for the poll's auto-retry."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_TRANSIENT)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_TRANSIENT
+    manager.provision_user_container.assert_not_awaited()
+    repo.release_provision_to_error.assert_awaited_once()
+    assert repo.release_provision_to_error.await_args.kwargs["retryable"] is True
+
+
+async def test_seed_step_0_error_release_failure_still_returns_exit_code(monkeypatch, manager, repo):
+    """The container-row error release is best-effort: a DDB blip there must
+    not change the exit-code ABI the machine reads."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_DETERMINISTIC)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
+    repo.release_provision_to_error = AsyncMock(side_effect=RuntimeError("ddb down"))
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_DETERMINISTIC
+    manager.provision_user_container.assert_not_awaited()
+
+
+async def test_seed_step_0_superseded_claim_stands_down_before_seeding(monkeypatch, manager, repo):
+    """A straggler whose claim was taken over stops at claim_attempt — the seed
+    (like the container work) never runs, and the runner exits 20."""
+    seed = AsyncMock(return_value=provision_runner.EXIT_OK)
+    monkeypatch.setattr(provision_runner, "_seed_owner_paperclip", seed)
+    monkeypatch.setattr(provision_runner.settings, "SEED_IN_EXECUTOR", True)
+    repo.claim_attempt = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
+    assert await provision_runner.run("user_a", "claim") == provision_runner.EXIT_SUPERSEDED
+    seed.assert_not_awaited()
+    manager.provision_user_container.assert_not_awaited()
+
+
+# ---- _seed_owner_paperclip direct tests: org/email resolution + classification ----
+
+
+async def test_seed_helper_personal_calls_ensure_paperclip_for_owner(monkeypatch):
+    """Personal owner_id: owner_email resolved via lookup_owner_email, then
+    _ensure_paperclip_for_owner with owner_id == owner_user_id, org_id=None."""
+    ensure_owner = AsyncMock()
+    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_owner", ensure_owner)
+    monkeypatch.setattr(
+        "core.services.paperclip_owner_email.lookup_owner_email",
+        AsyncMock(return_value="p@example.com"),
+    )
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_OK
+    ensure_owner.assert_awaited_once_with(
+        owner_id="user_p",
+        owner_user_id="user_p",
+        owner_email="p@example.com",
+        org_id=None,
+    )
+
+
+async def test_seed_helper_org_resolves_creator_then_calls_ensure_paperclip_for_org(monkeypatch):
+    """Org owner_id (org_...): the runner has only owner_id (dispatch drops the
+    triggering user), so the bootstrap identity is the org CREATOR resolved from
+    Clerk (created_by), always an admin, with its email resolved from the same
+    fallback the helpers use."""
+    ensure_org = AsyncMock()
+    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", ensure_org)
+    monkeypatch.setattr(
+        "core.services.clerk_admin.get_organization",
+        AsyncMock(return_value={"created_by": "user_creator"}),
+    )
+    look = AsyncMock(return_value="creator@example.com")
+    monkeypatch.setattr("core.services.paperclip_owner_email.lookup_owner_email", look)
+    assert await provision_runner._seed_owner_paperclip("org_xyz") == provision_runner.EXIT_OK
+    ensure_org.assert_awaited_once_with(
+        org_id="org_xyz",
+        user_id="user_creator",
+        email="creator@example.com",
+        is_admin=True,
+    )
+    look.assert_awaited_once_with(org_id="org_xyz", fallback_user_id="user_creator")
+
+
+async def test_seed_helper_org_no_resolvable_creator_is_transient(monkeypatch):
+    """No Clerk creator (org lookup returns None / a Clerk blip): defer as
+    TRANSIENT so SFN retries rather than failing the provision on a blip. The
+    seed helper is never entered."""
+    monkeypatch.setattr("core.services.clerk_admin.get_organization", AsyncMock(return_value=None))
+    ensure_org = AsyncMock()
+    monkeypatch.setattr("core.services.user_provision._ensure_paperclip_for_org", ensure_org)
+    assert await provision_runner._seed_owner_paperclip("org_xyz") == provision_runner.EXIT_TRANSIENT
+    ensure_org.assert_not_awaited()
+
+
+async def test_seed_helper_deterministic_paperclip_4xx_exits_10(monkeypatch):
+    """A non-409/422 Paperclip 4xx that propagates out of the helper classifies
+    DETERMINISTIC → EXIT_DETERMINISTIC (SFN stops, surfaced not looped)."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    monkeypatch.setattr(
+        "core.services.paperclip_owner_email.lookup_owner_email",
+        AsyncMock(return_value="p@example.com"),
+    )
+    monkeypatch.setattr(
+        "core.services.user_provision._ensure_paperclip_for_owner",
+        AsyncMock(side_effect=PaperclipApiError("bad request", status_code=400, body={})),
+    )
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_DETERMINISTIC
+
+
+async def test_seed_helper_transient_paperclip_5xx_exits_11(monkeypatch):
+    """A Paperclip 5xx classifies TRANSIENT → EXIT_TRANSIENT (SFN retries)."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    monkeypatch.setattr(
+        "core.services.paperclip_owner_email.lookup_owner_email",
+        AsyncMock(return_value="p@example.com"),
+    )
+    monkeypatch.setattr(
+        "core.services.user_provision._ensure_paperclip_for_owner",
+        AsyncMock(side_effect=PaperclipApiError("boom", status_code=503, body={})),
+    )
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_TRANSIENT
+
+
+async def test_seed_helper_transient_connection_error_exits_11(monkeypatch):
+    """A transport/connection error (not a Paperclip status) defaults TRANSIENT
+    → EXIT_TRANSIENT, same as the container path's classifier."""
+    import httpx
+
+    monkeypatch.setattr(
+        "core.services.paperclip_owner_email.lookup_owner_email",
+        AsyncMock(return_value="p@example.com"),
+    )
+    monkeypatch.setattr(
+        "core.services.user_provision._ensure_paperclip_for_owner",
+        AsyncMock(side_effect=httpx.ConnectError("connection refused")),
+    )
+    assert await provision_runner._seed_owner_paperclip("user_p") == provision_runner.EXIT_TRANSIENT

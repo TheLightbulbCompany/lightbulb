@@ -24,6 +24,7 @@ from collections import defaultdict
 
 from core.auth import AuthContext
 from core.billing.metronome_provisioning import ensure_metronome_customer
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
@@ -203,17 +204,48 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
             )
 
     # Paperclip (Teams) seed is a SEPARATE concern from the container (ECS)
-    # dispatch below. A seed failure must NOT abort provisioning: the box
+    # dispatch below. A seed/join failure must NOT abort provisioning: the box
     # still boots and serves chat because ecs_manager falls back to the legacy
     # `main` agent when no Paperclip company exists. The failure is recorded on
     # the paperclip-companies row (by _mark_failed) and surfaced via
     # /container/status; here we only guarantee it never wedges the container.
     # Best-effort — mirrors the ensure_metronome_customer guard above; the next
-    # /container/status poll retries the seed. Do NOT narrow the except: a seed
-    # can fail with PaperclipApiError (non-409) OR any transient error, and all
-    # of them must fall through to the dispatch rather than escape the poll.
+    # /container/status poll retries. Do NOT narrow the except: it can fail with
+    # PaperclipApiError (non-409) OR any transient error, and all of them must
+    # fall through to the dispatch rather than escape the poll.
+    #
+    # SEED_IN_EXECUTOR gates WHERE the OWNER company-create seed runs:
+    #
+    #   * OFF (default, byte-identical to today): the owner company-create seed
+    #     runs HERE, on the poll thread. This is the leg with the
+    #     duplicate-company race (#1442) — a load-balanced poll fan-out
+    #     double-runs provision_org because no in-flight state is shared across
+    #     backend tasks (the seed fence narrows but does not close it).
+    #   * ON: the owner company-create MOVES to the provisioning executor's
+    #     runner (scripts.provision_runner step 0), where try_claim_provision
+    #     elects exactly one execution per owner — so the seed inherits that
+    #     single-flight and the duplicate-company race is structurally
+    #     impossible. The poll thread then keeps ONLY the org member JOIN
+    #     (_ensure_paperclip_for_member): a seat-add is NOT a company-creation
+    #     race and STAYS here — co-admins/members join the shared company the
+    #     runner creates, and the creator's own re-poll no-ops on their already
+    #     -active owner row. Personal owners have no join, so nothing runs here
+    #     for them under the flag (the runner's step 0 does their whole seed).
+    #     GENUINE owner-seed failures are then tied to the execution and mapped
+    #     into the runner's exit-code ABI, not swallowed here — see
+    #     scripts.provision_runner._seed_owner_paperclip.
     try:
-        if auth.is_org_context:
+        if settings.SEED_IN_EXECUTOR:
+            # Owner company-create moved to the runner (step 0). Keep only the
+            # role-blind org member JOIN here; personal owners have nothing to
+            # do on the poll thread under the flag.
+            if auth.is_org_context:
+                await _ensure_paperclip_for_member(
+                    org_id=auth.org_id,
+                    member_user_id=auth.user_id,
+                    member_email=auth.email or "",
+                )
+        elif auth.is_org_context:
             # JOIN is role-blind — a co-admin (or member) of an
             # already-provisioned org joins the org's ONE shared company, never
             # creates a second one. CREATE is gated to admins: bootstrapping the

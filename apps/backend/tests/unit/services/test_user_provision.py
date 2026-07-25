@@ -1,5 +1,6 @@
 """Unit tests for the unified ensure_user_ready helper."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1759,3 +1760,142 @@ async def test_ensure_user_ready_does_not_invoke_arm_for_org_member(_stub_arm_ni
     ):
         await ensure_user_ready(_org_member_auth())
     _stub_arm_nightly.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# SEED_IN_EXECUTOR ON — the OWNER company-create seed moves to the executor's
+# runner (scripts.provision_runner step 0). ensure_user_ready stops seeding the
+# owner inline; the org member JOIN and the gate-up member branch (#1435) STAY
+# on the poll thread unchanged. This is the #1442 fix at the poll boundary: the
+# duplicate-company source (a load-balanced poll fan-out each running
+# provision_org) is removed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flag_on_personal_skips_inline_owner_seed_only_dispatches(_stub_trial_default):
+    """Flag ON, personal owner: NO inline owner seed (the runner's step 0 does
+    it), NO member call (personal has no join), and the container is dispatched
+    exactly once."""
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    inline_owner = AsyncMock()
+    inline_org = AsyncMock()
+    inline_member = AsyncMock()
+    with (
+        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=inline_org),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=inline_member),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_personal_auth("user_p"))
+    inline_owner.assert_not_awaited()
+    inline_org.assert_not_awaited()
+    inline_member.assert_not_awaited()
+    assert captured == ["background_provision"]
+
+
+@pytest.mark.asyncio
+async def test_flag_on_org_admin_does_member_join_never_inline_create(_stub_trial_default):
+    """Flag ON, org admin: the poll thread does the role-blind member JOIN
+    (member-add STAYS here) and NEVER the inline company create/`_ensure_
+    paperclip_for_org` — the runner's step 0 owns the create. Container still
+    dispatched (admin owns the box)."""
+    captured: list[str] = []
+
+    def capture_task(coro):
+        captured.append(coro.__qualname__)
+        coro.close()
+
+    inline_org = AsyncMock()
+    inline_owner = AsyncMock()
+    inline_member = AsyncMock()
+    with (
+        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_org", new=inline_org),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=inline_member),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
+    inline_org.assert_not_awaited()
+    inline_owner.assert_not_awaited()
+    inline_member.assert_awaited_once_with(
+        org_id="org_xyz",
+        member_user_id="user_admin",
+        member_email="a@example.com",
+    )
+    assert captured == ["background_provision"]
+
+
+@pytest.mark.asyncio
+async def test_flag_on_gate_up_org_member_branch_is_unchanged():
+    """The gate-up member branch (#1435) is orthogonal to SEED_IN_EXECUTOR:
+    with the flag ON and the gate UP, an org member still gets the idempotent
+    membership-add and no container is dispatched. The flag relocates only the
+    OWNER company-create, never member-add."""
+    with (
+        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=_up_gate())),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as member,
+        patch("core.services.user_provision.background_provision", new=AsyncMock()) as container,
+    ):
+        await ensure_user_ready(_org_member_auth("user_member", "org_456", "m@example.com"))
+    member.assert_awaited_once_with(
+        org_id="org_456",
+        member_user_id="user_member",
+        member_email="m@example.com",
+    )
+    container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flag_off_still_seeds_owner_inline_regression(_stub_trial_default):
+    """Flag OFF (default): the OWNER seed still runs inline on the poll thread —
+    byte-identical to today. The explicit False guards against a default flip."""
+    inline_owner = AsyncMock()
+    with (
+        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", False),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+    inline_owner.assert_awaited_once_with(
+        owner_id="user_p",
+        owner_user_id="user_p",
+        owner_email="p@example.com",
+        org_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_flag_on_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
+    """The #1442 fix at the poll boundary: under the flag, 15 concurrent
+    /container/status polls run ZERO inline provision_org — the duplicate
+    -company source is gone. Each poll instead dispatches, and the executor's
+    try_claim_provision (proven in test_provision_dispatch) collapses the 15
+    dispatches to one execution -> one runner -> one seed."""
+    dispatched: list[str] = []
+
+    def capture_task(coro):
+        dispatched.append(coro.__qualname__)
+        coro.close()
+
+    inline_owner = AsyncMock()
+    with (
+        patch("core.services.user_provision.settings.SEED_IN_EXECUTOR", True),
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch("core.services.user_provision._ensure_paperclip_for_owner", new=inline_owner),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
+    ):
+        await asyncio.gather(*[ensure_user_ready(_personal_auth("user_race")) for _ in range(15)])
+    inline_owner.assert_not_awaited()
+    assert dispatched == ["background_provision"] * 15

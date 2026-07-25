@@ -26,7 +26,7 @@ const KNOWN_INBOX_TABS_MAP: Record<InboxTab, true> = {
   runs: true,
   joins: true,
 };
-const DEFAULT_INBOX_TAB: InboxTab = "mine";
+const DEFAULT_INBOX_TAB: InboxTab = "all";
 
 /**
  * Runtime InboxTab validation for external inputs (?tab deep links, threaded
@@ -110,10 +110,11 @@ export function saveLastInboxTab(companyId: string, tab: InboxTab): void {
 }
 
 /**
- * Read + validate the last-active inbox tab. Returns `"mine"` (the upstream
- * default) when the key is missing, the stored value isn't a known InboxTab,
- * or storage access throws — matches upstream behavior at
- * paperclip/ui/src/lib/inbox.ts:614-631.
+ * Read + validate the last-active inbox tab. Returns `"all"` when the key is
+ * missing, the stored value isn't a known InboxTab, or storage access throws.
+ * Deliberate divergence from upstream's `"mine"` default
+ * (paperclip/ui/src/lib/inbox.ts:614-631): first-time users have nothing
+ * assigned to them yet, so an empty "Mine" tab is a dead-end first impression.
  */
 export function loadLastInboxTab(companyId: string): InboxTab {
   let raw: string | null;

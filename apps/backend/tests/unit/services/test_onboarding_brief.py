@@ -146,7 +146,10 @@ def test_first_run_message_with_brief_leads_with_the_users_ask():
     # The research → write-up → three-next-moves ask is woven into the SAME
     # message (deterministic, not a hoped-for system-prompt behavior).
     assert "Dig into the business and market" in msg
-    assert "three best next moves on the board" in msg
+    assert "three best next moves in the backlog" in msg
+    # Tasks land in the backlog and are NOT auto-started — the user prioritizes.
+    # Auto-starting them is what burned the trial cap / stormed in round 1 (#1426).
+    assert "don't start any of them yet" in msg
     assert "I'm watching" in msg
 
 
@@ -161,7 +164,8 @@ def test_first_run_message_no_brief_falls_back_to_the_you_pick_default():
     assert build_first_run_message("   ") == FIRST_RUN_NO_BRIEF_MESSAGE
     # The default still reads as the user and still names the same ask.
     assert "I'm not sure what to build yet" in FIRST_RUN_NO_BRIEF_MESSAGE
-    assert "three best next moves" in FIRST_RUN_NO_BRIEF_MESSAGE
+    assert "in the backlog" in FIRST_RUN_NO_BRIEF_MESSAGE
+    assert "Don't start any of them yet" in FIRST_RUN_NO_BRIEF_MESSAGE
     assert "I'm watching" in FIRST_RUN_NO_BRIEF_MESSAGE
 
 

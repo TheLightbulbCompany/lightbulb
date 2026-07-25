@@ -177,10 +177,18 @@ def project_name_for(first_name: str) -> str:
 # carries the same research → write-up → three-next-moves-on-the-board ask the
 # with-brief message does. BRIEF.md (staged pre-boot) carries the email lead +
 # "job zero" instructions Friday needs to actually choose one.
+# NB: the kickoff must leave the three tasks in the BACKLOG and NOT start them.
+# Starting a task wakes the assignee to work it, and that auto-work (on tasks
+# the user never prioritized) is what burned the trial's daily cap and produced
+# the round-1 retry storm (Isol8AI/isol8#1426). The user prioritizes; Friday
+# only does the research/write-up the user is watching, then hands the board
+# back. "in the backlog … don't start any yet … tell me which to tackle first"
+# makes the (nondeterministic) good round-2 behavior deterministic.
 FIRST_RUN_NO_BRIEF_MESSAGE = (
     "I'm not sure what to build yet — take a look and pick something promising for "
     "me, then dig into it, write up what you find, and put my three best next moves "
-    "on the board. Walk me through it, I'm watching."
+    "in the backlog. Don't start any of them yet — just tell me which to tackle "
+    "first. I'm watching."
 )
 
 
@@ -232,7 +240,8 @@ def build_first_run_message(brief_text: str | None) -> str:
         return FIRST_RUN_NO_BRIEF_MESSAGE
     return (
         f"I'm starting {brief}. Dig into the business and market, write it up, and put "
-        "my three best next moves on the board — walk me through it, I'm watching."
+        "my three best next moves in the backlog — don't start any of them yet, just "
+        "tell me which to tackle first. I'm watching."
     )
 
 

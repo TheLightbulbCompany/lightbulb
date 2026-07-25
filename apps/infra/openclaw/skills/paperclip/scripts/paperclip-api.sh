@@ -60,6 +60,9 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               assigneeAgentId?, blockedByIssueIds?,
               inheritExecutionWorkspaceFromIssueId?, billingCode? }
       Reads an optional markdown description from stdin.
+      STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
+      With --assignee and no --status, sends an EXPLICIT backlog (see
+      "Assigning work" at the bottom) — pass --status todo to start it now.
 
   create <companyId> --title T [--goal <id>] [--status S]
          [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
@@ -69,6 +72,9 @@ Subcommands (markdown / freeform text is read from stdin where noted):
               assigneeAgentId?, blockedByIssueIds?,
               inheritExecutionWorkspaceFromIssueId?, billingCode? }
       Reads an optional markdown description from stdin.
+      STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
+      With --assignee and no --status, sends an EXPLICIT backlog (see
+      "Assigning work" at the bottom) — pass --status todo to start it now.
 
   confirm <issueId> --prompt P [--title T] [--idempotency-key K]
           [--continuation none|wake_assignee|wake_assignee_on_accept]
@@ -106,6 +112,17 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       with jq -n (never hand-type inline JSON). The body is validated with jq
       before sending and rejected loudly if it does not parse.
 
+Assigning work (create / subtask):
+  An issue that has an assignee AND a status other than `backlog` DISPATCHES
+  AN AGENT RUN the moment it is created, and a 30s server-side reconciler
+  re-dispatches it until it escalates to `blocked`. Paperclip's own create
+  default is not neutral about this: omit `status` while passing an assignee
+  and the server silently promotes the issue to `todo` — i.e. it starts.
+  So this helper sends an explicit `backlog` for `--assignee` + no `--status`.
+  Filing work to someone and starting it right now are different acts, and the
+  second one spends money — ask for it with `--status todo`, never by omission.
+  Creates with no assignee are unchanged: `status` stays omitted.
+
 Examples:
   scripts/paperclip-api.sh comment "$PAPERCLIP_TASK_ID" <<'MD'
   ## Update
@@ -122,6 +139,14 @@ Examples:
   scripts/paperclip-api.sh confirm "$PAPERCLIP_TASK_ID" --prompt "Accept this plan?" <<'MD'
   Review the plan document before accepting.
   MD
+
+  # File assigned work WITHOUT starting it (the default):
+  scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Ship pricing page" \
+    --assignee "<agentId>" --status backlog
+
+  # Assign AND start it right now (deliberate — this spends money):
+  scripts/paperclip-api.sh create "$PAPERCLIP_COMPANY_ID" --title "Hotfix checkout 500" \
+    --assignee "<agentId>" --status todo
 EOF
 }
 
@@ -148,6 +173,62 @@ require_live_env() {
   if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" ]]; then
     die 'Missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY.'
   fi
+}
+
+# Paperclip's ISSUE_STATUSES enum (packages/shared/src/constants.ts).
+ISSUE_STATUSES="backlog todo in_progress in_review done blocked cancelled"
+
+require_valid_status() {
+  # require_valid_status <subcommand> <status>
+  local cmd="$1" status="$2"
+  case " $ISSUE_STATUSES " in
+    *" $status "*) return 0 ;;
+  esac
+  die "$cmd: invalid --status '$status' (expected one of: ${ISSUE_STATUSES// /, })."
+}
+
+# resolve_create_status <subcommand> <status> <assignee>
+#
+# Echoes the status to put in a create/subtask body ("" = omit the field).
+#
+# WHY this exists: Paperclip's create default is NOT neutral. An issue created
+# with an assignee and NO status is silently promoted to `todo`
+# (`resolveCreateIssueStatusDefault`, packages/shared/src/validators/issue.ts),
+# and assignee + any status other than `backlog` is exactly the pair that
+# dispatches an agent run — `queueIssueAssignmentWakeup` returns early ONLY for
+# "no assignee" or "backlog". Worse, the run isn't one-shot: a 30s reconciler
+# (`reconcileStrandedAssignedIssues`) re-picks assigned todo/in_progress issues
+# with no live execution path and re-dispatches them until they escalate to
+# `blocked`. Filing three assigned tasks in one heartbeat therefore fires three
+# unasked-for runs and then keeps firing them.
+#
+# So when an assignee is given and no status is, send an EXPLICIT `backlog`
+# rather than letting the server infer. The two mistakes are not symmetric:
+# a wrongly-backlogged task sits on the board until someone moves it, while a
+# wrongly-started one spends the owner's money and re-spends it every 30s.
+# "Assign this and start it now" stays fully available — it just has to be
+# asked for (`--status todo`) instead of falling out of an omission.
+#
+# Unassigned creates keep omitting `status`: the server's default there is
+# `backlog` too, so there is nothing to fix and no reason to freeze someone
+# else's default into this script.
+resolve_create_status() {
+  local cmd="$1" status="$2" assignee="$3"
+
+  if [[ -n "$status" ]]; then
+    require_valid_status "$cmd" "$status"
+    printf '%s' "$status"
+    return 0
+  fi
+
+  if [[ -n "$assignee" ]]; then
+    printf '%s: --assignee with no --status; filing to backlog. Pass --status todo to dispatch a run now.\n' \
+      "$cmd" >&2
+    printf 'backlog'
+    return 0
+  fi
+
+  printf ''
 }
 
 api_base() {
@@ -349,6 +430,8 @@ cmd_subtask() {
   [[ -n "$parent" ]] || printf 'subtask: warning — no --parent set; subtasks should set parentId.\n' >&2
   [[ -n "$goal" ]] || printf 'subtask: warning — no --goal set; subtasks should set goalId.\n' >&2
 
+  status="$(resolve_create_status subtask "$status" "$assignee")"
+
   local description
   description="$(read_stdin)"
 
@@ -405,6 +488,8 @@ cmd_create() {
   done
 
   [[ -n "$title" ]] || die 'create: --title is required.'
+
+  status="$(resolve_create_status create "$status" "$assignee")"
 
   local description
   description="$(read_stdin)"

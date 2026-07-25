@@ -475,6 +475,96 @@ def test_seed_workspace_state_keeps_an_unmigrated_seed(real_workspace, tmp_path)
     assert state.is_file()
 
 
+# ---------------------------------------------------------------------------
+# NATIVE_WORKSPACE_SEED flag — legacy JSON vs native sentinel
+# (docs/superpowers/specs/2026-07-25-native-workspace-seed-design.md)
+# ---------------------------------------------------------------------------
+
+
+def test_flag_off_writes_legacy_json_not_sentinel(real_workspace, tmp_path, monkeypatch):
+    """Flag OFF (default): the legacy ``workspace-state.json`` is written with
+    its historical ``{version, bootstrapSeededAt, setupCompletedAt}`` shape, and
+    the native sentinel is NOT created. Byte-identical to pre-flag behavior."""
+    monkeypatch.setattr("core.config.settings.NATIVE_WORKSPACE_SEED", False)
+
+    legacy = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+    sentinel = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "isol8-setup-seed.json"
+
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+
+    assert legacy.is_file()
+    assert not sentinel.exists()
+
+    import json as _json
+
+    payload = _json.loads(legacy.read_text())
+    assert payload["version"] == 1
+    _assert_js_canonical_roundtrip(payload["bootstrapSeededAt"])
+    _assert_js_canonical_roundtrip(payload["setupCompletedAt"])
+
+
+def test_flag_on_writes_native_sentinel_not_legacy_json(real_workspace, tmp_path, monkeypatch):
+    """Flag ON: the non-legacy sentinel ``.openclaw/isol8-setup-seed.json`` is
+    written with exactly ``{bootstrapSeededAt, setupCompletedAt}`` (no legacy
+    ``version`` key), same JS-canonical timestamp values, and the legacy
+    ``workspace-state.json`` is NEVER written — so the #1429 presence gate has
+    nothing to trip on."""
+    monkeypatch.setattr("core.config.settings.NATIVE_WORKSPACE_SEED", True)
+
+    legacy = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+    sentinel = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "isol8-setup-seed.json"
+
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+
+    assert sentinel.is_file()
+    assert not legacy.exists()
+
+    import json as _json
+
+    payload = _json.loads(sentinel.read_text())
+    assert set(payload.keys()) == {"bootstrapSeededAt", "setupCompletedAt"}
+    _assert_js_canonical_roundtrip(payload["bootstrapSeededAt"])
+    _assert_js_canonical_roundtrip(payload["setupCompletedAt"])
+
+
+def test_flag_on_seed_is_one_shot_on_existing_workspace(real_workspace, tmp_path, monkeypatch):
+    """Flag ON keeps the fresh-only gate: an existing workspace (reprovision)
+    is left alone — the sentinel is not re-dropped once the workspace dir
+    exists (the fork has already converted + removed any prior sentinel)."""
+    monkeypatch.setattr("core.config.settings.NATIVE_WORKSPACE_SEED", True)
+
+    sentinel = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "isol8-setup-seed.json"
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+
+    # Simulate the fork's boot hook consuming + deleting the sentinel.
+    sentinel.unlink()
+
+    # Reprovision (workspace dir now exists): no re-drop.
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "skipped"
+    assert not sentinel.exists()
+
+
+def test_flag_on_still_heals_stale_legacy_json(real_workspace, tmp_path, monkeypatch):
+    """The heal branch is flag-independent: a container seeded with the LEGACY
+    JSON before the flag flip, then migrated (shared state DB present), still
+    gets that stale legacy file deleted under flag ON — it only trips the
+    presence gate. The native sentinel is never touched by the heal."""
+    # Seed the legacy file first (flag OFF), as a pre-flip container would have.
+    monkeypatch.setattr("core.config.settings.NATIVE_WORKSPACE_SEED", False)
+    legacy = tmp_path / "user_x" / "workspace-uuid-f" / ".openclaw" / "workspace-state.json"
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "seeded"
+    assert legacy.is_file()
+
+    # Container booted 7.2's doctor at least once → shared state DB exists.
+    (tmp_path / "user_x" / "state").mkdir()
+    (tmp_path / "user_x" / "state" / "openclaw.sqlite").write_bytes(b"")
+
+    # Now the flag is ON; the heal must still clear the stale legacy JSON.
+    monkeypatch.setattr("core.config.settings.NATIVE_WORKSPACE_SEED", True)
+    assert friday_identity.seed_workspace_state(real_workspace, "user_x", "uuid-f") == "deleted_stale"
+    assert not legacy.exists()
+
+
 @pytest.mark.asyncio
 async def test_pre_stage_heals_stale_state_file_on_existing_workspace(monkeypatch):
     """Call-site wiring: an existing workspace with a stale re-seeded state

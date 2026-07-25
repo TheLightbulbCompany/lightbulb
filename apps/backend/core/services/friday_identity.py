@@ -54,10 +54,25 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from core.config import settings
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
+
+# The two seed formats. Both mark Friday/Atlas workspace setup complete before
+# first boot; they differ ONLY in filename + JSON shape (contract fixed in
+# docs/superpowers/specs/2026-07-25-native-workspace-seed-design.md):
+#   - LEGACY (flag OFF): the format OpenClaw's boot doctor migrates into SQLite
+#     (recording a sha256-of-bytes receipt) then deletes. Fragile on re-seed →
+#     the #1429 brick (see seed_workspace_state's docstring).
+#   - NATIVE sentinel (flag ON): a NON-legacy file the fork's boot hook feeds
+#     through its own idempotent ``mergeWorkspaceSetupState`` upsert then
+#     deletes. Its name MUST NOT be a legacy source path
+#     (``resolveLegacyWorkspaceSourcePaths``) — the presence-only legacy gate
+#     ignores it, so the #1429 error class is structurally impossible.
+_LEGACY_STATE_REL = ".openclaw/workspace-state.json"
+_NATIVE_SEED_REL = ".openclaw/isol8-setup-seed.json"
 
 
 def js_iso_now() -> str:
@@ -80,15 +95,32 @@ def js_iso_now() -> str:
 
 
 def seed_workspace_state(workspace: Workspace, owner_id: str, agent_uuid: str) -> str:
-    """One-shot seed of ``workspace-{agent_uuid}/.openclaw/workspace-state.json``.
+    """One-shot seed of the workspace-setup-state marker.
 
     Shared by both seed sites (Friday here, ``atlas_seed``). Returns the
     action taken: ``"seeded"`` (fresh workspace, file written),
     ``"skipped"`` (existing workspace left alone), or ``"deleted_stale"``
-    (existing workspace healed of a re-seeded copy — see below).
+    (existing workspace healed of a re-seeded LEGACY copy — see below).
+
+    FORMAT (``settings.NATIVE_WORKSPACE_SEED``, default OFF): the fresh-workspace
+    write branches on the flag but is otherwise identical (same one-shot gate,
+    same EFS write path, same field VALUES):
+      - OFF → legacy ``workspace-{agent_uuid}/.openclaw/workspace-state.json``,
+        ``{"version": 1, "bootstrapSeededAt", "setupCompletedAt"}`` — byte-
+        identical to before this flag existed.
+      - ON → native sentinel
+        ``workspace-{agent_uuid}/.openclaw/isol8-setup-seed.json``,
+        ``{"bootstrapSeededAt", "setupCompletedAt"}`` (no legacy ``version``
+        key). The fork's boot hook converts it via ``mergeWorkspaceSetupState``
+        then deletes it; the legacy presence gate never sees a legacy file.
+    The heal branch below is flag-INDEPENDENT: it clears a stale LEGACY JSON on
+    an already-migrated workspace (e.g. a container seeded before the flag flip),
+    never the native sentinel — which the fork itself removes after converting.
 
     WHY ONE-SHOT (#1429, mechanism verified against the deployed fork tag
-    v2026.7.2-isol8.1):
+    v2026.7.2-isol8.1) — applies to the LEGACY format; the native sentinel is a
+    safe idempotent upsert, but the fresh-only gate is kept identical across
+    both formats so the flag flip changes nothing but the file written:
 
     OpenClaw 7.2 treats this file as a RETIRED legacy source. The runtime
     never parses it — ``assertNoUnmigratedWorkspaceState``
@@ -124,19 +156,30 @@ def seed_workspace_state(workspace: Workspace, owner_id: str, agent_uuid: str) -
     does not exist (container never booted since seeding) the file is the
     original un-migrated seed and is left for the first boot to migrate.
     """
-    state_rel = f"workspace-{agent_uuid}/.openclaw/workspace-state.json"
+    legacy_rel = f"workspace-{agent_uuid}/{_LEGACY_STATE_REL}"
     workspace_dir = workspace.agent_workspace_path(owner_id, agent_uuid)
     if not workspace_dir.is_dir():
         now_iso = js_iso_now()
-        workspace.write_file_if_missing(
-            owner_id,
-            state_rel,
-            json.dumps({"version": 1, "bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}),
-        )
+        if settings.NATIVE_WORKSPACE_SEED:
+            # Native path: drop the non-legacy sentinel the fork converts +
+            # deletes at boot. Same field VALUES as the legacy seed, minus the
+            # legacy-only ``version`` key. Never writes the legacy file, so the
+            # #1429 presence gate has nothing to trip on.
+            workspace.write_file_if_missing(
+                owner_id,
+                f"workspace-{agent_uuid}/{_NATIVE_SEED_REL}",
+                json.dumps({"bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}),
+            )
+        else:
+            workspace.write_file_if_missing(
+                owner_id,
+                legacy_rel,
+                json.dumps({"version": 1, "bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}),
+            )
         return "seeded"
     shared_state_db = workspace.user_path(owner_id) / "state" / "openclaw.sqlite"
     if (workspace_dir / ".openclaw" / "workspace-state.json").is_file() and shared_state_db.is_file():
-        workspace.delete_file(owner_id, state_rel)
+        workspace.delete_file(owner_id, legacy_rel)
         return "deleted_stale"
     return "skipped"
 

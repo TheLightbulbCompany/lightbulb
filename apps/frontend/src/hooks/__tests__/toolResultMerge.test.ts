@@ -5,7 +5,11 @@ import {
   mergeStandaloneToolResults,
 } from "../internal/toolResultMerge";
 import { projectChatHistoryMessages } from "../internal/chatHistoryFilters";
+import { resolveMessageBlocks } from "../internal/toolBlockExtract";
 import type { HistoryMessage } from "../internal/types";
+
+/** `content` is a union (block array | bare string) — normalize before indexing. */
+const blocksOf = (m: HistoryMessage) => resolveMessageBlocks(m);
 
 const WEB_SEARCH_RESULT_TEXT =
   '{"kind":"answer","provider":"parallel","answer":"<<<EXTERNAL_UNTRUSTED_CONTENT id=\\"ab12\\">>>\\nSource: Web Search\\n---\\nstuff\\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id=\\"ab12\\">>>","externalContent":{"untrusted":true}}';
@@ -53,7 +57,7 @@ describe("mergeStandaloneToolResults", () => {
     expect(merged.every((m) => m.role === "assistant")).toBe(true);
     // …and its payload now lives as a tool_result block paired with the call,
     // which MessageBlocks renders as the collapsed pill (never prose).
-    const blocks = merged[0].content!;
+    const blocks = blocksOf(merged[0]);
     const result = blocks.find((b) => b.type === "tool_result");
     expect(result).toBeDefined();
     expect(result!.tool_use_id).toBe("call-1");
@@ -65,7 +69,7 @@ describe("mergeStandaloneToolResults", () => {
       assistantWithToolCall("call-1"),
       toolResultMessage("call-1", "boom", { isError: true }),
     ]);
-    const result = merged[0].content!.find((b) => b.type === "tool_result");
+    const result = blocksOf(merged[0]).find((b) => b.type === "tool_result");
     expect(result!.isError).toBe(true);
   });
 
@@ -79,8 +83,8 @@ describe("mergeStandaloneToolResults", () => {
     expect(merged).toHaveLength(2);
     const orphan = merged[0];
     expect(orphan.role).toBe("assistant");
-    const use = orphan.content!.find((b) => b.type === "tool_use");
-    const result = orphan.content!.find((b) => b.type === "tool_result");
+    const use = blocksOf(orphan).find((b) => b.type === "tool_use");
+    const result = blocksOf(orphan).find((b) => b.type === "tool_result");
     expect(use).toBeDefined();
     expect(use!.name).toBe("web_search");
     expect(result!.tool_use_id).toBe(use!.id);
@@ -99,7 +103,7 @@ describe("mergeStandaloneToolResults", () => {
       toolResultMessage("call-1", "re-delivered"),
     ]);
     // The re-delivered row falls to the orphan path instead of duplicating.
-    expect(merged[0].content!.filter((b) => b.type === "tool_result")).toHaveLength(1);
+    expect(blocksOf(merged[0]).filter((b) => b.type === "tool_result")).toHaveLength(1);
     expect(merged).toHaveLength(2);
   });
 
@@ -131,7 +135,7 @@ describe("projectChatHistoryMessages (merge integration)", () => {
     // …the repair row is gone entirely (filtered, not folded into a pill)…
     expect(projected).toHaveLength(1);
     // …and the real result is folded onto its assistant message.
-    const result = projected[0].content!.find((b) => b.type === "tool_result");
+    const result = blocksOf(projected[0]).find((b) => b.type === "tool_result");
     expect(result).toBeDefined();
     expect(result!.content).toEqual([{ type: "text", text: "real output" }]);
   });

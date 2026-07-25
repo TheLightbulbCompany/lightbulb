@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
 import type { ExecApprovalRequest } from "@/hooks/useExecApprovals";
+import { resolveMessageBlocks } from "@/hooks/internal/toolBlockExtract";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
@@ -440,7 +441,7 @@ describe("useAgentChat — approval-pause busy gate", () => {
           m.content.some((b) => b.type === "tool_use" && b.id === "tc-output"),
       );
     expect(assistantMsg).toBeTruthy();
-    const result_block = assistantMsg!.content!.find(
+    const result_block = resolveMessageBlocks(assistantMsg!).find(
       (b) => b.type === "tool_result" && b.tool_use_id === "tc-output",
     );
     expect(result_block).toBeTruthy();

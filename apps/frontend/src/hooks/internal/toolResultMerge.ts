@@ -26,6 +26,7 @@ import {
   isToolResultBlock,
   isToolUseBlock,
   resolveToolUseId,
+  resolveMessageBlocks,
 } from "./toolBlockExtract";
 
 const TOOL_RESULT_ROLES = new Set(["toolresult", "tool_result", "tool"]);
@@ -52,6 +53,9 @@ function resolveMessageToolCallId(m: HistoryMessage): string | undefined {
  * the flat text field. */
 function resolveResultContent(m: HistoryMessage): unknown {
   if (Array.isArray(m.content) && m.content.length > 0) return m.content;
+  // A bare-string `content` is the result text itself; renderToolOutput takes
+  // a string just as happily as a block array.
+  if (typeof m.content === "string" && m.content.length > 0) return m.content;
   if (typeof m.text === "string") return m.text;
   return "";
 }
@@ -103,7 +107,11 @@ export function mergeStandaloneToolResults(
       };
       out[targetIndex] = {
         ...target,
-        content: [...(target.content ?? []), resultBlock],
+        // resolveMessageBlocks, not `target.content ?? []`: `content` is a
+        // union with string, and spreading a string would explode it into
+        // one-character blocks. (Unreachable today — the match above requires
+        // an array-shaped toolCall block — but the shape must stay honest.)
+        content: [...resolveMessageBlocks(target), resultBlock],
       };
       continue;
     }

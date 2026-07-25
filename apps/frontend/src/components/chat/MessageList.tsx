@@ -35,6 +35,7 @@ import {
   isTextBlock,
   resolveToolUseId,
   resolveToolArgs,
+  resolveMessageBlocks,
 } from "@/hooks/internal/toolBlockExtract";
 import type {
   ChatRenderItem,
@@ -545,17 +546,11 @@ function MessageBlocks({
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
 }) {
-  // Some HistoryMessage payloads — older chat.history rows and cron
-  // run transcripts — carry their assistant text on the top-level
-  // `message.text` field instead of in `content[]`. Without a fallback
-  // those messages render as empty bubbles (UserMessageRow already has
-  // the analogous fallback). Synthesize a single text block from
-  // `message.text` when content is missing or empty.
-  const blocks: ContentBlock[] = Array.isArray(message.content) && message.content.length > 0
-    ? message.content
-    : typeof message.text === "string" && message.text.length > 0
-      ? [{ type: "text", text: message.text }]
-      : [];
+  // `content` may be a block array, a bare string, or absent with the body on
+  // the top-level `text` field (older chat.history rows, cron run transcripts).
+  // resolveMessageBlocks collapses all three — without it each non-array shape
+  // renders as an empty bubble.
+  const blocks: ContentBlock[] = resolveMessageBlocks(message);
   const pairs = pairToolBlocks(blocks);
   const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
   const rendered: React.ReactNode[] = [];
@@ -632,12 +627,13 @@ function MessageBlocks({
 }
 
 function UserMessageRow({ message }: { message: HistoryMessage }) {
-  const text = Array.isArray(message.content)
-    ? message.content
-        .filter(isTextBlock)
-        .map((b) => (b.text ?? "") as string)
-        .join("")
-    : (message.text ?? "");
+  // Same three-shape normalization as MessageBlocks — a typed user message
+  // arrives from chat.history with `content` as a bare string, which the old
+  // `Array.isArray ? … : message.text ?? ""` ternary rendered as empty.
+  const text = resolveMessageBlocks(message)
+    .filter(isTextBlock)
+    .map((b) => (b.text ?? "") as string)
+    .join("");
   return (
     <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col min-w-0 max-w-[85%]">

@@ -7,6 +7,31 @@
 import type { ContentBlock } from "./types";
 
 const TEXT_TYPES = new Set(["text", "output_text", "input_text"]);
+
+/**
+ * Normalize a message's body to a block array, collapsing the three shapes
+ * `chat.history` returns for the same logical thing (see `HistoryMessage.content`):
+ * a block array, a bare `content` string, or a top-level `text` field.
+ *
+ * This is the ONLY correct way to ask "what is in this message". Reading
+ * `content` as an array and treating everything else as empty silently
+ * discards every plain-text turn — which is how the string shape, the one
+ * OpenClaw persists for literally every message a user types, went unrendered.
+ */
+export function resolveMessageBlocks(message: {
+  content?: ContentBlock[] | string;
+  text?: string;
+}): ContentBlock[] {
+  const { content } = message;
+  if (Array.isArray(content) && content.length > 0) return content;
+  if (typeof content === "string" && content.length > 0) {
+    return [{ type: "text", text: content }];
+  }
+  if (typeof message.text === "string" && message.text.length > 0) {
+    return [{ type: "text", text: message.text }];
+  }
+  return [];
+}
 const TOOL_USE_TYPES = new Set(["toolcall", "tool_call", "tooluse", "tool_use"]);
 const TOOL_RESULT_TYPES = new Set(["toolresult", "tool_result"]);
 

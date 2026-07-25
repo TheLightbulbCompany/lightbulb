@@ -411,11 +411,17 @@ export interface AdminProvisioning {
     funnel_state?: string | null;
     funnel_submitted_at?: string | null;
     funnel_completed_at?: string | null;
+    onboarding_goal_id?: string | null;
+    onboarding_project_id?: string | null;
+    onboarding_submitted_by?: string | null;
     bootstrap_state?: string | null;
     bootstrap_attempts?: number | null;
     bootstrap_last_error?: string | null;
+    bootstrap_dispatch_id?: string | null;
     bootstrap_dispatched_at?: string | null;
     bootstrap_delivered_at?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
     /**
      * Present INSTEAD of the fields above when the backend's Paperclip-company
      * read itself failed (DDB timeout) — distinguishable from `paperclip ===

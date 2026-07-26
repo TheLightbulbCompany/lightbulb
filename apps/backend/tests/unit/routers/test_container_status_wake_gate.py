@@ -46,7 +46,7 @@ def _patches(row: dict, *, parked: bool, budget_ok: bool = True, trial_reason=No
         patch("routers.container._assert_provision_allowed", new=AsyncMock()),
         patch("routers.container.wake_policy.is_parked_trial", new=AsyncMock(return_value=parked)),
         patch("routers.container.wake_policy.legacy_wake_allowed", new=AsyncMock(return_value=budget_ok)),
-        patch("routers.container._dispatch_provision", new=AsyncMock()),
+        patch("routers.container.dispatch_provision", new=AsyncMock()),
     ]
 
 

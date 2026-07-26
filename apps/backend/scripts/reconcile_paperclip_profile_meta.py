@@ -38,7 +38,7 @@ Optional ``--owner-id`` / ``--agent-id`` scope a single owner / agent.
 Adaptation notes
 ----------------
 
-Mirrors ``scripts.migrate_paperclip_session_strategy`` (argparse,
+Follows the house shape for a per-agent reconcile script (argparse,
 logging, http/cookie setup, ``_scan_company_owner_map``, the
 non-list ``list_agents`` guard, the per-agent try/except continue, and
 the ``finally await http.aclose()`` teardown). ``ENVIRONMENT`` is set
@@ -145,7 +145,7 @@ async def _scan_company_owner_map() -> dict[str, str]:
     """Paginate the ``paperclip-companies`` table and return a
     ``{company_id: owner_id}`` map.
 
-    Copied from ``scripts.migrate_paperclip_session_strategy``. ``owner_id``
+    ``owner_id``
     is sourced from the ``org_id`` column (post-cutover that column
     carries the container's owner — Clerk org_id for orgs, Clerk
     user_id for personal owners; identical across every row in the same

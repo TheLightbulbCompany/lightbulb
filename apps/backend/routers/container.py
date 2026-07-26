@@ -24,7 +24,6 @@ from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
-from core.services.provision_dispatch import dispatch_provision as _dispatch_provision
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
@@ -399,7 +398,7 @@ async def container_status(
                 # Default True keeps a cause-less legacy error row self-healing
                 # (the pre-T3 auto-retry behaviour).
                 if container.get("retryable", True):
-                    asyncio.create_task(_dispatch_provision(owner_id))
+                    asyncio.create_task(dispatch_provision(owner_id))
                     container["substatus"] = "error_retrying"
                     _sync_contract_with_container(contract, container)
             else:
@@ -439,7 +438,7 @@ async def container_status(
                 # lease, which the claim's stale-clause could then mis-time. The
                 # local dict mutation below only shapes THIS response; the row
                 # flips ~ms later when the dispatched task wins its claim.
-                asyncio.create_task(_dispatch_provision(owner_id))
+                asyncio.create_task(dispatch_provision(owner_id))
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"
                 _sync_contract_with_container(contract, container)

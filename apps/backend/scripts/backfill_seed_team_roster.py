@@ -23,7 +23,7 @@ when present — a missing seeded agent is skipped, never substituted); only
 markerless legacy rows fall back to role/name matching, so a renamed Atlas on
 such a row is skipped.
 
-Scan + repo patterns mirror ``backfill_paperclip_for_legacy_users.py``;
+Scan + repo patterns follow the house shape for a fleet-wide backfill;
 admin client construction mirrors ``paperclip_provisioning
 .build_paperclip_provisioning``.
 """

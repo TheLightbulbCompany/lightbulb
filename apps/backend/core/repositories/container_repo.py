@@ -154,7 +154,7 @@ async def try_claim_provision(
     every ~3s, and the container row historically wasn't written until deep
     inside the provision (create_user_service), AFTER the Bedrock AIP mint. So
     two polls (a page refresh mid-provision) both saw "no row", both dispatched
-    ``background_provision``, and the two full provisions interleaved — each
+    ``dispatch_provision``, and the two full provisions interleaved — each
     minted its own inference profile (Bedrock does not enforce name-uniqueness)
     and one's ARN landed in the container config while the other's landed in
     the IAM policy: AccessDenied on every model call. Seen live on prod.
@@ -395,7 +395,7 @@ async def update_container_leased(
 
     - ``generation`` -- when given, additionally requires the row's
       ``provision_generation`` (the container-incarnation fence, minted once
-      at G1 -- see ``core.services.generation_ids``) to match or be absent.
+      at G1 in ``EcsManager.create_user_service``) to match or be absent.
       Belt-and-suspenders against a very late straggler from a PRIOR
       container incarnation (a full delete+recreate, not merely a lease
       retake) writing onto a newer incarnation's row; ``claim_id`` alone
@@ -675,7 +675,7 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     ``release_provision_to_error``.
 
     Lives here (not in a service) because it is shared by both callers of that
-    release — ``services.container_provision.background_provision`` (the
+    release — ``services.provision_dispatch.dispatch_provision`` (the
     poll-driven path) and ``containers.ecs_manager.provision_user_container``
     (the deliberate-reprovision doors) — and this repository already owns the
     error transition + fields, so both can import it without an import cycle.

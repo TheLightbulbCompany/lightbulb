@@ -1809,10 +1809,9 @@ def build_openclaw_config_dict(
                     bindings.append(binding)
 
     # ACP coding-harness runtime (Jarvis-style delegation: a native agent can
-    # ``sessions_spawn({runtime:"acp"})`` Claude Code / Codex / Gemini). Gated
-    # behind ``acp_enabled`` (a backend feature flag the I/O caller resolves
-    # from ``settings.ACP_ENABLED``) so it stays dark until the acpx-baked image
-    # (Dockerfile Layer 12) is promoted and we choose to roll it out. Harnesses
+    # ``sessions_spawn({runtime:"acp"})`` Claude Code / Codex / Gemini). On
+    # fleet-wide; ``acp_enabled=False`` is still passed by the marketplace
+    # deploy path when a listing does not declare ``requires_acp``. Harnesses
     # are DERIVED from the provider choice — no stored per-owner state. Emitting
     # ``acp.enabled`` is what teaches a native agent it can spawn (upstream
     # ``isAcpRuntimeSpawnAvailable`` -> ``acpEnabled: true`` in the system
@@ -1840,7 +1839,7 @@ async def write_openclaw_config(
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
-    acp_enabled: bool | None = None,
+    acp_enabled: bool = True,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -1880,12 +1879,6 @@ async def write_openclaw_config(
         ValueError: when ``provider_choice`` is unknown or
             ``byo_provider`` is missing/invalid for ``byo_key``.
     """
-    # ACP rollout is a backend-level feature flag, not per-owner state. When the
-    # caller doesn't pin it explicitly, resolve from settings so the whole fleet
-    # flips with one env var (dark by default).
-    if acp_enabled is None:
-        acp_enabled = settings.ACP_ENABLED
-
     config = build_openclaw_config_dict(
         user_id=user_id,
         gateway_token=gateway_token,

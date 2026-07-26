@@ -1,9 +1,8 @@
-"""Unit tests for the extracted background_provision helper.
+"""Unit tests for core.services.container_provision — provider-choice
+resolution and the provision metric.
 
-background_provision is a pure pass-through to
-core.services.provision_dispatch.dispatch_provision (the SFN executor, no
-flag — spec §7 PR-10). Its own claim/provide/release logic moved into
-dispatch_provision + scripts.provision_runner — see
+Provisioning dispatch itself lives in core.services.provision_dispatch
+(the SFN executor) and scripts.provision_runner — see
 tests/unit/services/test_provision_dispatch.py and
 tests/unit/scripts/test_provision_runner.py for that behavior."""
 
@@ -142,38 +141,17 @@ async def test_pre_stage_oauth_reads_connector_writes_owner():
 
 
 # ---------------------------------------------------------------------------
-# background_provision — THE single funnel, now a pure delegate to the SFN
-# executor (spec §7 PR-10). No flag, no inline fallback: every call site
-# (status-poll auto-retry, ensure_user_ready, reprovision_for_user,
-# container_wake, change_provider's cold path) rides dispatch_provision
-# unchanged.
+# container_provision is provider-choice resolution ONLY. Provisioning itself
+# is dispatched by core.services.provision_dispatch.dispatch_provision — the
+# single funnel every call site (status-poll auto-retry, ensure_user_ready,
+# reprovision_for_user, container_wake, change_provider's cold path) rides.
 
 
-async def test_background_provision_delegates_to_dispatch_provision():
-    from core.services import container_provision
-
-    dispatched = AsyncMock()
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatched):
-        await container_provision.background_provision("user_a", "user_a")
-    dispatched.assert_awaited_once_with("user_a")
-
-
-async def test_background_provision_ignores_clerk_user_id_kept_for_compat():
-    """clerk_user_id is accepted for caller-signature compatibility only —
-    dispatch_provision is called with owner_id alone."""
-    from core.services import container_provision
-
-    dispatched = AsyncMock()
-    with patch("core.services.provision_dispatch.dispatch_provision", dispatched):
-        await container_provision.background_provision("org_abc", "user_admin_totally_different")
-    dispatched.assert_awaited_once_with("org_abc")
-
-
-async def test_background_provision_never_calls_ecs_manager_directly():
-    """Regression guard for the de-flag: background_provision must not
-    import/call get_ecs_manager or provision_user_container itself anymore —
-    that work moved entirely into scripts.provision_runner, a separate
-    process the backend never invokes in-process."""
+async def test_container_provision_never_touches_ecs_directly():
+    """Regression guard for the de-flag: this module must not import/call
+    get_ecs_manager or provision_user_container — that work lives entirely
+    in scripts.provision_runner, a separate process the backend never
+    invokes in-process."""
     from core.services import container_provision
 
     assert not hasattr(container_provision, "get_ecs_manager")

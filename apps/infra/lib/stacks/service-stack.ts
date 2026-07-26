@@ -1303,18 +1303,6 @@ export class ServiceStack extends cdk.Stack {
         props.container.ownerBedrockBoundary.managedPolicyArn,
       BEDROCK_OWNER_BASE_POLICY_ARN:
         props.container.ownerBedrockBasePolicy.managedPolicyArn,
-      // ACP coding-harness runtime (acpx). Master switch read by
-      // core.config.settings.ACP_ENABLED — when true, write_openclaw_config
-      // emits the acp block + plugins.entries.acpx and provision wires the
-      // per-owner Bedrock harness env, letting a native agent (Jarvis)
-      // sessions_spawn Claude Code / Codex. The harness set is DERIVED
-      // per-owner from provider_choice (bedrock/byo-anthropic -> claude;
-      // chatgpt-oauth/byo-openai -> codex), so no owner is handed a harness
-      // it cannot authenticate. Enabled fleet-wide now that the acpx-baked
-      // extended image (2026.6.10-isol8.2, Dockerfile Layer 13) is promoted
-      // in openclaw-version.json for both dev and prod; existing containers
-      // pick up the acp block on their next reprovision / config patch.
-      ACP_ENABLED: "true",
       // Wake-on-intent gating for parked (stop_reason=trial_idle) trial
       // containers. ON in every environment — the code is fail-open (any
       // uncertainty falls back to wake-on-read, never worse than the old
@@ -1835,7 +1823,7 @@ export class ServiceStack extends cdk.Stack {
         ...backendContainerEnvironment,
         // THE provisioning executor, active on merge — no flag (spec §7 /
         // onboarding-architecture-design.md PR-10). The state machine below
-        // is dispatched by every background_provision call via
+        // is dispatched by every dispatch_provision call via
         // core.services.provision_dispatch.
         PROVISION_STATE_MACHINE_ARN: provisionStateMachine.stateMachineArn,
       },

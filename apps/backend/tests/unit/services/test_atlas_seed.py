@@ -188,11 +188,10 @@ def _acp_files_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_acp_section_appended_to_agents_when_flag_on(captured_ws, tmp_path, monkeypatch):
-    """With ACP_ENABLED on, Atlas's AGENTS.md ships the harness-delegation
-    section appended to the vendored base copy."""
+async def test_acp_section_appended_to_agents(captured_ws, tmp_path, monkeypatch):
+    """Atlas's AGENTS.md ships the harness-delegation section appended to the
+    vendored base copy."""
     _acp_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
 
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
@@ -201,21 +200,6 @@ async def test_acp_section_appended_to_agents_when_flag_on(captured_ws, tmp_path
     assert "base recruiter copy" in agents_md  # vendored base preserved
     assert "Coding-Harness Delegation (ACP)" in agents_md  # section appended
     assert 'sessions_spawn({ runtime: "acp" })' in agents_md
-
-
-@pytest.mark.asyncio
-async def test_acp_section_absent_when_flag_off(captured_ws, tmp_path, monkeypatch):
-    """Default (flag off): AGENTS.md is the vanilla vendored copy — no ACP
-    section leaks into the recruiter prompt before the feature is rolled out."""
-    _acp_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ACP_ENABLED", False)
-    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
-
-    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
-
-    agents_md = captured_ws.written["workspace-uuid-atlas/AGENTS.md"]
-    assert "base recruiter copy" in agents_md
-    assert "Coding-Harness Delegation (ACP)" not in agents_md
 
 
 def _bridge_files_dir(tmp_path, monkeypatch):
@@ -364,12 +348,11 @@ async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkey
 
 @pytest.mark.asyncio
 async def test_force_with_acp_overwrites_agents_with_acp_section(force_ws, monkeypatch, tmp_path):
-    """force=True AND ACP_ENABLED=True: AGENTS.md is force-overwritten WITH the
+    """force=True: AGENTS.md is force-overwritten WITH the
     ACP section appended (force must carry the augmentation, not the vanilla
     copy). Also asserts written stays 0 under force (overwrites count in
     overwritten only, so atlas_seed.success doesn't fire on overwrites)."""
     _acp_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
     written: dict[str, str] = {}
 
     def _wf(user_id, path, content):

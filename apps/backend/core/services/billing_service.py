@@ -1223,7 +1223,7 @@ async def change_provider(
         },
     )
 
-    # Stop-first (F1). A bare background_provision dispatch's FIRST act is
+    # Stop-first (F1). A bare dispatch_provision call's FIRST act is
     # the single-flight provision claim, whose ConditionExpression admits
     # only no-row/error/stopped/stale-provisioning — a "running" row is NOT
     # claimable, so the dispatch loses the claim and stands down silently:
@@ -1231,7 +1231,7 @@ async def change_provider(
     # def + rewrites openclaw.json) is never reached, yet we'd still tell
     # the caller ``restart: True``. reprovision_for_user fixes this by
     # scaling the service to 0 and waiting for it to drain BEFORE
-    # dispatching background_provision, so the dispatch lands on the
+    # dispatching dispatch_provision, so the dispatch lands on the
     # scale-from-zero branch instead of racing (and losing to) the still-
     # running row. Mirrors the admin container-reprovision action
     # (routers/admin.py) — see EcsManager.reprovision_for_user's docstring.
@@ -1248,7 +1248,7 @@ async def change_provider(
     # poll's wake path wins the claim and applies the committed provider.
     # (stop_user_service treats a missing ECS service as idempotent
     # success, so a subscribed-but-never-provisioned owner falls through
-    # to background_provision's create-from-scratch path.)
+    # to dispatch_provision's create-from-scratch path.)
     #
     # Accepted race — a status-poll wake DURING the drain window: the
     # poll's retryable-state dispatch can claim the stopped row before

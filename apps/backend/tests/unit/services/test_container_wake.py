@@ -30,7 +30,7 @@ def _ctx(row, *, trial_reason=None, gate=None):
             new=AsyncMock(return_value=gate_obj),
         ),
         patch("core.repositories.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
-        patch("core.services.container_wake.background_provision", new=AsyncMock()),
+        patch("core.services.container_wake.dispatch_provision", new=AsyncMock()),
     ]
 
 

@@ -55,6 +55,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from ulid import ULID
 
 from core.auth import is_org_owner_id
 from core.config import settings
@@ -62,7 +63,6 @@ from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
-from core.services.generation_ids import bump_onboarding_generation
 from core.services.company_identity import generate_company_name
 from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
@@ -773,7 +773,7 @@ class PaperclipProvisioning:
                 onboarding_fields = _carry_forward_onboarding_fields(existing)
             else:
                 onboarding_fields = {
-                    "onboarding_generation": bump_onboarding_generation(),
+                    "onboarding_generation": str(ULID()),
                     "funnel_state": "not_started",
                     "bootstrap_state": "not_started",
                 }

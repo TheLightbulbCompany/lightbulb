@@ -22,9 +22,3 @@ def cents_to_microcents(cents: float | int) -> int:
     """Metronome cents -> internal microcents (webhook remaining_balance,
     getNetBalance balance)."""
     return round(float(cents) * MICROCENTS_PER_CENT)
-
-
-def microcents_to_cents(microcents: int) -> int:
-    """Internal microcents -> Metronome cents (commit amounts; alert
-    thresholds are already carried in cents end-to-end)."""
-    return round(int(microcents) / MICROCENTS_PER_CENT)

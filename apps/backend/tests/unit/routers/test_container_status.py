@@ -1205,7 +1205,7 @@ class TestContainerStatusTrialConversion:
         writer is required, and two live tasks corrupt it. The just-paid owner
         is polling /status every ~3s; without a guard, that poll sees
         status="stopped", passes the gate (they're paid now), and dispatches
-        its OWN background_provision with no drain wait. Two provisions race.
+        its OWN dispatch_provision with no drain wait. Two provisions race.
 
     (b) The conversion is one fire-and-forget task. If it dies, Stripe never
         re-fires it (its retry sees old_status != "trial_local"), and the
@@ -1286,7 +1286,7 @@ class TestContainerStatusTrialConversion:
     @pytest.mark.asyncio
     async def test_converting_row_is_not_auto_retried(self):
         """A row the conversion owns (substatus=converting) must NOT be
-        auto-retried — that second background_provision has no drain wait and
+        auto-retried — that second dispatch_provision has no drain wait and
         would run a task alongside the one still draining."""
         from routers.container import container_status
 
@@ -1348,11 +1348,11 @@ class TestContainerStatusTrialConversion:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        # The racy status pre-write is deliberately gone — background_provision's
+        # The racy status pre-write is deliberately gone — dispatch_provision's
         # atomic lease claim IS the transition to "provisioning" now. The poll
         # only dispatches and shapes its own response.
         repo.update_status.assert_not_awaited()
-        assert captured == ["background_provision"], f"expected the ordinary auto-retry, got {captured}"
+        assert captured == ["dispatch_provision"], f"expected the ordinary auto-retry, got {captured}"
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
 
@@ -1470,7 +1470,7 @@ class TestContainerStatusTrialBedrockRestore:
 
         restore.assert_awaited_once_with("user_x")
         assert row["bedrock_revoked"] is False
-        assert captured == ["background_provision"], f"expected auto-retry to still fire, got {captured}"
+        assert captured == ["dispatch_provision"], f"expected auto-retry to still fire, got {captured}"
         assert result["container_status"] == "provisioning"
 
     @pytest.mark.asyncio
@@ -1690,7 +1690,7 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "error"
         assert result["last_error"] == "ValueError: bad config"
-        assert "background_provision" not in captured, f"deterministic error must not re-dispatch, got {captured}"
+        assert "dispatch_provision" not in captured, f"deterministic error must not re-dispatch, got {captured}"
         assert captured == []
 
     @pytest.mark.asyncio
@@ -1717,7 +1717,7 @@ class TestContainerStatusHonestError:
         assert result["container_substatus"] == "error_retrying"
         assert result["container_substatus"] != "provisioning", "an error must never be masked as provisioning"
         assert result["last_error"] == "EcsManagerError: spot reclaimed"
-        assert captured == ["background_provision"], f"transient error must re-dispatch, got {captured}"
+        assert captured == ["dispatch_provision"], f"transient error must re-dispatch, got {captured}"
 
     @pytest.mark.asyncio
     async def test_error_defaults_to_retryable_when_flag_absent(self):
@@ -1734,7 +1734,7 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "error"
         assert result["container_substatus"] == "error_retrying"
-        assert captured == ["background_provision"]
+        assert captured == ["dispatch_provision"]
 
     @pytest.mark.asyncio
     async def test_stopped_row_still_auto_wakes_as_provisioning(self):
@@ -1752,7 +1752,7 @@ class TestContainerStatusHonestError:
 
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
-        assert captured == ["background_provision"]
+        assert captured == ["dispatch_provision"]
 
     @pytest.mark.asyncio
     async def test_stale_provisioning_lease_still_reclaims(self):
@@ -1777,7 +1777,7 @@ class TestContainerStatusHonestError:
                 stack.enter_context(p)
             result = await container_status(_personal_auth())
 
-        assert captured == ["background_provision"], f"stale lease must re-claim, got {captured}"
+        assert captured == ["dispatch_provision"], f"stale lease must re-claim, got {captured}"
         assert result["container_status"] == "provisioning"
         assert result["container_substatus"] == "auto_retry"
 

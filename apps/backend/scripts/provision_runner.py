@@ -140,7 +140,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
 
     Org-vs-personal is derived from the ``owner_id`` prefix
     (``is_org_owner_id``). The dispatch carries ONLY owner_id
-    (``background_provision`` drops the triggering user_id, and threading it
+    (the dispatch path drops the triggering user_id, and threading it
     into the execution input would break Branch-A idempotency — the input must
     stay byte-identical across a claim's re-issues, but the triggering admin
     can differ between two polls). So the org path resolves the company's

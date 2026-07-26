@@ -642,8 +642,6 @@ class CatalogService:
 
         Returns True iff the ACP block was written. Returns False (no-op) when:
           - the listing doesn't require ACP,
-          - ``settings.ACP_ENABLED`` is off (the platform-wide rollout flag —
-            the acpx runtime is only baked + promoted behind it),
           - the buyer's provider can't authenticate any harness
             (``derive_enabled_harnesses`` returns []; e.g. a Gemini-only owner).
 
@@ -657,15 +655,6 @@ class CatalogService:
         another ACP agent just re-merges the same block.
         """
         if not manifest.get("requires_acp"):
-            return False
-
-        from core.config import settings
-
-        if not settings.ACP_ENABLED:
-            logger.info(
-                "deploy: listing requires ACP but ACP_ENABLED is off; skipping for %s",
-                owner_id,
-            )
             return False
 
         from core.containers.config import build_acp_config, derive_enabled_harnesses

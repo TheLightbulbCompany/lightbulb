@@ -1,6 +1,6 @@
 """SFN dispatch for container provisioning.
 
-THE executor for ``background_provision`` — there is no flag and no inline
+THE single provisioning funnel — there is no flag and no inline
 fallback (spec §7, PR-10: "no dual-run window"). Dispatch is crash-safe by
 execution NAME: the claim write stamps the name atomically (container_repo),
 and StartExecution is idempotent for STANDARD workflows on identical
@@ -98,7 +98,7 @@ async def dispatch_provision(owner_id: str) -> None:
     """Start (or idempotently re-start) the provisioning state machine for
     this owner. Never raises — dispatch failure releases the claim to
     ``error`` so the status poll's normal retry re-dispatches."""
-    # Re-bind correlation ids: like background_provision, this can run in a
+    # Re-bind correlation ids: dispatched via create_task, this can run in a
     # detached task where the HTTP-middleware binds did not propagate.
     bind_log_context(user_id=owner_id)
     try:

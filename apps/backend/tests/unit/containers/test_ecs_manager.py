@@ -445,7 +445,7 @@ class TestCreateUserService:
         """create_user_service upserts repo record early, then creates access point, task def, service."""
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.containers.ecs_manager.new_provision_generation", return_value="01ARZ3TESTGENERATION0"),
+            patch("core.containers.ecs_manager.ULID", return_value="01ARZ3TESTGENERATION0"),
         ):
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -768,7 +768,7 @@ class TestStopUserService:
         stopped, so a drifted "running" row regains claim/wake eligibility.
         This is what lets a cold provider change on a
         subscribed-but-never-provisioned owner fall through to
-        background_provision's create-from-scratch path instead of 500ing."""
+        dispatch_provision's create-from-scratch path instead of 500ing."""
         mock_ecs_client.update_service.side_effect = ClientError(
             {"Error": {"Code": code, "Message": "gone"}},
             "UpdateService",
@@ -1012,7 +1012,7 @@ class TestStartUserServiceGuards:
         task def inside the drain window would make the later provision claim
         see a desired/running service and take the branch that rewrites
         nothing — silently dropping the provider switch. The status poll's
-        wake path (background_provision → force=True start) bypasses this
+        wake path (dispatch_provision → force=True start) bypasses this
         guard and converges the row properly."""
         from core.containers.ecs_manager import START_REFUSED_REPROVISIONING
 
@@ -1125,7 +1125,7 @@ class TestStartUserServiceGuards:
     async def test_provision_user_container_start_is_not_guarded(self, manager, mock_ecs_client, monkeypatch):
         """provision_user_container's own start MUST bypass the guards, or the
         trial->paid conversion deadlocks itself: the conversion stamps the row,
-        THEN dispatches background_provision -> provision_user_container, which
+        THEN dispatches dispatch_provision -> provision_user_container, which
         would find its own stamp and refuse to start the container it just
         reprovisioned."""
         from core.services.trial_cap import CAP_MICROCENTS
@@ -3400,7 +3400,7 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
     """The admin reprovision must run a FULL reprovision: scale to 0 first (so
     provision takes its scale-from-zero branch that re-registers the task def +
     rewrites the EFS config), wait for the old task to fully drain (single EFS
-    SQLite writer), then dispatch background_provision. The old stale-task-def
+    SQLite writer), then dispatch dispatch_provision. The old stale-task-def
     force-redeploy path (start_user_service) must NOT be used.
     """
     order = []
@@ -3413,15 +3413,15 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
         order.append("drain")
         return True
 
-    async def _fake_bg(owner_id, clerk_user_id):
+    async def _fake_bg(owner_id):
         order.append("provision")
-        dispatched.append((owner_id, clerk_user_id))
+        dispatched.append(owner_id)
 
     manager.stop_user_service = AsyncMock(side_effect=_fake_stop)
     manager._wait_for_service_drained = AsyncMock(side_effect=_fake_drain)
     manager.start_user_service = AsyncMock()
     with patch(
-        "core.services.container_provision.background_provision",
+        "core.services.provision_dispatch.dispatch_provision",
         side_effect=_fake_bg,
     ):
         result = await manager.reprovision_for_user("org_abc")
@@ -3439,7 +3439,7 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
     manager._wait_for_service_drained.assert_awaited_once_with("org_abc")
     assert order == ["stop", "drain", "provision"], order
     # Then the FULL provision is dispatched.
-    assert dispatched == [("org_abc", "org_abc")]
+    assert dispatched == ["org_abc"]
     # The old stale-task-def scale-up path must NOT be used.
     manager.start_user_service.assert_not_awaited()
 
@@ -3583,9 +3583,9 @@ class TestProvisionFailureClassification:
     """provision_user_container's own except block records the failure CAUSE
     (last_error + retryable) on the error transition. This is the release that
     actually lands on the common inner-failure path (it fires before
-    background_provision's, which then no-ops on the flipped status), and it is
+    dispatch_provision's, which then no-ops on the flipped status), and it is
     the ONLY release for the deliberate doors (conversion / recover / admin)
-    that never pass through background_provision — so classification must happen
+    that never pass through dispatch_provision — so classification must happen
     here or a deterministic 4xx would loop forever as retryable."""
 
     @pytest.mark.asyncio

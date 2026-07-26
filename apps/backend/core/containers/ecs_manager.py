@@ -18,6 +18,7 @@ from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
+from ulid import ULID
 
 from core.config import settings
 from core.dynamodb import utc_now_iso
@@ -35,7 +36,6 @@ from core.containers.config import (
 from core.containers.workspace import get_workspace
 from core.repositories import billing_repo, container_repo
 from core.repositories.container_repo import ProvisionSuperseded
-from core.services.generation_ids import new_provision_generation
 
 logger = logging.getLogger(__name__)
 
@@ -831,15 +831,13 @@ class EcsManager:
             "substatus": None,
             "owner_type": owner_type,
             # The container-incarnation fence (INV-2). THE single mint point
-            # for provision_generation, system-wide — see
-            # core.services.generation_ids.new_provision_generation. Every
-            # other containers-row write path (scale-from-zero, force-redeploy,
+            # for provision_generation, system-wide. Every other
+            # containers-row write path (scale-from-zero, force-redeploy,
             # restart, provider hot-swap, Bedrock revoke/restore, Stripe
             # conversion) goes through container_repo.update_fields /
             # update_status / other scoped writers, none of which touch this
-            # field, so it survives all of them untouched. This PR is inert:
-            # no consumer reads it yet.
-            "provision_generation": new_provision_generation(),
+            # field, so it survives all of them untouched.
+            "provision_generation": str(ULID()),
         }
         if hook_token:
             upsert_fields["hook_token"] = hook_token
@@ -1169,7 +1167,7 @@ class EcsManager:
         #    provision claim would then see a desired/running service and
         #    take the branch that rewrites nothing — silently dropping the
         #    provider switch. Refusing here is safe: the status poll's wake
-        #    path dispatches background_provision (force=True internally),
+        #    path dispatches dispatch_provision (force=True internally),
         #    bypasses this guard, and applies the switch properly — so the
         #    row always converges even if the drain task died.
         if container and container.get("status") == "stopped" and container.get("stop_reason") == "reprovision":
@@ -1479,7 +1477,7 @@ class EcsManager:
         service — it left the container on its stale task-def AND its stale
         EFS config, so it could neither pick up a new image nor apply a
         backend config-builder change. Routing through
-        ``provision_user_container`` (via ``background_provision``) is the
+        ``provision_user_container`` (via ``dispatch_provision``) is the
         only path that re-runs ``write_user_configs`` + the chatgpt OAuth
         pre-stage, so an admin reprovision now genuinely re-applies config.
 
@@ -1527,7 +1525,7 @@ class EcsManager:
         max=100). Waiting here guarantees a single writer across the
         reprovision.
         """
-        from core.services.container_provision import background_provision
+        from core.services.provision_dispatch import dispatch_provision
 
         await self._wait_for_service_drained(user_id)
 
@@ -1535,7 +1533,7 @@ class EcsManager:
         # provider_choice off the billing row by owner_id, and chatgpt OAuth
         # resolves the connector via resolve_token_owner(owner_id). Pass
         # user_id for both to satisfy the signature.
-        asyncio.create_task(background_provision(user_id, user_id))
+        asyncio.create_task(dispatch_provision(user_id))
         return {"status": "reprovisioning"}
 
     async def reapply_standard_sizing(self, user_id: str) -> dict:
@@ -2000,10 +1998,10 @@ class EcsManager:
             raise
         except Exception as exc:
             # This is the release that ACTUALLY lands on the common inner-failure
-            # path: it fires before background_provision's own (which then no-ops
+            # path: it fires before dispatch_provision's own (which then no-ops
             # on the already-flipped status), and it also covers the deliberate
             # doors (conversion / recover / admin) that never reach
-            # background_provision. So the failure CAUSE must be classified and
+            # dispatch_provision. So the failure CAUSE must be classified and
             # recorded HERE too, or a deterministic 4xx would loop as retryable.
             last_error, retryable = _lease_repo.classify_provision_error(exc)
             try:
@@ -2250,9 +2248,8 @@ class EcsManager:
                 environment_for_task.append({"name": "AWS_BEARER_TOKEN_BEDROCK", "value": gate_token})
                 environment_for_task.append({"name": "AWS_BEDROCK_FORCE_HTTP1", "value": "1"})
 
-            # ACP coding-harness (Claude Code) Bedrock wiring. Gated by the
-            # ACP_ENABLED feature flag (dark by default, same gate as the
-            # openclaw.json acp block) and skipped for revoked owners — their
+            # ACP coding-harness (Claude Code) Bedrock wiring. Skipped for
+            # revoked owners — their
             # Bedrock grant is withheld above, so pointing the harness at it
             # would only AccessDeny. Points Claude Code at the owner's AIP ARNs
             # so its inference is billed to the owner (see helper docstring).
@@ -2261,7 +2258,7 @@ class EcsManager:
             # (no ACP on the free tier), so a trial container gets no acp block
             # to drive — and the harness env could not be built for one anyway:
             # it needs a haiku AIP the trial owner deliberately does not have.
-            if provider_choice == "bedrock_claude" and settings.ACP_ENABLED and not is_revoked and bedrock_aip_arns:
+            if provider_choice == "bedrock_claude" and not is_revoked and bedrock_aip_arns:
                 environment_for_task.extend(
                     _build_bedrock_acp_harness_env(
                         bedrock_aip_arns,
@@ -2396,7 +2393,7 @@ class EcsManager:
                             existing.get("bedrock_role_arn") if existing else None
                         )
                         # Size by plan on the restart path too — this is the
-                        # branch a full reprovision (stop -> background_provision)
+                        # branch a full reprovision (stop -> dispatch_provision)
                         # lands on, so without it an Ultra Pro reprovision would
                         # silently revert the container to the standard box.
                         restart_cpu, restart_memory = await self._size_for_owner(user_id)

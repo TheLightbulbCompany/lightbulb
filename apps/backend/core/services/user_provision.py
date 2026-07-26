@@ -34,7 +34,7 @@ from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_TITLE,
     create_enabled_schedule_routine,
 )
-from core.services.container_provision import background_provision
+from core.services.provision_dispatch import dispatch_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
@@ -136,7 +136,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # Auto-default a brand-new personal owner into a card-less trial_local
     # BEFORE the gate is evaluated, so the gate (which treats trial_local as
     # active + provision-eligible) returns None below and the normal
-    # Paperclip-seed + background_provision flow runs. Personal-only + the
+    # Paperclip-seed + dispatch_provision flow runs. Personal-only + the
     # rationale for the shared helper live in its docstring; /container/status
     # calls the SAME helper before its own gate.
     await ensure_personal_trial_default(auth, owner_id)
@@ -293,10 +293,10 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     if await wake_policy.is_parked_trial(owner_id, row):
         wake_policy.note_wake_suppressed(owner_id, row, door="ensure_user_ready", reason="gated")
     elif (row or {}).get("status") != "running":
-        # background_provision is idempotent on the absent/0-desired cases, so
+        # dispatch_provision is idempotent on the absent/0-desired cases, so
         # repeated owner polls on a not-yet-running container are safe: the
         # atomic claim collapses them to one execution.
-        asyncio.create_task(background_provision(owner_id, auth.user_id))
+        asyncio.create_task(dispatch_provision(owner_id))
         return
 
     try:

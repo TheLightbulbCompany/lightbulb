@@ -1029,17 +1029,45 @@ export function ProvisioningStepper({
   // Teams billing paywall: the gate returns team_billing_required for an org
   // owner (or member) with no billing row. Render the real per-seat checkout
   // card instead of the generic blocked card. TeamBillingCard is admin-gated
-  // internally — a member sees "ask your org admin" with no CTA.
+  // internally — a member sees "ask your org admin" with no CTA — and takes
+  // the gate's own `action.admin_only` rather than assuming it.
+  //
+  // The wrapper mirrors the generic blocked card below (logo centerpiece +
+  // Check again / Contact support footer on the #faf7f2 canvas) so a blocked
+  // org lands on the same shaped screen as every other gate; only the card in
+  // the middle differs.
   if (gatePhase === "blocked" && blocked && blocked.code === "team_billing_required") {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
-        <TeamBillingCard
-          seatCount={account?.seat_count ?? null}
-          seatPriceUsd={account?.team_seat_price_usd ?? null}
-          ownerRole={blocked.owner_role}
-          isSubscribed={false}
-          onSubscribe={startTeamCheckout}
-        />
+      <div className="flex-1 flex items-center justify-center bg-[#faf7f2] px-6 py-12">
+        <div className="flex w-full max-w-[440px] flex-col items-center">
+          <div className="mb-8 flex justify-center">
+            <Logo size="lg" href={null} />
+          </div>
+          <TeamBillingCard
+            seatCount={account?.seat_count ?? null}
+            seatPriceUsd={account?.team_seat_price_usd ?? null}
+            ownerRole={blocked.owner_role}
+            adminOnly={blocked.action.admin_only}
+            isSubscribed={false}
+            onSubscribe={startTeamCheckout}
+          />
+          <div className="mt-6 flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full border-[#e0dbd0]"
+              onClick={() => refresh()}
+            >
+              Check again
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <a
+                href="mailto:support@isol8.co"
+                onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+              >Contact support</a>
+            </Button>
+          </div>
+        </div>
       </div>
     );
   }

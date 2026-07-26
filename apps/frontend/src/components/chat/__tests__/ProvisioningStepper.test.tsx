@@ -436,6 +436,46 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       screen.getByRole("button", { name: /subscribe your team/i }).click();
     });
     expect(billingMockStartTeamCheckout).toHaveBeenCalled();
+
+    // The card must carry its own chrome: `.settings-*` classes live in a
+    // route-scoped stylesheet /chat never loads, so relying on them here is
+    // what made this gate paint as raw unstyled text in prod.
+    const card = screen.getByTestId("team-billing-card");
+    expect(card.className).not.toMatch(/settings-/);
+    expect(card.className).toMatch(/\bbg-white\b/);
+    // Same centerpiece footer the generic blocked card gets.
+    expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
+  });
+
+  it("hides the team CTA for a member when the gate says the action is admin_only", () => {
+    billingMockAccount = { provider_choice: null, seat_count: 4, team_seat_price_usd: 20 };
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "team_billing_required",
+        title: "Set up Teams billing",
+        message: "Your team needs an active per-seat subscription to start.",
+        action: {
+          kind: "link",
+          label: "Set up billing",
+          href: "/settings/billing",
+          admin_only: true,
+        },
+        owner_role: "member",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.queryByRole("button", { name: /subscribe your team/i })).toBeNull();
+    expect(screen.getByText(/ask your org admin/i)).toBeInTheDocument();
   });
 
   it("renders the ProviderPicker when phase=needs-signup", () => {

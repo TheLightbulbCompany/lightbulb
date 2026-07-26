@@ -250,6 +250,118 @@ async def _resolve_default_agent_id(owner_id: str) -> str | None:
     return None
 
 
+FIRST_CONTACT_MAX_ATTEMPTS = 3
+
+NUDGE_MESSAGE = (
+    "Before you stop: you haven't sent me your first email yet. Name the "
+    "company if you haven't, then send me a short note in your own voice "
+    "about what you found — the command is in your instructions."
+)
+
+# States that mean first contact is still owed. `failed` is included so a bad
+# mint or a failed SES send stays retryable; `sending` and `sent` are not.
+_FIRST_CONTACT_PENDING = ("not_started", "failed")
+
+
+async def _maybe_nudge_first_contact(
+    repo,
+    row_user_id: str,
+    *,
+    owner_id: str,
+    generation: str,
+    session_key: str,
+    friday_agent_id: str,
+    submitted_by: str,
+) -> None:
+    """Remind the agent if its run ended without sending the owner's first email.
+
+    This observer NEVER composes or sends mail — the send stays the agent's own
+    tool call against ``/agent-mail/send-to-owner``. It only notices she hasn't
+    and reminds her.
+
+    The ``/container/status`` poll cannot drive this: ``useProvisioningState``
+    documents that cadence as "0/off once ready", and first contact happens
+    AFTER ready, so a retry hung off the poll would never fire. This reuses the
+    run-completion callback the dispatcher already registers for every first
+    run instead — no new machinery.
+
+    Nudge runs re-register this same callback, because the bootstrap run
+    terminates exactly once and attempts 2 and 3 would otherwise have no
+    trigger. ``bump_first_contact_attempts`` is therefore the SOLE bound on the
+    loop, and it is checked BEFORE dispatch — dispatching first would be an
+    unbounded chain of agent runs.
+    """
+    try:
+        onboarding = await repo.get_onboarding_state(owner_id) or {}
+        state = onboarding.get("first_contact_state") or "not_started"
+        if state not in _FIRST_CONTACT_PENDING:
+            return
+
+        if not await repo.bump_first_contact_attempts(
+            row_user_id, onboarding_generation=generation, limit=FIRST_CONTACT_MAX_ATTEMPTS
+        ):
+            # Budget spent. Record it terminally so this stops being invisible —
+            # the previous incarnation of this feature failed silently for its
+            # entire life.
+            await repo.settle_first_contact(
+                row_user_id,
+                onboarding_generation=generation,
+                state="failed",
+                reason="nudge_attempts_exhausted",
+            )
+            logger.warning("bootstrap_dispatcher: first-contact nudges exhausted for %s", owner_id)
+            return
+
+        from core.containers import get_ecs_manager, get_gateway_pool
+
+        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+        if not container or not ip or not container.get("gateway_token"):
+            return
+
+        pool = get_gateway_pool()
+        nudge_run_id = str(uuid4())
+
+        async def _on_nudge_terminal(state: str, payload: dict) -> None:
+            # Re-enter so attempts 2 and 3 have a trigger at all. The counter
+            # bump above is what terminates this chain.
+            if state == "final":
+                await _maybe_nudge_first_contact(
+                    repo,
+                    row_user_id,
+                    owner_id=owner_id,
+                    generation=generation,
+                    session_key=session_key,
+                    friday_agent_id=friday_agent_id,
+                    submitted_by=submitted_by,
+                )
+
+        if not pool.register_run_completion_callback(owner_id, nudge_run_id, _on_nudge_terminal):
+            return
+        pool.mark_run_active(owner_id, session_key, friday_agent_id, member_id=submitted_by)
+        try:
+            await pool.send_rpc(
+                user_id=owner_id,
+                req_id=f"first-contact-nudge-{nudge_run_id}",
+                method="chat.send",
+                params={
+                    "sessionKey": session_key,
+                    "message": NUDGE_MESSAGE,
+                    "idempotencyKey": nudge_run_id,
+                    "deliver": False,
+                },
+                ip=ip,
+                token=container["gateway_token"],
+            )
+        except Exception:
+            # Mirror the kickoff's cleanup: an un-consumed callback would leak
+            # in _run_completion_callbacks until the connection is torn down.
+            pool.clear_active_run(owner_id, session_key)
+            pool.unregister_run_completion_callback(owner_id, nudge_run_id)
+            raise
+    except Exception:  # noqa: BLE001 — a completion observer must never raise
+        logger.exception("bootstrap_dispatcher: first-contact nudge failed for %s", owner_id)
+
+
 async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = None) -> None:
     """Best-effort: dispatch Friday's first-run kickoff if it is this
     caller's turn to (INV-5) and the runtime is reachable right now.
@@ -351,6 +463,15 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
             if state == "final":
                 await repo.mark_bootstrap_delivered(
                     row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
+                )
+                await _maybe_nudge_first_contact(
+                    repo,
+                    row_user_id,
+                    owner_id=owner_id,
+                    generation=generation,
+                    session_key=session_key,
+                    friday_agent_id=friday_agent_id,
+                    submitted_by=submitted_by,
                 )
             else:
                 err_msg = payload.get("errorMessage") or payload.get("error") or f"chat.{state}"

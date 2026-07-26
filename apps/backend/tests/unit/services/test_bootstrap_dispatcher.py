@@ -547,3 +547,141 @@ async def test_registration_failure_does_not_unregister_since_nothing_was_regist
     _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
 
     pool.unregister_run_completion_callback.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# First-contact nudge
+#
+# The observer NEVER composes or sends mail -- the send stays the agent's own
+# tool call. It only notices she hasn't sent and reminds her.
+# ---------------------------------------------------------------------------
+
+
+class _NudgeRepo:
+    def __init__(self, state="not_started", allow_bump=True):
+        self.state = state
+        self.allow_bump = allow_bump
+        self.bumps = 0
+        self.settled = None
+        self.settle_reason = None
+
+    async def get_onboarding_state(self, owner_id):
+        return {"first_contact_state": self.state}
+
+    async def bump_first_contact_attempts(self, user_id, *, onboarding_generation, limit):
+        self.bumps += 1
+        return self.allow_bump
+
+    async def settle_first_contact(self, user_id, *, onboarding_generation, state, reason=None):
+        self.settled = state
+        self.settle_reason = reason
+
+
+def _nudge_pool_and_ecs(monkeypatch, sent):
+    """Wire the gateway pool + ECS resolver so a nudge can actually dispatch."""
+    import core.containers as containers_mod
+
+    class _Pool:
+        def register_run_completion_callback(self, owner_id, run_id, cb):
+            return True
+
+        def mark_run_active(self, *a, **kw):
+            pass
+
+        def clear_active_run(self, *a, **kw):
+            pass
+
+        def unregister_run_completion_callback(self, *a, **kw):
+            pass
+
+        async def send_rpc(self, **kwargs):
+            sent.append(kwargs)
+
+    class _Ecs:
+        async def resolve_running_container(self, owner_id):
+            return {"gateway_token": "gw"}, "10.0.0.1"
+
+    monkeypatch.setattr(containers_mod, "get_gateway_pool", lambda: _Pool())
+    monkeypatch.setattr(containers_mod, "get_ecs_manager", lambda: _Ecs())
+
+
+async def _run_nudge(repo):
+    from core.services.bootstrap_dispatcher import _maybe_nudge_first_contact
+
+    await _maybe_nudge_first_contact(
+        repo,
+        "u1",
+        owner_id="u1",
+        generation="01G",
+        session_key="sk",
+        friday_agent_id="agent_friday",
+        submitted_by="u1",
+    )
+
+
+async def test_nudges_when_first_contact_not_started(monkeypatch):
+    sent = []
+    _nudge_pool_and_ecs(monkeypatch, sent)
+    repo = _NudgeRepo(state="not_started")
+    await _run_nudge(repo)
+    assert len(sent) == 1
+    assert "first email" in sent[0]["params"]["message"]
+
+
+async def test_nudges_when_first_contact_failed(monkeypatch):
+    """A failed mint or SES send must not make the first failure terminal."""
+    sent = []
+    _nudge_pool_and_ecs(monkeypatch, sent)
+    await _run_nudge(_NudgeRepo(state="failed"))
+    assert len(sent) == 1
+
+
+async def test_does_not_nudge_once_sent(monkeypatch):
+    sent = []
+    _nudge_pool_and_ecs(monkeypatch, sent)
+    repo = _NudgeRepo(state="sent")
+    await _run_nudge(repo)
+    assert sent == []
+    assert repo.bumps == 0
+
+
+async def test_does_not_nudge_while_a_claim_is_in_flight(monkeypatch):
+    """`sending` means a send is mid-flight -- nudging would risk a double."""
+    sent = []
+    _nudge_pool_and_ecs(monkeypatch, sent)
+    await _run_nudge(_NudgeRepo(state="sending"))
+    assert sent == []
+
+
+async def test_exhausted_attempts_settle_failed_and_dispatch_nothing(monkeypatch):
+    """The counter is the sole loop bound, and exhausting it must be VISIBLE --
+    the previous version of this feature failed silently for its whole life."""
+    sent = []
+    _nudge_pool_and_ecs(monkeypatch, sent)
+    repo = _NudgeRepo(state="not_started", allow_bump=False)
+    await _run_nudge(repo)
+    assert sent == []
+    assert repo.settled == "failed"
+    assert repo.settle_reason == "nudge_attempts_exhausted"
+
+
+async def test_attempts_are_bumped_BEFORE_dispatch(monkeypatch):
+    """Dispatching first would be an unbounded chain of agent runs."""
+    sent = []
+    _nudge_pool_and_ecs(monkeypatch, sent)
+    repo = _NudgeRepo(state="not_started")
+    await _run_nudge(repo)
+    assert repo.bumps == 1
+    assert len(sent) == 1
+
+
+async def test_observer_never_raises(monkeypatch):
+    """A completion callback that raises would break the gateway's terminal
+    handling for everyone on that connection."""
+    import core.containers as containers_mod
+
+    def _boom():
+        raise RuntimeError("ecs down")
+
+    monkeypatch.setattr(containers_mod, "get_ecs_manager", _boom)
+    await _run_nudge(_NudgeRepo(state="not_started"))  # must not raise

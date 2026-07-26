@@ -1,0 +1,20 @@
+{
+  "id": "isol8-marketplace",
+  "name": "Isol8 Marketplace",
+  "description": "Discover hireable agents in the Isol8 marketplace and recommend them to the owner.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "marketplace_search",
+      "recommend_agents"
+    ]
+  }
+}

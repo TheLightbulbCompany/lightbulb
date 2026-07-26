@@ -284,7 +284,12 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     });
   });
 
-  test("dev: the service stack's AGENT_EMAIL_DOMAIN + attachments-bucket env vars are empty (inert)", () => {
+  test("dev: agent email is LIVE on its own subdomain, without a stack of its own", () => {
+    // Dev cannot own an SES receipt rule set (SetActiveReceiptRuleSet is
+    // account+region scoped and prod owns it), but it does not need one: SES
+    // matches a recipient condition against the domain AND its subdomains, so
+    // the single prod-owned catch-all rule already receives
+    // `{slug}.dev.isol8.co`. Only the domain and the Lambda's routing differ.
     const stacks = stageStacks("dev");
     const serviceStack = stacks.find((s) => s.node.id === "isol8-dev-service");
     expect(serviceStack).toBeDefined();
@@ -293,11 +298,58 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            { Name: "AGENT_EMAIL_DOMAIN", Value: "" },
-            { Name: "AGENT_EMAIL_ATTACHMENTS_BUCKET", Value: "" },
+            { Name: "AGENT_EMAIL_DOMAIN", Value: "dev.isol8.co" },
           ]),
         }),
       ]),
     });
+  });
+
+  test("prod publishes the DEV wildcard MX + SPF (a single-label wildcard does not nest)", () => {
+    // `*.isol8.co` matches `acme.isol8.co` but NOT `acme.dev.isol8.co`, so the
+    // dev pair is required and lives in the prod stack, which owns mail DNS.
+    const stacks = stageStacks("prod");
+    const ses = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    expect(ses).toBeDefined();
+    const t = Template.fromStack(ses!);
+    t.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "*.dev.isol8.co.",
+      Type: "MX",
+      ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"],
+    });
+    t.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "*.dev.isol8.co.",
+      Type: "TXT",
+      ResourceRecords: ['"v=spf1 include:amazonses.com ~all"'],
+    });
+  });
+
+  test("the ingest Lambda carries the dev routing env so both backends are reachable", () => {
+    const stacks = stageStacks("prod");
+    const ses = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    const t = Template.fromStack(ses!);
+    const fns = Object.values(t.findResources("AWS::Lambda::Function")).filter(
+      (fn: any) => fn.Properties?.Environment?.Variables?.RAW_MAIL_PREFIX != null,
+    );
+    expect(fns.length).toBe(1);
+    const env = (fns[0] as any).Properties.Environment.Variables;
+    expect(env.DEV_MAIL_SUFFIX).toBe("dev.isol8.co");
+    expect(env.DEV_BACKEND_INGEST_URL).toBe(
+      "https://api-dev.isol8.co/api/v1/webhooks/ses-inbound",
+    );
+    // Each backend verifies the shared secret against its OWN copy, so the
+    // Lambda must be able to present dev's rather than prod's.
+    expect(env.DEV_SES_INBOUND_SECRET_ARN).toBeDefined();
+  });
+
+  test("synth FAILS if a dev mail domain is set without the dev secret name", () => {
+    // Routing dev mail while presenting prod's secret would 401 every message,
+    // and the only symptom would be silently undelivered mail. Fail at synth.
+    expect(() =>
+      synthSesInboundStack({
+        devMailDomain: "dev.isol8.co",
+        devSesIngestSecretName: undefined,
+      }),
+    ).toThrow(/devSesIngestSecretName is required/);
   });
 });

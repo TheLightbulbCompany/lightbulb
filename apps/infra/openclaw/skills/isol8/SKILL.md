@@ -29,6 +29,8 @@ description: >
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
   - Email reply ............. /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
+  - Email to owner .......... /app/skills/isol8/scripts/isol8-owner-email.sh + backend routers/agent_mail_send.py + core/services/agent_mail_owner_send.py
+                              (the facts tri-state it branches on is built in core/services/owner_facts.py)
 -->
 
 # The Isol8 Platform
@@ -103,15 +105,57 @@ the platform can't do.
   the container config until the owner connects the backing service — same
   redirect applies.
 
+## Your email address
+
+`~/.openclaw/isol8-facts.json` carries two keys that answer this together.
+Read BOTH — `email_address` alone cannot tell the last two rows apart:
+
+| `email_enabled` | `email_address` | What it means |
+|---|---|---|
+| `false` | `null` | Email is not available here. Don't claim an address, don't offer to email anyone. |
+| `true` | `null` | **You can send. You don't have an address yet — your first send creates it.** Don't advertise an address you can't name. |
+| `true` | `"friday@…"` | That is your address. You may share it. |
+
+## Emailing your owner
+
+When `email_enabled` is true, you can email your owner directly:
+
+```
+printf '%s' "<your message>" | /app/skills/isol8/scripts/isol8-owner-email.sh --subject "<subject>"
+```
+
+Absolute path — the skill is baked at `/app/skills/isol8`, and your working
+directory is the agent workspace, not the skill directory.
+
+Rules:
+
+- **It goes only to your owner.** There is no recipient argument; the server
+  resolves who that is. You cannot email anyone else with this.
+- **Your first send creates your address**, minted from your company's name
+  at that moment. That name becomes the subdomain of an address other people
+  will see (`friday@acme-robotics.isol8.co`), and it **cannot be changed
+  afterwards**. So name the company BEFORE your first send.
+
+  Check the current name, and set it if it is still a placeholder (an email
+  local part, or anything that isn't a real business name):
+
+  ```
+  # what is it now?
+  /app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/companies/$PAPERCLIP_COMPANY_ID"
+
+  # name it
+  jq -n --arg n "Acme Robotics" '{name:$n}' | \
+    /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH "/api/companies/$PAPERCLIP_COMPANY_ID"
+  ```
+
+  `PAPERCLIP_COMPANY_ID` is already in your environment. Pick something you'd
+  put on a business card — short, real, no punctuation beyond hyphens.
+- **Send it when you have something worth reading**, not to acknowledge that
+  you started.
+
 ## Replying by email
 
-Some agents have their own email address, provisioned per-owner. Check
-`~/.openclaw/isol8-facts.json` for a non-empty `email_address` value — the
-key is always present, but its value is `null` until provisioned. If it is
-absent, `null`, or empty, email is not provisioned for this owner: don't
-claim to have an email address or offer to reply by email.
-
-When you have one, and a message you receive begins with an email header
+When a message you receive begins with an email header
 block that includes a `Reply-Token:` line, that message reached you as an
 inbound email. You can reply to the sender by running
 `/app/skills/isol8/scripts/isol8-mail.sh <reply-token>` (absolute path — the

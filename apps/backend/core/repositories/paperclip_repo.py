@@ -269,6 +269,27 @@ class PaperclipCompany:
     bootstrap_attempts: Optional[int] = None
     bootstrap_last_error: Optional[str] = None
 
+    first_contact_state: Optional[str] = None
+    """``not_started`` -> ``sending`` -> ``sent`` | ``failed``.
+
+    THE once-only guard for the agent-initiated first email. Policy is read
+    from HERE, never from the ``purpose`` label a container supplies, so an
+    agent cannot skip the guard by mislabelling its send — and does not have
+    to make a judgment call it might get wrong.
+
+    ``failed`` is deliberately RE-CLAIMABLE: a failed mint or a failed SES
+    send must not make the first failure terminal. ``sending`` and ``sent``
+    are not — reclaiming either risks a double-send."""
+
+    first_contact_attempts: Optional[int] = None
+    """Bounds the nudge loop, and is the ONLY thing that does. Nudge runs
+    re-register the run-completion callback (otherwise attempts 2 and 3 would
+    have no trigger — the bootstrap run terminates exactly once), so a nudge
+    dispatched without incrementing this first is an infinite chain of agent
+    runs."""
+
+    first_contact_reason: Optional[str] = None
+
 
 class PaperclipRepo:
     """Async repository for the paperclip-companies DynamoDB table.
@@ -350,6 +371,12 @@ class PaperclipRepo:
             item["bootstrap_attempts"] = company.bootstrap_attempts
         if company.bootstrap_last_error is not None:
             item["bootstrap_last_error"] = company.bootstrap_last_error
+        if company.first_contact_state is not None:
+            item["first_contact_state"] = company.first_contact_state
+        if company.first_contact_attempts is not None:
+            item["first_contact_attempts"] = company.first_contact_attempts
+        if company.first_contact_reason is not None:
+            item["first_contact_reason"] = company.first_contact_reason
         await run_in_thread(self._table().put_item, Item=item)
         publish_status_changed(_broadcast_owner_key(user_id=company.user_id, org_id=company.org_id))
 
@@ -418,6 +445,11 @@ class PaperclipRepo:
                 int(item["bootstrap_attempts"]) if item.get("bootstrap_attempts") is not None else None
             ),
             bootstrap_last_error=item.get("bootstrap_last_error"),
+            first_contact_state=item.get("first_contact_state"),
+            first_contact_attempts=(
+                int(item["first_contact_attempts"]) if item.get("first_contact_attempts") is not None else None
+            ),
+            first_contact_reason=item.get("first_contact_reason"),
         )
 
     async def get_onboarding_state(self, owner_id: str) -> dict:
@@ -489,6 +521,10 @@ class PaperclipRepo:
                 "bootstrap_delivered_at": None,
                 "bootstrap_attempts": 0,
                 "bootstrap_last_error": None,
+                "first_contact_state": "not_started",
+                "first_contact_attempts": 0,
+                "first_contact_reason": None,
+                "friday_agent_id": None,
                 "teams_state": None,
                 "company_id": None,
                 "paperclip_user_id": None,
@@ -527,6 +563,14 @@ class PaperclipRepo:
             "bootstrap_delivered_at": _iso(getattr(company, "bootstrap_delivered_at", None)),
             "bootstrap_attempts": getattr(company, "bootstrap_attempts", None) or 0,
             "bootstrap_last_error": getattr(company, "bootstrap_last_error", None),
+            "first_contact_state": getattr(company, "first_contact_state", None) or "not_started",
+            "first_contact_attempts": getattr(company, "first_contact_attempts", None) or 0,
+            "first_contact_reason": getattr(company, "first_contact_reason", None),
+            # Friday is appended FIRST in provision_org's seed order, before
+            # Atlas, so index 0 is her. Projected here so the owner-send path
+            # resolves her from the SAME single read compute_status already
+            # does, rather than adding a second query.
+            "friday_agent_id": (getattr(company, "seeded_agent_ids", None) or [None])[0],
             "teams_state": getattr(company, "status", None),
             "company_id": getattr(company, "company_id", None),
             "paperclip_user_id": getattr(company, "paperclip_user_id", None),
@@ -1081,6 +1125,127 @@ class PaperclipRepo:
         if is_org_owner_id(owner_id):
             return await self.find_owner_row(owner_id, include_inactive=include_inactive)
         return await self.get(owner_id, consistent_read=consistent_read)
+
+    async def claim_first_contact(self, user_id: str, *, onboarding_generation: str) -> bool:
+        """Conditional ``first_contact_state -> sending``, generation-fenced.
+
+        THE once-only guard for the agent-initiated first email. Only the
+        caller whose write lands sends; a loser reports ``already_sent``
+        without touching SES, so an owner can never receive two.
+
+        Claimable from ``not_started`` (never sent) and from ``failed`` (a
+        failed mint or SES send must be retryable, or the FIRST failure is
+        terminal and the bounded nudge retry never fires). NOT claimable from
+        ``sending`` (a claim is in flight) or ``sent`` (terminal) — either
+        would risk a double-send.
+
+        A stuck ``sending`` — the process died between claim and settle — is
+        deliberately NOT recovered here, matching ``claim_bootstrap_dispatch``'s
+        posture on a stuck ``dispatched``: that is the generalized
+        reconciliation worker's job, not a second recovery path invented here.
+
+        Never raises.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET first_contact_state = :sending, first_contact_claimed_at = :t, updated_at = :t"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND "
+                    "(attribute_not_exists(first_contact_state) "
+                    "OR first_contact_state = :not_started "
+                    "OR first_contact_state = :failed)"
+                ),
+                ExpressionAttributeValues={
+                    ":sending": "sending",
+                    ":not_started": "not_started",
+                    ":failed": "failed",
+                    ":gen": onboarding_generation,
+                    ":t": now,
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Lost the race, wrong generation, or already sending/sent.
+            return False
+        except Exception as e:  # noqa: BLE001 — must not 500 the send path
+            logger.warning("claim_first_contact failed for %s: %s", user_id, e)
+            return False
+
+    async def settle_first_contact(
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        state: str,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Terminal write: ``sent`` or ``failed``.
+
+        Generation-fenced so a straggler from a superseded onboarding attempt
+        can never resolve a later one. Never raises — the send already
+        happened (or didn't), and a bookkeeping failure must not turn a
+        delivered email into a 500.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET first_contact_state = :s, first_contact_reason = :r, updated_at = :t"),
+                ConditionExpression="onboarding_generation = :gen",
+                ExpressionAttributeValues={
+                    ":s": state,
+                    ":r": reason or "",
+                    ":gen": onboarding_generation,
+                    ":t": now,
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Superseded generation — a straggler must not resolve a later attempt.
+            pass
+        except Exception as e:  # noqa: BLE001 — bookkeeping must not undo a send
+            logger.warning("settle_first_contact failed for %s: %s", user_id, e)
+
+    async def bump_first_contact_attempts(self, user_id: str, *, onboarding_generation: str, limit: int) -> bool:
+        """Increment-and-check, called BEFORE a nudge is dispatched.
+
+        Nudge runs re-register the run-completion callback — otherwise
+        attempts 2 and 3 would have no trigger, since the bootstrap run
+        terminates exactly once — so this counter is the SOLE bound on that
+        loop. Incrementing after dispatch, or not at all, is an unbounded
+        chain of agent runs.
+
+        Returns True when a nudge may be dispatched.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET first_contact_attempts = if_not_exists(first_contact_attempts, :zero) + :one"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND "
+                    "(attribute_not_exists(first_contact_attempts) OR first_contact_attempts < :limit)"
+                ),
+                ExpressionAttributeValues={
+                    ":zero": 0,
+                    ":one": 1,
+                    ":limit": limit,
+                    ":gen": onboarding_generation,
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Budget exhausted — the loop bound doing its job.
+            return False
+        except Exception as e:  # noqa: BLE001 — an observer must never raise
+            logger.warning("bump_first_contact_attempts failed for %s: %s", user_id, e)
+            return False
 
     async def claim_bootstrap_dispatch(
         self, user_id: str, *, onboarding_generation: str

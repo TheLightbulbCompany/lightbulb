@@ -89,7 +89,7 @@ _BACKEND_POST_TIMEOUT_SECONDS = 10
 
 # Cold-start caches: the shared secret and the boto3 clients are
 # fetched/built once per Lambda container and reused across invocations.
-_SECRET_CACHE = None
+_SECRET_CACHE = {}
 _S3 = None
 _SECRETS_MANAGER = None
 
@@ -108,14 +108,19 @@ def _secretsmanager():
     return _SECRETS_MANAGER
 
 
-def _get_secret():
-    """Return the shared ``X-Isol8-SES-Secret`` value, fetched once at
-    cold-start and cached for the life of the container."""
-    global _SECRET_CACHE
-    if _SECRET_CACHE is None:
+def _get_secret(arn=None):
+    """Return the shared ``X-Isol8-SES-Secret`` value for ``arn``, fetched on
+    first use and cached for the life of the container.
+
+    Cached PER ARN: one Lambda serves both environments (see ``_route_for``),
+    and each backend verifies against its own secret, so a single-slot cache
+    would present prod's secret to dev and get a 401.
+    """
+    if arn is None:
         arn = os.environ["SES_INBOUND_SECRET_ARN"]
-        _SECRET_CACHE = _secretsmanager().get_secret_value(SecretId=arn)["SecretString"]
-    return _SECRET_CACHE
+    if arn not in _SECRET_CACHE:
+        _SECRET_CACHE[arn] = _secretsmanager().get_secret_value(SecretId=arn)["SecretString"]
+    return _SECRET_CACHE[arn]
 
 
 def _extract_verdicts(receipt):
@@ -254,8 +259,47 @@ def _build_payload(ses, raw_mime):
     }
 
 
+def _route_for(recipients):
+    """Pick ``(backend_url, secret_arn)`` for this message's recipients.
+
+    ONE receipt rule serves both environments. SES matches a recipient
+    condition against the domain **and its subdomains** (see the SES
+    "email receiving concepts" guide), so a rule for ``isol8.co`` already
+    catches ``friday@acme.dev.isol8.co`` as well as
+    ``friday@acme.isol8.co``. A second rule set is impossible anyway —
+    ``SetActiveReceiptRuleSet`` is account+region scoped and prod owns it —
+    so this function is what separates the environments.
+
+    Matching is on a dotted suffix (``.dev.isol8.co``), never a bare
+    ``endswith`` of the suffix itself: ``acme.notdev.isol8.co`` must not be
+    mistaken for a dev address.
+
+    INERT until dev is configured: with no ``DEV_*`` environment, every
+    message routes to prod exactly as before.
+
+    Mixed-domain envelopes (a dev and a prod recipient on one message) route
+    by the FIRST recipient. That combination cannot arise from either
+    product flow — an owner-directed address is single-recipient — so it is
+    only reachable by a hand-crafted envelope, and picking deterministically
+    beats splitting one message across two backends.
+    """
+    prod = (os.environ["BACKEND_INGEST_URL"], os.environ["SES_INBOUND_SECRET_ARN"])
+    dev_suffix = (os.environ.get("DEV_MAIL_SUFFIX") or "").strip().lower()
+    dev_url = (os.environ.get("DEV_BACKEND_INGEST_URL") or "").strip()
+    dev_arn = (os.environ.get("DEV_SES_INBOUND_SECRET_ARN") or "").strip()
+    if not (dev_suffix and dev_url and dev_arn):
+        return prod
+
+    for addr in recipients or []:
+        domain = str(addr).rsplit("@", 1)[-1].strip().lower()
+        if domain == dev_suffix or domain.endswith("." + dev_suffix):
+            return (dev_url, dev_arn)
+        break  # first recipient decides — see docstring
+    return prod
+
+
 def _post_to_backend(payload):
-    """POST the payload to BACKEND_INGEST_URL with the shared-secret header.
+    """POST the payload to the environment's ingest URL with its shared secret.
 
     Returns the HTTP status for a 2xx or 4xx response — those are terminal;
     the caller does not raise on them (see the module docstring's FAILURE
@@ -265,13 +309,14 @@ def _post_to_backend(payload):
     transport-level failure (no response received at all) also propagates
     unchanged.
     """
+    backend_url, secret_arn = _route_for(payload.get("to"))
     req = urllib.request.Request(
-        os.environ["BACKEND_INGEST_URL"],
+        backend_url,
         method="POST",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
-            "X-Isol8-SES-Secret": _get_secret(),
+            "X-Isol8-SES-Secret": _get_secret(secret_arn),
         },
     )
     try:

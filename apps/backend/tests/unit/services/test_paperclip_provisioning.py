@@ -1263,11 +1263,7 @@ async def test_provision_org_names_company_from_generated_name(monkeypatch):
     async def fake_generate(*, org_id, owner_email):
         return "Acme Robotics"
 
-    async def fake_allocate(*, owner_id, name):
-        return "acme-robotics"
-
     monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await svc.provision_org(
@@ -1277,37 +1273,6 @@ async def test_provision_org_names_company_from_generated_name(monkeypatch):
     )
 
     assert admin.create_company.await_args.kwargs["name"] == "Acme Robotics"
-
-
-@pytest.mark.asyncio
-async def test_provision_org_allocates_slug_for_owner(monkeypatch):
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    allocated = []
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        allocated.append({"owner_id": owner_id, "name": name})
-        return "acme-robotics"
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    # Slug is keyed by owner_id (the container key), not owner_user_id.
-    assert allocated == [{"owner_id": "org_xyz", "name": "Acme Robotics"}]
 
 
 @pytest.mark.asyncio
@@ -1323,7 +1288,6 @@ async def test_provision_org_survives_name_generation_failure(monkeypatch):
         raise RuntimeError("clerk down")
 
     monkeypatch.setattr(mod, "generate_company_name", boom)
-    monkeypatch.setattr(mod, "allocate_company_slug", boom)
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     row = await svc.provision_org(
@@ -1335,127 +1299,6 @@ async def test_provision_org_survives_name_generation_failure(monkeypatch):
     assert row.status == "active"
     # Fell back to the previous behaviour rather than aborting.
     assert admin.create_company.await_args.kwargs["name"] == "owner@example.com"
-
-
-@pytest.mark.asyncio
-async def test_provision_org_mints_agent_email_from_allocated_slug(monkeypatch):
-    """The address is built from the slug we just allocated, not a lookup."""
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        return "acme-robotics"
-
-    minted = []
-
-    async def fake_mint(*, owner_id, agent_id, agent_name, owner_email, slug, is_primary=True):
-        minted.append(
-            {
-                "owner_id": owner_id,
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "owner_email": owner_email,
-                "slug": slug,
-                "is_primary": is_primary,
-            }
-        )
-        return f"{slug}@agents.isol8.co"
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-    monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    assert len(minted) == 1
-    assert minted[0] == {
-        "owner_id": "org_xyz",
-        "agent_id": "agent-friday",
-        "agent_name": "Friday",
-        "owner_email": "owner@example.com",
-        "slug": "acme-robotics",
-        "is_primary": True,
-    }
-
-
-@pytest.mark.asyncio
-async def test_provision_org_skips_mint_when_slug_allocation_failed(monkeypatch):
-    """No slug means no address — but the provision still succeeds."""
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        return None  # allocation failed
-
-    minted = []
-
-    async def fake_mint(**kwargs):
-        minted.append(kwargs)
-        return None
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-    monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    row = await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    assert row.status == "active"
-    assert minted == []
-
-
-@pytest.mark.asyncio
-async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
-    """A mail-side failure must NOT fail the provision."""
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        return "acme-robotics"
-
-    async def boom(**kwargs):
-        raise RuntimeError("mail down")
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-    monkeypatch.setattr(mod, "mint_agent_email_address", boom)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    row = await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    assert row.status == "active"
-    repo.put.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -1522,3 +1365,49 @@ async def test_provision_org_required_ceo_seed_failure_not_marked_active(monkeyp
     assert row.status != "active"
     for call in repo.put.await_args_list:
         assert call.args[0].status != "active", "must not mark a CEO-less company active"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_does_NOT_allocate_a_slug_or_mint_an_address(monkeypatch):
+    """Minting moved to the first owner-directed send.
+
+    The slug becomes the subdomain of an address other people are given, and
+    company_slug_repo has no delete path -- so reserving it during provisioning
+    would permanently freeze the auto-generated placeholder name (for a personal
+    owner, their own email local part). It must derive from the name the agent
+    chooses during its first run instead.
+    """
+    import core.services.agent_email as agent_email_mod
+    import core.services.company_identity as company_identity_mod
+    import core.services.paperclip_provisioning as mod
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
+
+    calls = []
+
+    async def spy_allocate(*, owner_id, name):
+        calls.append("allocate")
+        return "acme-robotics"
+
+    async def spy_mint(**kwargs):
+        calls.append("mint")
+        return "friday@acme-robotics.isol8.co"
+
+    # Patch at the SOURCE modules: provision_org no longer imports either name,
+    # so patching `mod` would silently assert nothing.
+    monkeypatch.setattr(company_identity_mod, "allocate_company_slug", spy_allocate)
+    monkeypatch.setattr(agent_email_mod, "mint_agent_email_address", spy_mint)
+    assert not hasattr(mod, "allocate_company_slug")
+    assert not hasattr(mod, "mint_agent_email_address")
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    assert row.status == "active"
+    assert calls == []

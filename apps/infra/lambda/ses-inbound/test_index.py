@@ -614,3 +614,63 @@ def test_raw_mail_prefix_is_applied_to_the_s3_key(monkeypatch):
         index.handler(_ses_event(), None)
 
     s3.get_object.assert_called_once_with(Bucket=RAW_MAIL_BUCKET, Key=f"inbound-raw/{MESSAGE_ID}")
+
+
+# --- Environment routing ---------------------------------------------------
+#
+# One receipt rule serves both environments: SES matches a recipient condition
+# of "isol8.co" against its SUBDOMAINS too, so mail for
+# friday@acme.dev.isol8.co lands on the same prod-owned rule as
+# friday@acme.isol8.co. This Lambda is therefore what separates them.
+
+
+def test_routes_dev_recipients_to_the_dev_backend(monkeypatch):
+    import index
+
+    monkeypatch.setenv("DEV_MAIL_SUFFIX", "dev.isol8.co")
+    monkeypatch.setenv("DEV_BACKEND_INGEST_URL", "https://api-dev.example/ingest")
+    monkeypatch.setenv("DEV_SES_INBOUND_SECRET_ARN", "arn:dev-secret")
+
+    url, arn = index._route_for(["friday@acme.dev.isol8.co"])
+
+    assert url == "https://api-dev.example/ingest"
+    assert arn == "arn:dev-secret"
+
+
+def test_routes_prod_recipients_to_the_prod_backend(monkeypatch):
+    import index
+
+    monkeypatch.setenv("DEV_MAIL_SUFFIX", "dev.isol8.co")
+    monkeypatch.setenv("DEV_BACKEND_INGEST_URL", "https://api-dev.example/ingest")
+    monkeypatch.setenv("DEV_SES_INBOUND_SECRET_ARN", "arn:dev-secret")
+
+    url, arn = index._route_for(["friday@acme.isol8.co"])
+
+    assert url == BACKEND_INGEST_URL
+    assert arn == SECRET_ARN
+
+
+def test_dev_routing_is_inert_when_unconfigured(monkeypatch):
+    """No DEV_* env (the posture before dev is enabled) -> always prod."""
+    import index
+
+    monkeypatch.delenv("DEV_MAIL_SUFFIX", raising=False)
+    monkeypatch.delenv("DEV_BACKEND_INGEST_URL", raising=False)
+
+    url, arn = index._route_for(["friday@acme.dev.isol8.co"])
+
+    assert url == BACKEND_INGEST_URL
+    assert arn == SECRET_ARN
+
+
+def test_lookalike_domain_is_not_routed_to_dev(monkeypatch):
+    """`notdev.isol8.co` must not match a `dev.isol8.co` suffix."""
+    import index
+
+    monkeypatch.setenv("DEV_MAIL_SUFFIX", "dev.isol8.co")
+    monkeypatch.setenv("DEV_BACKEND_INGEST_URL", "https://api-dev.example/ingest")
+    monkeypatch.setenv("DEV_SES_INBOUND_SECRET_ARN", "arn:dev-secret")
+
+    url, _ = index._route_for(["friday@acme.notdev.isol8.co"])
+
+    assert url == BACKEND_INGEST_URL

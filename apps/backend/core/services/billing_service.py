@@ -288,6 +288,21 @@ async def create_flat_fee_checkout(
     return session
 
 
+def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
+    """The subscription line item carrying ``price_id``, or ``{}`` if none does.
+
+    THE single way to answer "which item is priced X?". A Teams subscription
+    carries two items (flat base + per-seat) and Stripe does not guarantee
+    their order, so any positional read is a latent billing bug — picking the
+    base item as the seat item makes sync_team_seat_quantity drive the base
+    quantity. Empty ``price_id`` yields ``{}`` so an unconfigured price can
+    never match an item by accident.
+    """
+    if not price_id:
+        return {}
+    return next((item for item in items if (item.get("price") or {}).get("id") == price_id), {})
+
+
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
     """The single idempotency-key shape for subscription Checkout sessions.
 
@@ -416,11 +431,8 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         return int(account.get("seat_count") or 0)
 
     current = int(account.get("seat_count") or 0)
-    # strict=True: an unreadable pending-invitations count must return 0 here
-    # (not the members-only floor) so the guard below no-ops instead of
-    # writing an absolute Stripe quantity that undershoots the real seat
-    # count — that would look like a real downgrade (proration credit) and
-    # then get charged back on the very next successful sync.
+    # strict=True: an uncertain count must not move the Stripe quantity — see
+    # get_organization_seat_count's strict-mode note.
     member_count = await clerk_admin.get_organization_seat_count(owner_id, strict=True)
     if member_count <= 0 or member_count == current:
         # 0 = Clerk read failed/stubbed; don't zero a real subscription.
@@ -543,9 +555,7 @@ async def create_ultra_upgrade(
         # catch-all for any other multi-item shape we don't yet recognize by
         # price — never swap an item on a subscription we can't fully explain.
         # Endpoint maps this to a 400, same as the local guard.
-        is_team_sub = bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and any(
-            (item.get("price") or {}).get("id") == settings.STRIPE_TEAM_SEAT_PRICE_ID for item in items_data
-        )
+        is_team_sub = bool(subscription_item_on_price(items_data, settings.STRIPE_TEAM_SEAT_PRICE_ID))
         if len(items_data) > 1 or is_team_sub:
             raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
         # The flat sub has a single item whose id is not stored on the billing

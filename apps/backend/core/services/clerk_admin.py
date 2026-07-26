@@ -13,6 +13,7 @@ so local dev without real Clerk admin creds still renders the admin
 UI (with no users listed).
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -274,14 +275,14 @@ async def _pending_invitation_count(org_id: str) -> int | None:
     reports the all-statuses total, every accepted invitation would become a
     phantom seat. So this reads len(data) off a status=pending page instead.
     _PENDING_INVITATION_PAGE_LIMIT is the same cap already accepted for Gate
-    B's per-user equivalent. A FULL page is treated as unreadable (returns
-    None, not the count): a truncated read is an uncertain read, and
-    confidently returning a number known to be short would let
-    sync_team_seat_quantity write an undershooting absolute quantity to
-    Stripe — a silent downgrade indistinguishable from a real one. The
-    logger.warning still fires so a large org shows up in the logs rather
-    than disappearing into a wrong number; pagination can follow if that
-    ever actually happens.
+    B's per-user equivalent.
+
+    A FULL page is treated as unreadable (returns None, not the count) — a
+    truncated read is an uncertain read, and None must never quietly become a
+    lower number; see get_organization_seat_count's strict-mode note for why.
+    The logger.warning still fires so a large org shows up in the logs rather
+    than disappearing into a wrong number; pagination can follow if that ever
+    actually happens.
     """
     if not settings.CLERK_SECRET_KEY:
         return 0
@@ -349,10 +350,17 @@ async def get_organization_seat_count(org_id: str, *, strict: bool = False) -> i
         while returning 0 would either hide a real seat_count on the account
         page or 503 checkout outright on a transient Clerk blip.
     """
-    members = await get_organization_member_count(org_id)
+    # Concurrent: the two reads hit unrelated Clerk resources (the org object
+    # and the invitations list), and every real org has at least its creating
+    # admin — so sequencing them to skip the second call on members == 0 would
+    # pay double latency on every real call to save one call in a case that
+    # does not occur.
+    members, pending = await asyncio.gather(
+        get_organization_member_count(org_id),
+        _pending_invitation_count(org_id),
+    )
     if members <= 0:
         return 0
-    pending = await _pending_invitation_count(org_id)
     if pending is None:
         return 0 if strict else members
     return members + pending

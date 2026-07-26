@@ -36,7 +36,7 @@ from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
 from core.services import webhook_dedup
-from core.services.billing_service import BillingService
+from core.services.billing_service import BillingService, subscription_item_on_price
 
 logger = logging.getLogger(__name__)
 
@@ -759,20 +759,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # does not guarantee their order. Select the seat item BY PRICE ID: storing
     # the base item's id here would make sync_team_seat_quantity drive the base
     # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
-    seat_item = (
-        next(
-            (item for item in items if (item.get("price") or {}).get("id") == settings.STRIPE_TEAM_SEAT_PRICE_ID),
-            {},
-        )
-        if settings.STRIPE_TEAM_SEAT_PRICE_ID
-        else {}
-    )
+    seat_item = subscription_item_on_price(items, settings.STRIPE_TEAM_SEAT_PRICE_ID)
     # bool(seat_item) is a strict superset of the old "first item is the seat
-    # price" fallback: seat_item already scans ALL items for the seat price, so
-    # if the seat item happened to be at index 0 the old check would also have
-    # been True. It additionally catches the seat item landing at index >= 1,
-    # which the old first-item-only fallback missed — the exact position bug
-    # this task fixes. It cannot OVER-detect: nothing but a real per-seat line
+    # price" fallback, and cannot over-detect: nothing but a real per-seat line
     # item ever carries STRIPE_TEAM_SEAT_PRICE_ID.
     is_team_seat = metadata.get("purpose") == "team_seat" or bool(seat_item)
     team_seat_persisted = False

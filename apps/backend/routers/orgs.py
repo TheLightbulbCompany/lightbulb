@@ -101,4 +101,17 @@ async def create_invitation(
         body.role,
         invite["id"],
     )
+
+    # Seats include pending invitations ("no free members"), so the bill must
+    # move now. Clerk's membership webhooks are configured nowhere today
+    # (#1465), and the /container/status poll would otherwise be the only
+    # thing that notices. Failure is logged, never surfaced: the invite
+    # already succeeded in Clerk, and the poll reconciles.
+    try:
+        from core.services.billing_service import sync_team_seat_quantity
+
+        await sync_team_seat_quantity(org_id)
+    except Exception:
+        logger.exception("orgs.invitation seat sync failed org_id=%s", org_id)
+
     return CreateInvitationResponse(invitation_id=invite["id"])

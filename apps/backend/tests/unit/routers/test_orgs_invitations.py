@@ -273,3 +273,61 @@ def test_clerk_response_missing_id_raises_500(app, admin_auth):
         )
     # Server error — the contract is "fail loudly", not "return invitation_id=''".
     assert resp.status_code == 500
+
+
+def test_successful_invite_syncs_seat_quantity(app, admin_auth):
+    """The bill moves on the admin's action, not on the next poll.
+
+    Clerk membership webhooks are configured nowhere today (see #1465), so
+    without this the seat quantity lags until someone happens to open a tab.
+    """
+    _override_auth(app, admin_auth)
+    calls: list[str] = []
+
+    async def fake_sync(owner_id: str) -> int:
+        calls.append(owner_id)
+        return 2
+
+    # sync_team_seat_quantity is imported inside create_invitation's function
+    # body (mirrors routers/webhooks.py), so it must be patched at its
+    # SOURCE module path, not as an attribute on routers.orgs — see
+    # test_billing_change_provider.py's patch_background_provision fixture
+    # docstring for why a module-local import defeats the latter.
+    with (
+        patch("routers.orgs.clerk_admin") as mock_clerk,
+        patch("routers.orgs.billing_repo"),
+        patch("core.services.billing_service.sync_team_seat_quantity", fake_sync),
+    ):
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_1"})
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "new@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 201
+    assert resp.json() == {"invitation_id": "orginv_1"}
+    assert calls == ["org_test"]
+
+
+def test_invite_still_succeeds_when_seat_sync_fails(app, admin_auth):
+    """The invite already committed in Clerk; a Stripe blip must not 5xx it."""
+    _override_auth(app, admin_auth)
+
+    async def boom(owner_id: str) -> int:
+        raise RuntimeError("stripe down")
+
+    with (
+        patch("routers.orgs.clerk_admin") as mock_clerk,
+        patch("routers.orgs.billing_repo"),
+        patch("core.services.billing_service.sync_team_seat_quantity", boom),
+    ):
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_2"})
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "new@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 201
+    assert resp.json() == {"invitation_id": "orginv_2"}

@@ -232,11 +232,11 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         if container is None or container_ip is None:
             raise RuntimeError("container is not running — retry the approval in a moment")
 
-        tar_bytes, manifest, slice_ = await _fetch_artifact(listing)
+        tar_bytes, slice_ = _fetch_artifact(listing)
         await get_catalog_service().deploy_from_artifact(
             owner_id=owner_id,
             slug=listing.get("slug"),
-            manifest=manifest,
+            manifest=_manifest_for(listing),
             slice_=slice_,
             tar_bytes=tar_bytes,
             new_agent_id=agent_id,
@@ -254,15 +254,29 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         raise
 
 
-async def _fetch_artifact(listing: dict):
-    """Tarball + manifest + openclaw slice for a published listing.
+def _fetch_artifact(listing: dict) -> tuple[bytes, dict]:
+    """Tarball + openclaw slice for a published listing.
 
-    Thin seam so ``deploy_for_approval`` reads linearly and can be tested
-    without S3. Delegates to the same helpers the buyer-facing deploy uses.
+    Thin seam so ``deploy_for_approval`` reads linearly and can be patched in
+    tests without S3. Delegates to the SAME helper the buyer-facing deploy uses,
+    so the two install paths cannot drift.
     """
     from routers.marketplace_listings import _fetch_agent_artifact
 
-    return await _fetch_agent_artifact(listing)
+    return _fetch_agent_artifact(listing)
+
+
+def _manifest_for(listing: dict) -> dict:
+    """The manifest the installer passes through.
+
+    Mirrors ``deploy_listing``: the manifest on the listing ROW is authoritative
+    for slug/name/version, not anything in S3. ``deploy_from_artifact`` reads
+    only ``version`` and ``name`` from it.
+    """
+    manifest = dict(listing.get("manifest_json") or {})
+    manifest.setdefault("version", listing.get("version", 1))
+    manifest.setdefault("name", listing.get("name", listing.get("slug")))
+    return manifest
 
 
 async def _rollback_agent(*, owner_id: str, agent_id: str) -> None:

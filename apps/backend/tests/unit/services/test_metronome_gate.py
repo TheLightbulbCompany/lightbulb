@@ -240,3 +240,28 @@ async def test_restore_failure_does_not_block_the_gate():
     ) as m:
         m.restore.side_effect = RuntimeError("iam down")
         assert await is_owner_blocked(OWNER) is False
+
+
+@pytest.mark.asyncio
+async def test_row_blocked_at_reserve_estimate():
+    """The gate denies paid admission on `remaining - reserved - estimate <= 0`,
+    so an owner holding exactly one reservation's worth is already refused. The
+    old `remaining <= 0` predicate left the same $0.30 dead zone the trial side
+    had: a paying customer with $0.20 left got 'Provider rate limit reached'
+    and no out-of-credits banner."""
+    from core.services.metronome_gate import _row_blocked
+    from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
+
+    assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS}) is True
+    assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS - 1}) is True
+    assert _row_blocked({"remaining_microcents": RESERVE_ESTIMATE_MICROCENTS + 1}) is False
+
+
+@pytest.mark.asyncio
+async def test_row_blocked_missing_row_still_admits():
+    """A brand-new owner with no projection row must not be gated by its
+    absence — unchanged by the threshold move."""
+    from core.services.metronome_gate import _row_blocked
+
+    assert _row_blocked(None) is False
+    assert _row_blocked({}) is False

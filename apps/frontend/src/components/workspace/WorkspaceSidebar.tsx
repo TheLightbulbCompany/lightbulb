@@ -37,7 +37,7 @@ import { Logo } from "@/components/Logo";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
-import { planLabel } from "@/lib/planLabel";
+import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
@@ -77,6 +77,10 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
   const [deleteSessionTarget, setDeleteSessionTarget] = useState<AgentSession | null>(null);
+  // Captured once (not read directly in render — Date.now() is impure) so
+  // the free-tier expiry check below is stable across re-renders. Same
+  // pattern as settings/page.tsx's nowMs.
+  const [nowMs] = useState(() => Date.now());
 
   // Per-agent session state. `useActiveSession` is a shared module store, so
   // selecting a row here drives the focused ChatPanel's transcript (same
@@ -88,6 +92,11 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   );
 
   const subscriptionStatus = account?.subscription_status ?? null;
+  // Keeps the footer chip in sync with TrialBanner/OutOfCreditsBanner
+  // elsewhere on this same screen — without this, an expired free-tier
+  // owner saw "Free tier" here while the banner already said usage is
+  // blocked. See lib/planLabel.ts for why this isn't computed inline.
+  const isTrialExpired = isFreeTierExpired(subscriptionStatus, account?.trial_end, nowMs);
   const userName = user?.fullName || user?.firstName || "User";
   const userInitials = userName
     .split(" ")
@@ -302,8 +311,8 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
           <div className="user-info">
             <div className="user-name">{userName}</div>
           </div>
-          {planLabel(subscriptionStatus) && (
-            <span className="plan-badge">{planLabel(subscriptionStatus)}</span>
+          {planLabel(subscriptionStatus, { expired: isTrialExpired }) && (
+            <span className="plan-badge">{planLabel(subscriptionStatus, { expired: isTrialExpired })}</span>
           )}
         </div>
         <DesktopUpdater version="0.1" />

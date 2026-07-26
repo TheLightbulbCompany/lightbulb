@@ -9,6 +9,7 @@ import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
 import { useSpend } from "@/hooks/useSpend";
 import { Button } from "@/components/ui/button";
+import { planLabel } from "@/lib/planLabel";
 
 // =============================================================================
 // Helpers
@@ -85,10 +86,21 @@ export function UsagePanel() {
 
       {account && (
         <div className="flex items-center gap-3 text-xs text-[#8a8578]">
-          {account.subscription_status && (
+          {planLabel(account.subscription_status) && (
             <span>
               Subscription:{" "}
-              <span className="font-medium text-[#1a1a1a] capitalize">{account.subscription_status}</span>
+              {/* `capitalize` would turn "Free tier" into "Free Tier" —
+                  drop it for trial_local, same technique settings/page.tsx
+                  uses for its billing chip. */}
+              <span
+                className={
+                  account.subscription_status === "trial_local"
+                    ? "font-medium text-[#1a1a1a]"
+                    : "font-medium text-[#1a1a1a] capitalize"
+                }
+              >
+                {planLabel(account.subscription_status)}
+              </span>
             </span>
           )}
           {usage?.period && (

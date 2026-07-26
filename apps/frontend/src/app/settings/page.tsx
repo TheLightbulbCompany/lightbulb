@@ -64,6 +64,7 @@ function ProfilePanel() {
   const { user } = useUser();
   const { account } = useBilling();
   const subscriptionStatus = account?.subscription_status ?? null;
+  const isTrialLocal = subscriptionStatus === "trial_local";
 
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
   const initials = `${(user?.firstName ?? "")[0] ?? ""}${(user?.lastName ?? "")[0] ?? ""}`.toUpperCase();
@@ -79,8 +80,17 @@ function ProfilePanel() {
           <div>
             <div className="settings-profile-name">
               {user?.fullName ?? "User"}
-              {subscriptionStatus && (
-                <span className="settings-profile-badge">{subscriptionStatus}</span>
+              {planLabel(subscriptionStatus) && (
+                // .settings-profile-badge is text-transform: uppercase
+                // (settings.css) — fine for "ACTIVE" but would shout "FREE
+                // TIER". Override just the transform for the mapped label,
+                // same technique as the billing chip below.
+                <span
+                  className="settings-profile-badge"
+                  style={{ textTransform: isTrialLocal ? "none" : undefined }}
+                >
+                  {planLabel(subscriptionStatus)}
+                </span>
               )}
             </div>
             <div className="settings-profile-email">{email}</div>

@@ -838,8 +838,15 @@ class PaperclipAdminClient:
         capabilities: Optional[str] = None,
         icon: Optional[str] = None,
         metadata: Optional[dict] = None,
+        status: Optional[str] = None,
     ) -> dict:
         """Partial-update an agent.
+
+        ``status`` is on ``updateAgentSchema`` (but NOT ``createAgentSchema``),
+        so it is the only way to put a freshly-created agent into
+        ``pending_approval`` — the inert state used while a hire awaits the
+        owner's decision (it is in both Paperclip's ``NON_ASSIGNABLE`` and
+        ``NON_INVOKABLE`` sets, so it cannot be given work or woken).
 
         Maps to ``PATCH /api/agents/{agentId}`` (see
         ``paperclip/server/src/routes/agents.ts`` —
@@ -868,6 +875,8 @@ class PaperclipAdminClient:
             body["icon"] = icon
         if metadata is not None:
             body["metadata"] = metadata
+        if status is not None:
+            body["status"] = status
         return await self._patch(
             f"/api/agents/{agent_id}",
             json=body,

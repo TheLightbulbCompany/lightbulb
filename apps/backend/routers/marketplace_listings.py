@@ -32,6 +32,7 @@ from core.services import (
     agent_export,
     company_deploy_service,
     curator,
+    marketplace_hire,
     marketplace_search,
     marketplace_service,
     seller_display,
@@ -183,6 +184,80 @@ def _compact_items(items: list[dict]) -> list[dict]:
     ]
 
 
+def _fetch_agent_artifact(listing: dict) -> tuple[bytes, dict]:
+    """Fetch a published agent listing's tarball + openclaw slice from S3.
+
+    Extracted from ``deploy_listing`` so the approval-driven install
+    (``marketplace_hire.deploy_for_approval``) runs the identical fetch —
+    including the legacy-listing tolerance below — instead of a second copy
+    that can drift.
+
+    Returns ``(tar_bytes, slice_)``. The manifest is NOT fetched here: the one
+    on the listing row is authoritative for slug/name/version.
+    """
+    # Fetch the artifact tarball + slice from S3. The listing's ``s3_prefix``
+    # is written by ``marketplace_service._upload_artifact_to_s3`` and looks
+    # like ``listings/{listing_id}/v{version}/``. We deliberately skip
+    # reading manifest.json (the manifest stored on the listing row is
+    # authoritative for slug/name/version).
+    s3_prefix = listing.get("s3_prefix")
+    if not s3_prefix:
+        raise HTTPException(status_code=500, detail="listing has no artifact prefix")
+
+    s3 = boto3.client("s3")
+    try:
+        obj = s3.get_object(
+            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            Key=f"{s3_prefix}workspace.tar.gz",
+        )
+        tar_bytes = obj["Body"].read()
+    except ClientError as exc:
+        # Sanitize boto error text out of the user-facing response — raw
+        # ClientError messages can leak bucket names / role ARNs / etc.
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        logger.exception(
+            "Marketplace deploy: S3 fetch failed for listing %s (code=%s)",
+            listing.get("listing_id"),
+            error_code,
+        )
+        if error_code == "NoSuchKey":
+            raise HTTPException(
+                status_code=500,
+                detail="artifact missing for published listing",
+            ) from exc
+        raise HTTPException(
+            status_code=500,
+            detail="failed to fetch listing artifact",
+        ) from exc
+
+    # Fetch the slice. NoSuchKey is tolerated for legacy listings published
+    # before slice-synthesis shipped — those deploys land workspace files
+    # without registering the agent in openclaw.json (legacy behavior).
+    try:
+        slice_obj = s3.get_object(
+            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            Key=f"{s3_prefix}openclaw-slice.json",
+        )
+        slice_ = json.loads(slice_obj["Body"].read())
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+            logger.info(
+                "Marketplace deploy: legacy listing %s has no openclaw-slice; deploying without config registration",
+                listing.get("listing_id"),
+            )
+            slice_ = {}
+        else:
+            logger.exception(
+                "Marketplace deploy: slice fetch failed for listing %s",
+                listing.get("listing_id"),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="failed to fetch listing slice",
+            ) from exc
+    return tar_bytes, slice_
+
+
 def _resolve_recommended(slugs: list[str], published: list[dict]) -> list[dict]:
     """Compact rows for ``slugs``, in the order asked, unknown ones dropped.
 
@@ -231,17 +306,20 @@ async def recommend(
     published = await marketplace_search.search(query=None, limit=100)
     listings = _resolve_recommended(wanted, published)
 
-    # ``issue_id`` is accepted and currently IGNORED — the headless path is not
-    # switched on yet. ``marketplace_hire.create_hire_approval`` is complete and
-    # correct, but two pieces still have to land with it (see its docstring):
-    # the pre-create + pending_approval step that makes ``payload.agentId``
-    # deterministic, and the post-approve artifact deploy in
-    # ``routers/teams/approvals.py::approve``. Filing an approval without them
-    # would leave a roster entry with no workspace behind it.
-    #
-    # A headless recommendation therefore degrades to "named in Friday's reply
-    # and her issue comment", which still reaches the owner.
-    return {"listings": listings, "approval_id": None}
+    # Headless: file a hire_agent approval on the issue so the ask reaches the
+    # owner in Teams rather than a chat nobody is watching. Best-effort — losing
+    # the approval must not cost the caller the listings it already resolved,
+    # since Friday naming them in her reply beats an errored tool call.
+    approval_id = None
+    if issue_id and listings:
+        try:
+            approval_id = await marketplace_hire.create_hire_approval(
+                owner_id=owner_id, issue_id=issue_id, listing=listings[0]
+            )
+        except Exception:
+            logger.exception("recommend: hire approval failed for owner=%s issue=%s", owner_id, issue_id)
+
+    return {"listings": listings, "approval_id": approval_id}
 
 
 @router.get("/listings/search")
@@ -588,66 +666,7 @@ async def deploy_listing(
             detail="purchase required to deploy this listing",
         )
 
-    # Fetch the artifact tarball + slice from S3. The listing's ``s3_prefix``
-    # is written by ``marketplace_service._upload_artifact_to_s3`` and looks
-    # like ``listings/{listing_id}/v{version}/``. We deliberately skip
-    # reading manifest.json (the manifest stored on the listing row is
-    # authoritative for slug/name/version).
-    s3_prefix = listing.get("s3_prefix")
-    if not s3_prefix:
-        raise HTTPException(status_code=500, detail="listing has no artifact prefix")
-
-    s3 = boto3.client("s3")
-    try:
-        obj = s3.get_object(
-            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
-            Key=f"{s3_prefix}workspace.tar.gz",
-        )
-        tar_bytes = obj["Body"].read()
-    except ClientError as exc:
-        # Sanitize boto error text out of the user-facing response — raw
-        # ClientError messages can leak bucket names / role ARNs / etc.
-        error_code = exc.response.get("Error", {}).get("Code", "")
-        logger.exception(
-            "Marketplace deploy: S3 fetch failed for listing %s (code=%s)",
-            listing.get("listing_id"),
-            error_code,
-        )
-        if error_code == "NoSuchKey":
-            raise HTTPException(
-                status_code=500,
-                detail="artifact missing for published listing",
-            ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail="failed to fetch listing artifact",
-        ) from exc
-
-    # Fetch the slice. NoSuchKey is tolerated for legacy listings published
-    # before slice-synthesis shipped — those deploys land workspace files
-    # without registering the agent in openclaw.json (legacy behavior).
-    try:
-        slice_obj = s3.get_object(
-            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
-            Key=f"{s3_prefix}openclaw-slice.json",
-        )
-        slice_ = json.loads(slice_obj["Body"].read())
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
-            logger.info(
-                "Marketplace deploy: legacy listing %s has no openclaw-slice; deploying without config registration",
-                listing.get("listing_id"),
-            )
-            slice_ = {}
-        else:
-            logger.exception(
-                "Marketplace deploy: slice fetch failed for listing %s",
-                listing.get("listing_id"),
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="failed to fetch listing slice",
-            ) from exc
+    tar_bytes, slice_ = _fetch_agent_artifact(listing)
 
     # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
     # listing's manifest_json column). The marketplace manifest doesn't

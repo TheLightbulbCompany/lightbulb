@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import Link from "next/link";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
@@ -203,9 +203,15 @@ export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
                 variant="outline"
                 className="h-7 px-3 text-xs border-[#c0392b] text-[#7a2018] hover:bg-[#fbd6d2]"
               >
-                <a href={action.href} onClick={(e) => handleShellLinkClick(e, action.href)}>
-                  {action.label}
-                </a>
+                {action.crossRoute ? (
+                  // Different Next route — must go through the router. A bare
+                  // pushState would move the URL bar and leave the shell mounted.
+                  <Link href={action.href}>{action.label}</Link>
+                ) : (
+                  <a href={action.href} onClick={(e) => handleShellLinkClick(e, action.href)}>
+                    {action.label}
+                  </a>
+                )}
               </Button>
             )}
             {showRetry && onRetry && (

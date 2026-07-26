@@ -208,12 +208,16 @@ class TestCreateUltraUpgradeService:
         modify_mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_rejects_per_seat_team_subscription(self, monkeypatch):
-        """A per-seat Teams sub (subscription_item_id set) must NOT be swapped
-        in place — swapping the $/seat item to the Ultra flat price would
-        corrupt per-seat billing. Reject with a clear error, no Subscription
-        call. (Ultra + Teams is out of scope.)"""
+    async def test_per_seat_local_row_field_no_longer_blocks_team_upgrade(self, monkeypatch):
+        """A live per-seat Teams sub (local row carries subscription_item_id +
+        seat_count, same discriminator fields is_seat_subscription keys on in
+        routers/billing.py) is now a SUPPORTED upgrade target: the local-row
+        guard that used to hard-refuse on subscription_item_id alone is gone.
+        Only the BASE item is repriced; the seat item id/quantity are read but
+        never written."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
         monkeypatch.setattr(
             billing_service.billing_repo,
             "get_by_owner_id",
@@ -228,19 +232,32 @@ class TestCreateUltraUpgradeService:
                 }
             ),
         )
-        retrieve_mock = MagicMock()
+        retrieve_mock = MagicMock(
+            return_value={
+                "id": "sub_seat",
+                "items": {
+                    "data": [
+                        {"id": "si_seat", "quantity": 5, "price": {"id": "price_seat_test"}},
+                        {"id": "si_base", "quantity": 1, "price": {"id": "price_base_test"}},
+                    ]
+                },
+            }
+        )
         modify_mock = MagicMock()
         monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
         monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
         builder_mock = AsyncMock()
         monkeypatch.setattr(billing_service, "_build_subscription_checkout", builder_mock)
 
-        with pytest.raises(BillingServiceError, match="per-seat team"):
-            await billing_service.create_ultra_upgrade(owner_id="org_seats")
+        result = await billing_service.create_ultra_upgrade(owner_id="org_seats")
 
-        # No swap, no fresh checkout — pure rejection.
-        retrieve_mock.assert_not_called()
-        modify_mock.assert_not_called()
+        assert result == {"upgraded": True}
+        modify_mock.assert_called_once()
+        _, kwargs = modify_mock.call_args
+        # Only the BASE item id is repriced; the seat item ("si_seat") is
+        # absent from the call entirely.
+        assert kwargs["items"] == [{"id": "si_base", "price": "price_ultra_test"}]
+        assert kwargs["idempotency_key"] == "ultra-upgrade-org_seats-si_base"
         builder_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -283,13 +300,16 @@ class TestCreateUltraUpgradeService:
         builder_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_live_team_seat_sub_rejected_before_swap_even_without_local_field(self, monkeypatch):
-        """F2: even when the local row hasn't persisted subscription_item_id yet
-        (team-seat webhook lagged), a LIVE sub whose retrieved item is on the
-        seat price must be rejected BEFORE Subscription.modify — else the swap
-        would reprice a $/seat item to the Ultra flat price."""
+    async def test_seat_only_sub_with_no_base_item_rejected(self, monkeypatch):
+        """A LIVE sub carrying a seat-priced item but NO base item (one item
+        total) isn't the recognised team shape (base+seat) — reject BEFORE
+        Subscription.modify rather than guess which item is the tier. This can
+        arise from a hand-edited subscription or a mid-migration state; it must
+        never fall back to repricing the lone seat item, which would corrupt
+        per-seat billing."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         monkeypatch.setattr(
             billing_service.billing_repo,
             "get_by_owner_id",
@@ -299,8 +319,9 @@ class TestCreateUltraUpgradeService:
                     "stripe_customer_id": "cus_lag",
                     "stripe_subscription_id": "sub_seat_live",
                     "subscription_status": "active",
-                    # subscription_item_id intentionally ABSENT — the local guard
-                    # can't fire; the LIVE inspection must catch it.
+                    # subscription_item_id intentionally ABSENT — the local
+                    # row doesn't gate this path at all anymore; only the
+                    # LIVE retrieved shape does.
                 }
             ),
         )
@@ -314,7 +335,7 @@ class TestCreateUltraUpgradeService:
         monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
         monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
 
-        with pytest.raises(BillingServiceError, match="per-seat team"):
+        with pytest.raises(BillingServiceError, match="can't be changed automatically"):
             await billing_service.create_ultra_upgrade(owner_id="org_lag")
 
         retrieve_mock.assert_called_once_with("sub_seat_live")
@@ -322,9 +343,14 @@ class TestCreateUltraUpgradeService:
 
     @pytest.mark.asyncio
     async def test_live_sub_with_multiple_items_rejected(self, monkeypatch):
-        """F2: a live sub with more than one line item is a Teams/multi-item sub
-        — reject before the swap regardless of the price ids."""
+        """F2: a live sub with more than one line item, and NEITHER of them on
+        a price we recognise (no base, no seat, no ultra), can't be explained
+        as personal (1 item) or team (base+seat) — reject before the swap
+        regardless of the price ids. Defense-in-depth catch-all, now that a
+        real 2-item base+seat sub is a legitimate (accepted) shape."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
         monkeypatch.setattr(
             billing_service.billing_repo,
             "get_by_owner_id",
@@ -342,10 +368,114 @@ class TestCreateUltraUpgradeService:
         monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
         monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
 
-        with pytest.raises(BillingServiceError, match="per-seat team"):
+        with pytest.raises(BillingServiceError, match="can't be changed automatically"):
             await billing_service.create_ultra_upgrade(owner_id="org_multi")
 
         modify_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_team_upgrade_swaps_the_base_item_and_leaves_seats_alone(self, monkeypatch):
+        """Team ultra = $150 base + $20/seat. The seat item must not be
+        touched — not its id, not its quantity. Base deliberately placed at
+        index 1 in the retrieved items so a positional read would silently
+        swap the wrong (seat) item; selection must be by price id."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "org_1",
+                    "stripe_subscription_id": "sub_1",
+                    "subscription_status": "active",
+                    "subscription_item_id": "si_seat",
+                }
+            ),
+        )
+        retrieve_mock = MagicMock(
+            return_value={
+                "id": "sub_1",
+                "items": {
+                    "data": [
+                        {"id": "si_seat", "quantity": 4, "price": {"id": "price_seat"}},
+                        {"id": "si_base", "quantity": 1, "price": {"id": "price_base"}},
+                    ]
+                },
+            }
+        )
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+
+        result = await billing_service.create_ultra_upgrade(owner_id="org_1")
+
+        assert result == {"upgraded": True}
+        modify_mock.assert_called_once()
+        _, kwargs = modify_mock.call_args
+        # Exactly one item modified: the BASE, swapped to the ultra price. The
+        # seat item ("si_seat", quantity 4) is absent from the call.
+        assert kwargs["items"] == [{"id": "si_base", "price": "price_ultra"}]
+        assert kwargs["idempotency_key"] == "ultra-upgrade-org_1-si_base"
+
+    @pytest.mark.asyncio
+    async def test_unrecognised_multi_item_sub_still_refused(self, monkeypatch):
+        """The multi-item guard stays as defence-in-depth for shapes we can't
+        explain: two items, neither on the seat, base, or ultra price."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "user_1",
+                    "stripe_subscription_id": "sub_1",
+                    "subscription_status": "active",
+                }
+            ),
+        )
+        retrieve_mock = MagicMock(
+            return_value={
+                "id": "sub_1",
+                "items": {
+                    "data": [
+                        {"id": "si_flat", "quantity": 1, "price": {"id": "price_flat"}},
+                        {"id": "si_mystery", "quantity": 1, "price": {"id": "price_unknown_addon"}},
+                    ]
+                },
+            }
+        )
+        modify_mock = MagicMock()
+        monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
+        monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
+
+        with pytest.raises(BillingServiceError):
+            await billing_service.create_ultra_upgrade(owner_id="user_1")
+
+        modify_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_org_without_a_live_subscription_is_refused(self, monkeypatch):
+        """An org must buy its team plan first; the fresh-checkout branch mints
+        a personal-shaped single-item Ultra sub with NO seat item, which would
+        leave an org paying $150 for zero seats. Checked before any Stripe
+        call — the fresh-checkout claim/builder are never reached."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+        monkeypatch.setattr(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_1", "subscription_status": "canceled"}),
+        )
+        builder_mock = AsyncMock()
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", builder_mock)
+
+        with pytest.raises(BillingServiceError, match="team"):
+            await billing_service.create_ultra_upgrade(owner_id="org_1")
+
+        builder_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_idempotency_key_varies_by_item_id(self, monkeypatch):

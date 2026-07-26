@@ -370,6 +370,31 @@ RUN set -eux; \
     rm -rf /opt/stage-firecrawl; \
     chown -R root:root /app/dist/extensions/firecrawl
 
+# ---- Layer 12d: first-party Isol8 marketplace tool plugin ----
+# Read-only agent tools (marketplace_search, recommend_agents) so an agent can
+# name real marketplace listings instead of waving at a URL. Enabled fleet-wide
+# via plugins.entries["isol8-marketplace"] in core/containers/config.py.
+#
+# Second first-party plugin in-repo, same shape as plugins/aws-exec-profile
+# (Layer 14): the committed dist/ IS the baked artifact, so this is a plain
+# COPY — no npm install and no build step in the image. Rebuilding dist/ is a
+# local `npm run build`, and the plugin's own .gitignore overrides the repo-root
+# dist/ ignore so it stays tracked.
+#
+# It ships NO node_modules of its own. Its two imports resolve from the host by
+# self-referencing the `openclaw` package from /app — `openclaw/plugin-sdk/
+# tool-plugin` exactly as aws-exec-profile does, and `typebox` from
+# /app/node_modules (openclaw depends on typebox 1.3.3, which the plugin pins
+# in lockstep). The `openclaw` devDependency exists only to typecheck the build
+# locally and is ~460MB; it must never reach the image, which this COPY-only
+# layer guarantees structurally.
+#
+# Root-owned like every other baked plugin — the loader rejects any plugin dir
+# not owned by uid 0. Enabled fleet-wide via
+# plugins.entries["isol8-marketplace"] in core/containers/config.py.
+COPY plugins/isol8-marketplace /app/dist/extensions/isol8-marketplace
+RUN chown -R root:root /app/dist/extensions/isol8-marketplace
+
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent
 # (e.g. Jarvis) spawn external coding harnesses — Claude Code, Codex, Gemini —

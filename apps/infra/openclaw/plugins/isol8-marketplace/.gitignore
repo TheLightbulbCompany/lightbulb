@@ -1,0 +1,14 @@
+# This plugin's dist/ is the artifact the image bakes (the Dockerfile does a
+# plain `COPY plugins/isol8-marketplace` — no npm install, no build step in the
+# image, same as plugins/aws-exec-profile). Override the repo-root `dist/`
+# ignore so it is tracked.
+#
+# REBUILD AFTER EDITING src/: `npm install && npm run build && npm test`, then
+# commit the regenerated dist/. CI has no step that rebuilds it for you, so a
+# src/ change without a matching dist/ change ships the OLD tool.
+!dist/
+!dist/**
+
+# Build-time only (the `openclaw` devDependency is ~460MB of plugin-SDK types).
+# Nothing here reaches the image: typebox resolves from the host at /app.
+node_modules/

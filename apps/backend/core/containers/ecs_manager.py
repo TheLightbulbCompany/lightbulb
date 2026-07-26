@@ -2128,6 +2128,14 @@ class EcsManager:
         from core.services import atlas_seed
 
         environment_for_task.append({"name": "ISOL8_API_URL", "value": atlas_seed._api_base_url(settings.ENVIRONMENT)})
+        # Owner id for the BAKED marketplace plugin. Unlike Atlas's per-owner
+        # seed files (which substitute {{ISOL8_BRIDGE_URL}} at stage time), a
+        # baked plugin is byte-identical in every container and cannot carry
+        # owner identity in its source — it must read it from the environment.
+        # This is an IDENTIFIER, not a credential: the recommend route compares
+        # OPENCLAW_HOOK_TOKEN timing-safely against the named owner's own
+        # container row, so naming a different owner grants nothing.
+        environment_for_task.append({"name": "ISOL8_OWNER_ID", "value": user_id})
         if provider_choice == "chatgpt_oauth":
             from core.services.oauth_service import resolve_token_owner
 

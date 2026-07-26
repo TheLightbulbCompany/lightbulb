@@ -296,8 +296,11 @@ async def test_over_cap_never_delivers_to_the_agent(client, monkeypatch, capped_
         delivered.append(kwargs)
         return "delivered"
 
+    async def _autoreply(**kwargs):
+        return True
+
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", _deliver, raising=False)
-    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", lambda **k: _true())
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
     await post_inbound(client)
     assert delivered == []
 
@@ -694,6 +697,15 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Produces: no new public symbols; `send_reply`'s body gains the footer conditionally.
 
 - [ ] **Step 1: Write the failing tests**
+
+These use a `reply_harness` fixture and a `send()` helper you must write, in
+the style this test file already uses for `send_reply`: the harness
+monkeypatches `container_repo.consume_email_cold_wake` (returns
+`harness.cold_wake`), `billing_repo.get_by_owner_id` (returns
+`{"subscription_status": harness.subscription_status}`), and
+`ses_email.send_ses_reply` (records the body as `harness.sent_body`).
+`send()` calls `send_reply` with a ctx whose `owner_id` is `"user_a"` and a
+`body_text` of `"agent words"`.
 
 ```python
 FOOTER_MARK = "I was asleep when this arrived"

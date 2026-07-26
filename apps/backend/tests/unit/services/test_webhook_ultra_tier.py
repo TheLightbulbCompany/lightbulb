@@ -20,6 +20,8 @@ from core.services import stripe_webhook_handlers as handlers  # noqa: E402
 
 ULTRA_PRICE = "price_ultra_test"
 FLAT_PRICE = "price_flat_test"
+SEAT_PRICE = "price_seat_test"
+BASE_PRICE = "price_team_base_test"
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +38,18 @@ def ultra_price_configured(monkeypatch):
     """Every test here runs with the Ultra price id configured (CDK-wired in
     dev/prod; empty by default so the app boots without it)."""
     monkeypatch.setattr("core.config.settings.STRIPE_ULTRA_PRICE_ID", ULTRA_PRICE)
+
+
+@pytest.fixture(autouse=True)
+def team_prices_configured(monkeypatch):
+    """Sibling of ultra_price_configured above: every test here also runs with
+    the team seat + team base price ids configured (CDK-wired in dev/prod;
+    empty by default so the app boots without them). Needed because Task 2
+    makes team subscriptions reach the tier branch for the first time — tests
+    that mix a seat item into `items.data` need a real STRIPE_TEAM_SEAT_PRICE_ID
+    for `seat_item` detection to work."""
+    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", SEAT_PRICE)
+    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_BASE_PRICE_ID", BASE_PRICE)
 
 
 @pytest.fixture(autouse=True)
@@ -270,14 +284,89 @@ async def test_failed_set_plan_skips_resize():
 
 
 @pytest.mark.asyncio
-async def test_team_seat_event_never_reaches_tier_logic(monkeypatch):
-    """A team-seat sub is on a different pricing axis (never the ultra price):
-    the tier branch is skipped entirely — no set_plan, no resize — so the
-    seat flow alone owns team container sizing."""
-    monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
-    event = _ultra_event(item_price="price_seat_test", extra_metadata={"purpose": "team_seat"})
+async def test_team_seat_event_reaches_tier_logic_keyed_by_price():
+    """INVERTED from the pre-Task-2 assumption that a team-seat event never
+    reaches tier logic. That test protected "tier logic reacts to the
+    correct price" — it just expressed it as "team subs are blanket-excluded",
+    which is exactly the exclusion this task removes. Tier and headcount are
+    independent axes: a team's tier rides its BASE item, so the same
+    price-keyed logic that applies to a personal owner must apply here too —
+    a team-seat event on the standard base price ties plan to "standard";
+    the same event on the ultra price ties plan to "ultra_pro". No seat item
+    is present on either event, so set_team_subscription correctly does not
+    fire — this test is scoped to tier detection, not seat/tier composition
+    (see test_ultra_team_persists_seat_state_and_tier_together for that)."""
+    standard_event = _ultra_event(item_price=BASE_PRICE, extra_metadata={"purpose": "team_seat"})
+    repo, mgr = await _drive(standard_event, account=_account(plan="standard"))
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    repo.set_team_subscription.assert_not_awaited()
+    mgr.resize_user_container.assert_not_awaited()
+
+    ultra_event = _ultra_event(item_price=ULTRA_PRICE, extra_metadata={"purpose": "team_seat"})
+    repo2, mgr2 = await _drive(ultra_event, account=_account(plan="standard"))
+    assert repo2.set_plan.await_args.kwargs["plan"] == "ultra_pro"
+    repo2.set_team_subscription.assert_not_awaited()
+    mgr2.resize_user_container.assert_awaited_once_with("org_x", new_cpu="2048", new_memory="8192")
+
+
+@pytest.mark.asyncio
+async def test_team_sub_on_the_ultra_price_is_tiered_and_resized_up():
+    """A team's tier lives on its base item. Excluding team subs from tier
+    logic is what made Ultra unavailable to orgs."""
+    event = _ultra_event(item_price=ULTRA_PRICE)
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"]["data"] = [
+        {"id": "si_ultra", "quantity": 1, "price": {"id": ULTRA_PRICE}},
+        {"id": "si_seat", "quantity": 4, "price": {"id": SEAT_PRICE}},
+    ]
+
     repo, mgr = await _drive(event, account=_account(plan="standard"))
 
-    repo.set_plan.assert_not_awaited()
-    repo.set_team_subscription.assert_awaited_once()
-    mgr.resize_user_container.assert_not_awaited()
+    assert repo.set_plan.await_args.kwargs["plan"] == "ultra_pro"
+    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu="2048", new_memory="8192")
+
+
+@pytest.mark.asyncio
+async def test_ultra_team_persists_seat_state_and_tier_together():
+    """Both webhook branches now fire on one subscription for the first time.
+    They must not fight: seat persistence writes subscription_item_id +
+    seat_count from the SEAT item; tier persistence writes plan + resizes."""
+    event = _ultra_event(item_price=ULTRA_PRICE)
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"]["data"] = [
+        {"id": "si_ultra", "quantity": 1, "price": {"id": ULTRA_PRICE}},
+        {"id": "si_seat", "quantity": 4, "price": {"id": SEAT_PRICE}},
+    ]
+
+    repo, _mgr = await _drive(event, account=_account(plan="standard"))
+
+    # Seat state comes from the SEAT item, never the ultra/base item.
+    seat_kwargs = repo.set_team_subscription.await_args.kwargs
+    assert seat_kwargs["subscription_item_id"] == "si_seat"
+    assert seat_kwargs["seat_count"] == 4
+    # Tier state persisted on the same event.
+    assert repo.set_plan.await_args.kwargs["plan"] == "ultra_pro"
+
+
+@pytest.mark.asyncio
+async def test_team_sub_on_the_standard_base_is_tiered_down():
+    """Downgrade happens in the Stripe portal (there is no downgrade endpoint);
+    the webhook reacts. A team back on the standard base is plan="standard" and
+    resizes down, honouring the >10-agent deferral like any other owner."""
+    from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
+
+    event = _ultra_event(item_price=BASE_PRICE)
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"]["data"] = [
+        {"id": "si_base", "quantity": 1, "price": {"id": BASE_PRICE}},
+        {"id": "si_seat", "quantity": 4, "price": {"id": SEAT_PRICE}},
+    ]
+
+    repo, mgr = await _drive(
+        event,
+        account=_account(plan="ultra_pro"),
+        agents=[{"id": f"a{i}"} for i in range(5)],
+    )
+
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)

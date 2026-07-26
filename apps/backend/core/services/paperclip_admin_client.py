@@ -1096,6 +1096,31 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def create_approval(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a pending approval.
+
+        Maps to ``POST /api/companies/{companyId}/approvals``. ``body`` carries
+        ``type``, ``payload``, and optionally ``issueIds`` — upstream links
+        those to the approval via ``issueApprovalsSvc.linkManyForApproval``,
+        which is what makes a request show up ON the issue that prompted it
+        rather than only in a global list.
+
+        For ``type: "hire_agent"`` upstream additionally runs
+        ``normalizeHireApprovalPayloadForPersistence`` over the payload, and
+        returns the created row with its payload redacted.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/approvals",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     async def approve_approval(
         self,
         *,

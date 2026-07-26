@@ -81,6 +81,9 @@ async def test_get_balance_returns_metronome_balance(async_client, monkeypatch):
         "balance_dollars": "12.34",
         "lifecycle_enabled": True,
         "auto_charge_enabled": False,
+        # 12_340_000 is well above RESERVE_ESTIMATE_MICROCENTS (300_000) —
+        # the gate would admit a request against this balance.
+        "is_exhausted": False,
     }
     fake.get_net_balance.assert_awaited_once_with(customer_id="cust-uuid-1")
     # The successful live read is written through the fast-gate projection so
@@ -482,6 +485,9 @@ async def test_get_balance_null_when_lifecycle_disabled(async_client, monkeypatc
         "balance_dollars": None,
         "lifecycle_enabled": False,
         "auto_charge_enabled": False,
+        # A null balance is INDETERMINATE (lifecycle off here), never
+        # exhausted — a false banner is worse than a late one.
+        "is_exhausted": False,
     }
     for_settings_mock.assert_not_called()
 
@@ -507,6 +513,9 @@ async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch
         "balance_dollars": None,
         "lifecycle_enabled": True,
         "auto_charge_enabled": False,
+        # A null balance (Metronome outage here) is INDETERMINATE, never
+        # exhausted — a false banner is worse than a late one.
+        "is_exhausted": False,
     }
 
 
@@ -529,6 +538,9 @@ async def test_get_balance_no_metronome_customer_yields_null(async_client, monke
         "balance_dollars": None,
         "lifecycle_enabled": True,
         "auto_charge_enabled": False,
+        # A null balance (no Metronome customer here) is INDETERMINATE, never
+        # exhausted — a false banner is worse than a late one.
+        "is_exhausted": False,
     }
     fake.get_net_balance.assert_not_awaited()
 

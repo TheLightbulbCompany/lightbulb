@@ -10,6 +10,109 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services import agent_mail_reply  # noqa: E402
 
 
+FOOTER_MARK = "I was asleep when this arrived"
+
+
+class _ReplyHarness:
+    def __init__(self):
+        self.subscription_status = "trial_local"
+        self.cold_wake = False
+        self.sent_body: str | None = None
+
+
+@pytest.fixture
+def reply_harness(monkeypatch):
+    """Wires send_reply's full happy path plus the two cold-wake-footer
+    dependencies (container_repo.consume_email_cold_wake, billing_repo.
+    get_by_owner_id) to a mutable harness so a test can flip
+    ``subscription_status`` / ``cold_wake`` after the fixture runs and
+    ``send()`` will read the current values at call time."""
+    harness = _ReplyHarness()
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(
+        agent_mail_reply.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"address": "friday@agents.isol8.co", "agent_id": "a1", "status": "active"},
+            ]
+        ),
+    )
+
+    async def _consume_email_cold_wake(owner_id, **kwargs):
+        # CONSUMING, like the real one: the stamp is cleared by the read, so a
+        # second reply gets nothing. A fake that kept returning True would let
+        # "appears exactly once" pass while the footer repeated forever.
+        was_set, harness.cold_wake = harness.cold_wake, False
+        return was_set
+
+    monkeypatch.setattr(agent_mail_reply.container_repo, "consume_email_cold_wake", _consume_email_cold_wake)
+
+    async def _get_by_owner_id(owner_id, **kwargs):
+        return {"subscription_status": harness.subscription_status}
+
+    monkeypatch.setattr(agent_mail_reply.billing_repo, "get_by_owner_id", _get_by_owner_id)
+
+    async def _send_ses_reply(**kwargs):
+        harness.sent_body = kwargs["body_text"]
+        return "ses-123"
+
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", _send_ses_reply)
+
+    return harness
+
+
+async def send():
+    ctx = {
+        "owner_id": "user_a",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<m@x>",
+        "subject": "Need help",
+    }
+    return await agent_mail_reply.send_reply(ctx=ctx, body_text="agent words")
+
+
+@pytest.mark.asyncio
+async def test_footer_when_free_tier_and_recent_cold_wake(reply_harness):
+    reply_harness.subscription_status = "trial_local"
+    reply_harness.cold_wake = True
+    await send()
+    assert FOOTER_MARK in reply_harness.sent_body
+    # The agent's own words must be untouched, above the separator.
+    assert reply_harness.sent_body.index("agent words") < reply_harness.sent_body.index(FOOTER_MARK)
+
+
+@pytest.mark.asyncio
+async def test_no_footer_without_a_cold_wake(reply_harness):
+    reply_harness.subscription_status = "trial_local"
+    reply_harness.cold_wake = False
+    await send()
+    assert FOOTER_MARK not in reply_harness.sent_body
+
+
+@pytest.mark.asyncio
+async def test_no_footer_for_a_paid_owner(reply_harness):
+    """A paid container never sleeps, so the note would be a lie."""
+    reply_harness.subscription_status = "active"
+    reply_harness.cold_wake = True
+    await send()
+    assert FOOTER_MARK not in reply_harness.sent_body
+
+
+@pytest.mark.asyncio
+async def test_footer_appears_exactly_once(reply_harness):
+    """Once per cold wake, not once per reply -- the second reply in the same
+    waking is not explaining a delay any more."""
+    reply_harness.subscription_status = "trial_local"
+    reply_harness.cold_wake = True
+    await send()
+    assert reply_harness.sent_body.count(FOOTER_MARK) == 1
+
+    await send()
+    assert FOOTER_MARK not in reply_harness.sent_body
+
+
 def test_reply_subject_plain():
     assert agent_mail_reply.reply_subject("hello") == "Re: hello"
 

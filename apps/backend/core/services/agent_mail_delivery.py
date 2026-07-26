@@ -4,10 +4,25 @@ Mirrors ``routers/hooks_proxy.py``'s resolve-container -> read hook_token ->
 POST-to-``/hooks/agent`` pattern, but for internal-origin inbound mail rather
 than external webhook callers.
 
-**Never wakes a scaled-to-zero container.** If ``resolve_running_container``
-reports no IP, the container is not currently running (e.g. a free-tier box
-that scaled to zero while idle) and we return ``"container_not_running"``
-without POSTing — silently dropping the wake is intentional, not a bug.
+**Wakes a scaled-to-zero container, gated by the SAME cap predicate chat and
+container-start use.** If ``resolve_running_container`` reports no IP, the
+container is a free-tier box that scaled to zero while idle. We check
+``trial_cap.trial_block_reason`` ourselves before waking: an over-cap owner
+is never woken by mail (``"container_not_running"``, same as before -- the
+caller's cap check upstream already normally intercepts this, but this
+service must not wake an over-cap owner even if called from somewhere that
+skipped that check). An under-cap owner gets ``start_user_service`` fired and
+the wake stamped (``container_repo.stamp_email_cold_wake``), and we return
+``"woken"`` -- we do NOT wait for the container and do NOT POST in this
+request. Delivery of this specific message is completed by **SES's own
+retry**: the caller maps ``"woken"`` to HTTP 503, the ses-inbound Lambda
+re-raises on a 5xx (see ``_post_to_backend`` in
+``apps/infra/lambda/ses-inbound/index.py``), and because its SES invocation
+is asynchronous, AWS retries it roughly a minute later -- by which time the
+Fargate cold start has finished and the normal ``"delivered"`` path runs.
+Nothing is queued, polled, or held in memory here; a backend restart between
+the wake and the retry loses nothing because there is nothing in-process to
+lose.
 
 **Never raises.** Callers (the inbound mail webhook handler) must be able to
 treat this as a terminal step; every failure mode collapses to ``"error"``.
@@ -19,6 +34,8 @@ import httpx
 
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
+from core.repositories import container_repo
+from core.services.trial_cap import trial_block_reason
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +48,25 @@ def _client_factory() -> httpx.AsyncClient:
 async def deliver_to_agent(*, owner_id: str, agent_id: str, message: str, idempotency_key: str) -> str:
     """POST an inbound message to the owner's running container's agent hook.
 
-    Returns one of ``"delivered"``, ``"container_not_running"``, ``"error"``.
-    Never raises.
+    Returns one of ``"delivered"``, ``"woken"``, ``"container_not_running"``,
+    ``"error"``. Never raises.
     """
     try:
         container, ip = await get_ecs_manager().resolve_running_container(owner_id)
         if not ip:
-            return "container_not_running"
+            # Asleep. Waking is cost, so it goes through the SAME cap
+            # predicate chat and container-start use -- an over-cap owner is
+            # never woken by mail.
+            if await trial_block_reason(owner_id) is not None:
+                return "container_not_running"
+            await get_ecs_manager().start_user_service(owner_id)
+            await container_repo.stamp_email_cold_wake(owner_id)
+            # Delivery is completed by SES's OWN retry, not by anything here.
+            # The caller maps "woken" to a 503, the ingest Lambda re-raises on
+            # 5xx, and its async invocation is retried ~1 min later -- by which
+            # time the Fargate cold start (~40s) has finished. Nothing is
+            # queued or held in memory, so a backend restart loses nothing.
+            return "woken"
 
         hook_token = (container or {}).get("hook_token") or ""
         target = f"http://{ip}:{GATEWAY_PORT}/hooks/agent"

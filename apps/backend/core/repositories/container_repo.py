@@ -1,5 +1,6 @@
 """Container repository -- DynamoDB operations for the containers table."""
 
+import logging
 import time
 import uuid
 
@@ -8,6 +9,8 @@ from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.services.status_events import publish_status_changed
+
+logger = logging.getLogger(__name__)
 
 # How long a provision lease (provision_claim_id + provision_claimed_at) stays
 # exclusive with no checkpoint refresh before it is considered abandoned. Every
@@ -969,3 +972,57 @@ async def update_error(owner_id: str, error: str) -> dict | None:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def stamp_email_cold_wake(owner_id: str) -> None:
+    """Record that an inbound email cold-woke this container.
+
+    Read once by ``agent_mail_reply.send_reply`` to decide whether the agent's
+    outgoing reply should carry the free-tier "I was asleep" footer. The wake
+    and the reply happen in DIFFERENT requests, which is why this has to be
+    persisted rather than passed. Never raises.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET email_cold_wake_at = :t",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":t": int(time.time())},
+        )
+    except ClientError as e:
+        logger.warning("stamp_email_cold_wake failed for %s: %s", owner_id, e)
+
+
+async def consume_email_cold_wake(owner_id: str, *, max_age_seconds: int = 3600) -> bool:
+    """True when a RECENT cold-wake stamp existed. Clears it either way.
+
+    ONE conditional write, not read-then-remove: two concurrent callers for
+    the same owner could otherwise both read the stamp as fresh before either
+    cleared it, attaching the "I was asleep" footer to two separate replies.
+    The condition (``attribute_exists(email_cold_wake_at)``) means only one
+    concurrent caller can ever satisfy it; the loser gets
+    ConditionalCheckFailedException and correctly reports False. Clearing
+    unconditionally on both the fresh AND stale path is a side effect of this
+    being the same write that reads the value — a stale stamp must not attach
+    to an unrelated reply days later. Never raises.
+    """
+    table = _get_table()
+    try:
+        resp = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE email_cold_wake_at",
+            ConditionExpression="attribute_exists(owner_id) AND attribute_exists(email_cold_wake_at)",
+            ReturnValues="UPDATED_OLD",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("consume_email_cold_wake failed for %s: %s", owner_id, e)
+        return False
+
+    stamped = (resp.get("Attributes") or {}).get("email_cold_wake_at")
+    if stamped is None:
+        return False
+    return (int(time.time()) - int(stamped)) < max_age_seconds

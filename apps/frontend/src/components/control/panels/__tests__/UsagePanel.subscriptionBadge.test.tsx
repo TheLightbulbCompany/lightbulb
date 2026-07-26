@@ -8,8 +8,15 @@ import { UsagePanel } from "../UsagePanel";
 // "Subscription: Trial_local". Must now go through planLabel(), with
 // `capitalize` dropped for trial_local so "Free tier" doesn't come out
 // "Free Tier".
+//
+// Also covers the `expired` flag: UsagePanel can be docked as a sibling of
+// WorkspaceSidebar in the desktop dockable shell (WorkspaceShell.tsx), so an
+// expired free-tier owner must see "Free tier ended" here too, not just in
+// the sidebar footer — otherwise the two badges contradict each other on the
+// same screen.
 
-let billingAccount: { subscription_status: string | null } | null = null;
+let billingAccount: { subscription_status: string | null; trial_end?: number | null } | null =
+  null;
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({
     account: billingAccount,
@@ -48,5 +55,25 @@ describe("UsagePanel subscription badge", () => {
     render(<UsagePanel />);
     const label = screen.getByText("active");
     expect(label.className).toContain("capitalize");
+  });
+
+  it("reads Free tier ended once the free-tier window has elapsed", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      trial_end: Math.floor(Date.now() / 1000) - 86_400, // 1 day ago — expired
+    };
+    render(<UsagePanel />);
+    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
+    expect(screen.queryByText("Free tier")).not.toBeInTheDocument();
+  });
+
+  it("stays Free tier while the free-tier window is still open", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      trial_end: Math.floor(Date.now() / 1000) + 86_400, // 1 day out — not expired
+    };
+    render(<UsagePanel />);
+    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.queryByText("Free tier ended")).not.toBeInTheDocument();
   });
 });

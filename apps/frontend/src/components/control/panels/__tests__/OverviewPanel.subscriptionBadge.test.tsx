@@ -10,6 +10,12 @@ import { OverviewPanel } from "../OverviewPanel";
 // InfoRow's value span carries no uppercase/capitalize CSS, so the bug here
 // was just the raw enum text itself ("trial_local"), not a transform
 // mangling it further — no transform-conditioning needed for this site.
+//
+// Also covers the `expired` flag: OverviewPanel can be docked as a sibling
+// of WorkspaceSidebar in the desktop dockable shell (WorkspaceShell.tsx), so
+// an expired free-tier owner must see "Free tier ended" here too — otherwise
+// this badge and the sidebar footer badge contradict each other on the same
+// screen.
 
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (method: string) => {
@@ -44,7 +50,9 @@ vi.mock("@/hooks/useProvisioningState", () => ({
   }),
 }));
 
-let billingAccount: { subscription_status: string | null } | null = { subscription_status: "active" };
+let billingAccount: { subscription_status: string | null; trial_end?: number | null } | null = {
+  subscription_status: "active",
+};
 vi.mock("@/hooks/useBilling", () => ({
   useBilling: () => ({ account: billingAccount }),
 }));
@@ -87,5 +95,25 @@ describe("OverviewPanel — Subscription InfoRow", () => {
     // other InfoRows in this panel have real mocked values.
     const row = screen.getByText("Subscription").closest(".justify-between");
     expect(row?.textContent).toContain("—");
+  });
+
+  it("reads Free tier ended once the free-tier window has elapsed", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      trial_end: NOW / 1000 - 86_400, // 1 day before the mocked "now" — expired
+    };
+    render(<OverviewPanel />);
+    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
+    expect(screen.queryByText("Free tier")).not.toBeInTheDocument();
+  });
+
+  it("stays Free tier while the free-tier window is still open", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      trial_end: NOW / 1000 + 86_400, // 1 day after the mocked "now" — not expired
+    };
+    render(<OverviewPanel />);
+    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.queryByText("Free tier ended")).not.toBeInTheDocument();
   });
 });

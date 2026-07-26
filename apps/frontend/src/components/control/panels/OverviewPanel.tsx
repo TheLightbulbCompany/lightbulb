@@ -22,7 +22,7 @@ import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useBilling } from "@/hooks/useBilling";
-import { planLabel } from "@/lib/planLabel";
+import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -143,6 +143,13 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   const { container, isLoading: statusLoading, error: statusError } = useProvisioningState();
   const { account } = useBilling();
   const subscriptionStatus = account?.subscription_status ?? null;
+  // Captured once (not read directly in render — Date.now() is impure) so
+  // this is stable across re-renders. Docked next to WorkspaceSidebar's
+  // footer badge in the same dockable shell (WorkspaceShell.tsx), so it must
+  // agree on expired — a user with Overview open next to chat must not see
+  // "Free tier" here while the sidebar footer says "Free tier ended".
+  const [nowMs] = useState(() => Date.now());
+  const isTrialExpired = isFreeTierExpired(subscriptionStatus, account?.trial_end, nowMs);
 
   // Skills count comes from the same RPC SkillsTab uses; pass no agentId
   // to get the global skills inventory. Response can be either an array or
@@ -284,7 +291,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
             <InfoRow
               icon={<CreditCard className="h-3.5 w-3.5" />}
               label="Subscription"
-              value={planLabel(subscriptionStatus) ?? "—"}
+              value={planLabel(subscriptionStatus, { expired: isTrialExpired }) ?? "—"}
             />
             <InfoRow
               icon={<MapPin className="h-3.5 w-3.5" />}

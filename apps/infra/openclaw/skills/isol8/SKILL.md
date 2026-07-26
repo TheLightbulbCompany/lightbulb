@@ -132,10 +132,24 @@ Rules:
 - **It goes only to your owner.** There is no recipient argument; the server
   resolves who that is. You cannot email anyone else with this.
 - **Your first send creates your address**, minted from your company's name
-  at that moment. So give the company a real name BEFORE your first send —
-  that name becomes the subdomain of an address other people will see, and it
-  cannot be changed afterwards. Rename the company with the Paperclip tools
-  if it is still called something generic.
+  at that moment. That name becomes the subdomain of an address other people
+  will see (`friday@acme-robotics.isol8.co`), and it **cannot be changed
+  afterwards**. So name the company BEFORE your first send.
+
+  Check the current name, and set it if it is still a placeholder (an email
+  local part, or anything that isn't a real business name):
+
+  ```
+  # what is it now?
+  /app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/companies/$PAPERCLIP_COMPANY_ID"
+
+  # name it
+  jq -n --arg n "Acme Robotics" '{name:$n}' | \
+    /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH "/api/companies/$PAPERCLIP_COMPANY_ID"
+  ```
+
+  `PAPERCLIP_COMPANY_ID` is already in your environment. Pick something you'd
+  put on a business card — short, real, no punctuation beyond hyphens.
 - **Send it when you have something worth reading**, not to acknowledge that
   you started.
 

@@ -91,16 +91,16 @@ async def send_to_owner(
     a container nothing useful.
     """
     try:
+        # Validated HERE, not only at the router: `purpose` is a metric
+        # dimension, and the routines caller invokes this function IN-PROCESS,
+        # bypassing the router's check entirely. An unvalidated value is
+        # unbounded CloudWatch cardinality.
+        if purpose not in VALID_PURPOSES:
+            logger.warning("owner_send: rejecting unknown purpose %r for %s", purpose, owner_id)
+            return "error"
+
         if not (settings.AGENT_EMAIL_DOMAIN or "").strip():
             return "disabled"
-
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
-            put_metric(
-                "agent_email.owner_send",
-                dimensions={"purpose": purpose, "result": "rate_limited"},
-            )
-            return "rate_limited"
 
         repo = PaperclipRepo()
         onboarding = await repo.get_onboarding_state(owner_id) or {}
@@ -121,6 +121,12 @@ async def send_to_owner(
                 return "already_sent"
 
         async def _fail(reason: str, result: str) -> str:
+            """Release the claim as ``failed`` and report ``result``.
+
+            Every exit after a successful claim MUST go through here.
+            ``sending`` is neither re-claimable nor nudged, so returning
+            without settling would wedge first contact permanently.
+            """
             if is_first_contact:
                 await repo.settle_first_contact(
                     row_user_id,
@@ -130,6 +136,21 @@ async def send_to_owner(
                 )
             put_metric("agent_email.owner_send", dimensions={"purpose": purpose, "result": result})
             return result
+
+        # Charged only once we KNOW a send will be attempted — after the
+        # once-only decision above, never before it. Charging on entry would
+        # let an agent that keeps re-calling first_contact and collecting
+        # `already_sent` burn the whole daily budget on no-ops, starving a
+        # legitimate routine send later the same day. Hammering is still
+        # bounded by the router's per-minute burst limiter, and an
+        # `already_sent` return costs two DynamoDB ops and nothing else.
+        #
+        # Routed through _fail so a cap hit after a successful claim releases
+        # it (`failed` is retryable and nudged) instead of leaving the row
+        # stuck at `sending`.
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
+            return await _fail("daily_cap_exhausted", "rate_limited")
 
         owner_email = await lookup_owner_email(
             org_id=owner_id if is_org_owner_id(owner_id) else None,
@@ -203,8 +224,14 @@ async def send_to_owner(
 def _env_subject(subject: str) -> str:
     """Prefix non-prod mail so a dev message can never be mistaken for a real
     one. Both environments send from an isol8.co address into a real inbox,
-    which is exactly when that confusion happens."""
+    which is exactly when that confusion happens.
+
+    Fails toward PREFIXING. An unset ``ENVIRONMENT`` (the config default is an
+    empty string) is treated as non-prod, so a misconfigured deploy sends
+    obviously-marked mail rather than mail indistinguishable from production.
+    Only an explicit ``prod`` suppresses the prefix.
+    """
     env = (settings.ENVIRONMENT or "").strip().lower()
-    if env and env != "prod":
-        return f"[{env}] {subject}"
-    return subject
+    if env == "prod":
+        return subject
+    return f"[{env or 'non-prod'}] {subject}"

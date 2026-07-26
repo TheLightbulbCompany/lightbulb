@@ -179,11 +179,15 @@ async def test_facts_failure_does_not_block_the_send(wired):
 
 
 @pytest.mark.asyncio
-async def test_cap_exceeded_short_circuits_before_any_state_change(wired):
+async def test_cap_exceeded_releases_the_claim_rather_than_wedging_it(wired):
+    """The cap is charged AFTER the claim, so a cap hit must settle `failed`.
+    `sending` is neither re-claimable nor nudged — returning without settling
+    would wedge first contact permanently."""
     wired.cap_allows = False
     assert await _send() == "rate_limited"
     assert wired.ses_calls == 0
-    assert wired.claimed is False
+    assert wired.settled == "failed"
+    assert wired.settle_reason == "daily_cap_exhausted"
 
 
 @pytest.mark.asyncio
@@ -224,3 +228,60 @@ async def test_non_prod_subject_is_env_prefixed(monkeypatch, wired):
 async def test_prod_subject_is_untouched(wired):
     await _send()
     assert wired.sent_subject == "Hello"
+
+
+# --- Review fixes ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unknown_purpose_is_rejected_in_the_SERVICE(wired):
+    """The routines caller invokes send_to_owner IN-PROCESS, bypassing the
+    router's check. `purpose` is a metric dimension, so an unvalidated value
+    is unbounded CloudWatch cardinality."""
+    result = await mod.send_to_owner(owner_id="user_a", purpose="whatever-i-like", subject="s", body_text="b")
+    assert result == "error"
+    assert wired.ses_calls == 0
+    assert wired.claimed is False
+
+
+@pytest.mark.asyncio
+async def test_already_sent_does_NOT_burn_daily_budget(wired):
+    """Charging on entry would let an agent re-calling first_contact exhaust
+    the day on no-ops and starve a legitimate routine send."""
+    consumed = []
+
+    async def _cap(owner_id, *, day, cap):
+        consumed.append(day)
+        return True
+
+    import core.repositories.container_repo as cr
+
+    object.__setattr__(cr, "try_consume_daily_email_send", _cap)
+    mod.container_repo.try_consume_daily_email_send = _cap
+
+    wired.claim_returns = False
+    assert await _send() == "already_sent"
+    assert consumed == []
+
+
+@pytest.mark.asyncio
+async def test_a_real_send_DOES_burn_daily_budget(wired):
+    consumed = []
+
+    async def _cap(owner_id, *, day, cap):
+        consumed.append(day)
+        return True
+
+    mod.container_repo.try_consume_daily_email_send = _cap
+
+    assert await _send() == "sent"
+    assert len(consumed) == 1
+
+
+@pytest.mark.asyncio
+async def test_unset_environment_still_prefixes(monkeypatch, wired):
+    """Fail toward marking. A misconfigured deploy must not send mail that
+    looks identical to production."""
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "")
+    await _send()
+    assert wired.sent_subject == "[non-prod] Hello"

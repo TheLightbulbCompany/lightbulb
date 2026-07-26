@@ -817,7 +817,7 @@ async def test_deploy_skips_acp_when_provider_has_no_harness(monkeypatch):
 @pytest.mark.asyncio
 async def test_deploy_no_acp_when_not_required(monkeypatch):
     """A listing that doesn't declare requires_acp never touches the ACP path,
-    even with the flag on."""
+    with the flag gone."""
     patch_cfg = _patch_acp_deps(monkeypatch)
     svc, _ws, _aux, _pair, _gw = _make_service()
 

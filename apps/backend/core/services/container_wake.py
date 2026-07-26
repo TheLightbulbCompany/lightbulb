@@ -41,7 +41,7 @@ class WakeResult:
     gate_payload: dict[str, Any] | None = None
 
 
-async def request_wake(owner_id: str, *, reason: str, is_admin: bool, user_id: str) -> WakeResult:
+async def request_wake(owner_id: str, *, reason: str, is_admin: bool) -> WakeResult:
     """Wake the owner's container in response to explicit intent.
 
     Returns a ``WakeResult`` — the router maps ``blocked`` to a 402 with the
@@ -92,7 +92,7 @@ async def request_wake(owner_id: str, *, reason: str, is_admin: bool, user_id: s
 _OPERATOR_STOP_REASONS = frozenset({"admin", "killswitch"})
 
 
-async def request_wake_silent(owner_id: str, *, user_id: str, door: str = "chat_send") -> str:
+async def request_wake_silent(owner_id: str, *, door: str = "chat_send") -> str:
     """Best-effort wake for server-side intent (a message arrived for a
     stopped container). Same gate ordering as ``request_wake`` — the trial
     gates AND ``evaluate_provision_gate`` (subscription/credits/OAuth) both

@@ -37,14 +37,14 @@ def _ctx(row, *, trial_reason=None, gate=None):
 async def _silent(row, **kw):
     ps = _ctx(row, **kw)
     with ps[0], ps[1], ps[2], ps[3] as dispatch:
-        outcome = await container_wake.request_wake_silent("u1", user_id="u1")
+        outcome = await container_wake.request_wake_silent("u1")
         return outcome, dispatch
 
 
 async def _explicit(row, **kw):
     ps = _ctx(row, **kw)
     with ps[0], ps[1], ps[2], ps[3] as dispatch:
-        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True, user_id="u1")
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
         return result, dispatch
 
 
@@ -99,7 +99,7 @@ class TestRequestWakeSilent:
             "core.services.trial_cap.trial_block_reason",
             new=AsyncMock(side_effect=RuntimeError("ddb down")),
         ):
-            assert await container_wake.request_wake_silent("u1", user_id="u1") == "error"
+            assert await container_wake.request_wake_silent("u1") == "error"
 
 
 class TestRequestWake:

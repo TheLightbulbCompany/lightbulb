@@ -595,7 +595,6 @@ async def container_wake_endpoint(
         owner_id,
         reason=reason,
         is_admin=auth.is_org_admin if auth.is_org_context else True,
-        user_id=auth.user_id,
     )
     if result.outcome == "blocked":
         raise HTTPException(status_code=402, detail=result.gate_payload)

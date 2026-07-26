@@ -4,6 +4,7 @@ import {
   accumulateStreamText,
   isRetryableRpcError,
   rpcRetryDelayMs,
+  WARMING_GRACE_MS,
 } from "@isol8/shared";
 import { randomUUID } from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
@@ -50,12 +51,18 @@ import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
 
 /**
- * How many times a RETRYABLE chat.history failure is re-fetched silently
- * before the user sees a card. Sized for the condition it exists for —
- * OpenClaw's session-index rebuild, which asks for ~250ms — not as a general
- * outage cushion: a container that is actually down should say so quickly.
+ * How long a RETRYABLE chat.history failure is re-fetched silently before the
+ * user sees a card.
+ *
+ * A DEADLINE, not an attempt count. A count cannot serve both of the delays
+ * that reach this path: OpenClaw's session-index rebuild asks for ~250ms while
+ * the backend's waking container asks for 3000ms, so "3 attempts" is either
+ * ~750ms of patience or ~9s depending on who answered — and the 9s case gave
+ * up a quarter of the way into a cold start. Sharing the window every other
+ * surface uses keeps the whole app's answer to "is it still coming up?"
+ * consistent.
  */
-const HISTORY_RETRY_BUDGET = 3;
+const HISTORY_RETRY_WINDOW_MS = WARMING_GRACE_MS;
 
 /**
  * Slim reconnecting banner shown above the composer while the gateway
@@ -166,12 +173,13 @@ function AgentChat() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyNonce, setHistoryNonce] = useState(0);
-  // Auto-retry budget for RETRYABLE history failures only (see the fetch's
-  // catch). Spent silently, refilled on anything that counts as a fresh ask:
-  // a session switch or the card's Retry. Deliberately NOT refilled by the
-  // effect itself — the auto-retry re-enters through the same nonce, so
-  // refilling there would spin forever against a genuinely stuck container.
-  const historyRetriesRef = useRef(HISTORY_RETRY_BUDGET);
+  // Deadline for silently riding out RETRYABLE history failures (see the
+  // fetch's catch). `null` means "no run in progress — start one on the next
+  // retryable failure". Cleared on a SUCCESSFUL fetch, a session switch, and
+  // the card's Retry; deliberately NOT extended by the auto-retry itself,
+  // which re-enters through the same nonce and would otherwise never give up
+  // on a genuinely stuck container.
+  const historyRetryUntilRef = useRef<number | null>(null);
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   // Cumulative-stream bookkeeping for the active run: how many chars of the
@@ -309,7 +317,17 @@ function AgentChat() {
   // (reconnectAttempt etc.) doesn't spam refetches.
   const { sendReq, isConnected } = gateway;
   useEffect(() => {
-    if (!agentId || !userId || !isConnected) return;
+    if (!agentId || !userId || !isConnected) {
+      // A retryable failure leaves `historyLoading` true on purpose (the
+      // skeleton IS the retry's UI). If the socket drops before the scheduled
+      // refetch lands we bail here instead, so clear it — otherwise the
+      // transcript sits on an indefinite skeleton with no message and no
+      // Retry for as long as we stay disconnected. The reconnecting banner
+      // above the composer is what explains the wait; the effect re-fires and
+      // refetches on the rising edge.
+      setHistoryLoading(false);
+      return;
+    }
     if (activeSessionId && freshSessionIdsRef.current.has(activeSessionId)) {
       // Brand-new locally-minted session: no server transcript exists until
       // the first send, so there is nothing to fetch (contract §1).
@@ -356,21 +374,32 @@ function AgentChat() {
           }),
         );
         setHistoryLoading(false);
+        // Window closes on success: the next transient in this session gets a
+        // fresh one. Leaving it spent meant the SECOND rebuild in a long-lived
+        // session went straight to the card this whole path exists to avoid.
+        historyRetryUntilRef.current = null;
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         // The responder describes its own transients: a rebuilding session
-        // index answers UNAVAILABLE with retryable + retryAfterMs ~250ms.
-        // Spend the budget on those silently — a quarter-second condition
-        // must never reach a user as a red card asking them to tap Retry.
-        // The skeleton stays up across the wait, so it reads as loading.
-        if (isRetryableRpcError(err) && historyRetriesRef.current > 0) {
-          historyRetriesRef.current -= 1;
-          historyRetryTimerRef.current = setTimeout(
-            () => setHistoryNonce((n) => n + 1),
-            rpcRetryDelayMs(err, 1000),
-          );
-          return;
+        // index answers retryable with retryAfterMs ~250ms, a waking container
+        // with ~3000ms. Ride either out silently until the window closes — a
+        // quarter-second condition must never reach a user as a red card
+        // asking them to tap Retry, and a cold start must not give up a
+        // quarter of the way in. The skeleton stays up across the wait, so it
+        // reads as loading.
+        if (isRetryableRpcError(err)) {
+          const now = Date.now();
+          if (historyRetryUntilRef.current === null) {
+            historyRetryUntilRef.current = now + HISTORY_RETRY_WINDOW_MS;
+          }
+          if (now < historyRetryUntilRef.current) {
+            historyRetryTimerRef.current = setTimeout(
+              () => setHistoryNonce((n) => n + 1),
+              rpcRetryDelayMs(err, 1000),
+            );
+            return;
+          }
         }
         // Not latched: the effect re-fires on the next reconnect / session
         // visit, and the error card's Retry bumps historyNonce.
@@ -407,7 +436,7 @@ function AgentChat() {
       setItems([]);
       setHistoryItems([]);
       setHistoryError(null);
-      historyRetriesRef.current = HISTORY_RETRY_BUDGET;
+      historyRetryUntilRef.current = null;
     },
     [],
   );
@@ -768,8 +797,8 @@ function AgentChat() {
               </Text>
               <Pressable
                 onPress={() => {
-                  // A deliberate ask refills the silent-retry budget.
-                  historyRetriesRef.current = HISTORY_RETRY_BUDGET;
+                  // A deliberate ask opens a fresh silent-retry window.
+                  historyRetryUntilRef.current = null;
                   setHistoryNonce((n) => n + 1);
                 }}
                 accessibilityRole="button"

@@ -13,8 +13,8 @@
 // had five raw agents.list call sites carrying none of this, which is how a
 // waking container showed a TestFlight user a failure card.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, act, cleanup } from "@testing-library/react";
 
 const mutate = vi.fn(async () => undefined);
 let rpcData: { agents?: { id: string }[]; defaultId?: string } | undefined;
@@ -53,6 +53,13 @@ function emit(event: string, data: unknown): void {
   for (const h of [...handlers]) h(event, data);
 }
 
+// This package runs vitest with globals:false, so RTL never registers its
+// auto-cleanup — every sibling suite here calls cleanup() explicitly for the
+// same reason. Without it each renderHook root stays mounted for the file.
+afterEach(() => {
+  cleanup();
+});
+
 beforeEach(() => {
   mutate.mockClear();
   handlers.clear();
@@ -73,6 +80,11 @@ describe("useAgents roster revalidation", () => {
     expect(refreshInterval(undefined)).toBeGreaterThan(0);
     expect(refreshInterval({ agents: [] })).toBeGreaterThan(0);
     expect(refreshInterval({ agents: [{ id: "agent-ceo" }] })).toBe(0);
+    // Pin the actual cadence, not just "> 0": SWR runs refreshInterval
+    // revalidations WITH_DEDUPE, so a period under useGatewayRpc's
+    // dedupingInterval (10s) silently drops most of its ticks. A bare
+    // `toBeGreaterThan(0)` passed at 3000 while the real cadence was ~10s.
+    expect(refreshInterval({ agents: [] })).toBeGreaterThanOrEqual(10_000);
   });
 
   it("revalidates on a status_change HEALTHY push", () => {

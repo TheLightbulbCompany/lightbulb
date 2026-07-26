@@ -13,6 +13,26 @@ vi.mock("@/hooks/useConfigPatch", () => ({
     config: {}, configReady: true, patchConfig: patchConfigMock, refreshConfig: vi.fn(),
   }),
 }));
+// The roster now comes from the shared useAgents hook (which reaches for the
+// gateway context), so that is the seam to stub — not the RPC beneath it.
+vi.mock("@/hooks/useAgents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/useAgents")>();
+  return {
+    ...actual,
+    useAgents: () => ({
+      agents: agentsListData.agents ?? [],
+      defaultId: agentsListData.defaultId,
+      error: undefined,
+      isLoading: false,
+      isSettled: true,
+      refresh: vi.fn(),
+      createAgent: vi.fn(),
+      deleteAgent: vi.fn(),
+      updateAgent: vi.fn(),
+    }),
+  };
+});
+
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (method: string | null) => {
     if (method === "agents.list") {

@@ -15,7 +15,9 @@ import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
 import { useBilling } from "@/hooks/useBilling";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useAgents } from "@/hooks/useAgents";
+import { isRetryableRpcError, useWarmingWindow } from "@isol8/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
@@ -32,7 +34,11 @@ export interface AgentsPanelProps {
 }
 
 export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
-  const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
+  // Roster via the shared hook, not a raw agents.list: this panel is the
+  // direct analogue of mobile's control Agents tab and needs the same
+  // empty-roster latch fix and become-reachable revalidation.
+  const { agents: rosterAgents, defaultId: rosterDefaultId, error, isLoading, refresh: mutate } =
+    useAgents();
   const callRpc = useGatewayRpcMutation();
   // Channels require an active subscription (or trial). Pre-signup users
   // shouldn't see the Channels tab.
@@ -55,8 +61,10 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const agents: AgentEntry[] = rawData?.agents ?? [];
-  const defaultId = rawData?.defaultId;
+  const warming = useWarmingWindow(isRetryableRpcError(error));
+  const hardError = error && !warming ? error : null;
+  const agents = rosterAgents as AgentEntry[];
+  const defaultId = rosterDefaultId;
 
   const handleAgentCreated = () => {
     mutate();
@@ -85,10 +93,12 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
     );
   }
 
-  if (error) {
+  // A retryable failure (a container waking) reads as loading for a bounded
+  // window, then as the failure it is — same contract as mobile.
+  if (hardError) {
     return (
       <div className="p-4 space-y-3">
-        <p className="text-sm text-[#dc2626]">{error.message}</p>
+        <p className="text-sm text-[#dc2626]">{hardError.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>

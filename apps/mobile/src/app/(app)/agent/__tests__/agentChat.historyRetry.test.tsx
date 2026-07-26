@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react-native";
-import { GatewayRpcError } from "@isol8/shared";
+import { GatewayRpcError, WARMING_GRACE_MS } from "@isol8/shared";
 
 jest.mock("expo-router", () => ({
   router: {
@@ -28,6 +28,7 @@ const mockSendReq = jest.fn();
 // `sendReq` in its deps, so a per-render identity would re-fire the fetch on
 // every render and make the retry counts meaningless.
 const mockGateway = {
+  // Mutable so a test can drive the reconnect edge the history effect keys on.
   isConnected: true,
   error: null,
   onChatMessage: () => () => {},
@@ -84,6 +85,7 @@ async function tick() {
 describe("AgentChat history retry", () => {
   beforeEach(() => {
     mockSendReq.mockReset();
+    mockGateway.isConnected = true;
     jest.useFakeTimers();
   });
   afterEach(() => {
@@ -113,24 +115,66 @@ describe("AgentChat history retry", () => {
     expect(screen.queryByText(/Couldn’t load history/)).toBeNull();
   });
 
-  it("gives up after the budget and shows a message free of wire internals", async () => {
+  it("gives up when the window closes, with a message free of wire internals", async () => {
     mockSendReq.mockRejectedValue(REBUILDING());
 
     await render(<AgentChat />);
     await flush();
 
-    // Budget is 3 silent retries; drain them.
-    for (let i = 0; i < 3; i++) await tick();
-    expect(mockSendReq).toHaveBeenCalledTimes(4);
+    // Still riding it out well inside the window — no card yet.
+    await tick();
+    await tick();
+    expect(screen.queryByText(/Couldn’t load history/)).toBeNull();
+
+    // Past the window it must stop and say something actionable.
+    jest.setSystemTime(Date.now() + WARMING_GRACE_MS + 1);
+    await tick();
 
     // The card carries the sentence, not the code or the details JSON.
     expect(screen.getByText(/session history is rebuilding/)).toBeTruthy();
     expect(screen.queryByText(/UNAVAILABLE/)).toBeNull();
     expect(screen.queryByText(/"method"/)).toBeNull();
 
-    // And it stops there — a spent budget must not keep re-firing.
+    // And it stops there — a closed window must not keep re-firing.
+    const settled = mockSendReq.mock.calls.length;
     await tick();
-    expect(mockSendReq).toHaveBeenCalledTimes(4);
+    expect(mockSendReq).toHaveBeenCalledTimes(settled);
+  });
+
+  it("re-opens the silent window after a success, not just on a manual retry", async () => {
+    // The budget used to be spent permanently, so the SECOND transient in a
+    // long-lived session went straight to the card this path exists to avoid.
+    mockSendReq
+      .mockRejectedValueOnce(REBUILDING())
+      .mockResolvedValueOnce(HISTORY)
+      .mockRejectedValueOnce(REBUILDING())
+      .mockResolvedValueOnce(HISTORY);
+
+    const view = await render(<AgentChat />);
+    await flush();
+    await tick();
+    expect(screen.getByText(/the transcript survived/)).toBeTruthy();
+
+    // The user stays on this session a long time — long enough that a window
+    // opened by the FIRST transient would have expired. Without the
+    // reset-on-success the stale deadline is now in the past, so the second
+    // transient skips the silent retry and paints the card immediately.
+    jest.setSystemTime(Date.now() + WARMING_GRACE_MS + 1);
+
+    // A later reconnect re-fires the effect and hits another transient.
+    await act(async () => {
+      mockGateway.isConnected = false;
+      view.rerender(<AgentChat />);
+    });
+    await act(async () => {
+      mockGateway.isConnected = true;
+      view.rerender(<AgentChat />);
+    });
+    await flush();
+    expect(screen.queryByText(/Couldn’t load history/)).toBeNull();
+    await tick();
+    expect(screen.getByText(/the transcript survived/)).toBeTruthy();
+    expect(screen.queryByText(/Couldn’t load history/)).toBeNull();
   });
 
   it("shows a non-retryable failure immediately — no silent waiting", async () => {

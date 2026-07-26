@@ -30,7 +30,16 @@ export class GatewayRpcError extends Error {
 
   constructor(wireError: unknown) {
     const e = (wireError ?? {}) as Record<string, unknown>;
-    const message = typeof e.message === "string" && e.message ? e.message : "RPC call failed";
+    // Only the FALLBACK carries the code: a real message is shown to users
+    // verbatim and must stay clean, but "RPC call failed" with nothing else is
+    // untriageable — the code is the only handle left.
+    const code = typeof e.code === "string" && e.code ? e.code : undefined;
+    const message =
+      typeof e.message === "string" && e.message
+        ? e.message
+        : code
+          ? `RPC call failed [${code}]`
+          : "RPC call failed";
     super(message);
     this.name = "GatewayRpcError";
     this.code = typeof e.code === "string" ? e.code : undefined;
@@ -56,8 +65,19 @@ export function isRetryableRpcError(err: unknown): boolean {
   );
 }
 
-/** The responder's suggested retry delay, or `fallbackMs` when it gave none. */
+/** Floor/ceiling for a responder-supplied retry delay, mirroring OpenClaw's own
+ *  consumer of this field (src/tui/gateway-chat.ts). The value is chosen by
+ *  whoever answered — today the gateway says 250ms and the backend says 3000ms
+ *  for the same client code path — so it is a hint, not an instruction. An
+ *  unclamped large value would pin a bare skeleton on screen for its whole
+ *  duration with nothing to explain the wait. */
+const RETRY_DELAY_MIN_MS = 100;
+const RETRY_DELAY_MAX_MS = 5_000;
+
+/** The responder's suggested retry delay (clamped), or `fallbackMs` when it
+ *  gave none. */
 export function rpcRetryDelayMs(err: unknown, fallbackMs: number): number {
   const ms = (err as { retryAfterMs?: unknown } | null | undefined)?.retryAfterMs;
-  return typeof ms === "number" && ms > 0 ? ms : fallbackMs;
+  if (typeof ms !== "number" || !(ms > 0)) return fallbackMs;
+  return Math.min(Math.max(ms, RETRY_DELAY_MIN_MS), RETRY_DELAY_MAX_MS);
 }

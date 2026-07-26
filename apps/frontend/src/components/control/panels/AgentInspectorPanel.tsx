@@ -9,6 +9,7 @@ import { AgentChannelsSection } from "./AgentChannelsSection";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { useBilling } from "@/hooks/useBilling";
+import { useAgents } from "@/hooks/useAgents";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
@@ -63,9 +64,9 @@ export function AgentInspectorPanel({
 
   // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
   // inspector only has an id from the URL, not the agent object).
-  const { data } = useGatewayRpc<AgentsListResponse>("agents.list");
-  const agent: AgentEntry | undefined = (data?.agents ?? []).find(
-    (a) => a.id === agentId,
+  const { agents: gatewayAgents } = useAgents();
+  const agent: AgentEntry | undefined = (gatewayAgents as AgentEntry[]).find(
+    (a: AgentEntry) => a.id === agentId,
   );
 
   // Org controls (reports-to + lifecycle) need the Teams roster shape, which

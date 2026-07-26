@@ -1754,6 +1754,24 @@ async def _intercept_agents_update(
     return False
 
 
+# Gateway failures that mean "the container is still coming up", not "it is
+# broken". Matched on message because connection_pool raises bare RuntimeErrors
+# for these (core/gateway/connection_pool.py) — when any of them grows a
+# structured error shape, prefer that over this list.
+_TRANSIENT_GATEWAY_ERROR_MARKERS = (
+    "gateway health check timed out",
+    "gateway not healthy",
+    "gateway reconnect throttled",
+    "gateway connection lost",
+    "connection closed",
+)
+
+
+def _is_transient_gateway_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _TRANSIENT_GATEWAY_ERROR_MARKERS)
+
+
 async def _process_rpc_background(
     connection_id: str,
     user_id: str,
@@ -1830,13 +1848,23 @@ async def _process_rpc_background(
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    # A task with no IP yet is waking, not broken. Mirror
-                    # OpenClaw's own errorShape retry metadata so clients can
-                    # render this as a loading state and retry themselves
-                    # instead of showing the user a red failure card.
+                    # A task with no IP is USUALLY waking (still pulling the
+                    # image) but can also be one that died and is being
+                    # replaced — resolve_running_container cannot tell them
+                    # apart, so `retryable` here is a hint, not a liveness
+                    # proof. Clients must bound how long they present it as
+                    # loading (see useWarmingWindow); nothing downstream may
+                    # treat it as "wait forever".
+                    #
+                    # Deliberately NO `code`: shipped mobile builds string-join
+                    # an error's `code` into the message they display, so
+                    # adding one would regress the installed base to
+                    # "...try again in a moment. — [UNAVAILABLE]" — the exact
+                    # class of message this change exists to remove.
+                    # `retryable` and `retryAfterMs` are ignored by those
+                    # older clients.
                     "error": {
                         "message": "Container is starting up. Try again in a moment.",
-                        "code": "UNAVAILABLE",
                         "retryable": True,
                         "retryAfterMs": 3000,
                     },
@@ -2010,6 +2038,18 @@ async def _process_rpc_background(
                 error_obj = json.loads(str(e))
             except (ValueError, TypeError):
                 error_obj = {"message": str(e)}
+            # The no-IP branch above is only the FIRST seconds of a cold start.
+            # Once ECS publishes an IP the container still needs ~30-60s for
+            # the OpenClaw sidecar to accept a protocol-v4 handshake, and those
+            # failures arrive here as plain RuntimeErrors. Left unflagged they
+            # render the red failure card for the majority of every wake, so
+            # mark the known-transient ones too. Same hint-not-proof contract:
+            # bounded by the client, and no `code` (see above).
+            if not isinstance(error_obj, dict):
+                error_obj = {"message": str(e)}
+            if "retryable" not in error_obj and _is_transient_gateway_error(str(e)):
+                error_obj["retryable"] = True
+                error_obj.setdefault("retryAfterMs", 3000)
             await management_api.send_message_async(
                 connection_id,
                 {

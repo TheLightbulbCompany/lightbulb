@@ -20,6 +20,7 @@ import {
   getAgentModelString,
   isRetryableRpcError,
   useAgents,
+  useWarmingWindow,
   useGatewayRpcMutation,
   type Agent,
 } from "@isol8/shared";
@@ -268,7 +269,29 @@ export default function AgentsPanel() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  const showEmpty = agents.length === 0 && !isLoading && isSettled;
+  // Same contract as the roster tab, and it has to be the SAME, not merely
+  // similar: a retryable failure reads as loading for a bounded window
+  // (useWarmingWindow — the responder cannot prove liveness), after which it
+  // is shown as a failure with a way out.
+  const warming = useWarmingWindow(isRetryableRpcError(error));
+  const hardError = error && !warming ? error : null;
+
+  const renderErrorCard = (message: string): ReactElement => (
+    <View style={styles.errorCard}>
+      <Text style={styles.errorText}>Couldn’t load agents: {message}</Text>
+      <Pressable
+        style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+        onPress={() => void refresh()}
+        accessibilityRole="button"
+        accessibilityLabel="Retry"
+      >
+        <Text style={styles.retryText}>Retry</Text>
+      </Pressable>
+    </View>
+  );
+
+  const showEmpty =
+    agents.length === 0 && !isLoading && isSettled && !hardError;
 
   const confirmDelete = useCallback(
     (agent: Agent) => {
@@ -350,31 +373,13 @@ export default function AgentsPanel() {
     [confirmDelete, defaultId, deletingId],
   );
 
-  // Same contract as the roster tab: a retryable failure (a container waking
-  // from zero) is a loading state, not a failure — useGatewayRpc is already
-  // re-probing it. Only a failure that will NOT clear on its own earns a card.
-  const hardError = error && !isRetryableRpcError(error) ? error : null;
-
   let body: ReactElement;
-  if (hardError) {
-    body = (
-      <View style={styles.errorCard}>
-        <Text style={styles.errorText}>
-          Couldn’t load agents: {hardError.message}
-        </Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.retryButton,
-            pressed && styles.pressed,
-          ]}
-          onPress={() => void refresh()}
-          accessibilityRole="button"
-          accessibilityLabel="Retry"
-        >
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
-      </View>
-    );
+  // Only blank the screen when there is nothing to blank. Over a roster we
+  // already fetched, the card rides above the tiles — losing the list, the
+  // delete affordances and the New-agent entry point to a transient
+  // revalidation failure is a worse answer than showing both.
+  if (hardError && !isSettled) {
+    body = renderErrorCard(hardError.message);
   } else if (!isSettled && connectionDown) {
     body = (
       <View style={styles.centerGrow}>
@@ -394,16 +399,19 @@ export default function AgentsPanel() {
           showEmpty && styles.centerGrow,
         ]}
         ListHeaderComponent={
-          agents.length > 0 ? (
-            <Text style={styles.sectionLabel}>
-              AGENTS
-              <Text style={styles.sectionCount}> · {agents.length}</Text>
-            </Text>
-          ) : null
+          <>
+            {hardError ? renderErrorCard(hardError.message) : null}
+            {agents.length > 0 ? (
+              <Text style={styles.sectionLabel}>
+                AGENTS
+                <Text style={styles.sectionCount}> · {agents.length}</Text>
+              </Text>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
-          isLoading || !isSettled ? (
-            <SkeletonRows warming={isRetryableRpcError(error)} />
+          hardError ? null : isLoading || !isSettled ? (
+            <SkeletonRows warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>

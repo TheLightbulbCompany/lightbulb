@@ -52,7 +52,11 @@ export interface UseAgentsOptions {
 // latest cached data on every poll cycle (empty/undefined → keep polling,
 // populated → 0). Every provisioned owner has Friday/Atlas, so a persistently
 // empty roster is precisely the latch this heals.
-const EMPTY_ROSTER_POLL_MS = 3000;
+// NOT tunable below useGatewayRpc's `dedupingInterval` (10s): SWR runs
+// refreshInterval revalidations WITH_DEDUPE, so a shorter period silently
+// drops most of its ticks — a "3s" poll actually healed at ~10s. This is the
+// BACKSTOP anyway; the become-reachable pushes below are the fast path.
+const EMPTY_ROSTER_POLL_MS = 10_000;
 function rosterRefreshInterval(latest: AgentsListResponse | undefined): number {
   return (latest?.agents?.length ?? 0) === 0 ? EMPTY_ROSTER_POLL_MS : 0;
 }

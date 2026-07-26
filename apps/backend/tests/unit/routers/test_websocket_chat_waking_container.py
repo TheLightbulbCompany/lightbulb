@@ -60,9 +60,13 @@ async def test_waking_container_answers_retryable(monkeypatch):
     err = frame["error"]
     assert err["retryable"] is True
     assert err["retryAfterMs"] > 0
-    assert err["code"] == "UNAVAILABLE"
     # The message stays a plain human sentence — clients render it verbatim.
     assert "starting up" in err["message"]
+    # NO `code`: already-shipped mobile builds string-join an error's `code`
+    # into the text they display, so adding one would regress the installed
+    # base to "...try again in a moment. — [UNAVAILABLE]" — the exact message
+    # class this work exists to remove. Older clients ignore the other two.
+    assert "code" not in err
 
 
 @pytest.mark.asyncio
@@ -76,4 +80,43 @@ async def test_missing_container_is_not_retryable(monkeypatch):
 
     _, frame = mgmt.send_message.call_args.args
     assert frame["ok"] is False
+    assert frame["error"].get("retryable") is not True
+
+
+@pytest.mark.asyncio
+async def test_gateway_still_booting_is_retryable(monkeypatch):
+    """The no-IP branch is only the first seconds of a wake. Once ECS publishes
+    an IP the container still needs ~30-60s for the OpenClaw sidecar to accept a
+    handshake, and those failures arrive as bare RuntimeErrors — unflagged they
+    render the red failure card for the MAJORITY of every cold start."""
+    _ecs_mock(monkeypatch, ({"gateway_token": "gw"}, "10.0.0.5"))
+    mgmt = _mgmt_mock(monkeypatch)
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=RuntimeError("Gateway not healthy: timeout"))
+    monkeypatch.setattr("routers.websocket_chat.get_gateway_pool", MagicMock(return_value=pool))
+
+    await _run_rpc()
+
+    _, frame = mgmt.send_message.call_args.args
+    assert frame["ok"] is False
+    assert frame["error"]["retryable"] is True
+    assert "code" not in frame["error"]
+
+
+@pytest.mark.asyncio
+async def test_genuine_rpc_rejection_stays_non_retryable(monkeypatch):
+    """A real rejection from OpenClaw must NOT be dressed up as 'still waking' —
+    that would hide it behind a warming spinner until the client's grace window
+    expired."""
+    _ecs_mock(monkeypatch, ({"gateway_token": "gw"}, "10.0.0.5"))
+    mgmt = _mgmt_mock(monkeypatch)
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=RuntimeError("agent not found"))
+    monkeypatch.setattr("routers.websocket_chat.get_gateway_pool", MagicMock(return_value=pool))
+
+    await _run_rpc()
+
+    _, frame = mgmt.send_message.call_args.args
     assert frame["error"].get("retryable") is not True

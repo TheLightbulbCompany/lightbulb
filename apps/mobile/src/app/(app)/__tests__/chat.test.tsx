@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
 // expo-router isn't in the jest transform allowlist; stub the bits <Chat/> uses.
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
@@ -59,7 +59,7 @@ jest.mock("@isol8/shared", () => ({
 }));
 
 import Chat from "../chat";
-import { GatewayRpcError } from "@isol8/shared";
+import { GatewayRpcError, WARMING_GRACE_MS } from "@isol8/shared";
 
 const routerPush = jest.requireMock("expo-router").router.push as jest.Mock;
 
@@ -144,15 +144,65 @@ describe("Chat roster", () => {
     });
 
     it("does report a failure that will NOT clear on its own", async () => {
+      // NOT "No container provisioned." — useGatewayRpc's fetcher converts
+      // that one string into a SUCCESS (data === undefined), so a test using
+      // it pins a state production can never reach and would keep passing
+      // even if the hard-error path broke entirely.
       mockAgents = makeRoster({
         agents: [],
         defaultId: undefined,
-        error: new Error("No container provisioned."),
+        error: new Error("Gateway handshake rejected"),
         isSettled: false,
       });
       await render(<Chat />);
-      expect(screen.getByText(/No container provisioned/)).toBeTruthy();
+      expect(screen.getByText(/Gateway handshake rejected/)).toBeTruthy();
       expect(screen.queryByText("Waking your agents…")).toBeNull();
+    });
+
+    it("stops calling it 'waking' once the grace window closes", async () => {
+      // `retryable` is a hint, not proof of life: the same backend answer
+      // covers a container that is waking and one that died. Past the window
+      // the user must get the message and a way out.
+      jest.useFakeTimers();
+      try {
+        mockAgents = makeRoster({
+          agents: [],
+          defaultId: undefined,
+          error: WAKING(),
+          isSettled: false,
+        });
+        const view = await render(<Chat />);
+        expect(screen.getByText("Waking your agents…")).toBeTruthy();
+
+        jest.setSystemTime(Date.now() + WARMING_GRACE_MS + 1);
+        // SWR's 3s error-retry cadence is what re-renders in production.
+        mockAgents = makeRoster({
+          agents: [],
+          defaultId: undefined,
+          error: WAKING(),
+          isSettled: false,
+        });
+        await act(async () => {
+          view.rerender(<Chat />);
+        });
+
+        expect(screen.queryByText("Waking your agents…")).toBeNull();
+        expect(screen.getByText(/Container is starting up/)).toBeTruthy();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("never shows the error card and 'No agents yet.' at once", async () => {
+      mockAgents = makeRoster({
+        agents: [],
+        defaultId: undefined,
+        error: new Error("Gateway handshake rejected"),
+        isSettled: true,
+      });
+      await render(<Chat />);
+      expect(screen.getByText(/Gateway handshake rejected/)).toBeTruthy();
+      expect(screen.queryByText("No agents yet.")).toBeNull();
     });
   });
 

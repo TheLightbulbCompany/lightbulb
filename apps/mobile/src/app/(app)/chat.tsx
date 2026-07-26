@@ -10,7 +10,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { agentDisplayName, isRetryableRpcError, useAgents } from "@isol8/shared";
+import {
+  agentDisplayName,
+  isRetryableRpcError,
+  useAgents,
+  useWarmingWindow,
+} from "@isol8/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
@@ -122,7 +127,23 @@ export default function Chat() {
   const gateway = useGateway();
   const { agents, defaultId, error, isLoading, isSettled } = useAgents(gateway);
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  const showEmpty = agents.length === 0 && !isLoading && isSettled;
+  // A retryable failure is a loading state wearing an error's clothes — a
+  // container waking from zero answers agents.list with retryable, and
+  // useGatewayRpc is ALREADY re-probing it at a fixed 3s cadence. Rendering
+  // that as a red card told a first-time user their app was broken while it
+  // was, in fact, working.
+  //
+  // But only for a BOUNDED window. The backend cannot distinguish a container
+  // that is waking from one that died (see useWarmingWindow), so a permanently
+  // dead box answers retryable forever — and suppressing the card for it would
+  // trade the scary-but-honest message for a spinner with no escape. Past the
+  // window the failure is shown as a failure.
+  const warming = useWarmingWindow(isRetryableRpcError(error));
+  const hardError = error && !warming ? error : null;
+
+  // `hardError` suppresses it: the error card is the answer, and rendering
+  // "No agents yet." beside it tells the user two contradictory things.
+  const showEmpty = agents.length === 0 && !isLoading && isSettled && !hardError;
   const [pickerOpen, setPickerOpen] = useState(false);
   // Long-pressing a tile opens that agent's session switcher right from the
   // roster. `sessionsAgent` stays set after close so the sheet can animate out
@@ -165,14 +186,6 @@ export default function Chat() {
     });
   }, [user, agents, defaultId, onboarded]);
 
-  // A retryable failure is a loading state wearing an error's clothes — a
-  // container waking from zero answers agents.list with
-  // retryable/retryAfterMs, and useGatewayRpc is ALREADY re-probing it at a
-  // fixed 3s cadence. Rendering that as a red card told a first-time user
-  // their app was broken while it was, in fact, working. Only a
-  // non-retryable failure earns the card.
-  const hardError = error && !isRetryableRpcError(error) ? error : null;
-
   let body: ReactElement;
   if (hardError && !isSettled) {
     body = <ErrorCard message={hardError.message} />;
@@ -211,8 +224,8 @@ export default function Chat() {
           </>
         }
         ListEmptyComponent={
-          isLoading || !isSettled ? (
-            <SkeletonGrid warming={isRetryableRpcError(error)} />
+          hardError ? null : isLoading || !isSettled ? (
+            <SkeletonGrid warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>

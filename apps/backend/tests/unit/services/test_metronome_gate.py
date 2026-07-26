@@ -265,3 +265,27 @@ async def test_row_blocked_missing_row_still_admits():
 
     assert _row_blocked(None) is False
     assert _row_blocked({}) is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_boundary_pins_reserve_estimate_via_is_owner_blocked():
+    """`test_row_blocked_at_reserve_estimate` pins the boundary by calling
+    `_row_blocked` directly — it never exercises `is_owner_blocked`'s OWN
+    post-refresh comparison (metronome_gate.py, the `refreshed <=
+    RESERVE_ESTIMATE_MICROCENTS` line). A revert of that line alone back to
+    `<= 0` — while leaving `_row_blocked` untouched — would pass every other
+    test in this file, including the two above. Drive the stale-row +
+    getNetBalance REFRESH branch (not the direct-call path) at the same
+    boundary to close that gap.
+
+    30 cents / 29.9999 cents / 30.0001 cents -> 300_000 / 299_999 / 300_001
+    microcents (RESERVE_ESTIMATE_MICROCENTS exactly, one under, one over)."""
+    with _gate(row=_stale_row(0), metronome_customer_id="mc-uuid", net_balance_cents=30) as m:
+        assert await is_owner_blocked(OWNER) is True
+    m.fast_gate.set_balance.assert_awaited_once_with(OWNER, remaining_microcents=300_000)
+
+    with _gate(row=_stale_row(0), metronome_customer_id="mc-uuid", net_balance_cents=29.9999) as m:
+        assert await is_owner_blocked(OWNER) is True
+
+    with _gate(row=_stale_row(0), metronome_customer_id="mc-uuid", net_balance_cents=30.0001) as m:
+        assert await is_owner_blocked(OWNER) is False

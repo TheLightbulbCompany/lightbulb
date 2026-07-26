@@ -8,8 +8,10 @@ they can never disagree about blocked-ness.
 
 Read model:
 - The fast-gate DDB row (fed by the low-balance webhook) is the cached
-  answer. ``remaining_microcents <= 0`` blocks; a MISSING row does NOT
-  block (a brand-new owner must not be gated by a missing projection).
+  answer. ``remaining_microcents <= RESERVE_ESTIMATE_MICROCENTS`` blocks —
+  NOT ``<= 0`` — mirroring the bedrock-gate's own admission rule (see
+  ``_row_blocked``); a MISSING row does NOT block (a brand-new owner must
+  not be gated by a missing projection).
 - When the row is stale (older than ``METRONOME_GATE_STALENESS_S``) and the
   owner actually has a Metronome customer, the gate lazily refreshes from
   ``getNetBalance`` and rewrites the row. Metronome-down ⇒ the stale row is

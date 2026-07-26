@@ -56,6 +56,22 @@ export interface SesInboundStackProps extends cdk.StackProps {
   sesIngestSecretName: string;
   /** Base mail domain, e.g. "isol8.co". Verified for BOTH receiving and sending. */
   mailDomain: string;
+  /**
+   * Dev mail domain, e.g. "dev.isol8.co". When set, this stack also publishes
+   * `*.{devMailDomain}` MX + SPF and the ingest Lambda routes recipients under
+   * that suffix to the DEV backend instead of prod (see `_route_for`).
+   *
+   * It is configured HERE, in the prod stack, because dev cannot own an SES
+   * receipt rule set — `SetActiveReceiptRuleSet` is account+region scoped.
+   * Omit to keep every dev path inert.
+   */
+  devMailDomain?: string;
+  /**
+   * Name of the DEV `ses_ingest_secret`. Required whenever `devMailDomain` is
+   * set — each backend verifies the shared secret against its OWN copy, so
+   * presenting prod's secret to dev would 401.
+   */
+  devSesIngestSecretName?: string;
 }
 
 export class SesInboundStack extends cdk.Stack {
@@ -71,7 +87,16 @@ export class SesInboundStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SesInboundStackProps) {
     super(scope, id, props);
 
-    const { envName, hostedZone, mailDomain } = props;
+    const { envName, hostedZone, mailDomain, devMailDomain } = props;
+
+    if (devMailDomain && !props.devSesIngestSecretName) {
+      // Fail at synth, not at the first dev email. Routing dev mail to the dev
+      // backend while presenting prod's secret would 401 on every message, and
+      // the only symptom would be silently undelivered mail.
+      throw new Error(
+        "SesInboundStack: devSesIngestSecretName is required when devMailDomain is set",
+      );
+    }
 
     // -------------------------------------------------------------------------
     // Domain identity — verifies `mailDomain` for BOTH receiving and sending.
@@ -104,6 +129,34 @@ export class SesInboundStack extends cdk.Stack {
       recordName: `*.${mailDomain}`,
       values: ["v=spf1 include:amazonses.com ~all"],
     });
+
+    // -------------------------------------------------------------------------
+    // DEV mail domain — `{slug}.dev.isol8.co`.
+    //
+    // These records live in THIS (prod) stack on purpose. A second receipt
+    // rule set is impossible — SetActiveReceiptRuleSet is account+region
+    // scoped and this stack owns the active one — so dev cannot run its own
+    // SES-inbound stack. It does not need to: SES matches a recipient
+    // condition against the domain AND its subdomains, so the catch-all rule
+    // for `isol8.co` already catches `friday@acme.dev.isol8.co`. Only DNS and
+    // per-environment backend routing are missing, and both are here.
+    //
+    // A single-label wildcard does not nest: `*.isol8.co` matches
+    // `acme.isol8.co` but NOT `acme.dev.isol8.co`, hence the second pair.
+    // -------------------------------------------------------------------------
+    if (devMailDomain) {
+      new route53.MxRecord(this, "AgentMailDevWildcardMx", {
+        zone: hostedZone,
+        recordName: `*.${devMailDomain}`,
+        values: [{ priority: 10, hostName: "inbound-smtp.us-east-1.amazonaws.com" }],
+      });
+
+      new route53.TxtRecord(this, "AgentMailDevWildcardSpf", {
+        zone: hostedZone,
+        recordName: `*.${devMailDomain}`,
+        values: ["v=spf1 include:amazonses.com ~all"],
+      });
+    }
 
     // -------------------------------------------------------------------------
     // DMARC policy at the ORGANIZATIONAL domain.
@@ -207,6 +260,17 @@ export class SesInboundStack extends cdk.Stack {
       props.sesIngestSecretName,
     );
 
+    // The DEV backend verifies against its OWN copy of the shared secret, so
+    // the Lambda must be able to read both. AuthStack already creates both
+    // unconditionally; before dev routing existed only prod's was ever read.
+    const devSesIngestSecret = props.devSesIngestSecretName
+      ? secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportDevSesIngestSecret",
+          props.devSesIngestSecretName,
+        )
+      : undefined;
+
     // -------------------------------------------------------------------------
     // The ses-inbound ingest Lambda. Stdlib-only (requirements.txt is empty)
     // so a plain Code.fromAsset needs no bundling. Non-VPC — it only talks to
@@ -224,6 +288,15 @@ export class SesInboundStack extends cdk.Stack {
         ATTACHMENTS_BUCKET: this.attachmentsBucket.bucketName,
         BACKEND_INGEST_URL: `https://api.${mailDomain}/api/v1/webhooks/ses-inbound`,
         SES_INBOUND_SECRET_ARN: sesIngestSecret.secretArn,
+        // Per-environment routing. Absent => every message goes to prod,
+        // which is the behaviour before dev is enabled (see `_route_for`).
+        ...(devMailDomain && devSesIngestSecret
+          ? {
+              DEV_MAIL_SUFFIX: devMailDomain,
+              DEV_BACKEND_INGEST_URL: `https://api-dev.${mailDomain}/api/v1/webhooks/ses-inbound`,
+              DEV_SES_INBOUND_SECRET_ARN: devSesIngestSecret.secretArn,
+            }
+          : {}),
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
@@ -239,6 +312,7 @@ export class SesInboundStack extends cdk.Stack {
     // kms:ViaService=secretsmanager instead of a specific key ARN. Read-only
     // (no GenerateDataKey) — this Lambda never writes the secret.
     sesIngestSecret.grantRead(this.ingestFunction);
+    devSesIngestSecret?.grantRead(this.ingestFunction);
     this.ingestFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: "KmsDecryptViaSecretsManager",

@@ -36,12 +36,18 @@ export class Isol8Stage extends cdk.Stage {
 
     // SesInboundStack — SES inbound agent-mail receiving (domain identity,
     // wildcard MX/SPF, S3 buckets, receipt rule set + activation, ingest
-    // Lambda). PROD-ONLY — SetActiveReceiptRuleSet is an account+region-scoped
-    // "one active rule set" operation, exactly like the bedrock-meter/
-    // bedrock-gate account-scoped stacks below, so it must be a singleton,
-    // never one-per-env. Agent email is live in prod; dev/local stay inert
-    // (no SES stack synthesized, and AGENT_EMAIL_DOMAIN stays unset — the
-    // backend's AGENT_EMAIL_DOMAIN guards keep every non-prod env dormant).
+    // Lambda). The STACK is PROD-ONLY — SetActiveReceiptRuleSet is an
+    // account+region-scoped "one active rule set" operation, exactly like the
+    // bedrock-meter/bedrock-gate account-scoped stacks below, so it must be a
+    // singleton, never one-per-env.
+    //
+    // Agent email itself is live in BOTH envs. SES matches a recipient
+    // condition against the domain and its SUBDOMAINS, so the single
+    // prod-owned catch-all rule already receives `{slug}.dev.isol8.co` mail;
+    // this stack publishes the dev DNS and the ingest Lambda routes by
+    // recipient suffix to the dev backend. That is why dev needs no stack of
+    // its own — and why the dev wiring is configured here rather than in the
+    // dev stage.
     let sesInbound: SesInboundStack | undefined;
     if (env === "prod") {
       sesInbound = new SesInboundStack(this, `isol8-${env}-ses-inbound`, {
@@ -52,6 +58,11 @@ export class Isol8Stage extends cdk.Stage {
         // other secret name threaded into ServiceStack below.
         sesIngestSecretName: auth.sesIngestSecret.secretName,
         mailDomain: "isol8.co",
+        devMailDomain: "dev.isol8.co",
+        // Deterministic by-name reference to the DEV stage's secret. AuthStack
+        // creates it unconditionally in every env; before dev routing existed,
+        // only prod's was ever read.
+        devSesIngestSecretName: "isol8/dev/ses_ingest_secret",
       });
       sesInbound.addDependency(auth);
       sesInbound.addDependency(dns);
@@ -168,11 +179,16 @@ export class Isol8Stage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
-      // Agent-email base domain — "isol8.co" in prod (where the SES stack and
-      // verified domain live), empty elsewhere so the backend guards keep
-      // dev/local/CI inert. Kept in lockstep with the SES stack's
-      // `env === "prod"` gate above.
-      agentEmailDomain: env === "prod" ? "isol8.co" : "",
+      // Agent-email base domain. Prod owns the apex; dev gets its own
+      // subdomain so addresses can never collide and a dev message can never
+      // be mistaken for a real one. Both resolve through the single
+      // prod-owned receipt rule (SES matches subdomains), and the ingest
+      // Lambda routes each to its own backend.
+      //
+      // Every OTHER env stays empty, which keeps the backend's guards inert —
+      // there is no DNS, and nothing would route.
+      agentEmailDomain:
+        env === "prod" ? "isol8.co" : env === "dev" ? "dev.isol8.co" : "",
       // Undefined in every env/deploy where SesInboundStack isn't
       // instantiated (non-prod stage) — ServiceStack defaults this to an
       // empty string, which is inert without AGENT_EMAIL_DOMAIN.

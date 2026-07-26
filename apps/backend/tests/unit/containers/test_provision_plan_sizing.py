@@ -119,7 +119,6 @@ def mock_settings():
         s.CLOUD_MAP_NAMESPACE_NAME = "isol8-dev.local"
         s.CLOUD_MAP_SERVICE_NAME = "openclaw-containers"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
-        s.ACP_ENABLED = False
         yield s
 
 
@@ -220,7 +219,7 @@ class TestFreshProvisionSizing:
 
 
 class TestReprovisionRestartSizing:
-    """A full reprovision (stop -> background_provision) lands on the
+    """A full reprovision (stop -> dispatch_provision) lands on the
     service-exists-with-0-desired restart branch, which re-registers the task
     def. Sizing that branch by plan is what keeps an Ultra reprovision from
     reverting to standard."""

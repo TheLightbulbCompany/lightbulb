@@ -445,7 +445,6 @@ class TestTrialProvisionMint:
         manager.write_user_configs = AsyncMock()
         manager.start_user_service = AsyncMock()
 
-        # ACP_ENABLED is truthy on the mocked settings (as it is in dev+prod).
         await manager.provision_user_container("user_trial", provider_choice="bedrock_trial", owner_type="personal")
 
         env_names = {e["name"] for e in create_svc.call_args.kwargs["environment_for_task"]}
@@ -517,7 +516,6 @@ class TestBedrockGateTokenProvision:
         deny fence stays armed fleet-wide and returning to the gate never
         requires a secret rollout. (The conftest autouse default patches the
         resolver to "" = direct.)"""
-        mock_settings.ACP_ENABLED = False
         mint = self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
@@ -536,7 +534,6 @@ class TestBedrockGateTokenProvision:
     async def test_bearer_env_injected_when_gate_url_resolves(self, manager, mock_settings, monkeypatch):
         """The gateway is the standard path: a resolved gate URL means every
         Bedrock owner gets the bearer + HTTP/1.1 env — no per-owner flag."""
-        mock_settings.ACP_ENABLED = False
         monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", lambda: "https://gate.dev.example/")
         self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr(
@@ -557,7 +554,6 @@ class TestBedrockGateTokenProvision:
         unconditional (added before any provider branch) and derived from the
         single per-env URL builder — a refactor of provision_user_container must
         not silently drop it. (mock_settings pins ENVIRONMENT="dev".)"""
-        mock_settings.ACP_ENABLED = False
         self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr(
             "core.repositories.container_repo.get_by_owner_id",
@@ -574,7 +570,6 @@ class TestBedrockGateTokenProvision:
         """Break-glass 'direct' mode (resolver returns "") -> baseUrl stays
         direct (config.py), so the bearer token MUST NOT be injected (it would
         break direct auth). Conftest default already patches the resolver to ""."""
-        mock_settings.ACP_ENABLED = False
         self._wire_mint(manager, monkeypatch)
         monkeypatch.setattr(
             "core.repositories.container_repo.get_by_owner_id",
@@ -591,7 +586,6 @@ class TestBedrockGateTokenProvision:
         """A reprovision of a revoked owner re-asserts deny on the fresh token
         row (mint wrote denied=False) — the kill switch holds across reprovision."""
         mock_settings.BEDROCK_GATE_URL = "https://gate.dev.example/"
-        mock_settings.ACP_ENABLED = False
         self._wire_mint(manager, monkeypatch)
         deny = AsyncMock()
         monkeypatch.setattr("core.billing.bedrock_gate_tokens.deny_gate_token", deny)

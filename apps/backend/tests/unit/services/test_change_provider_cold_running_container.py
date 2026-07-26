@@ -2,8 +2,8 @@
 container.
 
 Prior to the F1 fix, change_provider's cold path (BYO involved on either
-side, or targeting bedrock_claude) dispatched ``background_provision``
-directly. ``background_provision``'s FIRST act is the single-flight lease
+side, or targeting bedrock_claude) dispatched ``dispatch_provision``
+directly. ``dispatch_provision``'s FIRST act is the single-flight lease
 claim (container_provision.py:90-94), and ``try_claim_provision``'s
 ConditionExpression admits only no-row / error / stopped / stale-provisioning
 — ``running`` was NOT claimable (container_repo.py:157-199). So a RUNNING
@@ -15,7 +15,7 @@ The fix (spec PR-11): the cold path now awaits ``stop_user_service`` (one
 fast, fail-loud ECS call) and then dispatches
 ``ecs_manager.drain_then_dispatch_provision`` as a background task — it
 waits for the drain (up to 90s, which is why it must not be awaited on the
-request path) and then dispatches ``background_provision``. That lands the
+request path) and then dispatches ``dispatch_provision``. That lands the
 dispatch on the scale-from-zero branch (the only one that rewrites configs /
 re-registers the task def) instead of racing a still-"running" row and
 losing. The task deliberately does NOT re-stop: a status-poll wake can
@@ -23,7 +23,7 @@ legitimately claim the exposed "stopped" row first, and a second stop would
 clobber its "provisioning" status back to claimable and let a second
 executor start (see the poll-claim race test).
 
-Post-SFN (spec §7 PR-10), ``background_provision`` funnels to the durable
+Post-SFN (spec §7 PR-10), ``dispatch_provision`` funnels to the durable
 Step Functions executor (``provision_dispatch``): once the single-flight claim
 is won against the row, its only side effect is ``StartExecution``; the actual
 ``provision_user_container`` runs in a SEPARATE one-shot ECS task
@@ -122,10 +122,10 @@ def cold_change_env(containers_table):
     billing_repo is the SAME module object in billing_service and
     container_provision (both `from core.repositories import billing_repo`),
     so one patch serves change_provider's guard read AND
-    background_provision's resolve_provider_choice read.
+    dispatch_provision's resolve_provider_choice read.
     """
     # Post-SFN, provisioning is a durable Step Functions execution: the
-    # dispatched background_provision funnels to provision_dispatch, whose only
+    # dispatched dispatch_provision funnels to provision_dispatch, whose only
     # side effect (once the single-flight claim is won against the real moto
     # row) is StartExecution. provision_user_container now runs in a SEPARATE
     # one-shot ECS task (scripts.provision_runner) -- out of process -- so the
@@ -144,7 +144,7 @@ def cold_change_env(containers_table):
 
     async def _commit_choice(owner_id, *, provider_choice, byo_provider, connector_user_id=None):
         # Mirror billing_repo.set_provider_choice: the dispatched
-        # background_provision re-reads the row and must see the NEW choice.
+        # dispatch_provision re-reads the row and must see the NEW choice.
         row["provider_choice"] = provider_choice
         row["byo_provider"] = byo_provider
 
@@ -176,7 +176,7 @@ def cold_change_env(containers_table):
         # Capture BOTH dispatched tasks instead of scheduling them, so the
         # test can await them deterministically: billing_service dispatches
         # drain_then_dispatch_provision (created[0]) and, inside it,
-        # ecs_manager dispatches background_provision (created[1]). Both
+        # ecs_manager dispatches dispatch_provision (created[1]). Both
         # modules do `import asyncio` at module scope — the SAME module
         # object — so one patch of asyncio.create_task covers both call
         # sites.
@@ -226,11 +226,11 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     # The drain-wait + provision dispatch ran OFF the request path: exactly
     # one drain_then_dispatch_provision task was dispatched. Run it — it
     # sees the drained service (NO second stop — see the poll-claim race
-    # test below) and dispatches background_provision (created[1]). Then
+    # test below) and dispatches dispatch_provision (created[1]). Then
     # run that to completion.
     assert len(env["created"]) == 1, "expected exactly one drain-then-dispatch task"
     await env["created"][0]
-    assert len(env["created"]) == 2, "expected the drain task to dispatch background_provision"
+    assert len(env["created"]) == 2, "expected the drain task to dispatch dispatch_provision"
     await env["created"][1]
 
     # Stop-first means the row was "stopped" by the time the claim ran: the
@@ -279,7 +279,7 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     post-checkout before the first /container/status provision, or a legacy
     owner falling back from the hot path) must not 500 after committing the
     provider choice: the stop treats service-not-found as idempotent success
-    and the dispatch falls through to background_provision's
+    and the dispatch falls through to dispatch_provision's
     create-from-scratch path."""
     env = cold_change_env
     # No container row put_item — the table is empty for this owner.
@@ -296,7 +296,7 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     assert result["restart"] is True
 
     # Both dispatches still happen: drain_then_dispatch_provision, then
-    # background_provision from inside it.
+    # dispatch_provision from inside it.
     assert len(env["created"]) == 1
     await env["created"][0]
     assert len(env["created"]) == 2
@@ -318,7 +318,7 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     claims the exposed "stopped" row BEFORE the drain task runs, the drain
     task must neither clobber the claim (no second stop → no update_status
     get→put over "provisioning") nor start a second executor — its own
-    dispatched background_provision loses the lease and stands down."""
+    dispatched dispatch_provision loses the lease and stands down."""
     from core.repositories import container_repo
 
     env = cold_change_env
@@ -332,7 +332,7 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     assert poll_claim, "poll should win the claim on the exposed stopped row"
 
     # Run the drain task. It must NOT reset the row to "stopped", and its
-    # dispatched background_provision must LOSE the lease and stand down.
+    # dispatched dispatch_provision must LOSE the lease and stand down.
     await env["created"][0]
     assert len(env["created"]) == 2
     await env["created"][1]

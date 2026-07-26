@@ -773,7 +773,7 @@ async def _admit_operator_wake(
     owner_id: str,
     body: Dict[str, Any],
 ) -> Optional[dict]:
-    """Budget-check a Paperclip-originated agent wake (#1426).
+    """Budget-check a Paperclip-originated agent wake.
 
     Paperclip's seed agents (Friday/Atlas) drive their runs through the operator
     relay, which short-circuits ABOVE both the RPC proxy and the typed
@@ -958,7 +958,7 @@ async def ws_message(
             if msg_type == "req" and body.get("method") == "connect":
                 submit_operator_signed_connect(x_connection_id, body)
             else:
-                # Wake-admission gate (#1426): a relay `req` that would START an
+                # Wake-admission gate: a relay `req` that would START an
                 # agent run is budget-checked with the same predicate as a human
                 # chat send. Everything else — `agent.wait`, status reads,
                 # history fetches, non-`req` frames — relays untouched, so the
@@ -2155,7 +2155,7 @@ async def _process_agent_chat_background(
                 # invariant intentionally FALSE for the stopped branch.
                 from core.services import container_wake as _cw
 
-                await _cw.request_wake_silent(owner_id, user_id=user_id)
+                await _cw.request_wake_silent(owner_id)
                 put_metric("chat.error", dimensions={"reason": "container_waking"})
                 logger.info(
                     "[%s] chat.send: container stopped (scaled to zero) for owner=%s — wake dispatched",

@@ -43,8 +43,11 @@ DELETE the doc in the same PR or shortly after — git history preserves it, and
 PR description is the durable record. The only plans/specs that stay are ones living
 code or CLAUDE.md explicitly references. Never let shipped plans accumulate: a
 2026-07 purge deleted 250 of 260 such files (196k lines) — don't rebuild that pile.
-The same applies to one-shot backend scripts: after they run, move them to
-`apps/backend/scripts/archive/` (and delete their tests).
+The same applies to one-shot backend scripts: once a backfill has run and the
+data it wrote is produced at creation time, DELETE the script and its tests —
+git history is the operational record (it carries the run date and PR context
+an archive directory does not). Re-runnable ops tools stay in
+`apps/backend/scripts/`.
 
 ### Monorepo Setup
 
@@ -344,7 +347,7 @@ The services directory has grown past per-file annotation. Run `ls apps/backend/
 - **Gateway / WebSocket**: `connection_service.py` (DDB connectionId↔user_id state), `management_api_client.py`, `node_proxy.py` (per-user node-host tracking — relocated from routers/ in May 2026).
 - **Catalog**: `catalog_service.py` plus `catalog_slice.py` / `catalog_package.py` helpers. `catalog_service.deploy_from_artifact` is the consumption-side entry point for marketplace deploys.
 - **Marketplace**: `marketplace_service.py` (DDB rows + S3 artifact uploads + status state machine: draft → review → published; published-version transitions are atomic via TransactWriteItems), `marketplace_search.py` (60s in-process cache of published listings, Python-side tokenized scoring), `marketplace_safety.py` (scan tarballs for credential/PII patterns), `agent_export.py` (seller-agent → tarball snapshotter; explicitly filters `sessions/`, `agent/`, dotfiles, junk dirs — see `_OPENCLAW_RUNTIME_STATE_DIRS` docstring for why).
-- **Provisioning**: `user_provision.py` (`ensure_user_ready` — the SINGLE canonical readiness entry point, called only from `GET /container/status`; owner path seeds Paperclip synchronously then dispatches container provision as background task), `container_provision.py` (`background_provision`), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
+- **Provisioning**: `user_provision.py` (`ensure_user_ready` — the SINGLE canonical readiness entry point, called only from `GET /container/status`; owner path seeds Paperclip synchronously then dispatches container provision as background task), `container_provision.py` (provider-choice resolution), `provision_dispatch.py` (`dispatch_provision` — the SFN executor every provisioning trigger funnels through), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
 - **Admin surface**: `admin_service.py`, `admin_audit.py`, `admin_redact.py`, `clerk_admin.py` (Clerk REST wrapper — every Clerk API call should go through here), `cloudwatch_logs.py` / `cloudwatch_url.py`, `posthog_admin.py`.
 - **Teams BFF (Paperclip)**: many `paperclip_*` services (`paperclip_admin_client.py`, `paperclip_admin_session.py`, `paperclip_user_session.py`, `paperclip_event_client.py`, `paperclip_provisioning.py` — owns `provision_org` which seeds Friday + Atlas, `paperclip_autoprovision.py`, `paperclip_owner_email.py`, `paperclip_event_router.py`, `teams_event_broker_singleton.py`, etc.) coordinating with the per-tenant Paperclip BFF.
 - **Auth / identity**: `oauth_service.py` (ChatGPT OAuth flow), `key_service.py` (BYOK API key encryption via Fernet), `service_token.py` (JWT minting for cross-service calls).
@@ -487,7 +490,7 @@ Clerk sign-up
                             ├─ seed Friday (CEO) with adapter_type="openclaw_gateway"
                             │     adapter_config.url = wss://ws-<env>.isol8.co
                             └─ seed Atlas (recruiter) — best-effort; Atlas failure does NOT undo Friday
-                  3. asyncio.create_task(background_provision(owner_id))
+                  3. asyncio.create_task(dispatch_provision(owner_id))
                        └─ ecs_manager.provision_user_container
                             ├─ per-user EFS access point + ECS service
                             └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
@@ -507,7 +510,7 @@ Owners whose container was provisioned **before** Paperclip integration shipped 
 Two fixes:
 
 1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
-2. **Backfill script** — `apps/backend/scripts/archive/backfill_paperclip_for_legacy_users.py` (archived one-shot; already run against prod) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Resurrect from the archive only if a new legacy cohort appears.
+2. **Backfill script** — a one-shot `backfill_paperclip_for_legacy_users.py` (already run against prod, since deleted) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Recover it from git history only if a new legacy cohort appears.
 
 **`PATCH /debug/provision` cannot wire Paperclip.** It only deep-merges `openclaw.json`. It cannot create a Paperclip company, cannot sign up a Paperclip user, cannot seed Friday/Atlas. The `config_patcher` is for config drift, not for provisioning gaps.
 

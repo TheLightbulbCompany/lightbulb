@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
-    """Whether ``routine_id`` is this owner's nightly CEO routine (issue #1273).
+    """Whether ``routine_id`` is this owner's nightly CEO routine.
 
     Title-match via a single ``get_routine`` — a rare user action (toggling
     the routine), so the extra GET is fine. Best-effort: any upstream error is
@@ -147,7 +147,7 @@ async def patch_routine(
     if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
 
-    # Nightly CEO loop opt-out (issue #1273): persist a DURABLE opt-out on the
+    # Nightly CEO loop opt-out: persist a DURABLE opt-out on the
     # billing row when the owner pauses/archives the nightly routine, and clear
     # it on re-activate. Billing survives a full reprovision (the container +
     # Paperclip company are wiped, the billing row is not), so this flag is what
@@ -204,7 +204,7 @@ async def patch_routine(
 async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
     """Delete a routine. Idempotent — upstream 404 is swallowed.
 
-    Nightly CEO loop opt-out (issue #1273): deleting the nightly routine is an
+    Nightly CEO loop opt-out: deleting the nightly routine is an
     opt-out gesture just like pausing it (the Teams Routines UI offers delete
     alongside pause), so persist the durable ``nightly_ceo_opted_out`` flag.
     Without it, a later full reprovision — which changes the company_id and so
@@ -332,7 +332,7 @@ async def patch_routine_trigger(
     if increases_fireability:
         await require_always_on_entitlement(ctx.owner_id)
 
-    # Nightly CEO loop opt-out (issue #1273): disabling the nightly routine's
+    # Nightly CEO loop opt-out: disabling the nightly routine's
     # trigger stops its schedule just like pausing the routine, so persist the
     # durable opt-out — else a later reprovision would silently re-arm the loop.
     # The routine row survives a trigger edit, so identity stays resolvable and
@@ -374,7 +374,7 @@ async def delete_routine_trigger(
 
     Ungated: removing a schedule can only REDUCE autonomy, never grant it.
 
-    Nightly CEO loop opt-out (issue #1273): deleting the nightly routine's
+    Nightly CEO loop opt-out: deleting the nightly routine's
     trigger stops its schedule just like deleting or pausing the routine, so
     persist the durable ``nightly_ceo_opted_out`` flag — else a later reprovision
     would silently re-arm the loop. The routine row survives a trigger delete, so

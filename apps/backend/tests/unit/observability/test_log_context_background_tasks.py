@@ -157,11 +157,10 @@ async def test_chat_background_task_binds_user_id_and_run_id_into_logs():
 
 @pytest.mark.asyncio
 async def test_provision_background_task_binds_owner_id_into_logs():
-    """background_provision is a pure pass-through to
-    core.services.provision_dispatch.dispatch_provision (the SFN executor —
-    spec §7, no flag), which does the actual bind_log_context + logs its own
-    failure path. Assert the bound owner_id reaches THAT logger's records."""
-    from core.services import container_provision, provision_dispatch
+    """dispatch_provision (the SFN executor) does the bind_log_context and
+    logs its own failure path. Assert the bound owner_id reaches its
+    logger's records."""
+    from core.services import provision_dispatch
 
     formatter = JsonFormatter()
     captured: list[str] = []
@@ -188,7 +187,7 @@ async def test_provision_background_task_binds_owner_id_into_logs():
             ),
         ):
             # Never raises (catches + logs).
-            await container_provision.background_provision("org_corr_owner", "user_clerk_1")
+            await provision_dispatch.dispatch_provision("org_corr_owner")
     finally:
         prov_logger.removeHandler(handler)
         prov_logger.setLevel(prev_level)

@@ -13,7 +13,7 @@ Writes published format="company" rows via the marketplace repo with the
 system seller id (the seller service surface is a seller-centric
 draft→review state machine; curated ingestion drives the repo transitions
 directly). Idempotent: packages whose slug already has a listing are
-skipped. After the prod run: move to scripts/archive/ and delete the tests.
+skipped. Re-runnable against a newer registry commit, so it stays here.
 """
 
 from __future__ import annotations

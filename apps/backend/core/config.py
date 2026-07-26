@@ -154,15 +154,6 @@ class Settings(BaseSettings):
     METRONOME_RATE_CARD_ID: str = os.getenv("METRONOME_RATE_CARD_ID", "")
     """Rate card the per-customer contract references at provision time.
     Created once per env in the Metronome console (runbook step)."""
-    ACP_ENABLED: bool = os.getenv("ACP_ENABLED", "false").lower() == "true"
-    """Master switch for the ACP coding-harness runtime (acpx). When True,
-    write_openclaw_config emits the acp block + plugins.entries.acpx so a
-    native agent (e.g. Jarvis) can sessions_spawn Claude Code / Codex / Gemini,
-    with allowedAgents DERIVED from the owner's provider_choice. Dark by
-    default: keep False until the acpx-baked extended image (Dockerfile
-    Layer 12) is promoted in openclaw-version.json for the env — enabling it
-    against an image without /app/dist/extensions/acpx makes every ACP spawn
-    fail with 'ACP runtime backend is not configured'."""
     METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
     """Metronome product id the prepaid credit commit draws against. Per-env."""
     METRONOME_USD_CENTS_CREDIT_TYPE_ID: str = "2714e483-4ff1-48e4-9e25-ac732e8f24f2"
@@ -254,9 +245,6 @@ class Settings(BaseSettings):
     # hardcoding the number in the UI. Kept in lockstep with
     # STRIPE_TEAM_BASE_PRICE_ID's unit amount in Stripe.
     TEAM_BASE_PRICE_USD: int = 50
-    # Display dollars for the Ultra Pro tier, kept in lockstep with
-    # STRIPE_ULTRA_PRICE_ID's unit amount in Stripe.
-    ULTRA_PRICE_USD: int = 150
 
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).

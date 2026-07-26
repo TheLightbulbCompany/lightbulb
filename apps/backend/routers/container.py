@@ -24,7 +24,6 @@ from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
-from core.services.container_provision import background_provision as _background_provision
 from core.services.provision_dispatch import dispatch_provision
 from core.services.provision_gate import (
     evaluate_provision_gate,
@@ -399,7 +398,7 @@ async def container_status(
                 # Default True keeps a cause-less legacy error row self-healing
                 # (the pre-T3 auto-retry behaviour).
                 if container.get("retryable", True):
-                    asyncio.create_task(_background_provision(owner_id, auth.user_id))
+                    asyncio.create_task(dispatch_provision(owner_id))
                     container["substatus"] = "error_retrying"
                     _sync_contract_with_container(contract, container)
             else:
@@ -432,14 +431,14 @@ async def container_status(
                     wake_policy.note_wake_dispatched(door="status_poll", intent="explicit")
                 else:
                     wake_policy.note_wake_dispatched(door="status_poll", intent="self_heal")
-                # No status pre-write here: background_provision's atomic lease
+                # No status pre-write here: dispatch_provision's atomic lease
                 # claim IS the transition to "provisioning". A pre-write would (a)
                 # race concurrent polls into double-dispatch (the exact incident
                 # this closes) and (b) flip the row to "provisioning" with a stale
                 # lease, which the claim's stale-clause could then mis-time. The
                 # local dict mutation below only shapes THIS response; the row
                 # flips ~ms later when the dispatched task wins its claim.
-                asyncio.create_task(_background_provision(owner_id, auth.user_id))
+                asyncio.create_task(dispatch_provision(owner_id))
                 container["status"] = "provisioning"
                 container["substatus"] = "auto_retry"
                 _sync_contract_with_container(contract, container)
@@ -551,7 +550,7 @@ def _status_response(contract: dict, *, parked: bool = False) -> dict:
         "last_error": contract.get("last_error"),
         "last_error_at": contract.get("last_error_at"),
         # Per-CONTAINER onboarding fact. RECONCILE-WITH-ONBOARD: this was
-        # `container.get("onboarded_at") is not None` before this PR; the
+        # `container.get("onboarded_at") is not None`; the
         # composer now derives it as `funnel_state == "complete"` once
         # ONBOARD's writers exist, falling back to the legacy onboarded_at
         # stamp until then -- see readiness_state.compute_status.
@@ -596,7 +595,6 @@ async def container_wake_endpoint(
         owner_id,
         reason=reason,
         is_admin=auth.is_org_admin if auth.is_org_context else True,
-        user_id=auth.user_id,
     )
     if result.outcome == "blocked":
         raise HTTPException(status_code=402, detail=result.gate_payload)
@@ -612,9 +610,8 @@ def _safe_phase(container: dict, owner_id: str) -> str:
     calls this anymore — the real phase now comes from
     ``readiness_state.compute_status``'s ``runtime_phase`` (gateway
     liveness sourced from the connection-service DDB table, not the
-    in-process pool; see ``_pool_self_heal_connect``'s deletion note in
-    this PR). Safe to delete alongside those patches in a follow-up
-    cleanup once nothing references it.
+    in-process pool; see ``_pool_self_heal_connect``'s deletion note).
+    Safe to delete alongside those patches once nothing references it.
 
     On pool init failure (ManagementApiClientError when
     WS_MANAGEMENT_API_URL is unset — typically test envs that skip the

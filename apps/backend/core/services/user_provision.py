@@ -34,7 +34,7 @@ from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_TITLE,
     create_enabled_schedule_routine,
 )
-from core.services.container_provision import background_provision
+from core.services.provision_dispatch import dispatch_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
@@ -136,7 +136,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # Auto-default a brand-new personal owner into a card-less trial_local
     # BEFORE the gate is evaluated, so the gate (which treats trial_local as
     # active + provision-eligible) returns None below and the normal
-    # Paperclip-seed + background_provision flow runs. Personal-only + the
+    # Paperclip-seed + dispatch_provision flow runs. Personal-only + the
     # rationale for the shared helper live in its docstring; /container/status
     # calls the SAME helper before its own gate.
     await ensure_personal_trial_default(auth, owner_id)
@@ -242,7 +242,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if not auth.is_org_context or auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
-    # Nightly CEO loop (issue #1273): arm the paid, ENABLED nightly routine on
+    # Nightly CEO loop: arm the paid, ENABLED nightly routine on
     # Friday for the container OWNER (personal owner or org admin) — never an
     # org member, never a trial owner (gated on has_always_on_entitlement
     # inside). Runs on EVERY owner poll, including the running-container one,
@@ -293,10 +293,10 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     if await wake_policy.is_parked_trial(owner_id, row):
         wake_policy.note_wake_suppressed(owner_id, row, door="ensure_user_ready", reason="gated")
     elif (row or {}).get("status") != "running":
-        # background_provision is idempotent on the absent/0-desired cases, so
+        # dispatch_provision is idempotent on the absent/0-desired cases, so
         # repeated owner polls on a not-yet-running container are safe: the
         # atomic claim collapses them to one execution.
-        asyncio.create_task(background_provision(owner_id, auth.user_id))
+        asyncio.create_task(dispatch_provision(owner_id))
         return
 
     try:
@@ -350,7 +350,7 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
 
 
 async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
-    """Idempotently arm the paid nightly CEO routine on Friday (issue #1273).
+    """Idempotently arm the paid nightly CEO routine on Friday.
 
     Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
     ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
@@ -438,7 +438,7 @@ async def _ensure_paperclip_for_org(
     org whose container is already running or parked, so no provision — and
     therefore no step 0 — will run). A FIRST provision always goes through the
     executor, where try_claim_provision elects one execution per owner, so the
-    duplicate-company race (#1442) stays closed on the path that had it. The
+    duplicate-company race stays closed on the path that had it. The
     per-org asyncio lock and ``try_acquire_org_create_claim`` below are KEPT as
     defense-in-depth for the reconcile path (and for a bare/local runner
     invocation outside the state machine).

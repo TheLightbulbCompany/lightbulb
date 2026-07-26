@@ -562,7 +562,7 @@ async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> Non
 
 
 async def try_claim_nightly_arm(owner_id: str, company_id: str) -> bool:
-    """Conditional-write claim for the paid nightly CEO routine (issue #1273).
+    """Conditional-write claim for the paid nightly CEO routine.
 
     SET ``nightly_ceo_armed_company = company_id`` on the billing row IF the
     attribute is absent OR currently points at a DIFFERENT company. Returns
@@ -624,7 +624,7 @@ async def release_nightly_arm(owner_id: str, company_id: str) -> None:
 
 
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
-    """Set/clear the durable nightly-CEO opt-out flag (issue #1273).
+    """Set/clear the durable nightly-CEO opt-out flag.
 
     Written from the Teams routine PATCH hook when the owner pauses/archives
     (opt-out True) or re-activates (opt-out False) the nightly CEO routine.

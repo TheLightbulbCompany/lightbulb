@@ -55,6 +55,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from ulid import ULID
 
 from core.auth import is_org_owner_id
 from core.config import settings
@@ -62,7 +63,6 @@ from core.encryption import decrypt, encrypt
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
-from core.services.generation_ids import bump_onboarding_generation
 from core.services.company_identity import generate_company_name
 from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
@@ -97,7 +97,7 @@ ATLAS_CAPABILITIES = (
 # via dataclasses.fields()) so it stays an explicit, reviewable list: every
 # whole-item ``repo.put`` writer-safety fix in this module reads this same
 # set, and drift between "what the dataclass carries" and "what a put
-# preserves" is exactly the bug class this PR exists to close.
+# preserves" is exactly the bug class this guard exists to close.
 _ONBOARDING_FIELD_NAMES = (
     "onboarding_generation",
     "funnel_state",
@@ -773,7 +773,7 @@ class PaperclipProvisioning:
                 onboarding_fields = _carry_forward_onboarding_fields(existing)
             else:
                 onboarding_fields = {
-                    "onboarding_generation": bump_onboarding_generation(),
+                    "onboarding_generation": str(ULID()),
                     "funnel_state": "not_started",
                     "bootstrap_state": "not_started",
                 }
@@ -1637,7 +1637,7 @@ class PaperclipProvisioning:
         if existing is not None:
             # Never downgrade a row that a concurrent provision attempt has
             # already completed to ``active``. Two overlapping attempts for one
-            # member can race: the early adoptable row this PR persists lets a
+            # member can race: the early adoptable row persisted here lets a
             # second poll sign in and write the final ``active`` row while the
             # first poll is still running; if that first poll then hits a late
             # transient error, this failure path must NOT clobber the active

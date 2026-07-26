@@ -1,6 +1,6 @@
 """Recursive openclaw.json secret-field redactor.
 
-Per CEO review S3 (#351): the admin agent-detail page renders a user's
+Per CEO review S3: the admin agent-detail page renders a user's
 openclaw.json config inline, but that config can contain BYOK provider
 keys, webhook URLs, and other secrets. Strip them before serializing
 to the admin frontend.

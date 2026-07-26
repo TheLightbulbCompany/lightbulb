@@ -627,7 +627,7 @@ class TestTeamSeatWebhook:
 # the persisted status off "trial_local". A RUNNING container's
 # provision_user_container only force-redeploys the stale task def + config, so
 # the handler must dispatch ecs_manager.reprovision_for_user, which scales to
-# zero + drains first so the follow-on background_provision takes the
+# zero + drains first so the follow-on dispatch_provision takes the
 # scale-from-zero branch that re-registers the task def AND rewrites
 # openclaw.json — by which point the stored status is already the paid one, so
 # resolve_provider_choice reads the owner's real paid provider.
@@ -875,7 +875,7 @@ async def test_trial_converted_telemetry_failure_does_not_break_webhook(mock_rep
 # per-owner EFS WAL SQLite open (our documented corruption mode). Meanwhile the
 # just-paid owner polls /container/status every ~3s, sees status="stopped", and
 # — now that they're paid, so no gate blocks them — would dispatch their OWN
-# background_provision with no drain wait. The webhook therefore stamps the
+# dispatch_provision with no drain wait. The webhook therefore stamps the
 # container row BEFORE the stop so the status path knows a conversion owns it.
 
 

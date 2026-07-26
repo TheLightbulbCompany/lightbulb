@@ -67,7 +67,7 @@ def _stub_seat_sync():
     ``patch("routers.orgs.clerk_admin")`` in the tests below do NOT reach
     it — it lives in, and must be patched at, its SOURCE module
     (``core.services.billing_service``), the same trap documented in
-    ``test_billing_change_provider.py``'s ``patch_background_provision``
+    ``test_billing_change_provider.py``'s ``patch_dispatch_provision``
     fixture. Without this autouse stub, every pre-existing test in this
     file that reaches ``return 201`` would fall through to a real
     ``billing_repo.get_by_owner_id`` call inside ``sync_team_seat_quantity``
@@ -326,7 +326,7 @@ def test_successful_invite_schedules_seat_sync(app, admin_auth):
     # sync_team_seat_quantity is imported inside create_invitation's function
     # body (mirrors routers/webhooks.py), so it must be patched at its
     # SOURCE module path, not as an attribute on routers.orgs — see
-    # test_billing_change_provider.py's patch_background_provision fixture
+    # test_billing_change_provider.py's patch_dispatch_provision fixture
     # docstring for why a module-local import defeats the latter.
     with (
         patch("routers.orgs.clerk_admin") as mock_clerk,

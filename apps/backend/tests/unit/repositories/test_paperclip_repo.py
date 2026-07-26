@@ -417,7 +417,7 @@ async def test_put_without_onboarding_kwargs_wipes_previously_set_fields(repo):
     await repo.put(_make_company(user_id="u1", status="provisioning"))
     # ...wipes them. (This is the exact bug the provisioning module's
     # _carry_forward_onboarding_fields helper exists to prevent at every
-    # call site — see tests/test_paperclip_provisioning.py for the
+    # call site — see tests/unit/services/test_paperclip_provisioning_moto.py for the
     # end-to-end proof that provision_org's real puts do NOT do this.)
     fetched = await repo.get("u1")
     assert fetched.onboarding_generation is None

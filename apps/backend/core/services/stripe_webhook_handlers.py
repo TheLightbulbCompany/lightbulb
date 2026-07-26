@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 #     documented corruption mode. The just-paid owner is meanwhile polling
 #     GET /container/status every ~3s, and that endpoint auto-retries an
 #     ("error", "stopped") row. Now that the owner is paid, no gate blocks it,
-#     so the poll would dispatch its OWN background_provision — with no drain
+#     so the poll would dispatch its OWN dispatch_provision — with no drain
 #     wait — right on top of the draining task. So the row is STAMPED before
 #     the stop and the status path stands down while the stamp is live.
 #
@@ -167,7 +167,7 @@ async def _claim_conversion_entry(owner_id: str, subscription_id: str) -> bool:
     them persists the new one, so more than one event can see
     ``trial_local -> active`` and enter the conversion branch. Two live
     conversions then interleave stop / dispatch / release writes on the same
-    container row — the observed dev strand (#1428): the second attempt's
+    container row — the observed dev strand: the second attempt's
     writes superseded the first attempt's SFN execution while landing none of
     its own.
 
@@ -287,14 +287,14 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
     if not container.get("conversion_pending"):
         # No pending conversion. `guard` is still honoured: it covers the brief
         # window between a successful hand-off (which drops the flag) and
-        # background_provision moving the row off "stopped".
+        # dispatch_provision moving the row off "stopped".
         #
         # EXCEPT for the stranded shape: stopped, NO provision claim, NO
         # recorded error. A healthy hand-off leaves either a claim (the
         # dispatch won it — an SFN execution owns the row) or, transiently,
         # this exact shape for the milliseconds before the claim lands. But a
         # conversion whose dispatched execution was superseded with no
-        # successor (#1428) sits in it PERMANENTLY — nothing running, nothing
+        # successor sits in it PERMANENTLY — nothing running, nothing
         # scheduled — and honouring the guard here would stand the poll's
         # wake path down for the full window on a row nobody owns. Release
         # the guard instead: the caller's wake branch re-checks every gate
@@ -843,11 +843,11 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     if old_status == "trial_local" and new_status in ("trialing", "active"):
         # Trial→paid conversion: the running container is still the locked-down
         # trial box. We must go through reprovision_for_user, NOT a bare
-        # background_provision: for a RUNNING container provision_user_container
+        # dispatch_provision: for a RUNNING container provision_user_container
         # only issues forceNewDeployment (no write_user_configs, no task-def
         # re-register), so the trial config would survive the conversion.
         # reprovision_for_user scales to zero + drains first, forcing the
-        # follow-on background_provision down the scale-from-zero branch that
+        # follow-on dispatch_provision down the scale-from-zero branch that
         # re-registers the task def AND rewrites openclaw.json — genuinely
         # turning the trial box into a paid one. The status was already
         # persisted off "trial_local" above, so by the time this runs
@@ -869,7 +869,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         #     will never re-enter this branch. That flag is the only thing that
         #     lets the status path self-heal the conversion.
         #
-        # SINGLE-FLIGHT entry (#1428): the whole block is gated on a CAS keyed
+        # SINGLE-FLIGHT entry: the whole block is gated on a CAS keyed
         # on (owner, subscription id). Stripe delivers several events per
         # subscription change and their handlers race the billing-row read
         # above, so more than one can see old_status == "trial_local" and land

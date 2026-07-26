@@ -8,7 +8,7 @@ so Friday's chat opens with the user's ask -- not a canned prompt. See
 ``docs/superpowers/specs/2026-07-25-onboarding-first-message-design.md``
 (Option A). This replaces the client-side latch it used to depend on
 (``useFirstRunKickoff`` + Clerk ``firstRun.started``/``completed``) and the
-thread-emptiness reconcile that latch needed to self-heal (#1391) -- both
+thread-emptiness reconcile that latch needed to self-heal -- both
 deleted in this same PR. See
 ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md`` §2
 ("Server-owned bootstrap") and INV-5.

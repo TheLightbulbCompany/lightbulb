@@ -49,7 +49,7 @@ _DEFAULT_TIMEZONE = "UTC"
 
 
 # ---------------------------------------------------------------------------
-# Nightly CEO routine — the single paid, ENABLED exception (issue #1273).
+# Nightly CEO routine — the single paid, ENABLED exception.
 # ---------------------------------------------------------------------------
 #
 # Identity of the one enabled routine we seed for PAID owners so Friday wakes
@@ -226,7 +226,7 @@ async def create_agent_routines(
 
 
 # ---------------------------------------------------------------------------
-# The single ENABLED path — paid nightly CEO routine ONLY (issue #1273).
+# The single ENABLED path — paid nightly CEO routine ONLY.
 # ---------------------------------------------------------------------------
 
 

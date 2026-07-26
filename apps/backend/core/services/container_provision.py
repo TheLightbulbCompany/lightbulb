@@ -52,35 +52,6 @@ async def resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
     return provider_choice_from_row(row)
 
 
-async def background_provision(owner_id: str, clerk_user_id: str) -> None:
-    """Run container provisioning via the PROVISION Step Functions executor.
-
-    ``owner_id`` is the container scope (org_id in org context, user_id
-    in personal). ``clerk_user_id`` is kept for caller compatibility;
-    the function does not consult it directly.
-
-    THE single funnel: every existing ``asyncio.create_task(background_provision(...))``
-    call site (the status poll's auto-retry/wake, ``ensure_user_ready``,
-    ``reprovision_for_user``, ``container_wake``, ``change_provider``'s cold
-    path) rides the SFN executor unchanged. There is no inline in-process
-    fallback and no flag (spec §7, PR-10) — provisioning is a durable,
-    process-death-proof Step Functions execution dispatched by
-    ``core.services.provision_dispatch.dispatch_provision``, never run
-    in-process here. ``dispatch_provision`` never raises (its own
-    try/except), so this wrapper is a pure pass-through and is itself an
-    asyncio.create_task target.
-
-    The three SYNCHRONOUS doors that used to call
-    ``ecs_manager.provision_user_container`` directly (``POST /provision``,
-    ``POST /retry``, ``POST /recover``) route through ``dispatch_provision``
-    too now — see those routers — so two provisioning systems (this poll-
-    driven path and a direct ECS call) are never live at once.
-    """
-    from core.services.provision_dispatch import dispatch_provision
-
-    await dispatch_provision(owner_id)
-
-
 def emit_provision_metric(status: str) -> None:
     """Best-effort ``container.provision`` metric — a metrics outage must never
     turn the swallow-all task into a raise. Same single dimension key (status)

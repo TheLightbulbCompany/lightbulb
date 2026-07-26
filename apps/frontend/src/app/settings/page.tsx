@@ -108,9 +108,9 @@ function ProfilePanel() {
 // Billing Panel
 // =============================================================================
 
-// Mirrors backend ULTRA_PRICE_USD (apps/backend/core/config.py). The billing
-// account response carries only `plan`, not the price, so the display price is
-// a labeled constant here rather than echoed from the server.
+// Keep in lockstep with STRIPE_ULTRA_PRICE_ID's unit amount in Stripe. The
+// billing account response carries only `plan`, not the price, so the display
+// price is a labeled constant here rather than echoed from the server.
 const ULTRA_PRICE_USD = 150;
 
 // Ultra Pro control for a non-per-seat subscribed owner. When the owner is

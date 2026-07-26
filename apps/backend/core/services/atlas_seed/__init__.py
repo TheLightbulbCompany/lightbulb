@@ -38,9 +38,8 @@ from core.services.friday_identity import seed_workspace_state
 
 logger = logging.getLogger(__name__)
 
-# Appended to Atlas's AGENTS.md ONLY when ``settings.ACP_ENABLED`` is on, so
-# the recruiter teaches harness delegation exactly when the platform actually
-# supports it (the acpx runtime is baked + promoted behind that flag). ACP is a
+# Appended to Atlas's AGENTS.md so the recruiter teaches harness delegation.
+# ACP is a
 # container-wide capability — OpenClaw's root ``acp.enabled`` gate, not a
 # per-agent config key — so the per-agent intent is carried by an agent's
 # prompt + its marketplace listing's ``enable_acp``/``requires_acp``, never by
@@ -213,7 +212,7 @@ async def pre_stage_atlas(
     # boot's doctor migrates it into SQLite and deletes it; a re-write (a
     # reprovision, or a force restage) re-arms the presence-only runtime gate
     # against a now-conflicting receipt and bricks every agent run — see
-    # friday_identity.seed_workspace_state (#1429), which also deletes a
+    # friday_identity.seed_workspace_state, which also deletes a
     # stale pre-fix copy from an already-migrated workspace.
     try:
         state_action = seed_workspace_state(workspace, owner_id, atlas_uuid)
@@ -231,24 +230,22 @@ async def pre_stage_atlas(
     # When ACP is rolled out, write Atlas's AGENTS.md with the harness-
     # delegation section appended BEFORE the generic vendored-file loop. The
     # loop's ``write_file_if_missing`` then no-ops on AGENTS.md (already
-    # present), so the augmented copy wins. When ACP is off, this is skipped
-    # and the loop writes the vanilla vendored AGENTS.md. Best-effort: a
-    # failure here just means Atlas ships the vanilla AGENTS.md the loop writes.
-    if settings.ACP_ENABLED:
-        try:
-            base_agents = (_FILES_DIR / "AGENTS.md").read_text(encoding="utf-8")
-            wrote_acp = _stage(
-                f"workspace-{atlas_uuid}/AGENTS.md",
-                base_agents + _ACP_DELEGATION_SECTION,
-            )
-            # Record so the loop skips AGENTS.md under force (keeps the augmented
-            # copy instead of overwriting it with the vanilla vendored one).
-            _prewritten_rels.add("AGENTS.md")
-            if wrote_acp:
-                put_metric("atlas_seed.acp_section_written")
-        except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-            put_metric("atlas_seed.acp_section_error")
-            logger.warning("atlas_seed: ACP AGENTS.md augmentation failed owner=%s: %s", owner_id, exc)
+    # present), so the augmented copy wins. Best-effort: a failure here just
+    # means Atlas ships the vanilla AGENTS.md the loop writes.
+    try:
+        base_agents = (_FILES_DIR / "AGENTS.md").read_text(encoding="utf-8")
+        wrote_acp = _stage(
+            f"workspace-{atlas_uuid}/AGENTS.md",
+            base_agents + _ACP_DELEGATION_SECTION,
+        )
+        # Record so the loop skips AGENTS.md under force (keeps the augmented
+        # copy instead of overwriting it with the vanilla vendored one).
+        _prewritten_rels.add("AGENTS.md")
+        if wrote_acp:
+            put_metric("atlas_seed.acp_section_written")
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("atlas_seed.acp_section_error")
+        logger.warning("atlas_seed: ACP AGENTS.md augmentation failed owner=%s: %s", owner_id, exc)
 
     # Stage-time bridge-URL templating. build.lobster's CREATE step curls the
     # per-owner agent-builder bridge but ships with a literal {{ISOL8_BRIDGE_URL}}

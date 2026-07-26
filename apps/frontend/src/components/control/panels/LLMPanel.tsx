@@ -501,7 +501,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         onClose={() => setModalOpen(false)}
         onCommitted={() => {
           // SWR refetch picks up the new provider_choice. The container
-          // restart fires asynchronously in the background_provision task;
+          // restart fires asynchronously in the dispatch_provision task;
           // the existing chat surface re-evaluates the provision gate on
           // its next /container/status poll and shows the right blocked
           // state if needed.

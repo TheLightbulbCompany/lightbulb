@@ -182,7 +182,7 @@ def smoke_env(mocked_paperclip_transport):
         admin = PaperclipAdminClient(http_client=http)
 
         # Point core.dynamodb.get_table at the moto resource and disable
-        # the env prefix (matches the pattern used by tests/test_paperclip_repo.py).
+        # the env prefix (matches the pattern used by tests/unit/repositories/test_paperclip_repo.py).
         with (
             patch("core.dynamodb._table_prefix", ""),
             patch("core.dynamodb._dynamodb_resource", resource),

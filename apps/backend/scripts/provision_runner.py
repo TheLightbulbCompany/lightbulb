@@ -118,7 +118,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
 
     WHY here: GET /container/status used to run provision_org (Better-Auth
     signup + company + Friday/Atlas) on the poll thread, where load-balanced
-    poll fan-out double-ran it and double-created the company (#1442). The
+    poll fan-out double-ran it and double-created the company. The
     executor elects exactly one runner per owner (try_claim_provision), so
     seeding here inherits that single-flight — one runner, one provision_org,
     structurally no duplicate company. This is now THE owner-seed path: the
@@ -140,7 +140,7 @@ async def _seed_owner_paperclip(owner_id: str) -> int:
 
     Org-vs-personal is derived from the ``owner_id`` prefix
     (``is_org_owner_id``). The dispatch carries ONLY owner_id
-    (``background_provision`` drops the triggering user_id, and threading it
+    (the dispatch path drops the triggering user_id, and threading it
     into the execution input would break Branch-A idempotency — the input must
     stay byte-identical across a claim's re-issues, but the triggering admin
     can differ between two polls). So the org path resolves the company's
@@ -222,7 +222,7 @@ async def run(owner_id: str, claim_id: str) -> int:
         # Step 0: the OWNER Paperclip seed runs HERE, under the executor's
         # single-flight (this is the ONLY runner for this owner's claim),
         # BEFORE the container work — killing the duplicate-company race
-        # (#1442) at its source.
+        # at its source.
         #
         # Placed AFTER claim_attempt so a straggler whose claim was taken over
         # stands down (ProvisionSuperseded) before it seeds. On a genuine seed
@@ -317,7 +317,7 @@ async def run(owner_id: str, claim_id: str) -> int:
 
 
 async def _stand_down_superseded(owner_id: str) -> int:
-    """The superseded exit — but VERIFIED, not assumed (#1428).
+    """The superseded exit — but VERIFIED, not assumed.
 
     ``ProvisionSuperseded`` used to be treated as proof that a successor owns
     the row, so the runner exited 20 and the machine stood down quietly. That

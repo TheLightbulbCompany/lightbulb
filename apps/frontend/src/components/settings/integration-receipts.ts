@@ -19,4 +19,5 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   vercel_cli: { delivers: "deploy, logs, project & env tools for your Vercel account" },
   aws: { delivers: "read-only AWS access — describe & list your account's resources" },
   instagram: { delivers: "publish posts & Reels, moderate comments & answer DMs on your Instagram" },
+  x: { delivers: "X posting, reading, search, replies, DMs, follows, likes & media through xurl" },
 };

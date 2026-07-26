@@ -18,6 +18,12 @@ export type CreditsBalance = {
    *  no checkout redirect). Granted only via a prior Checkout with the
    *  opt-in box ticked; false/absent routes purchases through Checkout. */
   auto_charge_enabled?: boolean;
+  /** Server-computed: is this balance unspendable at the bedrock-gate? The
+   *  gate admits only while remaining exceeds one reservation hold, so a small
+   *  positive balance still buys nothing. Computed backend-side so the reserve
+   *  constant has no TypeScript copy to drift from. Absent (not-yet-redeployed
+   *  backend) is treated as not exhausted. */
+  is_exhausted?: boolean;
 };
 
 export type TopUpResult = {

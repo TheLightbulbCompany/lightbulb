@@ -21,10 +21,15 @@ export function OutOfCreditsBanner() {
 
   // Only the bedrock_claude path uses prepaid credits. Without the gate,
   // chatgpt_oauth / byo_key users see a false "out of credits" banner.
-  // A null balance (Metronome unavailable / owner not provisioned there
-  // yet) is indeterminate — never scare the user with a false banner.
+  // is_exhausted is server-computed against the gate's own admission
+  // threshold (remaining - reserved - estimate > 0), not `> 0` — a small
+  // positive balance can still be refused at the gate. A null balance
+  // (Metronome unavailable / owner not provisioned there yet) is
+  // indeterminate and comes back as is_exhausted: false — never scare the
+  // user with a false banner. The `=== true` check also covers an absent
+  // field (not-yet-redeployed backend) the same way.
   if (me?.provider_choice !== "bedrock_claude") return null;
-  if (!balance || balance.balance_microcents === null || balance.balance_microcents > 0) return null;
+  if (!balance || balance.is_exhausted !== true) return null;
 
   return (
     <div className="bg-destructive/10 border-b border-destructive/20 px-4 py-2 text-sm flex items-center justify-between">

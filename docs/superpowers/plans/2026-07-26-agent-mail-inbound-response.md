@@ -404,22 +404,39 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ## Second PR: wake + footer (Tasks 3–6)
 
-### One open decision before Task 4
+### How delivery completes after a wake — RESOLVED, build nothing
 
-The spec says `deliver_to_agent` should "persist a pending-delivery marker" and
-flush it "when the gateway connection comes up". There is no existing
-gateway-connect hook to attach to, so that means inventing one.
+The spec asked for a persisted pending-delivery marker flushed "when the
+gateway connection comes up". **Do not build that.** The retry it describes
+already exists, assembled from two things already in the codebase:
 
-The cheaper option, and the one this plan recommends: a **bounded in-process
-retry**, mirroring `bootstrap_dispatcher`'s `_CONNECT_RETRY_DELAYS_S` pattern
-(~3–4 min budget) — start the service, then retry `resolve_running_container`
-with backoff and deliver when it answers.
+1. **SES invokes the ingest Lambda asynchronously.** `ses-inbound-stack.ts`
+   passes no `invocationType`, and CDK's default is `Event` (see
+   `aws-ses-actions/lib/lambda.d.ts`: `@default Event`). Async invocation means
+   **Lambda itself retries on function error** — 2 retries by default, roughly
+   1 and 2 minutes later.
+2. **The ingest Lambda already re-raises on 5xx**, by design — see
+   `_post_to_backend`'s docstring: *"A 5xx response means the backend is
+   signalling a transient failure, so it is RE-RAISED … so SES retries."*
 
-The trade: if the backend task restarts mid-wait, that one message is lost
-(logged + metric). No pending store, no flush hook, no stale-delivery guard.
+So the whole mechanism is:
 
-**Do not implement Task 4 until this is decided.** Tasks 1–2 are unaffected and
-should ship first regardless.
+```
+asleep + under cap  ->  start service, stamp cold-wake, return 503
+                    ->  Lambda re-raises -> async invocation fails
+                    ->  Lambda retries ~1 min later
+                    ->  Fargate cold start (~40s) done -> delivered
+```
+
+No pending store, no gateway hook, no background task, and **nothing held in
+memory** — a backend restart loses nothing, because the retry re-reads the same
+S3 object. Double-delivery is already safe: `idempotency_key` is the SES
+`messageId`, which OpenClaw dedupes on.
+
+**Known limit:** async retries default to 2, so ~3 attempts over ~3 minutes. A
+container slower than that loses the message. Task 4 Step 6 checks whether the
+ingest Lambda has a DLQ; if not, that is the follow-up — a smaller and more
+honest piece of work than inventing a delivery queue.
 
 ### Task 3: `email_cold_wake_at` stamp on the containers row
 
@@ -547,8 +564,6 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 4: Wake on inbound
 
-**BLOCKED on the open decision above.** Implement only once the retry approach is chosen.
-
 **Files:**
 - Modify: `apps/backend/core/services/agent_mail_delivery.py`
 - Test: `apps/backend/tests/unit/services/test_agent_mail_delivery.py`
@@ -606,12 +621,42 @@ In `deliver_to_agent`, replace the early return:
                 return "container_not_running"
             await get_ecs_manager().start_user_service(owner_id)
             await container_repo.stamp_email_cold_wake(owner_id)
-            # Delivery itself is completed by the retry path chosen in the
-            # open decision above.
+            # Delivery is completed by SES's OWN retry, not by anything here.
+            # The caller maps "woken" to a 503, the ingest Lambda re-raises on
+            # 5xx, and its async invocation is retried ~1 min later -- by which
+            # time the Fargate cold start (~40s) has finished. Nothing is
+            # queued or held in memory, so a backend restart loses nothing.
             return "woken"
 ```
 
-Update the module docstring: the "Never wakes a scaled-to-zero container" paragraph is now wrong and must say what replaced it.
+The caller in `routers/ses_inbound.py` must map `"woken"` to **HTTP 503**, or
+the retry never happens and the wake is pointless:
+
+```python
+        result = await deliver_to_agent(...)
+        if result == "woken":
+            # Signal transient to the ingest Lambda so it re-raises and its
+            # async invocation is retried once the container is up.
+            raise HTTPException(status_code=503, detail={"status": "waking"})
+```
+
+Update the module docstring: the "Never wakes a scaled-to-zero container"
+paragraph is now wrong and must state what replaced it, including that
+delivery completes via SES retry rather than in-process.
+
+- [ ] **Step 6: Check the DLQ**
+
+```bash
+aws lambda get-function-configuration \
+  --function-name isol8-prod-ses-inbound-SesIngestFunctionE2A868B7-ct40A0yBsZWn \
+  --query '{DLQ:DeadLetterConfig,Retries:null}' --output json
+aws lambda get-function-event-invoke-config \
+  --function-name isol8-prod-ses-inbound-SesIngestFunctionE2A868B7-ct40A0yBsZWn 2>&1 | head -5
+```
+
+Async retries default to 2, so a container slower than ~3 minutes drops the
+message. If there is no DLQ, record it as a follow-up — do NOT expand this task
+into building one.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

@@ -36,6 +36,9 @@ beforeEach(() => {
   post.mockReset();
   update.mockReset().mockResolvedValue(undefined);
   unsafeMetadata = {};
+  // The funnel persists an in-progress draft (see the remount tests below),
+  // so every test must start from an empty one.
+  window.sessionStorage.clear();
 });
 
 describe("FirstRunFunnel", () => {
@@ -254,6 +257,56 @@ describe("FirstRunFunnel", () => {
       expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/we couldn.t save your brief/i)).toBeNull();
+  });
+
+  it("restores an in-progress draft after a remount", () => {
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "acme.com" },
+    });
+
+    // The funnel does not control its own lifetime: ProvisioningStepper
+    // swaps it for a loader whenever /container/status is momentarily
+    // unreadable, which unmounts it mid-typing. Chosen path AND typed text
+    // must both survive that, or the user is dropped back on the two
+    // options having lost their work.
+    unmount();
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByPlaceholderText(/yourcompany\.com/i)).toHaveValue("acme.com");
+  });
+
+  it("restores the new-business draft including the optional audience field", () => {
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
+    fireEvent.change(screen.getByPlaceholderText(/social media agency/i), {
+      target: { value: "A bakery for dogs" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/who.s it for/i), {
+      target: { value: "Dog owners" },
+    });
+
+    unmount();
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByPlaceholderText(/social media agency/i)).toHaveValue("A bakery for dogs");
+    expect(screen.getByPlaceholderText(/who.s it for/i)).toHaveValue("Dog owners");
+  });
+
+  it("drops the draft once the brief is submitted", async () => {
+    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    const { unmount } = render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+
+    // A submitted brief is done. A container wipe / reprovision legitimately
+    // re-shows the funnel, and it must open clean rather than resurrecting
+    // the previous cycle's answer.
+    unmount();
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
   });
 
   it("offers no skip — the funnel is the committed onboarding front door", () => {

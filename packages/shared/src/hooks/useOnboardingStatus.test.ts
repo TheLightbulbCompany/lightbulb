@@ -87,6 +87,45 @@ describe("useOnboardingStatus", () => {
     expect(result.current.classified).toBeNull();
   });
 
+  it("keeps the last good status when a single poll fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchSpy = vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(jsonResponse(200, contractBody())));
+      global.fetch = fetchSpy as unknown as typeof fetch;
+
+      const { result } = renderHook(
+        () => useOnboardingStatus({ api: makeApi(), enabled: true }),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      expect(result.current.classified?.kind).toBe("container");
+
+      // The next poll fails outright — a transient blip, or the
+      // AbortController firing on a slow cold-start request.
+      fetchSpy.mockImplementation(() => Promise.reject(new TypeError("Failed to fetch")));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6_000);
+      });
+
+      // The failure is REPORTED, but the last good status must SURVIVE it.
+      // The rejection-safe fetcher resolves failures as data, so without
+      // stickiness SWR overwrites the good response and `classified` blanks
+      // for one cadence tick — which unmounts every consumer rendering on
+      // top of it (the first-run funnel most visibly, destroying whatever
+      // the user had typed) and remounts it a few seconds later.
+      expect(result.current.networkError).toBeDefined();
+      expect(result.current.classified?.kind).toBe("container");
+      expect(result.current.derived?.phase).toBe("cold_start");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not fetch while disabled", async () => {
     const fetchSpy = vi.fn();
     global.fetch = fetchSpy;

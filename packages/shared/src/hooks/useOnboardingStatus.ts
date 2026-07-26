@@ -27,6 +27,15 @@
  *      slack. Because it's a fresh interval rather than a chain of promise-
  *      chained timeouts, it survives whatever mechanism killed the chain.
  *
+ * Those two make the fetcher resolve errors as DATA, which costs SWR's
+ * keep-last-good-on-error behavior (a resolved value overwrites `data`; a
+ * thrown one would not). So a third property is restored explicitly at the
+ * return site: `classified`/`derived` are STICKY on the last successfully
+ * classified outcome, so a single failed poll reports `networkError` without
+ * blanking the status out from under every consumer. Read that comment
+ * before changing what the hook returns — dropping the stickiness silently
+ * unmounts whatever onboarding UI is rendered on top of the status.
+ *
  * Cadence: 5s while unsettled and within the first 60s of the CURRENT
  * unsettled streak, 15s after that, 0 (off) once `deriveUIPhase` reports
  * `phase === "ready"`. Deliberately NOT off at "parked": a parked (wake-
@@ -188,6 +197,10 @@ export function useOnboardingStatus(
     },
   });
 
+  // Cadence reads the LIVE outcome, never the sticky last-good below: a blip
+  // over a ready container must drop `ready` so polling resumes at the fast
+  // cadence and discovers the recovery. Sourcing this from the sticky value
+  // would hold cadence at 0 (off) and wedge the loop on the last good read.
   const ready = isSettledReady(data);
 
   // Rising edge INTO "not ready" (including first mount) restarts the fast
@@ -234,12 +247,40 @@ export function useOnboardingStatus(
     });
   }, [key, visibility, mutate]);
 
-  const classified = data?.kind === "classified" ? data.classified : null;
+  // Last outcome that actually CLASSIFIED. The fetcher above is
+  // rejection-safe by design — it resolves failures instead of throwing, so
+  // the poll loop can never die on an unhandled rejection (see module doc).
+  // The cost of that is invisible until you look at SWR's semantics: a
+  // RESOLVED value is DATA, so a failed poll OVERWRITES the last good
+  // response, where a thrown error would have sat alongside it in `error`
+  // and left `data` intact. Net effect without this ref: one blip (a
+  // transient 5xx, or the AbortController firing on a slow cold-start poll)
+  // blanks `classified` for a single cadence tick, every consumer reading it
+  // falls back to a loading state, and any UI mounted on top — the first-run
+  // funnel most visibly — UNMOUNTS, taking the user's in-progress typing
+  // with it, then remounts blank seconds later.
+  //
+  // So: keep the rejection-safety (it protects the loop) and add the
+  // stickiness back here (it protects the state). `networkError` still
+  // reports the blip, so callers that care can surface it.
+  //
+  // Deliberately NOT sticky across a null key: signing out (or otherwise
+  // disabling the hook) must drop the status, not leave a stale container
+  // on screen.
+  const lastGoodRef = useRef<Outcome | undefined>(undefined);
+  if (!key) {
+    lastGoodRef.current = undefined;
+  } else if (data?.kind === "classified") {
+    lastGoodRef.current = data;
+  }
+  const lastGood = lastGoodRef.current;
+
+  const classified = lastGood?.kind === "classified" ? lastGood.classified : null;
   const networkError = data?.kind === "network-error" ? data.error : undefined;
 
   return {
     classified,
-    derived: derivePhaseFromOutcome(data),
+    derived: derivePhaseFromOutcome(lastGood),
     networkError,
     isLoading,
     refresh,

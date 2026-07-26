@@ -27,6 +27,49 @@ const MAX_RETRIES = 5;
 // success) resets the streak.
 const PERSISTENT_FAILURE_THRESHOLD = 3;
 
+// The funnel does NOT control its own lifetime. ProvisioningStepper renders
+// it as one branch of a machine driven by /container/status, so anything that
+// makes a single poll momentarily unreadable swaps it for a loader — which
+// unmounts this component and discards its useState. That used to throw away
+// whatever the user had typed and drop them back on the two path buttons.
+//
+// The poll-blip case is fixed at its root in `useOnboardingStatus` (a failed
+// poll no longer clobbers the last good status), but the funnel is the front
+// door of the product and must not depend on that being the only way it can
+// ever be remounted. So the in-progress draft is persisted.
+//
+// sessionStorage, not localStorage: a draft is worth surviving a remount or a
+// reload, NOT worth resurrecting in a brand-new tab days later. Owner-scoped
+// on the same reasoning as ProvisioningStepper's activation markers — a
+// shared browser must not hand one account's draft to the next.
+const DRAFT_STORAGE_KEY = "isol8_first_run_draft_v1";
+
+interface Draft {
+  path: Path | null;
+  input: string;
+  detail: string;
+}
+
+const EMPTY_DRAFT: Draft = { path: null, input: "", detail: "" };
+
+/** Best-effort draft read. Every field is re-validated rather than trusted:
+ * this is user-writable storage, and a malformed entry must degrade to a
+ * clean funnel, never to a crashed one. */
+function readDraft(key: string): Draft {
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return EMPTY_DRAFT;
+    const parsed = JSON.parse(raw) as Partial<Draft>;
+    return {
+      path: parsed.path === "new" || parsed.path === "grow" ? parsed.path : null,
+      input: typeof parsed.input === "string" ? parsed.input : "",
+      detail: typeof parsed.detail === "string" ? parsed.detail : "",
+    };
+  } catch {
+    return EMPTY_DRAFT;
+  }
+}
+
 /** Best-effort upstream detail for a failed submit: FastAPI's body.detail,
  * else the error message, else the HTTP status. */
 function extractErrorDetail(err: unknown): string {
@@ -65,9 +108,16 @@ const SECONDARY_BTN =
 export function FirstRunFunnel() {
   const { user } = useUser();
   const api = useApi();
-  const [path, setPath] = React.useState<Path | null>(null);
-  const [input, setInput] = React.useState("");
-  const [detail, setDetail] = React.useState("");
+  // Stable for this mount: ProvisioningStepper only renders the funnel once
+  // Clerk's `user` is truthy, so the id is resolved before we ever read the
+  // draft — no key churn between the lazy init below and the persist effect.
+  const draftKey = `${DRAFT_STORAGE_KEY}:${user?.id ?? "anon"}`;
+  // Lazy initial state, so a restored draft is present on the FIRST render —
+  // hydrating it in an effect would paint the empty path-picker for a frame.
+  const [restored] = React.useState(() => readDraft(draftKey));
+  const [path, setPath] = React.useState<Path | null>(restored.path);
+  const [input, setInput] = React.useState(restored.input);
+  const [detail, setDetail] = React.useState(restored.detail);
   const [state, setState] = React.useState<"idle" | "submitting" | "waiting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one. Passed
   // explicitly into submit() rather than read from here — this state only
@@ -77,6 +127,23 @@ export function FirstRunFunnel() {
   // completed submit() that lands in state "error" == one failure; the
   // streak only grows while the upstream detail stays the same.
   const [failure, setFailure] = React.useState<{ detail: string; streak: number } | null>(null);
+  // Mirror the in-progress draft to storage on every edit. Cheap (three
+  // short strings, only while the funnel is on screen) and it means the
+  // draft is already durable at the instant of an unexpected unmount —
+  // there is no unmount hook that could be skipped.
+  React.useEffect(() => {
+    try {
+      if (path === null && !input && !detail) {
+        window.sessionStorage.removeItem(draftKey);
+        return;
+      }
+      window.sessionStorage.setItem(draftKey, JSON.stringify({ path, input, detail }));
+    } catch {
+      // Storage-disabled / quota-exceeded browser: the draft is a
+      // best-effort convenience, never a correctness requirement.
+    }
+  }, [draftKey, path, input, detail]);
+
   const recordFailure = React.useCallback((detail: string) => {
     setFailure((prev) =>
       prev && prev.detail === detail
@@ -110,6 +177,14 @@ export function FirstRunFunnel() {
           const status = (resp as { status?: string } | null)?.status;
           if (status === "staged" || status === "already_submitted") {
             setFailure(null);
+            // The brief is in. Drop the draft so a LATER funnel cycle — a
+            // wiped / reprovisioned container legitimately re-shows it —
+            // opens clean instead of resurrecting this answer.
+            try {
+              window.sessionStorage.removeItem(draftKey);
+            } catch {
+              /* best-effort */
+            }
             // "staged" and "already_submitted" both dismiss the funnel for
             // THIS user. The kickoff itself is server-owned now (spec PR-6,
             // BOOTSTRAP): the backend dispatches Friday's first-run kickoff
@@ -161,7 +236,7 @@ export function FirstRunFunnel() {
         }
       }
     },
-    [api, user, path, input, detail, recordFailure],
+    [api, user, path, input, detail, recordFailure, draftKey],
   );
 
   const busy = state === "submitting" || state === "waiting";

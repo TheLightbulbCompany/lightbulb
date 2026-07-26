@@ -30,11 +30,13 @@
  * Those two make the fetcher resolve errors as DATA, which costs SWR's
  * keep-last-good-on-error behavior (a resolved value overwrites `data`; a
  * thrown one would not). So a third property is restored explicitly at the
- * return site: `classified`/`derived` are STICKY on the last successfully
- * classified outcome, so a single failed poll reports `networkError` without
- * blanking the status out from under every consumer. Read that comment
- * before changing what the hook returns — dropping the stickiness silently
- * unmounts whatever onboarding UI is rendered on top of the status.
+ * return site: `classified`/`derived` are STICKY on the last outcome that
+ * represented a REAL SERVER STATE (200/202/402/404). Both failure routes —
+ * a rejected/aborted fetch AND a non-2xx that classifies as `unrecognized`
+ * — report via `networkError` without blanking the status out from under
+ * every consumer. Read that comment before changing what the hook returns:
+ * dropping the stickiness silently unmounts whatever onboarding UI is
+ * rendered on top of the status, taking any in-progress user input with it.
  *
  * Cadence: 5s while unsettled and within the first 60s of the CURRENT
  * unsettled streak, 15s after that, 0 (off) once `deriveUIPhase` reports
@@ -59,7 +61,7 @@
  * PURE READER of the composer's contract; it never re-derives readiness
  * itself.
  */
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import useSWR from "swr";
 
 import { fetchJsonWithStatus, type ApiClientConfig } from "../api/client";
@@ -108,9 +110,13 @@ export interface UseOnboardingStatusResult {
    * otherwise (202/402/404/unrecognized/not-yet-loaded all have no contract
    * body to derive from). */
   derived: DerivedUIPhase | null;
-  /** A genuine transport failure (network error, or the AbortController
-   * timeout firing) — never set for a classified 402/404/202/unrecognized,
-   * which are valid, non-throwing outcomes the caller reads via `classified`. */
+  /** The current poll FAILED: a transport failure (network error, or the
+   * AbortController timeout firing) or a non-2xx HTTP response that
+   * classifies as `unrecognized` (e.g. a 5xx). Never set for a 200/202/402/
+   * 404, which are valid server states the caller reads via `classified`.
+   * Set INDEPENDENTLY of `classified`: on a blip `classified` still holds
+   * the last good state while this reports the failure, so a caller that
+   * wants to surface transient trouble reads this, not a null status. */
   networkError: Error | undefined;
   isLoading: boolean;
   /** Forces an immediate revalidation and resets the fast-poll window. */
@@ -267,16 +273,39 @@ export function useOnboardingStatus(
   // Deliberately NOT sticky across a null key: signing out (or otherwise
   // disabling the hook) must drop the status, not leave a stale container
   // on screen.
+  // A "classified" outcome is NOT automatically a server state. Failure
+  // reaches us by two different routes and both must be non-destructive:
+  //   • a rejected/aborted fetch      -> `network-error`
+  //   • a non-2xx HTTP response (5xx) -> `classified` / `unrecognized`,
+  //     because the client THROWS ApiError, the fetcher catches it, and
+  //     `classifyContainerStatus` files anything outside 200/202/402/404
+  //     into its "can't represent this" bucket.
+  // Only those four codes describe a real owner state worth remembering, so
+  // `unrecognized` is treated as a failure here, exactly like a rejection.
+  const isServerState =
+    data?.kind === "classified" && data.classified.kind !== "unrecognized";
+
   const lastGoodRef = useRef<Outcome | undefined>(undefined);
   if (!key) {
     lastGoodRef.current = undefined;
-  } else if (data?.kind === "classified") {
+  } else if (isServerState) {
     lastGoodRef.current = data;
   }
   const lastGood = lastGoodRef.current;
 
   const classified = lastGood?.kind === "classified" ? lastGood.classified : null;
-  const networkError = data?.kind === "network-error" ? data.error : undefined;
+  // Both failure routes surface here, so a caller with NO last good to fall
+  // back on still gets a real error rather than a silently stuck UI — the
+  // contract `useProvisioningState` depends on for an unrecognized status.
+  // Memoized on the outcome: a fresh Error identity every render would churn
+  // any consumer that puts this in a dependency array.
+  const networkError = useMemo(() => {
+    if (data?.kind === "network-error") return data.error;
+    if (data?.kind === "classified" && data.classified.kind === "unrecognized") {
+      return new Error(`Unexpected ${swrKey} status: ${data.classified.status}`);
+    }
+    return undefined;
+  }, [data, swrKey]);
 
   return {
     classified,

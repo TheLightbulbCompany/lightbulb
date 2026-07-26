@@ -13,7 +13,7 @@ from typing import Annotated
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from core.auth import (
@@ -32,6 +32,7 @@ from core.services import (
     agent_export,
     company_deploy_service,
     curator,
+    marketplace_hire,
     marketplace_search,
     marketplace_service,
     seller_display,
@@ -173,6 +174,69 @@ def _compact_items(items: list[dict]) -> list[dict]:
         }
         for item in items
     ]
+
+
+def _resolve_recommended(slugs: list[str], published: list[dict]) -> list[dict]:
+    """Compact rows for ``slugs``, in the order asked, unknown ones dropped.
+
+    Dropping rather than raising is deliberate: a model naming a listing that
+    does not exist should produce no card, never a failed tool call that costs
+    another model turn to recover from. Non-published rows are dropped for the
+    same reason — the deploy route would 404 on them anyway.
+
+    Deduplicates, so naming the same agent twice does not render two cards.
+    """
+    by_slug = {row.get("slug"): row for row in published if row.get("status") == "published"}
+    seen: set[str] = set()
+    ordered: list[dict] = []
+    for slug in slugs:
+        if slug in by_slug and slug not in seen:
+            seen.add(slug)
+            ordered.append(by_slug[slug])
+    return _compact_items(ordered)
+
+
+@router.get("/u/{owner_id}/recommend")
+async def recommend(
+    owner_id: str,
+    request: Request,
+    slugs: str = Query(description="Comma-separated listing slugs from marketplace_search."),
+    issue_id: str | None = Query(
+        default=None,
+        description="Paperclip issue id — set only on headless runs, where nobody is watching chat.",
+    ),
+):
+    """Resolve slugs for a hire recommendation. Container-authenticated.
+
+    Read-only with respect to the roster. When ``issue_id`` is present this
+    additionally files a PENDING Paperclip ``hire_agent`` approval on that
+    issue, which still changes nothing until a human approves it in Teams.
+
+    Owner is in the PATH and authorized by the per-container ``hook_token``,
+    matching ``hooks_proxy`` and ``agent_builder``. Naming another owner does
+    not grant access to them: the token compare is against THAT owner's row.
+    """
+    from routers.agent_builder import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+
+    wanted = [s.strip() for s in slugs.split(",") if s.strip()]
+    published = await marketplace_search.search(query=None, limit=100)
+    listings = _resolve_recommended(wanted, published)
+
+    approval_id = None
+    if issue_id and listings:
+        # Best-effort: a failure to file the approval must not cost the caller
+        # the listings it already resolved — Friday can still name them in
+        # chat, which is strictly better than an errored tool call.
+        try:
+            approval_id = await marketplace_hire.create_hire_approval(
+                owner_id=owner_id, issue_id=issue_id, listing=listings[0]
+            )
+        except Exception:
+            logger.exception("recommend: hire approval failed for owner=%s issue=%s", owner_id, issue_id)
+
+    return {"listings": listings, "approval_id": approval_id}
 
 
 @router.get("/listings/search")

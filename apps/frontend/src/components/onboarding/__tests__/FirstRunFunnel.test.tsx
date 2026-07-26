@@ -16,12 +16,15 @@ let unsafeMetadata: Record<string, unknown> = {};
 // draft is owner-scoped (org id when in org context) — a test switches this
 // to prove one workspace's draft can't surface in another.
 let organization: { id: string } | null = null;
+// Clerk resolves the org context independently of the user; while it is
+// unresolved `organization` is undefined and MUST NOT be read as "personal".
+let orgLoaded = true;
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({
     user: { id: "user_1", unsafeMetadata, update },
     isLoaded: true,
   }),
-  useOrganization: () => ({ organization }),
+  useOrganization: () => ({ organization, isLoaded: orgLoaded }),
 }));
 
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
@@ -43,6 +46,7 @@ beforeEach(() => {
   update.mockReset().mockResolvedValue(undefined);
   unsafeMetadata = {};
   organization = null;
+  orgLoaded = true;
   // The funnel persists an in-progress draft (see the remount tests below),
   // so every test must start from an empty one.
   window.sessionStorage.clear();
@@ -369,6 +373,55 @@ describe("FirstRunFunnel", () => {
     render(<FirstRunFunnel />);
 
     expect(screen.getByPlaceholderText(/yourcompany\.com/i)).toHaveValue("acme.com");
+  });
+
+  it("does not strand the funnel busy when the workspace changes mid-submit", async () => {
+    // submit() never returns to "idle" on success — it relies on the status
+    // poll unmounting the funnel. So if the owner changes while a submission
+    // is in flight and the component STAYS mounted, the new workspace's
+    // funnel inherits `state: "submitting"` and its Continue button is
+    // disabled forever. The onboarding front door must never dead-end.
+    let resolvePost: (v: unknown) => void = () => {};
+    post.mockImplementation(() => new Promise((r) => { resolvePost = r; }));
+    organization = { id: "org_a" };
+    const { rerender } = render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+
+    organization = { id: "org_b" };
+    rerender(<FirstRunFunnel />);
+
+    // Org B starts clean: back on the picker, and once it has valid input its
+    // Continue button must be usable.
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "org-b.com" },
+    });
+    expect(screen.getByRole("button", { name: /continue/i })).not.toBeDisabled();
+
+    // Org A's in-flight call landing later must not write org B's metadata.
+    resolvePost({ status: "staged", friday_agent_id: "f1" });
+    await act(async () => { await Promise.resolve(); });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("does not read a personal draft while the organization context is unresolved", () => {
+    // Seed a PERSONAL draft, then mount with the org hook still loading.
+    organization = null;
+    orgLoaded = true;
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "personal-secret.com" },
+    });
+    unmount();
+
+    orgLoaded = false;
+    render(<FirstRunFunnel />);
+
+    // Owner unknown → restore nothing. Falling back to user.id here would
+    // render personal text inside what may be an org workspace.
+    expect(screen.queryByDisplayValue("personal-secret.com")).toBeNull();
   });
 
   it("offers no skip — the funnel is the committed onboarding front door", () => {

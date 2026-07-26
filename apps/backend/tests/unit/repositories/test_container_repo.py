@@ -646,3 +646,34 @@ async def test_daily_email_cap_is_per_owner(dynamodb_table):
     assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=1) is False
     # user_b's budget is untouched by user_a exhausting theirs.
     assert await container_repo.try_consume_daily_email_send("user_b", day="2026-07-26", cap=1) is True
+
+
+@pytest.mark.asyncio
+async def test_cold_wake_stamp_is_consumed_once(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    await container_repo.stamp_email_cold_wake("user_a")
+
+    assert await container_repo.consume_email_cold_wake("user_a") is True
+    # Second read must be False -- the footer appears exactly once.
+    assert await container_repo.consume_email_cold_wake("user_a") is False
+
+
+@pytest.mark.asyncio
+async def test_cold_wake_stamp_expires(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    await container_repo.stamp_email_cold_wake("user_a")
+
+    # A stale stamp must not attach a footer to an unrelated reply days later.
+    assert await container_repo.consume_email_cold_wake("user_a", max_age_seconds=0) is False
+
+
+@pytest.mark.asyncio
+async def test_no_stamp_is_false_not_an_error(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    assert await container_repo.consume_email_cold_wake("user_a") is False

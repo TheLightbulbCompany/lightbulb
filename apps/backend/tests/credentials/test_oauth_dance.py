@@ -159,6 +159,10 @@ async def test_exchange_consumes_state_and_returns_credential(monkeypatch):
     assert credential["refresh_token"] == "rt_tok"
     assert credential["client_id"] == "cid"
     assert credential["client_secret"] == "secret"
+    # Materializers that persist the CLI's own app registration (xurl_cli) read
+    # this off the credential. Dropping it here silently degrades them to a
+    # derived fallback, so the contract is asserted rather than assumed.
+    assert credential["redirect_uri"] == REDIRECT
     assert credential["token_expiry"]  # populated ISO string
 
 

@@ -203,6 +203,11 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
         "expires_in": int(expires_in) if expires_in else None,
         "client_id": client_id,
         "client_secret": client_secret,
+        # The callback this code was issued against. Carried through because some
+        # materializers persist the CLI's own app registration (xurl's ~/.xurl
+        # records a redirect_uri per app), and re-deriving it downstream would be
+        # a second source of truth that can drift from the authorize leg.
+        "redirect_uri": redirect_uri,
     }
     # Instagram's exchange also returns the app-scoped IG user id — materializers
     # need it for Graph calls, so carry it through when present.

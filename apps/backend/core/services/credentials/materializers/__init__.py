@@ -13,12 +13,12 @@ from core.services.credentials.materializers.instagram_cli import remove as _ins
 from core.services.credentials.materializers.instagram_cli import write as _instagram
 from core.services.credentials.materializers.mcp_oauth import remove as _mcp_oauth_remove
 from core.services.credentials.materializers.mcp_oauth import write as _mcp_oauth
-from core.services.credentials.materializers.xurl_cli import remove as _xurl_remove
-from core.services.credentials.materializers.xurl_cli import write as _xurl
 from core.services.credentials.materializers.skill_cli import remove as _skill_cli_remove
 from core.services.credentials.materializers.skill_cli import write as _skill_cli
 from core.services.credentials.materializers.toml_cli import remove as _toml_remove
 from core.services.credentials.materializers.toml_cli import write as _toml
+from core.services.credentials.materializers.xurl_cli import remove as _xurl_remove
+from core.services.credentials.materializers.xurl_cli import write as _xurl
 
 MATERIALIZERS: dict[str, object] = {
     "toml_cli": _toml,

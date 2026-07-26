@@ -11,7 +11,9 @@ remove deletes only that app, deleting ~/.xurl only when no apps remain.
 
 from __future__ import annotations
 
+import fcntl
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,8 @@ from typing import Any
 import httpx
 import yaml
 
-from core.services.credentials.materializers.base import atomic_write, owner_efs_root
+from core.config import settings
+from core.services.credentials.materializers.base import NODE_GID, NODE_UID, owner_efs_root
 
 logger = logging.getLogger(__name__)
 
@@ -31,23 +34,63 @@ def _xurl_path(owner_id: str) -> Path:
     return owner_efs_root(owner_id) / ".xurl"
 
 
-def _load_store(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"apps": {}, "default_app": ""}
-    data = yaml.safe_load(path.read_text()) or {}
+def _default_redirect_uri(provider_key: str) -> str:
+    # Mirrors routers/connections.py:_redirect_uri. Only a fallback: oauth_dance
+    # carries the real callback on the credential, and that is what a fresh
+    # connect uses. This keeps a credential minted before that field existed
+    # from writing an empty redirect_uri into the owner's xurl app entry.
+    return f"{settings.PUBLIC_API_BASE}/api/v1/oauth/{provider_key}/callback"
+
+
+def _parse_store(raw: str) -> dict[str, Any]:
+    data = yaml.safe_load(raw) if raw.strip() else None
     if not isinstance(data, dict):
+        # Fresh/unparseable file. This key order matches xurl's own storeFile
+        # struct, and safe_dump(sort_keys=False) preserves it on the way out.
         return {"apps": {}, "default_app": ""}
     apps = data.get("apps")
-    if not isinstance(apps, dict):
-        apps = {}
-    return {"apps": apps, "default_app": data.get("default_app") or ""}
+    # Spread `data` first so any top-level key xurl grows that we don't model
+    # survives our rewrite — same reason we merge apps rather than replace them.
+    return {**data, "apps": apps if isinstance(apps, dict) else {}, "default_app": data.get("default_app") or ""}
 
 
-def _dump_store(path: Path, store: dict[str, Any]) -> None:
-    # sort_keys=False keeps the on-disk shape readable and stable: apps first,
-    # default_app second, matching xurl's own storeFile struct order.
-    data = yaml.safe_dump(store, sort_keys=False).encode()
-    atomic_write(path, data, mode=0o600)
+def _locked_update(path: Path, mutate) -> None:
+    """fcntl-locked read-modify-write of the xurl YAML store on EFS.
+
+    ``~/.xurl`` is a SHARED file: it also holds user-created xurl apps, and the
+    owner's own in-container ``xurl`` invocations rewrite it (xurl persists
+    refreshed tokens there). An unlocked read-then-overwrite lets a racing
+    writer's apps vanish — so this uses the same NFS-safe ``fcntl.lockf``
+    read-modify-write as ``mcporter_vault._locked_update`` and ``config_patcher``.
+
+    ``mutate`` receives the parsed store and returns the store to persist, or
+    ``None`` to delete the file. The write is in place rather than via
+    ``atomic_write``: a temp-file rename would swap the inode out from under any
+    concurrent waiter, leaving it holding a lock on an orphan.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX)
+        os.fchmod(fd, 0o600)  # O_CREAT mode is umask-masked; the file holds tokens
+        store = _parse_store(os.read(fd, 1 << 24).decode())
+        result = mutate(store)
+        if result is None:
+            os.ftruncate(fd, 0)
+            path.unlink(missing_ok=True)
+            return
+        # sort_keys=False keeps the on-disk shape readable and stable: apps first,
+        # default_app second, matching xurl's own storeFile struct order.
+        os.lseek(fd, 0, 0)
+        os.ftruncate(fd, 0)
+        os.write(fd, yaml.safe_dump(result, sort_keys=False).encode())
+        if os.geteuid() == 0:  # in-container only; tests run non-root
+            os.fchown(fd, NODE_UID, NODE_GID)
+    finally:
+        fcntl.lockf(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    if os.geteuid() == 0 and path.exists():
+        os.chown(str(path.parent), NODE_UID, NODE_GID)
 
 
 def _fetch_username(access_token: str) -> str | None:
@@ -90,14 +133,11 @@ def _token_username(credential: dict[str, Any]) -> str:
 
 def write(owner_id: str, provider_key: str, credential: dict[str, Any]) -> str:
     """Write/replace Isol8's xurl app entry and return the connected handle/id."""
-    path = _xurl_path(owner_id)
-    store = _load_store(path)
     username = _token_username(credential)
-
-    store["apps"][_XURL_APP_NAME] = {
+    entry = {
         "client_id": credential["client_id"],
         "client_secret": credential.get("client_secret") or "",
-        "redirect_uri": credential.get("redirect_uri") or "",
+        "redirect_uri": credential.get("redirect_uri") or _default_redirect_uri(provider_key),
         "default_user": username,
         "oauth2_tokens": {
             username: {
@@ -110,10 +150,15 @@ def write(owner_id: str, provider_key: str, credential: dict[str, Any]) -> str:
             },
         },
     }
-    # Make xurl default to the freshly-connected Isol8 app. Unrelated apps remain
-    # in the file and become default again if isol8-x is later removed.
-    store["default_app"] = _XURL_APP_NAME
-    _dump_store(path, store)
+
+    def _mutate(store: dict[str, Any]) -> dict[str, Any]:
+        store["apps"][_XURL_APP_NAME] = entry
+        # Make xurl default to the freshly-connected Isol8 app. Unrelated apps
+        # remain in the file and become default again if isol8-x is later removed.
+        store["default_app"] = _XURL_APP_NAME
+        return store
+
+    _locked_update(_xurl_path(owner_id), _mutate)
     return username
 
 
@@ -122,15 +167,17 @@ def remove(owner_id: str, provider_key: str, credential: dict[str, Any] | None =
     path = _xurl_path(owner_id)
     if not path.exists():
         return
-    store = _load_store(path)
-    apps = store.get("apps") or {}
-    if _XURL_APP_NAME not in apps:
-        return
-    apps.pop(_XURL_APP_NAME, None)
-    if not apps:
-        path.unlink(missing_ok=True)
-        return
-    store["apps"] = apps
-    if store.get("default_app") == _XURL_APP_NAME:
-        store["default_app"] = sorted(apps)[0]
-    _dump_store(path, store)
+
+    def _mutate(store: dict[str, Any]) -> dict[str, Any] | None:
+        apps = store.get("apps") or {}
+        if _XURL_APP_NAME not in apps:
+            return store
+        apps.pop(_XURL_APP_NAME, None)
+        if not apps:
+            return None  # nothing left worth keeping — drop the file
+        store["apps"] = apps
+        if store.get("default_app") == _XURL_APP_NAME:
+            store["default_app"] = sorted(apps)[0]
+        return store
+
+    _locked_update(path, _mutate)

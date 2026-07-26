@@ -53,6 +53,59 @@ def test_write_produces_xurl_yaml(monkeypatch, tmp_path):
     }
 
 
+def test_store_mutations_hold_an_exclusive_lock(monkeypatch, tmp_path):
+    """~/.xurl is multi-writer (the owner's in-container xurl rewrites it on token
+    refresh), so every read-modify-write must be fcntl-guarded — an unlocked
+    read-then-overwrite silently drops the racing writer's apps. Structural guard:
+    a regression to plain read/write would take no lock at all."""
+    _patch_efs(monkeypatch, tmp_path)
+    modes = []
+    real_lockf = xurl_cli.fcntl.lockf
+    monkeypatch.setattr(xurl_cli.fcntl, "lockf", lambda fd, op, *a: (modes.append(op), real_lockf(fd, op, *a))[1])
+
+    xurl_cli.write("org_1", "x", _credential())
+    assert xurl_cli.fcntl.LOCK_EX in modes
+
+    modes.clear()
+    xurl_cli.remove("org_1", "x", {})
+    assert xurl_cli.fcntl.LOCK_EX in modes
+
+
+def test_write_derives_redirect_uri_when_credential_omits_it(monkeypatch, tmp_path):
+    """oauth_dance carries redirect_uri on the credential, but a credential minted
+    before that field existed must not write an empty callback into the owner's
+    xurl app entry — xurl's interactive re-auth reads it back."""
+    _patch_efs(monkeypatch, tmp_path)
+    monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "https://api-dev.isol8.co")
+    cred = _credential()
+    cred.pop("redirect_uri")
+
+    xurl_cli.write("org_1", "x", cred)
+
+    app = yaml.safe_load(_xurl_path(tmp_path).read_text())["apps"]["isol8-x"]
+    assert app["redirect_uri"] == "https://api-dev.isol8.co/api/v1/oauth/x/callback"
+
+
+def test_write_preserves_unknown_top_level_keys(monkeypatch, tmp_path):
+    """~/.xurl is shared with the owner's own xurl usage. A key xurl grows that we
+    don't model must survive our read-modify-write, not get normalized away."""
+    _patch_efs(monkeypatch, tmp_path)
+    path = _xurl_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        yaml.safe_dump(
+            {"apps": {}, "default_app": "", "some_future_xurl_key": {"keep": True}},
+            sort_keys=False,
+        )
+    )
+
+    xurl_cli.write("org_1", "x", _credential())
+
+    data = yaml.safe_load(path.read_text())
+    assert data["some_future_xurl_key"] == {"keep": True}
+    assert data["apps"]["isol8-x"]["client_id"] == "x-client"
+
+
 def test_write_preserves_unrelated_apps_and_replaces_owned_app(monkeypatch, tmp_path):
     _patch_efs(monkeypatch, tmp_path)
     path = _xurl_path(tmp_path)

@@ -105,6 +105,44 @@ export class SesInboundStack extends cdk.Stack {
       values: ["v=spf1 include:amazonses.com ~all"],
     });
 
+    // -------------------------------------------------------------------------
+    // DMARC policy at the ORGANIZATIONAL domain.
+    //
+    // This record is NOT optional decoration — without it the zone actively
+    // LOOKS configured while having no policy at all. The wildcard SPF TXT
+    // above matches `_dmarc.isol8.co` (`_dmarc` is just another label under
+    // the zone), so a receiver querying for DMARC gets back
+    // `"v=spf1 include:amazonses.com ~all"`. That is not a DMARC record — it
+    // does not start with `v=DMARC1` — so every receiver reads the domain as
+    // having NO published policy. An explicit record is the only fix, since
+    // an explicit name always beats a wildcard match.
+    //
+    // One record at the org domain covers every company subdomain too:
+    // `_dmarc.acme.isol8.co` also resolves to the wildcard SPF junk, and
+    // RFC 7489 §6.6.3 says a query returning no VALID DMARC record falls
+    // through to the organizational domain — landing here. (A wildcard can't
+    // help anyway: DNS wildcards must be leftmost, and `_dmarc.*.isol8.co`
+    // is not a legal wildcard name.)
+    //
+    // `p=none` is deliberate and load-bearing. This policy governs ALL
+    // isol8.co mail — Google Workspace on the apex, Resend, Clerk, and SES —
+    // and only SES alignment has been verified. Monitor-only publishes the
+    // policy and turns on aggregate reporting without putting a single
+    // existing mail flow at risk of quarantine/reject. Tighten to
+    // quarantine/reject only after the rua reports show every sender aligned.
+    // -------------------------------------------------------------------------
+    // Aggregate reports go to an address that ALREADY EXISTS on the apex
+    // (Google Workspace). A same-domain `rua` needs no authorization record
+    // at the receiving domain, and reusing a live mailbox means publishing
+    // DMARC costs no new Workspace seat, alias, or admin-console change.
+    const reportMailbox = `admin@${mailDomain}`;
+
+    new route53.TxtRecord(this, "AgentMailDmarc", {
+      zone: hostedZone,
+      recordName: `_dmarc.${mailDomain}`,
+      values: [`v=DMARC1; p=none; rua=mailto:${reportMailbox}; fo=1`],
+    });
+
     // Deterministic literal names (not read off the live construct — see
     // note below) so cross-stage consumers never receive a CDK Token.
     const rawBucketName = `isol8-${envName}-agent-mail-raw`;

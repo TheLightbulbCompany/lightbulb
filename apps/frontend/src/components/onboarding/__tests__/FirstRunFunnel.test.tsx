@@ -11,11 +11,17 @@ const update = vi.fn().mockResolvedValue(undefined);
 // other test sees a clean, first-time user. Read at useUser() call-time, same
 // call-time-deref pattern as `update` above.
 let unsafeMetadata: Record<string, unknown> = {};
+// Mutable active-organization context, same call-time-deref pattern. The
+// funnel is a PER-CONTAINER fact and an org shares one container, so the
+// draft is owner-scoped (org id when in org context) — a test switches this
+// to prove one workspace's draft can't surface in another.
+let organization: { id: string } | null = null;
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({
-    user: { unsafeMetadata, update },
+    user: { id: "user_1", unsafeMetadata, update },
     isLoaded: true,
   }),
+  useOrganization: () => ({ organization }),
 }));
 
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
@@ -36,6 +42,7 @@ beforeEach(() => {
   post.mockReset();
   update.mockReset().mockResolvedValue(undefined);
   unsafeMetadata = {};
+  organization = null;
   // The funnel persists an in-progress draft (see the remount tests below),
   // so every test must start from an empty one.
   window.sessionStorage.clear();
@@ -307,6 +314,61 @@ describe("FirstRunFunnel", () => {
     render(<FirstRunFunnel />);
 
     expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
+  });
+
+  it("does not leak a draft across a workspace switch", () => {
+    // Onboarding is a per-CONTAINER fact and an org shares one container, so
+    // the draft belongs to the OWNER, not the signed-in user. Someone who
+    // starts a brief in org A and then activates an un-onboarded org B in the
+    // same tab must get a clean funnel — otherwise A's text is restored and
+    // submitted under B's API context.
+    organization = { id: "org_a" };
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "org-a-secret.com" },
+    });
+    unmount();
+
+    organization = { id: "org_b" };
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("org-a-secret.com")).toBeNull();
+  });
+
+  it("does not leak a draft across a workspace switch WITHOUT a remount", () => {
+    // Harder variant: Clerk's setActive can flip the active org while this
+    // component stays mounted. The key changes mid-life, so without a
+    // render-time reset the persist effect would immediately write org A's
+    // in-progress text under org B's key — the same leak by another route.
+    organization = { id: "org_a" };
+    const { rerender } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "org-a-secret.com" },
+    });
+
+    organization = { id: "org_b" };
+    rerender(<FirstRunFunnel />);
+
+    expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("org-a-secret.com")).toBeNull();
+    expect(window.sessionStorage.getItem("isol8_first_run_draft_v1:org_b")).toBeNull();
+  });
+
+  it("restores the draft for the SAME workspace across a remount", () => {
+    organization = { id: "org_a" };
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "acme.com" },
+    });
+    unmount();
+
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByPlaceholderText(/yourcompany\.com/i)).toHaveValue("acme.com");
   });
 
   it("offers no skip — the funnel is the committed onboarding front door", () => {

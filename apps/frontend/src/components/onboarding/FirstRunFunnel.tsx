@@ -10,7 +10,7 @@
  * past it.
  */
 import * as React from "react";
-import { useUser } from "@clerk/nextjs";
+import { useOrganization, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
 import { writeFirstRun } from "@/lib/firstRun";
@@ -113,17 +113,47 @@ const SECONDARY_BTN =
 
 export function FirstRunFunnel() {
   const { user } = useUser();
+  const { organization } = useOrganization();
   const api = useApi();
+  // Keyed to the OWNER, not the signed-in user — the same owner identity
+  // ProvisioningStepper uses for its activation markers. Onboarding is a
+  // per-CONTAINER fact and an org shares one container, so the draft belongs
+  // to the workspace. Keying it on `user.id` alone would hand one workspace's
+  // in-progress brief to another: someone who starts a brief in org A and
+  // then activates an un-onboarded org B in the same tab would have A's text
+  // restored and submitted under B's API context.
+  //
   // Stable for this mount: ProvisioningStepper only renders the funnel once
-  // Clerk's `user` is truthy, so the id is resolved before we ever read the
-  // draft — no key churn between the lazy init below and the persist effect.
-  const draftKey = `${DRAFT_STORAGE_KEY}:${user?.id ?? "anon"}`;
+  // Clerk's `user` is truthy, so the identity is resolved before we ever read
+  // the draft — no key churn between the lazy init below and the persist
+  // effect. A workspace switch re-renders with a DIFFERENT key, which is
+  // exactly the isolation this provides.
+  const draftKey = `${DRAFT_STORAGE_KEY}:${organization?.id ?? user?.id ?? "anon"}`;
   // Lazy initial state, so a restored draft is present on the FIRST render —
   // hydrating it in an effect would paint the empty path-picker for a frame.
   const [restored] = React.useState(() => readDraft(draftKey));
   const [path, setPath] = React.useState<Path | null>(restored.path);
   const [input, setInput] = React.useState(restored.input);
   const [detail, setDetail] = React.useState(restored.detail);
+
+  // A workspace switch can change `draftKey` WITHOUT unmounting this
+  // component — Clerk's `setActive` re-renders in place. The lazy initializer
+  // above only runs at mount, so without this the previous owner's text would
+  // stay on screen AND the persist effect below (keyed on draftKey) would
+  // immediately write it under the NEW owner's key: the same cross-workspace
+  // leak the owner-scoped key exists to prevent, by another route. Re-read
+  // for the new owner during render — React's "adjust state when a prop
+  // changes" pattern, same idiom as the render-time derivations in
+  // ProvisioningStepper — so the switch lands on the new workspace's own
+  // draft (usually empty) with no intermediate frame showing the old one.
+  const [draftOwner, setDraftOwner] = React.useState(draftKey);
+  if (draftOwner !== draftKey) {
+    const next = readDraft(draftKey);
+    setDraftOwner(draftKey);
+    setPath(next.path);
+    setInput(next.input);
+    setDetail(next.detail);
+  }
   const [state, setState] = React.useState<"idle" | "submitting" | "waiting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one. Passed
   // explicitly into submit() rather than read from here — this state only

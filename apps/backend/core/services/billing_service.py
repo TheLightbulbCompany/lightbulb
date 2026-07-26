@@ -348,7 +348,7 @@ async def _build_subscription_checkout(
 
 
 async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:
-    """Per-seat Teams Checkout: quantity = org member count.
+    """Teams Checkout: flat base at quantity 1 plus per-seat at the seat count.
 
     Threads ``purpose="team_seat"`` into subscription metadata so the
     customer.subscription.* webhook records the subscription item id + seat
@@ -357,11 +357,19 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
     """
     if not settings.STRIPE_TEAM_SEAT_PRICE_ID:
         raise BillingServiceError("STRIPE_TEAM_SEAT_PRICE_ID not configured")
+    if not settings.STRIPE_TEAM_BASE_PRICE_ID:
+        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID not configured")
 
     quantity = max(1, member_count)
     return await _build_subscription_checkout(
         owner_id=owner_id,
-        line_items=[{"price": settings.STRIPE_TEAM_SEAT_PRICE_ID, "quantity": quantity}],
+        # Flat base + per-seat, in that order. NOTHING may select these by
+        # position — the webhook picks the seat item by price id precisely
+        # because Stripe does not guarantee line-item order.
+        line_items=[
+            {"price": settings.STRIPE_TEAM_BASE_PRICE_ID, "quantity": 1},
+            {"price": settings.STRIPE_TEAM_SEAT_PRICE_ID, "quantity": quantity},
+        ],
         # Teams are Bedrock-managed automatically — there is no provider picker
         # in the team flow. Thread provider_choice into the subscription
         # metadata so the customer.subscription.* webhook persists it as the

@@ -573,7 +573,9 @@ class TestBuildSubscriptionCheckoutSharedSpine:
 
     @pytest.mark.asyncio
     async def test_team_checkout_uses_seat_price_and_quantity(self, monkeypatch):
+        """Team checkout emits [base x1, seat xN] — a solo admin is $50 + 1x$20."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -584,7 +586,10 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         result = await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
 
         assert result.url == "https://checkout/team"
-        assert seen["line_items"] == [{"price": "price_seat_test", "quantity": 4}]
+        assert seen["line_items"] == [
+            {"price": "price_base_test", "quantity": 1},
+            {"price": "price_seat_test", "quantity": 4},
+        ]
         # provider_choice threaded in so the webhook backup persists teams as
         # Bedrock-managed (there is no provider picker in the team flow).
         assert seen["metadata"] == {
@@ -601,8 +606,18 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
 
     @pytest.mark.asyncio
+    async def test_team_checkout_raises_without_base_price_id(self, monkeypatch):
+        """An unconfigured base price fails loudly rather than silently
+        under-billing an org $20 instead of $70."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "")
+        with pytest.raises(BillingServiceError, match="STRIPE_TEAM_BASE_PRICE_ID not configured"):
+            await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
+
+    @pytest.mark.asyncio
     async def test_team_checkout_floors_quantity_at_one(self, monkeypatch):
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -611,7 +626,10 @@ class TestBuildSubscriptionCheckoutSharedSpine:
 
         monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
         await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=0)
-        assert seen["line_items"] == [{"price": "price_seat_test", "quantity": 1}]
+        assert seen["line_items"] == [
+            {"price": "price_base_test", "quantity": 1},
+            {"price": "price_seat_test", "quantity": 1},
+        ]
 
 
 @pytest.mark.asyncio

@@ -30,26 +30,39 @@ logger = logging.getLogger(__name__)
 # Teams). Its presence is what arms the post-approve artifact deploy, so every
 # non-marketplace approval flows through the approve handler untouched.
 LISTING_SLUG_KEY = "isol8_listing_slug"
+# The canonical identity — slugs are non-unique, so the post-approve deploy
+# resolves the artifact by this.
+LISTING_ID_KEY = "isol8_listing_id"
 
 _TITLE_MAX = 120
 
 
-def _gateway_url(env: str) -> str:
-    return f"wss://ws-{env}.isol8.co"
-
-
-def build_hire_approval_payload(*, listing: dict, env: str) -> dict:
+def build_hire_approval_payload(*, listing: dict, adapter_config: dict) -> dict:
     """Payload for a Paperclip ``hire_agent`` approval.
 
-    ``adapterType`` is set EXPLICITLY and must stay that way. Paperclip's
-    approve path does ``String(payload.adapterType ?? "process")``; an agent
-    created as ``"process"`` is unreachable over the openclaw gateway and
-    fails silently at its first wake, long after the approval looked like it
-    succeeded.
+    On approve, Paperclip builds the agent FROM THIS PAYLOAD
+    (``services/approvals.ts``: ``agentsSvc.create(companyId, {...
+    adapterConfig: payload.adapterConfig ...})``). So ``adapter_config`` must
+    be the full ``synthesize_openclaw_adapter`` output — in particular the
+    ed25519 ``devicePrivateKeyPem``. Isol8 mints and owns that keypair so the
+    deviceId is stable and can be pre-registered in the container's
+    ``paired.json``; an operator device that is not pre-paired is rejected
+    NOT_PAIRED, and the agent would sit broken until the next reprovision.
+    Passing a bare ``{"url": ...}`` here is exactly that bug.
 
-    ``agentId`` is deliberately ABSENT so Paperclip CREATES the agent on
-    approve instead of activating a pre-created one — nothing should exist in
-    the owner's roster before they say yes.
+    It survives the round trip: Paperclip's
+    ``normalizeHireApprovalPayloadForPersistence`` only rewrites
+    ``adapterConfig.env`` and passes every other key through, and
+    ``redactApprovalPayload`` shapes the HTTP RESPONSE only — approve reads the
+    unredacted stored row.
+
+    ``adapterType`` is set EXPLICITLY and must stay that way: the approve path
+    does ``String(payload.adapterType ?? "process")``, and a ``"process"``
+    agent is unreachable over the openclaw gateway.
+
+    ``agentId`` is deliberately ABSENT. With it set, approve merely activates a
+    pre-created agent; without it, approve CREATES the agent — so nothing
+    exists in the owner's roster until they say yes.
     """
     tags = listing.get("tags") or []
     return {
@@ -58,9 +71,12 @@ def build_hire_approval_payload(*, listing: dict, env: str) -> dict:
         "title": (listing.get("summary") or "")[:_TITLE_MAX],
         "capabilities": ", ".join(tags),
         "adapterType": "openclaw_gateway",
-        "adapterConfig": {"url": _gateway_url(env)},
+        "adapterConfig": adapter_config,
         "budgetMonthlyCents": 0,
-        "metadata": {LISTING_SLUG_KEY: listing.get("slug", "")},
+        "metadata": {
+            LISTING_SLUG_KEY: listing.get("slug", ""),
+            LISTING_ID_KEY: listing.get("listing_id", ""),
+        },
     }
 
 
@@ -75,51 +91,57 @@ def listing_slug_of(payload: dict | None) -> str | None:
     return slug or None
 
 
-async def create_hire_approval(*, owner_id: str, issue_id: str, listing: dict) -> str | None:
+async def create_hire_approval(
+    *, owner_id: str, issue_id: str, listing: dict, requested_by_user_id: str | None = None
+) -> str | None:
     """Create a PENDING ``hire_agent`` approval linked to ``issue_id``.
 
-    .. warning::
+    This is the headless half of hiring. In chat the owner gets a card with a
+    Deploy button; when Friday is working a Paperclip task with nobody
+    watching, she files this instead. Creating it changes nothing — the roster
+    moves only when the owner approves in the Teams Inbox.
 
-       **NOT WIRED UP YET — do not call this without reading the following.**
-       ``routers/marketplace_listings.recommend`` deliberately does not invoke
-       it. Two things must land first:
+    ``issueIds`` is what makes the request show up ON the task that prompted
+    it (upstream links them via ``issueApprovalsSvc.linkManyForApproval``)
+    rather than only in a global list the owner has no reason to open.
 
-       1. **The device keypair.** With ``agentId`` absent, Paperclip's approve
-          path calls its own ``agentsSvc.create``, which does NOT mint
-          ``adapterConfig.devicePrivateKeyPem``. Isol8 agents get that from
-          ``create_paperclip_for_marketplace`` + ``ensure_operator_device_paired``;
-          without it the hired agent cannot pass the operator-relay device-auth
-          handshake and stays broken until the next reprovision. The fix is to
-          mint the agent HERE via ``create_paperclip_for_marketplace`` in
-          Paperclip's ``pending_approval`` status and pass its id as
-          ``payload.agentId`` — that is exactly what upstream's
-          ``activatePendingApproval`` (on approve) / ``terminate`` (on reject)
-          branch exists for, and it keeps "nothing live before the human says
-          yes" intact.
-       2. **The post-approve artifact deploy.** Paperclip creates the roster
-          entry; the EFS workspace + ``openclaw.json`` merge is Isol8's half and
-          belongs in ``routers/teams/approvals.py::approve``. Without it,
-          approving yields a roster entry with no workspace behind it.
+    **This does NOT touch the direct-create flow.** Seeding Friday/Atlas,
+    marketplace deploys, and Atlas builds keep using
+    ``POST /companies/{id}/agents`` untouched. In particular this needs no
+    ``require_board_approval_for_new_agents`` flip — that flag switches the
+    direct-create route to a hard 409 fleet-wide, which would break signup
+    seeding (no human is awake to approve Friday and Atlas).
 
-       ``build_hire_approval_payload`` above is correct and tested; it is the
-       ``agentId`` omission that changes when this is finished.
+    .. note:: NOT CALLED YET. Two pieces land with it:
 
-    Creating the approval changes nothing on its own. ``issueIds`` is what
-    makes the request show up ON the task that prompted it (upstream links
-    them via ``issueApprovalsSvc.linkManyForApproval``) rather than only in a
-    global list the owner has no reason to open.
+       1. **Pre-create + ``pending_approval``.** The approve RESPONSE returns
+          only the approval row, never the created agent's id, so the deploy
+          step would have nothing to address. Create the agent first (this
+          keeps the keypair ours), PATCH it to ``pending_approval`` — genuinely
+          inert, it is in both ``NON_ASSIGNABLE`` and ``NON_INVOKABLE`` — and
+          pass its id as ``payload.agentId``. Approve then runs
+          ``activatePendingApproval`` (sets ``idle``, guarded on the row still
+          being pending) and reject runs ``terminate``. Needs a ``status``
+          argument on ``PaperclipAdminClient.update_agent``, which it lacks.
+       2. **The post-approve artifact deploy** in
+          ``routers/teams/approvals.py::approve`` — ``deploy_from_artifact``
+          plus ``ensure_operator_device_paired``, with rollback. Paperclip makes
+          the roster entry; the EFS workspace is Isol8's half.
 
     Returns the approval id, or None when the owner has no Paperclip company —
     a degraded state a recommendation must not raise on, since the listings
-    themselves are still worth returning.
+    are still worth returning.
     """
     import httpx
 
     from core.config import settings
     from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services import service_token
+    from core.services.paperclip_adapter_config import synthesize_openclaw_adapter
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_admin_session import get_admin_session_cookie
     from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
+    from core.services.paperclip_provisioning import _ws_gateway_url
 
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
     try:
@@ -128,6 +150,14 @@ async def create_hire_approval(*, owner_id: str, issue_id: str, listing: dict) -
         if company_id is None:
             logger.info("create_hire_approval: no paperclip company for owner=%s", owner_id)
             return None
+        # The full adapter config — including the ed25519 device keypair Isol8
+        # mints and owns — because Paperclip builds the agent FROM the payload
+        # on approve. See build_hire_approval_payload.
+        adapter_config = synthesize_openclaw_adapter(
+            gateway_url=_ws_gateway_url(settings.ENVIRONMENT or ""),
+            service_token=service_token.mint(owner_id),
+            user_id=requested_by_user_id or owner_id,
+        )
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
         created = await admin.create_approval(
@@ -135,7 +165,7 @@ async def create_hire_approval(*, owner_id: str, issue_id: str, listing: dict) -
             company_id=company_id,
             body={
                 "type": "hire_agent",
-                "payload": build_hire_approval_payload(listing=listing, env=settings.ENVIRONMENT),
+                "payload": build_hire_approval_payload(listing=listing, adapter_config=adapter_config),
                 "issueIds": [issue_id],
             },
         )

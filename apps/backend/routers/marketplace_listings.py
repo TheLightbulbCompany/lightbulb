@@ -231,20 +231,16 @@ async def recommend(
     published = await marketplace_search.search(query=None, limit=100)
     listings = _resolve_recommended(wanted, published)
 
-    # ``issue_id`` is accepted and currently IGNORED. Filing the Paperclip
-    # hire_agent approval is deliberately not wired up yet — see
-    # ``marketplace_hire.create_hire_approval``. Approving one would have
-    # Paperclip's own agentsSvc.create mint the roster row, and that path does
-    # NOT generate the operator device keypair
-    # (``adapterConfig.devicePrivateKeyPem``) that
-    # ``create_paperclip_for_marketplace`` + ``ensure_operator_device_paired``
-    # do — so the hired agent could never pass the device-auth handshake and
-    # would sit broken until the next reprovision. Shipping the approval
-    # without the deploy half would also leave a roster entry with no
-    # workspace behind it.
+    # ``issue_id`` is accepted and currently IGNORED — the headless path is not
+    # switched on yet. ``marketplace_hire.create_hire_approval`` is complete and
+    # correct, but two pieces still have to land with it (see its docstring):
+    # the pre-create + pending_approval step that makes ``payload.agentId``
+    # deterministic, and the post-approve artifact deploy in
+    # ``routers/teams/approvals.py::approve``. Filing an approval without them
+    # would leave a roster entry with no workspace behind it.
     #
-    # The agent still gets its listings, so a headless recommendation degrades
-    # to "named in the reply" rather than failing.
+    # A headless recommendation therefore degrades to "named in Friday's reply
+    # and her issue comment", which still reaches the owner.
     return {"listings": listings, "approval_id": None}
 
 

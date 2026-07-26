@@ -136,6 +136,18 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("backend task definition carries STRIPE_TEAM_BASE_PRICE_ID", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_TEAM_BASE_PRICE_ID" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   test("backend role can pass per-owner bedrock roles to ECS", () => {
     // The owner-bedrock prefix ARN is built from ${this.account}; in this
     // concrete-account synth CDK renders it as a literal string (it becomes an

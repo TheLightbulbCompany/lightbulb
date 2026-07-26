@@ -18,10 +18,35 @@ caller can log/metric on instead.
 import logging
 
 from core.config import settings
-from core.repositories import agent_email_repo
+from core.repositories import agent_email_repo, billing_repo, container_repo
 from core.services import ses_email
 
 logger = logging.getLogger(__name__)
+
+_COLD_WAKE_FOOTER = (
+    "\n\n———\n"
+    "I was asleep when this arrived — on the free plan I sleep when idle, so "
+    "replies wait for me to wake. https://isol8.co/settings\n"
+)
+
+
+async def _maybe_cold_wake_footer(owner_id: str) -> str:
+    """The free-tier "I was asleep" note, or "".
+
+    Consumed (and cleared) here so it appears exactly once. Free tier only: a
+    paid container never sleeps, so the note would be a lie. Never raises — a
+    footer must not cost a reply.
+    """
+    try:
+        if not await container_repo.consume_email_cold_wake(owner_id):
+            return ""
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        if account.get("subscription_status") != "trial_local":
+            return ""
+        return _COLD_WAKE_FOOTER
+    except Exception:  # noqa: BLE001
+        logger.warning("cold-wake footer lookup failed for %s", owner_id)
+        return ""
 
 
 def _header_safe(value: str) -> str:
@@ -75,6 +100,8 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
         # new email Friday is sending unprompted, not a reply -- prepending
         # "Re: " to it would be a lie about what it is.
         subject = ctx["subject"] if not in_reply_to else reply_subject(ctx["subject"])
+
+        body_text = body_text + await _maybe_cold_wake_footer(ctx["owner_id"])
 
         message_id = await ses_email.send_ses_reply(
             from_addr=from_addr,

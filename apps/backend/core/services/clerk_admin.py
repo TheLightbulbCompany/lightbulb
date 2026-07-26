@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _CLERK_API_BASE = "https://api.clerk.com/v1"
 _TIMEOUT_S = 5.0
+_PENDING_INVITATION_PAGE_LIMIT = 100
 
 
 async def list_users(*, query: str = "", limit: int = 50, offset: int = 0) -> dict:
@@ -272,15 +273,21 @@ async def _pending_invitation_count(org_id: str) -> int | None:
     that Clerk's total_count respects a status filter, and if it silently
     reports the all-statuses total, every accepted invitation would become a
     phantom seat. So this reads len(data) off a status=pending page instead.
-    limit=100 is the same cap already accepted for Gate B's per-user
-    equivalent; a truncated page logs a warning rather than silently
-    under-counting a very large org.
+    _PENDING_INVITATION_PAGE_LIMIT is the same cap already accepted for Gate
+    B's per-user equivalent. A FULL page is treated as unreadable (returns
+    None, not the count): a truncated read is an uncertain read, and
+    confidently returning a number known to be short would let
+    sync_team_seat_quantity write an undershooting absolute quantity to
+    Stripe — a silent downgrade indistinguishable from a real one. The
+    logger.warning still fires so a large org shows up in the logs rather
+    than disappearing into a wrong number; pagination can follow if that
+    ever actually happens.
     """
     if not settings.CLERK_SECRET_KEY:
         return 0
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
-    params = {"status": "pending", "limit": 100}
+    params = {"status": "pending", "limit": _PENDING_INVITATION_PAGE_LIMIT}
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
             response = await client.get(
@@ -306,11 +313,14 @@ async def _pending_invitation_count(org_id: str) -> int | None:
         return None
 
     count = len(data)
-    if count >= 100:
+    if count >= _PENDING_INVITATION_PAGE_LIMIT:
         logger.warning(
-            "clerk_admin._pending_invitation_count org=%s hit the 100-item page cap; pending count may be truncated",
+            "clerk_admin._pending_invitation_count org=%s hit the %d-item page cap; "
+            "pending count is truncated, treating as unreadable",
             org_id,
+            _PENDING_INVITATION_PAGE_LIMIT,
         )
+        return None
     return count
 
 

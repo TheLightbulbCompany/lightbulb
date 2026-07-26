@@ -196,8 +196,11 @@ async def test_pending_invitation_count_stubs_to_zero_without_secret_key(monkeyp
 
 @pytest.mark.asyncio
 async def test_pending_invitation_count_sends_status_pending_filter(monkeypatch):
-    """Nothing else proves the status=pending filter is actually sent —
-    without it, revoked/expired invitations would inflate the seat count."""
+    """Nothing else proves the status=pending filter (and the page-size limit
+    it's paired with) is actually sent — without status=pending,
+    revoked/expired invitations would inflate the seat count; a silently
+    drifted limit would change the truncation threshold without anyone
+    noticing."""
     monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
     from core.services import clerk_admin
 
@@ -223,6 +226,7 @@ async def test_pending_invitation_count_sends_status_pending_filter(monkeypatch)
 
     assert result == 1
     assert captured_params.get("status") == "pending"
+    assert captured_params.get("limit") == clerk_admin._PENDING_INVITATION_PAGE_LIMIT
 
 
 @pytest.mark.asyncio
@@ -283,14 +287,18 @@ async def test_pending_invitation_count_returns_none_on_malformed_json(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_pending_invitation_count_warns_when_page_is_full(monkeypatch, caplog):
-    """A full 100-item page means the true count may be truncated — must be
-    visible (a warning), not a silent under-count."""
+async def test_pending_invitation_count_none_and_warns_when_page_is_full(monkeypatch, caplog):
+    """A full page means the true count may be truncated. A truncated read is
+    an uncertain read — confidently returning a short count would let
+    sync_team_seat_quantity write an undershooting absolute quantity to
+    Stripe (a silent downgrade). Must return None (treated as unreadable),
+    with a warning so the truncation is visible in the logs rather than a
+    wrong number."""
     monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
     from core.services import clerk_admin
 
-    data = [{"id": f"orginv_{i}"} for i in range(100)]
-    response = _make_response(200, json_body={"data": data, "total_count": 100})
+    data = [{"id": f"orginv_{i}"} for i in range(clerk_admin._PENDING_INVITATION_PAGE_LIMIT)]
+    response = _make_response(200, json_body={"data": data, "total_count": len(data)})
     with patch(
         "core.services.clerk_admin.httpx.AsyncClient",
         new=lambda *a, **k: _fake_client(response),
@@ -298,5 +306,5 @@ async def test_pending_invitation_count_warns_when_page_is_full(monkeypatch, cap
         with caplog.at_level("WARNING"):
             result = await clerk_admin._pending_invitation_count("org_1")
 
-    assert result == 100
+    assert result is None
     assert any("truncated" in record.message for record in caplog.records)

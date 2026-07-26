@@ -155,13 +155,20 @@ async def test_team_checkout_still_blocked_when_active(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_team_checkout_quantity_includes_pending_invitations(monkeypatch, _stub_set_provider_choice):
-    """No free members: 1 admin + 3 pending invites checks out at 4 seats."""
+    """No free members: 1 admin + 3 pending invites checks out at 4 seats.
+
+    Stubs the two underlying Clerk reads (member count + pending count) and
+    lets the REAL get_organization_seat_count composition run — stubbing
+    get_organization_seat_count directly would only prove the router
+    forwards whatever it's handed, not that members+pending genuinely sums
+    to the checkout quantity."""
     monkeypatch.setattr(
         billing,
         "_get_billing_account",
         AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=4))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(billing.clerk_admin, "_pending_invitation_count", AsyncMock(return_value=3))
     fake_session = MagicMock(url="https://checkout/team")
     with patch(
         "core.services.billing_service.create_team_seat_checkout",

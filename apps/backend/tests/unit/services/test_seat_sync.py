@@ -13,6 +13,11 @@ from core.services import billing_service, clerk_admin  # noqa: E402
 
 @pytest.mark.asyncio
 async def test_sets_absolute_member_count_on_mismatch(monkeypatch):
+    # Pinned explicitly (not relying on the ambient env): under strict=True,
+    # a set CLERK_SECRET_KEY would send _pending_invitation_count on a real
+    # network call this test never stubs, turning a graceful degrade into a
+    # hard failure instead of the intended "pending short-circuits to 0".
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",
@@ -52,6 +57,8 @@ async def test_sets_absolute_member_count_on_mismatch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_noop_when_count_unchanged(monkeypatch):
+    # Pinned explicitly — see test_sets_absolute_member_count_on_mismatch.
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",

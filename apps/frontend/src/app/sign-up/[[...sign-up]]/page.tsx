@@ -1,7 +1,7 @@
-import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
+import { SignUpWithIntent } from "@/components/SignUpWithIntent";
 import { SignupIntentCookie } from "@/components/SignupIntentCookie";
 
 export default function Page() {
@@ -290,7 +290,7 @@ export default function Page() {
               <Logo size="md" />
             </div>
 
-            <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
+            <SignUpWithIntent />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

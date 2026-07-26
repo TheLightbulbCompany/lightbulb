@@ -13,6 +13,7 @@ import { capture } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Users, Mail } from "lucide-react";
 import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
+import { clearSignupIntentCookie } from "@/lib/signupIntent";
 
 function OnboardingFlow() {
   const router = useRouter();
@@ -34,10 +35,13 @@ function OnboardingFlow() {
   // completed by useOnboardingGate and never reach here — so there is no
   // personal path, no auto-complete, and no chooser.
   //
-  // Team intent arrives as ?intent=team (useOnboardingGate forwards it from
-  // the landing CTA / signup cookie). It stays in the URL across Clerk's
-  // org-creation soft nav via afterCreateOrganizationUrl="/onboarding?intent=team",
-  // so `mode` is derived straight from the URL — no sticky state needed.
+  // Team intent arrives as ?intent=team, either directly from a completed
+  // /sign-up (SignUpWithIntent resolves the redirect target itself so team
+  // signups land here without ever mounting /chat) or forwarded by
+  // useOnboardingGate for the in-app "Create a team" flow. It stays in the
+  // URL across Clerk's org-creation soft nav via
+  // afterCreateOrganizationUrl="/onboarding?intent=team", so `mode` is
+  // derived straight from the URL — no sticky state needed.
   //
   // Tenancy invariant: pending invitations force the invitations screen — a
   // user can't hold personal tenancy AND a pending org invite at once.
@@ -53,6 +57,19 @@ function OnboardingFlow() {
   // lint rule): record that the org-creation flow opened.
   useEffect(() => {
     if (mode === "org") capture("workspace_type_selected", { type: "org" });
+  }, [mode]);
+
+  // Team intent has now been consumed for routing (this page is rendering
+  // the org-creation UI off of it). Clear the cookie so a later personal
+  // signup in the same browser doesn't get mis-tagged as a team by the
+  // cookie's 30-minute TTL. This is the SignUpWithIntent entry path's
+  // clearing point — team signups redirect here directly and never mount
+  // /chat, so useOnboardingGate's own clear (for the in-app "Create a team"
+  // flow, which still goes through /chat) never runs for them. Clearing an
+  // already-absent cookie is a harmless no-op, so this is safe to also fire
+  // when useOnboardingGate got there first.
+  useEffect(() => {
+    if (mode === "org") clearSignupIntentCookie();
   }, [mode]);
 
   // Merge-preserving completion: write onboarded=true WITHOUT clobbering

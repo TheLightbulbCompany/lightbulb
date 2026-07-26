@@ -6,8 +6,20 @@
  * multi-step signup flow (email verification, SSO callback — each a distinct
  * sub-route that does NOT carry the original query) is unreliable. So the CTA
  * writes a short-lived cookie that survives every sub-route and the final
- * redirect; useOnboardingGate consumes it once on /chat and forwards
- * `?intent=team` to /onboarding, then clears it.
+ * redirect.
+ *
+ * Two consumers, one cookie:
+ *   - SignUpWithIntent (components/SignUpWithIntent.tsx) reads it on /sign-up
+ *     to pick Clerk's post-signup redirect target, so a team signup lands on
+ *     /onboarding?intent=team directly and never mounts /chat (which would
+ *     otherwise provision a throwaway personal container via the
+ *     GET /container/status poll before the team intent was ever noticed).
+ *     /onboarding clears the cookie once it renders the org-creation UI off
+ *     of it.
+ *   - useOnboardingGate consumes it on /chat for the in-app "Create a team"
+ *     flow (an existing user who wasn't on a fresh /sign-up), forwards
+ *     `?intent=team` to /onboarding, and clears it there.
+ * Clearing is idempotent, so whichever consumer gets there first is fine.
  */
 export const SIGNUP_INTENT_COOKIE = "isol8_signup_intent";
 
@@ -33,4 +45,22 @@ export function writeSignupIntentCookie(value: string): void {
 /** Clear the signup-intent cookie once it has been consumed. */
 export function clearSignupIntentCookie(): void {
   document.cookie = `${SIGNUP_INTENT_COOKIE}=; path=/; max-age=0; samesite=lax`;
+}
+
+/**
+ * Where a completed /sign-up should land, given the current query string and
+ * cookie jar. Team intent (query param OR cookie — the cookie is the durable
+ * signal because Clerk's multi-step signup drops the query on sub-routes like
+ * /sign-up/verify-email-address) sends the user straight to org creation so
+ * /chat — and the personal-container provisioning poll it mounts — is never
+ * reached for a team signup. Pure so it's testable without jsdom/window.
+ */
+export function resolveSignUpRedirectTarget(
+  search: string,
+  cookieString: string,
+): string {
+  const params = new URLSearchParams(search);
+  const hasTeamIntent =
+    params.get("intent") === "team" || readSignupIntentCookie(cookieString) === "team";
+  return hasTeamIntent ? "/onboarding?intent=team" : "/chat";
 }

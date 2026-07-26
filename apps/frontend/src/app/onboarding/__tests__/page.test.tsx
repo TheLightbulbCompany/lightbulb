@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { SIGNUP_INTENT_COOKIE } from "@/lib/signupIntent";
 
 const pushMock = vi.fn();
 const replaceMock = vi.fn();
@@ -50,6 +51,8 @@ describe("OnboardingPage", () => {
     searchString = "";
     pushMock.mockClear();
     replaceMock.mockClear();
+    // jsdom persists document.cookie across tests in a file.
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
   });
 
   it("forces invitation mode when pending invitations exist — no Skip button", async () => {
@@ -82,6 +85,25 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("CreateOrganization mock")).toBeInTheDocument();
     // Team creation stays on this page; no bounce to /chat.
     expect(replaceMock).not.toHaveBeenCalledWith("/chat");
+  });
+
+  it("clears the team-signup-intent cookie once mode resolves to 'org'", async () => {
+    // Consumption lives here now, not in useOnboardingGate (see that hook's
+    // test for why: clearing it before the /chat -> /onboarding navigation
+    // has actually landed re-arms useProvisioningState's poll suppression
+    // while /chat is still mounted). By the time this page renders the
+    // org-creation UI, /chat is no longer mounted, so clearing here is safe
+    // — and it's the one place both entry paths (the redirect, and a direct
+    // ?intent=team landing) converge.
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+    searchString = "intent=team";
+    vi.doMock("@clerk/nextjs", () => buildClerkMocks());
+    const { default: Page } = await import("../page");
+    render(<Page />);
+    expect(screen.getByText("CreateOrganization mock")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.cookie).not.toContain(SIGNUP_INTENT_COOKIE),
+    );
   });
 
   it("redirects a stray visitor (no team intent, no invitation) to /chat", async () => {

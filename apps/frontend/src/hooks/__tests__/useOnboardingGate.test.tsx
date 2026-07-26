@@ -208,4 +208,59 @@ describe("useOnboardingGate", () => {
     // Not treated as a personal completion.
     expect(userUpdateMock).not.toHaveBeenCalled();
   });
+
+  it("routes on the intent COOKIE alone", async () => {
+    // The cookie — not the query — is the signal that survives Clerk's
+    // multi-step signup, so this is the path a real team signup takes.
+    document.cookie = "isol8_signup_intent=team; path=/";
+    searchString = "";
+    setClerk({
+      user: { unsafeMetadata: {} },
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() =>
+      expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
+    );
+  });
+
+  it("does NOT clear the intent cookie itself — the redirect landing on /chat while the cookie clears would re-arm useProvisioningState's poll suppression", async () => {
+    // The cookie is what `useProvisioningState` suppresses its provisioning
+    // poll on (`!orgId && hasTeamSignupIntentCookie()`), and App Router keeps
+    // /chat committed until the /onboarding RSC payload lands. Clearing the
+    // cookie here — before that navigation has actually landed — would
+    // re-arm the poll on the still-mounted /chat and provision the very
+    // throwaway personal container this whole mechanism exists to prevent.
+    // Consumption moved to /onboarding (see app/onboarding/page.tsx), which
+    // clears it once `mode === "org"` — i.e. once the browser has actually
+    // stopped rendering /chat. This test pins that this hook stays a
+    // non-consumer so that regression can't creep back in silently.
+    document.cookie = "isol8_signup_intent=team; path=/";
+    searchString = "";
+    setClerk({
+      user: { unsafeMetadata: {} },
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() =>
+      expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
+    );
+    expect(document.cookie).toContain("isol8_signup_intent=team");
+  });
+
+  it("does not treat an undecodable intent cookie as team intent", async () => {
+    // Fail-open: `decodeURIComponent("%")` throws, and this read happens
+    // during render. The predicate swallows it, so the gate falls back to its
+    // pre-cookie behaviour (personal) instead of crashing the chat shell.
+    document.cookie = "isol8_signup_intent=%; path=/";
+    searchString = "";
+    setClerk({ user: { unsafeMetadata: {} }, memberships: [], invitations: [] });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("ready");
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
 });

@@ -5,6 +5,7 @@ import { useOnboardingStatus, type StatusContract } from "@isol8/shared";
 
 import { recordRequestId } from "@/lib/requestIdLog";
 import { isPresent } from "@/lib/presence";
+import { hasTeamSignupIntentCookie } from "@/lib/signupIntent";
 import { webVisibilityAdapter } from "@/lib/visibility";
 
 // Deliberately NOT `import { BACKEND_URL } from "@/lib/api"`: this hook is
@@ -104,11 +105,55 @@ export function useProvisioningState(
   options: ProvisioningStateOptions = {},
 ): ProvisioningStateResult {
   const { enabled = true } = options;
-  const { isSignedIn, getToken } = useAuth();
+  const { isSignedIn, orgId, getToken } = useAuth();
+
+  // Team-signup suppression. `GET /container/status` is not a read — it
+  // dispatches `ensure_user_ready`, so the poll IS the provisioning trigger.
+  // A team signup that lands on /chat therefore provisions a throwaway
+  // PERSONAL container + trial_local billing row + Paperclip company from the
+  // renders before `useOnboardingGate`'s redirect to /onboarding lands, and
+  // the user ends up with two workspaces (prod: personal container 20:45:27Z,
+  // org 21:03Z). Both shells call this hook transitively ABOVE their
+  // `onboardingPhase !== "ready"` early return, and React runs every hook
+  // before any early return, so gating the SHELLS cannot fix it — the poll
+  // has to refuse to fire.
+  //
+  // Suppressing here rather than at the entry URL is what makes this whole
+  // and not a game of whack-a-mole: it does not matter which URL Clerk picks
+  // (`fallbackRedirectUrl` loses to a `redirect_url` param, an SSO transfer
+  // uses `signInFallbackRedirectUrl`, the /sign-in widget has its own
+  // `signUpFallbackRedirectUrl`) — every one of them lands somewhere that
+  // cannot provision until the intent is resolved. It also keeps
+  // `useOnboardingGate` the SOLE producer of `/onboarding?intent=team`, so
+  // that page keeps the membership/invitation preconditions it has no guards
+  // of its own for.
+  //
+  // Pending = cookie set AND no org on the session yet. The org half is what
+  // guarantees the poll always comes back: an org owner is never left with a
+  // dead poll even if the cookie outlives org creation (30-min TTL, or
+  // /onboarding's `clearSignupIntentCookie` never ran because `mode`
+  // resolved to "invitations" instead of "org").
+  //
+  // `orgId` comes from `useAuth`, the same hook this file already calls for
+  // `isSignedIn`/`getToken` — not from a second `useOrganization()` call.
+  // That's simplicity, not a freshness guarantee: in the installed Clerk
+  // (@clerk/nextjs 6.39 -> clerk-react 5.61 -> shared 3.47), `deriveState`
+  // computes `orgId` as `state.organization ? state.organization.id :
+  // state.organization` — the SAME client-side object `useOrganization()`
+  // returns, not something read off a refreshed JWT. `sessionClaims` would be
+  // the token-derived value, and this hook doesn't use it.
+  //
+  // Cookie-only (no `?intent=team`): every entry point that sets the query
+  // also writes the cookie (the landing CTA's onClick, and `SignupIntentCookie`
+  // for a direct/bookmarked /sign-up?intent=team), and the cookie is the
+  // signal that survives Clerk's multi-step sub-routes — which is the whole
+  // reason it exists. Reading `useSearchParams` here would additionally force
+  // a CSR-bailout Suspense boundary on every consumer of this hook.
+  const teamIntentPending = !orgId && hasTeamSignupIntentCookie();
 
   const { classified, networkError, isLoading, refresh } = useOnboardingStatus({
     api: { apiUrl: BACKEND_URL, getToken, onRequestId: recordRequestId },
-    enabled: !!isSignedIn && enabled,
+    enabled: !!isSignedIn && enabled && !teamIntentPending,
     // Wake marker, computed at FETCH time (not baked into the SWR key —
     // key stability keeps dedupe/mutate semantics intact). wake=1 only
     // while a human is plausibly present (visible + input < 120s); wake=0

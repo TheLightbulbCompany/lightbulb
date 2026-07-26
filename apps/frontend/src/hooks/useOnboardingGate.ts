@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, useOrganization, useOrganizationList, useUser } from "@clerk/nextjs";
-import { clearSignupIntentCookie, readSignupIntentCookie } from "@/lib/signupIntent";
+import { hasTeamSignupIntentCookie } from "@/lib/signupIntent";
 
 /**
  * Phase of the chat-shell onboarding/context gate.
@@ -69,9 +69,7 @@ export function useOnboardingGate(): OnboardingGatePhase {
   // query). Only team signups are routed to /onboarding; personal signups are
   // completed here and dropped straight into /chat.
   const teamIntent =
-    searchParams.get("intent") === "team" ||
-    (typeof document !== "undefined" &&
-      readSignupIntentCookie(document.cookie) === "team");
+    searchParams.get("intent") === "team" || hasTeamSignupIntentCookie();
   const personalDoneRef = useRef(false);
 
   // The three "not ready" conditions. They're mutually exclusive by
@@ -116,16 +114,27 @@ export function useOnboardingGate(): OnboardingGatePhase {
   //   • pending invitation → the accept surface
   //   • team creation      → Clerk's <CreateOrganization> + invite step
   // Personal signups are NOT redirected; they're completed inline below and
-  // fall through to "ready" (straight into /chat). The team cookie is consumed
-  // and cleared here so a later personal signup in the same browser isn't
-  // mis-tagged as a team.
+  // fall through to "ready" (straight into /chat).
+  //
+  // Deliberately does NOT clear the team-signup-intent cookie. This effect
+  // only starts the navigation — `router.replace` doesn't unmount /chat
+  // synchronously, App Router keeps it committed until the /onboarding RSC
+  // payload lands (100-500ms). `teamIntentPending` in `useProvisioningState`
+  // is recomputed from the cookie on every render with no latch, so clearing
+  // it HERE re-arms that hook's poll suppression while /chat is still
+  // mounted — any re-render in that window (WS connect, agents.list
+  // resolving, a Clerk store update) fires `/container/status` and
+  // provisions the throwaway personal container this cookie exists to
+  // prevent. The cookie is cleared where it is actually CONSUMED instead:
+  // on /onboarding once it has taken over rendering the team-creation UI
+  // (`mode === "org"` in app/onboarding/page.tsx) — the one place both entry
+  // paths (this redirect, and a direct `?intent=team` landing) converge.
   useEffect(() => {
     if (needsInvitationFlow) {
       router.replace("/onboarding");
       return;
     }
     if (needsTeamCreation) {
-      clearSignupIntentCookie();
       router.replace("/onboarding?intent=team");
     }
   }, [needsTeamCreation, needsInvitationFlow, router]);

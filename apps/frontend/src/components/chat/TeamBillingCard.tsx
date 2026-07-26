@@ -5,6 +5,11 @@ import { useCallback, useState } from "react";
 export interface TeamBillingCardProps {
   seatCount: number | null;
   seatPriceUsd: number | null;
+  /**
+   * Flat monthly base charged alongside the per-seat item. null/undefined
+   * falls back to seats-only pricing (pre-base-price backend rows).
+   */
+  basePriceUsd?: number | null;
   ownerRole: "admin" | "member";
   /**
    * Mirrors the provision gate's `blocked.action.admin_only`. Combined with
@@ -39,6 +44,7 @@ export interface TeamBillingCardProps {
 export function TeamBillingCard({
   seatCount,
   seatPriceUsd,
+  basePriceUsd,
   ownerRole,
   adminOnly = true,
   isSubscribed = false,
@@ -56,7 +62,9 @@ export function TeamBillingCard({
   // real number.
   const seatsKnown = seatCount != null;
   const seats = seatCount ?? 0;
-  const total = seats * price;
+  // "No free members": seats counts joined members AND pending invitations.
+  const base = basePriceUsd ?? 0;
+  const total = base + seats * price;
 
   const run = useCallback(
     async (fn?: () => Promise<void>) => {
@@ -79,12 +87,13 @@ export function TeamBillingCard({
       style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}
       className="w-full max-w-[440px] rounded-2xl border border-[#e0dbd0] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
     >
-      <div className="text-base font-semibold leading-[1.4] text-[#1c1917]">Teams billing</div>
-      <p className="mt-1 text-[13px] leading-[1.5] text-[#6b655e]">
+      <div className="text-base font-semibold leading-[1.4] text-[var(--ink)]">Teams billing</div>
+      <p className="mt-1 text-[13px] leading-[1.5] text-[var(--mute)]">
         {seatsKnown ? (
           <>
-            {seats} {seats === 1 ? "seat" : "seats"} × ${price} = <strong className="font-semibold text-[#1c1917]">${total}/mo</strong>. Every member of your
-            organization is a seat.
+            ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
+            <strong className="font-semibold text-[var(--ink)]">${total}/mo</strong>. Everyone
+            you invite is a seat, from the moment you invite them.
           </>
         ) : (
           "Loading team size…"
@@ -94,7 +103,7 @@ export function TeamBillingCard({
       {error && (
         <div
           role="alert"
-          className="mt-3 rounded-[10px] border border-[rgba(182,48,37,0.2)] bg-[rgba(182,48,37,0.05)] px-3.5 py-2.5 text-[13px] leading-[1.5] text-[#b63025]"
+          className="mt-3 rounded-[10px] border border-[rgba(182,48,37,0.2)] bg-[rgba(182,48,37,0.05)] px-3.5 py-2.5 text-[13px] leading-[1.5] text-[var(--danger)]"
         >
           {error}
         </div>
@@ -102,7 +111,7 @@ export function TeamBillingCard({
 
       <div className="mt-4">
         {!canAct ? (
-          <p className="rounded-[10px] border border-[#e0dbd0] bg-[#faf7f2] px-3.5 py-3 text-[13px] leading-[1.5] text-[#6b655e]">
+          <p className="rounded-[10px] border border-[#e0dbd0] bg-[#faf7f2] px-3.5 py-3 text-[13px] leading-[1.5] text-[var(--mute)]">
             Ask your org admin to set up Teams billing. Only an organization admin can start the team
             subscription.
           </p>

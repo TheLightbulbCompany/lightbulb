@@ -1046,6 +1046,7 @@ export function ProvisioningStepper({
           <TeamBillingCard
             seatCount={account?.seat_count ?? null}
             seatPriceUsd={account?.team_seat_price_usd ?? null}
+            basePriceUsd={account?.team_base_price_usd ?? null}
             ownerRole={blocked.owner_role}
             adminOnly={blocked.action.admin_only}
             isSubscribed={false}

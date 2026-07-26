@@ -4,10 +4,26 @@ import { TeamBillingCard } from "../TeamBillingCard";
 
 describe("TeamBillingCard", () => {
   it("renders N seats × $price = total for an admin", () => {
-    render(<TeamBillingCard seatCount={4} seatPriceUsd={20} ownerRole="admin" />);
+    render(<TeamBillingCard seatCount={4} seatPriceUsd={20} basePriceUsd={50} ownerRole="admin" />);
     expect(screen.getByText(/4 seats/i)).toBeInTheDocument();
     expect(screen.getByText(/\$20/)).toBeInTheDocument();
-    expect(screen.getByText(/\$80/)).toBeInTheDocument();
+    expect(screen.getByText(/\$130/)).toBeInTheDocument();
+  });
+
+  it("prices base plus seats, not seats alone", () => {
+    render(<TeamBillingCard seatCount={1} seatPriceUsd={20} basePriceUsd={50} ownerRole="admin" />);
+    expect(screen.getByText(/\$70\/mo/)).toBeInTheDocument();
+  });
+
+  it("counts an invited-but-unjoined person as a billable seat", () => {
+    // seatCount already includes pending invitations — 1 admin + 3 invites.
+    render(<TeamBillingCard seatCount={4} seatPriceUsd={20} basePriceUsd={50} ownerRole="admin" />);
+    expect(screen.getByText(/\$130\/mo/)).toBeInTheDocument();
+  });
+
+  it("falls back to seats-only when the base price is absent", () => {
+    render(<TeamBillingCard seatCount={2} seatPriceUsd={20} basePriceUsd={null} ownerRole="admin" />);
+    expect(screen.getByText(/\$40\/mo/)).toBeInTheDocument();
   });
 
   it("calls onSubscribe when an unsubscribed admin clicks subscribe", () => {

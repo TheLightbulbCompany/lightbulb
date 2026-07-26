@@ -311,6 +311,7 @@ function BillingPanel() {
         <TeamBillingCard
           seatCount={account?.seat_count ?? null}
           seatPriceUsd={account?.team_seat_price_usd ?? null}
+          basePriceUsd={account?.team_base_price_usd ?? null}
           ownerRole={orgRole}
           isSubscribed={isSubscribed}
           onSubscribe={startTeamCheckout}

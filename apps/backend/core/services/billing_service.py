@@ -416,7 +416,12 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         return int(account.get("seat_count") or 0)
 
     current = int(account.get("seat_count") or 0)
-    member_count = await clerk_admin.get_organization_seat_count(owner_id)
+    # strict=True: an unreadable pending-invitations count must return 0 here
+    # (not the members-only floor) so the guard below no-ops instead of
+    # writing an absolute Stripe quantity that undershoots the real seat
+    # count — that would look like a real downgrade (proration credit) and
+    # then get charged back on the very next successful sync.
+    member_count = await clerk_admin.get_organization_seat_count(owner_id, strict=True)
     if member_count <= 0 or member_count == current:
         # 0 = Clerk read failed/stubbed; don't zero a real subscription.
         return current

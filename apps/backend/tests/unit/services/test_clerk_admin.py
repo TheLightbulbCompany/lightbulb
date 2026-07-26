@@ -184,3 +184,119 @@ async def test_member_count_stubs_to_zero_without_secret_key(monkeypatch):
 
     monkeypatch.setattr(clerk_admin, "get_organization", AsyncMock(return_value=None))
     assert await clerk_admin.get_organization_member_count("org_1") == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_stubs_to_zero_without_secret_key(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
+    from core.services import clerk_admin
+
+    assert await clerk_admin._pending_invitation_count("org_1") == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_sends_status_pending_filter(monkeypatch):
+    """Nothing else proves the status=pending filter is actually sent —
+    without it, revoked/expired invitations would inflate the seat count."""
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    response = _make_response(200, json_body={"data": [{"id": "orginv_1"}], "total_count": 1})
+    captured_params = {}
+
+    @asynccontextmanager
+    async def _capturing_client(response_to_return):
+        client = MagicMock()
+
+        async def _get(url, headers=None, params=None):
+            captured_params.update(params or {})
+            return response_to_return
+
+        client.get = _get
+        yield client
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _capturing_client(response),
+    ):
+        result = await clerk_admin._pending_invitation_count("org_1")
+
+    assert result == 1
+    assert captured_params.get("status") == "pending"
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_counts_data_length_not_total_count(monkeypatch):
+    """Reads len(data), NOT the envelope's total_count — nothing establishes
+    that Clerk's total_count actually respects the status filter, so trusting
+    it could silently count accepted invitations too."""
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    # total_count deliberately lies (claims 99) to prove it's ignored.
+    response = _make_response(200, json_body={"data": [{"id": "orginv_1"}, {"id": "orginv_2"}], "total_count": 99})
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        assert await clerk_admin._pending_invitation_count("org_1") == 2
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_returns_none_on_4xx(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    response = _make_response(429, json_body={})
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        assert await clerk_admin._pending_invitation_count("org_1") is None
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_returns_none_on_network_error(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(httpx.TimeoutException("slow")),
+    ):
+        assert await clerk_admin._pending_invitation_count("org_1") is None
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_returns_none_on_malformed_json(monkeypatch):
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    response = MagicMock(spec=httpx.Response)
+    response.status_code = 200
+    response.json = MagicMock(side_effect=ValueError("bad json"))
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        assert await clerk_admin._pending_invitation_count("org_1") is None
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_count_warns_when_page_is_full(monkeypatch, caplog):
+    """A full 100-item page means the true count may be truncated — must be
+    visible (a warning), not a silent under-count."""
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", "sk_test_xyz")
+    from core.services import clerk_admin
+
+    data = [{"id": f"orginv_{i}"} for i in range(100)]
+    response = _make_response(200, json_body={"data": data, "total_count": 100})
+    with patch(
+        "core.services.clerk_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        with caplog.at_level("WARNING"):
+            result = await clerk_admin._pending_invitation_count("org_1")
+
+    assert result == 100
+    assert any("truncated" in record.message for record in caplog.records)

@@ -23,11 +23,34 @@ async def test_account_includes_seats_for_org_owner(monkeypatch):
     monkeypatch.setattr(
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=5))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=5))
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     assert resp.seat_count == 5
     assert resp.team_seat_price_usd == 20
+
+
+@pytest.mark.asyncio
+async def test_account_seat_count_includes_pending_invitations(monkeypatch):
+    """No free members: the display count must reflect members + pending
+    invitations, not members alone — symmetric with the checkout-quantity
+    coverage in test_billing_team_checkout.py."""
+    monkeypatch.setattr(billing.settings, "TEAM_SEAT_PRICE_USD", 20)
+    monkeypatch.setattr(
+        billing,
+        "_get_billing_account",
+        AsyncMock(return_value={"owner_id": "org_1", "subscription_status": "active", "seat_count": 4}),
+    )
+    monkeypatch.setattr(
+        billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
+    )
+    # 1 admin + 3 pending invites, as get_organization_seat_count would
+    # report it — the router must surface this total verbatim, not re-derive
+    # it from a raw member count.
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=4))
+
+    resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
+    assert resp.seat_count == 4
 
 
 @pytest.mark.asyncio
@@ -64,7 +87,7 @@ async def test_account_is_seat_subscription_true_when_item_id_present(monkeypatc
     monkeypatch.setattr(
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=3))
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     assert resp.is_seat_subscription is True
@@ -89,7 +112,7 @@ async def test_account_is_seat_subscription_false_for_flat_comped_org(monkeypatc
     monkeypatch.setattr(
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=3))
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     assert resp.is_seat_subscription is False

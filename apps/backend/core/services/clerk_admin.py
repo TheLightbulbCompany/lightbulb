@@ -265,17 +265,28 @@ async def _pending_invitation_count(org_id: str) -> int | None:
     read failed and the caller must not treat the absence as a reduction.
     Filtering on status=pending is what makes revoked and expired invitations
     fall out of the seat count on their own.
+
+    Deliberately mirrors list_pending_invitations_for_user (the codebase's
+    only other *filtered* Clerk list read) rather than
+    get_organization_member_count's total_count shortcut: nothing establishes
+    that Clerk's total_count respects a status filter, and if it silently
+    reports the all-statuses total, every accepted invitation would become a
+    phantom seat. So this reads len(data) off a status=pending page instead.
+    limit=100 is the same cap already accepted for Gate B's per-user
+    equivalent; a truncated page logs a warning rather than silently
+    under-counting a very large org.
     """
     if not settings.CLERK_SECRET_KEY:
         return 0
 
     headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    params = {"status": "pending", "limit": 100}
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
             response = await client.get(
                 f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
                 headers=headers,
-                params={"status": "pending", "limit": 1},
+                params=params,
             )
     except Exception as e:  # noqa: BLE001
         logger.warning("clerk_admin._pending_invitation_count network error: %s", e)
@@ -289,11 +300,21 @@ async def _pending_invitation_count(org_id: str) -> int | None:
         payload = response.json()
     except ValueError:
         return None
-    total = payload.get("total_count") if isinstance(payload, dict) else None
-    return total if isinstance(total, int) else None
+
+    data = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(data, list):
+        return None
+
+    count = len(data)
+    if count >= 100:
+        logger.warning(
+            "clerk_admin._pending_invitation_count org=%s hit the 100-item page cap; pending count may be truncated",
+            org_id,
+        )
+    return count
 
 
-async def get_organization_seat_count(org_id: str) -> int:
+async def get_organization_seat_count(org_id: str, *, strict: bool = False) -> int:
     """Billable seats for an org: accepted members PLUS pending invitations.
 
     The platform principle is "no free members" — an invitation is billed from
@@ -302,14 +323,29 @@ async def get_organization_seat_count(org_id: str) -> int:
     only on invite, revoke, expire, and remove.
 
     Returns 0 when the member read fails, preserving sync_team_seat_quantity's
-    treat-0-as-a-no-op posture during a Clerk outage. When only the invitations
-    read fails, returns the member count alone rather than under-billing.
+    treat-0-as-a-no-op posture during a Clerk outage.
+
+    When only the invitations read fails (returns None), the two caller
+    postures diverge:
+      - strict=True returns 0, so sync_team_seat_quantity's no-op guard
+        leaves the Stripe quantity untouched instead of writing a members-only
+        absolute quantity that would look like a real downgrade (with a
+        proration CREDIT) followed by a correcting charge-back on the next
+        successful sync. An uncertain read must never move billing.
+      - strict=False (the default, for read-only display / checkout-quantity
+        callers) returns the member count alone. That is a floor, not the
+        true count, but for those callers it's the safer of the two directions:
+        an under-count self-corrects upward on the next successful sync,
+        while returning 0 would either hide a real seat_count on the account
+        page or 503 checkout outright on a transient Clerk blip.
     """
     members = await get_organization_member_count(org_id)
     if members <= 0:
         return 0
     pending = await _pending_invitation_count(org_id)
-    return members + (pending or 0)
+    if pending is None:
+        return 0 if strict else members
+    return members + pending
 
 
 async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:

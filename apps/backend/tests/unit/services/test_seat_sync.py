@@ -130,11 +130,29 @@ async def test_seat_count_unchanged_when_an_invite_is_accepted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_seat_count_falls_back_to_members_when_invites_unreadable(monkeypatch):
-    """An invitations-read failure must never under-bill into a downgrade."""
+    """Default (strict=False, used by /billing/account + checkout): an
+    invitations-read failure floors to the member count rather than
+    returning 0 — a members-only floor self-corrects upward on the next
+    successful sync, whereas 0 would hide seat_count or 503 checkout on a
+    transient Clerk blip."""
     monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
     monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=None))
 
     assert await clerk_admin.get_organization_seat_count("org_1") == 3
+
+
+@pytest.mark.asyncio
+async def test_seat_count_strict_returns_zero_when_invites_unreadable(monkeypatch):
+    """strict=True (sync_team_seat_quantity's caller): an invitations-read
+    failure must return 0, NOT the members-only floor — sync_team_seat_quantity
+    treats 0 as a no-op, so an uncertain read leaves the Stripe quantity
+    untouched instead of writing an absolute members-only quantity that would
+    look like a real downgrade (proration credit) and get charged back on the
+    next successful sync."""
+    monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=None))
+
+    assert await clerk_admin.get_organization_seat_count("org_1", strict=True) == 0
 
 
 @pytest.mark.asyncio
@@ -144,3 +162,39 @@ async def test_seat_count_zero_when_member_read_fails(monkeypatch):
     monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=5))
 
     assert await clerk_admin.get_organization_seat_count("org_1") == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_does_not_downgrade_stripe_when_invites_unreadable(monkeypatch):
+    """End-to-end regression for the strict-mode fix: 3 members + a stored
+    seat_count=5 (from an earlier successful sync that saw 2 pending
+    invites). The invitations read fails mid-sync (e.g. a 429 during a burst
+    of container/status polls after a bulk invite). Must NOT write
+    quantity=3 to Stripe — that would be a real downgrade (proration credit)
+    immediately reversed by the next successful sync. Must no-op and
+    preserve the stored 5."""
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "org_1",
+                "subscription_status": "active",
+                "stripe_subscription_id": "sub_1",
+                "subscription_item_id": "si_1",
+                "seat_count": 5,
+            }
+        ),
+    )
+    monkeypatch.setattr("core.services.provision_gate.is_subscription_active", lambda a: True)
+    monkeypatch.setattr("core.services.clerk_admin.get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr("core.services.clerk_admin._pending_invitation_count", AsyncMock(return_value=None))
+    set_team = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "set_team_subscription", set_team)
+
+    with patch.object(billing_service.stripe, "SubscriptionItem") as item:
+        result = await billing_service.sync_team_seat_quantity("org_1")
+
+    assert result == 5
+    item.modify.assert_not_called()
+    set_team.assert_not_awaited()

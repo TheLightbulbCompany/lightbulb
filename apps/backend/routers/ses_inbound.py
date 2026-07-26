@@ -20,17 +20,23 @@ endpoint entirely (fail-closed).
 DETERMINISTIC drop (disabled, unknown recipient, unverified sender, over cap,
 spam/virus, failed authentication, auto-submitted, duplicate) is terminal —
 retrying would produce the identical drop again — so those stay 200, as does
-a successful ``delivered``. ``container_not_running`` also stays 200: a
-scaled-to-zero free-tier box is intentionally silent on inbound mail — we do
-not wake it or hammer it with retries just because mail arrived.
+a successful ``delivered``. ``container_not_running`` also stays 200: it now
+only means the owner is OVER CAP (the cap gate below already normally
+intercepts that case before ``deliver_to_agent`` is even called; this is
+belt-and-suspenders for the same predicate) — waking a capped owner is
+exactly what the cap forbids, and hammering retries at it would not change
+that.
 
 TRANSIENT failures return 503 so SES/the Lambda's own (bounded) retry policy
 gets a chance to succeed later: a ``deliver_to_agent`` outcome of ``"error"``
-(e.g. a delivery error talking to a running container), and the top-level
-catch-all for an unexpected exception (e.g. a DynamoDB blip). Dedup is keyed
-on ``message_id`` and recorded BEFORE delivery is attempted, so a retry that
-later succeeds cannot double-deliver — the second attempt short-circuits at
-the ``duplicate`` check.
+(e.g. a delivery error talking to a running container) or ``"woken"`` (an
+under-cap owner's scaled-to-zero container was just started — the 503 is
+what makes the Lambda re-raise so SES's own async retry, ~1 minute later,
+lands after the Fargate cold start finishes and delivery actually happens),
+and the top-level catch-all for an unexpected exception (e.g. a DynamoDB
+blip). Dedup is keyed on ``message_id`` and recorded BEFORE delivery is
+attempted, so a retry that later succeeds cannot double-deliver — the second
+attempt short-circuits at the ``duplicate`` check.
 
 A bad/missing shared secret is 401 — not retried; there is no fixing a
 forged credential by resending the same request.
@@ -237,11 +243,18 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             message=message,
             idempotency_key=body.message_id,
         )
+        if result == "woken":
+            # deliver_to_agent just started an asleep, under-cap owner's
+            # container -- signal transient so the ingest Lambda re-raises and
+            # its async SES invocation is retried once the container is up.
+            # See the module docstring: delivery completes on that retry, not
+            # in this request.
+            return JSONResponse(status_code=503, content={"status": result})
         if result == "error":
             # Transient delivery failure (e.g. a running container's RPC
             # errored) — 503 so SES/the Lambda retries. `container_not_running`
-            # is intentionally excluded: that's silence-by-design for a
-            # scaled-to-zero box, not a failure to retry.
+            # is intentionally excluded: that now means OVER CAP, which a
+            # retry cannot fix.
             return JSONResponse(status_code=503, content={"status": result})
         return {"status": result}
     except Exception:  # noqa: BLE001 — see module docstring.

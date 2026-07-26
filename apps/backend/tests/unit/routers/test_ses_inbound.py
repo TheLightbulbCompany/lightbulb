@@ -14,9 +14,10 @@ SES-verdict gate (virus/spam explicit FAIL, DMARC-authoritative
 sender-auth FAIL, the SPF+DKIM fallback when DMARC is absent, and a
 missing/GRAY verdict set that must still deliver), the auto-submitted loop
 guard, the happy path, and the transient-vs-terminal outcome split: an
-unexpected exception or a "error" delivery result return 503 (retry), while
-"container_not_running" (scaled-to-zero, intentionally silent) and every
-deterministic drop stay 200.
+unexpected exception, a "error" delivery result, or a "woken" result (an
+asleep container was just cold-started -- 503 so SES's own retry lands after
+it finishes booting) return 503, while "container_not_running" (now: the
+owner was over cap) and every deterministic drop stay 200.
 
 Seams (``get_by_address``, ``trial_block_reason``, ``deliver_to_agent``,
 ``record_event_or_skip``, …) are imported BY NAME into
@@ -582,10 +583,9 @@ def test_deliver_error_returns_503_for_retry(client, monkeypatch):
 
 
 def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
-    """`deliver_to_agent` returning "container_not_running" means a
-    scaled-to-zero free-tier box — intentionally silent, so this stays 200
-    rather than retrying (we do not wake the container or hammer it with
-    SES retries just because mail arrived)."""
+    """`deliver_to_agent` returning "container_not_running" now means the
+    owner was over cap when it tried to wake -- retrying would hit the same
+    cap, so this stays 200 rather than retrying."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
@@ -596,3 +596,19 @@ def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "container_not_running"
+
+
+def test_deliver_woken_returns_503_so_ses_retries_after_cold_start(client, monkeypatch):
+    """`deliver_to_agent` returning "woken" means it just cold-started an
+    asleep, under-cap owner's container -- 503 so the ingest Lambda re-raises
+    and SES's own async retry lands after the Fargate cold start finishes."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="woken"))
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "woken"

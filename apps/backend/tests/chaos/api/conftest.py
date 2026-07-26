@@ -46,6 +46,14 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # table then snapshot + deploy into a live container; both absent hermetically.
     # Covered by tests/unit/routers/test_agent_builder.py.
     "POST /api/v1/agent-builder/u/{owner_id}/register-built-agent": "hook-token lookup + live container; containers table not provisioned hermetically",
+    # Marketplace hire recommendation: same hook-token lookup on the DDB
+    # containers table as agent-builder above, before anything else can run, so
+    # an unmocked GetItem raises ResourceNotFoundException -> 5xx. With a real
+    # table any owner_id simply misses and the handler 401s, so this is a
+    # harness artifact, not a production 5xx. Covered by
+    # tests/unit/routers/test_marketplace_recommend.py (resolver) +
+    # tests/unit/services/test_marketplace_hire.py (approval + install).
+    "GET /api/v1/marketplace/u/{owner_id}/recommend": "hook-token lookup; containers table not provisioned hermetically",
     # Agent-initiated owner email: same hook-token lookup on the DDB containers
     # table, before anything else can run, so an unmocked GetItem raises
     # ResourceNotFoundException → 5xx. Same class as hooks/u/... and

@@ -35,6 +35,16 @@ _RECIPIENTS_TTL_S = 5.0
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
+# Bound on the paid-owner `is_owner_blocked` read inside `_budget_error_code`.
+# That call is only a cheap fast-gate row read while the row is fresh; once it
+# goes stale (METRONOME_GATE_STALENESS_S, default 60s — true for any run over
+# a minute) it synchronously does a live Metronome round trip + a DDB write,
+# and possibly a second Metronome round trip + more writes. `_handle_message`
+# awaits `_budget_error_code` before forwarding the error frame and the
+# synthesized `run_ended` frame, and `_reader_loop` awaits `_handle_message`
+# serially — so without a bound here, a slow/degraded Metronome stalls
+# delivery of every subsequent event on this owner's gateway connection.
+_BUDGET_RECLASSIFY_TIMEOUT_S = 2.0  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 _PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
 _ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
@@ -169,6 +179,20 @@ def _deliver_to_recipients(
         sender.enqueue(conn_id, message, on_gone=on_gone)
         enqueued += 1
     return enqueued, skipped
+
+
+# The user-facing text for each way an owner can run out of Isol8 budget.
+# ONE copy, shared by gate_chat's pre-send refusal and the gateway's mid-run
+# reclassification: a turn refused before it starts and a turn refused halfway
+# through are the same event to the user and must never drift into two wordings.
+# The web card renders from `code` alone (see ChatErrorCard); these strings are
+# what non-web surfaces — Paperclip run rows, logs, the wake refusal frame — show.
+BUDGET_BLOCK_MESSAGES = {
+    "trial_expired": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+    "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    "out_of_credits": "You're out of Claude credits. Top up to continue.",
+    "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
+}
 
 
 class GatewayConnection:
@@ -870,6 +894,85 @@ class GatewayConnection:
             raise
         finally:
             self._pending_rpcs.pop(req_id, None)
+
+    async def _budget_error_code(self) -> tuple[str, str] | None:
+        """Is this owner's `rate_limit` actually an Isol8 budget refusal?
+
+        The bedrock-gate returns budget denials as `429 ThrottlingException`
+        so the container never learns it's behind a proxy. OpenClaw classifies
+        that as `errorKind: "rate_limit"` and — at two or more model attempts —
+        discards the gate's own message (`model-fallback.ts:741`). So by the
+        time the error reaches us the money reason is gone, and the only honest
+        way to recover it is to re-read the budget.
+
+        PROVIDER-AWARE BY CONSTRUCTION. Only owners whose inference Isol8 funds
+        (`trial_local`, or paid `bedrock_claude`) can be reclassified. A
+        ChatGPT-OAuth or BYO-key owner's 429 comes from THEIR provider on THEIR
+        account; relabelling it would route them to an Isol8 billing page to fix
+        someone else's quota. Same reasoning that made the wake-admission gate
+        reuse gate_chat rather than a trial-only predicate.
+
+        Returns `(code, message)` to substitute, or None to leave the upstream
+        error exactly as it arrived — which is also the answer for a genuine
+        Bedrock throttle against a funded owner.
+
+        NOT "one DDB read". On the paid `bedrock_claude` branch this calls
+        `metronome_gate.is_owner_blocked`, which is only a cheap fast-gate row
+        read while that row is fresh — but the row's staleness window
+        (`METRONOME_GATE_STALENESS_S`, default 60s) means any run longer than
+        a minute (the common case) hits the stale path instead: a live
+        Metronome `getNetBalance` over httpx (5s timeout), a `set_balance` DDB
+        write, and then either `_maybe_restore_bedrock` (container read + a
+        SECOND 5s `getNetBalance`) or `enforce_on_low_balance` (billing read +
+        IAM policy delete) — up to ~10-15s of synchronous work. `_handle_message`
+        awaits this before `_forward_to_frontends(error)` and the synthesized
+        `run_ended` frame, and `_reader_loop` awaits `_handle_message`
+        serially, so an unbounded call here stalls delivery of every
+        subsequent event on this owner's gateway connection (other agents'
+        streams included) behind it. Bounded below with `asyncio.wait_for` so
+        the worst case is the timeout, not the full Metronome round trip(s).
+
+        Never raises: this runs on the terminal error frame, and an exception
+        here would drop the frame and hang the run in the UI. The reader loop's
+        `except json.JSONDecodeError` around `_handle_message` catches nothing
+        broader — an import failure here would propagate to
+        `_on_reader_loop_exit` and tear down the owner's whole gateway
+        connection, not just this one frame. So the imports are INSIDE the
+        try too, not just the reads that follow them. The `asyncio.wait_for`
+        timeout raises `TimeoutError` (a plain `Exception` subclass), which
+        this same blanket `except Exception` below already swallows —
+        degrading to "forward the upstream error unchanged", the documented
+        fallback for any read failure on this path.
+        """
+        try:
+            from core.repositories import billing_repo
+            from core.services import trial_cap
+            from core.services.metronome_gate import is_owner_blocked
+
+            account = await billing_repo.get_by_owner_id(self.owner_id)
+            if not account:
+                return None
+
+            if account.get("subscription_status") == "trial_local":
+                reason = await trial_cap.reason_for_account(self.owner_id, account)
+                if reason in BUDGET_BLOCK_MESSAGES:
+                    return reason, BUDGET_BLOCK_MESSAGES[reason]
+                return None
+
+            if account.get("provider_choice") != "bedrock_claude":
+                return None
+
+            blocked = await asyncio.wait_for(is_owner_blocked(self.owner_id), timeout=_BUDGET_RECLASSIFY_TIMEOUT_S)
+            if blocked:
+                return "out_of_credits", BUDGET_BLOCK_MESSAGES["out_of_credits"]
+            return None
+        except Exception:
+            logger.warning(
+                "Budget reclassification read failed for owner %s — forwarding the upstream error unchanged",
+                self.owner_id,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def _transform_agent_event(payload: dict) -> dict | None:
@@ -1816,13 +1919,37 @@ class GatewayConnection:
                             err_msg = str(legacy_err)
                     if not err_msg:
                         err_msg = "Agent run failed"
+
+                    # A budget refusal reaches us disguised as a provider
+                    # throttle (see _budget_error_code). Recover the real reason
+                    # so the user gets a limit card with an upgrade path instead
+                    # of "wait for your quota to reset", which for a capped
+                    # free-tier owner is advice they cannot act on.
+                    upstream_msg: Optional[str] = None
+                    if err_kind == "rate_limit":
+                        money = await self._budget_error_code()
+                        if money is not None:
+                            upstream_msg = err_msg
+                            err_kind, err_msg = money
+
                     put_metric(
                         "chat.error",
-                        dimensions={"reason": err_kind or "agent_error"},
+                        dimensions={
+                            "reason": err_kind or "agent_error",
+                            # Makes mislabelling VISIBLE. If we ever start
+                            # reclassifying real AWS throttles, this spikes
+                            # instead of failing silently.
+                            "reclassified": "true" if upstream_msg else "false",
+                        },
                     )
                     fwd = {"type": "error", "message": err_msg}
                     if err_kind:
                         fwd["code"] = err_kind
+                    if upstream_msg:
+                        # Keep the true upstream cause on the wire for logs and
+                        # support. The card renders from `code`, so this never
+                        # reaches the user as copy.
+                        fwd["upstream_message"] = upstream_msg
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
@@ -2480,7 +2607,7 @@ class GatewayConnectionPool:
             return {
                 "blocked": True,
                 "code": "subscription_inactive",
-                "message": ("Your subscription is not active. Reactivate to continue chatting."),
+                "message": BUDGET_BLOCK_MESSAGES["subscription_inactive"],
             }
 
         # --- Layer 2: free-tier $3/day cost cap ----------------------
@@ -2508,7 +2635,7 @@ class GatewayConnectionPool:
                 return {
                     "blocked": True,
                     "code": "trial_expired",
-                    "message": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+                    "message": BUDGET_BLOCK_MESSAGES["trial_expired"],
                 }
             if reason == trial_cap.DAILY_CAP:
                 # Trial funnel telemetry: first block of the UTC day per
@@ -2519,7 +2646,7 @@ class GatewayConnectionPool:
                 return {
                     "blocked": True,
                     "code": "trial_daily_cap",
-                    "message": ("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
+                    "message": BUDGET_BLOCK_MESSAGES["trial_daily_cap"],
                 }
 
         # --- Layer 3: card-3 credit balance --------------------------
@@ -2535,7 +2662,7 @@ class GatewayConnectionPool:
             return {
                 "blocked": True,
                 "code": "out_of_credits",
-                "message": "You're out of Claude credits. Top up to continue.",
+                "message": BUDGET_BLOCK_MESSAGES["out_of_credits"],
             }
         return {"blocked": False}
 

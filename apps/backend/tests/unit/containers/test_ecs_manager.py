@@ -975,9 +975,16 @@ class TestStartUserServiceGuards:
     @pytest.mark.asyncio
     async def test_under_cap_trial_owner_starts(self, manager, mock_ecs_client, monkeypatch):
         """A trial owner UNDER the cap is a normal user: their container starts."""
-        from core.services.trial_cap import CAP_MICROCENTS
+        from core.services.trial_cap import CAP_MICROCENTS, RESERVE_ESTIMATE_MICROCENTS
 
-        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS - 1)
+        # Below CAP - RESERVE (the gate's actual admission threshold), not just
+        # below CAP -- `CAP_MICROCENTS - 1` now sits inside the gate's refusal
+        # band and would make this "under cap" fixture spuriously blocked.
+        self._billing(
+            monkeypatch,
+            subscription_status="trial_local",
+            spent_microcents=CAP_MICROCENTS - RESERVE_ESTIMATE_MICROCENTS - 1,
+        )
         self._container(monkeypatch, _make_container_dict(status="stopped"))
 
         with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):

@@ -18,7 +18,40 @@ export type CreditsBalance = {
    *  no checkout redirect). Granted only via a prior Checkout with the
    *  opt-in box ticked; false/absent routes purchases through Checkout. */
   auto_charge_enabled?: boolean;
+  /** Server-computed: is this balance unspendable at the bedrock-gate? The
+   *  gate admits only while remaining exceeds one reservation hold, so a small
+   *  positive balance still buys nothing. Computed backend-side so the reserve
+   *  constant has no TypeScript copy to drift from. Absent (not-yet-redeployed
+   *  backend) is treated as not exhausted. */
+  is_exhausted?: boolean;
 };
+
+/**
+ * Is this balance unspendable at the bedrock-gate? The single predicate
+ * shared by every surface that needs to gate on it (OutOfCreditsBanner,
+ * CreditsStep) so they can never drift apart on when to show the "out of
+ * credits" banner vs. when to skip the top-up step.
+ *
+ * `is_exhausted` is the source of truth once the backend carries the field —
+ * computed server-side against the gate's own admission threshold (remaining
+ * - reserved - estimate > 0), not `> 0`, since a small positive balance can
+ * still be refused at the gate. During the frontend-ahead-of-backend deploy
+ * window (Vercel auto-deploys on push; the backend's ECR/ECS rolling deploy
+ * lands minutes later), the field is absent — fall back to the legacy
+ * `balance_microcents <= 0` check so a genuinely zero-balance owner isn't
+ * left with no banner (or skipped past the top-up step) for that window. A
+ * null `balance_microcents` (Metronome unavailable / owner not provisioned
+ * there yet) is indeterminate under BOTH predicates and must never read as
+ * exhausted — never scare a user with a false banner, and never block a
+ * user who might already be funded from proceeding.
+ */
+export function isCreditsExhausted(balance: CreditsBalance | null | undefined): boolean {
+  if (!balance) return false;
+  return (
+    balance.is_exhausted ??
+    (balance.balance_microcents !== null && balance.balance_microcents <= 0)
+  );
+}
 
 export type TopUpResult = {
   /** "requested" — Metronome charges the saved card and releases the

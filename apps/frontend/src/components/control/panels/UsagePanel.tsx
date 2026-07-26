@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { Loader2, RefreshCw, AlertCircle } from "lucide-react";
@@ -9,6 +9,7 @@ import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
 import { useSpend } from "@/hooks/useSpend";
 import { Button } from "@/components/ui/button";
+import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 
 // =============================================================================
 // Helpers
@@ -32,6 +33,13 @@ export function UsagePanel() {
   const { account, isLoading: accountLoading, fetchUsage, refresh } = useBilling();
   const isOrgAdmin = useIsWorkspaceAdmin();
   const { spend } = useSpend();
+  // Captured once (not read directly in render — Date.now() is impure) so
+  // this is stable across re-renders. Docked next to WorkspaceSidebar's
+  // footer badge in the same dockable shell (WorkspaceShell.tsx), so it must
+  // agree on expired — a user with Usage open next to chat must not see
+  // "Free tier" here while the sidebar footer says "Free tier ended".
+  const [nowMs] = useState(() => Date.now());
+  const isTrialExpired = isFreeTierExpired(account?.subscription_status ?? null, account?.trial_end, nowMs);
 
   // SWR-cached rather than fetched into local state on mount: panels
   // unmount/remount on every shell navigation, and an uncached read here
@@ -85,10 +93,21 @@ export function UsagePanel() {
 
       {account && (
         <div className="flex items-center gap-3 text-xs text-[#8a8578]">
-          {account.subscription_status && (
+          {planLabel(account.subscription_status, { expired: isTrialExpired }) && (
             <span>
               Subscription:{" "}
-              <span className="font-medium text-[#1a1a1a] capitalize">{account.subscription_status}</span>
+              {/* `capitalize` would turn "Free tier" into "Free Tier" —
+                  drop it for trial_local, same technique settings/page.tsx
+                  uses for its billing chip. */}
+              <span
+                className={
+                  account.subscription_status === "trial_local"
+                    ? "font-medium text-[#1a1a1a]"
+                    : "font-medium text-[#1a1a1a] capitalize"
+                }
+              >
+                {planLabel(account.subscription_status, { expired: isTrialExpired })}
+              </span>
             </span>
           )}
           {usage?.period && (

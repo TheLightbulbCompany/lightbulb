@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import Link from "next/link";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
@@ -25,6 +25,19 @@ import { handleShellLinkClick } from "@/lib/shellNav";
  * cap) — surfaced by both the provision gate and gate_chat's Layer 2
  * (core/services/provision_gate.py, core/gateway/connection_pool.py).
  *
+ * `out_of_credits` and `subscription_inactive` are the paid-owner
+ * counterparts of the two trial codes above — gate_chat emits them when a
+ * paying customer's Bedrock credit balance or subscription state blocks the
+ * turn. Until this card grew branches for them they fell through to
+ * `default`, so a paying customer saw the same "Failed to generate" a crash
+ * would produce, with no top-up or reactivate path.
+ *
+ * All four of the codes above are "money codes" (see `MONEY_CODES`): the
+ * run died because of the owner's budget/subscription state, not a
+ * malfunction, so Retry is suppressed and the card renders from `code`
+ * alone — the server `message` is ignored so a pre-send gate_chat refusal
+ * and a mid-run reclassification render a pixel-identical card.
+ *
  * For unknown / unmapped codes we still show the upstream message
  * verbatim — that is strictly better than masking it with a generic
  * "encountered an error, please try again" string the way the old
@@ -42,8 +55,24 @@ export interface ChatErrorCardProps {
 interface ErrorPresentation {
   title: string;
   description: string;
-  action?: { label: string; href: string };
+  /** `crossRoute` marks a target on a DIFFERENT Next route (e.g. /settings).
+   *  Those must navigate via <Link>; handleShellLinkClick only swaps query
+   *  params on the route the shell is already on. See Task 6. */
+  action?: { label: string; href: string; crossRoute?: boolean };
 }
+
+/**
+ * Codes where the run died because the owner is out of Isol8 budget, not
+ * because anything malfunctioned. Retry is suppressed for all of them: it
+ * cannot succeed until the cap resets or the owner pays, and offering it
+ * makes an exhausted allowance look like a flaky product.
+ */
+const MONEY_CODES: ReadonlySet<string> = new Set([
+  "trial_daily_cap",
+  "trial_expired",
+  "out_of_credits",
+  "subscription_inactive",
+]);
 
 function describeError(code: string | undefined, message: string): ErrorPresentation {
   switch (code) {
@@ -90,22 +119,56 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
           "The model declined to respond, usually due to content policy. Try rephrasing your message.",
       };
     case "trial_daily_cap":
+      // Copy is derived from `code` alone — the server message is ignored, so
+      // the pre-send refusal (gate_chat) and the mid-run reclassification
+      // render an identical card. No dollar figure: the wall fires at
+      // CAP - RESERVE while Settings advertises the headline $3/day.
+      //
+      // No "in about N hours" countdown: it's arithmetically correct but
+      // surprising near the rollover (e.g. "in about 24 hours" 20 minutes
+      // after UTC midnight, if the cap is re-hit immediately), and dropping
+      // it also removes the client-clock dependency entirely — a deliberate
+      // human product call, not a bug fix.
       return {
         title: "Daily free limit reached",
-        description:
-          message ||
-          "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
-        // The upgrade *action* (checkout) is a later phase — for now this
-        // just deep-links to the Billing settings panel, same pattern as
-        // TrialBanner's "Manage" link.
-        action: { label: "Upgrade", href: "/settings?panel=billing" },
+        description: "You've used today's free usage. Resets at midnight UTC.",
+        action: {
+          label: "Upgrade to keep going",
+          href: "/settings?panel=billing",
+          crossRoute: true,
+        },
       };
     case "trial_expired":
+      // No reset line: trial_cap._is_expired never self-clears.
       return {
         title: "Your free trial has ended",
+        description: "Your free trial has ended. Choose a plan to keep your agent running.",
+        action: {
+          label: "Choose a plan",
+          href: "/settings?panel=billing",
+          crossRoute: true,
+        },
+      };
+    case "out_of_credits":
+      // Previously fell through to `default` — a paying customer saw the same
+      // "Failed to generate" a crash would produce, with no way to top up.
+      return {
+        title: "Out of credits",
         description:
-          message || "Your 3-day free trial has ended. Pick a plan to keep your agent.",
-        action: { label: "Upgrade", href: "/settings?panel=billing" },
+          "Your Claude credit balance is used up. Top up to keep your agents running.",
+        // In-shell: routes into CreditsStep, same as OutOfCreditsBanner.
+        action: { label: "Top up now", href: "/chat?provider=bedrock_claude" },
+      };
+    case "subscription_inactive":
+      return {
+        title: "Subscription inactive",
+        description:
+          "Your subscription isn't active, so agent runs are paused. Reactivate to continue.",
+        action: {
+          label: "Reactivate",
+          href: "/settings?panel=billing",
+          crossRoute: true,
+        },
       };
     case "unknown":
     default:
@@ -118,6 +181,7 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
 
 export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
   const { title, description, action } = describeError(code, message);
+  const showRetry = Boolean(onRetry) && !MONEY_CODES.has(code ?? "");
 
   return (
     <div
@@ -139,12 +203,18 @@ export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
                 variant="outline"
                 className="h-7 px-3 text-xs border-[#c0392b] text-[#7a2018] hover:bg-[#fbd6d2]"
               >
-                <a href={action.href} onClick={(e) => handleShellLinkClick(e, action.href)}>
-                  {action.label}
-                </a>
+                {action.crossRoute ? (
+                  // Different Next route — must go through the router. A bare
+                  // pushState would move the URL bar and leave the shell mounted.
+                  <Link href={action.href}>{action.label}</Link>
+                ) : (
+                  <a href={action.href} onClick={(e) => handleShellLinkClick(e, action.href)}>
+                    {action.label}
+                  </a>
+                )}
               </Button>
             )}
-            {onRetry && (
+            {showRetry && onRetry && (
               <Button
                 size="sm"
                 variant="ghost"

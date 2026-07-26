@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useCredits } from "@/hooks/useCredits";
+import { useCredits, isCreditsExhausted } from "@/hooks/useCredits";
 import { replaceSearchParams } from "@/lib/shellNav";
 
 type Props = { onComplete: () => void };
@@ -61,13 +61,18 @@ export function CreditsStep({ onComplete }: Props) {
   // Returning from a cancelled Checkout: surface it instead of a blank form.
   const checkoutCancelled = searchParams.get("credits") === "cancel";
 
-  // On mount and on every balance bump, check whether we already have
-  // credits — if so, a previous top-up has landed (or the owner arrived
+  // On mount and on every balance bump, check whether the balance is already
+  // spendable — if so, a previous top-up has landed (or the owner arrived
   // here with a pre-existing balance) and the wizard should skip past the
-  // top-up step.
+  // top-up step. Uses the same isCreditsExhausted predicate as
+  // OutOfCreditsBanner (see useCredits.ts) rather than a raw `> 0` check: the
+  // bedrock-gate refuses admission below its own reservation threshold, so a
+  // small positive balance (e.g. $0.20) is NOT spendable — completing here
+  // for it would land the owner back in chat facing the same "out of
+  // credits" banner with no way to reach this top-up form again.
   useEffect(() => {
     if (advancedRef.current) return;
-    if (balance && balance.balance_microcents !== null && balance.balance_microcents > 0) {
+    if (balance && !isCreditsExhausted(balance)) {
       advancedRef.current = true;
       onComplete();
     }

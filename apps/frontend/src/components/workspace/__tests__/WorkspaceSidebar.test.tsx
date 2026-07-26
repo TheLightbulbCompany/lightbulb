@@ -44,8 +44,14 @@ vi.mock("@/lib/modelDisplay", () => ({
 
 vi.mock("@/hooks/useGatewayRpc", () => ({ useGatewayRpc: () => ({ data: undefined }) }));
 vi.mock("@/hooks/useGateway", () => ({ useGateway: () => ({ nodeConnected: false }) }));
+// Mutable so the plan-badge tests below can swap subscription_status/trial_end
+// per case; every other test in this file relies on the "active" default set
+// in beforeEach.
+let billingAccount: { subscription_status: string | null; trial_end?: number | null } = {
+  subscription_status: "active",
+};
 vi.mock("@/hooks/useBilling", () => ({
-  useBilling: () => ({ account: { subscription_status: "active" }, isSubscribed: true }),
+  useBilling: () => ({ account: billingAccount, isSubscribed: true }),
 }));
 
 const selectSession = vi.fn();
@@ -129,6 +135,7 @@ beforeEach(() => {
   agents = [];
   defaultId = undefined;
   snapshot = { activePanelId: null, focusedChatAgentId: null };
+  billingAccount = { subscription_status: "active" };
   openChatPanel.mockClear();
   openPanel.mockClear();
   closeChatPanelIfOpen.mockClear();
@@ -227,5 +234,27 @@ describe("WorkspaceSidebar", () => {
 
     fireEvent.click(screen.getByTestId("health"));
     expect(onRecoveryReprovision).toHaveBeenCalledTimes(1);
+  });
+
+  it("footer plan-badge maps trial_local to Free tier, never the raw enum", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      trial_end: Math.floor(Date.now() / 1000) + 86_400, // 1 day out — not expired
+    };
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
+  });
+
+  it("footer plan-badge reads Free tier ended once the free-tier window has elapsed", () => {
+    billingAccount = {
+      subscription_status: "trial_local",
+      trial_end: Math.floor(Date.now() / 1000) - 86_400, // 1 day ago — expired
+    };
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+
+    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
+    expect(screen.queryByText("Free tier")).not.toBeInTheDocument();
   });
 });

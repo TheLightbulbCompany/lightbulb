@@ -8,8 +8,10 @@ they can never disagree about blocked-ness.
 
 Read model:
 - The fast-gate DDB row (fed by the low-balance webhook) is the cached
-  answer. ``remaining_microcents <= 0`` blocks; a MISSING row does NOT
-  block (a brand-new owner must not be gated by a missing projection).
+  answer. ``remaining_microcents <= RESERVE_ESTIMATE_MICROCENTS`` blocks —
+  NOT ``<= 0`` — mirroring the bedrock-gate's own admission rule (see
+  ``_row_blocked``); a MISSING row does NOT block (a brand-new owner must
+  not be gated by a missing projection).
 - When the row is stale (older than ``METRONOME_GATE_STALENESS_S``) and the
   owner actually has a Metronome customer, the gate lazily refreshes from
   ``getNetBalance`` and rewrites the row. Metronome-down ⇒ the stale row is
@@ -36,6 +38,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services.bedrock_enforcement import enforce_on_low_balance
+from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ async def is_owner_blocked(owner_id: str) -> bool:
 
     refreshed = await _refresh_from_metronome(owner_id, gate)
     if refreshed is not None:
-        return refreshed <= 0
+        return refreshed <= RESERVE_ESTIMATE_MICROCENTS
     # Refresh unavailable (no Metronome customer, or Metronome down): use
     # the stale row as-is. A missing row stays NOT blocked.
     return _row_blocked(row)
@@ -66,7 +69,11 @@ def _row_blocked(row: dict | None) -> bool:
     remaining = row.get("remaining_microcents")
     if remaining is None:
         return bool(row.get("blocked", False))
-    return int(remaining) <= 0
+    # The gate admits only while `remaining - reserved - estimate > 0`, so a
+    # balance at or below one reservation is already unspendable. Matching it
+    # here keeps the banner, the chat gate and the provision gate agreeing with
+    # the only component that actually decides.
+    return int(remaining) <= RESERVE_ESTIMATE_MICROCENTS
 
 
 async def read_net_balance_microcents(owner_id: str) -> int | None:

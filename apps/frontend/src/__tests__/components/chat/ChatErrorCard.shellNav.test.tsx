@@ -25,4 +25,23 @@ describe("ChatErrorCard action link", () => {
     });
     expect(push).not.toHaveBeenCalled();
   });
+
+  it("navigates cross-route CTAs with a real Link, not pushState", () => {
+    // /settings is a DIFFERENT Next route. pushState would change the URL bar
+    // while leaving the chat shell mounted — the upgrade CTA would silently do
+    // nothing. Only in-shell ?panel swaps may use pushState.
+    const push = vi.spyOn(window.history, "pushState").mockImplementation(() => {});
+    render(<ChatErrorCard code="trial_daily_cap" message="" />);
+    const link = screen.getByRole("link", { name: "Upgrade to keep going" });
+    expect(link).toHaveAttribute("href", "/settings?panel=billing");
+    fireEvent.click(link, { button: 0 });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("keeps pushState for in-shell CTAs", () => {
+    const push = vi.spyOn(window.history, "pushState").mockImplementation(() => {});
+    render(<ChatErrorCard code="out_of_credits" message="" />);
+    fireEvent.click(screen.getByRole("link", { name: "Top up now" }), { button: 0 });
+    expect(push).toHaveBeenCalledWith(null, "", "/chat?provider=bedrock_claude");
+  });
 });

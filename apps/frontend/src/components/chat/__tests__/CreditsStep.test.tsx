@@ -19,21 +19,30 @@ const mockRotateRequestId = vi.fn();
 // (autoChargeEnabled); everyone else gets the Stripe Checkout hand-off.
 // Tests flip this per-case to target the path under test.
 let mockAutoChargeEnabled = false;
-vi.mock("@/hooks/useCredits", () => ({
-  useCredits: () => {
-    const balance = mockBalance();
-    return {
-      balance,
-      // Mirrors the real hook: false only when the backend explicitly says so.
-      lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
-      autoChargeEnabled: mockAutoChargeEnabled,
-      startTopUp: mockStartTopUp,
-      rotateRequestId: mockRotateRequestId,
-      startTopUpCheckout: mockStartTopUpCheckout,
-      refresh: mockRefresh,
-    };
-  },
-}));
+vi.mock("@/hooks/useCredits", async () => {
+  // Keep the real isCreditsExhausted so this test exercises the actual
+  // predicate (and stays byte-identical with OutOfCreditsBanner's), not a
+  // hand-rolled reimplementation that could silently drift from it.
+  const actual = await vi.importActual<typeof import("@/hooks/useCredits")>(
+    "@/hooks/useCredits",
+  );
+  return {
+    ...actual,
+    useCredits: () => {
+      const balance = mockBalance();
+      return {
+        balance,
+        // Mirrors the real hook: false only when the backend explicitly says so.
+        lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
+        autoChargeEnabled: mockAutoChargeEnabled,
+        startTopUp: mockStartTopUp,
+        rotateRequestId: mockRotateRequestId,
+        startTopUpCheckout: mockStartTopUpCheckout,
+        refresh: mockRefresh,
+      };
+    },
+  };
+});
 
 describe("CreditsStep", () => {
   beforeEach(() => {
@@ -52,6 +61,27 @@ describe("CreditsStep", () => {
     mockBalance.mockReturnValue({ balance_dollars: "10.00", balance_microcents: 10_000_000 });
     render(<CreditsStep onComplete={onComplete} />);
     expect(onComplete).toHaveBeenCalled();
+  });
+
+  it("does NOT auto-advance on a positive-but-unspendable balance (Finding 1)", () => {
+    // The bedrock-gate refuses admission below its own reservation threshold,
+    // so a $0.20 balance is refused just like a $0 one — this is exactly the
+    // cohort the "Top up now" CTA newly routes here. A naive `> 0` check
+    // would immediately call onComplete and bounce the owner straight back
+    // into chat, where they hit the same banner with no way back to this
+    // form — the top-up form must render instead.
+    const onComplete = vi.fn();
+    mockBalance.mockReturnValue({
+      balance_dollars: "0.20",
+      balance_microcents: 200_000,
+      is_exhausted: true,
+    });
+    render(<CreditsStep onComplete={onComplete} />);
+    expect(onComplete).not.toHaveBeenCalled();
+    // The top-up form actually rendered, not a blank/skipped step.
+    expect(
+      screen.getByRole("button", { name: /continue to payment — \$20/i }),
+    ).toBeInTheDocument();
   });
 
   it("latches the submit button after a successful one-click request", async () => {

@@ -877,6 +877,22 @@ class TopUpCheckoutRequest(BaseModel):
     )
 
 
+def _is_exhausted(balance_microcents: int | None) -> bool:
+    """Whether the owner's credits are unspendable at the bedrock-gate.
+
+    The gate admits paid traffic only while `remaining - reserved - estimate
+    > 0`, so a balance at or below one reservation buys nothing. Surfacing the
+    gate's own threshold keeps the frontend from needing a copy of the
+    constant. A null balance (Metronome outage / no customer) is INDETERMINATE
+    and never exhausted — a false banner is worse than a late one.
+    """
+    from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
+
+    if balance_microcents is None:
+        return False
+    return balance_microcents <= RESERVE_ESTIMATE_MICROCENTS
+
+
 async def _metronome_balance_microcents(owner_id: str) -> int | None:
     """The owner's Metronome prepaid balance, in microcents.
 
@@ -935,6 +951,7 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
         # Drives the frontend's top-up fork: opted-in owners get one-click
         # (card on file), everyone else routes through Stripe Checkout.
         "auto_charge_enabled": bool(account.get("credits_auto_charge")),
+        "is_exhausted": _is_exhausted(balance_uc),
     }
 
 

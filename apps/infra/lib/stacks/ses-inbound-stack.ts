@@ -131,10 +131,16 @@ export class SesInboundStack extends cdk.Stack {
     // existing mail flow at risk of quarantine/reject. Tighten to
     // quarantine/reject only after the rua reports show every sender aligned.
     // -------------------------------------------------------------------------
+    // Aggregate reports go to an address that ALREADY EXISTS on the apex
+    // (Google Workspace). A same-domain `rua` needs no authorization record
+    // at the receiving domain, and reusing a live mailbox means publishing
+    // DMARC costs no new Workspace seat, alias, or admin-console change.
+    const reportMailbox = `admin@${mailDomain}`;
+
     new route53.TxtRecord(this, "AgentMailDmarc", {
       zone: hostedZone,
       recordName: `_dmarc.${mailDomain}`,
-      values: [`v=DMARC1; p=none; rua=mailto:dmarc@${mailDomain}; fo=1`],
+      values: [`v=DMARC1; p=none; rua=mailto:${reportMailbox}; fo=1`],
     });
 
     // Deterministic literal names (not read off the live construct — see

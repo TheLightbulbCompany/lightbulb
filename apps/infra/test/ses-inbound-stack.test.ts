@@ -129,7 +129,7 @@ describe("SesInboundStack", () => {
     template.hasResourceProperties("AWS::Route53::RecordSet", {
       Name: "_dmarc.isol8.co.",
       Type: "TXT",
-      ResourceRecords: ['"v=DMARC1; p=none; rua=mailto:dmarc@isol8.co; fo=1"'],
+      ResourceRecords: ['"v=DMARC1; p=none; rua=mailto:admin@isol8.co; fo=1"'],
     });
   });
 

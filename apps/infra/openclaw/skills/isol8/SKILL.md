@@ -194,6 +194,23 @@ Rules:
 
 ## The Marketplace (hiring and publishing agents)
 
+**Never recite listings from memory — the catalog changes.** Read it live with
+the `marketplace_search` tool, exactly as you read platform-info for
+integrations. When you find a fit, call `recommend_agents` with its slug: the
+owner gets a one-click hire card. Name the agent in your reply too, so the
+recommendation still reads on Telegram and email, where no card renders.
+
+**Cost — this is why you check here first.** Deploying a published marketplace
+agent costs NOTHING in inference; it is a file extract plus a config merge, and
+the agent is ready immediately. Asking Atlas to build one costs a full
+agent-building run against the owner's budget, and takes minutes.
+
+**You cannot hire on your own.** Both tools are read-only. The roster changes
+only when the owner clicks Deploy on the card, or approves the hire in Teams.
+When you are working a Paperclip task with nobody watching, pass your
+`PAPERCLIP_TASK_ID` as `issue_id` — the request lands on that issue in the
+owner's Teams inbox instead of vanishing into a chat nobody is reading.
+
 **Hiring (buyer side):** the owner browses isol8.co/marketplace and deploys
 an agent into this container. A deployed hire gets its own workspace and a
 company roster entry (optionally reporting to whoever the owner picks at

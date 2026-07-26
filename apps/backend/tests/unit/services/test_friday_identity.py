@@ -1026,3 +1026,33 @@ def test_migrate_add_nightly_section_noop_when_no_file():
 
     assert friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid") is False
     workspace.write_file.assert_not_called()
+
+
+def test_agents_template_checks_marketplace_before_atlas():
+    """The playbook must lead with the marketplace, not Atlas.
+
+    A marketplace hire costs $0 inference (tarball extract + config merge) and
+    is ready immediately; asking Atlas to build one is a full agent-building
+    run against the owner's budget. The cheap option has to be presented first,
+    or the model reaches for Atlas by default — observed in prod, where Friday
+    routed an engineering hire to Atlas and never mentioned the marketplace.
+    """
+    body = friday_identity._AGENTS_TEMPLATE
+    assert "marketplace_search" in body, "playbook must name the discovery tool"
+
+    # Scope to the hire step itself. Earlier steps mention Atlas descriptively
+    # ("new agents ... scaffolded by Atlas show up in the roster"), which is
+    # not a recommendation and must not count against the ordering.
+    step_3 = body[body.index("3. **Identify or hire.") : body.index("4. **Confirm.")]
+
+    assert "marketplace_search" in step_3, "the hire step must reach for the marketplace"
+    assert "Atlas" in step_3, "the hire step must still offer Atlas as the fallback"
+    assert step_3.index("marketplace_search") < step_3.index("Atlas"), (
+        "marketplace must be presented before Atlas within the hire step"
+    )
+
+
+def test_agents_template_names_the_recommend_tool():
+    """Discovery alone is not enough — she needs the tool that renders the
+    one-click hire card, or she falls back to pasting a URL."""
+    assert "recommend_agents" in friday_identity._AGENTS_TEMPLATE

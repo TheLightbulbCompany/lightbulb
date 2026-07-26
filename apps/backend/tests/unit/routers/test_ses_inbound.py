@@ -343,6 +343,43 @@ def test_over_cap_never_delivers_to_the_agent(client, monkeypatch, capped_owner)
     deliver_mock.assert_not_called()
 
 
+def test_over_cap_and_dmarc_fail_drops_before_the_autoreply_can_send(client, monkeypatch, capped_owner):
+    """Pins ordering: the cap check must run AFTER the anti-spoof gate. `From`
+    is a bare header parse with no DKIM/SPF binding, so the sender allowlist
+    alone doesn't prove this wasn't spoofed -- if the cap check ran first, a
+    spoofed sender for an over-cap owner would still trigger a real outbound
+    email. Fails if the cap-check block is moved back above this gate."""
+    autoreply_mock = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
+
+    resp = _post(
+        client,
+        _capped_body(verdicts={"spf": "PASS", "dkim": "PASS", "dmarc": "FAIL", "spam": "PASS", "virus": "PASS"}),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_failed_authentication"
+    autoreply_mock.assert_not_called()
+
+
+def test_over_cap_and_auto_submitted_drops_before_the_autoreply_can_send(client, monkeypatch, capped_owner):
+    """Pins ordering: the cap check must run AFTER the auto-submitted loop
+    guard, or an out-of-office autoresponder from the owner's own mail
+    infrastructure would trigger a real outbound reply -- a mail loop. Fails
+    if the cap-check block is moved back above this guard."""
+    autoreply_mock = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
+
+    resp = _post(
+        client,
+        _capped_body(headers={"Auto-Submitted": "auto-replied", "Message-ID": "<orig@x>"}),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_auto_submitted"
+    autoreply_mock.assert_not_called()
+
+
 def test_unverified_sender_gets_NO_autoreply(client, monkeypatch):
     """Replying would confirm the address exists and make this a reflector."""
     calls = []

@@ -146,27 +146,6 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         if not row.get("public") and sender not in (row.get("verified_senders") or []):
             return {"status": "dropped_unverified_sender"}
 
-        # Free-tier cost cap — same predicate the chat/container-start
-        # gates use, so an over-cap owner can't route around it via email.
-        #
-        # ANSWERED, not silently dropped. The sender allowlist above already
-        # proved this is the OWNER, so replying is safe here in a way it is
-        # NOT for the two drops above (replying to those would confirm the
-        # address exists and turn this into a reflector).
-        #
-        # The reply is server-templated with no agent run — that is the whole
-        # reason we can answer at all when the cap says we cannot think.
-        cap_reason = await trial_block_reason(row["owner_id"])
-        if cap_reason is not None:
-            notified = await send_cap_autoreply(
-                reason=cap_reason,
-                from_addr=row["address"],
-                to=sender,
-                in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
-                subject=reply_subject(body.subject or ""),
-            )
-            return {"status": "capped_notified" if notified else "dropped_over_cap"}
-
         # Anti-abuse gate: SES's own receipt pipeline already scanned this
         # mail for spam/viruses before the Lambda ever saw it, so an explicit
         # FAIL here is authoritative — always dropped.
@@ -195,6 +174,37 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # agent replying to one of these could re-trigger itself forever.
         if is_auto_submitted(body.headers or {}):
             return {"status": "dropped_auto_submitted"}
+
+        # Free-tier cost cap — same predicate the chat/container-start
+        # gates use, so an over-cap owner can't route around it via email.
+        #
+        # ANSWERED, not silently dropped. The sender allowlist above already
+        # proved this is the OWNER, so replying is safe here in a way it is
+        # NOT for the two drops above (replying to those would confirm the
+        # address exists and turn this into a reflector).
+        #
+        # The reply is server-templated with no agent run — that is the whole
+        # reason we can answer at all when the cap says we cannot think.
+        #
+        # POSITION IS LOAD-BEARING: this is the first branch that originates
+        # real outbound mail, so it must sit AFTER every gate above that
+        # decides whether this inbound is trustworthy (spam/virus, DMARC/
+        # SPF+DKIM anti-spoof, auto-submitted loop guard) — `From` is a bare
+        # header parse with no DKIM/SPF binding, so the sender allowlist
+        # alone does not prove the message wasn't spoofed or a mail-loop
+        # auto-reply. Sending here before those gates run would turn this
+        # endpoint into a reflector or a loop. Do not move this block back
+        # above them.
+        cap_reason = await trial_block_reason(row["owner_id"])
+        if cap_reason is not None:
+            notified = await send_cap_autoreply(
+                reason=cap_reason,
+                from_addr=row["address"],
+                to=sender,
+                in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
+                subject=reply_subject(body.subject or ""),
+            )
+            return {"status": "capped_notified" if notified else "dropped_over_cap"}
 
         token = encode_reply_token(
             {

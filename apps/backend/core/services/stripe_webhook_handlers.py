@@ -767,9 +767,14 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         if settings.STRIPE_TEAM_SEAT_PRICE_ID
         else {}
     )
-    is_team_seat = metadata.get("purpose") == "team_seat" or (
-        bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
-    )
+    # bool(seat_item) is a strict superset of the old "first item is the seat
+    # price" fallback: seat_item already scans ALL items for the seat price, so
+    # if the seat item happened to be at index 0 the old check would also have
+    # been True. It additionally catches the seat item landing at index >= 1,
+    # which the old first-item-only fallback missed — the exact position bug
+    # this task fixes. It cannot OVER-detect: nothing but a real per-seat line
+    # item ever carries STRIPE_TEAM_SEAT_PRICE_ID.
+    is_team_seat = metadata.get("purpose") == "team_seat" or bool(seat_item)
     team_seat_persisted = False
     if is_team_seat and seat_item:
         try:
@@ -783,6 +788,23 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             team_seat_persisted = True
         except Exception:
             logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
+    elif is_team_seat and not seat_item:
+        # Reached only via metadata.purpose == "team_seat" (bool(seat_item)
+        # can't be True here without seat_item also being truthy) but no item
+        # on the subscription matches STRIPE_TEAM_SEAT_PRICE_ID -- either the
+        # env var is unset in this deploy or the Stripe seat price was rotated
+        # to a new id. Non-destructive (existing stored subscription_item_id/
+        # seat_count are left alone), but must not be silent: a rotation would
+        # otherwise freeze seat counts on every subsequent webhook with no
+        # visible signal.
+        logger.warning(
+            "Team-seat subscription %s (owner %s) detected via metadata but no "
+            "item matches STRIPE_TEAM_SEAT_PRICE_ID=%r -- seat state not refreshed "
+            "(price unset or rotated?)",
+            event_data.get("id"),
+            account["owner_id"],
+            settings.STRIPE_TEAM_SEAT_PRICE_ID,
+        )
 
     # Ultra Pro tier: derive the tier FROM THE PRICE on the subscription item —
     # a direct sibling of the team-seat detection above, and NEVER from

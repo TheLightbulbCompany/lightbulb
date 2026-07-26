@@ -1,0 +1,210 @@
+"""Agent-initiated email to the owner.
+
+The general primitive behind BOTH first contact and (later) scheduled
+routines. It is deliberately REPEATABLE: outbound was never inherently
+one-shot — ``ses_email.send_ses_reply`` has no latch and the reply path
+already calls it once per inbound message — and a one-shot endpoint would
+have blocked a nightly routine on its second night.
+
+**``purpose`` never selects policy.** It is a metric label only. Once-only
+comes from ``first_contact_state``, which only the server can read or write,
+so an agent cannot skip the guard by mislabelling its send — and does not
+have to make a judgment call it might get wrong.
+
+**The address is minted HERE, not at provisioning.** Minting late is what
+lets the slug derive from the company name the agent actually chose rather
+than the auto-generated placeholder (``generate_company_name`` falls back to
+the owner's email local part for a personal owner, so provision-time minting
+makes them advertise it forever — and ``company_slug_repo`` has no delete
+path to undo that). Both ``allocate_company_slug`` and
+``mint_agent_email_address`` are already idempotent, so this costs one call
+on a path that runs anyway.
+
+The company name is read LIVE from Paperclip rather than from our own row.
+It has to be: the whole point of deferring the mint is that the agent renames
+the company first, and that rename lands in Paperclip, not in DynamoDB.
+"""
+
+import logging
+from datetime import datetime, timezone
+
+from core.auth import is_org_owner_id
+from core.config import settings
+from core.observability.metrics import put_metric
+from core.repositories import container_repo
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import ses_email
+from core.services.agent_email import mint_agent_email_address
+from core.services.company_identity import allocate_company_slug
+from core.services.owner_facts import write_owner_facts
+from core.services.paperclip_admin_client import shared_admin_client
+from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.paperclip_owner_email import lookup_owner_email
+
+logger = logging.getLogger(__name__)
+
+# Runaway fence. With the one-shot latch gone (it was wrong — see module
+# docstring), this is what stops an agent stuck in a loop from mailing its
+# owner hundreds of times an hour. Enforced durably in container_repo.
+DAILY_SEND_CAP = 10
+
+# Validated to bound metric cardinality, NOT for safety: policy never reads
+# `purpose`.
+VALID_PURPOSES = ("first_contact", "routine")
+
+# States that mean first contact is still OWED. `failed` is included so a bad
+# mint or a failed SES send stays retryable instead of making the first
+# failure terminal.
+_FIRST_CONTACT_PENDING = ("not_started", "failed")
+
+
+async def _resolve_company_name(company_id: str) -> str | None:
+    """The company's CURRENT name from Paperclip, or None.
+
+    Read live and never cached: the agent renames the company during its first
+    run, and that rename lands in Paperclip. Reading our own row would give
+    back the provisioning placeholder and defeat the deferred mint entirely.
+    """
+    try:
+        admin = shared_admin_client()
+        cookie = await get_admin_session_cookie(admin._http)
+        company = await admin.get_company(session_cookie=cookie, company_id=company_id)
+        name = (company or {}).get("name")
+        return name.strip() if isinstance(name, str) and name.strip() else None
+    except Exception as e:  # noqa: BLE001 — caller maps None to a failed send
+        logger.warning("owner_send: company-name lookup failed for %s: %s", company_id, e)
+        return None
+
+
+async def send_to_owner(
+    *,
+    owner_id: str,
+    purpose: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+) -> str:
+    """Send one owner-directed email.
+
+    Returns "sent", "already_sent", "no_address", "disabled", "rate_limited",
+    or "error". Never raises — the caller is an HTTP route whose 500 would tell
+    a container nothing useful.
+    """
+    try:
+        if not (settings.AGENT_EMAIL_DOMAIN or "").strip():
+            return "disabled"
+
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
+            put_metric(
+                "agent_email.owner_send",
+                dimensions={"purpose": purpose, "result": "rate_limited"},
+            )
+            return "rate_limited"
+
+        repo = PaperclipRepo()
+        onboarding = await repo.get_onboarding_state(owner_id) or {}
+        generation = onboarding.get("onboarding_generation") or ""
+        row_user_id = onboarding.get("user_id") or owner_id
+        company_id = onboarding.get("company_id")
+        friday_agent_id = onboarding.get("friday_agent_id")
+        state = onboarding.get("first_contact_state") or "not_started"
+
+        # POLICY — inferred from state, never from the `purpose` label.
+        is_first_contact = state in _FIRST_CONTACT_PENDING
+        if is_first_contact:
+            if not await repo.claim_first_contact(row_user_id, onboarding_generation=generation):
+                put_metric(
+                    "agent_email.owner_send",
+                    dimensions={"purpose": purpose, "result": "already_sent"},
+                )
+                return "already_sent"
+
+        async def _fail(reason: str, result: str) -> str:
+            if is_first_contact:
+                await repo.settle_first_contact(
+                    row_user_id,
+                    onboarding_generation=generation,
+                    state="failed",
+                    reason=reason,
+                )
+            put_metric("agent_email.owner_send", dimensions={"purpose": purpose, "result": result})
+            return result
+
+        owner_email = await lookup_owner_email(
+            org_id=owner_id if is_org_owner_id(owner_id) else None,
+            fallback_user_id=row_user_id,
+        )
+        if not owner_email:
+            return await _fail("no_owner_email", "error")
+
+        if not company_id or not friday_agent_id:
+            return await _fail("incomplete_provisioning", "error")
+
+        company_name = await _resolve_company_name(company_id)
+        # No name means Paperclip was unreachable. Minting from a fallback
+        # would freeze a junk slug permanently (no delete path), so fail and
+        # let the bounded nudge retry instead.
+        if not company_name:
+            return await _fail("company_name_unavailable", "error")
+
+        slug = await allocate_company_slug(owner_id=owner_id, name=company_name)
+        if not slug:
+            return await _fail("slug_allocation_failed", "no_address")
+
+        address = await mint_agent_email_address(
+            owner_id=owner_id,
+            agent_id=friday_agent_id,
+            agent_name="Friday",
+            owner_email=owner_email,
+            slug=slug,
+        )
+        if not address:
+            return await _fail("mint_failed", "no_address")
+
+        # Facts must reflect the address before the agent reads them again: a
+        # stale null makes the isol8 skill tell her she has no address, and she
+        # correctly declines to send. Best-effort — the address row is the
+        # source of truth, so a facts failure must not block a good send.
+        try:
+            await write_owner_facts(owner_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("owner_send: facts rewrite failed for %s", owner_id)
+
+        message_id = await ses_email.send_ses_reply(
+            from_addr=address,
+            to=owner_email,
+            subject=_env_subject(subject),
+            body_text=body_text,
+            body_html=body_html,
+            headers=None,
+        )
+        if message_id is None:
+            return await _fail("ses_send_failed", "error")
+
+        if is_first_contact:
+            await repo.settle_first_contact(row_user_id, onboarding_generation=generation, state="sent")
+        put_metric(
+            "agent_email.owner_send",
+            dimensions={
+                "purpose": purpose,
+                "result": "sent",
+                "env": settings.ENVIRONMENT or "unknown",
+            },
+        )
+        logger.info("owner_send: sent %s email for %s from %s", purpose, owner_id, address)
+        return "sent"
+    except Exception:
+        logger.exception("owner_send failed for owner_id=%s", owner_id)
+        put_metric("agent_email.owner_send", dimensions={"purpose": purpose, "result": "error"})
+        return "error"
+
+
+def _env_subject(subject: str) -> str:
+    """Prefix non-prod mail so a dev message can never be mistaken for a real
+    one. Both environments send from an isol8.co address into a real inbox,
+    which is exactly when that confusion happens."""
+    env = (settings.ENVIRONMENT or "").strip().lower()
+    if env and env != "prod":
+        return f"[{env}] {subject}"
+    return subject

@@ -162,7 +162,14 @@ would route the user to a billing page for someone else's quota. This mirrors
 `gate_chat`'s existing provider gate — the same reasoning that made the
 wake-admission gate reuse `gate_chat` rather than a trial-only predicate.
 
-Cost: one DDB read, on error frames only.
+Cost: one DDB read for the trial branch. The paid `bedrock_claude` branch is
+NOT one DDB read — `metronome_gate.is_owner_blocked` degrades to a live
+Metronome round trip + a DDB write (occasionally two round trips) once the
+fast-gate row goes stale (60s default), which is the common case for any run
+over a minute. That call runs serially ahead of the error/`run_ended` frames
+in the reader loop, so it is bounded with a 2s `asyncio.wait_for` — a timeout
+degrades to "leave the upstream error untouched," the same fallback as any
+other read failure on this path. On error frames only, either way.
 
 **Masking guard.** The upstream message rides along under a separate key so
 logs and support retain the true cause, and the `chat.error` metric gains a

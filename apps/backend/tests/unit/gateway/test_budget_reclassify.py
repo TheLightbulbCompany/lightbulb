@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 import pytest
 
 from core.gateway import connection_pool
@@ -165,3 +168,41 @@ async def test_read_failure_leaves_the_error_untouched(monkeypatch):
     monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", boom)
 
     assert await _conn()._budget_error_code() is None
+
+
+@pytest.mark.asyncio
+async def test_slow_budget_read_times_out_and_leaves_error_untouched(monkeypatch):
+    """`is_owner_blocked` is only a cheap fast-gate row read while that row is
+    fresh; once it goes stale (METRONOME_GATE_STALENESS_S, the common case for
+    any run over a minute) it degrades into a live Metronome round trip + a
+    DDB write (see the `_budget_error_code` docstring) that can hang for
+    seconds. `_reader_loop` awaits `_handle_message` serially, and
+    `_budget_error_code` runs before the error/`run_ended` frames are
+    forwarded — so an unbounded read here stalls delivery of every subsequent
+    event on the owner's connection. `_BUDGET_RECLASSIFY_TIMEOUT_S` bounds it;
+    a timeout must degrade exactly like any other read failure (leave the
+    upstream error untouched), never raise and never block past the bound."""
+
+    async def fake_account(owner_id):
+        return {
+            "owner_id": owner_id,
+            "subscription_status": "active",
+            "provider_choice": "bedrock_claude",
+        }
+
+    async def slow_blocked(owner_id):
+        # Deliberately much longer than the timeout — simulates a degraded/
+        # hanging Metronome round trip.
+        await asyncio.sleep(connection_pool._BUDGET_RECLASSIFY_TIMEOUT_S + 5)
+        return True
+
+    monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", fake_account)
+    monkeypatch.setattr("core.services.metronome_gate.is_owner_blocked", slow_blocked)
+
+    start = time.monotonic()
+    result = await _conn()._budget_error_code()
+    elapsed = time.monotonic() - start
+
+    assert result is None
+    # Bounded by the timeout, not by the artificially long slow_blocked sleep.
+    assert elapsed < connection_pool._BUDGET_RECLASSIFY_TIMEOUT_S + 2

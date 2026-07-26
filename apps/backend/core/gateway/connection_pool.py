@@ -35,6 +35,16 @@ _RECIPIENTS_TTL_S = 5.0
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
+# Bound on the paid-owner `is_owner_blocked` read inside `_budget_error_code`.
+# That call is only a cheap fast-gate row read while the row is fresh; once it
+# goes stale (METRONOME_GATE_STALENESS_S, default 60s — true for any run over
+# a minute) it synchronously does a live Metronome round trip + a DDB write,
+# and possibly a second Metronome round trip + more writes. `_handle_message`
+# awaits `_budget_error_code` before forwarding the error frame and the
+# synthesized `run_ended` frame, and `_reader_loop` awaits `_handle_message`
+# serially — so without a bound here, a slow/degraded Metronome stalls
+# delivery of every subsequent event on this owner's gateway connection.
+_BUDGET_RECLASSIFY_TIMEOUT_S = 2.0  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 _PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
 _ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
@@ -906,13 +916,33 @@ class GatewayConnection:
         error exactly as it arrived — which is also the answer for a genuine
         Bedrock throttle against a funded owner.
 
+        NOT "one DDB read". On the paid `bedrock_claude` branch this calls
+        `metronome_gate.is_owner_blocked`, which is only a cheap fast-gate row
+        read while that row is fresh — but the row's staleness window
+        (`METRONOME_GATE_STALENESS_S`, default 60s) means any run longer than
+        a minute (the common case) hits the stale path instead: a live
+        Metronome `getNetBalance` over httpx (5s timeout), a `set_balance` DDB
+        write, and then either `_maybe_restore_bedrock` (container read + a
+        SECOND 5s `getNetBalance`) or `enforce_on_low_balance` (billing read +
+        IAM policy delete) — up to ~10-15s of synchronous work. `_handle_message`
+        awaits this before `_forward_to_frontends(error)` and the synthesized
+        `run_ended` frame, and `_reader_loop` awaits `_handle_message`
+        serially, so an unbounded call here stalls delivery of every
+        subsequent event on this owner's gateway connection (other agents'
+        streams included) behind it. Bounded below with `asyncio.wait_for` so
+        the worst case is the timeout, not the full Metronome round trip(s).
+
         Never raises: this runs on the terminal error frame, and an exception
         here would drop the frame and hang the run in the UI. The reader loop's
         `except json.JSONDecodeError` around `_handle_message` catches nothing
         broader — an import failure here would propagate to
         `_on_reader_loop_exit` and tear down the owner's whole gateway
         connection, not just this one frame. So the imports are INSIDE the
-        try too, not just the reads that follow them.
+        try too, not just the reads that follow them. The `asyncio.wait_for`
+        timeout raises `TimeoutError` (a plain `Exception` subclass), which
+        this same blanket `except Exception` below already swallows —
+        degrading to "forward the upstream error unchanged", the documented
+        fallback for any read failure on this path.
         """
         try:
             from core.repositories import billing_repo
@@ -932,7 +962,8 @@ class GatewayConnection:
             if account.get("provider_choice") != "bedrock_claude":
                 return None
 
-            if await is_owner_blocked(self.owner_id):
+            blocked = await asyncio.wait_for(is_owner_blocked(self.owner_id), timeout=_BUDGET_RECLASSIFY_TIMEOUT_S)
+            if blocked:
                 return "out_of_credits", BUDGET_BLOCK_MESSAGES["out_of_credits"]
             return None
         except Exception:

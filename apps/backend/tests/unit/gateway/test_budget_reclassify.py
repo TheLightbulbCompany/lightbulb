@@ -74,7 +74,15 @@ async def test_reclassifies_paid_bedrock_owner_out_of_credits(monkeypatch):
 async def test_oauth_owner_is_never_reclassified(monkeypatch):
     """THE load-bearing negative case. An OAuth owner consumes no Isol8 budget,
     so their 429 is a genuine OpenAI throttle. Relabelling it would send them to
-    an Isol8 billing page to fix someone else's quota."""
+    an Isol8 billing page to fix someone else's quota.
+
+    ``is_owner_blocked`` is patched to return True (not left real) so this test
+    actually discriminates on the `provider_choice != "bedrock_claude"` guard:
+    with the unpatched real gate, a missing/blocked-False billing row and a
+    deleted guard would BOTH also yield None, making the assertion pass for
+    the wrong reason. Forcing "blocked" means the only thing that can still
+    produce None is the provider guard itself.
+    """
 
     async def fake_account(owner_id):
         return {
@@ -83,13 +91,21 @@ async def test_oauth_owner_is_never_reclassified(monkeypatch):
             "provider_choice": "chatgpt_oauth",
         }
 
+    async def fake_blocked(owner_id):
+        return True
+
     monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", fake_account)
+    monkeypatch.setattr("core.services.metronome_gate.is_owner_blocked", fake_blocked)
 
     assert await _conn()._budget_error_code() is None
 
 
 @pytest.mark.asyncio
 async def test_byo_key_owner_is_never_reclassified(monkeypatch):
+    """Same discrimination requirement as the OAuth case above — see its
+    docstring. ``is_owner_blocked`` is forced True so only the provider guard
+    can produce the None."""
+
     async def fake_account(owner_id):
         return {
             "owner_id": owner_id,
@@ -97,7 +113,11 @@ async def test_byo_key_owner_is_never_reclassified(monkeypatch):
             "provider_choice": "byo_key",
         }
 
+    async def fake_blocked(owner_id):
+        return True
+
     monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", fake_account)
+    monkeypatch.setattr("core.services.metronome_gate.is_owner_blocked", fake_blocked)
 
     assert await _conn()._budget_error_code() is None
 

@@ -907,13 +907,18 @@ class GatewayConnection:
         Bedrock throttle against a funded owner.
 
         Never raises: this runs on the terminal error frame, and an exception
-        here would drop the frame and hang the run in the UI.
+        here would drop the frame and hang the run in the UI. The reader loop's
+        `except json.JSONDecodeError` around `_handle_message` catches nothing
+        broader — an import failure here would propagate to
+        `_on_reader_loop_exit` and tear down the owner's whole gateway
+        connection, not just this one frame. So the imports are INSIDE the
+        try too, not just the reads that follow them.
         """
-        from core.repositories import billing_repo
-        from core.services import trial_cap
-        from core.services.metronome_gate import is_owner_blocked
-
         try:
+            from core.repositories import billing_repo
+            from core.services import trial_cap
+            from core.services.metronome_gate import is_owner_blocked
+
             account = await billing_repo.get_by_owner_id(self.owner_id)
             if not account:
                 return None

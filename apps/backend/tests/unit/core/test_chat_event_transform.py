@@ -744,10 +744,27 @@ class TestHandleMessage:
         )
 
     @pytest.mark.asyncio
-    async def test_chat_error_forwards_errorKind_as_code(self, connection, mock_management_api):
+    async def test_chat_error_forwards_errorKind_as_code(self, connection, mock_management_api, monkeypatch):
         """`errorKind` (refusal | timeout | rate_limit | context_length | unknown)
         is forwarded as `code` so the frontend can render a typed error card.
+
+        `errorKind: "rate_limit"` drives this frame through
+        `GatewayConnection._budget_error_code`'s mid-run reclassification
+        check (see connection_pool.py), which does a real `billing_repo`
+        read. Stubbed here to return None (no billing row) so this test
+        exercises that branch deterministically instead of hitting DynamoDB —
+        without the stub the call falls through to a live GetItem that fails
+        with ResourceNotFoundException in this environment and is swallowed
+        by `_budget_error_code`'s blanket except, which happens to produce
+        the same "leave errorKind alone" result but via an unmocked network
+        call and a logged warning+traceback per run.
         """
+
+        async def fake_no_billing_row(owner_id):
+            return None
+
+        monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", fake_no_billing_row)
+
         await _handle_and_flush(
             connection,
             {

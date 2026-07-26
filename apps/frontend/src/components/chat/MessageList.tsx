@@ -27,6 +27,7 @@ import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -572,6 +573,18 @@ function MessageBlocks({
             ? "error"
             : "done"
           : "running";
+        // A completed recommend_agents call renders as a hire card instead of
+        // a tool pill. parseHireSuggestion returns null for every other tool
+        // result, so anything else falls through untouched.
+        const hireSuggestion =
+          status === "done"
+            ? parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)
+            : null;
+        if (hireSuggestion) {
+          rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
+          renderedToolIds.delete(id);
+          continue;
+        }
         rendered.push(
           <ToolUseIndicator
             key={`tool:${id}`}

@@ -25,6 +25,19 @@ import { handleShellLinkClick } from "@/lib/shellNav";
  * cap) — surfaced by both the provision gate and gate_chat's Layer 2
  * (core/services/provision_gate.py, core/gateway/connection_pool.py).
  *
+ * `out_of_credits` and `subscription_inactive` are the paid-owner
+ * counterparts of the two trial codes above — gate_chat emits them when a
+ * paying customer's Bedrock credit balance or subscription state blocks the
+ * turn. Until this card grew branches for them they fell through to
+ * `default`, so a paying customer saw the same "Failed to generate" a crash
+ * would produce, with no top-up or reactivate path.
+ *
+ * All four of the codes above are "money codes" (see `MONEY_CODES`): the
+ * run died because of the owner's budget/subscription state, not a
+ * malfunction, so Retry is suppressed and the card renders from `code`
+ * alone — the server `message` is ignored so a pre-send gate_chat refusal
+ * and a mid-run reclassification render a pixel-identical card.
+ *
  * For unknown / unmapped codes we still show the upstream message
  * verbatim — that is strictly better than masking it with a generic
  * "encountered an error, please try again" string the way the old
@@ -42,10 +55,49 @@ export interface ChatErrorCardProps {
 interface ErrorPresentation {
   title: string;
   description: string;
-  action?: { label: string; href: string };
+  /** `crossRoute` marks a target on a DIFFERENT Next route (e.g. /settings).
+   *  Those must navigate via <Link>; handleShellLinkClick only swaps query
+   *  params on the route the shell is already on. See Task 6. */
+  action?: { label: string; href: string; crossRoute?: boolean };
 }
 
-function describeError(code: string | undefined, message: string): ErrorPresentation {
+/**
+ * Codes where the run died because the owner is out of Isol8 budget, not
+ * because anything malfunctioned. Retry is suppressed for all of them: it
+ * cannot succeed until the cap resets or the owner pays, and offering it
+ * makes an exhausted allowance look like a flaky product.
+ */
+const MONEY_CODES: ReadonlySet<string> = new Set([
+  "trial_daily_cap",
+  "trial_expired",
+  "out_of_credits",
+  "subscription_inactive",
+]);
+
+/**
+ * Hours until the free-tier daily counter rolls over. The counter is a
+ * date-keyed DynamoDB map read through `utc_today()`, so a new UTC day is a new
+ * key and the reset needs no worker — it simply happens. Computed client-side
+ * from the local clock rather than server-supplied, matching TrialBanner.
+ */
+function resetPhrase(nowMs: number): string {
+  const d = new Date(nowMs);
+  const nextUtcMidnight = Date.UTC(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate() + 1,
+  );
+  const hours = (nextUtcMidnight - nowMs) / 3_600_000;
+  if (hours < 1) return "in under an hour";
+  const rounded = Math.round(hours);
+  return `in about ${rounded} hour${rounded === 1 ? "" : "s"}`;
+}
+
+function describeError(
+  code: string | undefined,
+  message: string,
+  nowMs: number,
+): ErrorPresentation {
   switch (code) {
     case "rate_limit":
       // Generic "switch provider" framing is wrong here — switching to a BYO
@@ -90,22 +142,50 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
           "The model declined to respond, usually due to content policy. Try rephrasing your message.",
       };
     case "trial_daily_cap":
+      // Copy is derived from `code` alone — the server message is ignored, so
+      // the pre-send refusal (gate_chat) and the mid-run reclassification
+      // render an identical card. No dollar figure: the wall fires at
+      // CAP - RESERVE while Settings advertises the headline $3/day.
       return {
         title: "Daily free limit reached",
-        description:
-          message ||
-          "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
-        // The upgrade *action* (checkout) is a later phase — for now this
-        // just deep-links to the Billing settings panel, same pattern as
-        // TrialBanner's "Manage" link.
-        action: { label: "Upgrade", href: "/settings?panel=billing" },
+        description: `You've used today's free usage. Resets at midnight UTC — ${resetPhrase(nowMs)}.`,
+        action: {
+          label: "Upgrade to keep going",
+          href: "/settings?panel=billing",
+          crossRoute: true,
+        },
       };
     case "trial_expired":
+      // No reset line: trial_cap._is_expired never self-clears.
       return {
         title: "Your free trial has ended",
+        description: "Your free trial has ended. Choose a plan to keep your agent running.",
+        action: {
+          label: "Choose a plan",
+          href: "/settings?panel=billing",
+          crossRoute: true,
+        },
+      };
+    case "out_of_credits":
+      // Previously fell through to `default` — a paying customer saw the same
+      // "Failed to generate" a crash would produce, with no way to top up.
+      return {
+        title: "Out of credits",
         description:
-          message || "Your 3-day free trial has ended. Pick a plan to keep your agent.",
-        action: { label: "Upgrade", href: "/settings?panel=billing" },
+          "Your Claude credit balance is used up. Top up to keep your agents running.",
+        // In-shell: routes into CreditsStep, same as OutOfCreditsBanner.
+        action: { label: "Top up now", href: "/chat?provider=bedrock_claude" },
+      };
+    case "subscription_inactive":
+      return {
+        title: "Subscription inactive",
+        description:
+          "Your subscription isn't active, so agent runs are paused. Reactivate to continue.",
+        action: {
+          label: "Reactivate",
+          href: "/settings?panel=billing",
+          crossRoute: true,
+        },
       };
     case "unknown":
     default:
@@ -117,7 +197,11 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
 }
 
 export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
-  const { title, description, action } = describeError(code, message);
+  // Snapshot via useState so render stays pure and the SSR/client passes agree
+  // — the established pattern in this codebase for Date.now() in a component.
+  const [nowMs] = React.useState(() => Date.now());
+  const { title, description, action } = describeError(code, message, nowMs);
+  const showRetry = Boolean(onRetry) && !MONEY_CODES.has(code ?? "");
 
   return (
     <div
@@ -144,7 +228,7 @@ export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
                 </a>
               </Button>
             )}
-            {onRetry && (
+            {showRetry && onRetry && (
               <Button
                 size="sm"
                 variant="ghost"

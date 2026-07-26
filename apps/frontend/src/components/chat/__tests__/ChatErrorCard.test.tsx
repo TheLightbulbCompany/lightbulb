@@ -43,35 +43,66 @@ describe("ChatErrorCard", () => {
     expect(screen.getByText("Request refused")).toBeInTheDocument();
   });
 
-  it("renders the trial_daily_cap variant with the backend message and an Upgrade action", () => {
-    render(
-      <ChatErrorCard
-        code="trial_daily_cap"
-        message="You've used today's free allowance — resets tomorrow. Upgrade to keep going."
-      />,
+  it("renders the trial_daily_cap wall with an upgrade CTA and no dollar figure", () => {
+    render(<ChatErrorCard code="trial_daily_cap" message="server copy" />);
+    expect(screen.getByText("Daily free limit reached")).toBeInTheDocument();
+    expect(screen.getByText(/resets at midnight UTC/i)).toBeInTheDocument();
+    // No dollar figure at the wall: after the admission-threshold fix the wall
+    // fires at $2.70 of usable spend while Settings advertises "$3/day", so any
+    // number printed here would contradict it.
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+    // The card renders from `code`, ignoring the server message, so the
+    // pre-send and mid-run refusals are pixel-identical.
+    expect(screen.queryByText("server copy")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Upgrade to keep going" })).toHaveAttribute(
+      "href",
+      "/settings?panel=billing",
     );
-    // Distinct from a generic "Failed to generate" error card.
-    expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
-    ).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Upgrade" });
-    expect(link).toHaveAttribute("href", "/settings?panel=billing");
   });
 
-  it("renders the trial_expired variant with the backend message and an Upgrade action", () => {
-    render(
-      <ChatErrorCard
-        code="trial_expired"
-        message="Your 3-day free trial has ended. Pick a plan to keep your agent."
-      />,
-    );
+  it("omits the reset line for trial_expired — expiry is permanent", () => {
+    render(<ChatErrorCard code="trial_expired" message="" />);
     expect(screen.getByText("Your free trial has ended")).toBeInTheDocument();
-    expect(
-      screen.getByText("Your 3-day free trial has ended. Pick a plan to keep your agent."),
-    ).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Upgrade" });
-    expect(link).toHaveAttribute("href", "/settings?panel=billing");
+    expect(screen.queryByText(/resets at midnight/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /choose a plan/i })).toHaveAttribute(
+      "href",
+      "/settings?panel=billing",
+    );
+  });
+
+  it("renders out_of_credits with a top-up CTA instead of Failed to generate", () => {
+    render(<ChatErrorCard code="out_of_credits" message="" />);
+    expect(screen.getByText("Out of credits")).toBeInTheDocument();
+    expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
+    // Routes into CreditsStep, the same destination OutOfCreditsBanner uses.
+    expect(screen.getByRole("link", { name: "Top up now" })).toHaveAttribute(
+      "href",
+      "/chat?provider=bedrock_claude",
+    );
+  });
+
+  it("renders subscription_inactive with a reactivate CTA", () => {
+    render(<ChatErrorCard code="subscription_inactive" message="" />);
+    expect(screen.getByText("Subscription inactive")).toBeInTheDocument();
+    expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Reactivate" })).toHaveAttribute(
+      "href",
+      "/settings?panel=billing",
+    );
+  });
+
+  it("suppresses Retry on money codes but keeps it elsewhere", () => {
+    const onRetry = vi.fn();
+    for (const code of ["trial_daily_cap", "trial_expired", "out_of_credits", "subscription_inactive"]) {
+      const { unmount } = render(<ChatErrorCard code={code} message="" onRetry={onRetry} />);
+      // Retry against a budget wall is guaranteed to fail until reset or
+      // top-up; offering it reads as product flakiness, not an exhausted
+      // allowance.
+      expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+      unmount();
+    }
+    render(<ChatErrorCard code="timeout" message="" onRetry={onRetry} />);
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
   it("falls back to a generic title for unknown codes and shows the upstream message verbatim", () => {

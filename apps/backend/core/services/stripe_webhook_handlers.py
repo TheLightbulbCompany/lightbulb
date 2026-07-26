@@ -805,13 +805,21 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # lands at index >= 1 would fall to "standard" here and get their
     # container resized DOWN — silently. Same rule as the seat item above.
     is_ultra = bool(subscription_item_on_price(items, settings.STRIPE_ULTRA_PRICE_ID))
-    if items and not is_team_seat:
+    if items:
         # Only act when the payload actually carries the subscription item. A
         # partial `.updated` can arrive with an empty items.data; treating that
         # absence as "not ultra" would wrongly downgrade + shrink an Ultra owner.
-        # Team-seat subs are excluded outright — their per-seat pricing is a
-        # different axis (never the ultra price), and their container sizing is
-        # managed by the seat flow, not the tier flow.
+        #
+        # Team subs are INCLUDED: tier and headcount are independent axes. A
+        # team's tier rides its BASE item (the ultra price once upgraded) while
+        # its seat item is untouched, so this branch and the seat-persistence
+        # branch above operate on different items — and the seat write MUST
+        # run first. set_team_subscription is a full read-then-put_item
+        # rewrite of the row (it has no per-field UpdateExpression), so it
+        # would clobber a `plan` written by this branch back to whatever it
+        # read at the top of the handler; set_plan's scoped update_item has no
+        # such blast radius. Swapping the order would silently revert every
+        # tier write on an Ultra team's seat-change events.
         old_plan = account.get("plan") or "standard"
         new_plan = "ultra_pro" if is_ultra else "standard"
         plan_persisted = False

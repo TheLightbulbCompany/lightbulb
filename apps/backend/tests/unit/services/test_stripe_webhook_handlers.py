@@ -50,6 +50,10 @@ def mock_repo():
         )
         repo.set_subscription = AsyncMock()
         repo.set_provider_choice = AsyncMock()
+        # Any test that populates event_data["items"] reaches the tier branch
+        # (see the TestTeamSeatWebhook comment below for why this must be a
+        # real AsyncMock rather than a bare MagicMock).
+        repo.set_plan = AsyncMock()
         yield repo
 
 
@@ -404,6 +408,12 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
+            # Team-seat events now also reach the tier branch (Task 2 dropped
+            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
+            # hits a bare MagicMock, raises TypeError, and the handler's own
+            # best-effort except-Exception swallows it silently — mocking it
+            # properly makes the branch actually run instead of erroring out.
+            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(self._team_event(), MagicMock())
@@ -437,6 +447,12 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
+            # Team-seat events now also reach the tier branch (Task 2 dropped
+            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
+            # hits a bare MagicMock, raises TypeError, and the handler's own
+            # best-effort except-Exception swallows it silently — mocking it
+            # properly makes the branch actually run instead of erroring out.
+            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(flat_event, MagicMock())
@@ -483,6 +499,12 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
+            # Team-seat events now also reach the tier branch (Task 2 dropped
+            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
+            # hits a bare MagicMock, raises TypeError, and the handler's own
+            # best-effort except-Exception swallows it silently — mocking it
+            # properly makes the branch actually run instead of erroring out.
+            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(event, MagicMock())
@@ -531,6 +553,12 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
+            # Team-seat events now also reach the tier branch (Task 2 dropped
+            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
+            # hits a bare MagicMock, raises TypeError, and the handler's own
+            # best-effort except-Exception swallows it silently — mocking it
+            # properly makes the branch actually run instead of erroring out.
+            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(event, MagicMock())
@@ -575,6 +603,12 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
+            # Team-seat events now also reach the tier branch (Task 2 dropped
+            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
+            # hits a bare MagicMock, raises TypeError, and the handler's own
+            # best-effort except-Exception swallows it silently — mocking it
+            # properly makes the branch actually run instead of erroring out.
+            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(event, MagicMock())

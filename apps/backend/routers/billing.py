@@ -700,11 +700,13 @@ async def create_team_checkout(
         "Upgrades the owner to the Ultra Pro tier ($150/mo). An owner already "
         "on the flat subscription is upgraded IN PLACE — the existing "
         "subscription item's price is swapped to the Ultra price (one "
-        'subscription, prorated) — and the endpoint returns {"upgraded": true}. '
-        "An owner with no live subscription (free tier / never subscribed) gets "
-        "a fresh Ultra Checkout session and the endpoint returns its "
-        '{"checkout_url"}. The durable tier write + container resize happen in '
-        "the subscription webhook, not here. Org-context callers must be admins."
+        'subscription, prorated) — and the endpoint returns {"upgraded": true}; '
+        "for a per-seat team subscription, only the base item is swapped and "
+        "the seat item is left untouched. An owner with no live subscription "
+        "(free tier / never subscribed) gets a fresh Ultra Checkout session and "
+        'the endpoint returns its {"checkout_url"}. The durable tier write + '
+        "container resize happen in the subscription webhook, not here. "
+        "Org-context callers must be admins."
     ),
     operation_id="create_ultra_checkout",
 )

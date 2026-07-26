@@ -486,42 +486,47 @@ async def create_ultra_upgrade(
     owner_id: str,
     clerk_user_id: str | None = None,
 ) -> dict | stripe.checkout.Session:
-    """Upgrade an owner to the Ultra Pro tier ($150/mo).
+    """Upgrade an owner to the Ultra Pro tier.
 
-    Two paths, picked by whether the owner already holds a LIVE
-    subscription:
+    Ultra is *only* a container size ($150 base instead of $50) — it swaps a
+    price, never the shape of the subscription. Two paths, picked by whether
+    the owner already holds a LIVE subscription:
 
-    - **In-place item swap** — an owner already on the $50 flat sub
+    - **In-place item swap** — an owner already on a live subscription
       (``stripe_subscription_id`` present + a LIVE ``subscription_status`` —
       any of ``LIVE_SUBSCRIPTION_STATUSES``, i.e. active/trialing but also
-      past_due/unpaid/paused/incomplete) is upgraded by swapping the
-      subscription item's price to ``STRIPE_ULTRA_PRICE_ID`` on the SAME
-      Stripe subscription, prorated. Keeps ONE subscription (no cancel +
-      re-subscribe), so the owner is charged only the prorated difference and
-      a still-billable (e.g. past_due) owner never gets a SECOND parallel
-      subscription. The flat sub's item id is not persisted on the billing
-      row, so it is read LIVE off the retrieved subscription
-      (``sub["items"]["data"][0]["id"]``). Returns ``{"upgraded": True}``.
+      past_due/unpaid/paused/incomplete) is upgraded by swapping ONE item's
+      price to ``STRIPE_ULTRA_PRICE_ID`` on the SAME Stripe subscription,
+      prorated. Keeps ONE subscription (no cancel + re-subscribe), so the
+      owner is charged only the prorated difference and a still-billable
+      (e.g. past_due) owner never gets a SECOND parallel subscription.
+
+      A **personal** sub has a single item — that item is swapped. A
+      **team** sub carries two items (flat base + per-seat, price ids
+      ``STRIPE_TEAM_BASE_PRICE_ID`` / ``STRIPE_TEAM_SEAT_PRICE_ID``); only the
+      BASE item is swapped to the Ultra price — the seat item's id and
+      quantity are never touched, so a 4-seat Ultra team pays
+      $150 + 4×$20/mo. Item selection is always by price id
+      (``subscription_item_on_price``), never position — Stripe does not
+      guarantee line-item order. A subscription whose shape isn't exactly one
+      of those two (an unrecognised multi-item sub, a seat-only sub with no
+      base item, etc.) is refused rather than repriced blind. Returns
+      ``{"upgraded": True}``.
 
     - **Fresh checkout** — an owner with no live subscription (``trial_local``
       / canceled / never subscribed — no item to swap) gets a
       subscription-mode Checkout session on the Ultra price via the shared
       builder. Returns the Session; the caller redirects to ``session.url``.
+      This branch always mints a single-item, seat-less Ultra subscription, so
+      an **org** with no live subscription is refused up front — it must buy
+      its team plan (base + seat) first, or it would end up paying $150/mo for
+      zero seats with no seat item for ``sync_team_seat_quantity`` to drive.
 
     ``trial_local`` counts as "active" for platform use but carries no
     ``stripe_subscription_id``, so it correctly takes the fresh-checkout
     branch. A terminal status (``canceled``/``incomplete_expired``) never
     swaps in place even if a stale ``stripe_subscription_id`` lingers — it
     falls through to a fresh checkout rather than modifying a dead sub.
-
-    **Per-seat team subscriptions are rejected**, not swapped: a row with a
-    ``subscription_item_id`` (the ``is_seat_subscription`` discriminator) is a
-    per-seat Teams sub whose item price is $/seat — swapping it to the Ultra
-    flat price would corrupt per-seat billing. Ultra + Teams is out of scope,
-    so raise rather than proceed. The local-row guard is defense in depth: the
-    LIVE retrieved subscription is ALSO inspected before the swap (>1 line item,
-    or an item on the seat price) so a lagging team-seat webhook can't let a
-    per-seat sub reach ``Subscription.modify``.
 
     The fresh-checkout branch serializes behind the same per-owner claim as
     ``create_flat_fee_checkout`` (no duplicate concurrent sessions) and threads
@@ -541,39 +546,48 @@ async def create_ultra_upgrade(
 
     account = await billing_repo.get_by_owner_id(owner_id)
 
-    # Team per-seat subscriptions are out of scope for Ultra. A set
-    # subscription_item_id (same discriminator is_seat_subscription keys on in
-    # routers/billing.py) means a live per-seat Teams sub — swapping that
-    # item's $/seat price to the Ultra flat price would corrupt per-seat
-    # billing. Reject BEFORE the live-status swap below; the endpoint maps this
-    # BillingServiceError to a 400.
-    if account and account.get("subscription_item_id"):
-        raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
-
     sub_id = account.get("stripe_subscription_id") if account else None
     status = account.get("subscription_status") if account else None
+
+    # An org with no live subscription must buy its team plan first. The
+    # fresh-checkout branch below emits a single-item Ultra subscription with
+    # NO seat item — correct for a personal owner, but it would leave an org
+    # paying $150/mo for zero seats and with no item for
+    # sync_team_seat_quantity to drive.
+    from core.auth import is_org_owner_id
+
+    if is_org_owner_id(owner_id) and not (sub_id and status in LIVE_SUBSCRIPTION_STATUSES):
+        raise BillingServiceError("Subscribe your team before upgrading to Ultra Pro")
 
     if sub_id and status in LIVE_SUBSCRIPTION_STATUSES:
         with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
             sub = stripe.Subscription.retrieve(sub_id)
         items_data = sub["items"]["data"]
-        first_item = items_data[0]
-        # Reject a LIVE per-seat Teams sub before repricing it. The local-row
-        # subscription_item_id guard above is defense in depth, but the team-seat
-        # webhook may not have persisted that field yet — so inspect the retrieved
-        # subscription directly. Explicitly: a Teams sub is one carrying the seat
-        # price on ANY item. (This previously leaned SOLELY on `len(items_data) >
-        # 1`, which happens to hold now that Teams has base + seat, but said
-        # nothing true.) The multi-item check stays too, as a defense-in-depth
-        # catch-all for any other multi-item shape we don't yet recognize by
-        # price — never swap an item on a subscription we can't fully explain.
-        # Endpoint maps this to a 400, same as the local guard.
-        is_team_sub = bool(subscription_item_on_price(items_data, settings.STRIPE_TEAM_SEAT_PRICE_ID))
-        if len(items_data) > 1 or is_team_sub:
-            raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
-        # The flat sub has a single item whose id is not stored on the billing
-        # row — read it LIVE off the retrieved subscription and swap its price.
-        item_id = first_item["id"]
+
+        seat_item = subscription_item_on_price(items_data, settings.STRIPE_TEAM_SEAT_PRICE_ID)
+        base_item = subscription_item_on_price(items_data, settings.STRIPE_TEAM_BASE_PRICE_ID)
+        ultra_item = subscription_item_on_price(items_data, settings.STRIPE_ULTRA_PRICE_ID)
+        is_team_sub = bool(seat_item)
+
+        # Which item carries the tier? A team's tier lives on its BASE item
+        # (either the standard base, or the ultra price once upgraded); a
+        # personal sub's tier is its only item. Never by position — Stripe does
+        # not guarantee line-item order.
+        if is_team_sub:
+            target_item = base_item or ultra_item
+            recognised = len(items_data) == 2 and bool(target_item)
+        else:
+            target_item = items_data[0] if len(items_data) == 1 else {}
+            recognised = len(items_data) == 1
+
+        # Defence in depth: never reprice an item on a subscription whose shape
+        # we cannot fully explain (an unknown add-on, a coupon item, a
+        # hand-edited sub). Recognised shapes are exactly: one item (personal),
+        # or base+seat (team).
+        if not recognised or not target_item:
+            raise BillingServiceError("This subscription's plan can't be changed automatically")
+
+        item_id = target_item["id"]
         with timing("stripe.api.latency", {"op": "subscription.modify"}):
             stripe.Subscription.modify(
                 sub_id,

@@ -22,6 +22,7 @@ import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useBilling } from "@/hooks/useBilling";
+import { planLabel } from "@/lib/planLabel";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -283,7 +284,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
             <InfoRow
               icon={<CreditCard className="h-3.5 w-3.5" />}
               label="Subscription"
-              value={subscriptionStatus ?? "—"}
+              value={planLabel(subscriptionStatus) ?? "—"}
             />
             <InfoRow
               icon={<MapPin className="h-3.5 w-3.5" />}

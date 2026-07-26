@@ -87,8 +87,14 @@ export function TeamBillingCard({
       style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}
       className="w-full max-w-[440px] rounded-2xl border border-[#e0dbd0] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
     >
+      {/*
+        Body copy keeps the literal #6b655e rather than var(--mute) (#8a8578).
+        --mute is ~3.7:1 on white — below WCAG AA — and this paragraph carries
+        the price the owner is about to be charged. --ink and --danger below
+        ARE the tokens; they're contrast-equivalent to what they replaced.
+      */}
       <div className="text-base font-semibold leading-[1.4] text-[var(--ink)]">Teams billing</div>
-      <p className="mt-1 text-[13px] leading-[1.5] text-[var(--mute)]">
+      <p className="mt-1 text-[13px] leading-[1.5] text-[#6b655e]">
         {seatsKnown ? (
           <>
             ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
@@ -111,7 +117,7 @@ export function TeamBillingCard({
 
       <div className="mt-4">
         {!canAct ? (
-          <p className="rounded-[10px] border border-[#e0dbd0] bg-[#faf7f2] px-3.5 py-3 text-[13px] leading-[1.5] text-[var(--mute)]">
+          <p className="rounded-[10px] border border-[#e0dbd0] bg-[#faf7f2] px-3.5 py-3 text-[13px] leading-[1.5] text-[#6b655e]">
             Ask your org admin to set up Teams billing. Only an organization admin can start the team
             subscription.
           </p>

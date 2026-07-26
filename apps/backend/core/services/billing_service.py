@@ -367,13 +367,19 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
 
     Threads ``purpose="team_seat"`` into subscription metadata so the
     customer.subscription.* webhook records the subscription item id + seat
-    count via set_team_subscription. Quantity is floored at 1 so a transient
-    member-count read of 0 never creates a zero-quantity subscription.
+    count via set_team_subscription. The BASE quantity is always 1; the SEAT
+    quantity is floored at 1 so a transient member-count read of 0 never
+    creates a zero-quantity subscription.
     """
     if not settings.STRIPE_TEAM_SEAT_PRICE_ID:
         raise BillingServiceError("STRIPE_TEAM_SEAT_PRICE_ID not configured")
     if not settings.STRIPE_TEAM_BASE_PRICE_ID:
         raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID not configured")
+    if settings.STRIPE_TEAM_BASE_PRICE_ID == settings.STRIPE_TEAM_SEAT_PRICE_ID:
+        # Identical ids would make subscription_item_on_price return the same
+        # item for both lookups — reintroducing, through config, exactly the
+        # positional ambiguity this whole flow exists to eliminate.
+        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID and STRIPE_TEAM_SEAT_PRICE_ID must differ")
 
     quantity = max(1, member_count)
     return await _build_subscription_checkout(
@@ -397,7 +403,13 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
         success_url=f"{FRONTEND_URL}/chat?checkout=success",
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
-        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id),
+        # Seat count rides in the key. Seats now move on INVITE — seconds
+        # before the admin clicks Subscribe — so invite, open checkout,
+        # abandon, invite again, Subscribe can all land inside one 5-minute
+        # bucket. Without the quantity, that resends the same key with
+        # different line items and Stripe either errors or replays the stale
+        # session at the old seat count.
+        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id, str(quantity)),
     )
 
 

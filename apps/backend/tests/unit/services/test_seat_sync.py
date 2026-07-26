@@ -136,7 +136,6 @@ async def test_seat_count_unchanged_when_an_invite_is_accepted(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_seat_count_returns_zero_when_invites_unreadable(monkeypatch):
     """An invitations-read failure returns 0, NOT the members-only floor.
 

@@ -168,6 +168,12 @@ function fromClassified(
       };
     }
     case "unrecognized":
+      // DEFENSIVE ONLY: `useOnboardingStatus` stopped letting an
+      // `unrecognized` outcome become the classified value (it reports via
+      // `networkError` instead), and `useContainerStatus` now checks
+      // `networkError` first anyway — so a 5xx reaches "unreachable" by that
+      // route, carrying the real status code in its message rather than this
+      // generic fallback. Kept as a total-switch guard.
       return { kind: "unreachable", message: unreachableMessage };
     case "container": {
       // Defensive against an empty/malformed 200 body — mirrors this file's
@@ -274,10 +280,28 @@ export function useContainerStatus() {
     visibility: mobileVisibilityAdapter,
   });
 
-  const status: ContainerStatus = classified
-    ? fromClassified(classified, "Request failed")
-    : networkError
-      ? { kind: "unreachable", message: networkError.message }
+  // A LIVE failure outranks the sticky last-good body. `useOnboardingStatus`
+  // now keeps the last successfully classified status across a failed poll,
+  // so web's first-run funnel isn't unmounted (and its half-typed brief
+  // destroyed) by a single blip. That stickiness silently broke the old
+  // `classified ? … : networkError ? …` order here: once ANY good poll had
+  // landed, `classified` stayed truthy for the rest of the session and the
+  // `networkError` branch became unreachable, so a sustained outage rendered
+  // a frozen cold-start screen with no way out.
+  //
+  // Checking `networkError` FIRST restores this binding's pre-existing
+  // semantics exactly (before stickiness, a failed poll nulled `classified`,
+  // so a failure always landed here). That is the right policy for MOBILE
+  // specifically: `unreachable` is NON-BLOCKING here — ProvisionGate falls
+  // through to `children` — so it degrades to the app rather than trapping
+  // the user, and mobile's own first-run funnel is protected by its
+  // `onboarded` latch (see FirstRunGate), not by this stickiness. Rendering
+  // policy belongs to each binding; web keeps the sticky read because its
+  // funnel gates on it directly.
+  const status: ContainerStatus = networkError
+    ? { kind: "unreachable", message: networkError.message }
+    : classified
+      ? fromClassified(classified, "Request failed")
       : { kind: "loading" };
 
   return { status, refetch: refresh };

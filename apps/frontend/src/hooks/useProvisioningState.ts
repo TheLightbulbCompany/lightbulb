@@ -157,6 +157,14 @@ export function useProvisioningState(
       };
     case "unrecognized":
     default:
+      // DEFENSIVE ONLY as of the sticky-status change: `useOnboardingStatus`
+      // no longer lets an `unrecognized` outcome become the classified value
+      // (it is a failure, not a server state, so it reports via
+      // `networkError` and leaves the last good status in place). A 5xx
+      // therefore arrives as `networkError` with `classified` either the
+      // previous good status or null — the null case lands in the
+      // `if (!classified)` early return above, which already carries the
+      // error. Kept as a total-switch guard, not because this is reachable.
       // Either a non-402/404 status, or a 402 without a recognizable
       // blocked payload (FastAPI's HTTPException(detail=gate.to_payload())
       // always sends one in practice). Surface a real error rather than a

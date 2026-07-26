@@ -56,6 +56,12 @@ const EMPTY_DRAFT: Draft = { path: null, input: "", detail: "" };
  * this is user-writable storage, and a malformed entry must degrade to a
  * clean funnel, never to a crashed one. */
 function readDraft(key: string): Draft {
+  // This one runs inside a lazy `useState` initializer, which DOES execute
+  // during SSR — unlike the persist effect below, which is client-only by
+  // construction. Safe today only because ProvisioningStepper gates the
+  // funnel behind a completed client-side fetch; guarded here so that
+  // safety doesn't depend on a caller three files away.
+  if (typeof window === "undefined") return EMPTY_DRAFT;
   try {
     const raw = window.sessionStorage.getItem(key);
     if (!raw) return EMPTY_DRAFT;

@@ -85,7 +85,8 @@ This design does not reuse it.
 | # | Decision | Rationale |
 |---|---|---|
 | 1 | **One general primitive**: "agent emails its owner", callable repeatedly | First contact and nightly routines are two callers of one capability. A one-shot endpoint would have blocked routines on night two. |
-| 2 | **Once-only is per-purpose policy**, not a property of the endpoint | `first_contact` is once; `routine` is not. The guard belongs to the caller that needs it. |
+| 2 | **Once-only is SERVER-INFERRED**, never client-declared | The server already knows: `first_contact_state == not_started` *means* this is first contact. Trusting a client-supplied `purpose` to select the guard would let an agent bypass it by picking the wrong label — not maliciously, just by choosing wrong. |
+| 2a | **`email_enabled` is a distinct fact from `email_address`** | Mint-on-send means the address is null until the first send. Without a separate flag, `SKILL.md`'s "null ⇒ don't offer email" rule deadlocks the feature. See below. |
 | 3 | **Mint after Friday names the company**, not at provisioning | The slug becomes an address other people are given, so freezing it is right — freezing an auto-generated placeholder the user never chose is not. Prod has one owner and zero external users, so moving this is nearly free now. |
 | 4 | **Friday writes the body**, tailored | Preserves the product moment. Reuses `isol8-mail.sh`'s shape. |
 | 5 | **Friday invokes it via a tool call**, not a `chat.final` observer | She decides when her work is done. Collapses mint + send into one request and removes the need for a token entirely. |
@@ -99,18 +100,22 @@ This design does not reuse it.
 ```
 POST /api/v1/agent-mail/send-to-owner/u/{owner_id}
 Authorization: Bearer {hook_token}
-{ "purpose": "first_contact" | "routine", "subject": "...",
-  "body_text": "...", "body_html": null }
+{ "purpose": "first_contact" | "routine",   ← METRIC LABEL ONLY, not policy
+  "subject": "...", "body_text": "...", "body_html": null }
 
   1. auth        container_repo.get_by_owner_id + timing-safe compare
-  2. rate limit  60/min per owner (own bucket) AND a per-owner DAILY cap
-  3. policy      once-only purposes check their own state; others pass
-  4. address     read Paperclip company name  ← whatever Friday set
+  2. burst limit 60/min per owner, in-process (smoothing only)
+  3. daily cap   DURABLE conditional increment, 10/day per owner → 429
+  4. policy      first_contact_state == not_started ?
+                   → this IS first contact: claim it (conditional write)
+                   → else: a subsequent send, no guard
+  5. address     read Paperclip company name  ← whatever Friday set
                  allocate_company_slug()      ← idempotent per owner
                  mint_agent_email_address()   ← idempotent per owner
-  5. facts       write_owner_facts()          ← only when newly minted
-  6. send        SES: From = minted address, To = owner_email (server-derived)
-  7. settle      per-purpose state + metric
+  6. facts       write_owner_facts() when newly minted OR when facts
+                 carry no address (heals a stale null)
+  7. send        SES: From = minted address, To = owner_email (server-derived)
+  8. settle      state + metric
 ```
 
 **No token.** The deleted `mint_first_contact_token` existed only to bake a
@@ -118,19 +123,60 @@ recipient into a value Friday could hold. An endpoint that already knows who
 she is derives the recipient from `owner_id` server-side — nothing to mint,
 expire, or expose to a prompt where it could be pasted into a visible body.
 
-**The daily cap is a real fence, not ceremony.** An agent in a loop could
-otherwise email its owner hundreds of times in an hour. 10/day per owner,
-rejected with `429` and a metric above it.
+**`purpose` never selects the guard.** It is a metric dimension. Policy comes
+from `first_contact_state`, which only the server can read or write. An
+unknown `purpose` still 400s — not for safety, but to keep metric cardinality
+bounded. This means an agent cannot skip the once-only guard by mislabelling
+its send, and it removes a judgment call the agent would otherwise have to get
+right.
+
+**The daily cap must be DURABLE.** It is now the only fence against a looping
+agent — it replaced the one-shot latch. An in-process bucket (the pattern
+`agent_mail_relay` uses) would be per-ECS-task behind the ALB, making the real
+limit `10 × task_count` and resetting on every deploy. So it is a conditional
+DynamoDB increment keyed `(owner_id, YYYY-MM-DD)` with a TTL, mirroring
+`usage_repo`'s atomic counters. The per-minute in-process limit stays, but only
+as burst smoothing.
 
 ### Callers
 
-| Purpose | Guard | Triggered by |
+| Purpose (label) | Effective guard | Triggered by |
 |---|---|---|
-| `first_contact` | Once per `onboarding_generation` (`first_contact_state`) | Friday, instructed by the first-run kickoff prompt |
-| `routine` | None — rate + daily cap only | A seeded nightly routine, once the owner pays |
+| `first_contact` | Once per `onboarding_generation` — **because the state says so**, not because of the label | Friday, instructed by the first-run kickoff prompt |
+| `routine` | Burst + daily cap only (first contact already claimed) | A seeded nightly routine, once the owner pays |
 
-Adding a caller means adding a purpose and (optionally) a guard. It does not
-mean touching auth, minting, or the SES path.
+Adding a caller means adding a label. It does not mean touching auth, minting,
+policy, or the SES path.
+
+Edge case, deliberately allowed: if first contact never succeeded and a routine
+fires first, that send claims the first-contact slot. The owner gets one email
+rather than none, which is the better failure.
+
+### The facts tri-state (decision 2a)
+
+Mint-on-send creates a bootstrapping problem. `isol8/SKILL.md` currently says:
+
+> *"Check `~/.openclaw/isol8-facts.json` for a non-empty `email_address`… If it
+> is absent, `null`, or empty, email is not provisioned for this owner: don't
+> claim to have an email address or offer to reply by email."*
+
+Under mint-on-send the address is null **until the first send**. Friday would
+read her facts, see null, correctly follow the skill, and decline to send —
+then decline each nudge, burn all three attempts, and land in `failed`. The
+feature would deadlock on its own instructions and fail exactly the way the
+BOOTSTRAP.md version did: silently, with the agent behaving correctly.
+
+`email_address` is being asked to carry two different facts. Split them:
+
+| `email_enabled` | `email_address` | Meaning for the agent |
+|---|---|---|
+| `false` | `null` | Email is off for this owner/env. Don't claim or offer it. |
+| `true` | `null` | **You can send. Your address is created by your first send.** Don't advertise an address you can't yet name. |
+| `true` | `"friday@…"` | That is your address. Advertise and use it. |
+
+`build_owner_facts` derives `email_enabled` from `settings.AGENT_EMAIL_DOMAIN`
+being set — the same predicate every other guard already uses. `SKILL.md` is
+updated to branch on the pair, not on `email_address` alone.
 
 ### Security model
 
@@ -188,7 +234,8 @@ anyone's container.
 | `apps/infra/openclaw/skills/isol8/SKILL.md` | Document the helper and when each purpose applies. |
 | `core/services/onboarding_brief.build_first_run_message` | Add the naming step and the send step. |
 | `core/services/paperclip_provisioning.provision_org` | **Remove** `allocate_company_slug` + `mint_agent_email_address`. |
-| `core/services/owner_facts.build_owner_facts` | Add `owner_id` so the script can build its URL. |
+| `core/services/owner_facts.build_owner_facts` | Add `owner_id` (so the script can build its URL) and `email_enabled` (the tri-state — see above). |
+| `core/repositories/` — new daily-send counter | Durable conditional increment keyed `(owner_id, YYYY-MM-DD)` with TTL. |
 | `core/services/agent_mail_delivery` | Wake + pending-delivery instead of a silent drop. |
 | `core/repositories/paperclip_repo` | `first_contact_state` claim/settle/re-arm. |
 | `core/services/bootstrap_dispatcher._on_terminal` | Also inspect `first_contact_state` and dispatch a bounded nudge. Composes no mail. |
@@ -226,6 +273,13 @@ This does not contradict decision 5. The **send** remains Friday's own tool
 call; the observer never composes or sends mail. It only notices she hasn't
 and reminds her.
 
+**Nudge runs re-register the same callback**, so attempts 2 and 3 have a
+trigger at all — the bootstrap run only terminates once. `first_contact_attempts`
+is therefore the *sole* loop bound, and it is checked **before** dispatch, not
+after. State this explicitly in the implementation: a nudge that dispatches
+without first incrementing-and-checking the counter is an infinite loop of
+agent runs.
+
 We retry a **nudge**, not a send. A send that reached SES is never retried.
 
 ## Error handling
@@ -234,8 +288,8 @@ We retry a **nudge**, not a send. A send that reached SES is never retried.
 |---|---|
 | `AGENT_EMAIL_DOMAIN` unset | `{"status": "disabled"}`, no state change. Non-prod stays inert. |
 | Bad/missing hook_token | `401`. No state change, no leak about the owner. |
-| Rate limit / daily cap exceeded | `429` + metric. |
-| Unknown `purpose` | `400`. Fail closed rather than defaulting to unguarded. |
+| Burst limit / daily cap exceeded | `429` + metric. The daily cap is durable, so this holds across tasks and deploys. |
+| Unknown `purpose` | `400` — to bound metric cardinality, not for safety. Policy never reads it. |
 | Slug allocation fails | State `failed`, alarm. Nothing partial is written. |
 | Mint loses a conditional-put race | Treated as a failed mint, state `failed`, alarm. |
 | `write_owner_facts` fails | **Send proceeds.** Facts are advisory; the address row is the source of truth. Logged. |
@@ -251,12 +305,25 @@ naming" is a number rather than a guess.
 
 **Unit — endpoint**
 - wrong hook_token → 401; token for owner A cannot send for owner B
-- `first_contact` twice → second is `already_sent`, SES **not** called
-- `routine` twice → **both** send (the regression that motivated this revision)
-- concurrent `first_contact` claim: one `sending`, one `already_sent`
+- first send claims first contact; a second send is **not** guarded and goes out
+  (the regression that motivated this revision)
+- **a send labelled `purpose="routine"` while `first_contact_state` is
+  `not_started` still claims the first-contact slot** — the label cannot bypass
+  the guard
+- **a send labelled `purpose="first_contact"` after the slot is claimed is NOT
+  blocked** — the label confers nothing
+- concurrent first sends: one claims, one gets `already_sent`
 - unknown purpose → 400
-- daily cap exceeded → 429
+- daily cap: 11th send in a UTC day → 429, **and the counter survives a
+  simulated process restart** (guards the in-process regression)
 - `AGENT_EMAIL_DOMAIN` empty → `disabled`, no mint, no send
+
+**Unit — facts tri-state**
+- `AGENT_EMAIL_DOMAIN` unset → `email_enabled=false`, `email_address=null`
+- enabled but unminted → `email_enabled=true`, `email_address=null`
+- after mint → `email_enabled=true`, `email_address` populated
+- `SKILL.md` branches on the pair (assert the guidance text names
+  `email_enabled`, so the deadlock cannot silently return)
 
 **Unit — service**
 - no prior address → minted from the **current** Paperclip company name, not
@@ -308,11 +375,14 @@ but prod, so every guard short-circuits.
    observable instead of assumed.
 2. **She may email before naming the company**, freezing the slug on the
    placeholder. The prompt orders the steps; `company_named` quantifies it.
-3. **`write_owner_facts` must run after the mint.** The single most likely
-   silent failure: `isol8-facts.json` would carry `email_address: null`, and
-   `SKILL.md` explicitly instructs Friday not to claim an address in that
-   case — she would decline to send, exactly as quietly as the BOOTSTRAP.md
-   version did. Covered by a dedicated test.
+3. **The facts file gates whether Friday will act at all.** Two distinct
+   failures live here, and both are silent. First, `SKILL.md` must branch on
+   `email_enabled`, not on `email_address` alone — otherwise mint-on-send
+   deadlocks the feature before it ever sends (decision 2a). Second,
+   `write_owner_facts` must run after a mint, or a later run reads a stale
+   `null` and stops advertising an address that exists. Both are covered by
+   dedicated tests, because both fail exactly the way BOOTSTRAP.md did: with
+   the agent behaving correctly and nothing alarming.
 4. **Waking on inbound costs money.** Fenced by the cap check and by
    `verified_senders` — only the owner can trigger it, and only under cap.
 

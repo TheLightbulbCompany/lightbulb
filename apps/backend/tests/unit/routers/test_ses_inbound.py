@@ -6,7 +6,10 @@ secret, duplicate message_id (deduped up front — unlike the Resend path,
 every gate here is a deterministic function of an already-SES-scanned
 payload, so there's no transient-failure window to protect), an empty
 message_id that skips dedup but still proceeds to delivery, unknown
-recipient, unverified sender (+ the public-address bypass), over cap, the
+recipient, unverified sender (+ the public-address bypass), over cap
+(answered via an auto-reply rather than dropped silently -- see the
+`capped_owner` fixture and its tests, plus the unknown-recipient/
+unverified-sender tests proving those two stay silent), the
 SES-verdict gate (virus/spam explicit FAIL, DMARC-authoritative
 sender-auth FAIL, the SPF+DKIM fallback when DMARC is absent, and a
 missing/GRAY verdict set that must still deliver), the auto-submitted loop
@@ -28,6 +31,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
 from core.services.webhook_dedup import WebhookDedupResult
 from routers import ses_inbound
 
@@ -61,10 +65,11 @@ def _dedup_recorded(monkeypatch):
     )
 
 
-def _row(*, public: bool = False, verified_senders=None):
+def _row(*, public: bool = False, verified_senders=None, address: str = RECIPIENT):
     return {
         "owner_id": OWNER_ID,
         "agent_id": AGENT_ID,
+        "address": address,
         "public": public,
         "verified_senders": verified_senders if verified_senders is not None else [SENDER],
     }
@@ -228,19 +233,128 @@ def test_public_address_bypasses_unverified_sender_and_delivers(client, monkeypa
     deliver_mock.assert_awaited_once()
 
 
-def test_over_cap_is_dropped(client, monkeypatch):
+def test_over_cap_reports_capped_notified_when_autoreply_succeeds(client, monkeypatch):
+    """Over cap is ANSWERED, not dropped in silence -- the sender allowlist
+    above already proved this is the owner, so replying is safe here."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value="trial_daily_cap"))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", AsyncMock(return_value=True))
     deliver_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body())
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_over_cap"
+    assert resp.json()["status"] == "capped_notified"
     deliver_mock.assert_not_called()
+
+
+@pytest.fixture
+def capped_owner(monkeypatch):
+    """A verified sender emailing an over-cap owner -- eligible for an autoreply."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    row = {
+        "owner_id": OWNER_ID,
+        "agent_id": AGENT_ID,
+        "address": "friday@acme.isol8.co",
+        "public": False,
+        "verified_senders": ["owner@example.com"],
+    }
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=row))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+    return row
+
+
+def _capped_body(**overrides):
+    overrides.setdefault("from", "Owner <owner@example.com>")
+    return _body(**overrides)
+
+
+def test_over_cap_sends_an_autoreply_and_reports_capped_notified(client, monkeypatch, capped_owner):
+    calls = []
+
+    async def _autoreply(*, reason, from_addr, to, in_reply_to, subject):
+        calls.append({"reason": reason, "from": from_addr, "to": to})
+        return True
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _capped_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "capped_notified"
+    assert len(calls) == 1
+    # Sent FROM the agent's own address, TO the owner who wrote in.
+    assert calls[0]["from"] == "friday@acme.isol8.co"
+    assert calls[0]["to"] == "owner@example.com"
+
+
+def test_over_cap_still_reports_dropped_when_the_autoreply_fails(client, monkeypatch, capped_owner):
+    async def _autoreply(**kwargs):
+        return False
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _capped_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_over_cap"
+
+
+def test_over_cap_never_delivers_to_the_agent(client, monkeypatch, capped_owner):
+    deliver_mock = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    async def _autoreply(**kwargs):
+        return True
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    _post(client, _capped_body())
+
+    deliver_mock.assert_not_called()
+
+
+def test_unverified_sender_gets_NO_autoreply(client, monkeypatch):
+    """Replying would confirm the address exists and make this a reflector."""
+    calls = []
+
+    async def _autoreply(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _body(**{"from": "Stranger <stranger@example.com>"}))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_unverified_sender"
+    assert calls == []
+
+
+def test_unknown_recipient_gets_NO_autoreply(client, monkeypatch):
+    calls = []
+
+    async def _autoreply(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _body(to=["nobody@nowhere.isol8.co"]))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_unknown_recipient"
+    assert calls == []
 
 
 def test_virus_fail_verdict_is_dropped(client, monkeypatch):

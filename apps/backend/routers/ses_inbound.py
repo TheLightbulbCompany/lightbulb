@@ -48,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
 from core.repositories.agent_email_repo import get_by_address, normalize
+from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_inbound import (
     build_attachment_manifest,
@@ -55,6 +56,7 @@ from core.services.agent_mail_inbound import (
     is_auto_submitted,
     parse_from_address,
 )
+from core.services.agent_mail_reply import reply_subject
 from core.services.agent_mail_token import encode_reply_token
 from core.services.trial_cap import trial_block_reason
 from core.services.webhook_dedup import WebhookDedupResult, record_event_or_skip
@@ -146,8 +148,24 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
 
         # Free-tier cost cap — same predicate the chat/container-start
         # gates use, so an over-cap owner can't route around it via email.
-        if await trial_block_reason(row["owner_id"]) is not None:
-            return {"status": "dropped_over_cap"}
+        #
+        # ANSWERED, not silently dropped. The sender allowlist above already
+        # proved this is the OWNER, so replying is safe here in a way it is
+        # NOT for the two drops above (replying to those would confirm the
+        # address exists and turn this into a reflector).
+        #
+        # The reply is server-templated with no agent run — that is the whole
+        # reason we can answer at all when the cap says we cannot think.
+        cap_reason = await trial_block_reason(row["owner_id"])
+        if cap_reason is not None:
+            notified = await send_cap_autoreply(
+                reason=cap_reason,
+                from_addr=row["address"],
+                to=sender,
+                in_reply_to=body.message_id,
+                subject=reply_subject(body.subject or ""),
+            )
+            return {"status": "capped_notified" if notified else "dropped_over_cap"}
 
         # Anti-abuse gate: SES's own receipt pipeline already scanned this
         # mail for spam/viruses before the Lambda ever saw it, so an explicit

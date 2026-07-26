@@ -585,9 +585,8 @@ class CatalogService:
             "config_registered": slice_has_agent,
             # Lets the storefront distinguish "deployed with harness
             # delegation live" from "needs ACP but it couldn't be turned on"
-            # (flag off, or the buyer's provider can't auth any harness) so it
-            # can render a soft note instead of silently shipping a degraded
-            # agent.
+            # (the buyer's provider can't auth any harness) so it can render a
+            # soft note instead of silently shipping a degraded agent.
             "acp_requested": acp_requested,
             "acp_enabled": acp_enabled,
         }

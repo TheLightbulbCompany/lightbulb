@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
+import { planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
@@ -249,12 +250,9 @@ function BillingPanel() {
     account.trial_end * 1000 < nowMs;
   // Display mapping for the status chip — the raw enum must never render
   // ("trial_local" would capitalize to "Trial_local"). Other statuses keep
-  // the capitalize treatment.
-  const statusChipLabel = isTrialExpired
-    ? "Free tier ended"
-    : isTrialLocal
-      ? "Free tier"
-      : subscriptionStatus;
+  // the capitalize treatment. Shared with the two chat shells' plan-badge via
+  // @/lib/planLabel so the mapping can't drift between surfaces.
+  const statusChipLabel = planLabel(subscriptionStatus, { expired: isTrialExpired });
 
   // Org context: Teams billing is per-seat, not the flat $50/mo personal
   // plan, so org admins get TeamBillingCard instead of the personal card

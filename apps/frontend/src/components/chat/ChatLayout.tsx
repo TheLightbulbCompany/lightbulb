@@ -27,6 +27,7 @@ import { useSupport } from "@/components/support/SupportProvider";
 import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog, SessionDeleteDialog } from "@/components/chat/AgentDialogs";
 import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
+import { planLabel } from "@/lib/planLabel";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
@@ -463,7 +464,9 @@ export function ChatLayout({
               <div className="user-info">
                 <div className="user-name">{userName}</div>
               </div>
-              {subscriptionStatus && <span className="plan-badge">{subscriptionStatus}</span>}
+              {planLabel(subscriptionStatus) && (
+                <span className="plan-badge">{planLabel(subscriptionStatus)}</span>
+              )}
             </div>
             <DesktopUpdater version="0.1" />
           </div>

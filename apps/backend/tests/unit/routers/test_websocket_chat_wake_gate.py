@@ -25,6 +25,7 @@ from httpx import ASGITransport, AsyncClient
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+from core.gateway import connection_pool  # noqa: E402
 from core.gateway.connection_pool import GatewayConnectionPool  # noqa: E402
 from core.services import trial_cap  # noqa: E402
 from routers import websocket_chat as wc  # noqa: E402
@@ -330,12 +331,7 @@ def test_refusal_message_avoids_the_adapters_transient_retry_substrings():
     message containing one of those would be re-armed as a transient failure and
     recreate #1426 from the other side."""
     transient = ("econnrefused", "econnreset", "socket hang up", "timeout")
-    for code, message in (
-        ("trial_daily_cap", "You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
-        ("trial_expired", "Your 3-day free trial has ended. Pick a plan to keep your agent."),
-        ("subscription_inactive", "Your subscription is not active. Reactivate to continue chatting."),
-        ("out_of_credits", "You're out of Claude credits. Top up to continue."),
-    ):
+    for code, message in connection_pool.BUDGET_BLOCK_MESSAGES.items():
         frame = wc._wake_refusal_payload({"blocked": True, "code": code, "message": message}, req_id="r")
         lowered = frame["error"]["message"].lower()
         assert not any(marker in lowered for marker in transient), code

@@ -258,6 +258,60 @@ async def get_organization_member_count(org_id: str) -> int:
     return total if isinstance(total, int) else 0
 
 
+async def _pending_invitation_count(org_id: str) -> int | None:
+    """Count an org's pending invitations. None signals an unreadable result.
+
+    None is distinct from 0: 0 means "no pending invitations", None means the
+    read failed and the caller must not treat the absence as a reduction.
+    Filtering on status=pending is what makes revoked and expired invitations
+    fall out of the seat count on their own.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return 0
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(
+                f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
+                headers=headers,
+                params={"status": "pending", "limit": 1},
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin._pending_invitation_count network error: %s", e)
+        return None
+
+    if response.status_code >= 400:
+        logger.warning("clerk_admin._pending_invitation_count HTTP %s org=%s", response.status_code, org_id)
+        return None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    total = payload.get("total_count") if isinstance(payload, dict) else None
+    return total if isinstance(total, int) else None
+
+
+async def get_organization_seat_count(org_id: str) -> int:
+    """Billable seats for an org: accepted members PLUS pending invitations.
+
+    The platform principle is "no free members" — an invitation is billed from
+    the moment it is sent. Because acceptance moves a person from pending to
+    member, this total does NOT change when an invite is accepted; it moves
+    only on invite, revoke, expire, and remove.
+
+    Returns 0 when the member read fails, preserving sync_team_seat_quantity's
+    treat-0-as-a-no-op posture during a Clerk outage. When only the invitations
+    read fails, returns the member count alone rather than under-billing.
+    """
+    members = await get_organization_member_count(org_id)
+    if members <= 0:
+        return 0
+    pending = await _pending_invitation_count(org_id)
+    return members + (pending or 0)
+
+
 async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:
     """Return the orgs a Clerk user belongs to.
 

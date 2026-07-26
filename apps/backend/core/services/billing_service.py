@@ -387,7 +387,8 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
 
 
 async def sync_team_seat_quantity(owner_id: str) -> int:
-    """Set the team subscription's seat quantity to the live org member count.
+    """Set the team subscription's seat quantity to the live billable seat
+    count (accepted members PLUS pending invitations — "no free members").
 
     The SINGLE writer of seat quantity — called from the membership webhooks,
     the reconcile safety-net, and post-checkout. Absolute set (no delta math),
@@ -415,7 +416,7 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         return int(account.get("seat_count") or 0)
 
     current = int(account.get("seat_count") or 0)
-    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    member_count = await clerk_admin.get_organization_seat_count(owner_id)
     if member_count <= 0 or member_count == current:
         # 0 = Clerk read failed/stubbed; don't zero a real subscription.
         return current

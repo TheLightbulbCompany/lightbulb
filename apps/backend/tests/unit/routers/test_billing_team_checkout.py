@@ -39,7 +39,7 @@ async def test_team_checkout_happy_path(monkeypatch, _stub_set_provider_choice):
         "_get_billing_account",
         AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=4))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=4))
     fake_session = MagicMock(url="https://checkout/team")
     with patch(
         "core.services.billing_service.create_team_seat_checkout",
@@ -97,7 +97,7 @@ async def test_team_checkout_409_when_already_subscribed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_team_checkout_503_when_member_count_unknown(monkeypatch):
-    # get_organization_member_count returns 0 on any Clerk error/outage.
+    # get_organization_seat_count returns 0 on any Clerk error/outage.
     # create_team_seat_checkout floors quantity at max(1, member_count), so
     # without this guard a Clerk outage would subscribe the org at a single
     # seat instead of failing loudly. Must 503, not silently under-bill.
@@ -106,7 +106,7 @@ async def test_team_checkout_503_when_member_count_unknown(monkeypatch):
         "_get_billing_account",
         AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=0))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=0))
     with patch(
         "core.services.billing_service.create_team_seat_checkout",
         new=AsyncMock(),
@@ -129,7 +129,7 @@ async def test_team_checkout_allowed_after_cancellation(monkeypatch):
         "_get_billing_account",
         AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1", "subscription_status": "canceled"}),
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=4))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=4))
     fake_session = MagicMock(url="https://checkout/team")
     with patch(
         "core.services.billing_service.create_team_seat_checkout",
@@ -151,3 +151,22 @@ async def test_team_checkout_still_blocked_when_active(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await billing.create_team_checkout(auth=_admin_ctx())
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_team_checkout_quantity_includes_pending_invitations(monkeypatch, _stub_set_provider_choice):
+    """No free members: 1 admin + 3 pending invites checks out at 4 seats."""
+    monkeypatch.setattr(
+        billing,
+        "_get_billing_account",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=4))
+    fake_session = MagicMock(url="https://checkout/team")
+    with patch(
+        "core.services.billing_service.create_team_seat_checkout",
+        new=AsyncMock(return_value=fake_session),
+    ) as mock_create:
+        await billing.create_team_checkout(auth=_admin_ctx())
+
+    mock_create.assert_awaited_once_with(owner_id="org_1", member_count=4)

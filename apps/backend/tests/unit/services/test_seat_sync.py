@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch  # noqa: E402
 
 import pytest  # noqa: E402
 
-from core.services import billing_service  # noqa: E402
+from core.services import billing_service, clerk_admin  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -108,3 +108,39 @@ async def test_noop_for_grandfathered_sub_without_item_id(monkeypatch):
     assert result == 0
     item.modify.assert_not_called()
     count.assert_not_awaited()  # guarded out before the Clerk call
+
+
+@pytest.mark.asyncio
+async def test_seat_count_bills_pending_invitations(monkeypatch):
+    """No free members: 1 admin + 3 unaccepted invites = 4 seats."""
+    monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=3))
+
+    assert await clerk_admin.get_organization_seat_count("org_1") == 4
+
+
+@pytest.mark.asyncio
+async def test_seat_count_unchanged_when_an_invite_is_accepted(monkeypatch):
+    """Acceptance moves pending -> member; the total must not move."""
+    monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=2))
+    monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=2))
+
+    assert await clerk_admin.get_organization_seat_count("org_1") == 4
+
+
+@pytest.mark.asyncio
+async def test_seat_count_falls_back_to_members_when_invites_unreadable(monkeypatch):
+    """An invitations-read failure must never under-bill into a downgrade."""
+    monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=None))
+
+    assert await clerk_admin.get_organization_seat_count("org_1") == 3
+
+
+@pytest.mark.asyncio
+async def test_seat_count_zero_when_member_read_fails(monkeypatch):
+    """0 keeps sync_team_seat_quantity's existing no-op-on-Clerk-outage posture."""
+    monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=0))
+    monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=5))
+
+    assert await clerk_admin.get_organization_seat_count("org_1") == 0

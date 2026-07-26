@@ -998,24 +998,31 @@ async def stamp_email_cold_wake(owner_id: str) -> None:
 async def consume_email_cold_wake(owner_id: str, *, max_age_seconds: int = 3600) -> bool:
     """True when a RECENT cold-wake stamp existed. Clears it either way.
 
-    Clearing unconditionally is deliberate: the footer must appear exactly
-    once, and a stale stamp must not attach to an unrelated reply days later.
-    Never raises.
+    ONE conditional write, not read-then-remove: two concurrent callers for
+    the same owner could otherwise both read the stamp as fresh before either
+    cleared it, attaching the "I was asleep" footer to two separate replies.
+    The condition (``attribute_exists(email_cold_wake_at)``) means only one
+    concurrent caller can ever satisfy it; the loser gets
+    ConditionalCheckFailedException and correctly reports False. Clearing
+    unconditionally on both the fresh AND stale path is a side effect of this
+    being the same write that reads the value — a stale stamp must not attach
+    to an unrelated reply days later. Never raises.
     """
+    table = _get_table()
     try:
-        row = await get_by_owner_id(owner_id)
-        stamped = (row or {}).get("email_cold_wake_at")
-        if stamped is None:
-            return False
-        fresh = (int(time.time()) - int(stamped)) < max_age_seconds
-        table = _get_table()
-        await run_in_thread(
+        resp = await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="REMOVE email_cold_wake_at",
-            ConditionExpression="attribute_exists(owner_id)",
+            ConditionExpression="attribute_exists(owner_id) AND attribute_exists(email_cold_wake_at)",
+            ReturnValues="UPDATED_OLD",
         )
-        return fresh
     except ClientError as e:
-        logger.warning("consume_email_cold_wake failed for %s: %s", owner_id, e)
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("consume_email_cold_wake failed for %s: %s", owner_id, e)
         return False
+
+    stamped = (resp.get("Attributes") or {}).get("email_cold_wake_at")
+    if stamped is None:
+        return False
+    return (int(time.time()) - int(stamped)) < max_age_seconds

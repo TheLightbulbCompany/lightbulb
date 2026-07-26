@@ -677,3 +677,36 @@ async def test_no_stamp_is_false_not_an_error(dynamodb_table):
 
     await container_repo.upsert("user_a", {"hook_token": "t"})
     assert await container_repo.consume_email_cold_wake("user_a") is False
+
+
+@pytest.mark.asyncio
+async def test_consume_email_cold_wake_is_race_safe(dynamodb_table):
+    """Two concurrent consumers must not both see the stamp as fresh --
+    that would attach the "I was asleep" footer to two separate replies.
+    A read-then-remove implementation loses this race; only a single
+    conditional write (loser gets ConditionalCheckFailedException) is safe."""
+    import asyncio
+
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    await container_repo.stamp_email_cold_wake("user_a")
+
+    results = await asyncio.gather(
+        container_repo.consume_email_cold_wake("user_a"),
+        container_repo.consume_email_cold_wake("user_a"),
+    )
+    assert sum(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_cold_wake_stamp_cleared_on_stale_path_too(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    await container_repo.stamp_email_cold_wake("user_a")
+
+    assert await container_repo.consume_email_cold_wake("user_a", max_age_seconds=0) is False
+    # The stamp must have been cleared even though it was judged stale --
+    # otherwise it could resurface as "fresh" on a later, unrelated reply.
+    assert await container_repo.consume_email_cold_wake("user_a") is False

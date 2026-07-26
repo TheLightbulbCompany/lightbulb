@@ -40,7 +40,6 @@ def conn():
     # exercised by these billing tests, but _handle_message's TRUE-terminal
     # branch always pops from it now.
     c._run_completion_callbacks = {}
-    c._oauth_reauth_flagged = False
     c._run_completion_tasks = set()
     return c
 

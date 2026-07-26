@@ -61,8 +61,16 @@ describe("ChatErrorCard", () => {
   });
 
   it("omits the reset line for trial_expired — expiry is permanent", () => {
-    render(<ChatErrorCard code="trial_expired" message="" />);
+    // Non-empty, distinctive message: proves the card ignores it (a
+    // regressed `message ||` fallback would surface this string instead of
+    // the hardcoded copy).
+    render(<ChatErrorCard code="trial_expired" message="server copy: trial_expired" />);
     expect(screen.getByText("Your free trial has ended")).toBeInTheDocument();
+    expect(
+      screen.getByText("Your free trial has ended. Choose a plan to keep your agent running."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("server copy: trial_expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/resets at midnight/i)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /choose a plan/i })).toHaveAttribute(
       "href",
@@ -71,9 +79,14 @@ describe("ChatErrorCard", () => {
   });
 
   it("renders out_of_credits with a top-up CTA instead of Failed to generate", () => {
-    render(<ChatErrorCard code="out_of_credits" message="" />);
+    render(<ChatErrorCard code="out_of_credits" message="server copy: out_of_credits" />);
     expect(screen.getByText("Out of credits")).toBeInTheDocument();
+    expect(
+      screen.getByText("Your Claude credit balance is used up. Top up to keep your agents running."),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
+    expect(screen.queryByText("server copy: out_of_credits")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
     // Routes into CreditsStep, the same destination OutOfCreditsBanner uses.
     expect(screen.getByRole("link", { name: "Top up now" })).toHaveAttribute(
       "href",
@@ -82,9 +95,16 @@ describe("ChatErrorCard", () => {
   });
 
   it("renders subscription_inactive with a reactivate CTA", () => {
-    render(<ChatErrorCard code="subscription_inactive" message="" />);
+    render(<ChatErrorCard code="subscription_inactive" message="server copy: subscription_inactive" />);
     expect(screen.getByText("Subscription inactive")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Your subscription isn't active, so agent runs are paused. Reactivate to continue.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Failed to generate")).not.toBeInTheDocument();
+    expect(screen.queryByText("server copy: subscription_inactive")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Reactivate" })).toHaveAttribute(
       "href",
       "/settings?panel=billing",

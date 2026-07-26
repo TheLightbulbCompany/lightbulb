@@ -122,13 +122,38 @@ describe("SesInboundStack", () => {
     });
   });
 
+  test("publishes an EXPLICIT _dmarc record so the wildcard SPF cannot answer for it", () => {
+    // The wildcard TXT above matches `_dmarc.isol8.co`, which would serve an
+    // SPF string where a DMARC record belongs and leave the domain with no
+    // policy. Only an explicit record outranks the wildcard.
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "_dmarc.isol8.co.",
+      Type: "TXT",
+      ResourceRecords: ['"v=DMARC1; p=none; rua=mailto:dmarc@isol8.co; fo=1"'],
+    });
+  });
+
+  test("DMARC policy is monitor-only — it governs Google Workspace/Resend/Clerk mail too", () => {
+    // p=quarantine or p=reject here would put every unverified sender on the
+    // domain at risk, not just SES. Tightening is a deliberate later step.
+    const dmarc = Object.values(
+      template.findResources("AWS::Route53::RecordSet"),
+    ).find((r: any) => r.Properties?.Name === "_dmarc.isol8.co.") as any;
+    expect(dmarc).toBeDefined();
+    const value = dmarc.Properties.ResourceRecords[0] as string;
+    expect(value).toContain("v=DMARC1");
+    expect(value).toContain("p=none");
+    expect(value).not.toContain("p=reject");
+    expect(value).not.toContain("p=quarantine");
+  });
+
   test("verifies the domain identity (DKIM via the hosted zone)", () => {
     template.resourceCountIs("AWS::SES::EmailIdentity", 1);
     template.hasResourceProperties("AWS::SES::EmailIdentity", {
       EmailIdentity: "isol8.co",
     });
-    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT.
-    template.resourceCountIs("AWS::Route53::RecordSet", 5);
+    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit _dmarc TXT.
+    template.resourceCountIs("AWS::Route53::RecordSet", 6);
   });
 
   test("creates the raw-mail and attachments S3 buckets, both private", () => {

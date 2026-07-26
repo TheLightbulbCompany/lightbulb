@@ -74,30 +74,7 @@ const MONEY_CODES: ReadonlySet<string> = new Set([
   "subscription_inactive",
 ]);
 
-/**
- * Hours until the free-tier daily counter rolls over. The counter is a
- * date-keyed DynamoDB map read through `utc_today()`, so a new UTC day is a new
- * key and the reset needs no worker — it simply happens. Computed client-side
- * from the local clock rather than server-supplied, matching TrialBanner.
- */
-function resetPhrase(nowMs: number): string {
-  const d = new Date(nowMs);
-  const nextUtcMidnight = Date.UTC(
-    d.getUTCFullYear(),
-    d.getUTCMonth(),
-    d.getUTCDate() + 1,
-  );
-  const hours = (nextUtcMidnight - nowMs) / 3_600_000;
-  if (hours < 1) return "in under an hour";
-  const rounded = Math.round(hours);
-  return `in about ${rounded} hour${rounded === 1 ? "" : "s"}`;
-}
-
-function describeError(
-  code: string | undefined,
-  message: string,
-  nowMs: number,
-): ErrorPresentation {
+function describeError(code: string | undefined, message: string): ErrorPresentation {
   switch (code) {
     case "rate_limit":
       // Generic "switch provider" framing is wrong here — switching to a BYO
@@ -146,9 +123,15 @@ function describeError(
       // the pre-send refusal (gate_chat) and the mid-run reclassification
       // render an identical card. No dollar figure: the wall fires at
       // CAP - RESERVE while Settings advertises the headline $3/day.
+      //
+      // No "in about N hours" countdown: it's arithmetically correct but
+      // surprising near the rollover (e.g. "in about 24 hours" 20 minutes
+      // after UTC midnight, if the cap is re-hit immediately), and dropping
+      // it also removes the client-clock dependency entirely — a deliberate
+      // human product call, not a bug fix.
       return {
         title: "Daily free limit reached",
-        description: `You've used today's free usage. Resets at midnight UTC — ${resetPhrase(nowMs)}.`,
+        description: "You've used today's free usage. Resets at midnight UTC.",
         action: {
           label: "Upgrade to keep going",
           href: "/settings?panel=billing",
@@ -197,10 +180,7 @@ function describeError(
 }
 
 export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
-  // Snapshot via useState so render stays pure and the SSR/client passes agree
-  // — the established pattern in this codebase for Date.now() in a component.
-  const [nowMs] = React.useState(() => Date.now());
-  const { title, description, action } = describeError(code, message, nowMs);
+  const { title, description, action } = describeError(code, message);
   const showRetry = Boolean(onRetry) && !MONEY_CODES.has(code ?? "");
 
   return (

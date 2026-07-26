@@ -46,7 +46,13 @@ describe("ChatErrorCard", () => {
   it("renders the trial_daily_cap wall with an upgrade CTA and no dollar figure", () => {
     render(<ChatErrorCard code="trial_daily_cap" message="server copy" />);
     expect(screen.getByText("Daily free limit reached")).toBeInTheDocument();
-    expect(screen.getByText(/resets at midnight UTC/i)).toBeInTheDocument();
+    // No "in about N hours" countdown: it was arithmetically correct but
+    // surprising near the rollover, and dropping it removes the client-clock
+    // dependency entirely — a deliberate product call (round 2 of review),
+    // not a bug fix. Description is now a fixed, clock-independent sentence.
+    expect(
+      screen.getByText("You've used today's free usage. Resets at midnight UTC."),
+    ).toBeInTheDocument();
     // No dollar figure at the wall: after the admission-threshold fix the wall
     // fires at $2.70 of usable spend while Settings advertises "$3/day", so any
     // number printed here would contradict it.

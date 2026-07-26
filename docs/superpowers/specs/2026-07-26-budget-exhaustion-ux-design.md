@@ -186,15 +186,19 @@ Rewrite `trial_daily_cap` / `trial_expired`:
 ```
 ⚠ Daily free limit reached
   You've used today's free usage.
-  Resets at midnight UTC — in about 4 hours.
+  Resets at midnight UTC.
   [Upgrade to keep going]
 ```
 
-"in about N hours" is **computed client-side from the next UTC midnight**, not
-hardcoded and not server-supplied — the same local-clock pattern `TrialBanner`
-already uses via `useSyncExternalStore`. Round to hours; below one hour say
-"in under an hour". `trial_expired` omits the reset line entirely — expiry is
-permanent, and `trial_cap._is_expired` never self-clears.
+**No "in about N hours" countdown.** An earlier draft computed one client-side
+from the next UTC midnight (the local-clock pattern `TrialBanner` uses via
+`useSyncExternalStore`). Dropped in review: it's arithmetically correct but
+surprising near the rollover — re-hitting the cap at 00:20 UTC would show "in
+about 24 hours", true but not what a user expects to read one wall away from
+midnight. Removing it also removes the client-clock dependency (and the whole
+class of rounding edges) rather than special-casing the edge. `trial_expired`
+omits the reset line entirely — expiry is permanent, and
+`trial_cap._is_expired` never self-clears.
 
 **No dollar figure at the wall.** After A the wall fires at $2.70 of usable
 spend while Settings advertises "$3/day of included usage". Printing an exact

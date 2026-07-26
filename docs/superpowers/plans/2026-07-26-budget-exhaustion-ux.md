@@ -789,26 +789,18 @@ const MONEY_CODES: ReadonlySet<string> = new Set([
   "out_of_credits",
   "subscription_inactive",
 ]);
-
-/**
- * Hours until the free-tier daily counter rolls over. The counter is a
- * date-keyed DynamoDB map read through `utc_today()`, so a new UTC day is a new
- * key and the reset needs no worker — it simply happens. Computed client-side
- * from the local clock rather than server-supplied, matching TrialBanner.
- */
-function resetPhrase(nowMs: number): string {
-  const d = new Date(nowMs);
-  const nextUtcMidnight = Date.UTC(
-    d.getUTCFullYear(),
-    d.getUTCMonth(),
-    d.getUTCDate() + 1,
-  );
-  const hours = (nextUtcMidnight - nowMs) / 3_600_000;
-  if (hours < 1) return "in under an hour";
-  const rounded = Math.round(hours);
-  return `in about ${rounded} hour${rounded === 1 ? "" : "s"}`;
-}
 ```
+
+**No `resetPhrase` / countdown.** A round-1 draft of this task added a
+client-side `resetPhrase(nowMs)` helper computing "in about N hours" until
+the next UTC midnight (via a `React.useState(() => Date.now())` snapshot).
+Dropped in round-2 review: it's arithmetically correct but surprising near
+the rollover (re-hitting the cap at 00:20 UTC reads "in about 24 hours"),
+and removing it also removes the client-clock dependency and the whole
+class of rounding edges rather than special-casing them. `describeError`
+keeps its original two-argument shape (`code`, `message`) — no clock is
+threaded through it. The `trial_daily_cap` description is the fixed string
+`"You've used today's free usage. Resets at midnight UTC."`
 
 Extend the action type:
 
@@ -823,24 +815,21 @@ interface ErrorPresentation {
 }
 ```
 
-Change `describeError`'s signature to take the clock, and replace the four money branches:
+Replace the four money branches (`describeError`'s signature stays two-argument — no clock):
 
 ```tsx
-function describeError(
-  code: string | undefined,
-  message: string,
-  nowMs: number,
-): ErrorPresentation {
+function describeError(code: string | undefined, message: string): ErrorPresentation {
   switch (code) {
     // ... rate_limit / context_length / timeout / refusal unchanged ...
     case "trial_daily_cap":
       // Copy is derived from `code` alone — the server message is ignored, so
       // the pre-send refusal (gate_chat) and the mid-run reclassification
       // render an identical card. No dollar figure: the wall fires at
-      // CAP - RESERVE while Settings advertises the headline $3/day.
+      // CAP - RESERVE while Settings advertises the headline $3/day. No
+      // countdown either — see the "No `resetPhrase` / countdown" note above.
       return {
         title: "Daily free limit reached",
-        description: `You've used today's free usage. Resets at midnight UTC — ${resetPhrase(nowMs)}.`,
+        description: "You've used today's free usage. Resets at midnight UTC.",
         action: {
           label: "Upgrade to keep going",
           href: "/settings?panel=billing",
@@ -889,14 +878,11 @@ function describeError(
 }
 ```
 
-In the component, snapshot the clock and gate Retry:
+In the component, gate Retry (no clock snapshot — there is no `resetPhrase` to feed):
 
 ```tsx
 export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
-  // Snapshot via useState so render stays pure and the SSR/client passes agree
-  // — the established pattern in this codebase for Date.now() in a component.
-  const [nowMs] = React.useState(() => Date.now());
-  const { title, description, action } = describeError(code, message, nowMs);
+  const { title, description, action } = describeError(code, message);
   const showRetry = Boolean(onRetry) && !MONEY_CODES.has(code ?? "");
 ```
 
@@ -1245,7 +1231,7 @@ This is the user's stated acceptance criterion and must be confirmed by running,
    the prod billing row for a scratch dev account:
    `aws dynamodb update-item --table-name isol8-dev-billing-accounts --key '{"owner_id":{"S":"<owner>"}}' --update-expression 'SET trial_daily_spend_microcents.#d = :v' --expression-attribute-names '{"#d":"<UTC-date>"}' --expression-attribute-values '{":v":{"N":"2900000"}}' --profile isol8-admin`
    then send a message. **Dev only — never mutate a prod billing row to test UI.**
-4. Confirm: title "Daily free limit reached", a plausible "in about N hours", no dollar figure, no Retry button.
+4. Confirm: title "Daily free limit reached", description reads exactly "You've used today's free usage. Resets at midnight UTC." (no countdown — dropped in review, see Task 5), no dollar figure, no Retry button.
 5. Click **Upgrade to keep going**. Confirm the browser actually renders `/settings?panel=billing` — the Billing panel, not the chat shell with a changed URL.
 6. Confirm the card there reads "Isol8 — Free tier" with a **Subscribe — $50/mo** button.
 7. Click it and confirm redirection to a Stripe Checkout URL. **Do not complete payment.**

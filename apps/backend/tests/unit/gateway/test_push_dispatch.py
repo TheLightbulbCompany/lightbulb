@@ -70,6 +70,7 @@ def _make_terminal_conn(owner_id="org_1"):
     # exercised by these push-dispatch tests, but _handle_message's
     # TRUE-terminal branch always pops from it now.
     conn._run_completion_callbacks = {}
+    conn._oauth_reauth_flagged = False
     conn._run_completion_tasks = set()
     return conn
 

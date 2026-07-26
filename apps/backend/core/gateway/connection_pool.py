@@ -235,6 +235,12 @@ class GatewayConnection:
         # terminal.
         self._run_completion_callbacks: Dict[str, Callable[[str, dict], Awaitable[None]]] = {}
         self._run_completion_tasks: Set[asyncio.Task] = set()
+        # One-shot latch for ``_maybe_flag_oauth_reauth``: a dead ChatGPT
+        # credential fails EVERY run, so without this an agent retry loop would
+        # spend a DDB read+write per failure. The stamp it guards is idempotent
+        # anyway; this just keeps the repeat cost at zero. Per-connection, so a
+        # reconnect re-arms it.
+        self._oauth_reauth_flagged: bool = False
         # agent_id -> display name, TTL-cached from agents.list for push titles.
         # None until first resolve; _agent_names_at is the monotonic stamp.
         self._agent_names: Optional[Dict[str, str]] = None
@@ -1357,6 +1363,71 @@ class GatewayConnection:
         self._run_completion_tasks.add(task)
         task.add_done_callback(self._run_completion_tasks.discard)
 
+    def _maybe_flag_oauth_reauth(self, err_msg: str) -> None:
+        """Turn a run's DEFINITIVE ChatGPT-credential rejection into the
+        ``oauth_required`` provision gate. Fire-and-forget, never raises.
+
+        Cheap-first, in this order, so the reader-loop hot path stays hot:
+
+          1. a pure string classification (``is_provider_auth_failure``) —
+             narrow by design, and fail-open on anything ambiguous (5xx, 429,
+             timeouts, connection errors all read as "not dead");
+          2. a one-shot per-connection latch — an agent that retries five times
+             must not do five DDB round trips;
+          3. only then, off the hot path, the billing-row read that confirms
+             this owner is actually on ``chatgpt_oauth`` and resolves the
+             CONNECTOR, followed by the conditional stamp.
+
+        Step 3's provider check is what keeps Bedrock and BYO-key owners
+        completely untouched: a BYO-key owner using an OpenAI key can produce a
+        similarly-shaped auth error, and it must never stamp a ChatGPT row.
+        """
+        if self._oauth_reauth_flagged:
+            return
+        from core.services import oauth_service
+
+        if not oauth_service.is_provider_auth_failure(err_msg):
+            return
+        # Latch BEFORE the await so concurrent terminals on this connection
+        # can't each spawn their own read/write pair.
+        self._oauth_reauth_flagged = True
+
+        async def _run() -> None:
+            try:
+                from core.repositories import billing_repo
+
+                account = await billing_repo.get_by_owner_id(self.owner_id)
+                if (account or {}).get("provider_choice") != "chatgpt_oauth":
+                    return
+                connector = oauth_service.connector_from_account(account, self.owner_id)
+                stamped = await oauth_service.mark_oauth_invalid(
+                    user_id=connector,
+                    bound_to=self.owner_id,
+                    reason=err_msg,
+                )
+                if stamped:
+                    put_metric("oauth.credential_invalidated")
+                    logger.warning(
+                        "ChatGPT credential rejected for owner %s (connector %s) — "
+                        "provision gate will now require re-auth: %s",
+                        self.owner_id,
+                        connector,
+                        err_msg[:200],
+                    )
+            except Exception:
+                # A best-effort observer must never break chat. Un-latch so a
+                # later failure on this same connection gets another attempt.
+                self._oauth_reauth_flagged = False
+                logger.warning(
+                    "OAuth re-auth flagging failed for owner %s",
+                    self.owner_id,
+                    exc_info=True,
+                )
+
+        task = asyncio.create_task(_run())
+        self._run_completion_tasks.add(task)
+        task.add_done_callback(self._run_completion_tasks.discard)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -1820,6 +1891,15 @@ class GatewayConnection:
                         "chat.error",
                         dimensions={"reason": err_kind or "agent_error"},
                     )
+                    # The container is the ONLY party that can legitimately
+                    # spend a rotating ChatGPT refresh token, so its verdict on
+                    # that credential is the only trustworthy one we get — and
+                    # until now we threw it away. Feed a DEFINITIVE rejection
+                    # back into the provision gate so the next ~3s poll renders
+                    # the "Connect ChatGPT" card instead of a spinner. This is
+                    # the only layer that catches a token dying AFTER
+                    # onboarding, which no up-front check can.
+                    self._maybe_flag_oauth_reauth(err_msg)
                     fwd = {"type": "error", "message": err_msg}
                     if err_kind:
                         fwd["code"] = err_kind

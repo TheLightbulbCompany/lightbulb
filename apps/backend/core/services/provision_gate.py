@@ -278,7 +278,8 @@ async def maybe_restore_trial_bedrock(*, owner_id: str, container: Mapping[str, 
 
 
 async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
-    """Whether ``token_owner`` has ChatGPT OAuth tokens bound to ``owner_id``.
+    """Whether ``token_owner`` has a USABLE ChatGPT connection bound to
+    ``owner_id``.
 
     OAuth tokens live in the ``oauth-tokens`` DynamoDB table keyed by Clerk
     user_id (see ``core.services.oauth_service``). Callers pass the resolved
@@ -290,6 +291,17 @@ async def _has_oauth_tokens(token_owner: str, owner_id: str) -> bool:
     it as ``bound_to`` so a row the connector claimed for a *different*
     workspace reads as no-tokens — the gate then fires ``oauth_required``
     instead of silently passing on a row that belongs to another container.
+
+    PRESENCE IS NOT VALIDITY. This used to ask only "does an active row
+    exist?", so an owner whose ChatGPT login had been revoked or had expired
+    passed the gate, provisioned a container pinned to ``openai/gpt-5.5``, and
+    then had EVERY agent run die on a 401 the UI never rendered — an infinite
+    spinner with no explanation (observed in prod, 2026-07-24). ``has_active_oauth``
+    now also rejects a row carrying a definitive, observed provider rejection
+    (``oauth_health = "invalid"``, written by ``oauth_service.mark_oauth_invalid``
+    when a run reports one), so that owner gets the ``oauth_required`` card
+    instead. Still exactly ONE DynamoDB read and ZERO network calls, which this
+    ~3s poll path requires.
 
     Lazy import to avoid pulling the OAuth subsystem at module import time.
     """

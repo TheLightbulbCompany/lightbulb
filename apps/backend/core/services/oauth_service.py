@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
@@ -52,6 +53,164 @@ TOKEN_POLL_URL: Final = f"{AUTH_BASE_URL}/api/accounts/deviceauth/token"
 OAUTH_TOKEN_URL: Final = f"{AUTH_BASE_URL}/oauth/token"
 VERIFICATION_URL: Final = f"{AUTH_BASE_URL}/codex/device"
 EXCHANGE_REDIRECT_URI: Final = f"{AUTH_BASE_URL}/deviceauth/callback"
+
+
+# ---------------------------------------------------------------------------
+# Credential health — "is this connection still USABLE?", not just "does a row
+# exist?"
+#
+# WHY THERE IS NO ACTIVE PROBE HERE. The obvious design is for the backend to
+# validate a stored credential by spending it against ``/oauth/token`` with
+# ``grant_type=refresh_token``. That is NOT safe for this provider and must
+# not be added:
+#
+#   * OpenAI's Codex refresh tokens are ONE-TIME and ROTATE on every use.
+#     Reusing a spent one returns ``refresh_token_reused`` and (per standard
+#     reuse detection) burns the whole token family. This is not theoretical —
+#     it is the 2026-06-23 incident that forced the per-agent auth fan-out to
+#     collapse into a single shared credential file (see
+#     ``workspace.pre_stage_auth_profile_store`` and its pinning test
+#     ``test_ecs_manager.test_pre_stage_oauth_does_not_clear_default_agent_row``).
+#   * The blob in this table is only a BOOTSTRAP SEED. Once a container has
+#     imported it, the LIVE token lives in the container's auth store and has
+#     rotated away from our copy. Probing with our stale seed would therefore
+#     report "dead" for a perfectly healthy owner (a fail-CLOSED false
+#     positive) *and* revoke the family that was working — i.e. the probe
+#     would CAUSE the outage it is meant to detect.
+#
+# So health is OBSERVED, never polled: the only party that can legitimately
+# spend the credential is the container, and it already reports the verdict on
+# a failed run (``chat`` terminal ``errorMessage``). ``mark_oauth_invalid``
+# records that verdict; ``has_active_oauth`` consumes it. Zero calls to OpenAI,
+# zero per-poll cost.
+# ---------------------------------------------------------------------------
+
+# Value stamped on ``oauth_health`` once a definitive provider-side rejection
+# has been observed. Absence of the attribute means "no bad news" — every
+# legacy row and every freshly minted row reads as usable.
+OAUTH_HEALTH_INVALID: Final = "invalid"
+
+# TIER A — signals that are conclusive on their own.
+#
+# Two kinds, and both are somebody else's considered verdict rather than our
+# guess:
+#
+#   * "isn't accepting your saved login" is OpenClaw's OWN ``auth_permanent``
+#     copy (``src/agents/auth-profiles/failure-copy.ts``). It is emitted only
+#     after upstream's ``classifyOAuthRefreshFailureReason`` has already
+#     separated permanent rejections from transient ones — a 5xx refresh
+#     failure gets the SOFTER ``auth`` copy instead and never reaches this
+#     phrase. Keying on it inherits that classification for free. This is the
+#     exact string the prod failure carried (2026-07-24).
+#   * OpenAI's terminal refresh-token error codes, which appear only in its own
+#     error envelope (``{"error":{"code":"refresh_token_reused"}}``) and each
+#     mean the credential can never work again without a fresh sign-in.
+#
+# NOTE the OpenAI codes arrive on **400 OR 401** (openai/codex PR #24830 moved
+# ``refresh_token_reused`` to 400 on some paths), so branching on HTTP status
+# alone would be wrong. NOTE ALSO that OpenAI does not emit the RFC 6749
+# ``invalid_grant`` for this flow — but OpenClaw's own permanent-reason set
+# does list it, so it stays in Tier B as defence in depth.
+_TERMINAL_OAUTH_SIGNALS: Final[tuple[str, ...]] = (
+    "isn't accepting your saved login",
+    "is not accepting your saved login",
+    "refresh_token_reused",
+    "refresh_token_expired",
+    "refresh_token_invalidated",
+    "token_invalidated",
+)
+
+# TIER B — phrases that identify the error as being about the SAVED CREDENTIAL
+# rather than the model call, the tools, or the agent. From the raw refresh
+# failure upstream wraps: "OAuth token refresh failed for openai: OpenAI Codex
+# token refresh failed (401): {…".
+_AUTH_CREDENTIAL_PHRASES: Final[tuple[str, ...]] = (
+    "oauth token refresh failed",
+    "token refresh failed",
+    "failed to refresh token",
+    "refresh token",
+    "models auth login",
+)
+
+# Markers that make a Tier-B phrase a DEFINITIVE rejection — the provider
+# actively refused the credential, as opposed to failing to answer. Mirrors the
+# keyword set upstream's ``oauth-refresh-failure.ts`` treats as permanent.
+_DEFINITIVE_REJECTION_MARKERS: Final[tuple[str, ...]] = (
+    "401",
+    "unauthorized",
+    "invalid_grant",
+    "invalid_client",
+    "invalid refresh token",
+    "sign in again",
+    "revoked",
+)
+
+# Markers that make the outcome AMBIGUOUS. A message carrying any of these is
+# never treated as a dead credential even if it also matches the phrases above
+# — OpenAI having a blip must not cost a working owner their onboarding. This
+# is the fail-open half of the classifier, and it deliberately wins ties.
+_AMBIGUOUS_FAILURE_MARKERS: Final[tuple[str, ...]] = (
+    "500",
+    "502",
+    "503",
+    "504",
+    "429",
+    "rate limit",
+    "rate_limit",
+    "timeout",
+    "timed out",
+    "temporarily unavailable",
+    "service unavailable",
+    "connection reset",
+    "connection refused",
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "network",
+)
+
+# Stored ``oauth_health_reason`` is for operators reading the row, not for
+# replay — keep it bounded so a pathological error string can't bloat the item.
+_HEALTH_REASON_MAX_CHARS: Final = 500
+
+
+def is_provider_auth_failure(message: str | None) -> bool:
+    """Whether a run's terminal error message is a DEFINITIVE rejection of the
+    owner's saved ChatGPT credential.
+
+    Deliberately narrow, and asymmetric on purpose — mis-classifying a healthy
+    owner as needing re-auth is the expensive error, so anything we cannot
+    positively call dead reads as alive.
+
+    Two ways to qualify:
+
+      * **Tier A** — the message carries a conclusive signal
+        (``_TERMINAL_OAUTH_SIGNALS``): OpenClaw's own ``auth_permanent`` copy,
+        or one of OpenAI's terminal refresh-token error codes (on a 400 or a
+        401). Both are already-classified verdicts, so they stand alone.
+      * **Tier B** — the message is about the saved credential
+        (``_AUTH_CREDENTIAL_PHRASES``) AND carries a definitive rejection
+        marker (``_DEFINITIVE_REJECTION_MARKERS``) AND carries NO ambiguity
+        marker (``_AMBIGUOUS_FAILURE_MARKERS`` — 5xx, 429, timeouts,
+        connection errors).
+
+    The ambiguity veto wins ties in Tier B: "OAuth token refresh failed for
+    openai … (503)" is an OpenAI outage, not a dead login, and returns False.
+
+    Provider scoping is the CALLER's job, not this function's: the same string
+    shape can come from a BYO-key OpenAI owner. Callers must confirm
+    ``provider_choice == "chatgpt_oauth"`` before acting on a True.
+    """
+    if not message:
+        return False
+    text = message.lower()
+    if any(signal in text for signal in _TERMINAL_OAUTH_SIGNALS):
+        return True
+    if not any(phrase in text for phrase in _AUTH_CREDENTIAL_PHRASES):
+        return False
+    if any(marker in text for marker in _AMBIGUOUS_FAILURE_MARKERS):
+        return False
+    return any(marker in text for marker in _DEFINITIVE_REJECTION_MARKERS)
 
 
 class OAuthAlreadyActiveError(Exception):
@@ -326,7 +485,11 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
         Key={"user_id": user_id},
         UpdateExpression=(
             "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc, bound_owner_id = :bound "
-            "REMOVE device_auth_id, user_code, #i"
+            # A completed sign-in is valid BY CONSTRUCTION — OpenAI just issued
+            # these tokens. Drop any ``invalid`` verdict a previous, now-replaced
+            # credential earned, otherwise the owner would re-connect
+            # successfully and still be held at the oauth_required gate.
+            "REMOVE device_auth_id, user_code, #i, oauth_health, oauth_health_reason, oauth_health_at"
         ),
         ExpressionAttributeNames={"#s": "state", "#i": "interval"},
         ExpressionAttributeValues={
@@ -413,18 +576,103 @@ async def get_decrypted_tokens(*, user_id: str, bound_to: str | None = None) -> 
 
 
 async def has_active_oauth(*, user_id: str, bound_to: str | None = None) -> bool:
-    """Whether an ACTIVE OAuth row exists for ``user_id`` bound to ``bound_to`` —
-    a connection-state check that does NOT decrypt the token blob.
+    """Whether ``user_id`` has a USABLE ChatGPT connection bound to ``bound_to``
+    — a connection-state check that does NOT decrypt the token blob.
+
+    Three conditions, all answered from ONE GetItem (this runs on the ~3s
+    ``/container/status`` poll path via the provision gate, so it must not grow
+    a second read or any network call):
+
+      1. an ``active`` row exists;
+      2. it belongs to this workspace (``_row_belongs_to``);
+      3. it has not been stamped ``oauth_health = "invalid"`` by an observed,
+         definitive provider rejection (``mark_oauth_invalid``).
+
+    Condition 3 is the fix for the class of bug where a row EXISTS but its
+    credential is dead: presence used to stand in for validity, so an owner
+    with a revoked/expired ChatGPT login sailed through the provision gate and
+    then had every single agent run fail with an unexplained 401. Now the gate
+    fires ``oauth_required`` and the owner gets the "Connect ChatGPT" card.
+
+    Absence of ``oauth_health`` means "no bad news", so legacy rows and freshly
+    minted rows are unaffected. See the module-level health section for why the
+    verdict is OBSERVED from the container rather than probed from here.
 
     Callers that need the actual tokens use ``get_decrypted_tokens``; the gate
-    only needs to know a connection exists, so it should not lean on the stored
-    secret (which is a stale bootstrap seed once the container owns the live,
-    rotating token). Keeps the connected-flag decoupled from the secret.
+    only needs to know a usable connection exists, so it should not lean on the
+    stored secret (which is a stale bootstrap seed once the container owns the
+    live, rotating token). Keeps the connected-flag decoupled from the secret.
     """
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "active":
         return False
-    return _row_belongs_to(row, bound_to)
+    if not _row_belongs_to(row, bound_to):
+        return False
+    return row.get("oauth_health") != OAUTH_HEALTH_INVALID
+
+
+async def mark_oauth_invalid(*, user_id: str, bound_to: str | None, reason: str) -> bool:
+    """Record that ``user_id``'s ChatGPT credential was DEFINITIVELY rejected,
+    so the next provision-gate evaluation fires ``oauth_required``.
+
+    This is the only writer of ``oauth_health``. It closes the loop no up-front
+    check can: a token that dies AFTER onboarding (revoked in ChatGPT settings,
+    refresh window elapsed) produces a failed run, and this turns that failure
+    into the "Connect ChatGPT" card on the very next ~3s poll instead of an
+    indefinite spinner.
+
+    ``user_id`` is the CONNECTOR (the human who completed the device-code flow
+    — ``connector_from_account``), never the polling user, and ``bound_to`` is
+    the workspace whose container consumed the credential. Both are checked
+    before writing, so a run failure in workspace A can never invalidate a
+    credential that belongs to workspace B — the same binding rule
+    ``has_active_oauth`` reads with.
+
+    Returns True only if a stamp was actually written. False (never an
+    exception) when there is no row, the row is not ``active``, the row belongs
+    to a different workspace, or a concurrent re-connect flipped it — callers
+    are best-effort observers on a hot path and must not care.
+    """
+    try:
+        row = _table().get_item(Key={"user_id": user_id}).get("Item")
+    except ClientError:
+        logger.warning("mark_oauth_invalid: read failed for %s", user_id, exc_info=True)
+        return False
+    if not row or row.get("state") != "active":
+        return False
+    if not _row_belongs_to(row, bound_to):
+        # A different workspace owns this credential; its container's failures
+        # are not evidence about ours (and vice versa).
+        return False
+    if row.get("oauth_health") == OAUTH_HEALTH_INVALID:
+        return False  # already stamped — don't churn the row on repeat failures
+
+    try:
+        _table().update_item(
+            Key={"user_id": user_id},
+            UpdateExpression=("SET oauth_health = :bad, oauth_health_reason = :why, oauth_health_at = :at"),
+            # Re-assert ``active`` at write time: a concurrent revoke/re-connect
+            # between the read above and here must win, not be overwritten with
+            # a verdict about the credential it just replaced.
+            ConditionExpression="attribute_exists(user_id) AND #s = :active",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={
+                ":bad": OAUTH_HEALTH_INVALID,
+                ":why": (reason or "")[:_HEALTH_REASON_MAX_CHARS],
+                ":at": int(time.time()),
+                ":active": "active",
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        logger.warning("mark_oauth_invalid: write failed for %s", user_id, exc_info=True)
+        return False
+    logger.warning(
+        "oauth_credential_invalidated",
+        extra={"user_id": user_id, "bound_to": bound_to, "reason": (reason or "")[:200]},
+    )
+    return True
 
 
 async def get_decrypted_tokens_consistent(*, user_id: str, bound_to: str | None = None) -> dict | None:

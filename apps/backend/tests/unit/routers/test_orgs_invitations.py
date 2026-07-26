@@ -58,6 +58,32 @@ def _override_auth(app, ctx):
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
+@pytest.fixture(autouse=True)
+def _stub_seat_sync():
+    """Every invite that reaches success now calls
+    ``core.services.billing_service.sync_team_seat_quantity`` (see
+    ``routers.orgs.create_invitation``). That import is local to the
+    function body, so ``patch("routers.orgs.billing_repo")`` /
+    ``patch("routers.orgs.clerk_admin")`` in the tests below do NOT reach
+    it — it lives in, and must be patched at, its SOURCE module
+    (``core.services.billing_service``), the same trap documented in
+    ``test_billing_change_provider.py``'s ``patch_background_provision``
+    fixture. Without this autouse stub, every pre-existing test in this
+    file that reaches ``return 201`` would fall through to a real
+    ``billing_repo.get_by_owner_id`` call inside ``sync_team_seat_quantity``
+    and hit live DynamoDB — masked only by the router's own
+    ``except Exception`` swallow. Tests that care about the seat-sync call
+    itself (below) layer their own ``patch(...)`` for the same target
+    inside their ``with`` block, which nests over — and, once its block
+    exits, correctly reverts to — this fixture's stub.
+    """
+    with patch(
+        "core.services.billing_service.sync_team_seat_quantity",
+        new=AsyncMock(return_value=0),
+    ) as mock_sync:
+        yield mock_sync
+
+
 def test_invite_to_email_with_no_clerk_user_succeeds(app, admin_auth):
     _override_auth(app, admin_auth)
     with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:

@@ -753,12 +753,11 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # Detect by explicit metadata purpose OR by the seat price id. Personal
     # flat subs skip this entirely.
     items = (event_data.get("items") or {}).get("data") or []
-    first_item = items[0] if items else {}
-    first_price_id = (first_item.get("price") or {}).get("id")
     # A Teams subscription carries TWO items (flat base + per-seat) and Stripe
     # does not guarantee their order. Select the seat item BY PRICE ID: storing
     # the base item's id here would make sync_team_seat_quantity drive the base
     # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
+    # NOTHING in this handler reads items by position — see is_ultra below.
     seat_item = subscription_item_on_price(items, settings.STRIPE_TEAM_SEAT_PRICE_ID)
     # bool(seat_item) is a strict superset of the old "first item is the seat
     # price" fallback, and cannot over-detect: nothing but a real per-seat line
@@ -800,7 +799,12 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # subscription.metadata (a checkout-time snapshot that goes stale; the same
     # clobber the entering_live provider guard defends against). Persist the
     # plan and resize the container only on the tier transition.
-    is_ultra = bool(settings.STRIPE_ULTRA_PRICE_ID) and first_price_id == settings.STRIPE_ULTRA_PRICE_ID
+    # Scanned by price, not read off items[0]: an Ultra sub is single-item
+    # TODAY, but the moment one grows a second line item (a metered-overage
+    # item, a Stripe-side add-on or coupon) an Ultra owner whose ultra price
+    # lands at index >= 1 would fall to "standard" here and get their
+    # container resized DOWN — silently. Same rule as the seat item above.
+    is_ultra = bool(subscription_item_on_price(items, settings.STRIPE_ULTRA_PRICE_ID))
     if items and not is_team_seat:
         # Only act when the payload actually carries the subscription item. A
         # partial `.updated` can arrive with an empty items.data; treating that

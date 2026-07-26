@@ -8,8 +8,7 @@ readiness inputs into one ``StatusContract``:
   3. gateway liveness                    (``core.services.connection_service``,
                                            DDB-backed -- NOT the in-process
                                            ``GatewayConnectionPool``, which is
-                                           readiness store R4 and is retired
-                                           by this PR)
+                                           readiness store R4, now retired)
   4. the ``paperclip-companies`` owner row (``core.repositories.paperclip_repo``
                                            -- carries BOTH ``teams_state`` and
                                            the generation-fenced onboarding
@@ -28,7 +27,7 @@ forbids, and what
 lightweight AST import-count check, not a full import-linter). A module
 reading exactly ONE of the four stores for its own unrelated purpose (e.g.
 a Teams router reading only the paperclip-companies row for Paperclip
-session/auth plumbing) is fine and untouched by this PR -- see that
+session/auth plumbing) is fine and untouched -- see that
 router's own docstring for why it was deliberately NOT folded into this
 composer (a per-request Teams-BFF hot path pulling in three unrelated DDB
 reads it doesn't need would be a real latency regression, not an INV-1 fix).
@@ -261,9 +260,7 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     # Until then `onboarding_generation` is always None on this branch (no
     # writer ships it here), so fall back to the legacy per-container
     # `onboarded_at` stamp -- preserves existing behavior (and existing
-    # tests) in the gap between this PR and ONBOARD landing its writers.
-    # ONBOARD also touches this line; reconcile in favor of whichever PR
-    # lands the real funnel writers first.
+    # tests) until ONBOARD's funnel writers land.
     onboarded_legacy = container is not None and container.get("onboarded_at") is not None
     onboarded = (funnel_state == "complete") if onboarding.get("onboarding_generation") else onboarded_legacy
 

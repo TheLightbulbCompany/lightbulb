@@ -212,7 +212,7 @@ async def pre_stage_atlas(
     # boot's doctor migrates it into SQLite and deletes it; a re-write (a
     # reprovision, or a force restage) re-arms the presence-only runtime gate
     # against a now-conflicting receipt and bricks every agent run — see
-    # friday_identity.seed_workspace_state (#1429), which also deletes a
+    # friday_identity.seed_workspace_state, which also deletes a
     # stale pre-fix copy from an already-migrated workspace.
     try:
         state_action = seed_workspace_state(workspace, owner_id, atlas_uuid)

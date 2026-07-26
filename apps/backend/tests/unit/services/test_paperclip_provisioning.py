@@ -1,5 +1,6 @@
 """Tests for org/member provisioning behaviors that don't fit the
-heavier moto-backed suite in ``tests/test_paperclip_provisioning.py``.
+heavier moto-backed suite in
+``tests/unit/services/test_paperclip_provisioning_moto.py``.
 
 Currently exercises:
 * The auto-seeded Main Agent name + role (``"Friday"`` / ``"ceo"``).

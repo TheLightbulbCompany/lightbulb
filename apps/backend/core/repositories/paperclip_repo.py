@@ -260,8 +260,8 @@ class PaperclipCompany:
 
     bootstrap_state: Optional[BootstrapState] = None
     """``not_started`` (set at G2) -> ``dispatched`` -> ``delivered`` |
-    ``failed``. Written by the bootstrap dispatcher (a later PR) — this PR
-    only establishes the attribute and its G2-time initial value."""
+    ``failed``. Written by the bootstrap dispatcher; this declaration
+    establishes the attribute and its G2-time initial value."""
 
     bootstrap_dispatch_id: Optional[str] = None
     bootstrap_dispatched_at: Optional[datetime] = None
@@ -1325,8 +1325,8 @@ class PaperclipRepo:
         ``funnel_state -> complete`` and stamps ``funnel_completed_at`` on
         the SAME write -- OBSERVING Friday's ``chat.final`` is the single
         event the architecture spec calls "the funnel's completion signal"
-        (§2, ``FunnelState`` docstring), replacing the old thread-emptiness
-        inference (#1391) this PR deletes.
+        (§2, ``FunnelState`` docstring), replacing the older
+        thread-emptiness inference.
 
         A lost guard (``ConditionalCheckFailedException`` -- the generation
         moved on, or a duplicate/re-delivered terminal for a dispatch that

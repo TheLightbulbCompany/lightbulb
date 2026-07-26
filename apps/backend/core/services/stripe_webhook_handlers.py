@@ -167,7 +167,7 @@ async def _claim_conversion_entry(owner_id: str, subscription_id: str) -> bool:
     them persists the new one, so more than one event can see
     ``trial_local -> active`` and enter the conversion branch. Two live
     conversions then interleave stop / dispatch / release writes on the same
-    container row — the observed dev strand (#1428): the second attempt's
+    container row — the observed dev strand: the second attempt's
     writes superseded the first attempt's SFN execution while landing none of
     its own.
 
@@ -294,7 +294,7 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
         # dispatch won it — an SFN execution owns the row) or, transiently,
         # this exact shape for the milliseconds before the claim lands. But a
         # conversion whose dispatched execution was superseded with no
-        # successor (#1428) sits in it PERMANENTLY — nothing running, nothing
+        # successor sits in it PERMANENTLY — nothing running, nothing
         # scheduled — and honouring the guard here would stand the poll's
         # wake path down for the full window on a row nobody owns. Release
         # the guard instead: the caller's wake branch re-checks every gate
@@ -861,7 +861,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         #     will never re-enter this branch. That flag is the only thing that
         #     lets the status path self-heal the conversion.
         #
-        # SINGLE-FLIGHT entry (#1428): the whole block is gated on a CAS keyed
+        # SINGLE-FLIGHT entry: the whole block is gated on a CAS keyed
         # on (owner, subscription id). Stripe delivers several events per
         # subscription change and their handlers race the billing-row read
         # above, so more than one can see old_status == "trial_local" and land

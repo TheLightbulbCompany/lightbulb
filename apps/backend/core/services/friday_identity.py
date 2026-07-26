@@ -37,7 +37,7 @@ the same JS-canonical format.
 
 But it is seeded ONE-SHOT — only into a workspace this provision is
 CREATING, never re-written into one that already exists. See
-``seed_workspace_state`` for the verified upstream mechanism (#1429):
+``seed_workspace_state`` for the verified upstream mechanism:
 first boot's doctor migrates the file into SQLite, records a sha256
 receipt, and DELETES the file; a reprovision that re-seeds it (fresh
 timestamp → different sha) makes every later doctor pass refuse cleanup
@@ -578,7 +578,7 @@ browser, web fetch, images, channels) — use these for your own work
 """
 
 
-# The nightly self-directed wake section (issue #1273). Kept as a standalone
+# The nightly self-directed wake section. Kept as a standalone
 # constant — with NO ``{...}`` format placeholders — so it can be (a) appended
 # to _AGENTS_TEMPLATE below via plain concatenation (safe through the later
 # ``.format`` call) AND (b) reused verbatim by the surgical migration that heals
@@ -742,7 +742,7 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
 
 def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Append the ``## Nightly self-directed wake`` section to an EXISTING
-    AGENTS.md that predates it (issue #1273).
+    AGENTS.md that predates it.
 
     AGENTS.md is seeded write-if-missing, so already-provisioned Fridays keep
     their old playbook forever and would never learn the nightly-wake branch.
@@ -969,7 +969,7 @@ async def pre_stage_friday_identity(
             exc,
         )
 
-    # Heal pre-nightly-loop AGENTS.md (issue #1273): the seed loop below is
+    # Heal pre-nightly-loop AGENTS.md: the seed loop below is
     # write-if-missing and won't touch an existing AGENTS.md, so append the
     # nightly-wake section when it's absent. Best-effort.
     try:

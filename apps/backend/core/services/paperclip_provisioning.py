@@ -97,7 +97,7 @@ ATLAS_CAPABILITIES = (
 # via dataclasses.fields()) so it stays an explicit, reviewable list: every
 # whole-item ``repo.put`` writer-safety fix in this module reads this same
 # set, and drift between "what the dataclass carries" and "what a put
-# preserves" is exactly the bug class this PR exists to close.
+# preserves" is exactly the bug class this guard exists to close.
 _ONBOARDING_FIELD_NAMES = (
     "onboarding_generation",
     "funnel_state",
@@ -1637,7 +1637,7 @@ class PaperclipProvisioning:
         if existing is not None:
             # Never downgrade a row that a concurrent provision attempt has
             # already completed to ``active``. Two overlapping attempts for one
-            # member can race: the early adoptable row this PR persists lets a
+            # member can race: the early adoptable row persisted here lets a
             # second poll sign in and write the final ``active`` row while the
             # first poll is still running; if that first poll then hits a late
             # transient error, this failure path must NOT clobber the active

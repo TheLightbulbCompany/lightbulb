@@ -103,7 +103,7 @@ _AUTH_BACKOFF_CAP_S = 300
 
 # How stale `last_event_at` on an active run must be before the parked
 # connection counts as "agent appears stuck" for observability. Set by spec
-# §6 — we don't ESCALATE on this in this PR (deferred follow-up); we only
+# §6 — we don't ESCALATE on this (deferred follow-up); we only
 # emit `gateway.run.long_idle` metrics + structured logs so the deadlock-
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300

@@ -242,7 +242,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if not auth.is_org_context or auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
-    # Nightly CEO loop (issue #1273): arm the paid, ENABLED nightly routine on
+    # Nightly CEO loop: arm the paid, ENABLED nightly routine on
     # Friday for the container OWNER (personal owner or org admin) — never an
     # org member, never a trial owner (gated on has_always_on_entitlement
     # inside). Runs on EVERY owner poll, including the running-container one,
@@ -350,7 +350,7 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
 
 
 async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
-    """Idempotently arm the paid nightly CEO routine on Friday (issue #1273).
+    """Idempotently arm the paid nightly CEO routine on Friday.
 
     Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
     ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
@@ -438,7 +438,7 @@ async def _ensure_paperclip_for_org(
     org whose container is already running or parked, so no provision — and
     therefore no step 0 — will run). A FIRST provision always goes through the
     executor, where try_claim_provision elects one execution per owner, so the
-    duplicate-company race (#1442) stays closed on the path that had it. The
+    duplicate-company race stays closed on the path that had it. The
     per-org asyncio lock and ``try_acquire_org_create_claim`` below are KEPT as
     defense-in-depth for the reconcile path (and for a bare/local runner
     invocation outside the state machine).

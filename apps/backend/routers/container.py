@@ -551,7 +551,7 @@ def _status_response(contract: dict, *, parked: bool = False) -> dict:
         "last_error": contract.get("last_error"),
         "last_error_at": contract.get("last_error_at"),
         # Per-CONTAINER onboarding fact. RECONCILE-WITH-ONBOARD: this was
-        # `container.get("onboarded_at") is not None` before this PR; the
+        # `container.get("onboarded_at") is not None`; the
         # composer now derives it as `funnel_state == "complete"` once
         # ONBOARD's writers exist, falling back to the legacy onboarded_at
         # stamp until then -- see readiness_state.compute_status.
@@ -612,9 +612,8 @@ def _safe_phase(container: dict, owner_id: str) -> str:
     calls this anymore — the real phase now comes from
     ``readiness_state.compute_status``'s ``runtime_phase`` (gateway
     liveness sourced from the connection-service DDB table, not the
-    in-process pool; see ``_pool_self_heal_connect``'s deletion note in
-    this PR). Safe to delete alongside those patches in a follow-up
-    cleanup once nothing references it.
+    in-process pool; see ``_pool_self_heal_connect``'s deletion note).
+    Safe to delete alongside those patches once nothing references it.
 
     On pool init failure (ManagementApiClientError when
     WS_MANAGEMENT_API_URL is unset — typically test envs that skip the

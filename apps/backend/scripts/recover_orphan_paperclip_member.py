@@ -1,7 +1,7 @@
 """Recover an org member wedged by an orphan Paperclip Better Auth user.
 
 Scenario: ``provision_member`` failed after the member's Better Auth
-sign-up (e.g. the redundant approve 409 that this PR fixes), discarding
+sign-up (e.g. the redundant approve 409, since fixed), discarding
 the member's stored paperclip_user_id + password and leaving their Better
 Auth user orphaned. Subsequent attempts then re-sign-up and 422 against
 the now-existing user, so the member is permanently wedged with a

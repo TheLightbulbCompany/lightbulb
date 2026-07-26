@@ -6,7 +6,7 @@ execution NAME: the claim write stamps the name atomically (container_repo),
 and StartExecution is idempotent for STANDARD workflows on identical
 name+input, so any later poll can safely re-issue the same call. See
 docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §7 and
-the (#1388) docs/superpowers/specs/2026-07-22-durable-provisioning-executor-design.md
+the docs/superpowers/specs/2026-07-22-durable-provisioning-executor-design.md
 §3 for the original crash-safety argument, which is unchanged by the reshape.
 
 Two hazards #1388 left open, both closed here (spec §7 "Required reshape"):
@@ -21,11 +21,11 @@ Two hazards #1388 left open, both closed here (spec §7 "Required reshape"):
    See ``container_repo.claim_attempt`` docstring for the full hazard.
 2. Branch-B wedge (execution CLOSED without a terminal row write): the
    design hands this to a ``reconciliation_worker`` (SWEEP) that
-   disambiguates via ``DescribeExecution`` — NOT built in this PR (SWEEP is
+   disambiguates via ``DescribeExecution`` — NOT yet built (SWEEP is
    Wave 5). ``describe_dispatch_execution`` below is the clean query
    interface SWEEP will call; until it lands, the wall-clock stale-lease
    heuristic in ``container_repo.is_provision_claim_stale`` remains the
-   interim bridge (see its docstring) — do not delete it as part of this PR.
+   interim bridge (see its docstring) — do not delete it until SWEEP lands.
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ async def describe_dispatch_execution(owner_id: str, claim_id: str) -> dict | No
     execution, or ``None`` if the row carries no execution name.
 
     # SWEEP: integration point for the reconciliation worker (spec §7,
-    # Wave 5, not built in this PR). SWEEP's job on a stuck "provisioning"
+    # Wave 5, not yet built). SWEEP's job on a stuck "provisioning"
     # row is to call this and disambiguate:
     #   - status RUNNING           → still legitimately in flight, leave it
     #   - status SUCCEEDED/FAILED/TIMED_OUT/ABORTED (a "CLOSED without a
@@ -231,6 +231,6 @@ def _state_machine_name() -> str:
 async def _account_id() -> str:
     # Parsed out of the state machine ARN (arn:aws:states:<region>:<account>:
     # stateMachine:<name>) rather than an STS call — cheap and avoids a new
-    # IAM grant for a helper that (as of this PR) SWEEP has not yet wired up.
+    # IAM grant for a helper that SWEEP has not yet wired up.
     parts = settings.PROVISION_STATE_MACHINE_ARN.split(":")
     return parts[4] if len(parts) > 4 else ""

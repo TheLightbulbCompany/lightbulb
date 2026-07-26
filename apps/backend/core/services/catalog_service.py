@@ -717,7 +717,7 @@ def get_catalog_service() -> CatalogService:
     """Returns the singleton CatalogService used by marketplace deploys.
 
     No longer reads from the admin-catalog S3 bucket — publish + unpublish
-    moved to the marketplace flow (#547). The remaining surface is
+    moved to the marketplace flow. The remaining surface is
     ``deploy_from_artifact`` (called by /marketplace/listings/{slug}/deploy
     after fetching the tarball + slice from the marketplace artifacts
     bucket) and ``list_deployed_for_user`` (called by

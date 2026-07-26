@@ -249,8 +249,7 @@ async def create_flat_fee_checkout(
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            price_id=settings.STRIPE_FLAT_PRICE_ID,
-            quantity=1,
+            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
                 f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
@@ -306,8 +305,7 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
 async def _build_subscription_checkout(
     *,
     owner_id: str,
-    price_id: str,
-    quantity: int,
+    line_items: list[dict],
     metadata: dict,
     success_url: str,
     cancel_url: str,
@@ -317,8 +315,10 @@ async def _build_subscription_checkout(
 
     Owns the session kwargs, the automatic_tax / customer_update block, and
     the subscription_data metadata assembly so neither the flat (personal)
-    nor the team path copies them. The price-id existence guard stays in
-    each caller because the config key differs.
+    nor the team path copies them. Callers pass a list so the team path can
+    charge a flat base alongside the per-seat item. Single-element lists are
+    the norm; price-id existence guards stay in each caller because the
+    config key differs.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):
@@ -329,7 +329,7 @@ async def _build_subscription_checkout(
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],
         mode="subscription",
-        line_items=[{"price": price_id, "quantity": quantity}],
+        line_items=line_items,
         success_url=success_url,
         cancel_url=cancel_url,
         allow_promotion_codes=True,
@@ -361,8 +361,7 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
     quantity = max(1, member_count)
     return await _build_subscription_checkout(
         owner_id=owner_id,
-        price_id=settings.STRIPE_TEAM_SEAT_PRICE_ID,
-        quantity=quantity,
+        line_items=[{"price": settings.STRIPE_TEAM_SEAT_PRICE_ID, "quantity": quantity}],
         # Teams are Bedrock-managed automatically — there is no provider picker
         # in the team flow. Thread provider_choice into the subscription
         # metadata so the customer.subscription.* webhook persists it as the
@@ -583,8 +582,7 @@ async def create_ultra_upgrade(
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            price_id=settings.STRIPE_ULTRA_PRICE_ID,
-            quantity=1,
+            line_items=[{"price": settings.STRIPE_ULTRA_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
                 f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")

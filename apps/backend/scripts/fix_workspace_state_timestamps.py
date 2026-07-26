@@ -64,7 +64,7 @@ Fix every container created after the 7.2 promote (born-broken cohort)::
         --all-since 2026-07-22T00:00:00+00:00 --apply
 
 Idempotent: already-canonical timestamps are left untouched, so re-running is
-safe. Archive this script under ``scripts/archive/`` once the cohort is healed.
+safe. Delete this script once the cohort is healed — git history keeps it.
 """
 
 from __future__ import annotations

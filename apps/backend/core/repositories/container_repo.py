@@ -79,7 +79,7 @@ async def get_by_status(status: str) -> list[dict]:
 async def scan_all() -> list[dict]:
     """Return every container row. Paginates via DDB LastEvaluatedKey.
 
-    Used by the one-shot hook-token backfill (scripts/backfill-hook-tokens.py).
+    Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
     Not for hot paths -- DDB Scan is expensive at scale.
     """
     table = _get_table()
@@ -952,20 +952,6 @@ async def set_hook_token(owner_id: str, token: str) -> dict | None:
     return await update_fields(
         owner_id,
         {"hook_token": token, "hook_token_rotated_at": utc_now_iso()},
-    )
-
-
-async def mark_hook_token_provisioned(owner_id: str) -> dict | None:
-    """Stamp ``hook_token_provisioned_at`` after the full backfill sequence
-    (set_hook_token → refresh_task_definition → wait → patch_openclaw_config)
-    has succeeded for this user.
-
-    The backfill orchestrator's idempotency guard tests this field, not
-    ``hook_token``, so a crash mid-sequence leaves the user retryable.
-    """
-    return await update_fields(
-        owner_id,
-        {"hook_token_provisioned_at": utc_now_iso()},
     )
 
 

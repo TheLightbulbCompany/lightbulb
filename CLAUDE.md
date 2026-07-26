@@ -43,8 +43,11 @@ DELETE the doc in the same PR or shortly after — git history preserves it, and
 PR description is the durable record. The only plans/specs that stay are ones living
 code or CLAUDE.md explicitly references. Never let shipped plans accumulate: a
 2026-07 purge deleted 250 of 260 such files (196k lines) — don't rebuild that pile.
-The same applies to one-shot backend scripts: after they run, move them to
-`apps/backend/scripts/archive/` (and delete their tests).
+The same applies to one-shot backend scripts: once a backfill has run and the
+data it wrote is produced at creation time, DELETE the script and its tests —
+git history is the operational record (it carries the run date and PR context
+an archive directory does not). Re-runnable ops tools stay in
+`apps/backend/scripts/`.
 
 ### Monorepo Setup
 
@@ -507,7 +510,7 @@ Owners whose container was provisioned **before** Paperclip integration shipped 
 Two fixes:
 
 1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
-2. **Backfill script** — `apps/backend/scripts/archive/backfill_paperclip_for_legacy_users.py` (archived one-shot; already run against prod) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Resurrect from the archive only if a new legacy cohort appears.
+2. **Backfill script** — a one-shot `backfill_paperclip_for_legacy_users.py` (already run against prod, since deleted) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Recover it from git history only if a new legacy cohort appears.
 
 **`PATCH /debug/provision` cannot wire Paperclip.** It only deep-merges `openclaw.json`. It cannot create a Paperclip company, cannot sign up a Paperclip user, cannot seed Friday/Atlas. The `config_patcher` is for config drift, not for provisioning gaps.
 

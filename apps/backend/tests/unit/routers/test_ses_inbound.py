@@ -292,6 +292,31 @@ def test_over_cap_sends_an_autoreply_and_reports_capped_notified(client, monkeyp
     assert calls[0]["to"] == "owner@example.com"
 
 
+def test_over_cap_autoreply_threads_on_message_id_header_not_ses_id(client, monkeypatch, capped_owner):
+    """`in_reply_to` must be the RFC-5322 `Message-ID` header the sender's own
+    mail client threads on -- NOT SES's internal `message_id`, which matches
+    nothing in any mail client. SES's id and the mail header are set to
+    different values here so this test fails if someone reverts to the SES id."""
+    calls = []
+
+    async def _autoreply(*, reason, from_addr, to, in_reply_to, subject):
+        calls.append(in_reply_to)
+        return True
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(
+        client,
+        _capped_body(
+            message_id="ses-internal-id-999",
+            headers={"Auto-Submitted": "no", "Message-ID": "<real-thread@owner-mailbox>"},
+        ),
+    )
+
+    assert resp.json()["status"] == "capped_notified"
+    assert calls == ["<real-thread@owner-mailbox>"]
+
+
 def test_over_cap_still_reports_dropped_when_the_autoreply_fails(client, monkeypatch, capped_owner):
     async def _autoreply(**kwargs):
         return False

@@ -162,7 +162,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
                 reason=cap_reason,
                 from_addr=row["address"],
                 to=sender,
-                in_reply_to=body.message_id,
+                in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
                 subject=reply_subject(body.subject or ""),
             )
             return {"status": "capped_notified" if notified else "dropped_over_cap"}

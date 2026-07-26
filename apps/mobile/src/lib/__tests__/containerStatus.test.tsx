@@ -408,3 +408,37 @@ describe("useContainerStatus refetch", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("useContainerStatus live failure vs sticky last-good", () => {
+  beforeEach(() => {
+    mockUseOnboardingStatus.mockReset();
+    setActive("active");
+  });
+
+  // `useOnboardingStatus` keeps the last good `classified` across a failed
+  // poll so web's first-run funnel isn't unmounted by a blip. That made this
+  // binding's old `classified ? ... : networkError ? ...` order drop the
+  // failure signal entirely once ANY good poll had landed: a sustained
+  // outage rendered a frozen cold-start screen with no way out. Mobile's
+  // `unreachable` is NON-BLOCKING (ProvisionGate falls through to children),
+  // so reporting the live transport failure is the honest read here.
+  it("reports unreachable while the current poll is failing, even with a sticky last-good body", async () => {
+    mockUseOnboardingStatus.mockReturnValue({
+      classified: { kind: "container" as const, body: { runtime_phase: "starting", lifecycle: "starting" } },
+      derived: null,
+      networkError: new Error("Failed to fetch"),
+      isLoading: false,
+      refresh: jest.fn(),
+    });
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("unreachable"));
+  });
+
+  it("still reports the container status once the poll recovers", async () => {
+    mockUseOnboardingStatus.mockReturnValue(
+      containerResult({ runtime_phase: "ready", lifecycle: "ready", onboarded: true }),
+    );
+    const { result } = await renderHook(() => useContainerStatus());
+    await waitFor(() => expect(result.current.status.kind).toBe("ready"));
+  });
+});

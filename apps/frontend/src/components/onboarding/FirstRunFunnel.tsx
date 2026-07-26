@@ -10,7 +10,7 @@
  * past it.
  */
 import * as React from "react";
-import { useUser } from "@clerk/nextjs";
+import { useOrganization, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { capture } from "@/lib/analytics";
 import { writeFirstRun } from "@/lib/firstRun";
@@ -26,6 +26,55 @@ const MAX_RETRIES = 5;
 // shows the upstream detail and points at support. A different error (or a
 // success) resets the streak.
 const PERSISTENT_FAILURE_THRESHOLD = 3;
+
+// The funnel does NOT control its own lifetime. ProvisioningStepper renders
+// it as one branch of a machine driven by /container/status, so anything that
+// makes a single poll momentarily unreadable swaps it for a loader — which
+// unmounts this component and discards its useState. That used to throw away
+// whatever the user had typed and drop them back on the two path buttons.
+//
+// The poll-blip case is fixed at its root in `useOnboardingStatus` (a failed
+// poll no longer clobbers the last good status), but the funnel is the front
+// door of the product and must not depend on that being the only way it can
+// ever be remounted. So the in-progress draft is persisted.
+//
+// sessionStorage, not localStorage: a draft is worth surviving a remount or a
+// reload, NOT worth resurrecting in a brand-new tab days later. Owner-scoped
+// on the same reasoning as ProvisioningStepper's activation markers — a
+// shared browser must not hand one account's draft to the next.
+const DRAFT_STORAGE_KEY = "isol8_first_run_draft_v1";
+
+interface Draft {
+  path: Path | null;
+  input: string;
+  detail: string;
+}
+
+const EMPTY_DRAFT: Draft = { path: null, input: "", detail: "" };
+
+/** Best-effort draft read. Every field is re-validated rather than trusted:
+ * this is user-writable storage, and a malformed entry must degrade to a
+ * clean funnel, never to a crashed one. */
+function readDraft(key: string): Draft {
+  // This one runs inside a lazy `useState` initializer, which DOES execute
+  // during SSR — unlike the persist effect below, which is client-only by
+  // construction. Safe today only because ProvisioningStepper gates the
+  // funnel behind a completed client-side fetch; guarded here so that
+  // safety doesn't depend on a caller three files away.
+  if (typeof window === "undefined") return EMPTY_DRAFT;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return EMPTY_DRAFT;
+    const parsed = JSON.parse(raw) as Partial<Draft>;
+    return {
+      path: parsed.path === "new" || parsed.path === "grow" ? parsed.path : null,
+      input: typeof parsed.input === "string" ? parsed.input : "",
+      detail: typeof parsed.detail === "string" ? parsed.detail : "",
+    };
+  } catch {
+    return EMPTY_DRAFT;
+  }
+}
 
 /** Best-effort upstream detail for a failed submit: FastAPI's body.detail,
  * else the error message, else the HTTP status. */
@@ -64,10 +113,36 @@ const SECONDARY_BTN =
 
 export function FirstRunFunnel() {
   const { user } = useUser();
+  // `isLoaded` is load-bearing, not decoration: Clerk resolves the org
+  // context independently of the user, so there is a window where `user` is
+  // present and `organization` is still undefined. Reading that as "personal"
+  // would render — and let the user submit — a personal-workspace draft
+  // inside what turns out to be an org. Until it resolves, the owner is
+  // UNKNOWN and no draft is touched.
+  const { organization, isLoaded: orgLoaded } = useOrganization();
   const api = useApi();
-  const [path, setPath] = React.useState<Path | null>(null);
-  const [input, setInput] = React.useState("");
-  const [detail, setDetail] = React.useState("");
+  // Keyed to the OWNER, not the signed-in user — the same owner identity
+  // ProvisioningStepper uses for its activation markers. Onboarding is a
+  // per-CONTAINER fact and an org shares one container, so the draft belongs
+  // to the workspace. Keying it on `user.id` alone would hand one workspace's
+  // in-progress brief to another: someone who starts a brief in org A and
+  // then activates an un-onboarded org B in the same tab would have A's text
+  // restored and submitted under B's API context.
+  //
+  // NULL while the owner is unknown (org context still loading). Every draft
+  // read and write below is gated on it, so an unknown owner means "no
+  // draft", never "assume personal". A workspace switch produces a DIFFERENT
+  // key, which is exactly the isolation this provides.
+  const draftKey = orgLoaded
+    ? `${DRAFT_STORAGE_KEY}:${organization?.id ?? user?.id ?? "anon"}`
+    : null;
+  // Lazy initial state, so a restored draft is present on the FIRST render —
+  // hydrating it in an effect would paint the empty path-picker for a frame.
+  const [restored] = React.useState(() => (draftKey ? readDraft(draftKey) : EMPTY_DRAFT));
+  const [path, setPath] = React.useState<Path | null>(restored.path);
+  const [input, setInput] = React.useState(restored.input);
+  const [detail, setDetail] = React.useState(restored.detail);
+
   const [state, setState] = React.useState<"idle" | "submitting" | "waiting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one. Passed
   // explicitly into submit() rather than read from here — this state only
@@ -77,6 +152,64 @@ export function FirstRunFunnel() {
   // completed submit() that lands in state "error" == one failure; the
   // streak only grows while the upstream detail stays the same.
   const [failure, setFailure] = React.useState<{ detail: string; streak: number } | null>(null);
+  // A workspace switch can change the owner WITHOUT unmounting this component
+  // — Clerk's `setActive` re-renders in place. The lazy initializer above only
+  // runs at mount, so without this the previous owner's text would stay on
+  // screen AND the persist effect below would write it under the NEW owner's
+  // key: the same cross-workspace leak the owner-scoped key exists to prevent,
+  // by another route. Re-read for the new owner during render — React's
+  // "adjust state when a prop changes" pattern, the same render-time-derivation
+  // idiom ProvisioningStepper uses — so the switch lands on the new
+  // workspace's own draft with no frame showing the old one.
+  //
+  // The SUBMISSION state resets with it, and that half is not cosmetic:
+  // `submit()` deliberately never returns to "idle" on success (it expects the
+  // status poll to unmount the funnel), so a partial reset would leave the new
+  // workspace's funnel inheriting `state: "submitting"` — Continue disabled,
+  // permanently, on the committed onboarding front door. `ownerRef` is the
+  // matching half: any submit already in flight for the OLD owner checks it
+  // after each await and abandons, so a late response can't write the new
+  // workspace's metadata and a queued retry can't POST the old workspace's
+  // brief under the new one's token.
+  const ownerRef = React.useRef(draftKey);
+  const [draftOwner, setDraftOwner] = React.useState(draftKey);
+  if (draftOwner !== draftKey) {
+    const next = draftKey ? readDraft(draftKey) : EMPTY_DRAFT;
+    // Written HERE, in render, not in an effect: an in-flight submit resolving
+    // between this render and a post-commit effect would still read the OLD
+    // owner and write the new workspace's metadata — the exact race this
+    // guards. Same derived-state-from-transition pattern (and same rule
+    // suppression) as ProvisioningStepper's `previousBackendPhaseRef`.
+    // eslint-disable-next-line react-hooks/refs
+    ownerRef.current = draftKey;
+    setDraftOwner(draftKey);
+    setPath(next.path);
+    setInput(next.input);
+    setDetail(next.detail);
+    setState("idle");
+    setFailure(null);
+  }
+
+  // Mirror the in-progress draft to storage on every edit. Cheap (three
+  // short strings, only while the funnel is on screen) and it means the
+  // draft is already durable at the instant of an unexpected unmount —
+  // there is no unmount hook that could be skipped.
+  React.useEffect(() => {
+    // Owner not yet known — writing now would file this text under a guessed
+    // key and defeat the isolation above.
+    if (!draftKey) return;
+    try {
+      if (path === null && !input && !detail) {
+        window.sessionStorage.removeItem(draftKey);
+        return;
+      }
+      window.sessionStorage.setItem(draftKey, JSON.stringify({ path, input, detail }));
+    } catch {
+      // Storage-disabled / quota-exceeded browser: the draft is a
+      // best-effort convenience, never a correctness requirement.
+    }
+  }, [draftKey, path, input, detail]);
+
   const recordFailure = React.useCallback((detail: string) => {
     setFailure((prev) =>
       prev && prev.detail === detail
@@ -90,6 +223,12 @@ export function FirstRunFunnel() {
       const noIdea = submitMode === "noIdea";
       setMode(submitMode);
       if (!user) return;
+      // The owner this submission belongs to. Every await below re-checks it
+      // against `ownerRef` and abandons if the active workspace changed —
+      // otherwise a late response writes the NEW workspace's metadata, and a
+      // queued retry re-POSTs THIS workspace's brief under the new one's token.
+      const submitOwner = ownerRef.current;
+      const ownerChanged = () => ownerRef.current !== submitOwner;
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -107,9 +246,18 @@ export function FirstRunFunnel() {
           // provisioning — the api client treats any 2xx as success, so we
           // check the body to tell "staged" apart from "not really". Anything
           // else (including that 202 shape) is retried via the same loop.
+          if (ownerChanged()) return;
           const status = (resp as { status?: string } | null)?.status;
           if (status === "staged" || status === "already_submitted") {
             setFailure(null);
+            // The brief is in. Drop the draft so a LATER funnel cycle — a
+            // wiped / reprovisioned container legitimately re-shows it —
+            // opens clean instead of resurrecting this answer.
+            try {
+              if (submitOwner) window.sessionStorage.removeItem(submitOwner);
+            } catch {
+              /* best-effort */
+            }
             // "staged" and "already_submitted" both dismiss the funnel for
             // THIS user. The kickoff itself is server-owned now (spec PR-6,
             // BOOTSTRAP): the backend dispatches Friday's first-run kickoff
@@ -139,6 +287,7 @@ export function FirstRunFunnel() {
           if (attempt < MAX_RETRIES) {
             setState("waiting");
             await new Promise((r) => setTimeout(r, RETRY_MS));
+            if (ownerChanged()) return;
             continue;
           }
           recordFailure(
@@ -149,10 +298,12 @@ export function FirstRunFunnel() {
           setState("error");
           return;
         } catch (err) {
+          if (ownerChanged()) return;
           const httpStatus = (err as { status?: number }).status;
           if (httpStatus === 409 && attempt < MAX_RETRIES) {
             setState("waiting");
             await new Promise((r) => setTimeout(r, RETRY_MS));
+            if (ownerChanged()) return;
             continue;
           }
           recordFailure(extractErrorDetail(err));

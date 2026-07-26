@@ -11,11 +11,20 @@ const update = vi.fn().mockResolvedValue(undefined);
 // other test sees a clean, first-time user. Read at useUser() call-time, same
 // call-time-deref pattern as `update` above.
 let unsafeMetadata: Record<string, unknown> = {};
+// Mutable active-organization context, same call-time-deref pattern. The
+// funnel is a PER-CONTAINER fact and an org shares one container, so the
+// draft is owner-scoped (org id when in org context) — a test switches this
+// to prove one workspace's draft can't surface in another.
+let organization: { id: string } | null = null;
+// Clerk resolves the org context independently of the user; while it is
+// unresolved `organization` is undefined and MUST NOT be read as "personal".
+let orgLoaded = true;
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({
-    user: { unsafeMetadata, update },
+    user: { id: "user_1", unsafeMetadata, update },
     isLoaded: true,
   }),
+  useOrganization: () => ({ organization, isLoaded: orgLoaded }),
 }));
 
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
@@ -36,6 +45,11 @@ beforeEach(() => {
   post.mockReset();
   update.mockReset().mockResolvedValue(undefined);
   unsafeMetadata = {};
+  organization = null;
+  orgLoaded = true;
+  // The funnel persists an in-progress draft (see the remount tests below),
+  // so every test must start from an empty one.
+  window.sessionStorage.clear();
 });
 
 describe("FirstRunFunnel", () => {
@@ -254,6 +268,160 @@ describe("FirstRunFunnel", () => {
       expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/we couldn.t save your brief/i)).toBeNull();
+  });
+
+  it("restores an in-progress draft after a remount", () => {
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "acme.com" },
+    });
+
+    // The funnel does not control its own lifetime: ProvisioningStepper
+    // swaps it for a loader whenever /container/status is momentarily
+    // unreadable, which unmounts it mid-typing. Chosen path AND typed text
+    // must both survive that, or the user is dropped back on the two
+    // options having lost their work.
+    unmount();
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByPlaceholderText(/yourcompany\.com/i)).toHaveValue("acme.com");
+  });
+
+  it("restores the new-business draft including the optional audience field", () => {
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
+    fireEvent.change(screen.getByPlaceholderText(/social media agency/i), {
+      target: { value: "A bakery for dogs" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/who.s it for/i), {
+      target: { value: "Dog owners" },
+    });
+
+    unmount();
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByPlaceholderText(/social media agency/i)).toHaveValue("A bakery for dogs");
+    expect(screen.getByPlaceholderText(/who.s it for/i)).toHaveValue("Dog owners");
+  });
+
+  it("drops the draft once the brief is submitted", async () => {
+    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    const { unmount } = render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+
+    // A submitted brief is done. A container wipe / reprovision legitimately
+    // re-shows the funnel, and it must open clean rather than resurrecting
+    // the previous cycle's answer.
+    unmount();
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
+  });
+
+  it("does not leak a draft across a workspace switch", () => {
+    // Onboarding is a per-CONTAINER fact and an org shares one container, so
+    // the draft belongs to the OWNER, not the signed-in user. Someone who
+    // starts a brief in org A and then activates an un-onboarded org B in the
+    // same tab must get a clean funnel — otherwise A's text is restored and
+    // submitted under B's API context.
+    organization = { id: "org_a" };
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "org-a-secret.com" },
+    });
+    unmount();
+
+    organization = { id: "org_b" };
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("org-a-secret.com")).toBeNull();
+  });
+
+  it("does not leak a draft across a workspace switch WITHOUT a remount", () => {
+    // Harder variant: Clerk's setActive can flip the active org while this
+    // component stays mounted. The key changes mid-life, so without a
+    // render-time reset the persist effect would immediately write org A's
+    // in-progress text under org B's key — the same leak by another route.
+    organization = { id: "org_a" };
+    const { rerender } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "org-a-secret.com" },
+    });
+
+    organization = { id: "org_b" };
+    rerender(<FirstRunFunnel />);
+
+    expect(screen.getByRole("button", { name: /grow my business/i })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("org-a-secret.com")).toBeNull();
+    expect(window.sessionStorage.getItem("isol8_first_run_draft_v1:org_b")).toBeNull();
+  });
+
+  it("restores the draft for the SAME workspace across a remount", () => {
+    organization = { id: "org_a" };
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "acme.com" },
+    });
+    unmount();
+
+    render(<FirstRunFunnel />);
+
+    expect(screen.getByPlaceholderText(/yourcompany\.com/i)).toHaveValue("acme.com");
+  });
+
+  it("does not strand the funnel busy when the workspace changes mid-submit", async () => {
+    // submit() never returns to "idle" on success — it relies on the status
+    // poll unmounting the funnel. So if the owner changes while a submission
+    // is in flight and the component STAYS mounted, the new workspace's
+    // funnel inherits `state: "submitting"` and its Continue button is
+    // disabled forever. The onboarding front door must never dead-end.
+    let resolvePost: (v: unknown) => void = () => {};
+    post.mockImplementation(() => new Promise((r) => { resolvePost = r; }));
+    organization = { id: "org_a" };
+    const { rerender } = render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+
+    organization = { id: "org_b" };
+    rerender(<FirstRunFunnel />);
+
+    // Org B starts clean: back on the picker, and once it has valid input its
+    // Continue button must be usable.
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "org-b.com" },
+    });
+    expect(screen.getByRole("button", { name: /continue/i })).not.toBeDisabled();
+
+    // Org A's in-flight call landing later must not write org B's metadata.
+    resolvePost({ status: "staged", friday_agent_id: "f1" });
+    await act(async () => { await Promise.resolve(); });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("does not read a personal draft while the organization context is unresolved", () => {
+    // Seed a PERSONAL draft, then mount with the org hook still loading.
+    organization = null;
+    orgLoaded = true;
+    const { unmount } = render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
+    fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
+      target: { value: "personal-secret.com" },
+    });
+    unmount();
+
+    orgLoaded = false;
+    render(<FirstRunFunnel />);
+
+    // Owner unknown → restore nothing. Falling back to user.id here would
+    // render personal text inside what may be an org workspace.
+    expect(screen.queryByDisplayValue("personal-secret.com")).toBeNull();
   });
 
   it("offers no skip — the funnel is the committed onboarding front door", () => {

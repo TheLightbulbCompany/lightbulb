@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
+import { KeyRound, Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
@@ -11,7 +12,15 @@ import { CreditsSection } from "./CreditsSection";
 import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
 import { Input } from "@/components/ui/input";
-import { ChangeProviderModal } from "./ChangeProviderModal";
+import {
+  ChangeProviderModal,
+  type CredentialProviderChoice,
+} from "./ChangeProviderModal";
+import {
+  commitProviderChoice,
+  providerCommitErrorMessage,
+  type ByoProvider,
+} from "@/lib/providerCommit";
 import {
   resolveProviderStatus,
   statusToDotColor,
@@ -19,8 +28,10 @@ import {
   type DotColor,
 } from "./llm-auth-status";
 
-import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
-type ByoProvider = "openai" | "anthropic";
+import {
+  PROVIDER_SWITCH_CARDS,
+  type ProviderChoiceId as ProviderChoice,
+} from "@/lib/providerCards";
 
 type UserData = {
   provider_choice?: ProviderChoice | null;
@@ -206,37 +217,114 @@ function BedrockBlock({
   );
 }
 
-function EmptyStateCard({
-  message,
-  onChangeProvider,
+// byo_key spans OpenAI *and* Anthropic, so a vendor mark would misrepresent
+// it — a key glyph is the honest icon there.
+const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
+  bedrock_claude: <AnthropicIcon size={24} />,
+  chatgpt_oauth: <OpenAIIcon size={24} />,
+  byo_key: <KeyRound size={22} className="text-[#8a8578]" />,
+};
+
+/**
+ * Inline provider picker for the empty state. The three choices are rendered
+ * directly on the panel rather than behind a "Pick a provider" button — a user
+ * with no provider shouldn't have to click blind into a modal to discover what
+ * the options even are.
+ *
+ * Bedrock commits in place (nothing to collect). The other two need a
+ * credential stage, so they hand off to ChangeProviderModal opened straight on
+ * that stage — the modal remains the single owner of the OAuth device-code and
+ * BYO-key flows.
+ */
+function ProviderChoiceCards({
+  onPick,
+  committing,
+  error,
 }: {
-  message?: string;
-  onChangeProvider?: () => void;
+  onPick: (choice: ProviderChoice) => void;
+  committing: ProviderChoice | null;
+  error: string | null;
 }) {
   return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {PROVIDER_SWITCH_CARDS.map((card) => {
+          const busy = committing === card.id;
+          return (
+            <button
+              key={card.id}
+              type="button"
+              onClick={() => onPick(card.id)}
+              disabled={committing !== null}
+              className="rounded-xl border border-[#e0dbd0] bg-white p-4 text-left transition-colors hover:border-[#06402B]/40 hover:bg-[#f3efe6]/60 disabled:opacity-60 disabled:hover:bg-white"
+            >
+              {/* Icon sits beside the copy on narrow widths (stacked cards
+                  would otherwise be needlessly tall) and above it once the
+                  grid goes three-across. */}
+              <div className="flex items-start gap-3 sm:block">
+                <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[card.id]}</div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium text-[#1a1a1a]">{card.title}</h3>
+                  <p className="mt-1 text-xs text-[#8a8578]">{card.subtitle}</p>
+                  {busy && (
+                    <p className="mt-2 flex items-center gap-1.5 text-xs text-[#06402B]">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Setting up…
+                    </p>
+                  )}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function EmptyStateCard({
+  message,
+  onPick,
+  committing,
+  error,
+}: {
+  message?: string;
+  /** Absent pre-subscription — nothing to commit against, so link to onboarding. */
+  onPick?: (choice: ProviderChoice) => void;
+  committing?: ProviderChoice | null;
+  error?: string | null;
+}) {
+  const prompt = message ?? "You haven’t picked a provider yet.";
+
+  // When a billing row already exists (e.g. user disconnected ChatGPT OAuth —
+  // provider_choice was cleared but the subscription is still active) the
+  // choices are pickable in-place. The choice cards carry their own card
+  // chrome, so the prompt sits bare on the panel rather than nesting white
+  // cards inside a white card. The ``/onboarding`` link is the
+  // pre-subscription fallback and keeps the single-card treatment.
+  if (onPick) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-[#1a1a1a]">{prompt}</p>
+        <ProviderChoiceCards
+          onPick={onPick}
+          committing={committing ?? null}
+          error={error ?? null}
+        />
+      </div>
+    );
+  }
+
+  return (
     <div className={ACTION_CARD}>
-      <p className="text-sm text-[#1a1a1a]">
-        {message ?? "You haven’t picked a provider yet."}
-      </p>
-      {/* When a billing row already exists (e.g. user disconnected ChatGPT
-          OAuth — provider_choice was cleared but the subscription is still
-          active) ``onChangeProvider`` opens the picker in-place. The
-          ``/onboarding`` link is the pre-subscription fallback. */}
-      {onChangeProvider ? (
-        <button
-          onClick={onChangeProvider}
-          className="inline-flex rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
-        >
-          Pick a provider →
-        </button>
-      ) : (
-        <Link
-          href="/onboarding"
-          className="inline-flex rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
-        >
-          Re-onboard →
-        </Link>
-      )}
+      <p className="text-sm text-[#1a1a1a]">{prompt}</p>
+      <Link
+        href="/onboarding"
+        className="inline-flex rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
+      >
+        Re-onboard →
+      </Link>
     </div>
   );
 }
@@ -269,10 +357,17 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const [modalOpen, setModalOpen] = useState(
     () => initialAction === "change-provider",
   );
+  // Which credential stage the modal should open on. null = the full picker,
+  // which is what the "Change provider" buttons and the ?action= intent want.
+  const [modalChoice, setModalChoice] =
+    useState<CredentialProviderChoice | null>(null);
   const [prevInitialAction, setPrevInitialAction] = useState(initialAction);
   if (initialAction !== prevInitialAction) {
     setPrevInitialAction(initialAction);
-    if (initialAction === "change-provider") setModalOpen(true);
+    if (initialAction === "change-provider") {
+      setModalChoice(null);
+      setModalOpen(true);
+    }
   }
 
   useEffect(() => {
@@ -295,9 +390,34 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   );
   const dotColor: DotColor = statusToDotColor(providerStatus);
 
+  // Inline-picker commit state. Bedrock is the only choice committed from the
+  // panel itself; the other two hand off to the modal's credential stages.
+  const [committing, setCommitting] = useState<ProviderChoice | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
+
+  const handlePick = useCallback(
+    (choice: ProviderChoice) => {
+      setPickError(null);
+      if (choice !== "bedrock_claude") {
+        setModalChoice(choice);
+        setModalOpen(true);
+        return;
+      }
+      setCommitting(choice);
+      void commitProviderChoice(api.post, choice)
+        .then(() => mutate())
+        .catch((e: unknown) => setPickError(providerCommitErrorMessage(e)))
+        .finally(() => setCommitting(null));
+    },
+    [api, mutate],
+  );
+
   if (!user) return <div className="p-6 text-sm">Loading…</div>;
 
-  const openModal = () => setModalOpen(true);
+  const openModal = () => {
+    setModalChoice(null);
+    setModalOpen(true);
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -345,7 +465,9 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       {user.provider_choice === "byo_key" && !user.byo_provider && (
         <EmptyStateCard
           message="Your bring-your-own-key configuration is incomplete. Pick a provider to finish setting up."
-          onChangeProvider={openModal}
+          onPick={handlePick}
+          committing={committing}
+          error={pickError}
         />
       )}
 
@@ -353,7 +475,13 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         <BedrockBlock onChangeProvider={openModal} dotColor={dotColor} />
       )}
 
-      {!user.provider_choice && <EmptyStateCard onChangeProvider={openModal} />}
+      {!user.provider_choice && (
+        <EmptyStateCard
+          onPick={handlePick}
+          committing={committing}
+          error={pickError}
+        />
+      )}
 
       {/* Credits live inline for Bedrock owners — the former Credits panel.
           Non-Bedrock providers bill through their own account, so nothing
@@ -369,6 +497,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         open={modalOpen}
         currentProvider={user.provider_choice ?? null}
         currentByoProvider={user.byo_provider ?? null}
+        initialChoice={modalChoice}
         onClose={() => setModalOpen(false)}
         onCommitted={() => {
           // SWR refetch picks up the new provider_choice. The container

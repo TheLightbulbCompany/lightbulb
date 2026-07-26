@@ -10,12 +10,27 @@ vi.mock("swr", () => ({
 }));
 
 const mockApiPut = vi.fn();
+const mockApiPost = vi.fn();
 vi.mock("@/lib/api", () => ({
+  // ApiError is re-exported by lib/api and imported by lib/providerCommit,
+  // which LLMPanel pulls in — the mock must provide it or the module graph
+  // resolves it to undefined and the `instanceof` check throws.
+  ApiError: class ApiError extends Error {
+    body: unknown;
+  },
   useApi: () => ({
     get: vi.fn(),
-    post: vi.fn(),
+    post: mockApiPost,
     put: mockApiPut,
   }),
+}));
+
+// ReplaceKeyForm reports save failures as a sonner toast (toast-migrated in
+// c723015d9), not inline text — assert the notify call rather than mounting a
+// <Toaster />.
+const mockNotifyApiError = vi.fn();
+vi.mock("@/lib/notify", () => ({
+  notifyApiError: (...args: unknown[]) => mockNotifyApiError(...args),
 }));
 
 const mockDisconnect = vi.fn();
@@ -59,8 +74,19 @@ vi.mock("next/navigation", () => ({
 // triggered correctly via the dialog id; the modal's own behaviour is
 // covered in ChangeProviderModal tests.
 vi.mock("../ChangeProviderModal", () => ({
-  ChangeProviderModal: ({ open }: { open: boolean }) =>
-    open ? <div data-testid="change-provider-modal-open" /> : null,
+  ChangeProviderModal: ({
+    open,
+    initialChoice,
+  }: {
+    open: boolean;
+    initialChoice?: string | null;
+  }) =>
+    open ? (
+      <div
+        data-testid="change-provider-modal-open"
+        data-initial-choice={initialChoice ?? ""}
+      />
+    ) : null,
 }));
 
 // CreditsSection owns its own data fetching (billing/credits SWR) and is
@@ -76,6 +102,9 @@ describe("LLMPanel", () => {
     mockSWRData.mockReset();
     mockMutate.mockReset();
     mockApiPut.mockReset();
+    mockApiPost.mockReset();
+    mockApiPost.mockResolvedValue({});
+    mockNotifyApiError.mockReset();
     mockDisconnect.mockReset();
     mockAuthStatusData.mockReset();
     mockAuthStatusData.mockReturnValue({ ts: 1, providers: [] });
@@ -170,29 +199,71 @@ describe("LLMPanel", () => {
     expect(screen.queryByTestId("credits-section")).toBeNull();
   });
 
-  it("renders the empty-state with an in-place Pick-a-provider button when provider_choice is null", () => {
+  it("renders all three provider choices inline when provider_choice is null", () => {
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
     // The empty-state copy uses a typographic apostrophe; match either.
     expect(screen.getByText(/haven.{1,3}t picked a provider/i)).toBeInTheDocument();
-    // Now offers in-place picker instead of bouncing to /onboarding —
-    // /onboarding's ProviderPicker requires no subscription, but this
-    // empty-state is reachable by *active subscribers* who disconnected
-    // ChatGPT OAuth (which clears provider_choice). Sending them to
-    // /onboarding would 409 already_subscribed at trial-checkout.
-    const button = screen.getByRole("button", { name: /pick a provider/i });
-    expect(button).toBeInTheDocument();
-    fireEvent.click(button);
-    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
+    // The choices are visible without a click — the old single "Pick a
+    // provider" button hid them behind a modal, so a user with no provider
+    // couldn't see what the options even were.
+    expect(screen.getByRole("button", { name: /Powered by Claude/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sign in with ChatGPT/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^pick a provider/i })).toBeNull();
+    // Nothing opens until a choice is made.
+    expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
   });
 
-  it("renders the BYOK-incomplete empty-state with an in-place Pick-a-provider button when byo_provider is missing", () => {
+  it("commits Bedrock in place without opening the modal", async () => {
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /Powered by Claude/ }));
+    await waitFor(() =>
+      expect(mockApiPost).toHaveBeenCalledWith("/billing/provider", {
+        provider_choice: "bedrock_claude",
+      }),
+    );
+    // Bedrock needs no credential collection, so the modal must stay shut.
+    expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
+    await waitFor(() => expect(mockMutate).toHaveBeenCalled());
+  });
+
+  it("surfaces a commit error inline when the Bedrock pick fails", async () => {
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    mockApiPost.mockRejectedValueOnce(new Error("No credits"));
+    render(<LLMPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /Powered by Claude/ }));
+    await waitFor(() => expect(screen.getByText("No credits")).toBeInTheDocument());
+    expect(mockMutate).not.toHaveBeenCalled();
+    // Cards must be re-enabled so the user can pick a different path.
+    expect(
+      screen.getByRole("button", { name: /Sign in with ChatGPT/ }),
+    ).not.toBeDisabled();
+  });
+
+  it.each([
+    [/Sign in with ChatGPT/, "chatgpt_oauth"],
+    [/Bring your own API key/, "byo_key"],
+  ])("opens the modal on the %s credential stage", async (label, choice) => {
+    mockSWRData.mockReturnValue({ provider_choice: null });
+    render(<LLMPanel />);
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    const modal = screen.getByTestId("change-provider-modal-open");
+    // initialChoice skips the modal's own picker — the user already picked.
+    expect(modal).toHaveAttribute("data-initial-choice", choice);
+    // Credential paths must NOT commit from the panel.
+    expect(mockApiPost).not.toHaveBeenCalled();
+  });
+
+  it("renders the inline choices for the BYOK-incomplete empty-state", () => {
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: null });
     render(<LLMPanel />);
     expect(
       screen.getByText(/bring-your-own-key configuration is incomplete/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /pick a provider/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Powered by Claude/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Bring your own API key/ })).toBeInTheDocument();
     // Should NOT render the BYO hero/form for an incomplete config.
     expect(screen.queryByText(/Bring your own (OpenAI|Anthropic) key/)).not.toBeInTheDocument();
   });
@@ -202,17 +273,24 @@ describe("LLMPanel", () => {
     render(<LLMPanel />);
     expect(screen.queryByTestId("change-provider-modal-open")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change provider/i }));
-    expect(screen.getByTestId("change-provider-modal-open")).toBeInTheDocument();
+    const modal = screen.getByTestId("change-provider-modal-open");
+    expect(modal).toBeInTheDocument();
+    // A deliberate switch opens on the full picker (with its cutover warning),
+    // not pre-advanced to a credential stage.
+    expect(modal).toHaveAttribute("data-initial-choice", "");
   });
 
   it("surfaces a save error from PUT /settings/keys/{provider}", async () => {
     mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: "openai" });
-    mockApiPut.mockRejectedValueOnce(new Error("Invalid key"));
+    const err = new Error("Invalid key");
+    mockApiPut.mockRejectedValueOnce(err);
     render(<LLMPanel />);
     const input = screen.getByPlaceholderText(/sk-proj-/);
     fireEvent.change(input, { target: { value: "sk-proj-bad" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
-    await waitFor(() => expect(screen.getByText("Invalid key")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(mockNotifyApiError).toHaveBeenCalledWith(err, "Couldn't save key"),
+    );
   });
 
   it("colors the provider dot green when models.authStatus reports ok", () => {

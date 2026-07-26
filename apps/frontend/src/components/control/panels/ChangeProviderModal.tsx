@@ -2,8 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { ApiError, useApi } from "@/lib/api";
+import { useApi } from "@/lib/api";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
+import {
+  commitProviderChoice,
+  providerCommitErrorMessage,
+  readableProvider,
+  type ByoProvider,
+} from "@/lib/providerCommit";
 import {
   Dialog,
   DialogContent,
@@ -33,14 +39,22 @@ import { Button } from "@/components/ui/button";
  *   4. If Bedrock → POST /billing/provider directly (credits gate is
  *      enforced at provisioning time by provision_gate).
  *
+ * `initialChoice` skips step 1: LLMPanel's empty state renders the same three
+ * choices inline, so a user arriving from there has already picked and the
+ * modal opens straight on the credential stage. It only ever names a
+ * credential-collecting path — Bedrock needs no stage, so the panel commits
+ * it inline without opening the modal at all.
+ *
  * Errors from /billing/provider carry a `{code, message}` payload from
  * the backend (ChangeProviderError). We surface message verbatim — the
  * codes (`byo_key_missing`, `oauth_required`, etc.) are stable so a
  * future per-code UI affordance can be wired up if useful.
  */
 
-import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
-type ByoProvider = "openai" | "anthropic";
+import {
+  PROVIDER_SWITCH_CARDS,
+  type ProviderChoiceId as ProviderChoice,
+} from "@/lib/providerCards";
 
 type Stage =
   | { kind: "picker" }
@@ -49,10 +63,15 @@ type Stage =
   | { kind: "submitting"; choice: ProviderChoice; byo?: ByoProvider }
   | { kind: "error"; message: string };
 
+/** Paths that need a credential stage — the only valid `initialChoice` values. */
+export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude">;
+
 interface ChangeProviderModalProps {
   open: boolean;
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  /** Open past the picker, on this choice's credential stage. */
+  initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
   onCommitted: () => void;
 }
@@ -61,6 +80,7 @@ export function ChangeProviderModal({
   open,
   currentProvider,
   currentByoProvider,
+  initialChoice = null,
   onClose,
   onCommitted,
 }: ChangeProviderModalProps) {
@@ -83,6 +103,7 @@ export function ChangeProviderModal({
           <ChangeProviderBody
             currentProvider={currentProvider}
             currentByoProvider={currentByoProvider}
+            initialChoice={initialChoice}
             onClose={onClose}
             onCommitted={onCommitted}
           />
@@ -95,6 +116,7 @@ export function ChangeProviderModal({
 interface BodyProps {
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
   onCommitted: () => void;
 }
@@ -102,36 +124,31 @@ interface BodyProps {
 function ChangeProviderBody({
   currentProvider,
   currentByoProvider,
+  initialChoice = null,
   onClose,
   onCommitted,
 }: BodyProps) {
   const api = useApi();
-  const [stage, setStage] = useState<Stage>({ kind: "picker" });
+  // The body remounts on every open (parent renders it behind `open &&`), so a
+  // plain initializer is enough to honor `initialChoice` — no effect needed,
+  // which keeps react-hooks/set-state-in-effect happy.
+  const [stage, setStage] = useState<Stage>(() =>
+    initialChoice === "chatgpt_oauth"
+      ? { kind: "chatgpt-oauth" }
+      : initialChoice === "byo_key"
+        ? { kind: "byo-key" }
+        : { kind: "picker" },
+  );
 
   const commit = useCallback(
     async (choice: ProviderChoice, byo?: ByoProvider) => {
       setStage({ kind: "submitting", choice, byo });
       try {
-        await api.post("/billing/provider", {
-          provider_choice: choice,
-          ...(byo ? { byo_provider: byo } : {}),
-        });
+        await commitProviderChoice(api.post, choice, byo);
         onCommitted();
         onClose();
       } catch (e: unknown) {
-        // Backend ChangeProviderError surfaces as {code, message}. Render
-        // the human message; the code stays in the network response for
-        // ops debugging.
-        let message = "Couldn't change provider.";
-        if (e instanceof ApiError) {
-          // FastAPI wraps the dict detail under `detail` — try both shapes.
-          const data = e.body as { detail?: { message?: string } } | undefined;
-          if (data?.detail?.message) message = data.detail.message;
-          else if (e.message) message = e.message;
-        } else if (e instanceof Error) {
-          message = e.message;
-        }
-        setStage({ kind: "error", message });
+        setStage({ kind: "error", message: providerCommitErrorMessage(e) });
       }
     },
     [api, onClose, onCommitted],
@@ -219,13 +236,6 @@ function ChangeProviderBody({
   );
 }
 
-function readableProvider(choice: ProviderChoice, byo?: ByoProvider): string {
-  if (choice === "bedrock_claude") return "Bedrock-managed Claude";
-  if (choice === "chatgpt_oauth") return "ChatGPT OAuth";
-  if (choice === "byo_key" && byo) return `${byo === "openai" ? "OpenAI" : "Anthropic"} (BYO key)`;
-  return "BYO key";
-}
-
 // ---------------------------------------------------------------------------
 // Picker stage
 // ---------------------------------------------------------------------------
@@ -237,29 +247,6 @@ interface PickerStageProps {
 }
 
 function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStageProps) {
-  type Card = {
-    id: ProviderChoice;
-    title: string;
-    subtitle: string;
-  };
-  const cards: Card[] = [
-    {
-      id: "bedrock_claude",
-      title: "Powered by Claude",
-      subtitle: "Bedrock-managed Claude credits",
-    },
-    {
-      id: "chatgpt_oauth",
-      title: "Sign in with ChatGPT",
-      subtitle: "Inference via your ChatGPT subscription",
-    },
-    {
-      id: "byo_key",
-      title: "Bring your own API key",
-      subtitle: "OpenAI or Anthropic — your key, your billing",
-    },
-  ];
-
   const isCurrent = (id: ProviderChoice) => {
     if (id !== currentProvider) return false;
     // BYO is "current" only if the user is on byo_key today; sub-provider
@@ -270,7 +257,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
 
   return (
     <div className="grid grid-cols-1 gap-3 py-2 md:grid-cols-3">
-      {cards.map((card) => {
+      {PROVIDER_SWITCH_CARDS.map((card) => {
         const current = isCurrent(card.id);
         return (
           <button

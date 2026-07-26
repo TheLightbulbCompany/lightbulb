@@ -755,18 +755,30 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     items = (event_data.get("items") or {}).get("data") or []
     first_item = items[0] if items else {}
     first_price_id = (first_item.get("price") or {}).get("id")
+    # A Teams subscription carries TWO items (flat base + per-seat) and Stripe
+    # does not guarantee their order. Select the seat item BY PRICE ID: storing
+    # the base item's id here would make sync_team_seat_quantity drive the base
+    # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
+    seat_item = (
+        next(
+            (item for item in items if (item.get("price") or {}).get("id") == settings.STRIPE_TEAM_SEAT_PRICE_ID),
+            {},
+        )
+        if settings.STRIPE_TEAM_SEAT_PRICE_ID
+        else {}
+    )
     is_team_seat = metadata.get("purpose") == "team_seat" or (
         bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
     )
     team_seat_persisted = False
-    if is_team_seat and first_item:
+    if is_team_seat and seat_item:
         try:
             await billing_repo.set_team_subscription(
                 owner_id=account["owner_id"],
                 subscription_id=event_data["id"],
-                subscription_item_id=first_item.get("id"),
+                subscription_item_id=seat_item.get("id"),
                 status=new_status,
-                seat_count=int(first_item.get("quantity") or 0),
+                seat_count=int(seat_item.get("quantity") or 0),
             )
             team_seat_persisted = True
         except Exception:
@@ -895,8 +907,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # Same shape for the seat fields: on a brand-new Teams seat sub the
         # eventually-consistent row re-read can miss the just-committed
         # subscription_item_id/seat_count and mislabel the plan as flat-fee.
-        facts_overrides["subscription_item_id"] = first_item.get("id")
-        facts_overrides["seat_count"] = int(first_item.get("quantity") or 0)
+        facts_overrides["subscription_item_id"] = seat_item.get("id")
+        facts_overrides["seat_count"] = int(seat_item.get("quantity") or 0)
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational

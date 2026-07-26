@@ -523,13 +523,17 @@ async def create_ultra_upgrade(
         # Reject a LIVE per-seat Teams sub before repricing it. The local-row
         # subscription_item_id guard above is defense in depth, but the team-seat
         # webhook may not have persisted that field yet — so inspect the retrieved
-        # subscription directly: more than one line item, or an item on the seat
-        # price, is a Teams sub whose $/seat item must never be swapped to the
-        # Ultra flat price. Endpoint maps this to a 400, same as the local guard.
-        first_price_id = (first_item.get("price") or {}).get("id")
-        if len(items_data) > 1 or (
-            bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
-        ):
+        # subscription directly. Explicitly: a Teams sub is one carrying the seat
+        # price on ANY item. (This previously leaned SOLELY on `len(items_data) >
+        # 1`, which happens to hold now that Teams has base + seat, but said
+        # nothing true.) The multi-item check stays too, as a defense-in-depth
+        # catch-all for any other multi-item shape we don't yet recognize by
+        # price — never swap an item on a subscription we can't fully explain.
+        # Endpoint maps this to a 400, same as the local guard.
+        is_team_sub = bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and any(
+            (item.get("price") or {}).get("id") == settings.STRIPE_TEAM_SEAT_PRICE_ID for item in items_data
+        )
+        if len(items_data) > 1 or is_team_sub:
             raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
         # The flat sub has a single item whose id is not stored on the billing
         # row — read it LIVE off the retrieved subscription and swap its price.

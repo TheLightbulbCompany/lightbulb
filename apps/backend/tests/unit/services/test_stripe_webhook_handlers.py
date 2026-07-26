@@ -443,6 +443,51 @@ class TestTeamSeatWebhook:
 
         repo.set_team_subscription.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_seat_persistence_selects_seat_item_not_position_zero(self, monkeypatch):
+        """With the base at items[0], the SEAT item's id and quantity are stored.
+
+        Regression guard: storing the base item's id makes sync_team_seat_quantity
+        drive the base quantity, billing a 4-seat org $50x4 + $20 = $220/mo
+        instead of $50 + $20x4 = $130/mo. Stripe does not guarantee line-item
+        order, so selection must be by price id, never by position.
+        """
+        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        event = {
+            "id": "evt_team_ordered",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_team",
+                    "customer": "cus_team",
+                    "status": "active",
+                    "metadata": {"owner_id": "org_team", "purpose": "team_seat"},
+                    "items": {
+                        "data": [
+                            {"id": "si_base", "quantity": 1, "price": {"id": "price_base_test"}},
+                            {"id": "si_seat", "quantity": 4, "price": {"id": "price_seat_test"}},
+                        ]
+                    },
+                }
+            },
+        }
+        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
+            repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_team", "stripe_customer_id": "cus_team"})
+            repo.set_subscription = AsyncMock()
+            repo.set_provider_choice = AsyncMock()
+            repo.set_team_subscription = AsyncMock()
+            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+
+            await handlers.handle_subscription_state(event, MagicMock())
+
+        repo.set_team_subscription.assert_awaited_once_with(
+            owner_id="org_team",
+            subscription_id="sub_team",
+            subscription_item_id="si_seat",
+            status="active",
+            seat_count=4,
+        )
+
 
 # ---------------------------------------------------------------------------
 # trial_local -> paid conversion forces a cold reprovision off the trial box

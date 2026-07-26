@@ -246,9 +246,10 @@ describe("useProvisioningState", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(fetchMock).not.toHaveBeenCalled();
 
-      // `useOnboardingGate` clears the cookie when it forwards the user to
-      // /onboarding?intent=team. The cookie read is not reactive, so this
-      // pins the self-heal: the very next render picks the change up.
+      // /onboarding clears the cookie once it takes over rendering the
+      // team-creation UI (`mode === "org"`). The cookie read is not
+      // reactive, so this pins the self-heal: the very next render picks
+      // the change up.
       document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
       rerender();
       await waitFor(() => expect(result.current.phase).toBe("normal"));

@@ -130,16 +130,18 @@ export function useProvisioningState(
   //
   // Pending = cookie set AND no org on the session yet. The org half is what
   // guarantees the poll always comes back: an org owner is never left with a
-  // dead poll even if the cookie outlives org creation (30-min TTL, or the
-  // gate's `clearSignupIntentCookie` never ran because the invitation branch
-  // took the redirect).
+  // dead poll even if the cookie outlives org creation (30-min TTL, or
+  // /onboarding's `clearSignupIntentCookie` never ran because `mode`
+  // resolved to "invitations" instead of "org").
   //
-  // `orgId` — the JWT's org claim from `useAuth`, NOT `useOrganization`'s
-  // client-side `organization`. Deliberate: `orgId` is exactly what the
-  // BACKEND will see on this poll's bearer token, and Clerk's setActive ->
-  // JWT refresh is async. During that window `organization` is already set
-  // while the token is still personal, which is precisely the request that
-  // would provision the wrong tenancy.
+  // `orgId` comes from `useAuth`, the same hook this file already calls for
+  // `isSignedIn`/`getToken` — not from a second `useOrganization()` call.
+  // That's simplicity, not a freshness guarantee: in the installed Clerk
+  // (@clerk/nextjs 6.39 -> clerk-react 5.61 -> shared 3.47), `deriveState`
+  // computes `orgId` as `state.organization ? state.organization.id :
+  // state.organization` — the SAME client-side object `useOrganization()`
+  // returns, not something read off a refreshed JWT. `sessionClaims` would be
+  // the token-derived value, and this hook doesn't use it.
   //
   // Cookie-only (no `?intent=team`): every entry point that sets the query
   // also writes the cookie (the landing CTA's onClick, and `SignupIntentCookie`

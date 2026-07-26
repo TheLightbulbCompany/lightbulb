@@ -13,6 +13,7 @@ import { capture } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Users, Mail } from "lucide-react";
 import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
+import { clearSignupIntentCookie } from "@/lib/signupIntent";
 
 function OnboardingFlow() {
   const router = useRouter();
@@ -53,6 +54,25 @@ function OnboardingFlow() {
   // lint rule): record that the org-creation flow opened.
   useEffect(() => {
     if (mode === "org") capture("workspace_type_selected", { type: "org" });
+  }, [mode]);
+
+  // Consume the team-signup-intent cookie HERE, once this page has actually
+  // taken over rendering the team-creation UI — not where `useOnboardingGate`
+  // starts the redirect that lands here. `useProvisioningState` suppresses
+  // its `/container/status` poll off this same cookie
+  // (`!orgId && hasTeamSignupIntentCookie()`) for as long as /chat stays
+  // mounted; clearing the cookie any earlier re-arms that suppression during
+  // the gap before this page's RSC payload lands, while /chat is still
+  // committed, and the poll fires there instead — provisioning the very
+  // throwaway personal container this cookie exists to prevent. By the time
+  // `mode === "org"` is true we're rendering here, not on /chat, so clearing
+  // is safe. This is also the one place both entry paths (a direct
+  // `?intent=team` landing, and the cookie-driven redirect from
+  // `useOnboardingGate`) converge, which is what the cookie's other job
+  // (stopping a later personal signup in the same browser from being
+  // mis-tagged as team) needs.
+  useEffect(() => {
+    if (mode === "org") clearSignupIntentCookie();
   }, [mode]);
 
   // Merge-preserving completion: write onboarded=true WITHOUT clobbering

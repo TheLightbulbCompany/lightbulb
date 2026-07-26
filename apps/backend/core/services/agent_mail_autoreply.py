@@ -5,18 +5,31 @@ is NO agent run here: SES sending is not gated by the trial cap (the cap
 fences Bedrock inference), so we can always answer even when we cannot think.
 Nothing is reserved and nothing is spent.
 
-Only ever sent to the OWNER. `routers/ses_inbound.py` enforces a sender
-allowlist before this point, so an inbound that reaches the cap check is
-authenticated. Unknown-recipient and unverified-sender inbound must stay
-silent — replying there would confirm the address exists and turn the
-endpoint into a reflector.
+Only ever sent to the OWNER, and only for a PRIVATE address.
+`routers/ses_inbound.py` enforces a sender allowlist before this point, so an
+inbound that reaches the cap check on a private address is authenticated —
+that is the entire safety argument for answering at all. A `public` address
+has no allowlist to enforce, so its `From` is unproven and the router drops
+it silently rather than calling here. Unknown-recipient and unverified-sender
+inbound stay silent for the same reason: replying would confirm the address
+exists and turn the endpoint into a reflector.
+
+Two independent loop fences, because this is machine-generated mail:
+``Auto-Submitted: auto-replied`` (RFC 3834) is what tells a well-behaved
+autoresponder on the other side not to answer back — it is the same signal
+our own ``is_auto_submitted`` guard trips on — and the durable per-owner
+daily send counter bounds the damage when the other side ignores it (each
+bounce carries a fresh Message-ID, so dedup will not catch the loop).
 """
 
 import logging
+from datetime import datetime, timezone
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.services import ses_email
+from core.repositories import container_repo
+from core.services import agent_mail_reply, ses_email
+from core.services.agent_mail_owner_send import DAILY_SEND_CAP
 from core.services.trial_cap import DAILY_CAP, TRIAL_EXPIRED
 
 logger = logging.getLogger(__name__)
@@ -42,7 +55,9 @@ _TRIAL_EXPIRED_BODY = (
 _BODIES = {DAILY_CAP: _DAILY_CAP_BODY, TRIAL_EXPIRED: _TRIAL_EXPIRED_BODY}
 
 
-async def send_cap_autoreply(*, reason: str, from_addr: str, to: str, in_reply_to: str | None, subject: str) -> bool:
+async def send_cap_autoreply(
+    *, owner_id: str, reason: str, from_addr: str, to: str, in_reply_to: str | None, subject: str
+) -> bool:
     """Answer an inbound that cannot be run. True when SES accepted it.
 
     Never raises — the ingest webhook must stay terminal.
@@ -58,12 +73,32 @@ async def send_cap_autoreply(*, reason: str, from_addr: str, to: str, in_reply_t
             logger.warning("agent_mail_autoreply: no template for reason %r", reason)
             return False
 
-        headers = {"In-Reply-To": in_reply_to, "References": in_reply_to} if in_reply_to else None
+        # Charged only once a send is actually going to be attempted. Shares
+        # the owner's one durable daily outbound budget with `owner_send` on
+        # purpose: it is the same mailbox being written to, and one shared
+        # counter is what makes "at most N machine emails a day" true no matter
+        # which path loops. See the module docstring.
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
+            logger.warning("agent_mail_autoreply: daily send cap exhausted for %s", owner_id)
+            put_metric("agent_email.autoreply", dimensions={"reason": reason, "result": "rate_limited"})
+            return False
+
+        # `in_reply_to` and `subject` both originate in the SENDER's own mail —
+        # sanitized here exactly as the sibling reply path does.
+        in_reply_to = agent_mail_reply._header_safe(in_reply_to or "")
+        # Auto-Submitted marks this as machine mail (RFC 3834) so the other
+        # side's autoresponder does not answer it — the same header our own
+        # inbound loop guard drops on.
+        headers = {"Auto-Submitted": "auto-replied"}
+        if in_reply_to:
+            headers["In-Reply-To"] = in_reply_to
+            headers["References"] = in_reply_to
 
         message_id = await ses_email.send_ses_reply(
             from_addr=from_addr,
             to=to,
-            subject=subject,
+            subject=agent_mail_reply._header_safe(subject or ""),
             body_text=body,
             body_html=None,
             headers=headers,

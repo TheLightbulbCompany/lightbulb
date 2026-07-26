@@ -40,7 +40,11 @@ def reply_harness(monkeypatch):
     )
 
     async def _consume_email_cold_wake(owner_id, **kwargs):
-        return harness.cold_wake
+        # CONSUMING, like the real one: the stamp is cleared by the read, so a
+        # second reply gets nothing. A fake that kept returning True would let
+        # "appears exactly once" pass while the footer repeated forever.
+        was_set, harness.cold_wake = harness.cold_wake, False
+        return was_set
 
     monkeypatch.setattr(agent_mail_reply.container_repo, "consume_email_cold_wake", _consume_email_cold_wake)
 
@@ -98,10 +102,15 @@ async def test_no_footer_for_a_paid_owner(reply_harness):
 
 @pytest.mark.asyncio
 async def test_footer_appears_exactly_once(reply_harness):
+    """Once per cold wake, not once per reply -- the second reply in the same
+    waking is not explaining a delay any more."""
     reply_harness.subscription_status = "trial_local"
     reply_harness.cold_wake = True
     await send()
     assert reply_harness.sent_body.count(FOOTER_MARK) == 1
+
+    await send()
+    assert FOOTER_MARK not in reply_harness.sent_body
 
 
 def test_reply_subject_plain():

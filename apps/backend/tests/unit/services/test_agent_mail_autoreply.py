@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 from core.services import agent_mail_autoreply as mod
@@ -14,17 +16,21 @@ def sent(monkeypatch):
 
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
     monkeypatch.setattr(mod.ses_email, "send_ses_reply", _send)
+    monkeypatch.setattr(mod.container_repo, "try_consume_daily_email_send", AsyncMock(return_value=True))
     return box
 
 
-async def _call(reason):
-    return await mod.send_cap_autoreply(
-        reason=reason,
-        from_addr="friday@acme.isol8.co",
-        to="owner@example.com",
-        in_reply_to="<m1@mail>",
-        subject="Re: hello",
-    )
+async def _call(reason, **overrides):
+    kwargs = {
+        "owner_id": "owner_1",
+        "reason": reason,
+        "from_addr": "friday@acme.isol8.co",
+        "to": "owner@example.com",
+        "in_reply_to": "<m1@mail>",
+        "subject": "Re: hello",
+    }
+    kwargs.update(overrides)
+    return await mod.send_cap_autoreply(**kwargs)
 
 
 @pytest.mark.asyncio
@@ -53,6 +59,32 @@ async def test_threads_with_the_conversation(sent):
     assert sent[0]["from"] == "friday@acme.isol8.co"
     assert sent[0]["to"] == "owner@example.com"
     assert sent[0]["headers"]["In-Reply-To"] == "<m1@mail>"
+
+
+@pytest.mark.asyncio
+async def test_marks_itself_as_machine_mail(sent):
+    """RFC 3834. Without it a correspondent's own autoresponder can bounce
+    back and forth with us forever -- each bounce carries a fresh Message-ID,
+    so dedup never sees the loop and the owner is still over cap."""
+    await _call(DAILY_CAP)
+    assert sent[0]["headers"]["Auto-Submitted"] == "auto-replied"
+
+
+@pytest.mark.asyncio
+async def test_stops_once_the_daily_send_cap_is_exhausted(monkeypatch, sent):
+    """The header above is advisory; this counter is the fence that holds when
+    the other side ignores it."""
+    monkeypatch.setattr(mod.container_repo, "try_consume_daily_email_send", AsyncMock(return_value=False))
+    assert await _call(DAILY_CAP) is False
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_sanitizes_sender_controlled_headers(sent):
+    """`in_reply_to` and `subject` come straight off the sender's mail."""
+    await _call(DAILY_CAP, in_reply_to="<m1@mail>\r\nBcc: evil@x.com", subject="Re: hi\r\nBcc: evil@x.com")
+    assert sent[0]["headers"]["In-Reply-To"] == "<m1@mail>Bcc: evil@x.com"
+    assert "\r" not in sent[0]["subject"] and "\n" not in sent[0]["subject"]
 
 
 @pytest.mark.asyncio

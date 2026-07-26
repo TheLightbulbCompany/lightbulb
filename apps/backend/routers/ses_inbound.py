@@ -36,7 +36,13 @@ lands after the Fargate cold start finishes and delivery actually happens),
 and the top-level catch-all for an unexpected exception (e.g. a DynamoDB
 blip). Dedup is keyed on ``message_id`` and recorded BEFORE delivery is
 attempted, so a retry that later succeeds cannot double-deliver — the second
-attempt short-circuits at the ``duplicate`` check.
+attempt short-circuits at the ``duplicate`` check. EVERY 503 return
+(``woken``, ``error``, the catch-all) ROLLS THAT DEDUP ROW BACK first
+(``_rollback_dedup``): a dedup record must never outlive a request we are
+explicitly asking SES to retry, or the retry short-circuits as a
+``duplicate``, the mail is dropped for good, and the Fargate cold start the
+wake just paid for is wasted. Terminal drops keep their row — re-running one
+would produce the identical drop.
 
 A bad/missing shared secret is 401 — not retried; there is no fixing a
 forged credential by resending the same request.
@@ -53,6 +59,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import get_by_address, normalize
 from core.services.agent_mail_autoreply import send_cap_autoreply
 from core.services.agent_mail_delivery import deliver_to_agent
@@ -65,11 +72,46 @@ from core.services.agent_mail_inbound import (
 from core.services.agent_mail_reply import reply_subject
 from core.services.agent_mail_token import encode_reply_token
 from core.services.trial_cap import trial_block_reason
-from core.services.webhook_dedup import WebhookDedupResult, record_event_or_skip
+from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# The outcomes worth counting individually. Everything else — every
+# deterministic drop, plus the transient `error` — collapses to `dropped` so
+# the dimension stays bounded.
+_METRIC_RESULTS = ("delivered", "woken", "capped_notified")
+
+
+def _final(status: str, *, code: int = 200):
+    """Emit the inbound-outcome metric and build the response."""
+    try:
+        put_metric(
+            "agent_email.inbound",
+            dimensions={"result": status if status in _METRIC_RESULTS else "dropped"},
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never break ingestion
+        logger.debug("agent_email.inbound metric emission failed", exc_info=True)
+    if code == 200:
+        return {"status": status}
+    return JSONResponse(status_code=code, content={"status": status})
+
+
+async def _rollback_dedup(message_id: str) -> None:
+    """Drop the dedup row recorded at the top of this request.
+
+    The dedup record must not outlive a request we are asking SES to retry:
+    the retry arrives with the SAME message_id, would short-circuit at the
+    dedup gate as a ``duplicate``, and the mail would be dropped permanently.
+    Best-effort — a failed rollback must not change the 503 we return.
+    """
+    if not message_id:
+        return
+    try:
+        await delete_event(message_id)
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.warning("ses_inbound: dedup rollback failed for %s", message_id, exc_info=True)
 
 
 class SesInboundBody(BaseModel):
@@ -129,7 +171,7 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         if body.message_id:
             dedup = await record_event_or_skip(body.message_id, source="ses_inbound")
             if dedup is WebhookDedupResult.ALREADY_SEEN:
-                return {"status": "duplicate"}
+                return _final("duplicate")
 
         # Resolve recipient: first provisioned address in `to` that we know
         # about wins. A message can be addressed to multiple recipients;
@@ -144,20 +186,20 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             if row is not None:
                 break
         if row is None:
-            return {"status": "dropped_unknown_recipient"}
+            return _final("dropped_unknown_recipient")
 
         # Sender allowlist — skipped entirely for public addresses (no
         # allowlist to enforce), enforced for private ones.
         sender = parse_from_address(body.from_)
         if not row.get("public") and sender not in (row.get("verified_senders") or []):
-            return {"status": "dropped_unverified_sender"}
+            return _final("dropped_unverified_sender")
 
         # Anti-abuse gate: SES's own receipt pipeline already scanned this
         # mail for spam/viruses before the Lambda ever saw it, so an explicit
         # FAIL here is authoritative — always dropped.
         verdicts = body.verdicts or {}
         if (verdicts.get("virus") or "").upper() == "FAIL" or (verdicts.get("spam") or "").upper() == "FAIL":
-            return {"status": "dropped_spam_or_virus"}
+            return _final("dropped_spam_or_virus")
 
         # Anti-spoof gate: DMARC is authoritative when SES reports a verdict
         # for it — an explicit FAIL always drops, and (unlike the Resend
@@ -169,25 +211,28 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         dmarc = verdicts.get("dmarc")
         if dmarc is not None:
             if dmarc.upper() == "FAIL":
-                return {"status": "dropped_failed_authentication"}
+                return _final("dropped_failed_authentication")
         else:
             spf = (verdicts.get("spf") or "").upper()
             dkim = (verdicts.get("dkim") or "").upper()
             if spf == "FAIL" and dkim == "FAIL":
-                return {"status": "dropped_failed_authentication"}
+                return _final("dropped_failed_authentication")
 
         # Loop guard: never deliver autoresponder/bulk/list traffic — an
         # agent replying to one of these could re-trigger itself forever.
         if is_auto_submitted(body.headers or {}):
-            return {"status": "dropped_auto_submitted"}
+            return _final("dropped_auto_submitted")
 
         # Free-tier cost cap — same predicate the chat/container-start
         # gates use, so an over-cap owner can't route around it via email.
         #
-        # ANSWERED, not silently dropped. The sender allowlist above already
-        # proved this is the OWNER, so replying is safe here in a way it is
-        # NOT for the two drops above (replying to those would confirm the
-        # address exists and turn this into a reflector).
+        # ANSWERED, not silently dropped — but ONLY for a private address,
+        # where the sender allowlist above actually ran and proved this is the
+        # OWNER. That proof is the whole safety argument for replying here in
+        # a way we do NOT for the two drops above (replying to those would
+        # confirm the address exists and turn this into a reflector). A
+        # `public` row SKIPS that allowlist, so its `sender` is nothing but an
+        # attacker-chosen `From` header — it gets the silent drop instead.
         #
         # The reply is server-templated with no agent run — that is the whole
         # reason we can answer at all when the cap says we cannot think.
@@ -203,14 +248,17 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # above them.
         cap_reason = await trial_block_reason(row["owner_id"])
         if cap_reason is not None:
-            notified = await send_cap_autoreply(
-                reason=cap_reason,
-                from_addr=row["address"],
-                to=sender,
-                in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
-                subject=reply_subject(body.subject or ""),
-            )
-            return {"status": "capped_notified" if notified else "dropped_over_cap"}
+            notified = False
+            if not row.get("public"):
+                notified = await send_cap_autoreply(
+                    owner_id=row["owner_id"],
+                    reason=cap_reason,
+                    from_addr=row["address"],
+                    to=sender,
+                    in_reply_to=body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
+                    subject=reply_subject(body.subject or ""),
+                )
+            return _final("capped_notified" if notified else "dropped_over_cap")
 
         token = encode_reply_token(
             {
@@ -248,15 +296,21 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             # container -- signal transient so the ingest Lambda re-raises and
             # its async SES invocation is retried once the container is up.
             # See the module docstring: delivery completes on that retry, not
-            # in this request.
-            return JSONResponse(status_code=503, content={"status": result})
+            # in this request -- which is exactly why the dedup row has to go
+            # first, or that retry never gets past the duplicate check and the
+            # cold start we just paid for is wasted.
+            await _rollback_dedup(body.message_id)
+            return _final(result, code=503)
         if result == "error":
             # Transient delivery failure (e.g. a running container's RPC
             # errored) — 503 so SES/the Lambda retries. `container_not_running`
             # is intentionally excluded: that now means OVER CAP, which a
             # retry cannot fix.
-            return JSONResponse(status_code=503, content={"status": result})
-        return {"status": result}
+            await _rollback_dedup(body.message_id)
+            return _final(result, code=503)
+        return _final(result)
     except Exception:  # noqa: BLE001 — see module docstring.
         logger.exception("ses_inbound handler failed unexpectedly")
-        return JSONResponse(status_code=503, content={"status": "error"})
+        # Same reason as the two 503s above: this one asks SES to retry too.
+        await _rollback_dedup(body.message_id)
+        return _final("error", code=503)

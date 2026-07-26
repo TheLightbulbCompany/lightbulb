@@ -78,10 +78,36 @@ def listing_slug_of(payload: dict | None) -> str | None:
 async def create_hire_approval(*, owner_id: str, issue_id: str, listing: dict) -> str | None:
     """Create a PENDING ``hire_agent`` approval linked to ``issue_id``.
 
-    Creating it changes nothing on its own. ``issueIds`` is what makes the
-    request show up ON the task that prompted it (upstream links them via
-    ``issueApprovalsSvc.linkManyForApproval``) rather than only in a global
-    list the owner has no reason to open.
+    .. warning::
+
+       **NOT WIRED UP YET — do not call this without reading the following.**
+       ``routers/marketplace_listings.recommend`` deliberately does not invoke
+       it. Two things must land first:
+
+       1. **The device keypair.** With ``agentId`` absent, Paperclip's approve
+          path calls its own ``agentsSvc.create``, which does NOT mint
+          ``adapterConfig.devicePrivateKeyPem``. Isol8 agents get that from
+          ``create_paperclip_for_marketplace`` + ``ensure_operator_device_paired``;
+          without it the hired agent cannot pass the operator-relay device-auth
+          handshake and stays broken until the next reprovision. The fix is to
+          mint the agent HERE via ``create_paperclip_for_marketplace`` in
+          Paperclip's ``pending_approval`` status and pass its id as
+          ``payload.agentId`` — that is exactly what upstream's
+          ``activatePendingApproval`` (on approve) / ``terminate`` (on reject)
+          branch exists for, and it keeps "nothing live before the human says
+          yes" intact.
+       2. **The post-approve artifact deploy.** Paperclip creates the roster
+          entry; the EFS workspace + ``openclaw.json`` merge is Isol8's half and
+          belongs in ``routers/teams/approvals.py::approve``. Without it,
+          approving yields a roster entry with no workspace behind it.
+
+       ``build_hire_approval_payload`` above is correct and tested; it is the
+       ``agentId`` omission that changes when this is finished.
+
+    Creating the approval changes nothing on its own. ``issueIds`` is what
+    makes the request show up ON the task that prompted it (upstream links
+    them via ``issueApprovalsSvc.linkManyForApproval``) rather than only in a
+    global list the owner has no reason to open.
 
     Returns the approval id, or None when the owner has no Paperclip company —
     a degraded state a recommendation must not raise on, since the listings

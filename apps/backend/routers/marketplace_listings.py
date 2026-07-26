@@ -32,7 +32,6 @@ from core.services import (
     agent_export,
     company_deploy_service,
     curator,
-    marketplace_hire,
     marketplace_search,
     marketplace_service,
     seller_display,
@@ -232,19 +231,21 @@ async def recommend(
     published = await marketplace_search.search(query=None, limit=100)
     listings = _resolve_recommended(wanted, published)
 
-    approval_id = None
-    if issue_id and listings:
-        # Best-effort: a failure to file the approval must not cost the caller
-        # the listings it already resolved — Friday can still name them in
-        # chat, which is strictly better than an errored tool call.
-        try:
-            approval_id = await marketplace_hire.create_hire_approval(
-                owner_id=owner_id, issue_id=issue_id, listing=listings[0]
-            )
-        except Exception:
-            logger.exception("recommend: hire approval failed for owner=%s issue=%s", owner_id, issue_id)
-
-    return {"listings": listings, "approval_id": approval_id}
+    # ``issue_id`` is accepted and currently IGNORED. Filing the Paperclip
+    # hire_agent approval is deliberately not wired up yet — see
+    # ``marketplace_hire.create_hire_approval``. Approving one would have
+    # Paperclip's own agentsSvc.create mint the roster row, and that path does
+    # NOT generate the operator device keypair
+    # (``adapterConfig.devicePrivateKeyPem``) that
+    # ``create_paperclip_for_marketplace`` + ``ensure_operator_device_paired``
+    # do — so the hired agent could never pass the device-auth handshake and
+    # would sit broken until the next reprovision. Shipping the approval
+    # without the deploy half would also leave a roster entry with no
+    # workspace behind it.
+    #
+    # The agent still gets its listings, so a headless recommendation degrades
+    # to "named in the reply" rather than failing.
+    return {"listings": listings, "approval_id": None}
 
 
 @router.get("/listings/search")

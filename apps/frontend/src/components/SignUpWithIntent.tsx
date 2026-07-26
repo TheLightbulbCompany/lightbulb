@@ -28,6 +28,15 @@ import { resolveSignUpRedirectTarget } from "@/lib/signupIntent";
  * render): default to "/chat" there. Safe because this only matters up to
  * the point the user actually completes sign-up, well after hydration has
  * recomputed the real value client-side.
+ *
+ * `signInFallbackRedirectUrl` stays a static "/chat", NOT the computed team
+ * target. That prop only fires when the visitor uses the widget's own
+ * "Sign in" footer link to an EXISTING account — never the fresh-signup
+ * double-provision case this component exists to fix. Routing it to
+ * /onboarding?intent=team would let an existing org owner (who clicked
+ * "Create a team", wrote the intent cookie, then remembered they already
+ * have an account) land back on the org-creation UI with no membership
+ * guard, creating a second org and a second container.
  */
 export function SignUpWithIntent() {
   const [redirectTarget] = useState<string>(() =>
@@ -39,7 +48,7 @@ export function SignUpWithIntent() {
   return (
     <SignUp
       fallbackRedirectUrl={redirectTarget}
-      signInFallbackRedirectUrl={redirectTarget}
+      signInFallbackRedirectUrl="/chat"
     />
   );
 }

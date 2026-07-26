@@ -29,9 +29,6 @@ describe("SignUpWithIntent", () => {
     render(<SignUpWithIntent />);
     const el = screen.getByTestId("sign-up-mock");
     expect(el.dataset.fallbackRedirectUrl).toBe("/onboarding?intent=team");
-    expect(el.dataset.signInFallbackRedirectUrl).toBe(
-      "/onboarding?intent=team",
-    );
   });
 
   it("routes to /onboarding?intent=team via the cookie alone (Clerk's multi-step signup already dropped the query)", () => {
@@ -42,15 +39,26 @@ describe("SignUpWithIntent", () => {
     render(<SignUpWithIntent />);
     const el = screen.getByTestId("sign-up-mock");
     expect(el.dataset.fallbackRedirectUrl).toBe("/onboarding?intent=team");
-    expect(el.dataset.signInFallbackRedirectUrl).toBe(
-      "/onboarding?intent=team",
-    );
   });
 
   it("routes to /chat when there is no team intent, unchanged from before", () => {
     render(<SignUpWithIntent />);
     const el = screen.getByTestId("sign-up-mock");
     expect(el.dataset.fallbackRedirectUrl).toBe("/chat");
+    expect(el.dataset.signInFallbackRedirectUrl).toBe("/chat");
+  });
+
+  it("regression guard: signInFallbackRedirectUrl stays /chat even when team intent is present", () => {
+    // signInFallbackRedirectUrl fires on Clerk's own "Sign in" footer link —
+    // an EXISTING account, not the fresh-signup double-provision case this
+    // component exists to fix. Routing it to /onboarding?intent=team would
+    // let an existing org owner land back on unguarded org-creation UI and
+    // create a second org/container. Must never re-couple to redirectTarget.
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+    window.history.replaceState({}, "", "/sign-up?intent=team");
+    render(<SignUpWithIntent />);
+    const el = screen.getByTestId("sign-up-mock");
+    expect(el.dataset.fallbackRedirectUrl).toBe("/onboarding?intent=team");
     expect(el.dataset.signInFallbackRedirectUrl).toBe("/chat");
   });
 });

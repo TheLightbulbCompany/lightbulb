@@ -1076,3 +1076,80 @@ async def test_reset_bootstrap_for_retry_returns_false_on_condition_fail(repo):
     assert fetched.bootstrap_state == "failed"
     assert fetched.bootstrap_attempts == 1
     assert fetched.bootstrap_dispatch_id == dispatch_id
+
+
+# ---------------------------------------------------------------------------
+# first_contact claim / settle / attempts
+#
+# Once-only is inferred SERVER-SIDE from this state, never from a
+# client-supplied `purpose` label, so an agent cannot skip the guard by
+# mislabelling its send.
+# ---------------------------------------------------------------------------
+
+
+async def test_claim_first_contact_wins_fresh(repo):
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    assert await repo.claim_first_contact("u1", onboarding_generation="01G") is True
+    assert (await repo.get("u1")).first_contact_state == "sending"
+
+
+async def test_claim_first_contact_exactly_once(repo):
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    first = await repo.claim_first_contact("u1", onboarding_generation="01G")
+    second = await repo.claim_first_contact("u1", onboarding_generation="01G")
+    assert first is True
+    assert second is False
+
+
+async def test_claim_first_contact_is_generation_fenced(repo):
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    assert await repo.claim_first_contact("u1", onboarding_generation="WRONG") is False
+
+
+async def test_settle_first_contact_marks_sent(repo):
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.claim_first_contact("u1", onboarding_generation="01G")
+    await repo.settle_first_contact("u1", onboarding_generation="01G", state="sent")
+    assert (await repo.get("u1")).first_contact_state == "sent"
+
+
+async def test_failed_first_contact_is_reclaimable(repo):
+    """A failed mint or SES send must not make the first failure terminal."""
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.claim_first_contact("u1", onboarding_generation="01G")
+    await repo.settle_first_contact("u1", onboarding_generation="01G", state="failed", reason="ses_send_failed")
+    assert await repo.claim_first_contact("u1", onboarding_generation="01G") is True
+
+
+async def test_sent_first_contact_is_not_reclaimable(repo):
+    """`sent` is terminal -- reclaiming it would double-send."""
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    await repo.claim_first_contact("u1", onboarding_generation="01G")
+    await repo.settle_first_contact("u1", onboarding_generation="01G", state="sent")
+    assert await repo.claim_first_contact("u1", onboarding_generation="01G") is False
+
+
+async def test_first_contact_attempts_are_bounded(repo):
+    """The counter is the SOLE bound on the nudge loop -- nudge runs
+    re-register the completion callback, so without it this is infinite."""
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01G"))
+    for _ in range(3):
+        assert await repo.bump_first_contact_attempts("u1", onboarding_generation="01G", limit=3) is True
+    assert await repo.bump_first_contact_attempts("u1", onboarding_generation="01G", limit=3) is False
+
+
+async def test_onboarding_state_projects_first_contact_and_friday(repo):
+    """send_to_owner reads these from the SAME single read compute_status does."""
+    await repo.put(
+        _make_company(
+            user_id="u1",
+            org_id="u1",
+            onboarding_generation="01G",
+            seeded_agent_ids=["agent_friday", "agent_atlas"],
+        )
+    )
+    state = await repo.get_onboarding_state("u1")
+    assert state["first_contact_state"] == "not_started"
+    assert state["first_contact_attempts"] == 0
+    # Friday is seeded FIRST in provision_org, so she is index 0.
+    assert state["friday_agent_id"] == "agent_friday"

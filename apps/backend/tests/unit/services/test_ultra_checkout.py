@@ -452,7 +452,7 @@ class TestCreateUltraUpgradeService:
         monkeypatch.setattr(billing_service.stripe.Subscription, "retrieve", retrieve_mock)
         monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify_mock)
 
-        with pytest.raises(BillingServiceError):
+        with pytest.raises(BillingServiceError, match="can't be changed automatically"):
             await billing_service.create_ultra_upgrade(owner_id="user_1")
 
         modify_mock.assert_not_called()

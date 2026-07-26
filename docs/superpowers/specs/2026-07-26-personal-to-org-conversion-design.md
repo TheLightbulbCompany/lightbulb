@@ -1,8 +1,9 @@
 # Personal → org conversion
 
 **Status:** design in progress 2026-07-26
-**Depends on:** nothing
-**Open decision:** Ultra-tier owners (see the end)
+**Depends on:** this branch's Ultra-for-teams work — `create_ultra_upgrade`
+swaps only a team subscription's base item, leaving the seat item alone (see
+"Ultra-tier owners" at the end).
 
 ## What a user gets
 
@@ -69,9 +70,12 @@ oldest-active selection and split the org's membership view.
 
 The billing row moves to `org_id`, but the Stripe **subscription object stays
 the same**. Swap the flat $50 item for base + seat items on that subscription
-so Stripe prorates the difference itself. Cancel-and-resubscribe would open a
-window where the owner has no active subscription — the provision gate would
-lock them out of their own workspace mid-conversion.
+so Stripe prorates the difference itself. An `ultra_pro` personal owner's base
+item carries `STRIPE_ULTRA_PRICE_ID` instead of `STRIPE_TEAM_BASE_PRICE_ID` —
+same swap, different base price — so they land on an Ultra team rather than
+being downgraded. Cancel-and-resubscribe would open a window where the owner
+has no active subscription — the provision gate would lock them out of their
+own workspace mid-conversion.
 
 A `trial_local` owner has no Stripe customer at all, so this step is a normal
 first checkout rather than a modify.
@@ -123,14 +127,20 @@ the system knowing what is happening and showing none of it.
   for the org.
 - A `trial_local` owner converts without a Stripe modify.
 
-## Open decision
+## Ultra-tier owners
 
-An `ultra_pro` personal owner ($150/mo) cannot become a team —
-`create_ultra_upgrade` refuses per-seat subscriptions outright, so conversion
-would silently downgrade them to standard team pricing on a smaller container.
+Resolved by this branch's Ultra-for-teams work — there is no longer a
+block-or-downgrade choice to make. `create_ultra_upgrade` no longer refuses
+per-seat subscriptions; it swaps a team subscription's base item and leaves
+the seat item untouched, which is exactly the shape a converting Ultra owner
+needs.
 
-Block conversion for Ultra owners with a clear message, or allow it and accept
-the downgrade? This needs an answer before implementation.
+So conversion for an `ultra_pro` personal owner ($150/mo) is mechanical, not a
+product decision: when step 7 swaps the single flat item for `[base, seat]`,
+an `ultra_pro` owner's base item is written with `STRIPE_ULTRA_PRICE_ID`
+instead of `STRIPE_TEAM_BASE_PRICE_ID`. They convert to an Ultra team — $150
+base + $20/seat × N — and keep their container size instead of being silently
+downgraded.
 
 ## Not in scope
 

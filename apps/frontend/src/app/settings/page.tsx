@@ -106,7 +106,9 @@ const ULTRA_PRICE_USD = 150;
 // already on ultra_pro it collapses to an "Ultra Pro" active badge; otherwise
 // it renders the upgrade button that calls useBilling().upgradeToUltra (which
 // redirects to a fresh Checkout, or refreshes in place on the item-swap path).
-// Never rendered on the per-seat TeamBillingCard — Ultra rejects team subs.
+// Never rendered on the per-seat TeamBillingCard — Ultra-for-teams exists at
+// the billing layer, but the org upgrade CTA hasn't been built on the
+// frontend yet.
 function UltraUpgradeRow({
   plan,
   upgradeToUltra,
@@ -359,7 +361,9 @@ function BillingPanel() {
             </button>
           </div>
           {/* A flat/comped org sub (no per-seat item) can still upgrade to
-              Ultra — only the per-seat TeamBillingCard path is excluded. */}
+              Ultra — only the per-seat TeamBillingCard path omits the CTA,
+              and that's a frontend gap, not a backend limit (Ultra now
+              supports per-seat subs too). */}
           <UltraUpgradeRow plan={account?.plan} upgradeToUltra={upgradeToUltra} />
         </div>
       </div>

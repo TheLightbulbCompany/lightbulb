@@ -2249,10 +2249,10 @@ class EcsManager:
                 environment_for_task.append({"name": "AWS_BEDROCK_FORCE_HTTP1", "value": "1"})
 
             # ACP coding-harness (Claude Code) Bedrock wiring. Skipped for
-            # revoked owners — their
-            # Bedrock grant is withheld above, so pointing the harness at it
-            # would only AccessDeny. Points Claude Code at the owner's AIP ARNs
-            # so its inference is billed to the owner (see helper docstring).
+            # revoked owners — their Bedrock grant is withheld above, so
+            # pointing the harness at it would only AccessDeny. Points Claude
+            # Code at the owner's AIP ARNs so its inference is billed to the
+            # owner (see helper docstring).
             #
             # PAID ONLY. derive_enabled_harnesses returns [] for bedrock_trial
             # (no ACP on the free tier), so a trial container gets no acp block

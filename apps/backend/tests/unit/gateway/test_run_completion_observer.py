@@ -36,6 +36,7 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._parked = False
     conn._parked_watchdog_task = None
     conn._run_completion_callbacks = {}
+    conn._oauth_reauth_flagged = False
     conn._run_completion_tasks = set()
     return conn
 

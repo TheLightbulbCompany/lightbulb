@@ -349,6 +349,7 @@ async def test_grace_close_arms_trial_stop_after_mixed_case_session_key_run_comp
     # exercised by this test, but _handle_message's TRUE-terminal branch
     # always pops from it now.
     conn._run_completion_callbacks = {}
+    conn._oauth_reauth_flagged = False
     conn._run_completion_tasks = set()
     conn.close = AsyncMock()
 

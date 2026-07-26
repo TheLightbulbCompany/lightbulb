@@ -234,6 +234,62 @@ async def try_claim_provision(
         raise
 
 
+async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> bool:
+    """Reserve one agent-initiated owner email for ``day`` (UTC ``YYYY-MM-DD``).
+
+    DURABLE on purpose. This is the only fence against an agent looping on the
+    owner-send endpoint, and the backend runs several ECS tasks behind an ALB —
+    an in-process bucket (the pattern ``agent_mail_relay`` uses for burst
+    smoothing) would give a real limit of ``cap * task_count`` and reset on
+    every deploy.
+
+    Two conditional writes, at most one extra round trip:
+
+    1. Roll over — set the counter to 1 when the stored day is absent or stale.
+    2. Same day — increment, conditional on the count still being under cap.
+
+    Returns True when the send is allowed.
+
+    **Fails OPEN.** A DynamoDB fault returns True rather than blocking. The
+    once-only first-contact guard and the per-minute burst limiter both still
+    apply, so the blast radius of failing open is bounded — whereas failing
+    closed would silently swallow a legitimate first-contact email, which is
+    the exact failure mode this whole feature exists to stop.
+    """
+    table = _get_table()
+
+    # 1. New day, or first send ever: reset the window to 1.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET email_send_day = :d, email_send_count = :one",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND (attribute_not_exists(email_send_day) OR email_send_day <> :d)"
+            ),
+            ExpressionAttributeValues={":d": day, ":one": 1},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            return True  # fail open — see docstring
+
+    # 2. Same day: increment only while under cap.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET email_send_count = email_send_count + :one",
+            ConditionExpression="email_send_day = :d AND email_send_count < :cap",
+            ExpressionAttributeValues={":d": day, ":one": 1, ":cap": cap},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        return True  # fail open — see docstring
+
+
 async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> None:
     """Stamp a fresh per-SFN-retry ``provision_attempt_token`` onto an
     already-claimed lease. Called by ``scripts/provision_runner`` as its

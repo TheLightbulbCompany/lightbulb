@@ -602,3 +602,47 @@ async def test_stamp_stop_reason_trial_idle_sets_parked_at(dynamodb_table):
     row = await container_repo.get_by_owner_id("user_sr")
     assert row["stop_reason"] == "admin"
     assert "parked_at" not in row
+
+
+# --- Daily owner-email send cap -------------------------------------------
+#
+# DURABLE by design: this is the only fence against an agent looping on the
+# owner-send endpoint, and the backend runs several ECS tasks behind an ALB,
+# so an in-process bucket would give a real limit of cap*task_count and reset
+# on every deploy.
+
+
+@pytest.mark.asyncio
+async def test_daily_email_cap_allows_up_to_cap_then_blocks(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+
+    for _ in range(3):
+        assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=3) is True
+
+    assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=3) is False
+
+
+@pytest.mark.asyncio
+async def test_daily_email_cap_resets_on_a_new_day(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+
+    assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=1) is True
+    assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=1) is False
+    assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-27", cap=1) is True
+
+
+@pytest.mark.asyncio
+async def test_daily_email_cap_is_per_owner(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_a", {"hook_token": "t"})
+    await container_repo.upsert("user_b", {"hook_token": "t"})
+
+    assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=1) is True
+    assert await container_repo.try_consume_daily_email_send("user_a", day="2026-07-26", cap=1) is False
+    # user_b's budget is untouched by user_a exhausting theirs.
+    assert await container_repo.try_consume_daily_email_send("user_b", day="2026-07-26", cap=1) is True

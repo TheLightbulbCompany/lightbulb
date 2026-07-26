@@ -122,14 +122,16 @@ async def get_billing_account(
     # platform-use semantics untouched.
     is_subscribed = is_paid_subscription(account)
 
-    # Teams per-seat billing. seat_count echoes the LIVE Clerk member count
-    # for org owners — not the stored Stripe quantity — so the paywall can
-    # price "N × $20" correctly even before the first subscription exists.
-    # Falls back to the stored seat_count if Clerk is unavailable (returns
-    # 0). Post-subscribe, stored and live counts converge via
-    # sync_team_seat_quantity. Personal owners keep both fields None.
+    # Teams per-seat billing. seat_count echoes the LIVE billable seat count
+    # (members + pending invitations) for org owners — not the stored Stripe
+    # quantity — so the paywall can price "N × $20" correctly even before the
+    # first subscription exists. Falls back to the stored seat_count if Clerk
+    # is unavailable (returns 0). Post-subscribe, stored and live counts
+    # converge via sync_team_seat_quantity. Personal owners keep both fields
+    # None.
     seat_count: int | None = None
     team_seat_price_usd: int | None = None
+    team_base_price_usd: int | None = None
     # is_seat_subscription discriminates a REAL per-seat Stripe subscription
     # (subscription_item_id set by the webhook — see
     # stripe_webhook_handlers.py) from a flat/comped/grandfathered org sub
@@ -137,10 +139,11 @@ async def get_billing_account(
     # "N seats x $price" billing math on the frontend.
     is_seat_subscription = False
     if is_org_owner_id(owner_id):
-        live = await clerk_admin.get_organization_member_count(owner_id)
+        live = await clerk_admin.get_organization_seat_count(owner_id)
         stored = int(account.get("seat_count") or 0) if account else 0
         seat_count = live if live > 0 else (stored or None)
         team_seat_price_usd = settings.TEAM_SEAT_PRICE_USD
+        team_base_price_usd = settings.TEAM_BASE_PRICE_USD
         is_seat_subscription = bool(account and account.get("subscription_item_id"))
 
     return BillingAccountResponse(
@@ -154,6 +157,7 @@ async def get_billing_account(
         plan=(account.get("plan") or "standard") if account else "standard",
         seat_count=seat_count,
         team_seat_price_usd=team_seat_price_usd,
+        team_base_price_usd=team_base_price_usd,
         is_seat_subscription=is_seat_subscription,
     )
 
@@ -675,9 +679,9 @@ async def create_team_checkout(
         byo_provider=None,
     )
 
-    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    member_count = await clerk_admin.get_organization_seat_count(owner_id)
     if member_count <= 0:
-        # get_organization_member_count returns 0 on any Clerk error/outage.
+        # get_organization_seat_count returns 0 on any Clerk error/outage.
         # create_team_seat_checkout floors quantity at max(1, member_count),
         # so proceeding here would silently subscribe the org at a single
         # seat instead of its real size. Fail loudly instead of under-billing.

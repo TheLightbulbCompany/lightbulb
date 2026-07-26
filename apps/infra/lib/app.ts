@@ -56,6 +56,11 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // both secrets are populated.
       STRIPE_TEAM_SEAT_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_DEV }}",
       STRIPE_TEAM_SEAT_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_SEAT_PRICE_ID_PROD }}",
+      // Stripe Teams BASE Price IDs — the $50/mo flat component charged
+      // alongside the per-seat item. Same synth-time bake + per-env live/test
+      // split as the seat price above.
+      STRIPE_TEAM_BASE_PRICE_ID_DEV: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_DEV }}",
+      STRIPE_TEAM_BASE_PRICE_ID_PROD: "${{ secrets.STRIPE_TEAM_BASE_PRICE_ID_PROD }}",
       // Stripe Ultra Pro Price IDs — same synth-time bake + per-env live/test
       // split as the flat/team prices above. Empty string is tolerated (the
       // backend surfaces "STRIPE_ULTRA_PRICE_ID not configured" at the

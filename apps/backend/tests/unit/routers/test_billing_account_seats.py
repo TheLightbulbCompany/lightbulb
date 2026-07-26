@@ -23,11 +23,41 @@ async def test_account_includes_seats_for_org_owner(monkeypatch):
     monkeypatch.setattr(
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=5))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=5))
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     assert resp.seat_count == 5
     assert resp.team_seat_price_usd == 20
+
+
+@pytest.mark.asyncio
+async def test_account_seat_count_includes_pending_invitations(monkeypatch):
+    """No free members: the display count must reflect members + pending
+    invitations, not members alone or the stored value.
+
+    Stubs the two underlying Clerk reads (member count + pending count) and
+    lets the REAL get_organization_seat_count composition run — stubbing
+    get_organization_seat_count itself would only prove the router forwards
+    whatever it's handed, not that the members+pending sum genuinely
+    happens. The stored seat_count (2) is deliberately different from both
+    the member-count-alone answer (1) and the correct composed answer (4),
+    so the assertion can only pass if the live composition is real: a
+    members-only bug would land on 1, a stored-value bug would land on 2,
+    and only true members+pending lands on 4."""
+    monkeypatch.setattr(billing.settings, "TEAM_SEAT_PRICE_USD", 20)
+    monkeypatch.setattr(
+        billing,
+        "_get_billing_account",
+        AsyncMock(return_value={"owner_id": "org_1", "subscription_status": "active", "seat_count": 2}),
+    )
+    monkeypatch.setattr(
+        billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
+    )
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(billing.clerk_admin, "_pending_invitation_count", AsyncMock(return_value=3))
+
+    resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
+    assert resp.seat_count == 4
 
 
 @pytest.mark.asyncio
@@ -64,7 +94,7 @@ async def test_account_is_seat_subscription_true_when_item_id_present(monkeypatc
     monkeypatch.setattr(
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=3))
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     assert resp.is_seat_subscription is True
@@ -89,7 +119,7 @@ async def test_account_is_seat_subscription_false_for_flat_comped_org(monkeypatc
     monkeypatch.setattr(
         billing, "get_usage_summary", AsyncMock(return_value={"total_spend": 0.0, "lifetime_spend": 0.0})
     )
-    monkeypatch.setattr(billing.clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
+    monkeypatch.setattr(billing.clerk_admin, "get_organization_seat_count", AsyncMock(return_value=3))
 
     resp = await billing.get_billing_account(auth=AuthContext(user_id="u", org_id="org_1", org_role="org:admin"))
     assert resp.is_seat_subscription is False

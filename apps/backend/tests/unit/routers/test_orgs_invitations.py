@@ -1,6 +1,6 @@
 """Tests for POST /api/v1/orgs/{org_id}/invitations — Gate A."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -56,6 +56,32 @@ def _override_auth(app, ctx):
     from core.auth import get_current_user
 
     app.dependency_overrides[get_current_user] = lambda: ctx
+
+
+@pytest.fixture(autouse=True)
+def _stub_seat_sync():
+    """Every invite that reaches success now calls
+    ``core.services.billing_service.sync_team_seat_quantity`` (see
+    ``routers.orgs.create_invitation``). That import is local to the
+    function body, so ``patch("routers.orgs.billing_repo")`` /
+    ``patch("routers.orgs.clerk_admin")`` in the tests below do NOT reach
+    it — it lives in, and must be patched at, its SOURCE module
+    (``core.services.billing_service``), the same trap documented in
+    ``test_billing_change_provider.py``'s ``patch_background_provision``
+    fixture. Without this autouse stub, every pre-existing test in this
+    file that reaches ``return 201`` would fall through to a real
+    ``billing_repo.get_by_owner_id`` call inside ``sync_team_seat_quantity``
+    and hit live DynamoDB — masked only by the router's own
+    ``except Exception`` swallow. Tests that care about the seat-sync call
+    itself (below) layer their own ``patch(...)`` for the same target
+    inside their ``with`` block, which nests over — and, once its block
+    exits, correctly reverts to — this fixture's stub.
+    """
+    with patch(
+        "core.services.billing_service.sync_team_seat_quantity",
+        new=AsyncMock(return_value=0),
+    ) as mock_sync:
+        yield mock_sync
 
 
 def test_invite_to_email_with_no_clerk_user_succeeds(app, admin_auth):
@@ -273,3 +299,84 @@ def test_clerk_response_missing_id_raises_500(app, admin_auth):
         )
     # Server error — the contract is "fail loudly", not "return invitation_id=''".
     assert resp.status_code == 500
+
+
+def test_successful_invite_schedules_seat_sync(app, admin_auth):
+    """The bill moves on the admin's action, not on the next poll.
+
+    There is no organizationInvitation.* webhook handler at all, and Clerk has
+    no webhook endpoint configured anyway (#1465), so this dispatch is the only
+    thing in the system that reacts to an invite being sent.
+
+    Scheduled, not awaited — same fire-and-forget shape as the reconcile in
+    routers/container.py, so the admin's invite never waits on two Clerk reads
+    plus a Stripe write. Asserted the same way as
+    test_container_status_seat_reconcile.py: capture asyncio.create_task and
+    check the sync's coroutine was handed to it.
+    """
+    _override_auth(app, admin_auth)
+
+    dispatched: list = []
+    # MagicMock, not AsyncMock, on purpose: patch() auto-substitutes an
+    # AsyncMock for coroutine-function targets, which would hand `dispatched`
+    # an unawaited coroutine instead of the sentinel we assert on.
+    sentinel = MagicMock(name="seat_sync_coro")
+    mock_sync = MagicMock(return_value=sentinel)
+
+    # sync_team_seat_quantity is imported inside create_invitation's function
+    # body (mirrors routers/webhooks.py), so it must be patched at its
+    # SOURCE module path, not as an attribute on routers.orgs — see
+    # test_billing_change_provider.py's patch_background_provision fixture
+    # docstring for why a module-local import defeats the latter.
+    with (
+        patch("routers.orgs.clerk_admin") as mock_clerk,
+        patch("routers.orgs.billing_repo"),
+        patch("core.services.billing_service.sync_team_seat_quantity", new=mock_sync),
+        patch.object(orgs.asyncio, "create_task", lambda coro: dispatched.append(coro) or MagicMock()),
+    ):
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_1"})
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "new@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 201
+    assert resp.json() == {"invitation_id": "orginv_1"}
+    mock_sync.assert_called_once_with("org_test")
+    assert sentinel in dispatched
+
+
+def test_invite_succeeds_even_though_seat_sync_raises(app, admin_auth):
+    """The invite already committed in Clerk; a Stripe blip must not 5xx it.
+
+    With the sync scheduled rather than awaited, a failure inside it can no
+    longer reach the response at all — this pins that the invite still returns
+    201 and that the failing sync really was dispatched (rather than silently
+    skipped, which would pass for the wrong reason).
+    """
+    _override_auth(app, admin_auth)
+
+    dispatched: list = []
+
+    async def boom(owner_id: str) -> int:
+        raise RuntimeError("stripe down")
+
+    with (
+        patch("routers.orgs.clerk_admin") as mock_clerk,
+        patch("routers.orgs.billing_repo"),
+        patch("core.services.billing_service.sync_team_seat_quantity", boom),
+        patch.object(orgs.asyncio, "create_task", lambda coro: dispatched.append(coro) or MagicMock()),
+    ):
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_2"})
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "new@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 201
+    assert resp.json() == {"invitation_id": "orginv_2"}
+    assert len(dispatched) == 1
+    # Close the never-awaited coroutine so pytest doesn't warn about it.
+    dispatched[0].close()

@@ -36,7 +36,7 @@ from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
 from core.services import webhook_dedup
-from core.services.billing_service import BillingService
+from core.services.billing_service import BillingService, subscription_item_on_price
 
 logger = logging.getLogger(__name__)
 
@@ -753,31 +753,58 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # Detect by explicit metadata purpose OR by the seat price id. Personal
     # flat subs skip this entirely.
     items = (event_data.get("items") or {}).get("data") or []
-    first_item = items[0] if items else {}
-    first_price_id = (first_item.get("price") or {}).get("id")
-    is_team_seat = metadata.get("purpose") == "team_seat" or (
-        bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
-    )
+    # A Teams subscription carries TWO items (flat base + per-seat) and Stripe
+    # does not guarantee their order. Select the seat item BY PRICE ID: storing
+    # the base item's id here would make sync_team_seat_quantity drive the base
+    # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
+    # NOTHING in this handler reads items by position — see is_ultra below.
+    seat_item = subscription_item_on_price(items, settings.STRIPE_TEAM_SEAT_PRICE_ID)
+    # bool(seat_item) is a strict superset of the old "first item is the seat
+    # price" fallback, and cannot over-detect: nothing but a real per-seat line
+    # item ever carries STRIPE_TEAM_SEAT_PRICE_ID.
+    is_team_seat = metadata.get("purpose") == "team_seat" or bool(seat_item)
     team_seat_persisted = False
-    if is_team_seat and first_item:
+    if is_team_seat and seat_item:
         try:
             await billing_repo.set_team_subscription(
                 owner_id=account["owner_id"],
                 subscription_id=event_data["id"],
-                subscription_item_id=first_item.get("id"),
+                subscription_item_id=seat_item.get("id"),
                 status=new_status,
-                seat_count=int(first_item.get("quantity") or 0),
+                seat_count=int(seat_item.get("quantity") or 0),
             )
             team_seat_persisted = True
         except Exception:
             logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
+    elif is_team_seat and not seat_item:
+        # Reached only via metadata.purpose == "team_seat" (bool(seat_item)
+        # can't be True here without seat_item also being truthy) but no item
+        # on the subscription matches STRIPE_TEAM_SEAT_PRICE_ID -- either the
+        # env var is unset in this deploy or the Stripe seat price was rotated
+        # to a new id. Non-destructive (existing stored subscription_item_id/
+        # seat_count are left alone), but must not be silent: a rotation would
+        # otherwise freeze seat counts on every subsequent webhook with no
+        # visible signal.
+        logger.warning(
+            "Team-seat subscription %s (owner %s) detected via metadata but no "
+            "item matches STRIPE_TEAM_SEAT_PRICE_ID=%r -- seat state not refreshed "
+            "(price unset or rotated?)",
+            event_data.get("id"),
+            account["owner_id"],
+            settings.STRIPE_TEAM_SEAT_PRICE_ID,
+        )
 
     # Ultra Pro tier: derive the tier FROM THE PRICE on the subscription item —
     # a direct sibling of the team-seat detection above, and NEVER from
     # subscription.metadata (a checkout-time snapshot that goes stale; the same
     # clobber the entering_live provider guard defends against). Persist the
     # plan and resize the container only on the tier transition.
-    is_ultra = bool(settings.STRIPE_ULTRA_PRICE_ID) and first_price_id == settings.STRIPE_ULTRA_PRICE_ID
+    # Scanned by price, not read off items[0]: an Ultra sub is single-item
+    # TODAY, but the moment one grows a second line item (a metered-overage
+    # item, a Stripe-side add-on or coupon) an Ultra owner whose ultra price
+    # lands at index >= 1 would fall to "standard" here and get their
+    # container resized DOWN — silently. Same rule as the seat item above.
+    is_ultra = bool(subscription_item_on_price(items, settings.STRIPE_ULTRA_PRICE_ID))
     if items and not is_team_seat:
         # Only act when the payload actually carries the subscription item. A
         # partial `.updated` can arrive with an empty items.data; treating that
@@ -895,8 +922,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # Same shape for the seat fields: on a brand-new Teams seat sub the
         # eventually-consistent row re-read can miss the just-committed
         # subscription_item_id/seat_count and mislabel the plan as flat-fee.
-        facts_overrides["subscription_item_id"] = first_item.get("id")
-        facts_overrides["seat_count"] = int(first_item.get("quantity") or 0)
+        facts_overrides["subscription_item_id"] = seat_item.get("id")
+        facts_overrides["seat_count"] = int(seat_item.get("quantity") or 0)
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational

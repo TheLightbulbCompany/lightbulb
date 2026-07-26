@@ -211,10 +211,14 @@ Every Isol8 company starts with two seeded agents:
 ## Plans, providers, and this owner's current state
 
 Isol8's paid plans: **Starter, $50/month flat fee** (always-on container)
-for personal and flat-fee org workspaces, and a **per-seat Teams
-subscription** for seat-billed team workspaces. There is also a **free
-tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap, container
-sleeps when idle). Inference runs on one of
+for personal and flat-fee org workspaces, and a **Teams subscription for
+team workspaces: a $50/month base plus $20/month per seat** — so a solo
+admin pays $70/month and a four-person team pays $130/month. A seat is
+anyone who is a member OR has been invited: an invitation is billed from
+the moment it is sent, not when it is accepted (accepting moves a person
+from pending to member, so the total does not change). There is also a
+**free tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap,
+container sleeps when idle). Inference runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Isol8-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account — available to
 personal owners and to org workspaces, where the workspace owner/admin who

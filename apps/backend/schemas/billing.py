@@ -31,6 +31,9 @@ class BillingAccountResponse(BaseModel):
     # for personal owners.
     seat_count: int | None = None
     team_seat_price_usd: int | None = None
+    # Flat monthly base charged alongside the per-seat item. None for personal
+    # owners. Frontend renders "$50 + N x $20" from these two numbers.
+    team_base_price_usd: int | None = None
     # True only for org owners on a REAL per-seat Stripe subscription (one
     # that recorded subscription_item_id via the webhook). False for
     # personal owners and for flat/comped/grandfathered org subs that have

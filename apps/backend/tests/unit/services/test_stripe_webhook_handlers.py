@@ -443,6 +443,145 @@ class TestTeamSeatWebhook:
 
         repo.set_team_subscription.assert_not_awaited()
 
+    _BASE_ITEM = {"id": "si_base", "quantity": 1, "price": {"id": "price_base_test"}}
+    _SEAT_ITEM = {"id": "si_seat", "quantity": 4, "price": {"id": "price_seat_test"}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "items_order",
+        [
+            pytest.param([_BASE_ITEM, _SEAT_ITEM], id="base_first"),
+            pytest.param([_SEAT_ITEM, _BASE_ITEM], id="seat_first"),
+        ],
+    )
+    async def test_seat_persistence_selects_seat_item_not_position_zero(self, monkeypatch, items_order):
+        """The SEAT item's id and quantity are stored regardless of which item
+        Stripe puts at items[0] -- the actual invariant is that ORDER IS
+        IRRELEVANT, selection is by price id alone.
+
+        Regression guard: storing the base item's id makes sync_team_seat_quantity
+        drive the base quantity, billing a 4-seat org $50x4 + $20 = $220/mo
+        instead of $50 + $20x4 = $130/mo. Stripe does not guarantee line-item
+        order, so selection must be by price id, never by position.
+        """
+        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        event = {
+            "id": "evt_team_ordered",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_team",
+                    "customer": "cus_team",
+                    "status": "active",
+                    "metadata": {"owner_id": "org_team", "purpose": "team_seat"},
+                    "items": {"data": items_order},
+                }
+            },
+        }
+        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
+            repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_team", "stripe_customer_id": "cus_team"})
+            repo.set_subscription = AsyncMock()
+            repo.set_provider_choice = AsyncMock()
+            repo.set_team_subscription = AsyncMock()
+            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+
+            await handlers.handle_subscription_state(event, MagicMock())
+
+        repo.set_team_subscription.assert_awaited_once_with(
+            owner_id="org_team",
+            subscription_id="sub_team",
+            subscription_item_id="si_seat",
+            status="active",
+            seat_count=4,
+        )
+
+    @pytest.mark.asyncio
+    async def test_detects_via_seat_item_without_metadata_purpose(self, monkeypatch):
+        """A Teams sub with NO metadata.purpose=='team_seat' at all (e.g. one
+        created directly in the Stripe Dashboard for a comped/enterprise org,
+        or one whose metadata was cleared) must still be detected as a team
+        seat sub, by scanning ALL items for the seat price -- not just item[0].
+
+        Regression guard for the UNDER-billing failure mode: with the base at
+        items[0] and no metadata purpose, the old fallback
+        (`first_price_id == seat_price`) evaluated False, so is_team_seat was
+        False, set_team_subscription was never called, subscription_item_id
+        was never persisted, and sync_team_seat_quantity silently no-op'd
+        forever -- the org would never be billed for seats added after
+        signup.
+        """
+        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        event = {
+            "id": "evt_team_no_metadata",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_team_dash",
+                    "customer": "cus_team_dash",
+                    "status": "active",
+                    "metadata": {"owner_id": "org_dash"},  # no "purpose" key at all
+                    "items": {"data": [self._BASE_ITEM, self._SEAT_ITEM]},
+                }
+            },
+        }
+        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
+            repo.get_by_owner_id = AsyncMock(
+                return_value={"owner_id": "org_dash", "stripe_customer_id": "cus_team_dash"}
+            )
+            repo.set_subscription = AsyncMock()
+            repo.set_provider_choice = AsyncMock()
+            repo.set_team_subscription = AsyncMock()
+            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+
+            await handlers.handle_subscription_state(event, MagicMock())
+
+        repo.set_team_subscription.assert_awaited_once_with(
+            owner_id="org_dash",
+            subscription_id="sub_team_dash",
+            subscription_item_id="si_seat",
+            status="active",
+            seat_count=4,
+        )
+
+    @pytest.mark.asyncio
+    async def test_warns_when_metadata_says_team_seat_but_no_item_matches_price(self, monkeypatch, caplog):
+        """metadata.purpose=='team_seat' but no item carries
+        STRIPE_TEAM_SEAT_PRICE_ID (env var unset, or the Stripe seat price was
+        rotated to a new id): must not silently freeze seat state -- it should
+        surface a warning so a price rotation is visible in logs instead of
+        manifesting only as mysteriously-stuck seat counts."""
+        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        event = {
+            "id": "evt_team_rotated",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_team_rotated",
+                    "customer": "cus_team_rotated",
+                    "status": "active",
+                    "metadata": {"owner_id": "org_rotated", "purpose": "team_seat"},
+                    "items": {"data": [{"id": "si_old", "quantity": 4, "price": {"id": "price_seat_STALE"}}]},
+                }
+            },
+        }
+        with (
+            patch.object(handlers, "billing_repo") as repo,
+            patch.object(handlers, "stripe") as mock_stripe,
+            caplog.at_level("WARNING", logger=handlers.logger.name),
+        ):
+            repo.get_by_owner_id = AsyncMock(
+                return_value={"owner_id": "org_rotated", "stripe_customer_id": "cus_team_rotated"}
+            )
+            repo.set_subscription = AsyncMock()
+            repo.set_provider_choice = AsyncMock()
+            repo.set_team_subscription = AsyncMock()
+            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
+
+            await handlers.handle_subscription_state(event, MagicMock())
+
+        repo.set_team_subscription.assert_not_awaited()
+        assert any("no item matches STRIPE_TEAM_SEAT_PRICE_ID" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # trial_local -> paid conversion forces a cold reprovision off the trial box

@@ -146,8 +146,7 @@ class TestCreateUltraUpgradeService:
         result = await billing_service.create_ultra_upgrade(owner_id="owner_trial")
 
         assert result.url == "https://checkout/ultra"
-        assert seen["price_id"] == "price_ultra_test"
-        assert seen["quantity"] == 1
+        assert seen["line_items"] == [{"price": "price_ultra_test", "quantity": 1}]
         # purpose=ultra rides the subscription metadata so the webhook records
         # the Ultra tier when the subscription first goes live.
         assert seen["metadata"] == {"owner_id": "owner_trial", "purpose": "ultra"}
@@ -172,7 +171,7 @@ class TestCreateUltraUpgradeService:
         result = await billing_service.create_ultra_upgrade(owner_id="owner_new", clerk_user_id="user_new")
 
         assert result.url == "https://checkout/ultra-new"
-        assert seen["price_id"] == "price_ultra_test"
+        assert seen["line_items"] == [{"price": "price_ultra_test", "quantity": 1}]
         # clerk_user_id threaded into metadata (mirrors the flat checkout) so
         # the webhook can resolve the per-Clerk-user row.
         assert seen["metadata"] == {"owner_id": "owner_new", "purpose": "ultra", "clerk_user_id": "user_new"}

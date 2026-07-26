@@ -119,6 +119,28 @@ async def test_upgrade_to_ultra_sets_plan_and_resizes_up():
 
 
 @pytest.mark.asyncio
+async def test_ultra_detected_when_its_price_is_not_the_first_item():
+    """Tier detection scans by price id — it must not depend on item order.
+
+    Ultra subs are single-item today, so this cannot happen yet. It becomes
+    reachable the moment one grows a second line item (metered overage, a
+    Stripe-side add-on or coupon). Under the old items[0] read the ultra price
+    at index 1 resolved to plan "standard", silently downgrading a paying Ultra
+    owner AND resizing their container down.
+    """
+    event = _ultra_event(item_price=ULTRA_PRICE)
+    event["data"]["object"]["items"]["data"] = [
+        {"id": "si_addon", "quantity": 1, "price": {"id": "price_some_addon"}},
+        {"id": "si_ultra", "quantity": 1, "price": {"id": ULTRA_PRICE}},
+    ]
+
+    repo, mgr = await _drive(event, account=_account(plan="standard"))
+
+    assert repo.set_plan.await_args.kwargs["plan"] == "ultra_pro"
+    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu="2048", new_memory="8192")
+
+
+@pytest.mark.asyncio
 async def test_downgrade_small_company_resizes_down():
     """(b) Ultra→flat with ≤10 agents → set_plan("standard") + resize down to
     the standard box (PER_USER constants)."""

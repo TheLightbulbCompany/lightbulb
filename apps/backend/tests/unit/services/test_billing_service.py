@@ -566,15 +566,16 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             result = await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="bedrock_claude")
 
         assert result.url == "https://checkout/flat"
-        assert seen["price_id"] == "price_flat_test"
-        assert seen["quantity"] == 1
+        assert seen["line_items"] == [{"price": "price_flat_test", "quantity": 1}]
         assert seen["metadata"]["owner_id"] == "u_1"
         assert seen["metadata"]["provider_choice"] == "bedrock_claude"
         assert seen["idempotency_key"].startswith("flat_checkout:u_1:")
 
     @pytest.mark.asyncio
     async def test_team_checkout_uses_seat_price_and_quantity(self, monkeypatch):
+        """Team checkout emits [base x1, seat xN] — a solo admin is $50 + 1x$20."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -585,8 +586,10 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         result = await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
 
         assert result.url == "https://checkout/team"
-        assert seen["price_id"] == "price_seat_test"
-        assert seen["quantity"] == 4
+        assert seen["line_items"] == [
+            {"price": "price_base_test", "quantity": 1},
+            {"price": "price_seat_test", "quantity": 4},
+        ]
         # provider_choice threaded in so the webhook backup persists teams as
         # Bedrock-managed (there is no provider picker in the team flow).
         assert seen["metadata"] == {
@@ -603,8 +606,18 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
 
     @pytest.mark.asyncio
+    async def test_team_checkout_raises_without_base_price_id(self, monkeypatch):
+        """An unconfigured base price fails loudly rather than silently
+        under-billing an org $20 instead of $70."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "")
+        with pytest.raises(BillingServiceError, match="STRIPE_TEAM_BASE_PRICE_ID not configured"):
+            await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
+
+    @pytest.mark.asyncio
     async def test_team_checkout_floors_quantity_at_one(self, monkeypatch):
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -613,7 +626,41 @@ class TestBuildSubscriptionCheckoutSharedSpine:
 
         monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
         await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=0)
-        assert seen["quantity"] == 1
+        assert seen["line_items"] == [
+            {"price": "price_base_test", "quantity": 1},
+            {"price": "price_seat_test", "quantity": 1},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_build_subscription_checkout_passes_line_items_verbatim(monkeypatch):
+    """The builder forwards its line_items list to Stripe untouched — this is
+    what lets the team path add a base-price item alongside the seat item in
+    a later task without the builder itself changing."""
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return MagicMock(id="cs_test_1", url="https://checkout.stripe.com/x")
+
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", fake_create)
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+
+    items = [{"price": "price_base", "quantity": 1}, {"price": "price_seat", "quantity": 3}]
+    await billing_service._build_subscription_checkout(
+        owner_id="org_1",
+        line_items=items,
+        metadata={"owner_id": "org_1"},
+        success_url="https://x/ok",
+        cancel_url="https://x/no",
+        idempotency_key="k1",
+    )
+
+    assert captured["line_items"] == items
 
 
 @pytest.mark.asyncio
@@ -804,6 +851,12 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
 async def test_sync_team_seat_quantity_refreshes_owner_facts(monkeypatch):
     """The membership-change path is the seat-count writer — it must refresh
     the facts file with the new count as an override."""
+    # Pin the key OFF: this test stubs get_organization_member_count only, but
+    # the seat count now also reads pending invitations. Without this the
+    # unstubbed read escapes to api.clerk.com on any machine that exports
+    # CLERK_SECRET_KEY — which CLAUDE.md's LocalStack setup tells developers
+    # to do. CI happens not to set it; a laptop does.
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",

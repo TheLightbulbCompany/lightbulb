@@ -249,8 +249,7 @@ async def create_flat_fee_checkout(
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            price_id=settings.STRIPE_FLAT_PRICE_ID,
-            quantity=1,
+            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
                 f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
@@ -289,6 +288,21 @@ async def create_flat_fee_checkout(
     return session
 
 
+def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
+    """The subscription line item carrying ``price_id``, or ``{}`` if none does.
+
+    THE single way to answer "which item is priced X?". A Teams subscription
+    carries two items (flat base + per-seat) and Stripe does not guarantee
+    their order, so any positional read is a latent billing bug — picking the
+    base item as the seat item makes sync_team_seat_quantity drive the base
+    quantity. Empty ``price_id`` yields ``{}`` so an unconfigured price can
+    never match an item by accident.
+    """
+    if not price_id:
+        return {}
+    return next((item for item in items if (item.get("price") or {}).get("id") == price_id), {})
+
+
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
     """The single idempotency-key shape for subscription Checkout sessions.
 
@@ -306,8 +320,7 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
 async def _build_subscription_checkout(
     *,
     owner_id: str,
-    price_id: str,
-    quantity: int,
+    line_items: list[dict],
     metadata: dict,
     success_url: str,
     cancel_url: str,
@@ -317,8 +330,10 @@ async def _build_subscription_checkout(
 
     Owns the session kwargs, the automatic_tax / customer_update block, and
     the subscription_data metadata assembly so neither the flat (personal)
-    nor the team path copies them. The price-id existence guard stays in
-    each caller because the config key differs.
+    nor the team path copies them. Callers pass a list so the team path can
+    charge a flat base alongside the per-seat item. Single-element lists are
+    the norm; price-id existence guards stay in each caller because the
+    config key differs.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):
@@ -329,7 +344,7 @@ async def _build_subscription_checkout(
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],
         mode="subscription",
-        line_items=[{"price": price_id, "quantity": quantity}],
+        line_items=line_items,
         success_url=success_url,
         cancel_url=cancel_url,
         allow_promotion_codes=True,
@@ -348,21 +363,34 @@ async def _build_subscription_checkout(
 
 
 async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:
-    """Per-seat Teams Checkout: quantity = org member count.
+    """Teams Checkout: flat base at quantity 1 plus per-seat at the seat count.
 
     Threads ``purpose="team_seat"`` into subscription metadata so the
     customer.subscription.* webhook records the subscription item id + seat
-    count via set_team_subscription. Quantity is floored at 1 so a transient
-    member-count read of 0 never creates a zero-quantity subscription.
+    count via set_team_subscription. The BASE quantity is always 1; the SEAT
+    quantity is floored at 1 so a transient member-count read of 0 never
+    creates a zero-quantity subscription.
     """
     if not settings.STRIPE_TEAM_SEAT_PRICE_ID:
         raise BillingServiceError("STRIPE_TEAM_SEAT_PRICE_ID not configured")
+    if not settings.STRIPE_TEAM_BASE_PRICE_ID:
+        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID not configured")
+    if settings.STRIPE_TEAM_BASE_PRICE_ID == settings.STRIPE_TEAM_SEAT_PRICE_ID:
+        # Identical ids would make subscription_item_on_price return the same
+        # item for both lookups — reintroducing, through config, exactly the
+        # positional ambiguity this whole flow exists to eliminate.
+        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID and STRIPE_TEAM_SEAT_PRICE_ID must differ")
 
     quantity = max(1, member_count)
     return await _build_subscription_checkout(
         owner_id=owner_id,
-        price_id=settings.STRIPE_TEAM_SEAT_PRICE_ID,
-        quantity=quantity,
+        # Flat base + per-seat, in that order. NOTHING may select these by
+        # position — the webhook picks the seat item by price id precisely
+        # because Stripe does not guarantee line-item order.
+        line_items=[
+            {"price": settings.STRIPE_TEAM_BASE_PRICE_ID, "quantity": 1},
+            {"price": settings.STRIPE_TEAM_SEAT_PRICE_ID, "quantity": quantity},
+        ],
         # Teams are Bedrock-managed automatically — there is no provider picker
         # in the team flow. Thread provider_choice into the subscription
         # metadata so the customer.subscription.* webhook persists it as the
@@ -375,12 +403,19 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
         success_url=f"{FRONTEND_URL}/chat?checkout=success",
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
-        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id),
+        # Seat count rides in the key. Seats now move on INVITE — seconds
+        # before the admin clicks Subscribe — so invite, open checkout,
+        # abandon, invite again, Subscribe can all land inside one 5-minute
+        # bucket. Without the quantity, that resends the same key with
+        # different line items and Stripe either errors or replays the stale
+        # session at the old seat count.
+        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id, str(quantity)),
     )
 
 
 async def sync_team_seat_quantity(owner_id: str) -> int:
-    """Set the team subscription's seat quantity to the live org member count.
+    """Set the team subscription's seat quantity to the live billable seat
+    count (accepted members PLUS pending invitations — "no free members").
 
     The SINGLE writer of seat quantity — called from the membership webhooks,
     the reconcile safety-net, and post-checkout. Absolute set (no delta math),
@@ -408,7 +443,10 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         return int(account.get("seat_count") or 0)
 
     current = int(account.get("seat_count") or 0)
-    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    # Returns 0 when the count isn't known for certain, which the guard below
+    # treats as "don't act" — an uncertain count must never move the Stripe
+    # quantity. See get_organization_seat_count.
+    member_count = await clerk_admin.get_organization_seat_count(owner_id)
     if member_count <= 0 or member_count == current:
         # 0 = Clerk read failed/stubbed; don't zero a real subscription.
         return current
@@ -523,13 +561,15 @@ async def create_ultra_upgrade(
         # Reject a LIVE per-seat Teams sub before repricing it. The local-row
         # subscription_item_id guard above is defense in depth, but the team-seat
         # webhook may not have persisted that field yet — so inspect the retrieved
-        # subscription directly: more than one line item, or an item on the seat
-        # price, is a Teams sub whose $/seat item must never be swapped to the
-        # Ultra flat price. Endpoint maps this to a 400, same as the local guard.
-        first_price_id = (first_item.get("price") or {}).get("id")
-        if len(items_data) > 1 or (
-            bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
-        ):
+        # subscription directly. Explicitly: a Teams sub is one carrying the seat
+        # price on ANY item. (This previously leaned SOLELY on `len(items_data) >
+        # 1`, which happens to hold now that Teams has base + seat, but said
+        # nothing true.) The multi-item check stays too, as a defense-in-depth
+        # catch-all for any other multi-item shape we don't yet recognize by
+        # price — never swap an item on a subscription we can't fully explain.
+        # Endpoint maps this to a 400, same as the local guard.
+        is_team_sub = bool(subscription_item_on_price(items_data, settings.STRIPE_TEAM_SEAT_PRICE_ID))
+        if len(items_data) > 1 or is_team_sub:
             raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
         # The flat sub has a single item whose id is not stored on the billing
         # row — read it LIVE off the retrieved subscription and swap its price.
@@ -579,8 +619,7 @@ async def create_ultra_upgrade(
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            price_id=settings.STRIPE_ULTRA_PRICE_ID,
-            quantity=1,
+            line_items=[{"price": settings.STRIPE_ULTRA_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
                 f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")

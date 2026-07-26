@@ -10,11 +10,7 @@ import {
   Text,
   View,
 } from "react-native";
-import {
-  agentDisplayName,
-  useGatewayRpc,
-  type AgentsListResponse,
-} from "@isol8/shared";
+import { agentDisplayName, isRetryableRpcError, useAgents } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
@@ -88,32 +84,45 @@ function Monogram({
 }
 
 // Four pulsing placeholder tiles (2×2) while agents.list is in flight (§7).
-function SkeletonGrid() {
+// `warming` adds a line naming what we're waiting on, for the one case where
+// the wait is long enough to look like a hang: a container waking from zero.
+function SkeletonGrid({ warming }: { warming?: boolean }) {
   const pulse = usePulse(true, 0.55);
   return (
-    <View style={styles.skeletonGrid}>
-      {[0, 1, 2, 3].map((i) => (
-        <Animated.View
-          key={i}
-          style={[styles.skeletonTile, { opacity: pulse }]}
-        />
-      ))}
+    <View>
+      {warming ? (
+        <Text style={styles.warmingLabel}>Waking your agents…</Text>
+      ) : null}
+      <View style={styles.skeletonGrid}>
+        {[0, 1, 2, 3].map((i) => (
+          <Animated.View
+            key={i}
+            style={[styles.skeletonTile, { opacity: pulse }]}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function ErrorCard({ message }: { message: string }) {
+  return (
+    <View style={styles.errorCard}>
+      <Text style={styles.errorText}>Couldn’t load agents: {message}</Text>
     </View>
   );
 }
 
 // Agent roster — a 2-column grid of agent tiles, plus a "New task" entry that
-// starts a fresh session with a picked agent. Streams over the same
-// agents.list RPC the web sidebar uses.
+// starts a fresh session with a picked agent. Reads the roster through the
+// SHARED useAgents hook (the same one the web sidebar uses), which carries the
+// onboarding empty-roster latch fix and revalidation on container-reachable —
+// neither of which the raw agents.list call this replaced had.
 export default function Chat() {
   const gateway = useGateway();
-  const { data, error, isLoading } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
-  const agents = data?.agents ?? [];
+  const { agents, defaultId, error, isLoading, isSettled } = useAgents(gateway);
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  const showEmpty = agents.length === 0 && !isLoading && data != null;
+  const showEmpty = agents.length === 0 && !isLoading && isSettled;
   const [pickerOpen, setPickerOpen] = useState(false);
   // Long-pressing a tile opens that agent's session switcher right from the
   // roster. `sessionsAgent` stays set after close so the sheet can animate out
@@ -144,28 +153,30 @@ export default function Chat() {
     containerStatus?.kind === "ready" && containerStatus.onboarded === true;
   const redirectedRef = useRef(false);
   useEffect(() => {
-    if (redirectedRef.current || !user || !data?.defaultId) return;
+    if (redirectedRef.current || !user || !defaultId) return;
     const fr = readFirstRun(user);
     if (!fr.briefSubmitted || onboarded) return;
-    const agent = data.agents?.find((a) => a.id === data.defaultId);
+    const agent = agents.find((a) => a.id === defaultId);
     if (!agent) return;
     redirectedRef.current = true;
     router.push({
       pathname: "/(app)/agent/[agentId]",
       params: { agentId: agent.id, name: agentDisplayName(agent) },
     });
-  }, [user, data, onboarded]);
+  }, [user, agents, defaultId, onboarded]);
+
+  // A retryable failure is a loading state wearing an error's clothes — a
+  // container waking from zero answers agents.list with
+  // retryable/retryAfterMs, and useGatewayRpc is ALREADY re-probing it at a
+  // fixed 3s cadence. Rendering that as a red card told a first-time user
+  // their app was broken while it was, in fact, working. Only a
+  // non-retryable failure earns the card.
+  const hardError = error && !isRetryableRpcError(error) ? error : null;
 
   let body: ReactElement;
-  if (error) {
-    body = (
-      <View style={styles.errorCard}>
-        <Text style={styles.errorText}>
-          Couldn’t load agents: {error.message}
-        </Text>
-      </View>
-    );
-  } else if (!data && connectionDown) {
+  if (hardError && !isSettled) {
+    body = <ErrorCard message={hardError.message} />;
+  } else if (!isSettled && connectionDown) {
     // No cached roster and the socket is down — the health row carries the
     // detail; keep the body quiet rather than pulsing skeletons forever.
     body = (
@@ -186,16 +197,22 @@ export default function Chat() {
           showEmpty && styles.centerGrow,
         ]}
         ListHeaderComponent={
-          agents.length > 0 ? (
-            <Text style={styles.sectionLabel}>
-              AGENTS
-              <Text style={styles.sectionCount}> · {agents.length}</Text>
-            </Text>
-          ) : null
+          <>
+            {/* A hard failure over a cached roster reports itself above the
+                tiles rather than replacing them — the agents we already
+                fetched are still the truest thing we can show. */}
+            {hardError ? <ErrorCard message={hardError.message} /> : null}
+            {agents.length > 0 ? (
+              <Text style={styles.sectionLabel}>
+                AGENTS
+                <Text style={styles.sectionCount}> · {agents.length}</Text>
+              </Text>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
-          isLoading || !data ? (
-            <SkeletonGrid />
+          isLoading || !isSettled ? (
+            <SkeletonGrid warming={isRetryableRpcError(error)} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>
@@ -440,6 +457,12 @@ const styles = StyleSheet.create({
   },
 
   // Loading skeletons — 2×2 tile grid (spec §7).
+  warmingLabel: {
+    ...type.body,
+    color: colors.mute,
+    textAlign: "center",
+    marginBottom: spacing.md,
+  },
   skeletonGrid: {
     flexDirection: "row",
     flexWrap: "wrap",

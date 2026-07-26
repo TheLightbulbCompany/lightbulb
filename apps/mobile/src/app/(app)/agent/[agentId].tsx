@@ -1,6 +1,10 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
-import { accumulateStreamText } from "@isol8/shared";
+import {
+  accumulateStreamText,
+  isRetryableRpcError,
+  rpcRetryDelayMs,
+} from "@isol8/shared";
 import { randomUUID } from "expo-crypto";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
@@ -44,6 +48,14 @@ import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
 import { buildChatSessionKey } from "../../../lib/sessionKey";
 import { useGateway } from "../../../providers/gateway";
+
+/**
+ * How many times a RETRYABLE chat.history failure is re-fetched silently
+ * before the user sees a card. Sized for the condition it exists for —
+ * OpenClaw's session-index rebuild, which asks for ~250ms — not as a general
+ * outage cushion: a container that is actually down should say so quickly.
+ */
+const HISTORY_RETRY_BUDGET = 3;
 
 /**
  * Slim reconnecting banner shown above the composer while the gateway
@@ -154,6 +166,13 @@ function AgentChat() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyNonce, setHistoryNonce] = useState(0);
+  // Auto-retry budget for RETRYABLE history failures only (see the fetch's
+  // catch). Spent silently, refilled on anything that counts as a fresh ask:
+  // a session switch or the card's Retry. Deliberately NOT refilled by the
+  // effect itself — the auto-retry re-enters through the same nonce, so
+  // refilling there would spin forever against a genuinely stuck container.
+  const historyRetriesRef = useRef(HISTORY_RETRY_BUDGET);
+  const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   // Cumulative-stream bookkeeping for the active run: how many chars of the
   // cumulative text earlier segments already display, the current segment
@@ -340,6 +359,19 @@ function AgentChat() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
+        // The responder describes its own transients: a rebuilding session
+        // index answers UNAVAILABLE with retryable + retryAfterMs ~250ms.
+        // Spend the budget on those silently — a quarter-second condition
+        // must never reach a user as a red card asking them to tap Retry.
+        // The skeleton stays up across the wait, so it reads as loading.
+        if (isRetryableRpcError(err) && historyRetriesRef.current > 0) {
+          historyRetriesRef.current -= 1;
+          historyRetryTimerRef.current = setTimeout(
+            () => setHistoryNonce((n) => n + 1),
+            rpcRetryDelayMs(err, 1000),
+          );
+          return;
+        }
         // Not latched: the effect re-fires on the next reconnect / session
         // visit, and the error card's Retry bumps historyNonce.
         setHistoryLoading(false);
@@ -349,6 +381,10 @@ function AgentChat() {
       });
     return () => {
       cancelled = true;
+      if (historyRetryTimerRef.current) {
+        clearTimeout(historyRetryTimerRef.current);
+        historyRetryTimerRef.current = null;
+      }
     };
   }, [agentId, userId, activeSessionId, isConnected, sendReq, historyNonce]);
 
@@ -371,6 +407,7 @@ function AgentChat() {
       setItems([]);
       setHistoryItems([]);
       setHistoryError(null);
+      historyRetriesRef.current = HISTORY_RETRY_BUDGET;
     },
     [],
   );
@@ -730,7 +767,11 @@ function AgentChat() {
                 Couldn’t load history — {historyError}
               </Text>
               <Pressable
-                onPress={() => setHistoryNonce((n) => n + 1)}
+                onPress={() => {
+                  // A deliberate ask refills the silent-retry budget.
+                  historyRetriesRef.current = HISTORY_RETRY_BUDGET;
+                  setHistoryNonce((n) => n + 1);
+                }}
                 accessibilityRole="button"
                 accessibilityLabel="Retry loading history"
               >

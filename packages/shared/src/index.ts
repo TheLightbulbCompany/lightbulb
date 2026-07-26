@@ -16,6 +16,12 @@ export {
   agentDisplayName,
   getAgentModelString,
 } from "./hooks/agents";
+export { useAgents } from "./hooks/useAgents";
+export type {
+  AgentsAnalyticsEvent,
+  AgentsGatewaySource,
+  UseAgentsOptions,
+} from "./hooks/useAgents";
 export type {
   Agent,
   AgentModelRef,
@@ -70,6 +76,11 @@ export type {
 
 export { useGatewayConnection } from "./gateway/useGatewayConnection";
 export { accumulateStreamText } from "./gateway/streamText";
+export {
+  GatewayRpcError,
+  isRetryableRpcError,
+  rpcRetryDelayMs,
+} from "./gateway/error";
 export type {
   GatewayConnectionOptions,
   GatewayConnectionValue,
@@ -79,3 +90,22 @@ export type {
   GatewayEvent,
   ToolResultBlock,
 } from "./gateway/types";
+
+export {
+  extractResultText,
+  isAssistantHeartbeatAck,
+  isAssistantSilentReply,
+  isEmptyUserTextOnlyMessage,
+  isSyntheticExecWrapper,
+  isSyntheticTranscriptRepairToolResult,
+  isTextBlock,
+  isThinkingBlock,
+  isToolResultBlock,
+  isToolResultRole,
+  isToolUseBlock,
+  resolveMessageBlocks,
+  resolveToolArgs,
+  resolveToolUseId,
+  shouldHideHistoryMessage,
+} from "./chat/history";
+export type { ContentBlock, HistoryMessage } from "./chat/history";

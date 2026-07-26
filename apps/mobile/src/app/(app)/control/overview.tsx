@@ -19,8 +19,8 @@ import {
   ApiError,
   createApiClient,
   fetchJsonWithStatus,
+  useAgents,
   useGatewayRpc,
-  type AgentsListResponse,
 } from "@isol8/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
@@ -300,10 +300,7 @@ export default function Overview() {
   const { state, retry } = useOverviewRest();
 
   // Live counts over the same RPCs the web Overview polls.
-  const { data: agentsData } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
+  const { agents, isSettled: agentsSettled } = useAgents(gateway);
   const { data: healthRaw } = useGatewayRpc<unknown>(
     gateway,
     "health",
@@ -312,7 +309,7 @@ export default function Overview() {
   );
   const health = extractHealth(healthRaw);
 
-  const agentCount = agentsData?.agents?.length;
+  const agentCount = agentsSettled ? agents.length : undefined;
   const sessionCount = health?.sessions?.count;
 
   let body: ReactNode;
@@ -382,7 +379,7 @@ export default function Overview() {
             label="AGENTS"
             value={agentCount != null ? String(agentCount) : "—"}
             loading={
-              agentCount == null && agentsData == null && gateway.isConnected
+              agentCount == null && !agentsSettled && gateway.isConnected
             }
           />
           <Tile

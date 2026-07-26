@@ -1830,7 +1830,16 @@ async def _process_rpc_background(
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    "error": {"message": "Container is starting up. Try again in a moment."},
+                    # A task with no IP yet is waking, not broken. Mirror
+                    # OpenClaw's own errorShape retry metadata so clients can
+                    # render this as a loading state and retry themselves
+                    # instead of showing the user a red failure card.
+                    "error": {
+                        "message": "Container is starting up. Try again in a moment.",
+                        "code": "UNAVAILABLE",
+                        "retryable": True,
+                        "retryAfterMs": 3000,
+                    },
                 },
             )
             return

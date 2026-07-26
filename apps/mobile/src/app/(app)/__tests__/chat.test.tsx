@@ -30,22 +30,36 @@ jest.mock("../../../lib/containerStatusContext", () => ({
   useContainerStatusContext: () => mockContainerStatus,
 }));
 
+// The roster now arrives via the SHARED useAgents hook (the same one the web
+// sidebar uses), so that is the seam these tests stub — not the raw
+// agents.list RPC underneath it.
+const ROSTER_AGENTS = [
+  { id: "agent_a", name: "Friday", identity: { emoji: "🤖" } },
+  { id: "agent_b", name: "Atlas" },
+];
+type RosterResult = ReturnType<typeof makeRoster>;
+function makeRoster(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    agents: ROSTER_AGENTS,
+    defaultId: "agent_a" as string | undefined,
+    error: null as Error | null,
+    isLoading: false,
+    isSettled: true,
+    refresh: jest.fn(),
+    createAgent: jest.fn(),
+    deleteAgent: jest.fn(),
+    updateAgent: jest.fn(),
+    ...over,
+  };
+}
+let mockAgents: RosterResult = makeRoster();
 jest.mock("@isol8/shared", () => ({
   ...jest.requireActual("@isol8/shared"),
-  useGatewayRpc: () => ({
-    data: {
-      defaultId: "agent_a",
-      agents: [
-        { id: "agent_a", name: "Friday", identity: { emoji: "🤖" } },
-        { id: "agent_b", name: "Atlas" },
-      ],
-    },
-    error: null,
-    isLoading: false,
-  }),
+  useAgents: () => mockAgents,
 }));
 
 import Chat from "../chat";
+import { GatewayRpcError } from "@isol8/shared";
 
 const routerPush = jest.requireMock("expo-router").router.push as jest.Mock;
 
@@ -56,6 +70,7 @@ describe("Chat roster", () => {
     mockSendReq.mockClear();
     mockSessionsPayload = { sessions: [] };
     mockContainerStatus = null;
+    mockAgents = makeRoster();
   });
 
   it("renders the agent grid and the New task action", async () => {
@@ -94,6 +109,51 @@ describe("Chat roster", () => {
     await render(<Chat />);
     expect(screen.getByText("Friday")).toBeTruthy();
     expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  // A container waking from zero answers agents.list with a RETRYABLE error,
+  // and useGatewayRpc is already re-probing it every 3s. Shipping that as a
+  // red "Couldn't load agents" card told a first-time TestFlight user their
+  // app was broken while it was busy working.
+  describe("a waking container", () => {
+    const WAKING = () =>
+      new GatewayRpcError({
+        code: "UNAVAILABLE",
+        message: "Container is starting up. Try again in a moment.",
+        retryable: true,
+        retryAfterMs: 3000,
+      });
+
+    it("reads as loading, not as a failure", async () => {
+      mockAgents = makeRoster({
+        agents: [],
+        defaultId: undefined,
+        error: WAKING(),
+        isSettled: false,
+      });
+      await render(<Chat />);
+      expect(screen.getByText("Waking your agents…")).toBeTruthy();
+      expect(screen.queryByText(/Couldn’t load agents/)).toBeNull();
+    });
+
+    it("still shows a cached roster instead of blanking it", async () => {
+      mockAgents = makeRoster({ error: WAKING() });
+      await render(<Chat />);
+      expect(screen.getByText("Friday")).toBeTruthy();
+      expect(screen.queryByText(/Couldn’t load agents/)).toBeNull();
+    });
+
+    it("does report a failure that will NOT clear on its own", async () => {
+      mockAgents = makeRoster({
+        agents: [],
+        defaultId: undefined,
+        error: new Error("No container provisioned."),
+        isSettled: false,
+      });
+      await render(<Chat />);
+      expect(screen.getByText(/No container provisioned/)).toBeTruthy();
+      expect(screen.queryByText("Waking your agents…")).toBeNull();
+    });
   });
 
   describe("per-agent sessions (long-press)", () => {

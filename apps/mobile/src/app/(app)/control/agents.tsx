@@ -18,10 +18,10 @@ import {
 import {
   agentDisplayName,
   getAgentModelString,
-  useGatewayRpc,
+  isRetryableRpcError,
+  useAgents,
   useGatewayRpcMutation,
   type Agent,
-  type AgentsListResponse,
 } from "@isol8/shared";
 
 import { AgentMonogram, AgentStatusDot } from "../../../components/control/AgentMonogram";
@@ -34,13 +34,20 @@ import { useGateway } from "../../../providers/gateway";
 // Skeleton (spec §7) — three pulsing rows while agents.list is in flight.
 // ---------------------------------------------------------------------------
 
-function SkeletonRows() {
+// `warming` names what we're waiting on when the wait is long enough to look
+// like a hang — a container waking from zero. Mirrors the roster tab.
+function SkeletonRows({ warming }: { warming?: boolean }) {
   const pulse = usePulse(true, 0.55);
   return (
-    <View style={styles.skeletonGroup}>
-      {[0, 1, 2].map((i) => (
-        <Animated.View key={i} style={[styles.skeletonRow, { opacity: pulse }]} />
-      ))}
+    <View>
+      {warming ? (
+        <Text style={styles.warmingLabel}>Waking your agents…</Text>
+      ) : null}
+      <View style={styles.skeletonGroup}>
+        {[0, 1, 2].map((i) => (
+          <Animated.View key={i} style={[styles.skeletonRow, { opacity: pulse }]} />
+        ))}
+      </View>
     </View>
   );
 }
@@ -244,13 +251,14 @@ function CreateAgentModal({
 export default function AgentsPanel() {
   const gateway = useGateway();
   const callRpc = useGatewayRpcMutation(gateway);
-  const { data, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
-
-  const agents = useMemo(() => data?.agents ?? [], [data]);
-  const defaultId = data?.defaultId;
+  // Roster read goes through the SHARED useAgents hook — same hook the web
+  // sidebar uses, carrying the onboarding empty-roster latch fix and
+  // revalidation on container-reachable. The mutations below stay local: this
+  // screen's agents.create sends `reasoningDefault` + nested
+  // `params.paperclip`, which the shared createAgent does not, and create is
+  // non-idempotent so the payload must not change under it.
+  const { agents, defaultId, error, isLoading, isSettled, refresh } =
+    useAgents(gateway);
   const existingNames = useMemo(
     () => agents.map((a) => agentDisplayName(a)),
     [agents],
@@ -260,7 +268,7 @@ export default function AgentsPanel() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  const showEmpty = agents.length === 0 && !isLoading && data != null;
+  const showEmpty = agents.length === 0 && !isLoading && isSettled;
 
   const confirmDelete = useCallback(
     (agent: Agent) => {
@@ -281,7 +289,7 @@ export default function AgentsPanel() {
                 agentId: agent.id,
                 deleteFiles: true,
               })
-                .then(() => mutate())
+                .then(() => refresh())
                 .catch((err: unknown) => {
                   Alert.alert(
                     "Couldn’t delete agent",
@@ -294,7 +302,7 @@ export default function AgentsPanel() {
         ],
       );
     },
-    [callRpc, defaultId, mutate],
+    [callRpc, defaultId, refresh],
   );
 
   const renderItem = useCallback(
@@ -342,19 +350,24 @@ export default function AgentsPanel() {
     [confirmDelete, defaultId, deletingId],
   );
 
+  // Same contract as the roster tab: a retryable failure (a container waking
+  // from zero) is a loading state, not a failure — useGatewayRpc is already
+  // re-probing it. Only a failure that will NOT clear on its own earns a card.
+  const hardError = error && !isRetryableRpcError(error) ? error : null;
+
   let body: ReactElement;
-  if (error) {
+  if (hardError) {
     body = (
       <View style={styles.errorCard}>
         <Text style={styles.errorText}>
-          Couldn’t load agents: {error.message}
+          Couldn’t load agents: {hardError.message}
         </Text>
         <Pressable
           style={({ pressed }) => [
             styles.retryButton,
             pressed && styles.pressed,
           ]}
-          onPress={() => void mutate()}
+          onPress={() => void refresh()}
           accessibilityRole="button"
           accessibilityLabel="Retry"
         >
@@ -362,7 +375,7 @@ export default function AgentsPanel() {
         </Pressable>
       </View>
     );
-  } else if (!data && connectionDown) {
+  } else if (!isSettled && connectionDown) {
     body = (
       <View style={styles.centerGrow}>
         <Text style={styles.dim}>{gateway.error}</Text>
@@ -389,8 +402,8 @@ export default function AgentsPanel() {
           ) : null
         }
         ListEmptyComponent={
-          isLoading || !data ? (
-            <SkeletonRows />
+          isLoading || !isSettled ? (
+            <SkeletonRows warming={isRetryableRpcError(error)} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>
@@ -427,7 +440,7 @@ export default function AgentsPanel() {
         existingNames={existingNames}
         onClose={() => setCreateOpen(false)}
         onCreated={async () => {
-          await mutate();
+          await refresh();
         }}
       />
     </View>
@@ -516,6 +529,12 @@ const styles = StyleSheet.create({
   },
 
   // Loading skeletons (spec §7).
+  warmingLabel: {
+    ...type.body,
+    color: colors.mute,
+    textAlign: "center",
+    marginBottom: spacing.md,
+  },
   skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
   skeletonRow: {
     height: 44,

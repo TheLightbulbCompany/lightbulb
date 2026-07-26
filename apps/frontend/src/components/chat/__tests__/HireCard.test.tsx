@@ -14,6 +14,7 @@ const SUGGESTION = {
   reason: "Nobody on the team does content.",
   listings: [
     {
+      listing_id: "81ab74f8-efc2-464c-8c62-706274b69639",
       slug: "pulse",
       name: "Pulse",
       summary: "Marketing intel and content research.",
@@ -48,6 +49,18 @@ describe("parseHireSuggestion", () => {
   it("rejects a suggestion whose listings are all malformed", () => {
     expect(
       parseHireSuggestion({ kind: "isol8.hire_suggestion", listings: [{ no: "slug" }] }),
+    ).toBeNull();
+  });
+
+  it("rejects a listing with no listing_id, since deploy cannot address it", () => {
+    // Slugs are non-unique; listing_id is the canonical identity. A row
+    // without one is unusable, and rendering it would produce a card whose
+    // button 404s.
+    expect(
+      parseHireSuggestion({
+        kind: "isol8.hire_suggestion",
+        listings: [{ slug: "pulse", name: "Pulse" }],
+      }),
     ).toBeNull();
   });
 
@@ -87,7 +100,10 @@ describe("HireCard", () => {
     render(<HireCard suggestion={SUGGESTION} />);
     await user.click(screen.getByRole("button", { name: /deploy/i }));
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith("/marketplace/listings/pulse/deploy", {}),
+      expect(post).toHaveBeenCalledWith(
+        "/marketplace/listings/81ab74f8-efc2-464c-8c62-706274b69639/deploy",
+        {},
+      ),
     );
   });
 
@@ -118,7 +134,7 @@ describe("HireCard", () => {
           ...SUGGESTION,
           listings: [
             SUGGESTION.listings[0],
-            { ...SUGGESTION.listings[0], slug: "ora", name: "Ora" },
+            { ...SUGGESTION.listings[0], listing_id: "other-uuid", slug: "ora", name: "Ora" },
           ],
         }}
       />,

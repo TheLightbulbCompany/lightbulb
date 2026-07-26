@@ -16,6 +16,8 @@ import { useApi } from "@/lib/api";
  */
 
 export interface HireListing {
+  /** Canonical identity. Slugs are NOT unique, so deploy addresses this. */
+  listing_id: string;
   slug: string;
   name: string;
   summary: string;
@@ -33,7 +35,9 @@ function asListing(value: unknown): HireListing | null {
   if (!value || typeof value !== "object") return null;
   const l = value as Record<string, unknown>;
   if (typeof l.slug !== "string" || !l.slug) return null;
+  if (typeof l.listing_id !== "string" || !l.listing_id) return null;
   return {
+    listing_id: l.listing_id,
     slug: l.slug,
     name: typeof l.name === "string" ? l.name : l.slug,
     summary: typeof l.summary === "string" ? l.summary : "",
@@ -76,7 +80,9 @@ function ListingRow({ listing }: { listing: HireListing }) {
     setState("deploying");
     setError(null);
     try {
-      await api.post(`/marketplace/listings/${listing.slug}/deploy`, {});
+      // By listing_id, never slug: slugs are non-unique, so a slug-addressed
+      // deploy would 404 or resolve the wrong listing.
+      await api.post(`/marketplace/listings/${listing.listing_id}/deploy`, {});
       setState("done");
     } catch (e) {
       // Surfaced in place rather than swallowed: a listing can be retired
@@ -130,7 +136,7 @@ export function HireCard({ suggestion }: { suggestion: unknown }) {
     <div className="my-2 space-y-2">
       {parsed.reason && <div className="text-sm text-muted-foreground">{parsed.reason}</div>}
       {parsed.listings.map((listing) => (
-        <ListingRow key={listing.slug} listing={listing} />
+        <ListingRow key={listing.listing_id} listing={listing} />
       ))}
     </div>
   );

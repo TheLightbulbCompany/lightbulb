@@ -161,11 +161,19 @@ def _compact_items(items: list[dict]) -> list[dict]:
     ~50KB the default view returns for 8 listings — far more than an agent
     deciding "who could do content work?" can afford to read.
 
+    Carries ``listing_id`` as well as ``slug``. The UUID is the canonical
+    identity — **slugs are NOT unique** (see
+    ``marketplace_service.get_published_by_id``) — so every downstream action
+    (deploy, checkout) must address the listing by ``listing_id``. ``slug``
+    stays because it is what an agent names in prose and what a human
+    recognizes.
+
     Coerces null/absent ``tags`` and ``price_cents``: DynamoDB rows carry
     explicit nulls, and older listings predate several of these fields.
     """
     return [
         {
+            "listing_id": item.get("listing_id", ""),
             "slug": item.get("slug", ""),
             "name": item.get("name", ""),
             "summary": _summary_of(item),

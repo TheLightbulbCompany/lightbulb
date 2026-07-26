@@ -18,6 +18,9 @@ import { buildRecommendPath, buildSearchPath, resolveEnv } from "./env.js";
 
 const LISTING = Type.Object(
   {
+    // The canonical identity. Slugs are NOT unique, so every downstream
+    // action (deploy, checkout) addresses the listing by this UUID.
+    listing_id: Type.String(),
     slug: Type.String(),
     name: Type.String(),
     summary: Type.String(),

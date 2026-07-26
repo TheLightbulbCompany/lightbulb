@@ -55,7 +55,7 @@ def test_drops_listings_that_are_not_published():
 
 def test_returns_the_compact_shape():
     [item] = _resolve_recommended(["pulse"], _PUBLISHED)
-    assert set(item) == {"slug", "name", "summary", "tags", "price_cents"}
+    assert set(item) == {"listing_id", "slug", "name", "summary", "tags", "price_cents"}
 
 
 def test_deduplicates_repeated_slugs():

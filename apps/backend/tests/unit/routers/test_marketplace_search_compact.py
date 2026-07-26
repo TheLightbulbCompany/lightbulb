@@ -27,7 +27,7 @@ _HEAVY = {
 
 def test_compact_drops_heavy_fields():
     [item] = _compact_items([_HEAVY])
-    assert set(item) == {"slug", "name", "summary", "tags", "price_cents"}
+    assert set(item) == {"listing_id", "slug", "name", "summary", "tags", "price_cents"}
 
 
 def test_compact_summary_is_first_prose_line_not_a_heading():
@@ -44,7 +44,14 @@ def test_compact_response_is_small():
 def test_compact_tolerates_missing_fields():
     """Listings predate several of these fields; a projection must not KeyError."""
     [item] = _compact_items([{"slug": "x"}])
-    assert item == {"slug": "x", "name": "", "summary": "", "tags": [], "price_cents": 0}
+    assert item == {
+        "listing_id": "",
+        "slug": "x",
+        "name": "",
+        "summary": "",
+        "tags": [],
+        "price_cents": 0,
+    }
 
 
 def test_compact_coerces_null_tags_and_price():
@@ -66,3 +73,13 @@ def test_summary_is_empty_when_there_is_no_prose():
 def test_summary_is_bounded():
     long_line = "x" * 500
     assert len(_summary_of({"description_md": long_line})) == 200
+
+
+def test_compact_carries_listing_id_because_slugs_are_not_unique():
+    """listing_id is the canonical identity (marketplace_service.get_published_by_id:
+    "slugs are non-unique"). Every downstream action — deploy, checkout — must
+    address the listing by UUID, so the projection an agent hands to the hire
+    card has to carry it.
+    """
+    [item] = _compact_items([{**_HEAVY, "listing_id": "81ab74f8-efc2-464c"}])
+    assert item["listing_id"] == "81ab74f8-efc2-464c"

@@ -813,7 +813,13 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # Team subs are INCLUDED: tier and headcount are independent axes. A
         # team's tier rides its BASE item (the ultra price once upgraded) while
         # its seat item is untouched, so this branch and the seat-persistence
-        # branch above operate on different items and different fields.
+        # branch above operate on different items — and the seat write MUST
+        # run first. set_team_subscription is a full read-then-put_item
+        # rewrite of the row (it has no per-field UpdateExpression), so it
+        # would clobber a `plan` written by this branch back to whatever it
+        # read at the top of the handler; set_plan's scoped update_item has no
+        # such blast radius. Swapping the order would silently revert every
+        # tier write on an Ultra team's seat-change events.
         old_plan = account.get("plan") or "standard"
         new_plan = "ultra_pro" if is_ultra else "standard"
         plan_persisted = False

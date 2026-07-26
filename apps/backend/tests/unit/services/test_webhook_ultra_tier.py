@@ -338,14 +338,19 @@ async def test_ultra_team_persists_seat_state_and_tier_together():
         {"id": "si_seat", "quantity": 4, "price": {"id": SEAT_PRICE}},
     ]
 
-    repo, _mgr = await _drive(event, account=_account(plan="standard"))
+    repo, mgr = await _drive(event, account=_account(plan="standard"))
 
-    # Seat state comes from the SEAT item, never the ultra/base item.
+    # Seat state comes from the SEAT item, never the ultra/base item — and
+    # exactly once, so a double-write from the two branches fighting would
+    # fail this rather than just landing on the last call's kwargs.
+    repo.set_team_subscription.assert_awaited_once()
     seat_kwargs = repo.set_team_subscription.await_args.kwargs
     assert seat_kwargs["subscription_item_id"] == "si_seat"
     assert seat_kwargs["seat_count"] == 4
-    # Tier state persisted on the same event.
+    # Tier state persisted on the same event, also exactly once.
+    repo.set_plan.assert_awaited_once()
     assert repo.set_plan.await_args.kwargs["plan"] == "ultra_pro"
+    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu="2048", new_memory="8192")
 
 
 @pytest.mark.asyncio
@@ -368,5 +373,49 @@ async def test_team_sub_on_the_standard_base_is_tiered_down():
         agents=[{"id": f"a{i}"} for i in range(5)],
     )
 
+    assert repo.set_plan.await_args.kwargs["plan"] == "standard"
+    mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)
+
+
+@pytest.mark.asyncio
+async def test_partial_payload_with_only_the_seat_item_misreads_as_a_downgrade():
+    """PINNED, KNOWN TRADEOFF — not a spec, a recorded gap.
+
+    The `if items:` guard on the tier branch only defends against a fully
+    EMPTY items.data (a partial `.updated` payload). It does not defend
+    against a partial payload that carries SOME items but not the base/ultra
+    one -- e.g. Stripe (or a test double) sending only the seat item. That
+    shape reads as "no ultra price present" -> is_ultra=False -> an
+    ultra_pro team gets downgraded to "standard" AND resized down, even
+    though its tier item was simply missing from this particular payload,
+    not actually changed.
+
+    Why this is accepted rather than fixed: Stripe sends all subscription
+    items on every event (up to the expand limit of 10; teams have 2), and
+    create_ultra_upgrade (Task 1) refuses to create a seat-only subscription
+    -- a live team sub always carries both items together. So this shape is
+    believed unreachable in production. This test exists so that if it ever
+    IS reached, the behaviour it triggers is a deliberate, documented
+    tradeoff instead of a silent surprise.
+    """
+    from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
+
+    event = _ultra_event(item_price=SEAT_PRICE)
+    event["data"]["object"]["metadata"]["purpose"] = "team_seat"
+    event["data"]["object"]["items"]["data"] = [
+        {"id": "si_seat", "quantity": 4, "price": {"id": SEAT_PRICE}},
+    ]
+
+    repo, mgr = await _drive(
+        event,
+        account=_account(plan="ultra_pro"),
+        agents=[{"id": f"a{i}"} for i in range(5)],
+    )
+
+    # Seat state persists normally -- the seat item IS present.
+    seat_kwargs = repo.set_team_subscription.await_args.kwargs
+    assert seat_kwargs["subscription_item_id"] == "si_seat"
+    assert seat_kwargs["seat_count"] == 4
+    # But the tier branch reads "no ultra item this payload" as a downgrade.
     assert repo.set_plan.await_args.kwargs["plan"] == "standard"
     mgr.resize_user_container.assert_awaited_once_with("org_x", new_cpu=PER_USER_CPU, new_memory=PER_USER_MEMORY_MIB)

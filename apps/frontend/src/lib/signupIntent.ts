@@ -6,20 +6,16 @@
  * multi-step signup flow (email verification, SSO callback — each a distinct
  * sub-route that does NOT carry the original query) is unreliable. So the CTA
  * writes a short-lived cookie that survives every sub-route and the final
- * redirect.
+ * redirect; useOnboardingGate consumes it once on /chat and forwards
+ * `?intent=team` to /onboarding, then clears it.
  *
- * Two consumers, one cookie:
- *   - SignUpWithIntent (components/SignUpWithIntent.tsx) reads it on /sign-up
- *     to pick Clerk's post-signup redirect target, so a team signup lands on
- *     /onboarding?intent=team directly and never mounts /chat (which would
- *     otherwise provision a throwaway personal container via the
- *     GET /container/status poll before the team intent was ever noticed).
- *     /onboarding clears the cookie once it renders the org-creation UI off
- *     of it.
- *   - useOnboardingGate consumes it on /chat for the in-app "Create a team"
- *     flow (an existing user who wasn't on a fresh /sign-up), forwards
- *     `?intent=team` to /onboarding, and clears it there.
- * Clearing is idempotent, so whichever consumer gets there first is fine.
+ * The cookie has a second reader: `useProvisioningState` suppresses the
+ * `GET /container/status` poll while it is set and no org is active yet. That
+ * poll is what provisions, so leaving it running for the handful of renders
+ * before the gate's redirect lands hands a team signup a throwaway PERSONAL
+ * container + trial_local billing row + Paperclip company. Both readers go
+ * through `hasTeamSignupIntentCookie` below — do not add a third open-coded
+ * `readSignupIntentCookie(...) === "team"`.
  */
 export const SIGNUP_INTENT_COOKIE = "isol8_signup_intent";
 
@@ -48,19 +44,24 @@ export function clearSignupIntentCookie(): void {
 }
 
 /**
- * Where a completed /sign-up should land, given the current query string and
- * cookie jar. Team intent (query param OR cookie — the cookie is the durable
- * signal because Clerk's multi-step signup drops the query on sub-routes like
- * /sign-up/verify-email-address) sends the user straight to org creation so
- * /chat — and the personal-container provisioning poll it mounts — is never
- * reached for a team signup. Pure so it's testable without jsdom/window.
+ * Does this browser currently carry an unconsumed team-signup intent?
+ *
+ * The single team-intent predicate, shared by both readers (see the module
+ * doc). TOTAL by construction: no `document` (SSR / prerender) and ANY failure
+ * reading or decoding the cookie both answer `false`.
+ *
+ * That `false` direction is deliberate, not incidental. Both callers must FAIL
+ * OPEN — `useOnboardingGate` falls back to treating the signup as personal
+ * (its pre-cookie behaviour), and `useProvisioningState` falls back to
+ * POLLING. A user must never be left unable to provision because a cookie read
+ * threw, and `readSignupIntentCookie`'s `decodeURIComponent` throws on a value
+ * a hand-edited or truncated cookie can easily hold (`...=%`), during render.
  */
-export function resolveSignUpRedirectTarget(
-  search: string,
-  cookieString: string,
-): string {
-  const params = new URLSearchParams(search);
-  const hasTeamIntent =
-    params.get("intent") === "team" || readSignupIntentCookie(cookieString) === "team";
-  return hasTeamIntent ? "/onboarding?intent=team" : "/chat";
+export function hasTeamSignupIntentCookie(): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    return readSignupIntentCookie(document.cookie) === "team";
+  } catch {
+    return false;
+  }
 }

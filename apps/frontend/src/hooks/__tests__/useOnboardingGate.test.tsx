@@ -208,4 +208,40 @@ describe("useOnboardingGate", () => {
     // Not treated as a personal completion.
     expect(userUpdateMock).not.toHaveBeenCalled();
   });
+
+  it("routes on the intent COOKIE alone, and clears it on the way out", async () => {
+    // The cookie — not the query — is the signal that survives Clerk's
+    // multi-step signup, so this is the path a real team signup takes. It is
+    // also what `useProvisioningState` suppresses its provisioning poll on,
+    // which makes both halves of this test load-bearing:
+    //   • the redirect still fires  → the user reaches team creation at all;
+    //   • the cookie is cleared     → the suppressed poll comes back, and a
+    //     later personal signup in the same browser isn't mis-tagged as a
+    //     team inside the cookie's 30-minute TTL.
+    document.cookie = "isol8_signup_intent=team; path=/";
+    searchString = "";
+    setClerk({
+      user: { unsafeMetadata: {} },
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() =>
+      expect(replaceMock).toHaveBeenCalledWith("/onboarding?intent=team"),
+    );
+    expect(document.cookie).not.toContain("isol8_signup_intent");
+  });
+
+  it("does not treat an undecodable intent cookie as team intent", async () => {
+    // Fail-open: `decodeURIComponent("%")` throws, and this read happens
+    // during render. The predicate swallows it, so the gate falls back to its
+    // pre-cookie behaviour (personal) instead of crashing the chat shell.
+    document.cookie = "isol8_signup_intent=%; path=/";
+    searchString = "";
+    setClerk({ user: { unsafeMetadata: {} }, memberships: [], invitations: [] });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("ready");
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
 });

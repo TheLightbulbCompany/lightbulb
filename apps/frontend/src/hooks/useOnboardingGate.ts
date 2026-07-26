@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, useOrganization, useOrganizationList, useUser } from "@clerk/nextjs";
-import { clearSignupIntentCookie, readSignupIntentCookie } from "@/lib/signupIntent";
+import { clearSignupIntentCookie, hasTeamSignupIntentCookie } from "@/lib/signupIntent";
 
 /**
  * Phase of the chat-shell onboarding/context gate.
@@ -69,9 +69,7 @@ export function useOnboardingGate(): OnboardingGatePhase {
   // query). Only team signups are routed to /onboarding; personal signups are
   // completed here and dropped straight into /chat.
   const teamIntent =
-    searchParams.get("intent") === "team" ||
-    (typeof document !== "undefined" &&
-      readSignupIntentCookie(document.cookie) === "team");
+    searchParams.get("intent") === "team" || hasTeamSignupIntentCookie();
   const personalDoneRef = useRef(false);
 
   // The three "not ready" conditions. They're mutually exclusive by

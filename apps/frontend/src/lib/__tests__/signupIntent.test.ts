@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
+  hasTeamSignupIntentCookie,
   readSignupIntentCookie,
-  resolveSignUpRedirectTarget,
   SIGNUP_INTENT_COOKIE,
 } from "../signupIntent";
 
@@ -33,25 +33,38 @@ describe("readSignupIntentCookie", () => {
   });
 });
 
-describe("resolveSignUpRedirectTarget", () => {
-  it("routes to /onboarding?intent=team on the ?intent=team query alone", () => {
-    expect(resolveSignUpRedirectTarget("?intent=team", "")).toBe(
-      "/onboarding?intent=team",
-    );
+/**
+ * The single team-intent predicate. `useOnboardingGate` routes on it and
+ * `useProvisioningState` suppresses the provisioning poll on it, so its
+ * false-on-failure contract is load-bearing in both directions: a personal
+ * signup must not be mis-tagged as a team, and a broken cookie must not leave
+ * anyone unable to provision.
+ */
+describe("hasTeamSignupIntentCookie", () => {
+  beforeEach(() => {
+    // jsdom persists document.cookie across tests in a file.
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
   });
 
-  it("routes to /onboarding?intent=team on the cookie alone (query dropped by Clerk's multi-step signup)", () => {
-    expect(
-      resolveSignUpRedirectTarget("", `${SIGNUP_INTENT_COOKIE}=team`),
-    ).toBe("/onboarding?intent=team");
+  it("is true when the cookie says team", () => {
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+    expect(hasTeamSignupIntentCookie()).toBe(true);
   });
 
-  it("routes to /chat when neither the query nor the cookie carries team intent", () => {
-    expect(resolveSignUpRedirectTarget("", "")).toBe("/chat");
-    expect(resolveSignUpRedirectTarget("?foo=bar", "other=1")).toBe("/chat");
+  it("is false when the cookie is absent", () => {
+    expect(hasTeamSignupIntentCookie()).toBe(false);
   });
 
-  it("ignores a query intent value that isn't 'team'", () => {
-    expect(resolveSignUpRedirectTarget("?intent=personal", "")).toBe("/chat");
+  it("is false for a non-team intent value", () => {
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=personal; path=/`;
+    expect(hasTeamSignupIntentCookie()).toBe(false);
+  });
+
+  it("fails OPEN on an undecodable value instead of throwing during render", () => {
+    // `decodeURIComponent("%")` raises URIError. Both callers read this during
+    // render, so an escaping throw would crash the chat shell.
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=%; path=/`;
+    expect(() => hasTeamSignupIntentCookie()).not.toThrow();
+    expect(hasTeamSignupIntentCookie()).toBe(false);
   });
 });

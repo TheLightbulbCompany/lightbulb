@@ -136,30 +136,19 @@ async def test_seat_count_unchanged_when_an_invite_is_accepted(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_seat_count_falls_back_to_members_when_invites_unreadable(monkeypatch):
-    """Default (strict=False, used by /billing/account + checkout): an
-    invitations-read failure floors to the member count rather than
-    returning 0 — a members-only floor self-corrects upward on the next
-    successful sync, whereas 0 would hide seat_count or 503 checkout on a
-    transient Clerk blip."""
-    monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
-    monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=None))
-
-    assert await clerk_admin.get_organization_seat_count("org_1") == 3
-
-
 @pytest.mark.asyncio
-async def test_seat_count_strict_returns_zero_when_invites_unreadable(monkeypatch):
-    """strict=True (sync_team_seat_quantity's caller): an invitations-read
-    failure must return 0, NOT the members-only floor — sync_team_seat_quantity
-    treats 0 as a no-op, so an uncertain read leaves the Stripe quantity
-    untouched instead of writing an absolute members-only quantity that would
-    look like a real downgrade (proration credit) and get charged back on the
-    next successful sync."""
+async def test_seat_count_returns_zero_when_invites_unreadable(monkeypatch):
+    """An invitations-read failure returns 0, NOT the members-only floor.
+
+    0 is the "unreadable" signal every caller already handles: the sync no-ops,
+    the account page falls back to the stored Stripe quantity, and checkout
+    503s so the admin retries. Returning members-only would write an absolute
+    Stripe quantity that undershoots — indistinguishable from a real downgrade
+    (proration credit), charged back on the next successful sync."""
     monkeypatch.setattr(clerk_admin, "get_organization_member_count", AsyncMock(return_value=3))
     monkeypatch.setattr(clerk_admin, "_pending_invitation_count", AsyncMock(return_value=None))
 
-    assert await clerk_admin.get_organization_seat_count("org_1", strict=True) == 0
+    assert await clerk_admin.get_organization_seat_count("org_1") == 0
 
 
 @pytest.mark.asyncio

@@ -431,9 +431,10 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         return int(account.get("seat_count") or 0)
 
     current = int(account.get("seat_count") or 0)
-    # strict=True: an uncertain count must not move the Stripe quantity — see
-    # get_organization_seat_count's strict-mode note.
-    member_count = await clerk_admin.get_organization_seat_count(owner_id, strict=True)
+    # Returns 0 when the count isn't known for certain, which the guard below
+    # treats as "don't act" — an uncertain count must never move the Stripe
+    # quantity. See get_organization_seat_count.
+    member_count = await clerk_admin.get_organization_seat_count(owner_id)
     if member_count <= 0 or member_count == current:
         # 0 = Clerk read failed/stubbed; don't zero a real subscription.
         return current

@@ -325,7 +325,7 @@ async def _pending_invitation_count(org_id: str) -> int | None:
     return count
 
 
-async def get_organization_seat_count(org_id: str, *, strict: bool = False) -> int:
+async def get_organization_seat_count(org_id: str) -> int:
     """Billable seats for an org: accepted members PLUS pending invitations.
 
     The platform principle is "no free members" — an invitation is billed from
@@ -333,22 +333,14 @@ async def get_organization_seat_count(org_id: str, *, strict: bool = False) -> i
     member, this total does NOT change when an invite is accepted; it moves
     only on invite, revoke, expire, and remove.
 
-    Returns 0 when the member read fails, preserving sync_team_seat_quantity's
-    treat-0-as-a-no-op posture during a Clerk outage.
-
-    When only the invitations read fails (returns None), the two caller
-    postures diverge:
-      - strict=True returns 0, so sync_team_seat_quantity's no-op guard
-        leaves the Stripe quantity untouched instead of writing a members-only
-        absolute quantity that would look like a real downgrade (with a
-        proration CREDIT) followed by a correcting charge-back on the next
-        successful sync. An uncertain read must never move billing.
-      - strict=False (the default, for read-only display / checkout-quantity
-        callers) returns the member count alone. That is a floor, not the
-        true count, but for those callers it's the safer of the two directions:
-        an under-count self-corrects upward on the next successful sync,
-        while returning 0 would either hide a real seat_count on the account
-        page or 503 checkout outright on a transient Clerk blip.
+    **Returns 0 whenever the count is not known for certain** — either read
+    failing, or a truncated invitations page. 0 is the module-wide "unreadable"
+    convention and every caller already treats it as "don't act": the seat sync
+    no-ops, the account page falls back to the stored Stripe quantity, and
+    checkout 503s so the admin retries. A guessed number is worse than none
+    here, because the sync writes an ABSOLUTE Stripe quantity — a low guess is
+    indistinguishable from a real downgrade and bills a proration credit that
+    gets charged back on the next successful sync.
     """
     # Concurrent: the two reads hit unrelated Clerk resources (the org object
     # and the invitations list), and every real org has at least its creating
@@ -359,10 +351,8 @@ async def get_organization_seat_count(org_id: str, *, strict: bool = False) -> i
         get_organization_member_count(org_id),
         _pending_invitation_count(org_id),
     )
-    if members <= 0:
+    if members <= 0 or pending is None:
         return 0
-    if pending is None:
-        return 0 if strict else members
     return members + pending
 
 

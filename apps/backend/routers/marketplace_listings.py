@@ -136,6 +136,45 @@ async def _recreate_routines_for_buyer(
         await http.aclose()
 
 
+_COMPACT_SUMMARY_MAX = 200
+
+
+def _summary_of(listing: dict) -> str:
+    """First prose line of ``description_md`` — skips headings and blanks.
+
+    One line is enough for an agent to judge fit; the full body is a
+    listing-detail fetch away for anyone who wants it.
+    """
+    for line in (listing.get("description_md") or "").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped[:_COMPACT_SUMMARY_MAX]
+    return ""
+
+
+def _compact_items(items: list[dict]) -> list[dict]:
+    """Agent-shaped projection: enough to judge fit, nothing else.
+
+    Deliberately excludes ``manifest_json``, ``s3_prefix``, ``manifest_sha256``,
+    safety flags and seller fields. ``manifest_json`` alone is the bulk of the
+    ~50KB the default view returns for 8 listings — far more than an agent
+    deciding "who could do content work?" can afford to read.
+
+    Coerces null/absent ``tags`` and ``price_cents``: DynamoDB rows carry
+    explicit nulls, and older listings predate several of these fields.
+    """
+    return [
+        {
+            "slug": item.get("slug", ""),
+            "name": item.get("name", ""),
+            "summary": _summary_of(item),
+            "tags": item.get("tags") or [],
+            "price_cents": item.get("price_cents") or 0,
+        }
+        for item in items
+    ]
+
+
 @router.get("/listings/search")
 async def search_listings(
     response: Response,
@@ -153,6 +192,14 @@ async def search_listings(
         description=(
             "Comma-separated statuses (draft,review,published,retired,taken_down)."
             " Honored only when seller_id matches the calling user."
+        ),
+    ),
+    view: str | None = Query(
+        default=None,
+        pattern="^compact$",
+        description=(
+            "compact = agent-shaped projection (slug, name, summary, tags, price_cents)."
+            " Omit for the full row the web surfaces consume."
         ),
     ),
 ):
@@ -192,6 +239,10 @@ async def search_listings(
         include_unpublished=include_unpublished,
         status_in=status_list,
     )
+    if view == "compact":
+        # Agent-facing: skip the seller-name hydration entirely — it is an
+        # extra round trip whose output the compact projection drops anyway.
+        return {"items": _compact_items(items)}
     await seller_display.attach_seller_names(items)
     return {"items": items}
 

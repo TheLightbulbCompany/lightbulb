@@ -193,20 +193,11 @@ async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id
         return False
 
 
-def _current_env() -> str:
-    # Empty ENVIRONMENT (local dev) is treated as "dev", matching the
-    # integration_secret_store / provider-secret naming convention.
-    return settings.ENVIRONMENT or "dev"
-
-
 def _available_for(p: registry.Provider, owner_id: str | None) -> bool:
-    """Whether this provider is exposed to this owner in the running environment.
-    Available when it's not env-gated, OR the current env is in its `environments`,
-    OR this owner is on its `owner_allowlist` (the prod-dogfood escape hatch — a
-    dev-gated provider still reachable by a named founder container on prod)."""
-    if p.environments is None or _current_env() in p.environments:
-        return True
-    return bool(owner_id and p.owner_allowlist and owner_id in p.owner_allowlist)
+    """Router-local alias; the policy itself lives in registry.available_for so
+    that ownerless surfaces (routers/platform_info.py) share the env half of the
+    gate instead of re-deriving it and drifting."""
+    return registry.available_for(p, owner_id)
 
 
 def _get_provider_or_404(provider: str, owner_id: str | None = None) -> registry.Provider:

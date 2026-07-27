@@ -58,11 +58,17 @@ describe("SesInboundStack", () => {
     template = synthSesInboundStack();
   });
 
-  test("creates the receipt rule set + a catch-all rule matching the mail domain", () => {
+  test("catch-all rule matches the apex AND every subdomain mailbox", () => {
+    // The leading-dot entry is the load-bearing one: agent mailboxes are
+    // ALWAYS `friday@{slug}.isol8.co`, and in SES a bare domain matches only
+    // the exact domain. With `["isol8.co"]` alone, every agent reply hit SES
+    // and was dropped — no S3 object, no Lambda invocation — so inbound had
+    // never been delivered once in prod. This test previously asserted that
+    // broken value, which is why nothing caught it.
     template.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
     template.hasResourceProperties("AWS::SES::ReceiptRule", {
       Rule: Match.objectLike({
-        Recipients: ["isol8.co"],
+        Recipients: ["isol8.co", ".isol8.co"],
         ScanEnabled: true,
         Enabled: true,
       }),

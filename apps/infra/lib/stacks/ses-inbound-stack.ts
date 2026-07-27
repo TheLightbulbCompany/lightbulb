@@ -328,9 +328,18 @@ export class SesInboundStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // Receipt rule set + catch-all rule. `recipients: [mailDomain]` matches
-    // the domain AND all its subdomains (SES semantics), so one rule covers
-    // every company's `{slug}.isol8.co` mailbox.
+    // Receipt rule set + catch-all rule.
+    //
+    // BOTH entries are required. In SES, a bare domain matches ONLY that exact
+    // domain; matching subdomains needs a LEADING DOT. Every agent mailbox
+    // lives on a subdomain (`friday@{slug}.isol8.co`), so `[mailDomain]` alone
+    // matched nothing an agent could ever be reached at — mail hit SES (the
+    // `*.isol8.co` MX resolves) and was dropped with no S3 object and no
+    // Lambda invocation. Inbound agent mail had never once been delivered.
+    //
+    // An earlier comment here asserted that a bare domain also matches
+    // subdomains. It does not, and the whole inbound design rested on that
+    // untested claim. `mailDomain` is kept so the apex keeps working.
     //
     // No fixed `receiptRuleSetName` — CDK auto-generates one, avoiding the
     // CREATE-before-DELETE collision risk a fixed name would have on replace
@@ -348,7 +357,7 @@ export class SesInboundStack extends cdk.Stack {
     this.ruleSet = new ses.ReceiptRuleSet(this, "AgentMailRuleSet");
 
     const catchAllRule = this.ruleSet.addRule("AgentMailCatchAll", {
-      recipients: [mailDomain],
+      recipients: [mailDomain, `.${mailDomain}`],
       scanEnabled: true,
       actions: [
         new sesActions.S3({ bucket: this.rawBucket, objectKeyPrefix: "inbound/" }),

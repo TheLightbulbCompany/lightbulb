@@ -88,6 +88,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
+      clerkWebhookSecret: `isol8/${environment}/clerk_webhook_secret`,
       stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
       stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
       encryptionKey: `isol8/${environment}/encryption_key`,

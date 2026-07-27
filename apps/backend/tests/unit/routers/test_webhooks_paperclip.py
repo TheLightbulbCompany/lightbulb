@@ -34,54 +34,38 @@ def _svix_headers() -> dict:
     }
 
 
+# ``organization.created`` has no handler and must not be subscribed. Clerk org
+# creation carries no eligibility information (orgs have no free tier — they are
+# gated on ``team_billing_required`` until a Stripe subscription goes live), and
+# the org creator is resolved from the Clerk Backend API by
+# ``provision_runner._seed_owner_paperclip``, never from that payload. The old
+# ``test_organization_created_does_not_provision`` went with the handler.
+
+
 # ----------------------------------------------------------------------
-# organization.created -> provision_org
+# organizationMembership.created -> paperclip member add, NO container
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_organization_created_does_not_provision():
-    """The webhook is record-keeping only. Should NOT call
-    build_paperclip_provisioning, provision_org, or
-    _enqueue_paperclip_retry. Provisioning fires from /container/status
-    when readiness is satisfied.
+async def test_membership_created_adds_paperclip_member_and_never_provisions():
+    """The membership webhook is the MEMBER trigger: it dispatches the Paperclip
+    membership add so the new member's Teams surfaces don't 401 on a missing
+    row. It must NEVER dispatch a container provision — members ride the shared
+    org box, and an org's eligibility comes from Stripe, not from someone
+    joining it.
     """
-    from routers.webhooks import _handle_organization_created
-
-    with (
-        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
-        patch(
-            "routers.webhooks._enqueue_paperclip_retry",
-            new=AsyncMock(),
-        ) as mock_retry,
-    ):
-        await _handle_organization_created(
-            {
-                "id": "org_acme",
-                "created_by": "user_owner",
-            }
-        )
-
-    mock_factory.assert_not_called()
-    mock_retry.assert_not_awaited()
-
-
-# ----------------------------------------------------------------------
-# organizationMembership.created -> log + dual-tenancy invariant probe
-# ----------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_membership_created_does_not_provision():
-    """The membership webhook is record-keeping + dual-tenancy invariant
-    probe only. Should NOT call provision_member,
-    build_paperclip_provisioning, or _enqueue_paperclip_retry. The new
-    member's paperclip-membership row will be added by the first
-    /container/status poll on their session via ensure_user_ready."""
     from routers.webhooks import _handle_organization_membership_created
 
     with (
-        patch("routers.webhooks.build_paperclip_provisioning") as mock_factory,
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_member",
+            new=AsyncMock(),
+        ) as mock_member_add,
+        patch(
+            "core.services.provision_dispatch.dispatch_provision",
+            new=AsyncMock(return_value="dispatched"),
+        ) as mock_dispatch,
         patch("routers.webhooks._enqueue_paperclip_retry", new=AsyncMock()) as mock_retry,
         patch(
             "routers.webhooks.billing_repo.get_by_owner_id",
@@ -98,10 +82,46 @@ async def test_membership_created_does_not_provision():
             }
         )
 
-    mock_factory.assert_not_called()
+    mock_member_add.assert_awaited_once_with(
+        org_id="org_x",
+        member_user_id="user_member",
+        member_email="m@example.com",
+    )
+    # THE load-bearing assertion: no container provision on the member path.
+    mock_dispatch.assert_not_awaited()
     mock_retry.assert_not_awaited()
     # Invariant probe still runs.
     mock_billing.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_membership_created_survives_paperclip_failure():
+    """A Paperclip outage must not 5xx the webhook: Svix treats non-2xx as a
+    delivery failure and silently disables the endpoint after 5 days of them.
+    The member's /container/status poll re-drives the add.
+    """
+    from routers.webhooks import _handle_organization_membership_created
+
+    with (
+        patch(
+            "core.services.user_provision._ensure_paperclip_for_member",
+            new=AsyncMock(side_effect=PaperclipApiError("boom", 503, "upstream down")),
+        ),
+        patch(
+            "routers.webhooks.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        # Must not raise.
+        await _handle_organization_membership_created(
+            {
+                "organization": {"id": "org_x", "created_by": "user_owner"},
+                "public_user_data": {
+                    "user_id": "user_member",
+                    "identifier": "m@example.com",
+                },
+            }
+        )
 
 
 # ----------------------------------------------------------------------

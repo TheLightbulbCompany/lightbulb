@@ -43,11 +43,8 @@ DELETE the doc in the same PR or shortly after — git history preserves it, and
 PR description is the durable record. The only plans/specs that stay are ones living
 code or CLAUDE.md explicitly references. Never let shipped plans accumulate: a
 2026-07 purge deleted 250 of 260 such files (196k lines) — don't rebuild that pile.
-The same applies to one-shot backend scripts: once a backfill has run and the
-data it wrote is produced at creation time, DELETE the script and its tests —
-git history is the operational record (it carries the run date and PR context
-an archive directory does not). Re-runnable ops tools stay in
-`apps/backend/scripts/`.
+The same applies to one-shot backend scripts: after they run, move them to
+`apps/backend/scripts/archive/` (and delete their tests).
 
 ### Monorepo Setup
 
@@ -347,7 +344,7 @@ The services directory has grown past per-file annotation. Run `ls apps/backend/
 - **Gateway / WebSocket**: `connection_service.py` (DDB connectionId↔user_id state), `management_api_client.py`, `node_proxy.py` (per-user node-host tracking — relocated from routers/ in May 2026).
 - **Catalog**: `catalog_service.py` plus `catalog_slice.py` / `catalog_package.py` helpers. `catalog_service.deploy_from_artifact` is the consumption-side entry point for marketplace deploys.
 - **Marketplace**: `marketplace_service.py` (DDB rows + S3 artifact uploads + status state machine: draft → review → published; published-version transitions are atomic via TransactWriteItems), `marketplace_search.py` (60s in-process cache of published listings, Python-side tokenized scoring), `marketplace_safety.py` (scan tarballs for credential/PII patterns), `agent_export.py` (seller-agent → tarball snapshotter; explicitly filters `sessions/`, `agent/`, dotfiles, junk dirs — see `_OPENCLAW_RUNTIME_STATE_DIRS` docstring for why).
-- **Provisioning**: `user_provision.py` (`ensure_user_ready` — the SINGLE canonical readiness entry point, called only from `GET /container/status`; owner path seeds Paperclip synchronously then dispatches container provision as background task), `container_provision.py` (provider-choice resolution), `provision_dispatch.py` (`dispatch_provision` — the SFN executor every provisioning trigger funnels through), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
+- **Provisioning**: `user_provision.py` — two entry points. `ensure_owner_provisioned(owner_id, trigger=…)` is the auth-free, owner-scoped **event trigger** the Clerk and Stripe webhooks call (gate → dispatch). `ensure_user_ready(auth)` is the `GET /container/status` poll's composed readiness path; it evaluates the gate once and calls the dispatch-only half, so the poll never pays for a second gate evaluation. Both funnel into `provision_dispatch.dispatch_provision`. Also `container_provision.py` (`background_provision`), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
 - **Admin surface**: `admin_service.py`, `admin_audit.py`, `admin_redact.py`, `clerk_admin.py` (Clerk REST wrapper — every Clerk API call should go through here), `cloudwatch_logs.py` / `cloudwatch_url.py`, `posthog_admin.py`.
 - **Teams BFF (Paperclip)**: many `paperclip_*` services (`paperclip_admin_client.py`, `paperclip_admin_session.py`, `paperclip_user_session.py`, `paperclip_event_client.py`, `paperclip_provisioning.py` — owns `provision_org` which seeds Friday + Atlas, `paperclip_autoprovision.py`, `paperclip_owner_email.py`, `paperclip_event_router.py`, `teams_event_broker_singleton.py`, etc.) coordinating with the per-tenant Paperclip BFF.
 - **Auth / identity**: `oauth_service.py` (ChatGPT OAuth flow), `key_service.py` (BYOK API key encryption via Fernet), `service_token.py` (JWT minting for cross-service calls).
@@ -476,11 +473,46 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 
 A first-time user moves from "just signed up" to "ready to chat" through one canonical path. Understanding it matters because **Paperclip wiring is only set up at provision time** — there is no PATCH that retrofits it onto a pre-existing container.
 
+Provisioning is triggered by **server-side events**; the poll is an idempotent
+fallback that is never removed. The trigger is not "a user was created" — it is
+"the owner became ELIGIBLE", i.e. `evaluate_provision_gate` going from a `Gate`
+to `None`, which happens at a different moment per tenancy:
+
+```
+TRIGGERS                                                       →  DISPATCHES
+
+Clerk  user.created (primary email VERIFIED)                   →  trial_local row,
+  personal owners clear the gate the instant the card-less         then container
+  trial row exists (the gate's trial_local short-circuit)
+
+Stripe customer.subscription.created|updated → entering_live   →  container
+  orgs have NO free tier; they sit behind team_billing_required
+  until a per-seat sub goes live. Clerk organization.created is
+  NOT a trigger — it carries no eligibility information at all.
+  (Skipped during a trial→paid conversion, which owns its own
+  drain + reprovision.)
+
+Clerk  organizationMembership.created                          →  Paperclip
+  a member rides the shared org box; they need a membership row,     membership
+  or every Teams surface 401s on them. NEVER a container.            ONLY
+
+GET /container/status  (every ~3s while pre-ready)             →  all of the above
+  UNCHANGED and non-negotiable. Svix silently auto-disables an
+  endpoint after 5 days of failures, so a missing/broken webhook
+  must degrade to today's behaviour, never to a signup outage.
+```
+
+Concurrent triggers are safe by CONSTRUCTION, not coordination:
+`container_repo.try_claim_provision` is a DynamoDB conditional write that elects
+one winner per owner across all backend tasks, and the Paperclip owner seed runs
+as step 0 *inside* the executor's runner under that same single-flight. Whoever
+claims first wins; everyone else no-ops. Do not add locks or a second dedup
+layer.
+
 ```
 Clerk sign-up
-   └─ frontend polls GET /container/status every ~3s
-        └─ routers/container.py dispatches ensure_user_ready(auth)
-             └─ core/services/user_provision.py
+   └─ Clerk user.created webhook  (or, as fallback, the ~3s /container/status poll)
+        └─ core/services/user_provision.py
                   1. evaluate_provision_gate — subscription/credits/OAuth pre-checks
                   2. _ensure_paperclip_for_owner (SYNC, ~2-3s)
                        └─ paperclip_provisioning.provision_org
@@ -490,7 +522,7 @@ Clerk sign-up
                             ├─ seed Friday (CEO) with adapter_type="openclaw_gateway"
                             │     adapter_config.url = wss://ws-<env>.isol8.co
                             └─ seed Atlas (recruiter) — best-effort; Atlas failure does NOT undo Friday
-                  3. asyncio.create_task(dispatch_provision(owner_id))
+                  3. asyncio.create_task(background_provision(owner_id))
                        └─ ecs_manager.provision_user_container
                             ├─ per-user EFS access point + ECS service
                             └─ write_user_configs → write_openclaw_config(paperclip_agents=[…])
@@ -499,7 +531,8 @@ Clerk sign-up
 
 Key invariants:
 
-- **`GET /container/status` is the only caller of `ensure_user_ready`** (see `user_provision.py` module docstring). Clerk webhooks are pure record-keeping; they do not trigger provisioning.
+- **The poll is a fallback, never removed.** `GET /container/status` keeps its `ensure_user_ready` dispatch permanently — see the trigger table above. Clerk webhooks are no longer pure record-keeping: `user.created` and `organizationMembership.created` are live triggers, and `POST /api/v1/webhooks/clerk` is signature-verified **fail-closed** (a malformed `CLERK_WEBHOOK_SECRET` rejects, it does not skip).
+- **Gate policy lives in exactly one function** — `evaluate_provision_gate`. The webhook path reaches it via `ensure_owner_provisioned`; the poll evaluates it once at the top of `ensure_user_ready`. Never copy gate logic into a handler.
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
 - **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success (see `_ensure_paperclip_for_owner` line 141-156).
 
@@ -510,7 +543,7 @@ Owners whose container was provisioned **before** Paperclip integration shipped 
 Two fixes:
 
 1. **Full reprovision** — `DELETE /api/v1/debug/provision` then `POST /api/v1/debug/provision`. The new poll cycle invokes `ensure_user_ready` against an empty slate.
-2. **Backfill script** — a one-shot `backfill_paperclip_for_legacy_users.py` (already run against prod, since deleted) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Recover it from git history only if a new legacy cohort appears.
+2. **Backfill script** — `apps/backend/scripts/archive/backfill_paperclip_for_legacy_users.py` (archived one-shot; already run against prod) paginated the `containers` table, found owners with no Paperclip row, and called `provision_org` for each. Resurrect from the archive only if a new legacy cohort appears.
 
 **`PATCH /debug/provision` cannot wire Paperclip.** It only deep-merges `openclaw.json`. It cannot create a Paperclip company, cannot sign up a Paperclip user, cannot seed Friday/Atlas. The `config_patcher` is for config drift, not for provisioning gaps.
 
@@ -639,7 +672,7 @@ POST /marketplace/listings/{slug}/deploy
 |----------|---------|---------|
 | `CLERK_ISSUER` | Clerk domain for JWT validation | Required |
 | `CLERK_SECRET_KEY` | Clerk secret key | Optional |
-| `CLERK_WEBHOOK_SECRET` | Clerk webhook verification | Optional |
+| `CLERK_WEBHOOK_SECRET` | Svix signing secret for `POST /webhooks/clerk`. **Required** — verification fails closed, and the endpoint is a provisioning trigger. Set from Secrets Manager (`isol8/{env}/clerk_webhook_secret`); override the CDK placeholder with the real `whsec_…` **before** configuring the Clerk Dashboard endpoint. Unset = verification skipped (local dev only, logs a WARNING). | Required |
 | `AWS_REGION` | AWS region | `us-east-1` |
 | `BEDROCK_ENABLED` | Enable Bedrock model discovery | `true` |
 | `ENVIRONMENT` | Environment name (dev/staging/prod) | Empty |

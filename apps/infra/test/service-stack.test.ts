@@ -69,6 +69,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
+      clerkWebhookSecret: `isol8/${environment}/clerk_webhook_secret`,
       stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
       stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
       encryptionKey: `isol8/${environment}/encryption_key`,
@@ -132,18 +133,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({ Name: "backend", StopTimeout: 30 }),
-      ]),
-    });
-  });
-
-  test("backend task definition carries STRIPE_TEAM_BASE_PRICE_ID", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Environment: Match.arrayWith([
-            Match.objectLike({ Name: "STRIPE_TEAM_BASE_PRICE_ID" }),
-          ]),
-        }),
       ]),
     });
   });

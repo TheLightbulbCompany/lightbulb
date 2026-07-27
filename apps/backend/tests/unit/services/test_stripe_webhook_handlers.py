@@ -50,10 +50,6 @@ def mock_repo():
         )
         repo.set_subscription = AsyncMock()
         repo.set_provider_choice = AsyncMock()
-        # Any test that populates event_data["items"] reaches the tier branch
-        # (see the TestTeamSeatWebhook comment below for why this must be a
-        # real AsyncMock rather than a bare MagicMock).
-        repo.set_plan = AsyncMock()
         yield repo
 
 
@@ -408,12 +404,6 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
-            # Team-seat events now also reach the tier branch (Task 2 dropped
-            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
-            # hits a bare MagicMock, raises TypeError, and the handler's own
-            # best-effort except-Exception swallows it silently — mocking it
-            # properly makes the branch actually run instead of erroring out.
-            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(self._team_event(), MagicMock())
@@ -447,174 +437,11 @@ class TestTeamSeatWebhook:
             repo.set_subscription = AsyncMock()
             repo.set_provider_choice = AsyncMock()
             repo.set_team_subscription = AsyncMock()
-            # Team-seat events now also reach the tier branch (Task 2 dropped
-            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
-            # hits a bare MagicMock, raises TypeError, and the handler's own
-            # best-effort except-Exception swallows it silently — mocking it
-            # properly makes the branch actually run instead of erroring out.
-            repo.set_plan = AsyncMock()
             mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
 
             await handlers.handle_subscription_state(flat_event, MagicMock())
 
         repo.set_team_subscription.assert_not_awaited()
-
-    _BASE_ITEM = {"id": "si_base", "quantity": 1, "price": {"id": "price_base_test"}}
-    _SEAT_ITEM = {"id": "si_seat", "quantity": 4, "price": {"id": "price_seat_test"}}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "items_order",
-        [
-            pytest.param([_BASE_ITEM, _SEAT_ITEM], id="base_first"),
-            pytest.param([_SEAT_ITEM, _BASE_ITEM], id="seat_first"),
-        ],
-    )
-    async def test_seat_persistence_selects_seat_item_not_position_zero(self, monkeypatch, items_order):
-        """The SEAT item's id and quantity are stored regardless of which item
-        Stripe puts at items[0] -- the actual invariant is that ORDER IS
-        IRRELEVANT, selection is by price id alone.
-
-        Regression guard: storing the base item's id makes sync_team_seat_quantity
-        drive the base quantity, billing a 4-seat org $50x4 + $20 = $220/mo
-        instead of $50 + $20x4 = $130/mo. Stripe does not guarantee line-item
-        order, so selection must be by price id, never by position.
-        """
-        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
-        event = {
-            "id": "evt_team_ordered",
-            "type": "customer.subscription.created",
-            "data": {
-                "object": {
-                    "id": "sub_team",
-                    "customer": "cus_team",
-                    "status": "active",
-                    "metadata": {"owner_id": "org_team", "purpose": "team_seat"},
-                    "items": {"data": items_order},
-                }
-            },
-        }
-        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
-            repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_team", "stripe_customer_id": "cus_team"})
-            repo.set_subscription = AsyncMock()
-            repo.set_provider_choice = AsyncMock()
-            repo.set_team_subscription = AsyncMock()
-            # Team-seat events now also reach the tier branch (Task 2 dropped
-            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
-            # hits a bare MagicMock, raises TypeError, and the handler's own
-            # best-effort except-Exception swallows it silently — mocking it
-            # properly makes the branch actually run instead of erroring out.
-            repo.set_plan = AsyncMock()
-            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
-
-            await handlers.handle_subscription_state(event, MagicMock())
-
-        repo.set_team_subscription.assert_awaited_once_with(
-            owner_id="org_team",
-            subscription_id="sub_team",
-            subscription_item_id="si_seat",
-            status="active",
-            seat_count=4,
-        )
-
-    @pytest.mark.asyncio
-    async def test_detects_via_seat_item_without_metadata_purpose(self, monkeypatch):
-        """A Teams sub with NO metadata.purpose=='team_seat' at all (e.g. one
-        created directly in the Stripe Dashboard for a comped/enterprise org,
-        or one whose metadata was cleared) must still be detected as a team
-        seat sub, by scanning ALL items for the seat price -- not just item[0].
-
-        Regression guard for the UNDER-billing failure mode: with the base at
-        items[0] and no metadata purpose, the old fallback
-        (`first_price_id == seat_price`) evaluated False, so is_team_seat was
-        False, set_team_subscription was never called, subscription_item_id
-        was never persisted, and sync_team_seat_quantity silently no-op'd
-        forever -- the org would never be billed for seats added after
-        signup.
-        """
-        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
-        event = {
-            "id": "evt_team_no_metadata",
-            "type": "customer.subscription.created",
-            "data": {
-                "object": {
-                    "id": "sub_team_dash",
-                    "customer": "cus_team_dash",
-                    "status": "active",
-                    "metadata": {"owner_id": "org_dash"},  # no "purpose" key at all
-                    "items": {"data": [self._BASE_ITEM, self._SEAT_ITEM]},
-                }
-            },
-        }
-        with patch.object(handlers, "billing_repo") as repo, patch.object(handlers, "stripe") as mock_stripe:
-            repo.get_by_owner_id = AsyncMock(
-                return_value={"owner_id": "org_dash", "stripe_customer_id": "cus_team_dash"}
-            )
-            repo.set_subscription = AsyncMock()
-            repo.set_provider_choice = AsyncMock()
-            repo.set_team_subscription = AsyncMock()
-            # Team-seat events now also reach the tier branch (Task 2 dropped
-            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
-            # hits a bare MagicMock, raises TypeError, and the handler's own
-            # best-effort except-Exception swallows it silently — mocking it
-            # properly makes the branch actually run instead of erroring out.
-            repo.set_plan = AsyncMock()
-            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
-
-            await handlers.handle_subscription_state(event, MagicMock())
-
-        repo.set_team_subscription.assert_awaited_once_with(
-            owner_id="org_dash",
-            subscription_id="sub_team_dash",
-            subscription_item_id="si_seat",
-            status="active",
-            seat_count=4,
-        )
-
-    @pytest.mark.asyncio
-    async def test_warns_when_metadata_says_team_seat_but_no_item_matches_price(self, monkeypatch, caplog):
-        """metadata.purpose=='team_seat' but no item carries
-        STRIPE_TEAM_SEAT_PRICE_ID (env var unset, or the Stripe seat price was
-        rotated to a new id): must not silently freeze seat state -- it should
-        surface a warning so a price rotation is visible in logs instead of
-        manifesting only as mysteriously-stuck seat counts."""
-        monkeypatch.setattr("core.config.settings.STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
-        event = {
-            "id": "evt_team_rotated",
-            "type": "customer.subscription.created",
-            "data": {
-                "object": {
-                    "id": "sub_team_rotated",
-                    "customer": "cus_team_rotated",
-                    "status": "active",
-                    "metadata": {"owner_id": "org_rotated", "purpose": "team_seat"},
-                    "items": {"data": [{"id": "si_old", "quantity": 4, "price": {"id": "price_seat_STALE"}}]},
-                }
-            },
-        }
-        with (
-            patch.object(handlers, "billing_repo") as repo,
-            patch.object(handlers, "stripe") as mock_stripe,
-            caplog.at_level("WARNING", logger=handlers.logger.name),
-        ):
-            repo.get_by_owner_id = AsyncMock(
-                return_value={"owner_id": "org_rotated", "stripe_customer_id": "cus_team_rotated"}
-            )
-            repo.set_subscription = AsyncMock()
-            repo.set_provider_choice = AsyncMock()
-            repo.set_team_subscription = AsyncMock()
-            # Team-seat events now also reach the tier branch (Task 2 dropped
-            # `not is_team_seat`). Without this, `await billing_repo.set_plan`
-            # hits a bare MagicMock, raises TypeError, and the handler's own
-            # best-effort except-Exception swallows it silently — mocking it
-            # properly makes the branch actually run instead of erroring out.
-            repo.set_plan = AsyncMock()
-            mock_stripe.Customer.retrieve.return_value = {"invoice_settings": {"default_payment_method": "pm"}}
-
-            await handlers.handle_subscription_state(event, MagicMock())
-
-        repo.set_team_subscription.assert_not_awaited()
-        assert any("no item matches STRIPE_TEAM_SEAT_PRICE_ID" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +454,7 @@ class TestTeamSeatWebhook:
 # the persisted status off "trial_local". A RUNNING container's
 # provision_user_container only force-redeploys the stale task def + config, so
 # the handler must dispatch ecs_manager.reprovision_for_user, which scales to
-# zero + drains first so the follow-on dispatch_provision takes the
+# zero + drains first so the follow-on background_provision takes the
 # scale-from-zero branch that re-registers the task def AND rewrites
 # openclaw.json — by which point the stored status is already the paid one, so
 # resolve_provider_choice reads the owner's real paid provider.
@@ -875,7 +702,7 @@ async def test_trial_converted_telemetry_failure_does_not_break_webhook(mock_rep
 # per-owner EFS WAL SQLite open (our documented corruption mode). Meanwhile the
 # just-paid owner polls /container/status every ~3s, sees status="stopped", and
 # — now that they're paid, so no gate blocks them — would dispatch their OWN
-# dispatch_provision with no drain wait. The webhook therefore stamps the
+# background_provision with no drain wait. The webhook therefore stamps the
 # container row BEFORE the stop so the status path knows a conversion owns it.
 
 
@@ -1436,3 +1263,94 @@ async def test_facts_skip_team_seat_fields_when_write_fails(mock_repo, facts_moc
     overrides = facts_mock.await_args.kwargs["account_overrides"]
     assert "subscription_item_id" not in overrides
     assert "seat_count" not in overrides
+
+
+# ----------------------------------------------------------------------
+# ORG provisioning trigger — `entering_live`
+# ----------------------------------------------------------------------
+#
+# There is no org free tier: an org sits behind the `team_billing_required`
+# gate until its per-seat subscription goes live, so the Stripe event IS the
+# org's eligibility transition. Clerk's `organization.created` carries no
+# eligibility information at all and is deliberately not a trigger.
+
+
+@pytest.mark.asyncio
+async def test_subscription_entering_live_triggers_provisioning(mock_repo):
+    """A fresh org row has no subscription_status and no stripe_subscription_id,
+    so `.created(active)` is `entering_live` — the moment the gate clears."""
+    with (
+        patch.object(handlers, "stripe"),
+        patch("core.services.user_provision.ensure_owner_provisioned", new=AsyncMock()) as mock_trigger,
+    ):
+        await handlers.handle_subscription_state(_subscription_event(status="active"), MagicMock())
+
+    mock_trigger.assert_awaited_once_with("org_x", trigger="stripe.subscription_live")
+
+
+@pytest.mark.asyncio
+async def test_already_live_subscription_does_not_re_trigger(mock_repo):
+    """Renewals, seat syncs and payment-method changes on an ESTABLISHED
+    subscription are not eligibility transitions. Only the edge into live is."""
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_x",
+            "owner_type": "org",
+            "stripe_customer_id": "cus_x",
+            "stripe_subscription_id": "sub_x",
+            "subscription_status": "active",
+        }
+    )
+
+    with (
+        patch.object(handlers, "stripe"),
+        patch("core.services.user_provision.ensure_owner_provisioned", new=AsyncMock()) as mock_trigger,
+    ):
+        await handlers.handle_subscription_state(_subscription_event(status="active"), MagicMock())
+
+    mock_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trial_to_paid_conversion_does_not_dispatch_underneath_itself(mock_repo):
+    """`trial_local -> active` satisfies `entering_live` AND enters the
+    conversion branch, which owns the container row and runs its own
+    drain + reprovision. A second dispatch there lands two tasks on the same
+    EFS WAL — the documented corruption mode.
+    """
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "user_x",
+            "owner_type": "personal",
+            "stripe_customer_id": "cus_x",
+            "subscription_status": "trial_local",
+        }
+    )
+
+    with (
+        patch.object(handlers, "stripe"),
+        patch.object(handlers, "run_conversion_reprovision", new=AsyncMock()),
+        patch("core.services.user_provision.ensure_owner_provisioned", new=AsyncMock()) as mock_trigger,
+    ):
+        await handlers.handle_subscription_state(
+            _subscription_event(status="active", metadata={"owner_id": "user_x"}),
+            MagicMock(),
+        )
+
+    mock_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trigger_failure_does_not_fail_the_webhook(mock_repo):
+    """A raise would 5xx a webhook whose billing writes already committed,
+    making Stripe retry them. The /container/status poll re-drives the
+    provisioning either way."""
+    with (
+        patch.object(handlers, "stripe"),
+        patch(
+            "core.services.user_provision.ensure_owner_provisioned",
+            new=AsyncMock(side_effect=RuntimeError("gate exploded")),
+        ),
+    ):
+        # Must not raise.
+        await handlers.handle_subscription_state(_subscription_event(status="active"), MagicMock())

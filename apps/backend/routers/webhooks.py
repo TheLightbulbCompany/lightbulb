@@ -4,19 +4,39 @@ Receives lifecycle events from Clerk (user, organization,
 organizationMembership) and keeps internal state — including the
 Paperclip mirror — in sync.
 
-Verification uses the svix HMAC-SHA256 signature scheme:
+Verification uses the svix HMAC-SHA256 signature scheme, via the shared
+fail-closed verifier in ``core.crypto.svix``:
   https://docs.svix.com/receiving/verifying-payloads/how
 
 If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
-(safe for local dev; must be set in production).
+(safe for local dev; every deployed env gets it from Secrets Manager).
 
-**Paperclip provisioning dispatch**:
+**Provisioning triggers.** Two events here are provisioning triggers, not
+record-keeping. Both are safe to fire concurrently with each other and with
+the ``/container/status`` poll — ``container_repo.try_claim_provision`` is a
+DynamoDB conditional write that elects one winner per owner, so extra
+triggers no-op rather than double-provision.
 
-  * ``organization.created``           -> log only (provisioning deferred to /container/status)
-  * ``organizationMembership.created`` -> log + dual-tenancy probe (provisioning deferred to /container/status)
+  * ``user.created``                   -> trial_local row + container provision
+                                          (personal owner; gated on a VERIFIED
+                                          primary email)
+  * ``organizationMembership.created`` -> paperclip membership add + seat sync
+                                          + dual-tenancy probe. NEVER a
+                                          container: orgs have no free tier and
+                                          become eligible via Stripe, so the org
+                                          container trigger lives in
+                                          ``stripe_webhook_handlers``.
   * ``organizationMembership.deleted`` -> ``disable`` for that user
   * ``organization.deleted``           -> ``disable`` for every member of the org
   * ``user.deleted``                   -> ``disable`` for that user
+
+``organization.created`` is deliberately NOT handled and should not be
+subscribed: Clerk org creation carries no eligibility information at all, and
+the org creator is resolved from the Clerk Backend API by
+``provision_runner._seed_owner_paperclip``, not from that payload.
+
+The poll remains a non-negotiable fallback for all of it — Svix silently
+auto-disables an endpoint after 5 days of sustained failure.
 
 Retry semantics: if provisioning raises an exception with
 ``retryable=True`` (``OrgNotProvisionedError`` always; ``PaperclipApiError``
@@ -29,9 +49,6 @@ and swallowed; returning 5xx would just have Clerk retry the same
 permanently-broken event.
 """
 
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -41,6 +58,7 @@ import stripe
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
+from core.crypto.svix import verify_svix_signature
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
 from core.services.paperclip_provisioning import (
@@ -57,46 +75,30 @@ router = APIRouter()
 def _verify_svix_signature(body: bytes, headers: dict) -> None:
     """Raise HTTPException(400) if the svix signature is invalid.
 
-    Svix signs the payload with HMAC-SHA256 using a timestamp + body
-    combination.  The ``svix-signature`` header contains one or more
-    ``v1,<base64>`` tokens; we accept the payload if ANY token matches.
+    Delegates the HMAC to the shared ``core.crypto.svix`` verifier rather than
+    carrying a second copy of the scheme. That module is deliberately
+    FAIL-CLOSED: a malformed secret returns False instead of skipping the
+    check. The inline verifier this replaced logged and skipped on a bad
+    secret, so a typo'd ``whsec_`` silently reopened the endpoint to anyone.
 
-    Skipped when CLERK_WEBHOOK_SECRET is not configured (local dev).
+    The one policy this router owns is the unset-secret case: skip, for local
+    dev where no secret is provisioned. Every deployed environment gets
+    ``CLERK_WEBHOOK_SECRET`` from Secrets Manager (service-stack), so the skip
+    is unreachable there — and it logs at WARNING so an env that lost the
+    secret is visible rather than quietly unauthenticated.
     """
     secret = settings.CLERK_WEBHOOK_SECRET
     if not secret:
+        logger.warning(
+            "CLERK_WEBHOOK_SECRET is unset — Clerk webhook signature verification "
+            "SKIPPED. Expected only in local dev; any deployed environment is "
+            "accepting unsigned webhook bodies."
+        )
         return
 
-    # Strip the ``whsec_`` prefix that Clerk/svix adds to the secret.
-    raw_secret = secret.removeprefix("whsec_")
-    try:
-        key = base64.b64decode(raw_secret)
-    except Exception:
-        logger.warning("CLERK_WEBHOOK_SECRET is not valid base64; skipping signature check")
-        return
-
-    msg_id = headers.get("svix-id", "")
-    msg_timestamp = headers.get("svix-timestamp", "")
-    msg_signature = headers.get("svix-signature", "")
-
-    if not msg_id or not msg_timestamp or not msg_signature:
+    if not verify_svix_signature(secret=secret, body=body, headers=headers):
         put_metric("webhook.clerk.sig_fail")
-        raise HTTPException(status_code=400, detail="Missing svix signature headers")
-
-    signed_content = f"{msg_id}.{msg_timestamp}.".encode() + body
-    expected = hmac.new(key, signed_content, hashlib.sha256).digest()
-    expected_b64 = base64.b64encode(expected).decode()
-
-    # svix-signature may contain multiple space-separated tokens.
-    tokens = msg_signature.split(" ")
-    for token in tokens:
-        if token.startswith("v1,"):
-            candidate = token[3:]
-            if hmac.compare_digest(expected_b64, candidate):
-                return
-
-    put_metric("webhook.clerk.sig_fail")
-    raise HTTPException(status_code=400, detail="Invalid svix signature")
+        raise HTTPException(status_code=400, detail="Invalid svix signature")
 
 
 # The canonical home for ``PAPERCLIP_RETRY_KIND`` is
@@ -125,6 +127,17 @@ async def _enqueue_paperclip_retry(*, op: str, payload: dict, owner_id: str) -> 
     best-effort, and the alternative (5xx-ing the webhook) would just
     have Clerk retry the original event, which has the same retryable
     classification.
+
+    SCOPE — reviewed when event-triggered provisioning landed, KEPT deliberately.
+    This queue was originally built to re-drive Paperclip PROVISIONING from
+    webhooks and has never executed a row (no Clerk endpoint existed). Its one
+    live op is now ``archive_member`` from ``organizationMembership.deleted``,
+    and the worker (``update_service.paperclip_provision_retry_pass``) already
+    errors on any other op. Folding the retry inline into that handler was
+    considered and rejected: Svix requires a 2xx within 15 SECONDS and disables
+    an endpoint after 5 days of failures, so an in-handler retry loop is exactly
+    the wrong shape, and the durable pending-updates row is what survives a
+    backend restart mid-retry. A one-op queue is the cheaper correct answer.
     """
     try:
         await update_repo.create(
@@ -239,6 +252,34 @@ def _extract_primary_email(data: dict) -> Optional[str]:
     return None
 
 
+def _primary_email_verified(data: dict) -> bool:
+    """True iff the PRIMARY email on a ``user.*`` payload is verified.
+
+    Deliberately STRICT — no "first email in the array" fallback, unlike
+    ``_extract_primary_email``. A missing ``primary_email_address_id`` means we
+    cannot tell which address is primary, and the caller must then treat the
+    user as unverified.
+
+    Why this gates the provisioning trigger: ``ensure_personal_trial_default``
+    and the provision gate both refuse a personal trial when the user has a
+    pending org invitation, and **Clerk matches invitations to VERIFIED emails
+    only**. ``user.created`` fires at the earliest possible instant — plausibly
+    before verification — so triggering on an unverified primary email would
+    hand an about-to-be-invited user a personal container, a personal billing
+    row, and a throwaway Paperclip company, all of it instant junk. Skipping is
+    free: the ``/container/status`` poll picks the owner up moments later,
+    exactly as it does today.
+    """
+    primary_id = data.get("primary_email_address_id")
+    if not primary_id:
+        return False
+    for entry in data.get("email_addresses") or []:
+        if isinstance(entry, dict) and entry.get("id") == primary_id:
+            verification = entry.get("verification") or {}
+            return verification.get("status") == "verified"
+    return False
+
+
 async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -> Optional[str]:
     """Pull the org owner's email so ``provision_member`` can sign them in.
 
@@ -261,40 +302,22 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
 # ----------------------------------------------------------------------
 
 
-async def _handle_organization_created(data: dict) -> None:
-    """Persist any org metadata we want to track from the create event.
-
-    Provisioning is intentionally NOT done here — at org creation
-    time the readiness gate is up (no subscription, no provider
-    chosen) and provisioning Paperclip without a container is the
-    half-state we're eliminating. Provisioning fires from the
-    canonical GET /container/status trigger once readiness is satisfied.
-    """
-    org_id = data.get("id", "")
-    owner_user_id = data.get("created_by", "")
-    if not org_id or not owner_user_id:
-        logger.warning("Clerk organization.created missing id/created_by: %s", data)
-        return
-    logger.info(
-        "organization.created: org=%s owner=%s recorded",
-        org_id,
-        owner_user_id,
-    )
-
-
 async def _handle_organization_membership_created(data: dict) -> None:
-    """Record-keeping for member acceptance + dual-tenancy invariant probe.
+    """Add the new member to the org's Paperclip company, + dual-tenancy probe.
 
-    Provisioning is intentionally NOT done here. The new member's
-    paperclip-membership row will be added by their first
-    ``/container/status`` poll, which calls ``ensure_user_ready`` and
-    routes to ``_ensure_paperclip_for_member``. That helper:
+    A member joining an already-subscribed org needs NO container — they ride
+    the shared org box. What they need is a Paperclip membership row, or every
+    Teams surface 401s on them (the silent orphan-member incident). So this
+    handler dispatches ``_ensure_paperclip_for_member`` and **never** a
+    container provision: an org's eligibility comes from its Stripe
+    subscription, not from anyone joining it.
 
-      * adds the member if the owner's company is active
-      * logs and returns gracefully if the owner's company isn't ready
-
-    Either way, the webhook has nothing useful to do besides logging
-    + enforcing the dual-tenancy invariant.
+    ``_ensure_paperclip_for_member`` is join-only by construction — it never
+    creates a company — and returns gracefully when the org's company does not
+    exist yet, emitting ``paperclip.member_add{outcome=no_company}``. That is
+    the CORRECT out-of-order behaviour: Clerk/Svix guarantee no ordering, so a
+    membership event can legitimately beat the org's own provisioning. The
+    member's own ``/container/status`` poll retries. Do not add a retry queue.
     """
     org = data.get("organization") or {}
     org_id = org.get("id", "")
@@ -338,12 +361,30 @@ async def _handle_organization_membership_created(data: dict) -> None:
         logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
 
     logger.info(
-        "membership.created: org=%s member=%s owner=%s recorded; "
-        "paperclip-membership will be added by first /container/status poll",
+        "membership.created: org=%s member=%s owner=%s — dispatching paperclip membership-add",
         org_id,
         user_id,
         owner_user_id,
     )
+
+    # The member trigger. Best-effort: a Paperclip outage must not 5xx the
+    # webhook (Svix would retry, and 5 days of failures silently disable the
+    # endpoint). The member's /container/status poll re-drives this via
+    # ensure_user_ready, which is why no retry queue is needed here.
+    try:
+        from core.services.user_provision import _ensure_paperclip_for_member
+
+        await _ensure_paperclip_for_member(
+            org_id=org_id,
+            member_user_id=user_id,
+            member_email=email,
+        )
+    except Exception:
+        logger.exception(
+            "paperclip membership-add on membership.created failed for org=%s user=%s",
+            org_id,
+            user_id,
+        )
 
     # Keep the org's per-seat subscription quantity in step with membership.
     # Best-effort: the reconciler self-guards (no-op unless the org has an
@@ -587,7 +628,7 @@ async def _handle_user_deleted_paperclip(user_id: str) -> None:
     summary="Handle Clerk webhooks",
     description=(
         "Processes Clerk lifecycle events: user.created, user.updated, user.deleted, "
-        "organization.created/deleted, organizationMembership.created/deleted."
+        "organization.deleted, organizationMembership.created/deleted."
     ),
     operation_id="handle_clerk_webhook",
     include_in_schema=False,
@@ -675,6 +716,51 @@ async def handle_clerk_webhook(request: Request):
                 except Exception:
                     logger.exception("welcome email send raised for user.created %s", user_id)
 
+            # PERSONAL provisioning trigger. A personal owner becomes
+            # provision-eligible the instant the card-less trial_local row
+            # exists (the gate has an explicit trial_local short-circuit that
+            # skips the provider layer), so this event genuinely IS the
+            # eligibility transition — no other signal is needed.
+            #
+            # Gated on primary-email verification; see _primary_email_verified
+            # for why (pending-invitation tenancy invariant).
+            #
+            # Note on dedup: the svix-id row is written BEFORE this handler
+            # runs and the Clerk handler does not use the delete_event
+            # rollback, so a crash here suppresses Svix's retry. That is
+            # deliberately fine for THIS branch and no rollback is warranted:
+            # /container/status re-runs the identical trigger within ~3s, and
+            # the trigger is idempotent (try_claim_provision collapses
+            # concurrent dispatches to one execution). A blanket rollback
+            # would reopen double-handling for every other branch.
+            if not _primary_email_verified(data):
+                put_metric(
+                    "provision.trigger",
+                    dimensions={"source": "clerk.user_created", "result": "unverified_email"},
+                )
+                logger.info(
+                    "user.created: primary email not verified for %s — deferring "
+                    "provisioning to the /container/status poll",
+                    user_id,
+                )
+            else:
+                try:
+                    from core.services.user_provision import (
+                        ensure_owner_provisioned,
+                        ensure_personal_trial_default_for_user,
+                    )
+
+                    # Creates the trial_local row (which is what clears the
+                    # gate), then triggers. Both are idempotent; both refuse a
+                    # user holding a pending org invitation.
+                    await ensure_personal_trial_default_for_user(user_id)
+                    await ensure_owner_provisioned(user_id, trigger="clerk.user_created")
+                except Exception:
+                    # Never 5xx the webhook: Svix treats it as a delivery
+                    # failure and 5 days of those silently disable the
+                    # endpoint. The poll fallback covers this owner.
+                    logger.exception("provisioning trigger failed for user.created %s", user_id)
+
     elif event_type == "user.updated":
         user_id = data.get("id", "")
         logger.info("Clerk user.updated webhook received for %s", user_id)
@@ -731,9 +817,6 @@ async def handle_clerk_webhook(request: Request):
         # membership cleanup is handled via the organizationMembership
         # event stream — we don't enumerate orgs here.
         await _handle_user_deleted_paperclip(user_id)
-
-    elif event_type == "organization.created":
-        await _handle_organization_created(data)
 
     elif event_type == "organizationMembership.created":
         await _handle_organization_membership_created(data)

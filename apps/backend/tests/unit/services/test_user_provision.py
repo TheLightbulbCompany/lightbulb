@@ -146,7 +146,7 @@ async def test_ensure_user_ready_no_op_when_gate_blocks(_stub_trial_default):
             new=AsyncMock(),
         ) as mock_paperclip,
         patch(
-            "core.services.user_provision.dispatch_provision",
+            "core.services.user_provision._dispatch_provision_trigger",
             new=AsyncMock(),
         ) as mock_container,
     ):
@@ -312,7 +312,7 @@ async def test_gate_up_personal_owner_stays_a_pure_no_op():
         ),
         patch("core.services.user_provision.ensure_personal_trial_default", new=AsyncMock()),
         patch("core.services.user_provision.build_paperclip_provisioning", new=build),
-        patch("core.services.user_provision.dispatch_provision", new=AsyncMock()) as mock_container,
+        patch("core.services.user_provision._dispatch_provision_trigger", new=AsyncMock()) as mock_container,
     ):
         await ensure_user_ready(_personal_auth())
     build.assert_not_awaited()
@@ -691,14 +691,14 @@ async def test_ensure_paperclip_for_member_threads_owner_user_id_to_lookup_owner
 # Container dispatch contract (Task 5)
 # ---------------------------------------------------------------------------
 #
-# The container dispatch_provision is dispatched as an asyncio task
+# The container _dispatch_provision_trigger is dispatched as an asyncio task
 # only on the owner path. Org members ride the owner's container, so
 # ensure_user_ready must NOT dispatch a container task for them.
 
 
 @pytest.mark.asyncio
 async def test_ensure_user_ready_dispatches_container_for_owner(_stub_trial_default):
-    """Owner path → dispatch_provision dispatched as task."""
+    """Owner path → _dispatch_provision_trigger dispatched as task."""
     captured: list[str] = []
 
     def capture_task(coro):
@@ -723,14 +723,14 @@ async def test_ensure_user_ready_dispatches_container_for_owner(_stub_trial_defa
         ),
     ):
         await ensure_user_ready(_personal_auth("user_p"))
-    assert captured == ["dispatch_provision"], (
-        f"expected one create_task call dispatching dispatch_provision, got {captured}"
+    assert captured == ["_dispatch_provision_trigger"], (
+        f"expected one create_task call dispatching _dispatch_provision_trigger, got {captured}"
     )
 
 
 @pytest.mark.asyncio
 async def test_ensure_user_ready_dispatches_container_for_org_admin():
-    """Org-admin (no company yet) → dispatch_provision dispatched (admin owns the box)."""
+    """Org-admin (no company yet) → _dispatch_provision_trigger dispatched (admin owns the box)."""
     captured: list[str] = []
 
     def capture_task(coro):
@@ -743,8 +743,8 @@ async def test_ensure_user_ready_dispatches_container_for_org_admin():
         patch("core.services.user_provision.asyncio.create_task", side_effect=capture_task),
     ):
         await ensure_user_ready(_org_admin_auth("user_admin", "org_xyz", "a@example.com"))
-    assert captured == ["dispatch_provision"], (
-        f"expected one create_task call dispatching dispatch_provision, got {captured}"
+    assert captured == ["_dispatch_provision_trigger"], (
+        f"expected one create_task call dispatching _dispatch_provision_trigger, got {captured}"
     )
 
 
@@ -1143,13 +1143,13 @@ async def test_metronome_failure_does_not_block_provisioning(_mock_ensure_metron
     ):
         await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
     _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
-    assert captured == ["dispatch_provision"]
+    assert captured == ["_dispatch_provision_trigger"]
 
 
 @pytest.mark.asyncio
 async def test_seed_failure_does_not_block_container_dispatch():
     """Org-admin path: a Paperclip (Teams) member-JOIN failure is best-effort —
-    it must NOT abort provisioning. dispatch_provision is STILL dispatched
+    it must NOT abort provisioning. _dispatch_provision_trigger is STILL dispatched
     (the box boots and ecs_manager falls back to the legacy `main` agent when
     no company exists) and the failure is recorded via put_metric, never
     swallowed as success. Mirrors test_metronome_failure_does_not_block_provisioning.
@@ -1173,7 +1173,7 @@ async def test_seed_failure_does_not_block_container_dispatch():
             "core.services.user_provision._ensure_paperclip_for_member",
             new=AsyncMock(side_effect=seed_error),
         ) as mock_seed,
-        patch("core.services.user_provision.dispatch_provision", new=MagicMock()) as mock_bg,
+        patch("core.services.user_provision._dispatch_provision_trigger", new=MagicMock()) as mock_bg,
         patch(
             "core.services.user_provision.asyncio.create_task",
             side_effect=lambda coro: dispatched.append(coro),
@@ -1185,7 +1185,7 @@ async def test_seed_failure_does_not_block_container_dispatch():
 
     mock_seed.assert_awaited_once()
     # Container dispatched despite the 422, keyed on the ORG owner_id.
-    mock_bg.assert_called_once_with("org_xyz")
+    mock_bg.assert_called_once_with("org_xyz", trigger="status_poll")
     assert len(dispatched) == 1
     # Failure recorded — not silently swallowed as success.
     mock_metric.assert_any_call("paperclip.seed.error")
@@ -1242,7 +1242,7 @@ async def test_metronome_customer_provisioned_for_org_admin_with_org_owner_id(_m
 # A genuinely-new owner (no billing row) is auto-defaulted into trial_local
 # BEFORE the gate is evaluated, so the gate (which now accepts trial_local
 # as active + provision-eligible, per Task 2) returns None and the normal
-# Paperclip-seed + dispatch_provision flow runs. create_trial_local_if_absent
+# Paperclip-seed + dispatch flow runs. create_trial_local_if_absent
 # is an idempotent no-op if any row already exists (Task 1), so this call is
 # safe on every ~3s poll and never overwrites a paid/canceled owner. The gate
 # itself stays pure -- this is the only new write, and it lives only here.
@@ -1255,7 +1255,7 @@ async def test_new_personal_owner_creates_trial_before_gate_and_dispatches_provi
 ):
     """A no-billing NEW personal owner: create_trial_local_if_absent is
     awaited (with owner_id=user_id, owner_type='personal') BEFORE the gate
-    is evaluated, the gate then returns None, and dispatch_provision is
+    is evaluated, the gate then returns None, and the provisioning dispatch is
     dispatched."""
     call_order: list[str] = []
 
@@ -1284,7 +1284,7 @@ async def test_new_personal_owner_creates_trial_before_gate_and_dispatches_provi
 
     assert call_order == ["create_trial", "gate"], f"expected create-then-gate ordering, got {call_order}"
     _mock_create_trial_local_if_absent.assert_awaited_once_with(owner_id="user_p", owner_type="personal")
-    assert captured == ["dispatch_provision"]
+    assert captured == ["_dispatch_provision_trigger"]
 
 
 @pytest.mark.asyncio
@@ -1802,7 +1802,7 @@ async def test_personal_no_container_skips_inline_owner_seed_only_dispatches(_st
     inline_owner.assert_not_awaited()
     inline_org.assert_not_awaited()
     inline_member.assert_not_awaited()
-    assert captured == ["dispatch_provision"]
+    assert captured == ["_dispatch_provision_trigger"]
 
 
 @pytest.mark.asyncio
@@ -1834,7 +1834,7 @@ async def test_org_admin_does_member_join_never_inline_create(_stub_trial_defaul
         member_user_id="user_admin",
         member_email="a@example.com",
     )
-    assert captured == ["dispatch_provision"]
+    assert captured == ["_dispatch_provision_trigger"]
 
 
 @pytest.mark.asyncio
@@ -1845,7 +1845,7 @@ async def test_gate_up_org_member_branch_is_unchanged():
     with (
         patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=_up_gate())),
         patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()) as member,
-        patch("core.services.user_provision.dispatch_provision", new=AsyncMock()) as container,
+        patch("core.services.user_provision._dispatch_provision_trigger", new=AsyncMock()) as container,
     ):
         await ensure_user_ready(_org_member_auth("user_member", "org_456", "m@example.com"))
     member.assert_awaited_once_with(
@@ -1877,7 +1877,7 @@ async def test_concurrent_polls_run_no_inline_owner_seed(_stub_trial_default):
     ):
         await asyncio.gather(*[ensure_user_ready(_personal_auth("user_race")) for _ in range(15)])
     inline_owner.assert_not_awaited()
-    assert dispatched == ["dispatch_provision"] * 15
+    assert dispatched == ["_dispatch_provision_trigger"] * 15
 
 
 # ---------------------------------------------------------------------------
@@ -1963,7 +1963,7 @@ async def test_stopped_but_not_parked_container_still_dispatches(_stub_trial_def
     ):
         await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
     inline_owner.assert_not_awaited()
-    assert captured == ["dispatch_provision"]
+    assert captured == ["_dispatch_provision_trigger"]
 
 
 @pytest.mark.asyncio

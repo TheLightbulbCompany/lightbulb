@@ -10,6 +10,7 @@ import { Construct } from "constructs";
 export interface AuthSecrets {
   clerkIssuer: secretsmanager.ISecret;
   clerkSecretKey: secretsmanager.ISecret;
+  clerkWebhookSecret: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
@@ -77,6 +78,17 @@ export class AuthStack extends cdk.Stack {
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
+      // Svix signing secret for POST /api/v1/webhooks/clerk. Same createSecret
+      // pattern as the others: CDK generates a random placeholder, the operator
+      // overrides it with the real `whsec_…` from the Clerk Dashboard.
+      //
+      // ORDERING MATTERS. The router fails CLOSED on a set-but-wrong secret, so
+      // between this deploy and the operator override every delivery 400s. Do
+      // the `aws secretsmanager update-secret` BEFORE configuring the Clerk
+      // endpoint — Svix auto-disables an endpoint after 5 days of sustained
+      // failure, silently, and nothing on our side would report it except the
+      // W38 absence alarm.
+      clerkWebhookSecret: createSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       encryptionKey,

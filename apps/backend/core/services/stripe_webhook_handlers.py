@@ -36,7 +36,7 @@ from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo, container_repo
 from core.services import webhook_dedup
-from core.services.billing_service import BillingService, subscription_item_on_price
+from core.services.billing_service import BillingService
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 #     documented corruption mode. The just-paid owner is meanwhile polling
 #     GET /container/status every ~3s, and that endpoint auto-retries an
 #     ("error", "stopped") row. Now that the owner is paid, no gate blocks it,
-#     so the poll would dispatch its OWN dispatch_provision — with no drain
+#     so the poll would dispatch its OWN background_provision — with no drain
 #     wait — right on top of the draining task. So the row is STAMPED before
 #     the stop and the status path stands down while the stamp is live.
 #
@@ -167,7 +167,7 @@ async def _claim_conversion_entry(owner_id: str, subscription_id: str) -> bool:
     them persists the new one, so more than one event can see
     ``trial_local -> active`` and enter the conversion branch. Two live
     conversions then interleave stop / dispatch / release writes on the same
-    container row — the observed dev strand: the second attempt's
+    container row — the observed dev strand (#1428): the second attempt's
     writes superseded the first attempt's SFN execution while landing none of
     its own.
 
@@ -287,14 +287,14 @@ async def maybe_resume_stuck_conversion(owner_id: str, container: dict | None) -
     if not container.get("conversion_pending"):
         # No pending conversion. `guard` is still honoured: it covers the brief
         # window between a successful hand-off (which drops the flag) and
-        # dispatch_provision moving the row off "stopped".
+        # background_provision moving the row off "stopped".
         #
         # EXCEPT for the stranded shape: stopped, NO provision claim, NO
         # recorded error. A healthy hand-off leaves either a claim (the
         # dispatch won it — an SFN execution owns the row) or, transiently,
         # this exact shape for the milliseconds before the claim lands. But a
         # conversion whose dispatched execution was superseded with no
-        # successor sits in it PERMANENTLY — nothing running, nothing
+        # successor (#1428) sits in it PERMANENTLY — nothing running, nothing
         # scheduled — and honouring the guard here would stand the poll's
         # wake path down for the full window on a row nobody owns. Release
         # the guard instead: the caller's wake branch re-checks every gate
@@ -753,73 +753,38 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # Detect by explicit metadata purpose OR by the seat price id. Personal
     # flat subs skip this entirely.
     items = (event_data.get("items") or {}).get("data") or []
-    # A Teams subscription carries TWO items (flat base + per-seat) and Stripe
-    # does not guarantee their order. Select the seat item BY PRICE ID: storing
-    # the base item's id here would make sync_team_seat_quantity drive the base
-    # quantity, billing a 4-seat org $50x4 + $20 instead of $50 + $20x4.
-    # NOTHING in this handler reads items by position — see is_ultra below.
-    seat_item = subscription_item_on_price(items, settings.STRIPE_TEAM_SEAT_PRICE_ID)
-    # bool(seat_item) is a strict superset of the old "first item is the seat
-    # price" fallback, and cannot over-detect: nothing but a real per-seat line
-    # item ever carries STRIPE_TEAM_SEAT_PRICE_ID.
-    is_team_seat = metadata.get("purpose") == "team_seat" or bool(seat_item)
+    first_item = items[0] if items else {}
+    first_price_id = (first_item.get("price") or {}).get("id")
+    is_team_seat = metadata.get("purpose") == "team_seat" or (
+        bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
+    )
     team_seat_persisted = False
-    if is_team_seat and seat_item:
+    if is_team_seat and first_item:
         try:
             await billing_repo.set_team_subscription(
                 owner_id=account["owner_id"],
                 subscription_id=event_data["id"],
-                subscription_item_id=seat_item.get("id"),
+                subscription_item_id=first_item.get("id"),
                 status=new_status,
-                seat_count=int(seat_item.get("quantity") or 0),
+                seat_count=int(first_item.get("quantity") or 0),
             )
             team_seat_persisted = True
         except Exception:
             logger.exception("Failed to record team seat state for owner %s", account["owner_id"])
-    elif is_team_seat and not seat_item:
-        # Reached only via metadata.purpose == "team_seat" (bool(seat_item)
-        # can't be True here without seat_item also being truthy) but no item
-        # on the subscription matches STRIPE_TEAM_SEAT_PRICE_ID -- either the
-        # env var is unset in this deploy or the Stripe seat price was rotated
-        # to a new id. Non-destructive (existing stored subscription_item_id/
-        # seat_count are left alone), but must not be silent: a rotation would
-        # otherwise freeze seat counts on every subsequent webhook with no
-        # visible signal.
-        logger.warning(
-            "Team-seat subscription %s (owner %s) detected via metadata but no "
-            "item matches STRIPE_TEAM_SEAT_PRICE_ID=%r -- seat state not refreshed "
-            "(price unset or rotated?)",
-            event_data.get("id"),
-            account["owner_id"],
-            settings.STRIPE_TEAM_SEAT_PRICE_ID,
-        )
 
     # Ultra Pro tier: derive the tier FROM THE PRICE on the subscription item —
     # a direct sibling of the team-seat detection above, and NEVER from
     # subscription.metadata (a checkout-time snapshot that goes stale; the same
     # clobber the entering_live provider guard defends against). Persist the
     # plan and resize the container only on the tier transition.
-    # Scanned by price, not read off items[0]: an Ultra sub is single-item
-    # TODAY, but the moment one grows a second line item (a metered-overage
-    # item, a Stripe-side add-on or coupon) an Ultra owner whose ultra price
-    # lands at index >= 1 would fall to "standard" here and get their
-    # container resized DOWN — silently. Same rule as the seat item above.
-    is_ultra = bool(subscription_item_on_price(items, settings.STRIPE_ULTRA_PRICE_ID))
-    if items:
+    is_ultra = bool(settings.STRIPE_ULTRA_PRICE_ID) and first_price_id == settings.STRIPE_ULTRA_PRICE_ID
+    if items and not is_team_seat:
         # Only act when the payload actually carries the subscription item. A
         # partial `.updated` can arrive with an empty items.data; treating that
         # absence as "not ultra" would wrongly downgrade + shrink an Ultra owner.
-        #
-        # Team subs are INCLUDED: tier and headcount are independent axes. A
-        # team's tier rides its BASE item (the ultra price once upgraded) while
-        # its seat item is untouched, so this branch and the seat-persistence
-        # branch above operate on different items — and the seat write MUST
-        # run first. set_team_subscription is a full read-then-put_item
-        # rewrite of the row (it has no per-field UpdateExpression), so it
-        # would clobber a `plan` written by this branch back to whatever it
-        # read at the top of the handler; set_plan's scoped update_item has no
-        # such blast radius. Swapping the order would silently revert every
-        # tier write on an Ultra team's seat-change events.
+        # Team-seat subs are excluded outright — their per-seat pricing is a
+        # different axis (never the ultra price), and their container sizing is
+        # managed by the seat flow, not the tier flow.
         old_plan = account.get("plan") or "standard"
         new_plan = "ultra_pro" if is_ultra else "standard"
         plan_persisted = False
@@ -840,14 +805,24 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         if plan_persisted:
             await _apply_ultra_resize(account["owner_id"], old_plan=old_plan, new_plan=new_plan)
 
-    if old_status == "trial_local" and new_status in ("trialing", "active"):
+    # A trial→paid conversion is a DIFFERENT job from a first provision, and the
+    # two must never run at once: the conversion branch below owns the container
+    # row and drives its own drain + reprovision, so landing a second dispatch
+    # underneath it puts two tasks on the same EFS WAL — the documented
+    # corruption mode. Computed once here and consulted by the provisioning
+    # trigger further down; note it deliberately does NOT key on who won
+    # ``_claim_conversion_entry``, because a sibling event that LOST that claim
+    # must also stand down rather than dispatch under the winner's drain.
+    is_trial_conversion = old_status == "trial_local" and new_status in ("trialing", "active")
+
+    if is_trial_conversion:
         # Trial→paid conversion: the running container is still the locked-down
         # trial box. We must go through reprovision_for_user, NOT a bare
-        # dispatch_provision: for a RUNNING container provision_user_container
+        # background_provision: for a RUNNING container provision_user_container
         # only issues forceNewDeployment (no write_user_configs, no task-def
         # re-register), so the trial config would survive the conversion.
         # reprovision_for_user scales to zero + drains first, forcing the
-        # follow-on dispatch_provision down the scale-from-zero branch that
+        # follow-on background_provision down the scale-from-zero branch that
         # re-registers the task def AND rewrites openclaw.json — genuinely
         # turning the trial box into a paid one. The status was already
         # persisted off "trial_local" above, so by the time this runs
@@ -869,7 +844,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         #     will never re-enter this branch. That flag is the only thing that
         #     lets the status path self-heal the conversion.
         #
-        # SINGLE-FLIGHT entry: the whole block is gated on a CAS keyed
+        # SINGLE-FLIGHT entry (#1428): the whole block is gated on a CAS keyed
         # on (owner, subscription id). Stripe delivers several events per
         # subscription change and their handlers race the billing-row read
         # above, so more than one can see old_status == "trial_local" and land
@@ -910,6 +885,32 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 # the recovery path either way.)
                 await _rollback_conversion_entry(account["owner_id"], event_data["id"])
 
+    # ORG (and paid-personal) provisioning trigger. ``entering_live`` is exactly
+    # "this row just acquired a live subscription", which for an org IS the
+    # eligibility transition: there is no org free tier, so an org sits behind
+    # the ``team_billing_required`` gate until its per-seat subscription goes
+    # live. ``create_team_checkout`` writes the customer row AND provider_choice
+    # synchronously before the Stripe session, so gate layers 1 and 2 are both
+    # already satisfied by the time this fires.
+    #
+    # Fires for personal paid signups too. That is correct and harmless — the
+    # gate short-circuits or ``try_claim_provision`` refuses a running row.
+    #
+    # Skipped during a trial→paid conversion; see ``is_trial_conversion`` above.
+    if entering_live and not is_trial_conversion:
+        try:
+            from core.services.user_provision import ensure_owner_provisioned
+
+            await ensure_owner_provisioned(account["owner_id"], trigger="stripe.subscription_live")
+        except Exception:
+            # Never 5xx the webhook over the trigger — Stripe would retry an
+            # event whose billing writes already committed. The
+            # /container/status poll re-drives provisioning either way.
+            logger.exception(
+                "provisioning trigger failed for owner %s on subscription entering live",
+                account["owner_id"],
+            )
+
     # Refresh the owner-facts file (plan/provider snapshot the bundled isol8
     # skill points agents at). Subscription-state flips land HERE — not via
     # change_provider — so without this write a past_due/canceled transition
@@ -930,8 +931,8 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # Same shape for the seat fields: on a brand-new Teams seat sub the
         # eventually-consistent row re-read can miss the just-committed
         # subscription_item_id/seat_count and mislabel the plan as flat-fee.
-        facts_overrides["subscription_item_id"] = seat_item.get("id")
-        facts_overrides["seat_count"] = int(seat_item.get("quantity") or 0)
+        facts_overrides["subscription_item_id"] = first_item.get("id")
+        facts_overrides["seat_count"] = int(first_item.get("quantity") or 0)
     await write_owner_facts(account["owner_id"], account_overrides=facts_overrides)
 
     # Customer-analytics bridge (the EMF put_metric above is the operational

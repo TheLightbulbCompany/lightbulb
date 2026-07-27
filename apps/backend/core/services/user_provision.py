@@ -1,28 +1,63 @@
-"""Unified provisioning entry point.
+"""Unified provisioning entry points.
 
-Single canonical helper called from exactly one site:
-  - GET /container/status (routers/container.py)
+Provisioning is triggered by SERVER-SIDE EVENTS, with the client poll kept
+as an idempotent fallback. The trigger is not "a user was created" — it is
+"the owner became ELIGIBLE", i.e. ``evaluate_provision_gate`` going from
+returning a ``Gate`` to returning ``None``. That moment differs by tenancy:
 
-The frontend polls /container/status every ~3s while the user is
-in pre-ready state (ProvisioningStepper.tsx:250-252), so within
-~3s of the readiness gate clearing, ensure_user_ready dispatches.
-No webhook, REST endpoint, or service-layer call dispatches it
-from anywhere else — see plan §"One trigger only" for rationale.
+  PERSONAL owner  — Clerk ``user.created``. ``ensure_personal_trial_default``
+                    writes a card-less ``trial_local`` row, and the gate has an
+                    explicit ``trial_local`` short-circuit that skips the
+                    provider layer, so the gate clears the instant that row
+                    exists.
+  ORG owner       — Stripe ``customer.subscription.created|updated`` entering a
+                    live status. There is NO org free tier: an org with no
+                    billing row is gated on ``team_billing_required``, so Clerk
+                    ``organization.created`` carries no eligibility information
+                    and is NOT a trigger.
+  ORG member      — Clerk ``organizationMembership.created``. Dispatches a
+                    Paperclip membership add ONLY. Members ride the shared org
+                    container; they never provision one.
 
-Clerk webhooks (org.created, membership.created) are pure
-record-keeping; they do NOT call this helper.
+``ensure_owner_provisioned(owner_id, trigger=…)`` is THE trigger: gate, then
+dispatch. Auth-free and owner-scoped, because a webhook has no JWT to build an
+AuthContext from.
 
-ensure_user_ready is idempotent — every call is safe to repeat.
-It never raises on "not ready yet" — that's a normal return.
+``ensure_user_ready(auth)`` (the poll) does not call it, and calls its
+dispatch-only half ``_dispatch_provision_trigger`` instead — solely because the
+poll has ALREADY evaluated the gate, and uses that one result for five separate
+decisions (member join, Metronome, Paperclip seed, dispatch, nightly-CEO arm)
+before it ever reaches the dispatch. Routing it back through the gate-evaluating
+wrapper would re-read the billing row on every ~3s poll of every pre-ready
+owner. Gate policy still lives in exactly one function
+(``evaluate_provision_gate``) and both paths funnel into exactly one dispatcher
+(``provision_dispatch.dispatch_provision``), so the poll and the webhook cannot
+disagree.
+
+GET /container/status KEEPS its ``ensure_user_ready`` dispatch, permanently.
+Svix silently auto-disables an endpoint after 5 days of sustained failure, so
+a missing/misconfigured/disabled webhook must degrade to poll-driven
+provisioning, never to a signup outage. The poll is the repair edge; the event
+is the causal edge.
+
+Multiple concurrent triggers are safe by construction, not by coordination:
+``container_repo.try_claim_provision`` is a DynamoDB conditional write that
+elects exactly one winner per owner across all backend tasks, and the Paperclip
+owner seed runs as step 0 INSIDE the executor's runner under that same
+single-flight. Whoever claims first wins; everyone else no-ops. Do not add
+locks or a second dedup layer here.
+
+Everything in this module is idempotent — every call is safe to repeat — and
+never raises on "not ready yet"; that is a normal return.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from enum import Enum
 
-from core.auth import AuthContext
+from core.auth import AuthContext, is_org_owner_id
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
@@ -34,7 +69,6 @@ from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_TITLE,
     create_enabled_schedule_routine,
 )
-from core.services.provision_dispatch import dispatch_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
@@ -46,14 +80,144 @@ from core.services.provision_gate import evaluate_provision_gate, has_always_on_
 
 logger = logging.getLogger(__name__)
 
-# Per-org in-process lock serializing the create-vs-join decision so two
-# concurrent first-pollers in an all-admin org don't each create a separate
-# Paperclip company. Paperclip ignores the Idempotency-Key header
-# (see paperclip_admin_client.py module docstring), so dedup must happen
-# here. Single-backend-instance scope: if the service scales to N tasks the
-# window reopens across tasks; acceptable for current fleet size — the loser
-# of a cross-instance race resolves to the join path on its next poll.
-_org_provision_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+class ProvisionTriggerResult(str, Enum):
+    """Why a provisioning trigger did or did not start an execution."""
+
+    DISPATCHED = "dispatched"
+    """Execution started, or an already-RUNNING one idempotently re-affirmed."""
+
+    GATED = "gated"
+    """The provision gate is up. Normal, not an error — the owner is not yet
+    eligible and a later trigger (or the poll) will pick them up."""
+
+    NOT_CLAIMABLE = "not_claimable"
+    """``try_claim_provision`` refused: the container is ``running``, or another
+    trigger holds a fresh lease. The single-flight working as designed."""
+
+    PARKED = "parked"
+    """The owner is eligible, but their trial container is deliberately parked
+    (``stopped`` + ``stop_reason=trial_idle``). Waking it is a user-intent
+    decision, not an eligibility one — see ``wake_policy``."""
+
+    ERROR = "error"
+    """Dispatch failed transiently. The row was released to ``error``; the
+    status poll's existing error auto-retry re-dispatches."""
+
+
+_DISPATCH_OUTCOME_TO_RESULT = {
+    "dispatched": ProvisionTriggerResult.DISPATCHED,
+    "claim_lost": ProvisionTriggerResult.NOT_CLAIMABLE,
+    "error": ProvisionTriggerResult.ERROR,
+}
+
+
+async def _dispatch_provision_trigger(owner_id: str, *, trigger: str) -> ProvisionTriggerResult:
+    """Dispatch the provisioning executor and record WHICH trigger did it.
+
+    The caller has ALREADY established that this owner is eligible. This is the
+    half of ``ensure_owner_provisioned`` below the gate, split out for exactly
+    one reason: ``ensure_user_ready`` evaluates the gate at its top, so routing
+    its dispatch through the gate-evaluating wrapper would re-read the billing
+    row (plus the trial-cap and Metronome fast-gate reads behind it) on EVERY
+    ~3s poll of every pre-ready owner. Gate policy still lives in one place —
+    ``evaluate_provision_gate`` — and there is still exactly one dispatch
+    funnel; only the redundant second evaluation is gone.
+
+    ``dispatch_provision`` never raises, so neither does this.
+    """
+    from core.services.provision_dispatch import dispatch_provision
+
+    outcome = await dispatch_provision(owner_id)
+    result = _DISPATCH_OUTCOME_TO_RESULT.get(outcome, ProvisionTriggerResult.ERROR)
+    put_metric("provision.trigger", dimensions={"source": trigger, "result": result.value})
+    logger.info(
+        "provision trigger: owner=%s source=%s result=%s",
+        owner_id,
+        trigger,
+        result.value,
+    )
+    return result
+
+
+async def ensure_owner_provisioned(owner_id: str, *, trigger: str) -> ProvisionTriggerResult:
+    """Evaluate the provision gate for ``owner_id`` and dispatch if it is clear.
+
+    THE auth-free, owner-scoped provisioning trigger. Takes no ``AuthContext``
+    and no request — that is the entire reason it exists, since a webhook has
+    no JWT to build one from. Safe to call from any trigger, any number of
+    times, concurrently: ``try_claim_provision`` is the fence.
+
+    ``is_admin=True`` is correct BY CONSTRUCTION, not by assumption — every
+    caller is owner-scoped, never member-scoped. A personal owner is an admin
+    of themselves, and an org ``owner_id`` reached from a Stripe subscription
+    IS the org's own billing row. Org MEMBERS never reach here; their trigger
+    dispatches a Paperclip membership add and no container at all.
+
+    Never raises. A gate being up is a normal return; a gate evaluation that
+    blows up is reported as ``ERROR`` rather than escaping into a webhook
+    handler, where a 5xx would make Svix retry an event the poll already covers.
+    """
+    try:
+        gate = await evaluate_provision_gate(owner_id=owner_id, is_admin=True)
+    except Exception:
+        put_metric(
+            "provision.trigger",
+            dimensions={"source": trigger, "result": ProvisionTriggerResult.ERROR.value},
+        )
+        logger.exception(
+            "provision trigger: gate evaluation failed for owner=%s source=%s — "
+            "deferring to the /container/status fallback",
+            owner_id,
+            trigger,
+        )
+        return ProvisionTriggerResult.ERROR
+
+    if gate is not None:
+        put_metric(
+            "provision.trigger",
+            dimensions={"source": trigger, "result": ProvisionTriggerResult.GATED.value},
+        )
+        logger.info(
+            "provision trigger: owner=%s source=%s result=gated code=%s",
+            owner_id,
+            trigger,
+            gate.code,
+        )
+        return ProvisionTriggerResult.GATED
+
+    # Eligible — but never WAKE a deliberately parked trial box. This is the
+    # same suppression ``_provision_or_reconcile`` applies on the poll path, and
+    # it is needed here for the same reason: ``try_claim_provision`` ADMITS a
+    # ``stopped`` row, so a dispatch against a parked container is a wake.
+    #
+    # Eligibility and intent are different questions. A parked trial owner is
+    # perfectly eligible; they simply haven't asked for their box back, and
+    # explicit wakes go through ``container_wake.request_wake``. Without this
+    # check, wiring the follow-up eligibility triggers this entry point is
+    # designed for — OAuth device-flow completion, a BYO key being saved, the
+    # daily trial Bedrock restore — would wake every parked trial box on a
+    # timer and burn the free tier's budget on containers nobody asked for.
+    try:
+        row = await container_repo.get_by_owner_id(owner_id)
+        if await wake_policy.is_parked_trial(owner_id, row):
+            wake_policy.note_wake_suppressed(owner_id, row, door=trigger, reason="gated")
+            put_metric(
+                "provision.trigger",
+                dimensions={"source": trigger, "result": ProvisionTriggerResult.PARKED.value},
+            )
+            return ProvisionTriggerResult.PARKED
+    except Exception:
+        # is_parked_trial already fails OPEN on every uncertainty it can see;
+        # this guards the row read itself. Falling through to the dispatch
+        # matches that posture — self-heal must never depend on the predicate.
+        logger.exception(
+            "provision trigger: parked-trial check failed for owner=%s source=%s — dispatching",
+            owner_id,
+            trigger,
+        )
+
+    return await _dispatch_provision_trigger(owner_id, trigger=trigger)
 
 
 async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> None:
@@ -80,8 +244,32 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     personal container. The frontend normally routes them to the invitation
     screen, but a direct poll or a routing race must not be able to violate a
     backend invariant.
+
+    Thin ``AuthContext`` wrapper over ``ensure_personal_trial_default_for_user``.
+    In personal context ``owner_id`` IS ``auth.user_id`` at both call sites
+    (``ensure_user_ready`` and ``/container/status`` derive it the same way), so
+    the two forms are the same call — the split exists only so the Clerk
+    ``user.created`` webhook, which has no JWT to build an AuthContext from, can
+    reach the same code rather than growing a second copy of this policy.
     """
     if auth.is_org_context:
+        return
+    await ensure_personal_trial_default_for_user(owner_id)
+
+
+async def ensure_personal_trial_default_for_user(user_id: str) -> None:
+    """Auth-free form of ``ensure_personal_trial_default`` — that docstring
+    carries the full rationale; this function is the implementation.
+
+    The personal-only predicate is the owner-id PREFIX rather than
+    ``auth.is_org_context``: an org owner_id starts with ``org_``, a Clerk user
+    id never does. Same invariant, derivable without a JWT.
+
+    The pending-invitation refusal below is NOT duplicated anywhere — it is a
+    tenancy invariant (Gate B) and this is its one enforcement site on the
+    trial-creation path.
+    """
+    if is_org_owner_id(user_id):
         return
 
     # Short-circuit on an existing row BEFORE the Clerk call. This helper runs on
@@ -90,25 +278,25 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
     # create, so the only callers that reach Clerk are those at the actual signup
     # moment (no billing row yet) — and an invited user gets routed to the
     # invitation screen rather than left polling.
-    if await billing_repo.get_by_owner_id(owner_id):
+    if await billing_repo.get_by_owner_id(user_id):
         return
 
-    pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
+    pending = await clerk_admin.list_pending_invitations_for_user(user_id)
     if pending:
         logger.info(
             "user_provision: personal trial default refused for user=%s — pending org invitation",
-            auth.user_id,
+            user_id,
         )
         return
 
     created = await billing_repo.create_trial_local_if_absent(
-        owner_id=owner_id,
+        owner_id=user_id,
         owner_type="personal",
     )
     if created:
         # Only the call that actually wrote the row fires this — every
         # later idempotent no-op (each ~3s poll) must not re-fire it.
-        capture_product_event(distinct_id=owner_id, event="trial_started")
+        capture_product_event(distinct_id=user_id, event="trial_started")
 
 
 async def ensure_user_ready(auth: AuthContext) -> None:
@@ -136,7 +324,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # Auto-default a brand-new personal owner into a card-less trial_local
     # BEFORE the gate is evaluated, so the gate (which treats trial_local as
     # active + provision-eligible) returns None below and the normal
-    # Paperclip-seed + dispatch_provision flow runs. Personal-only + the
+    # Paperclip-seed + background_provision flow runs. Personal-only + the
     # rationale for the shared helper live in its docstring; /container/status
     # calls the SAME helper before its own gate.
     await ensure_personal_trial_default(auth, owner_id)
@@ -242,7 +430,7 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     if not auth.is_org_context or auth.is_org_admin:
         await _provision_or_reconcile(auth, owner_id)
 
-    # Nightly CEO loop: arm the paid, ENABLED nightly routine on
+    # Nightly CEO loop (issue #1273): arm the paid, ENABLED nightly routine on
     # Friday for the container OWNER (personal owner or org admin) — never an
     # org member, never a trial owner (gated on has_always_on_entitlement
     # inside). Runs on EVERY owner poll, including the running-container one,
@@ -293,10 +481,17 @@ async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
     if await wake_policy.is_parked_trial(owner_id, row):
         wake_policy.note_wake_suppressed(owner_id, row, door="ensure_user_ready", reason="gated")
     elif (row or {}).get("status") != "running":
-        # dispatch_provision is idempotent on the absent/0-desired cases, so
-        # repeated owner polls on a not-yet-running container are safe: the
-        # atomic claim collapses them to one execution.
-        asyncio.create_task(dispatch_provision(owner_id))
+        # Dispatch is idempotent on the absent/0-desired cases, so repeated
+        # owner polls on a not-yet-running container are safe: the atomic claim
+        # collapses them to one execution.
+        #
+        # Calls the dispatch-only half, NOT ``ensure_owner_provisioned``:
+        # ``ensure_user_ready`` already evaluated the gate above and this branch
+        # only runs when it was clear, so re-gating here would re-read the
+        # billing row on every ~3s poll of every pre-ready owner. Still
+        # fire-and-forget — the nightly-CEO arm below must not queue behind a
+        # StartExecution round trip.
+        asyncio.create_task(_dispatch_provision_trigger(owner_id, trigger="status_poll"))
         return
 
     try:
@@ -350,7 +545,7 @@ async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
 
 
 async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
-    """Idempotently arm the paid nightly CEO routine on Friday.
+    """Idempotently arm the paid nightly CEO routine on Friday (issue #1273).
 
     Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
     ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
@@ -438,18 +633,26 @@ async def _ensure_paperclip_for_org(
     org whose container is already running or parked, so no provision — and
     therefore no step 0 — will run). A FIRST provision always goes through the
     executor, where try_claim_provision elects one execution per owner, so the
-    duplicate-company race stays closed on the path that had it. The
-    per-org asyncio lock and ``try_acquire_org_create_claim`` below are KEPT as
-    defense-in-depth for the reconcile path (and for a bare/local runner
-    invocation outside the state machine).
+    duplicate-company race (#1442) stays closed on the path that had it.
+    ``try_acquire_org_create_claim`` below is KEPT as defense-in-depth for the
+    reconcile path (and for a bare/local runner invocation outside the state
+    machine).
+
+    There used to be a per-org ``asyncio.Lock`` wrapped around the create
+    branch. It is gone: it only ever serialized ONE backend task, and rolling
+    deploys run at ``maximumPercent=200`` so two tasks coexist during every
+    deploy — exactly when the window it claimed to close is open.
+    ``try_acquire_org_create_claim`` is a strongly-consistent conditional write
+    and is the real cross-instance fence; keeping a lock that works only in the
+    uninteresting case made the guarantee look stronger than it was.
 
     Decided by company existence:
       - Company exists → JOIN it (provision_member), regardless of role.
         This is the role-blind fix: admins and members alike join the one
         shared company.
       - No active company yet → only an ADMIN creates it (provision_org),
-        under a per-org lock so concurrent first-pollers can't
-        double-create. A member returns gracefully and waits — an admin
+        under ``try_acquire_org_create_claim`` so concurrent first-pollers
+        can't double-create. A member returns gracefully and waits — an admin
         will bootstrap the company (and the container it rides) on their
         poll, and the member joins on a subsequent poll. Letting a member
         create here would seed Friday/Atlas pointing at a container members
@@ -459,98 +662,97 @@ async def _ensure_paperclip_for_org(
     success and a duplicate-email 422 (Better Auth) as a recorded failure —
     neither re-raises — so this is safe to call on every /container/status poll.
     """
-    async with _org_provision_locks[org_id]:
-        provisioning = await build_paperclip_provisioning()
-        try:
-            owner = await provisioning.find_org_owner(org_id)
+    provisioning = await build_paperclip_provisioning()
+    try:
+        owner = await provisioning.find_org_owner(org_id)
 
-            if owner is None:
-                if not is_admin:
-                    # Member polling a not-yet-bootstrapped org: wait for an
-                    # admin to create the shared company. The pending state is
-                    # implicit and resolves on the member's next poll.
-                    logger.info(
-                        "ensure_user_ready (org member): org=%s has no active "
-                        "paperclip company yet — waiting for an admin to "
-                        "bootstrap it; will retry on next /container/status poll",
-                        org_id,
-                    )
-                    return
-
-                # Strongly-consistent cross-instance guard against
-                # double-create. The per-org asyncio lock above only
-                # serializes THIS process, and find_org_owner reads the
-                # eventually-consistent by-org-id GSI — so two admins on
-                # different backend instances (or within the GSI propagation
-                # gap) could both see owner=None and both create a separate
-                # company, silently splitting the org's workspace. The claim
-                # is a strongly-consistent PK conditional write that exactly
-                # one caller wins; losers fall through to the join path on
-                # their next poll once the winner's company is GSI-visible.
-                if not await provisioning.try_acquire_org_create_claim(org_id, holder=user_id):
-                    logger.info(
-                        "ensure_user_ready (org): org=%s create claim held by "
-                        "another backend instance — waiting; will join on the "
-                        "next /container/status poll",
-                        org_id,
-                    )
-                    return
-
-                # We won the claim: become the org's company owner-of-record.
-                try:
-                    await _ensure_paperclip_for_owner(
-                        owner_id=org_id,
-                        owner_user_id=user_id,
-                        owner_email=email,
-                        org_id=org_id,
-                    )
-                except BaseException:
-                    # Release the claim so the next poll (this instance or
-                    # another) can re-acquire and retry.
-                    await provisioning.release_org_create_claim(org_id, holder=user_id)
-                    raise
-
-                # Verify the create actually wrote an active row before
-                # leaving the claim in place. provision_org's
-                # 409-as-idempotent path can return WITHOUT writing one — e.g.
-                # a prior holder crashed (SIGKILL) after Better Auth signup
-                # but before the row was persisted: the random signup password
-                # is lost and Paperclip exposes no user-delete/reset, so this
-                # email's signup now 409s and _ensure_paperclip_for_owner
-                # swallows it as "already provisioned." Leaving the claim then
-                # would strand the org behind a held claim with no discoverable
-                # company. Releasing it lets the next poll retry — ideally
-                # another admin whose signup isn't burned — recover the org.
-                # Strongly-consistent read so we never false-release on our own
-                # just-written row. On genuine success the claim stays as a
-                # permanent "bootstrapped" marker (find_org_owner then returns
-                # the company and this branch is not re-entered).
-                #
-                # The row must also belong to THIS org. provision_org
-                # short-circuits on repo.get(user_id) when the user already has
-                # an active row — and since rows are keyed per-user, a user who
-                # was provisioned in a PERSONAL context (row.org_id == their
-                # user_id) would make this read return that unrelated active row
-                # even though no org-indexed company exists. Checking org_id
-                # keeps us from holding the claim on a personal row while
-                # find_org_owner(org_id) stays None.
-                row = await provisioning.get_company_row(user_id)
-                if row is None or row.status != "active" or row.org_id != org_id:
-                    logger.warning(
-                        "ensure_user_ready (org): create for org=%s user=%s "
-                        "returned without an active paperclip row (likely a "
-                        "prior partial/crashed attempt); releasing create claim "
-                        "so a retry can recover",
-                        org_id,
-                        user_id,
-                    )
-                    await provisioning.release_org_create_claim(org_id, holder=user_id)
+        if owner is None:
+            if not is_admin:
+                # Member polling a not-yet-bootstrapped org: wait for an
+                # admin to create the shared company. The pending state is
+                # implicit and resolves on the member's next poll.
+                logger.info(
+                    "ensure_user_ready (org member): org=%s has no active "
+                    "paperclip company yet — waiting for an admin to "
+                    "bootstrap it; will retry on next /container/status poll",
+                    org_id,
+                )
                 return
-        finally:
-            await close_paperclip_provisioning(provisioning)
 
-    # Company already exists → join it. Outside the create lock so member
-    # adds for an established org don't serialize behind one mutex.
+            # Strongly-consistent cross-instance guard against
+            # double-create — THE fence for this branch, now that the
+            # single-process asyncio lock is gone. find_org_owner reads the
+            # eventually-consistent by-org-id GSI, so without it two admins on
+            # different backend instances (or within the GSI propagation
+            # gap) could both see owner=None and both create a separate
+            # company, silently splitting the org's workspace. The claim
+            # is a strongly-consistent PK conditional write that exactly
+            # one caller wins; losers fall through to the join path on
+            # their next poll once the winner's company is GSI-visible.
+            if not await provisioning.try_acquire_org_create_claim(org_id, holder=user_id):
+                logger.info(
+                    "ensure_user_ready (org): org=%s create claim held by "
+                    "another backend instance — waiting; will join on the "
+                    "next /container/status poll",
+                    org_id,
+                )
+                return
+
+            # We won the claim: become the org's company owner-of-record.
+            try:
+                await _ensure_paperclip_for_owner(
+                    owner_id=org_id,
+                    owner_user_id=user_id,
+                    owner_email=email,
+                    org_id=org_id,
+                )
+            except BaseException:
+                # Release the claim so the next poll (this instance or
+                # another) can re-acquire and retry.
+                await provisioning.release_org_create_claim(org_id, holder=user_id)
+                raise
+
+            # Verify the create actually wrote an active row before
+            # leaving the claim in place. provision_org's
+            # 409-as-idempotent path can return WITHOUT writing one — e.g.
+            # a prior holder crashed (SIGKILL) after Better Auth signup
+            # but before the row was persisted: the random signup password
+            # is lost and Paperclip exposes no user-delete/reset, so this
+            # email's signup now 409s and _ensure_paperclip_for_owner
+            # swallows it as "already provisioned." Leaving the claim then
+            # would strand the org behind a held claim with no discoverable
+            # company. Releasing it lets the next poll retry — ideally
+            # another admin whose signup isn't burned — recover the org.
+            # Strongly-consistent read so we never false-release on our own
+            # just-written row. On genuine success the claim stays as a
+            # permanent "bootstrapped" marker (find_org_owner then returns
+            # the company and this branch is not re-entered).
+            #
+            # The row must also belong to THIS org. provision_org
+            # short-circuits on repo.get(user_id) when the user already has
+            # an active row — and since rows are keyed per-user, a user who
+            # was provisioned in a PERSONAL context (row.org_id == their
+            # user_id) would make this read return that unrelated active row
+            # even though no org-indexed company exists. Checking org_id
+            # keeps us from holding the claim on a personal row while
+            # find_org_owner(org_id) stays None.
+            row = await provisioning.get_company_row(user_id)
+            if row is None or row.status != "active" or row.org_id != org_id:
+                logger.warning(
+                    "ensure_user_ready (org): create for org=%s user=%s "
+                    "returned without an active paperclip row (likely a "
+                    "prior partial/crashed attempt); releasing create claim "
+                    "so a retry can recover",
+                    org_id,
+                    user_id,
+                )
+                await provisioning.release_org_create_claim(org_id, holder=user_id)
+            return
+    finally:
+        await close_paperclip_provisioning(provisioning)
+
+    # Company already exists → join it. Outside the create branch, which
+    # returns in every one of its own cases.
     await _ensure_paperclip_for_member(
         org_id=org_id,
         member_user_id=user_id,

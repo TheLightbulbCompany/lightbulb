@@ -1,6 +1,5 @@
 """Container repository -- DynamoDB operations for the containers table."""
 
-import logging
 import time
 import uuid
 
@@ -9,8 +8,6 @@ from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.services.status_events import publish_status_changed
-
-logger = logging.getLogger(__name__)
 
 # How long a provision lease (provision_claim_id + provision_claimed_at) stays
 # exclusive with no checkpoint refresh before it is considered abandoned. Every
@@ -82,7 +79,7 @@ async def get_by_status(status: str) -> list[dict]:
 async def scan_all() -> list[dict]:
     """Return every container row. Paginates via DDB LastEvaluatedKey.
 
-    Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
+    Used by the one-shot hook-token backfill (scripts/backfill-hook-tokens.py).
     Not for hot paths -- DDB Scan is expensive at scale.
     """
     table = _get_table()
@@ -157,7 +154,7 @@ async def try_claim_provision(
     every ~3s, and the container row historically wasn't written until deep
     inside the provision (create_user_service), AFTER the Bedrock AIP mint. So
     two polls (a page refresh mid-provision) both saw "no row", both dispatched
-    ``dispatch_provision``, and the two full provisions interleaved — each
+    ``background_provision``, and the two full provisions interleaved — each
     minted its own inference profile (Bedrock does not enforce name-uniqueness)
     and one's ARN landed in the container config while the other's landed in
     the IAM policy: AccessDenied on every model call. Seen live on prod.
@@ -167,7 +164,8 @@ async def try_claim_provision(
     ``status="provisioning"`` and stamps the lease. DynamoDB serializes it
     across ALL backend tasks — which matters even at desiredCount=1, because
     rolling deploys run at maximumPercent=200, so two backend tasks coexist
-    during every deploy. An in-process lock (the ``_org_provision_locks``
+    during every deploy. An in-process lock (the since-deleted
+    ``user_provision._org_provision_locks``
     pattern) would reopen the race in that window.
 
     The returned claim_id is a FENCING TOKEN: the provision threads it through
@@ -235,62 +233,6 @@ async def try_claim_provision(
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return None
         raise
-
-
-async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> bool:
-    """Reserve one agent-initiated owner email for ``day`` (UTC ``YYYY-MM-DD``).
-
-    DURABLE on purpose. This is the only fence against an agent looping on the
-    owner-send endpoint, and the backend runs several ECS tasks behind an ALB —
-    an in-process bucket (the pattern ``agent_mail_relay`` uses for burst
-    smoothing) would give a real limit of ``cap * task_count`` and reset on
-    every deploy.
-
-    Two conditional writes, at most one extra round trip:
-
-    1. Roll over — set the counter to 1 when the stored day is absent or stale.
-    2. Same day — increment, conditional on the count still being under cap.
-
-    Returns True when the send is allowed.
-
-    **Fails OPEN.** A DynamoDB fault returns True rather than blocking. The
-    once-only first-contact guard and the per-minute burst limiter both still
-    apply, so the blast radius of failing open is bounded — whereas failing
-    closed would silently swallow a legitimate first-contact email, which is
-    the exact failure mode this whole feature exists to stop.
-    """
-    table = _get_table()
-
-    # 1. New day, or first send ever: reset the window to 1.
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET email_send_day = :d, email_send_count = :one",
-            ConditionExpression=(
-                "attribute_exists(owner_id) AND (attribute_not_exists(email_send_day) OR email_send_day <> :d)"
-            ),
-            ExpressionAttributeValues={":d": day, ":one": 1},
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            return True  # fail open — see docstring
-
-    # 2. Same day: increment only while under cap.
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET email_send_count = email_send_count + :one",
-            ConditionExpression="email_send_day = :d AND email_send_count < :cap",
-            ExpressionAttributeValues={":d": day, ":one": 1, ":cap": cap},
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        return True  # fail open — see docstring
 
 
 async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> None:
@@ -398,7 +340,7 @@ async def update_container_leased(
 
     - ``generation`` -- when given, additionally requires the row's
       ``provision_generation`` (the container-incarnation fence, minted once
-      at G1 in ``EcsManager.create_user_service``) to match or be absent.
+      at G1 -- see ``core.services.generation_ids``) to match or be absent.
       Belt-and-suspenders against a very late straggler from a PRIOR
       container incarnation (a full delete+recreate, not merely a lease
       retake) writing onto a newer incarnation's row; ``claim_id`` alone
@@ -678,7 +620,7 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
     ``release_provision_to_error``.
 
     Lives here (not in a service) because it is shared by both callers of that
-    release — ``services.provision_dispatch.dispatch_provision`` (the
+    release — ``services.container_provision.background_provision`` (the
     poll-driven path) and ``containers.ecs_manager.provision_user_container``
     (the deliberate-reprovision doors) — and this repository already owns the
     error transition + fields, so both can import it without an import cycle.
@@ -958,6 +900,20 @@ async def set_hook_token(owner_id: str, token: str) -> dict | None:
     )
 
 
+async def mark_hook_token_provisioned(owner_id: str) -> dict | None:
+    """Stamp ``hook_token_provisioned_at`` after the full backfill sequence
+    (set_hook_token → refresh_task_definition → wait → patch_openclaw_config)
+    has succeeded for this user.
+
+    The backfill orchestrator's idempotency guard tests this field, not
+    ``hook_token``, so a crash mid-sequence leaves the user retryable.
+    """
+    return await update_fields(
+        owner_id,
+        {"hook_token_provisioned_at": utc_now_iso()},
+    )
+
+
 async def update_error(owner_id: str, error: str) -> dict | None:
     """Record the last error for a container."""
     return await update_fields(
@@ -972,57 +928,3 @@ async def update_error(owner_id: str, error: str) -> dict | None:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
-
-
-async def stamp_email_cold_wake(owner_id: str) -> None:
-    """Record that an inbound email cold-woke this container.
-
-    Read once by ``agent_mail_reply.send_reply`` to decide whether the agent's
-    outgoing reply should carry the free-tier "I was asleep" footer. The wake
-    and the reply happen in DIFFERENT requests, which is why this has to be
-    persisted rather than passed. Never raises.
-    """
-    table = _get_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET email_cold_wake_at = :t",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeValues={":t": int(time.time())},
-        )
-    except ClientError as e:
-        logger.warning("stamp_email_cold_wake failed for %s: %s", owner_id, e)
-
-
-async def consume_email_cold_wake(owner_id: str, *, max_age_seconds: int = 3600) -> bool:
-    """True when a RECENT cold-wake stamp existed. Clears it either way.
-
-    ONE conditional write, not read-then-remove: two concurrent callers for
-    the same owner could otherwise both read the stamp as fresh before either
-    cleared it, attaching the "I was asleep" footer to two separate replies.
-    The condition (``attribute_exists(email_cold_wake_at)``) means only one
-    concurrent caller can ever satisfy it; the loser gets
-    ConditionalCheckFailedException and correctly reports False. Clearing
-    unconditionally on both the fresh AND stale path is a side effect of this
-    being the same write that reads the value — a stale stamp must not attach
-    to an unrelated reply days later. Never raises.
-    """
-    table = _get_table()
-    try:
-        resp = await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE email_cold_wake_at",
-            ConditionExpression="attribute_exists(owner_id) AND attribute_exists(email_cold_wake_at)",
-            ReturnValues="UPDATED_OLD",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            logger.warning("consume_email_cold_wake failed for %s: %s", owner_id, e)
-        return False
-
-    stamped = (resp.get("Attributes") or {}).get("email_cold_wake_at")
-    if stamped is None:
-        return False
-    return (int(time.time()) - int(stamped)) < max_age_seconds

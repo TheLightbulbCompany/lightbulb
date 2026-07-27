@@ -1,12 +1,12 @@
 """SFN dispatch for container provisioning.
 
-THE single provisioning funnel — there is no flag and no inline
+THE executor for ``background_provision`` — there is no flag and no inline
 fallback (spec §7, PR-10: "no dual-run window"). Dispatch is crash-safe by
 execution NAME: the claim write stamps the name atomically (container_repo),
 and StartExecution is idempotent for STANDARD workflows on identical
 name+input, so any later poll can safely re-issue the same call. See
 docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §7 and
-the docs/superpowers/specs/2026-07-22-durable-provisioning-executor-design.md
+the (#1388) docs/superpowers/specs/2026-07-22-durable-provisioning-executor-design.md
 §3 for the original crash-safety argument, which is unchanged by the reshape.
 
 Two hazards #1388 left open, both closed here (spec §7 "Required reshape"):
@@ -21,11 +21,11 @@ Two hazards #1388 left open, both closed here (spec §7 "Required reshape"):
    See ``container_repo.claim_attempt`` docstring for the full hazard.
 2. Branch-B wedge (execution CLOSED without a terminal row write): the
    design hands this to a ``reconciliation_worker`` (SWEEP) that
-   disambiguates via ``DescribeExecution`` — NOT yet built (SWEEP is
+   disambiguates via ``DescribeExecution`` — NOT built in this PR (SWEEP is
    Wave 5). ``describe_dispatch_execution`` below is the clean query
    interface SWEEP will call; until it lands, the wall-clock stale-lease
    heuristic in ``container_repo.is_provision_claim_stale`` remains the
-   interim bridge (see its docstring) — do not delete it until SWEEP lands.
+   interim bridge (see its docstring) — do not delete it as part of this PR.
 """
 
 from __future__ import annotations
@@ -94,20 +94,38 @@ def execution_input(owner_id: str, claim_id: str) -> str:
     )
 
 
-async def dispatch_provision(owner_id: str) -> None:
+async def dispatch_provision(owner_id: str) -> str:
     """Start (or idempotently re-start) the provisioning state machine for
     this owner. Never raises — dispatch failure releases the claim to
-    ``error`` so the status poll's normal retry re-dispatches."""
-    # Re-bind correlation ids: dispatched via create_task, this can run in a
+    ``error`` so the status poll's normal retry re-dispatches.
+
+    Returns the outcome so callers can report WHY nothing started:
+
+      * ``"dispatched"``  — execution started, or idempotently re-affirmed an
+        already-RUNNING one (both mean "this owner has an execution").
+      * ``"claim_lost"``  — ``try_claim_provision`` refused: the row is
+        ``running``, or another caller holds a fresh lease. Not an error —
+        it is the single-flight working.
+      * ``"error"``       — transient StartExecution failure or name
+        collision; the row was released to ``error`` and a later trigger
+        retries.
+
+    Every pre-existing caller ignores the return value; it exists so the
+    event triggers in ``user_provision`` can emit an honest
+    ``provision.trigger{result}`` instead of reporting "dispatched" for a
+    call that actually stood down.
+    """
+    # Re-bind correlation ids: like background_provision, this can run in a
     # detached task where the HTTP-middleware binds did not propagate.
     bind_log_context(user_id=owner_id)
     try:
-        await _dispatch_inner(owner_id)
+        return await _dispatch_inner(owner_id)
     except Exception:  # noqa: BLE001 — dispatch must never take down the caller
         logger.exception("dispatch_provision: dispatch failed for owner %s", owner_id)
+        return "error"
 
 
-async def _dispatch_inner(owner_id: str) -> None:
+async def _dispatch_inner(owner_id: str) -> str:
     row = await container_repo.get_by_owner_id(owner_id)
 
     # Branch A (design §3): a row with a self-consistent stamped execution
@@ -132,7 +150,7 @@ async def _dispatch_inner(owner_id: str) -> None:
             if outcome != "closed":
                 # "ok" → done. "failed" → return WITHOUT touching the row:
                 # the claim is not ours to release, and a later poll retries.
-                return
+                return "dispatched" if outcome == "ok" else "error"
 
     # Branch B: fresh dispatch — mint claim + name in one atomic write.
     claim = str(uuid.uuid4())
@@ -141,10 +159,10 @@ async def _dispatch_inner(owner_id: str) -> None:
     if won is None:
         logger.info("dispatch_provision: claim lost for owner %s — standing down", owner_id)
         emit_provision_metric("claim_lost")
-        return
+        return "claim_lost"
     outcome = await _start(owner_id, claim)
     if outcome == "ok":
-        return
+        return "dispatched"
     # "failed": transient StartExecution error. "closed": an 8-hex name
     # collision on a FRESH claim — the name embeds claim_id[:8], so a closed
     # execution already holds it and this claim can never run. Either way,
@@ -160,6 +178,7 @@ async def _dispatch_inner(owner_id: str) -> None:
     except Exception:  # noqa: BLE001 — release is best-effort
         logger.exception("dispatch_provision: release failed for owner %s", owner_id)
     emit_provision_metric("error")
+    return "error"
 
 
 async def _start(owner_id: str, claim_id: str) -> str:
@@ -195,7 +214,7 @@ async def describe_dispatch_execution(owner_id: str, claim_id: str) -> dict | No
     execution, or ``None`` if the row carries no execution name.
 
     # SWEEP: integration point for the reconciliation worker (spec §7,
-    # Wave 5, not yet built). SWEEP's job on a stuck "provisioning"
+    # Wave 5, not built in this PR). SWEEP's job on a stuck "provisioning"
     # row is to call this and disambiguate:
     #   - status RUNNING           → still legitimately in flight, leave it
     #   - status SUCCEEDED/FAILED/TIMED_OUT/ABORTED (a "CLOSED without a
@@ -231,6 +250,6 @@ def _state_machine_name() -> str:
 async def _account_id() -> str:
     # Parsed out of the state machine ARN (arn:aws:states:<region>:<account>:
     # stateMachine:<name>) rather than an STS call — cheap and avoids a new
-    # IAM grant for a helper that SWEEP has not yet wired up.
+    # IAM grant for a helper that (as of this PR) SWEEP has not yet wired up.
     parts = settings.PROVISION_STATE_MACHINE_ARN.split(":")
     return parts[4] if len(parts) > 4 else ""

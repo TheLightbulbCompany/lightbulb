@@ -84,39 +84,25 @@ async def test_missing_container_is_not_retryable(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_still_booting_is_retryable(monkeypatch):
-    """The no-IP branch is only the first seconds of a wake. Once ECS publishes
-    an IP the container still needs ~30-60s for the OpenClaw sidecar to accept a
-    handshake, and those failures arrive as bare RuntimeErrors — unflagged they
-    render the red failure card for the MAJORITY of every cold start."""
+async def test_gateway_errors_are_not_dressed_up_as_waking(monkeypatch):
+    """A gateway failure over a container that HAS an IP is forwarded as-is.
+
+    An earlier revision substring-matched this error's text for "still coming
+    up" markers. It was wrong three ways (see the comment at the call site);
+    the load-bearing one: two of the markers were raised immediately after the
+    pool emits GATEWAY_DOWN_DEAD, so a cap-killed container was advertised to
+    every client as merely waking. Whether a container is coming up is
+    answered by /container/status, never by matching error prose.
+    """
     _ecs_mock(monkeypatch, ({"gateway_token": "gw"}, "10.0.0.5"))
     mgmt = _mgmt_mock(monkeypatch)
 
     pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=RuntimeError("Gateway not healthy: timeout"))
+    pool.send_rpc = AsyncMock(side_effect=RuntimeError("Gateway connection lost"))
     monkeypatch.setattr("routers.websocket_chat.get_gateway_pool", MagicMock(return_value=pool))
 
     await _run_rpc()
 
     _, frame = mgmt.send_message.call_args.args
     assert frame["ok"] is False
-    assert frame["error"]["retryable"] is True
-    assert "code" not in frame["error"]
-
-
-@pytest.mark.asyncio
-async def test_genuine_rpc_rejection_stays_non_retryable(monkeypatch):
-    """A real rejection from OpenClaw must NOT be dressed up as 'still waking' —
-    that would hide it behind a warming spinner until the client's grace window
-    expired."""
-    _ecs_mock(monkeypatch, ({"gateway_token": "gw"}, "10.0.0.5"))
-    mgmt = _mgmt_mock(monkeypatch)
-
-    pool = MagicMock()
-    pool.send_rpc = AsyncMock(side_effect=RuntimeError("agent not found"))
-    monkeypatch.setattr("routers.websocket_chat.get_gateway_pool", MagicMock(return_value=pool))
-
-    await _run_rpc()
-
-    _, frame = mgmt.send_message.call_args.args
     assert frame["error"].get("retryable") is not True

@@ -1,5 +1,9 @@
 import { act, render, screen } from "@testing-library/react-native";
-import { GatewayRpcError, WARMING_GRACE_MS } from "@isol8/shared";
+import { GatewayRpcError } from "@isol8/shared";
+
+// Mirrors the screen's bounds; both must trip, whichever comes first.
+const HISTORY_RETRY_WINDOW_MS = 60_000;
+const HISTORY_RETRY_MAX_ATTEMPTS = 8;
 
 jest.mock("expo-router", () => ({
   router: {
@@ -121,13 +125,13 @@ describe("AgentChat history retry", () => {
     await render(<AgentChat />);
     await flush();
 
-    // Still riding it out well inside the window — no card yet.
+    // Still riding it out well inside both bounds — no card yet.
     await tick();
     await tick();
     expect(screen.queryByText(/Couldn’t load history/)).toBeNull();
 
     // Past the window it must stop and say something actionable.
-    jest.setSystemTime(Date.now() + WARMING_GRACE_MS + 1);
+    jest.setSystemTime(Date.now() + HISTORY_RETRY_WINDOW_MS + 1);
     await tick();
 
     // The card carries the sentence, not the code or the details JSON.
@@ -159,7 +163,7 @@ describe("AgentChat history retry", () => {
     // opened by the FIRST transient would have expired. Without the
     // reset-on-success the stale deadline is now in the past, so the second
     // transient skips the silent retry and paints the card immediately.
-    jest.setSystemTime(Date.now() + WARMING_GRACE_MS + 1);
+    jest.setSystemTime(Date.now() + HISTORY_RETRY_WINDOW_MS + 1);
 
     // A later reconnect re-fires the effect and hits another transient.
     await act(async () => {
@@ -185,5 +189,36 @@ describe("AgentChat history retry", () => {
 
     expect(screen.getByText(/Gateway connection lost/)).toBeTruthy();
     expect(mockSendReq).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("AgentChat history retry bounds", () => {
+  beforeEach(() => {
+    mockSendReq.mockReset();
+    mockGateway.isConnected = true;
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  it("caps the REQUEST COUNT, not just the elapsed time", async () => {
+    // The gateway's rebuilding-index error asks for 250ms. A 60s window with
+    // no attempt cap would be ~240 full round trips from one screen — a
+    // self-inflicted retry storm aimed at a container that is already
+    // unhealthy.
+    mockSendReq.mockRejectedValue(REBUILDING());
+
+    await render(<AgentChat />);
+    await flush();
+
+    for (let i = 0; i < HISTORY_RETRY_MAX_ATTEMPTS + 4; i++) await tick();
+
+    // 1 initial + at most the cap, well short of the ~240 the window allows.
+    expect(mockSendReq.mock.calls.length).toBeLessThanOrEqual(
+      HISTORY_RETRY_MAX_ATTEMPTS + 1,
+    );
+    expect(screen.getByText(/session history is rebuilding/)).toBeTruthy();
   });
 });

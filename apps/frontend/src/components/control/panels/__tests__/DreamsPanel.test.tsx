@@ -35,9 +35,9 @@ vi.mock("@/hooks/useAgents", async (importOriginal) => {
 
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (method: string | null) => {
-    if (method === "agents.list") {
-      return { data: agentsListData, error: undefined, isLoading: false, mutate: vi.fn() };
-    }
+    // NO "agents.list" branch on purpose: the roster must come from the
+    // useAgents mock above, so reverting the component to a raw agents.list
+    // call FAILS here instead of passing on this fixture.
     if (method === "doctor.memory.status") {
       return {
         data: { agentId: "main", embedding: { ok: true }, dreaming: { enabled: true, promotedToday: 2, totalSignalCount: 5, phases: { light: { enabled: true }, rem: { enabled: true }, deep: { enabled: false } } } },

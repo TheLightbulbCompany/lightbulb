@@ -1754,24 +1754,6 @@ async def _intercept_agents_update(
     return False
 
 
-# Gateway failures that mean "the container is still coming up", not "it is
-# broken". Matched on message because connection_pool raises bare RuntimeErrors
-# for these (core/gateway/connection_pool.py) — when any of them grows a
-# structured error shape, prefer that over this list.
-_TRANSIENT_GATEWAY_ERROR_MARKERS = (
-    "gateway health check timed out",
-    "gateway not healthy",
-    "gateway reconnect throttled",
-    "gateway connection lost",
-    "connection closed",
-)
-
-
-def _is_transient_gateway_error(message: str) -> bool:
-    lowered = message.lower()
-    return any(marker in lowered for marker in _TRANSIENT_GATEWAY_ERROR_MARKERS)
-
-
 async def _process_rpc_background(
     connection_id: str,
     user_id: str,
@@ -2038,18 +2020,17 @@ async def _process_rpc_background(
                 error_obj = json.loads(str(e))
             except (ValueError, TypeError):
                 error_obj = {"message": str(e)}
-            # The no-IP branch above is only the FIRST seconds of a cold start.
-            # Once ECS publishes an IP the container still needs ~30-60s for
-            # the OpenClaw sidecar to accept a protocol-v4 handshake, and those
-            # failures arrive here as plain RuntimeErrors. Left unflagged they
-            # render the red failure card for the majority of every wake, so
-            # mark the known-transient ones too. Same hint-not-proof contract:
-            # bounded by the client, and no `code` (see above).
-            if not isinstance(error_obj, dict):
-                error_obj = {"message": str(e)}
-            if "retryable" not in error_obj and _is_transient_gateway_error(str(e)):
-                error_obj["retryable"] = True
-                error_obj.setdefault("retryAfterMs", 3000)
+            # Deliberately NOT classified as transient here. An earlier
+            # attempt substring-matched this error's text for "still coming
+            # up" markers and was wrong three ways: `str(e)` is the whole
+            # serialized OpenClaw error dict (so `details` text could flip a
+            # real rejection to retryable, and it kept its `code`); the
+            # dominant early cold-start failure is ConnectionRefusedError, an
+            # OSError that never reaches this handler at all; and two of the
+            # markers ("Gateway connection lost", "Connection closed") are
+            # raised immediately AFTER the pool emits GATEWAY_DOWN_DEAD — the
+            # death signal, labelled as birth. "Is the container coming up?"
+            # is answered by /container/status, which owns that question.
             await management_api.send_message_async(
                 connection_id,
                 {

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
 // expo-router isn't in the jest transform allowlist; stub the bits <Chat/> uses.
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
@@ -59,7 +59,7 @@ jest.mock("@isol8/shared", () => ({
 }));
 
 import Chat from "../chat";
-import { GatewayRpcError, WARMING_GRACE_MS } from "@isol8/shared";
+import { GatewayRpcError } from "@isol8/shared";
 
 const routerPush = jest.requireMock("expo-router").router.push as jest.Mock;
 
@@ -111,20 +111,21 @@ describe("Chat roster", () => {
     expect(routerPush).not.toHaveBeenCalled();
   });
 
-  // A container waking from zero answers agents.list with a RETRYABLE error,
-  // and useGatewayRpc is already re-probing it every 3s. Shipping that as a
-  // red "Couldn't load agents" card told a first-time TestFlight user their
-  // app was broken while it was busy working.
+  // Whether a missing roster is a wake or a failure is decided by the SERVER's
+  // container status, not by the shape of the RPC error. An earlier revision
+  // inferred it from the error plus a 90s timer; the timer's deadline lived in
+  // a component ref that reset on every park/unpark and remount, so a dead
+  // container re-armed the grace forever.
   describe("a waking container", () => {
     const WAKING = () =>
       new GatewayRpcError({
-        code: "UNAVAILABLE",
         message: "Container is starting up. Try again in a moment.",
         retryable: true,
         retryAfterMs: 3000,
       });
 
-    it("reads as loading, not as a failure", async () => {
+    it("reads as loading while the server says the container is coming up", async () => {
+      mockContainerStatus = { kind: "starting" };
       mockAgents = makeRoster({
         agents: [],
         defaultId: undefined,
@@ -136,64 +137,61 @@ describe("Chat roster", () => {
       expect(screen.queryByText(/Couldn’t load agents/)).toBeNull();
     });
 
+    it("says so during a first run, where there is NO error to classify", async () => {
+      // "No container provisioned." is swallowed into undefined-as-success by
+      // the shared fetcher, so this path has no error at all. Driving the
+      // state off the error left it skeletoning silently forever.
+      mockContainerStatus = { kind: "starting" };
+      mockAgents = makeRoster({
+        agents: [],
+        defaultId: undefined,
+        error: null,
+        isSettled: false,
+      });
+      await render(<Chat />);
+      expect(screen.getByText("Waking your agents…")).toBeTruthy();
+    });
+
+    it("reports the failure IMMEDIATELY once the server says ready", async () => {
+      // No grace period: the container is up, so the RPC failing is real and
+      // waiting 90s to admit it only makes the genuine error case worse.
+      mockContainerStatus = { kind: "ready" };
+      mockAgents = makeRoster({
+        agents: [],
+        defaultId: undefined,
+        error: WAKING(),
+        isSettled: false,
+      });
+      await render(<Chat />);
+      expect(screen.getByText(/Container is starting up/)).toBeTruthy();
+      expect(screen.queryByText("Waking your agents…")).toBeNull();
+    });
+
+    it("gives the user a way out of the error card", async () => {
+      mockContainerStatus = { kind: "ready" };
+      const refresh = jest.fn();
+      mockAgents = makeRoster({
+        agents: [],
+        defaultId: undefined,
+        error: new Error("Gateway handshake rejected"),
+        isSettled: false,
+        refresh,
+      });
+      await render(<Chat />);
+      fireEvent.press(screen.getByLabelText("Retry loading agents"));
+      expect(refresh).toHaveBeenCalled();
+    });
+
     it("still shows a cached roster instead of blanking it", async () => {
+      mockContainerStatus = { kind: "starting" };
       mockAgents = makeRoster({ error: WAKING() });
       await render(<Chat />);
       expect(screen.getByText("Friday")).toBeTruthy();
       expect(screen.queryByText(/Couldn’t load agents/)).toBeNull();
     });
 
-    it("does report a failure that will NOT clear on its own", async () => {
-      // NOT "No container provisioned." — useGatewayRpc's fetcher converts
-      // that one string into a SUCCESS (data === undefined), so a test using
-      // it pins a state production can never reach and would keep passing
-      // even if the hard-error path broke entirely.
-      mockAgents = makeRoster({
-        agents: [],
-        defaultId: undefined,
-        error: new Error("Gateway handshake rejected"),
-        isSettled: false,
-      });
-      await render(<Chat />);
-      expect(screen.getByText(/Gateway handshake rejected/)).toBeTruthy();
-      expect(screen.queryByText("Waking your agents…")).toBeNull();
-    });
-
-    it("stops calling it 'waking' once the grace window closes", async () => {
-      // `retryable` is a hint, not proof of life: the same backend answer
-      // covers a container that is waking and one that died. Past the window
-      // the user must get the message and a way out.
-      jest.useFakeTimers();
-      try {
-        mockAgents = makeRoster({
-          agents: [],
-          defaultId: undefined,
-          error: WAKING(),
-          isSettled: false,
-        });
-        const view = await render(<Chat />);
-        expect(screen.getByText("Waking your agents…")).toBeTruthy();
-
-        jest.setSystemTime(Date.now() + WARMING_GRACE_MS + 1);
-        // SWR's 3s error-retry cadence is what re-renders in production.
-        mockAgents = makeRoster({
-          agents: [],
-          defaultId: undefined,
-          error: WAKING(),
-          isSettled: false,
-        });
-        await act(async () => {
-          view.rerender(<Chat />);
-        });
-
-        expect(screen.queryByText("Waking your agents…")).toBeNull();
-        expect(screen.getByText(/Container is starting up/)).toBeTruthy();
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
     it("never shows the error card and 'No agents yet.' at once", async () => {
+      mockContainerStatus = { kind: "ready" };
       mockAgents = makeRoster({
         agents: [],
         defaultId: undefined,

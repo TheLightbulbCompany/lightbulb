@@ -10,12 +10,7 @@ import {
   Text,
   View,
 } from "react-native";
-import {
-  agentDisplayName,
-  isRetryableRpcError,
-  useAgents,
-  useWarmingWindow,
-} from "@isol8/shared";
+import { agentDisplayName, useAgents } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
@@ -23,6 +18,7 @@ import { SessionsSheet } from "../../components/chat/SessionsSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { readFirstRun } from "../../lib/firstRun";
 import { useContainerStatusContext } from "../../lib/containerStatusContext";
+import { isContainerComingUp } from "../../lib/rosterPresentation";
 import { useGateway } from "../../providers/gateway";
 
 // Slim connection-state row above the roster (web HealthIndicator, spec §5).
@@ -110,10 +106,26 @@ function SkeletonGrid({ warming }: { warming?: boolean }) {
   );
 }
 
-function ErrorCard({ message }: { message: string }) {
+// Always carries a Retry: a card with no way out is only marginally better
+// than the spinner it replaced, and this is the surface a first-time user
+// lands on.
+function ErrorCard({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
   return (
     <View style={styles.errorCard}>
       <Text style={styles.errorText}>Couldn’t load agents: {message}</Text>
+      <Pressable
+        onPress={onRetry}
+        accessibilityRole="button"
+        accessibilityLabel="Retry loading agents"
+      >
+        <Text style={styles.retryText}>Retry</Text>
+      </Pressable>
     </View>
   );
 }
@@ -125,20 +137,16 @@ function ErrorCard({ message }: { message: string }) {
 // neither of which the raw agents.list call this replaced had.
 export default function Chat() {
   const gateway = useGateway();
-  const { agents, defaultId, error, isLoading, isSettled } = useAgents(gateway);
+  const { agents, defaultId, error, isLoading, isSettled, refresh } =
+    useAgents(gateway);
+  const containerStatus = useContainerStatusContext();
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  // A retryable failure is a loading state wearing an error's clothes — a
-  // container waking from zero answers agents.list with retryable, and
-  // useGatewayRpc is ALREADY re-probing it at a fixed 3s cadence. Rendering
-  // that as a red card told a first-time user their app was broken while it
-  // was, in fact, working.
-  //
-  // But only for a BOUNDED window. The backend cannot distinguish a container
-  // that is waking from one that died (see useWarmingWindow), so a permanently
-  // dead box answers retryable forever — and suppressing the card for it would
-  // trade the scary-but-honest message for a spinner with no escape. Past the
-  // window the failure is shown as a failure.
-  const warming = useWarmingWindow(isRetryableRpcError(error));
+  // Is a missing/failed roster a wake or a failure? Ask the server, don't
+  // infer it from the RPC error (see isContainerComingUp). `warming` also
+  // covers the NO-error case: a first-run owner's agents.list resolves to
+  // undefined-as-success, so there is nothing to classify and the screen
+  // would otherwise skeleton silently forever.
+  const warming = isContainerComingUp(containerStatus);
   const hardError = error && !warming ? error : null;
 
   // `hardError` suppresses it: the error card is the answer, and rendering
@@ -169,7 +177,6 @@ export default function Chat() {
   // every roster mount (cold start, relaunch, any remount). Once the backend
   // reports `onboarded`, the first-run window is over and we stand down.
   const { user } = useUser();
-  const containerStatus = useContainerStatusContext();
   const onboarded =
     containerStatus?.kind === "ready" && containerStatus.onboarded === true;
   const redirectedRef = useRef(false);
@@ -188,7 +195,7 @@ export default function Chat() {
 
   let body: ReactElement;
   if (hardError && !isSettled) {
-    body = <ErrorCard message={hardError.message} />;
+    body = <ErrorCard message={hardError.message} onRetry={() => void refresh()} />;
   } else if (!isSettled && connectionDown) {
     // No cached roster and the socket is down — the health row carries the
     // detail; keep the body quiet rather than pulsing skeletons forever.
@@ -214,7 +221,12 @@ export default function Chat() {
             {/* A hard failure over a cached roster reports itself above the
                 tiles rather than replacing them — the agents we already
                 fetched are still the truest thing we can show. */}
-            {hardError ? <ErrorCard message={hardError.message} /> : null}
+            {hardError ? (
+              <ErrorCard
+                message={hardError.message}
+                onRetry={() => void refresh()}
+              />
+            ) : null}
             {agents.length > 0 ? (
               <Text style={styles.sectionLabel}>
                 AGENTS
@@ -497,6 +509,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.errorBorder,
     borderRadius: radii.md,
+  },
+  retryText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.forest,
+    marginTop: spacing.sm,
   },
   errorText: {
     fontFamily: fonts.dmSans,

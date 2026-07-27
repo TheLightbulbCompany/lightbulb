@@ -17,7 +17,6 @@ export {
   getAgentModelString,
 } from "./hooks/agents";
 export { useAgents } from "./hooks/useAgents";
-export { useWarmingWindow, WARMING_GRACE_MS } from "./hooks/useWarmingWindow";
 export type {
   AgentsAnalyticsEvent,
   AgentsGatewaySource,

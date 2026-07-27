@@ -18,9 +18,7 @@ import {
 import {
   agentDisplayName,
   getAgentModelString,
-  isRetryableRpcError,
   useAgents,
-  useWarmingWindow,
   useGatewayRpcMutation,
   type Agent,
 } from "@isol8/shared";
@@ -30,6 +28,8 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { deriveWorkspace, validateAgentName } from "../../../lib/agentCatalog";
 import { useGateway } from "../../../providers/gateway";
+import { useContainerStatusContext } from "../../../lib/containerStatusContext";
+import { isContainerComingUp } from "../../../lib/rosterPresentation";
 
 // ---------------------------------------------------------------------------
 // Skeleton (spec §7) — three pulsing rows while agents.list is in flight.
@@ -269,11 +269,11 @@ export default function AgentsPanel() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  // Same contract as the roster tab, and it has to be the SAME, not merely
-  // similar: a retryable failure reads as loading for a bounded window
-  // (useWarmingWindow — the responder cannot prove liveness), after which it
-  // is shown as a failure with a way out.
-  const warming = useWarmingWindow(isRetryableRpcError(error));
+  // Same source of truth as the roster tab — and it has to be the SAME, not
+  // merely similar: the server's container status decides whether a missing
+  // roster is a wake or a failure (see isContainerComingUp).
+  const containerStatus = useContainerStatusContext();
+  const warming = isContainerComingUp(containerStatus);
   const hardError = error && !warming ? error : null;
 
   const renderErrorCard = (message: string): ReactElement => (

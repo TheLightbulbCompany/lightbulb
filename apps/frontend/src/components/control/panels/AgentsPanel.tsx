@@ -15,7 +15,8 @@ import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
 import { useBilling } from "@/hooks/useBilling";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
@@ -32,7 +33,11 @@ export interface AgentsPanelProps {
 }
 
 export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
-  const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
+  // Roster via the shared hook, not a raw agents.list: this panel is the
+  // direct analogue of mobile's control Agents tab and needs the same
+  // empty-roster latch fix and become-reachable revalidation.
+  const { agents: rosterAgents, defaultId: rosterDefaultId, error, isLoading, refresh: mutate } =
+    useAgents();
   const callRpc = useGatewayRpcMutation();
   // Channels require an active subscription (or trial). Pre-signup users
   // shouldn't see the Channels tab.
@@ -55,8 +60,8 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
-  const agents: AgentEntry[] = rawData?.agents ?? [];
-  const defaultId = rawData?.defaultId;
+  const agents = rosterAgents as AgentEntry[];
+  const defaultId = rosterDefaultId;
 
   const handleAgentCreated = () => {
     mutate();
@@ -85,6 +90,14 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
     );
   }
 
+  // No warming suppression here, deliberately. Mobile can hide a wake behind
+  // a skeleton because it reads the container-status contract; this panel has
+  // no equivalent, and suppressing the card without a loading affordance
+  // rendered the panel as a successfully-loaded EMPTY roster ("Agents 0" with
+  // a live New button) over a cold-starting container — telling the user
+  // their agents are gone and inviting a non-idempotent agents.create against
+  // a box that cannot answer. Showing the error is the honest answer until
+  // this panel can ask the status contract too.
   if (error) {
     return (
       <div className="p-4 space-y-3">

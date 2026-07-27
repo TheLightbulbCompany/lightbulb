@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Loader2, RefreshCw, Moon, Sun, Sparkles } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useConfigPatch } from "@/hooks/useConfigPatch";
-import { type Agent, agentDisplayName } from "@/hooks/useAgents";
+import { type Agent, agentDisplayName, useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import {
   type MemoryStatusResponse,
@@ -25,10 +25,8 @@ export function DreamsPanel() {
   // Agent selector. `{}` → default agent server-side; an explicit pick scopes
   // every doctor.memory.* call to that agent's workspace. `agents.list`
   // returns `{ defaultId?, agents? }`, not a bare array.
-  const { data: agentsData } = useGatewayRpc<{ defaultId?: string; agents?: Agent[] }>(
-    "agents.list",
-  );
-  const agents = agentsData?.agents ?? [];
+  const { agents: roster } = useAgents();
+  const agents = roster as Agent[];
   const params = agentId ? { agentId } : {};
 
   const { data, error, isLoading, mutate } = useGatewayRpc<MemoryStatusResponse>(

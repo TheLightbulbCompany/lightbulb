@@ -2,6 +2,29 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
+// AgentsPanel reads its roster through the shared useAgents hook, which
+// reaches for the gateway context — stub the hook, not the RPC beneath it.
+vi.mock("@/hooks/useAgents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/useAgents")>();
+  return {
+    ...actual,
+    useAgents: () => ({
+      agents: [
+        { id: "a1", name: "Alpha" },
+        { id: "a2", name: "Beta" },
+      ],
+      defaultId: "a1",
+      error: undefined,
+      isLoading: false,
+      isSettled: true,
+      refresh: vi.fn(),
+      createAgent: vi.fn(),
+      deleteAgent: vi.fn(),
+      updateAgent: vi.fn(),
+    }),
+  };
+});
+
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: () => ({
     data: { agents: [{ id: "a1", name: "Alpha" }, { id: "a2", name: "Beta" }], defaultId: "a1" },

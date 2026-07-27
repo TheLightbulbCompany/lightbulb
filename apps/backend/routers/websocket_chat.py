@@ -1830,7 +1830,26 @@ async def _process_rpc_background(
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    "error": {"message": "Container is starting up. Try again in a moment."},
+                    # A task with no IP is USUALLY waking (still pulling the
+                    # image) but can also be one that died and is being
+                    # replaced — resolve_running_container cannot tell them
+                    # apart, so `retryable` here is a hint, not a liveness
+                    # proof. Clients must bound how long they present it as
+                    # loading (see useWarmingWindow); nothing downstream may
+                    # treat it as "wait forever".
+                    #
+                    # Deliberately NO `code`: shipped mobile builds string-join
+                    # an error's `code` into the message they display, so
+                    # adding one would regress the installed base to
+                    # "...try again in a moment. — [UNAVAILABLE]" — the exact
+                    # class of message this change exists to remove.
+                    # `retryable` and `retryAfterMs` are ignored by those
+                    # older clients.
+                    "error": {
+                        "message": "Container is starting up. Try again in a moment.",
+                        "retryable": True,
+                        "retryAfterMs": 3000,
+                    },
                 },
             )
             return
@@ -2001,6 +2020,17 @@ async def _process_rpc_background(
                 error_obj = json.loads(str(e))
             except (ValueError, TypeError):
                 error_obj = {"message": str(e)}
+            # Deliberately NOT classified as transient here. An earlier
+            # attempt substring-matched this error's text for "still coming
+            # up" markers and was wrong three ways: `str(e)` is the whole
+            # serialized OpenClaw error dict (so `details` text could flip a
+            # real rejection to retryable, and it kept its `code`); the
+            # dominant early cold-start failure is ConnectionRefusedError, an
+            # OSError that never reaches this handler at all; and two of the
+            # markers ("Gateway connection lost", "Connection closed") are
+            # raised immediately AFTER the pool emits GATEWAY_DOWN_DEAD — the
+            # death signal, labelled as birth. "Is the container coming up?"
+            # is answered by /container/status, which owns that question.
             await management_api.send_message_async(
                 connection_id,
                 {

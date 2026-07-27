@@ -48,11 +48,31 @@ const renderInspector = () =>
 // agents.list feeds the header (name/emoji), mirroring AgentsPanel.
 const agentsListData: { defaultId?: string; agents?: Array<{ id: string; name?: string; identity?: { emoji?: string } }> } =
   { defaultId: "main", agents: [{ id: "agent_42", name: "Scout", identity: { emoji: "🔭" } }] };
+// The roster now comes from the shared useAgents hook (which reaches for the
+// gateway context), so that is the seam to stub — not the RPC beneath it.
+vi.mock("@/hooks/useAgents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/useAgents")>();
+  return {
+    ...actual,
+    useAgents: () => ({
+      agents: agentsListData.agents ?? [],
+      defaultId: agentsListData.defaultId,
+      error: undefined,
+      isLoading: false,
+      isSettled: true,
+      refresh: vi.fn(),
+      createAgent: vi.fn(),
+      deleteAgent: vi.fn(),
+      updateAgent: vi.fn(),
+    }),
+  };
+});
+
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (method: string | null) => {
-    if (method === "agents.list") {
-      return { data: agentsListData, error: undefined, isLoading: false, mutate: vi.fn() };
-    }
+    // NO "agents.list" branch on purpose: the roster must come from the
+    // useAgents mock above, so reverting the component to a raw agents.list
+    // call FAILS here instead of passing on this fixture.
     return { data: undefined, error: undefined, isLoading: false, mutate: vi.fn() };
   },
   useGatewayRpcMutation: () => vi.fn(),

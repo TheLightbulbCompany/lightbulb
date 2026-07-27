@@ -131,7 +131,7 @@ describe("projectChatHistoryMessages (merge integration)", () => {
       } as HistoryMessage,
     ]);
     // No standalone tool-result rows survive projection…
-    expect(projected.some((m) => m.role.toLowerCase() === "toolresult")).toBe(false);
+    expect(projected.some((m) => m.role?.toLowerCase() === "toolresult")).toBe(false);
     // …the repair row is gone entirely (filtered, not folded into a pill)…
     expect(projected).toHaveLength(1);
     // …and the real result is folded onto its assistant message.

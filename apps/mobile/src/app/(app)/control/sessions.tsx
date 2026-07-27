@@ -12,10 +12,10 @@ import {
 } from "react-native";
 import {
   agentDisplayName,
+  useAgents,
   useGatewayRpc,
   useGatewayRpcMutation,
   type Agent,
-  type AgentsListResponse,
 } from "@isol8/shared";
 
 import { usePulse } from "../../../components/chat/usePulse";
@@ -154,18 +154,15 @@ export default function SessionsPanel() {
     "sessions.list",
     SESSIONS_LIST_PARAMS,
   );
-  const { data: agentsData } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
+  const { agents } = useAgents(gateway);
 
   const agentNames = useMemo(() => {
     const map = new Map<string, string>();
-    for (const a of agentsData?.agents ?? []) {
+    for (const a of agents) {
       map.set(a.id.toLowerCase(), agentDisplayName(a as Agent));
     }
     return map;
-  }, [agentsData]);
+  }, [agents]);
 
   const sessions = useMemo(() => projectGlobalSessions(data), [data]);
 

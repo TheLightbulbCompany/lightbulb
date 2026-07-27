@@ -18,10 +18,9 @@ import {
 import {
   agentDisplayName,
   getAgentModelString,
-  useGatewayRpc,
+  useAgents,
   useGatewayRpcMutation,
   type Agent,
-  type AgentsListResponse,
 } from "@isol8/shared";
 
 import { AgentMonogram, AgentStatusDot } from "../../../components/control/AgentMonogram";
@@ -29,18 +28,27 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import { deriveWorkspace, validateAgentName } from "../../../lib/agentCatalog";
 import { useGateway } from "../../../providers/gateway";
+import { useContainerStatusContext } from "../../../lib/containerStatusContext";
+import { isContainerComingUp } from "../../../lib/rosterPresentation";
 
 // ---------------------------------------------------------------------------
 // Skeleton (spec §7) — three pulsing rows while agents.list is in flight.
 // ---------------------------------------------------------------------------
 
-function SkeletonRows() {
+// `warming` names what we're waiting on when the wait is long enough to look
+// like a hang — a container waking from zero. Mirrors the roster tab.
+function SkeletonRows({ warming }: { warming?: boolean }) {
   const pulse = usePulse(true, 0.55);
   return (
-    <View style={styles.skeletonGroup}>
-      {[0, 1, 2].map((i) => (
-        <Animated.View key={i} style={[styles.skeletonRow, { opacity: pulse }]} />
-      ))}
+    <View>
+      {warming ? (
+        <Text style={styles.warmingLabel}>Waking your agents…</Text>
+      ) : null}
+      <View style={styles.skeletonGroup}>
+        {[0, 1, 2].map((i) => (
+          <Animated.View key={i} style={[styles.skeletonRow, { opacity: pulse }]} />
+        ))}
+      </View>
     </View>
   );
 }
@@ -244,13 +252,14 @@ function CreateAgentModal({
 export default function AgentsPanel() {
   const gateway = useGateway();
   const callRpc = useGatewayRpcMutation(gateway);
-  const { data, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
-
-  const agents = useMemo(() => data?.agents ?? [], [data]);
-  const defaultId = data?.defaultId;
+  // Roster read goes through the SHARED useAgents hook — same hook the web
+  // sidebar uses, carrying the onboarding empty-roster latch fix and
+  // revalidation on container-reachable. The mutations below stay local: this
+  // screen's agents.create sends `reasoningDefault` + nested
+  // `params.paperclip`, which the shared createAgent does not, and create is
+  // non-idempotent so the payload must not change under it.
+  const { agents, defaultId, error, isLoading, isSettled, refresh } =
+    useAgents(gateway);
   const existingNames = useMemo(
     () => agents.map((a) => agentDisplayName(a)),
     [agents],
@@ -260,7 +269,29 @@ export default function AgentsPanel() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  const showEmpty = agents.length === 0 && !isLoading && data != null;
+  // Same source of truth as the roster tab — and it has to be the SAME, not
+  // merely similar: the server's container status decides whether a missing
+  // roster is a wake or a failure (see isContainerComingUp).
+  const containerStatus = useContainerStatusContext();
+  const warming = isContainerComingUp(containerStatus);
+  const hardError = error && !warming ? error : null;
+
+  const renderErrorCard = (message: string): ReactElement => (
+    <View style={styles.errorCard}>
+      <Text style={styles.errorText}>Couldn’t load agents: {message}</Text>
+      <Pressable
+        style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+        onPress={() => void refresh()}
+        accessibilityRole="button"
+        accessibilityLabel="Retry"
+      >
+        <Text style={styles.retryText}>Retry</Text>
+      </Pressable>
+    </View>
+  );
+
+  const showEmpty =
+    agents.length === 0 && !isLoading && isSettled && !hardError;
 
   const confirmDelete = useCallback(
     (agent: Agent) => {
@@ -281,7 +312,7 @@ export default function AgentsPanel() {
                 agentId: agent.id,
                 deleteFiles: true,
               })
-                .then(() => mutate())
+                .then(() => refresh())
                 .catch((err: unknown) => {
                   Alert.alert(
                     "Couldn’t delete agent",
@@ -294,7 +325,7 @@ export default function AgentsPanel() {
         ],
       );
     },
-    [callRpc, defaultId, mutate],
+    [callRpc, defaultId, refresh],
   );
 
   const renderItem = useCallback(
@@ -343,26 +374,13 @@ export default function AgentsPanel() {
   );
 
   let body: ReactElement;
-  if (error) {
-    body = (
-      <View style={styles.errorCard}>
-        <Text style={styles.errorText}>
-          Couldn’t load agents: {error.message}
-        </Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.retryButton,
-            pressed && styles.pressed,
-          ]}
-          onPress={() => void mutate()}
-          accessibilityRole="button"
-          accessibilityLabel="Retry"
-        >
-          <Text style={styles.retryText}>Retry</Text>
-        </Pressable>
-      </View>
-    );
-  } else if (!data && connectionDown) {
+  // Only blank the screen when there is nothing to blank. Over a roster we
+  // already fetched, the card rides above the tiles — losing the list, the
+  // delete affordances and the New-agent entry point to a transient
+  // revalidation failure is a worse answer than showing both.
+  if (hardError && !isSettled) {
+    body = renderErrorCard(hardError.message);
+  } else if (!isSettled && connectionDown) {
     body = (
       <View style={styles.centerGrow}>
         <Text style={styles.dim}>{gateway.error}</Text>
@@ -381,16 +399,19 @@ export default function AgentsPanel() {
           showEmpty && styles.centerGrow,
         ]}
         ListHeaderComponent={
-          agents.length > 0 ? (
-            <Text style={styles.sectionLabel}>
-              AGENTS
-              <Text style={styles.sectionCount}> · {agents.length}</Text>
-            </Text>
-          ) : null
+          <>
+            {hardError ? renderErrorCard(hardError.message) : null}
+            {agents.length > 0 ? (
+              <Text style={styles.sectionLabel}>
+                AGENTS
+                <Text style={styles.sectionCount}> · {agents.length}</Text>
+              </Text>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
-          isLoading || !data ? (
-            <SkeletonRows />
+          hardError ? null : isLoading || !isSettled ? (
+            <SkeletonRows warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>
@@ -427,7 +448,7 @@ export default function AgentsPanel() {
         existingNames={existingNames}
         onClose={() => setCreateOpen(false)}
         onCreated={async () => {
-          await mutate();
+          await refresh();
         }}
       />
     </View>
@@ -516,6 +537,12 @@ const styles = StyleSheet.create({
   },
 
   // Loading skeletons (spec §7).
+  warmingLabel: {
+    ...type.body,
+    color: colors.mute,
+    textAlign: "center",
+    marginBottom: spacing.md,
+  },
   skeletonGroup: { alignSelf: "stretch", gap: spacing.sm },
   skeletonRow: {
     height: 44,

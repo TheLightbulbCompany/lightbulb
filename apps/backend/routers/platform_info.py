@@ -36,6 +36,12 @@ async def get_platform_info() -> dict:
             "byo_required": provider.byo_required,
         }
         for provider in registry.all_providers().values()
+        # Env-gated providers are invisible on this environment's Integrations
+        # tab, so advertising them here would send agents to a dead end ("connect
+        # Instagram" for a prod owner who has no such button). The owner_allowlist
+        # half of the gate needs an owner id this public route deliberately
+        # doesn't have — allowlisted owners just see one extra entry in their tab.
+        if registry.visible_in_env(provider)
     ]
     channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

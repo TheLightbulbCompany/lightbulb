@@ -11,6 +11,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from core.config import settings
+
 _YAML = Path(__file__).parent / "providers.yaml"
 
 Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
@@ -279,3 +281,33 @@ def get_provider(key: str) -> Provider:
     if key not in providers:
         raise KeyError(f"unknown integration provider: {key!r}")
     return providers[key]
+
+
+def current_env() -> str:
+    # Empty ENVIRONMENT (local dev) is treated as "dev", matching the
+    # integration_secret_store / provider-secret naming convention.
+    return settings.ENVIRONMENT or "dev"
+
+
+def visible_in_env(p: Provider) -> bool:
+    """Env half of the availability gate.
+
+    This is the only half an *ownerless* caller can evaluate — notably the
+    public platform-info catalog, which has no auth and so cannot check
+    `owner_allowlist`. Keep it here rather than in a router so every surface
+    that advertises providers agrees on what this environment offers.
+    """
+    return p.environments is None or current_env() in p.environments
+
+
+def available_for(p: Provider, owner_id: str | None) -> bool:
+    """Whether this provider is exposed to this owner in the running environment.
+
+    Available when it's not env-gated, OR the current env is in its
+    `environments`, OR this owner is on its `owner_allowlist` (the prod-dogfood
+    escape hatch — a dev-gated provider still reachable by a named founder
+    container on prod).
+    """
+    if visible_in_env(p):
+        return True
+    return bool(owner_id and p.owner_allowlist and owner_id in p.owner_allowlist)

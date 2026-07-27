@@ -1,10 +1,14 @@
 ---
 name: isol8
 description: >
-  Authoritative guide to the Isol8 platform you run on — its web and desktop
-  surfaces, the Integrations tab, the agent marketplace, plans and billing,
-  and how your company (Paperclip) is structured. Use whenever a question
-  involves Isol8 itself — connecting services, hiring or publishing agents,
+  Authoritative guide to the Isol8 platform you run on, AND the only way to
+  send email. Read this whenever you need to EMAIL YOUR OWNER or reply to an
+  email — you have your own address and a helper script here; Isol8 does not
+  use Gmail, himalaya, or an OpenClaw email channel, so looking for those
+  will find nothing. Also covers the web and desktop surfaces, the
+  Integrations tab, the agent marketplace, plans and billing, and how your
+  company (Paperclip) is structured. Use whenever a question involves Isol8
+  itself — emailing, connecting services, hiring or publishing agents,
   plans/providers/models, where a UI surface lives, what you can and cannot
   do on the platform — rather than the user's own domain work. Do not guess
   platform mechanics; read this first.

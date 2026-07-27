@@ -159,9 +159,12 @@ def test_first_run_message_grow_brief_reads_naturally():
 
 
 def test_first_run_message_no_brief_falls_back_to_the_you_pick_default():
-    assert build_first_run_message(None) == FIRST_RUN_NO_BRIEF_MESSAGE
-    assert build_first_run_message("") == FIRST_RUN_NO_BRIEF_MESSAGE
-    assert build_first_run_message("   ") == FIRST_RUN_NO_BRIEF_MESSAGE
+    # startswith, not equality: every kickoff now carries the closing steps
+    # (name the company, then email the owner). The fallback body itself is
+    # unchanged — it just isn't the whole message any more.
+    assert build_first_run_message(None).startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
+    assert build_first_run_message("").startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
+    assert build_first_run_message("   ").startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
     # The default still reads as the user and still names the same ask.
     assert "I'm not sure what to build yet" in FIRST_RUN_NO_BRIEF_MESSAGE
     assert "in the backlog" in FIRST_RUN_NO_BRIEF_MESSAGE
@@ -269,3 +272,42 @@ def test_staging_overwrites_a_partial_prior_attempt():
 
     assert ws.write_file.call_count == 1
     ws.write_file_if_missing.assert_not_called()
+
+
+# --- First-run kickoff: name the company, then email the owner -------------
+#
+# Discovery is not enough on its own. A live prod run showed the agent asked to
+# email its owner hunting for gog/himalaya/an OpenClaw email channel and
+# concluding none was configured — it never opened the isol8 skill. The kickoff
+# hands it the command directly so first contact does not depend on the agent
+# making that leap.
+
+SCRIPT = "/app/skills/isol8/scripts/isol8-owner-email.sh"
+
+
+def test_first_run_message_instructs_naming_and_email():
+    from core.services.onboarding_brief import build_first_run_message
+
+    msg = build_first_run_message("a coffee subscription business")
+    assert SCRIPT in msg
+    assert "name" in msg.lower()
+    # The user's own ask must still lead the message.
+    assert msg.index("coffee subscription") < msg.index(SCRIPT)
+
+
+def test_no_brief_path_also_instructs_email():
+    """The 'you pick' path gets first contact too — it is the same product
+    moment."""
+    from core.services.onboarding_brief import build_first_run_message
+
+    msg = build_first_run_message(None)
+    assert SCRIPT in msg
+
+
+def test_kickoff_says_the_name_becomes_the_address():
+    """The name is frozen at the first send, so the agent must know that
+    BEFORE it sends, not after."""
+    from core.services.onboarding_brief import build_first_run_message
+
+    msg = build_first_run_message("a coffee subscription business").lower()
+    assert "email address" in msg or "address" in msg

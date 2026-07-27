@@ -233,7 +233,10 @@ async def test_won_claim_dispatches_chat_send_addressed_at_the_submitting_member
     send_kwargs = pool.send_rpc.call_args.kwargs
     assert send_kwargs["method"] == "chat.send"
     # No brief on this fixture -> the no-brief default, still in the user's voice.
-    assert send_kwargs["params"]["message"] == FIRST_RUN_NO_BRIEF_MESSAGE
+    # startswith, not equality: the kickoff now appends the closing steps
+    # (name the company, then email the owner) to every path.
+    assert send_kwargs["params"]["message"].startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
+    assert "isol8-owner-email.sh" in send_kwargs["params"]["message"]
     assert send_kwargs["params"]["deliver"] is False
     assert send_kwargs["ip"] == "10.0.0.5"
     assert send_kwargs["token"] == "tok-123"

@@ -223,6 +223,35 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
     return idea
 
 
+# Appended to BOTH kickoff paths. This is what makes first contact happen at
+# all: the command is handed over directly rather than left to be discovered.
+#
+# A live prod run (2026-07-26) showed why that matters. Asked to email its
+# owner, the agent searched for gog, himalaya, and an OpenClaw "email channel",
+# found none, and reported that email was unconfigured — it never opened the
+# isol8 skill, because nothing in that skill's description mentioned email.
+# The description is fixed separately; this removes the dependency on discovery
+# entirely for the one send that must not be missed.
+#
+# The naming step comes FIRST and is not decoration: the address is minted from
+# the company's name on the FIRST send, and `company_slug_repo` has no delete
+# path, so whatever it is called at that moment is permanent. "If it is still a
+# placeholder" is deliberate — by the time this runs the owner may already have
+# named it (a real org's Clerk name carries through), and renaming a good name
+# to a worse one is the failure mode on the other side.
+_CLOSING_STEPS = (
+    "\n\nTwo more things before you stop. First, check the company's name and, "
+    "if it is still a placeholder rather than a real business name, give it one "
+    "— that name becomes the subdomain of my email address and cannot be "
+    "changed afterwards, so pick something you would put on a business card. "
+    "Then email me a short note in your own voice about what you found:\n"
+    "printf '%s' \"<your note>\" | /app/skills/isol8/scripts/isol8-owner-email.sh "
+    '--subject "<subject>"\n'
+    "That script is how you send email here — there is no Gmail, himalaya, or "
+    "email channel to configure."
+)
+
+
 def build_first_run_message(brief_text: str | None) -> str:
     """Friday's first-run kickoff chat.send message — the VISIBLE first user
     message in her chat.
@@ -237,12 +266,12 @@ def build_first_run_message(brief_text: str | None) -> str:
     """
     brief = (brief_text or "").strip()
     if not brief:
-        return FIRST_RUN_NO_BRIEF_MESSAGE
+        return FIRST_RUN_NO_BRIEF_MESSAGE + _CLOSING_STEPS
     return (
         f"I'm starting {brief}. Dig into the business and market, write it up, and put "
         "my three best next moves in the backlog — don't start any of them yet, just "
         "tell me which to tackle first. I'm watching."
-    )
+    ) + _CLOSING_STEPS
 
 
 async def seed_goal_and_project(

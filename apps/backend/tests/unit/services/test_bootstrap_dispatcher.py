@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.gateway.connection_pool import GatewayAuthBackoff, GatewayReconnectThrottled
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services import bootstrap_dispatcher
 from core.services.onboarding_brief import FIRST_RUN_NO_BRIEF_MESSAGE, build_first_run_message
@@ -469,13 +470,81 @@ async def test_transient_failure_at_attempts_cap_marks_failed_for_real(monkeypat
 
 @pytest.mark.asyncio
 async def test_deterministic_connect_failure_neither_retries_nor_rearms():
-    """Non-connection errors (auth backoff/reconnect-floor RuntimeErrors,
-    GatewayConnectAuthError) would fail identically on a retry — no connect
-    retry, and the terminal mark_bootstrap_failed, exactly as before."""
+    """Non-connection errors (auth backoff, GatewayConnectAuthError) would
+    fail identically on a retry — no connect retry, and the terminal
+    mark_bootstrap_failed, exactly as before.
+
+    The reconnect FLOOR is deliberately absent from that list: it clears on
+    its own in seconds and is retryable. It used to be lumped in here, which
+    is precisely how a 5s cooldown latched a row at ``failed`` forever."""
     onboarding = _onboarding()
     repo = _fake_repo(onboarding=onboarding)
     pool = _fake_pool()
     pool.ensure_connection = AsyncMock(side_effect=RuntimeError("auth backoff active"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    assert pool.ensure_connection.await_count == 1
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_throttle_retries_then_dispatches(monkeypatch):
+    """The prod regression this guards (2026-07-26, org_3H3vi…).
+
+    A ``/container/status`` poll opened the gateway ~0.3s before the
+    dispatcher, so the pool's 5s reconnect floor rejected the dispatcher's
+    connect. That rejection was a bare RuntimeError, so it was neither
+    retried nor re-armed: first contact was lost permanently for that owner,
+    on a cooldown that clears by itself. The floor is transient, so the
+    ladder must ride it out — its first rung is 5s, exactly the floor.
+    """
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", (0, 0))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(
+        side_effect=[
+            GatewayReconnectThrottled("throttled — last attempt 0.3s ago, floor 5s"),
+            None,
+        ]
+    )
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    assert pool.ensure_connection.await_count == 2
+    pool.send_rpc.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_throttle_exhaustion_rearms_rather_than_failing(monkeypatch):
+    """Classified TRANSIENT, so exhausting the in-dispatch budget re-arms for
+    the next poll instead of burning the owner's only first contact."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_CONNECT_RETRY_DELAYS_S", (0,))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=GatewayReconnectThrottled("throttled, floor 5s"))
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    pool.send_rpc.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auth_backoff_is_not_retried_despite_sharing_a_base_class():
+    """``GatewayAuthBackoff`` and ``GatewayReconnectThrottled`` are both
+    RuntimeErrors guarding the same call, and mean opposite things. Retrying
+    an auth hold cannot succeed AND each attempt counts toward the gateway's
+    10-in-60s lockout, so widening the transient set to ``RuntimeError``
+    would hammer the owner into that lockout. Only the throttle is
+    retryable."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    pool.ensure_connection = AsyncMock(side_effect=GatewayAuthBackoff("auth backoff active for another 42s"))
     _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
 
     assert pool.ensure_connection.await_count == 1

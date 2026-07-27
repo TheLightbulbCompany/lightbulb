@@ -145,6 +145,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
+from core.gateway.connection_pool import GatewayReconnectThrottled
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services.onboarding_brief import build_first_run_message
 
@@ -170,11 +171,22 @@ _CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
 
 # Failure classes the dispatcher treats as TRANSIENT: connection-level
 # failures (``OSError`` covers ConnectionRefusedError/ConnectionResetError/
-# the raw [Errno 111] connect refusal) and timeouts (``asyncio.TimeoutError``
-# IS ``TimeoutError`` on >=3.11). Everything else -- including
-# ``GatewayConnectAuthError`` (a RuntimeError: same credentials cannot
-# succeed on retry) and chat-level errors -- is DETERMINISTIC and marks the
-# bootstrap failed for real.
+# the raw [Errno 111] connect refusal), timeouts (``asyncio.TimeoutError``
+# IS ``TimeoutError`` on >=3.11), and ``GatewayReconnectThrottled`` -- the
+# pool's own 5s reconnect floor, which clears on its own with no other
+# change. Everything else -- including ``GatewayConnectAuthError`` and
+# ``GatewayAuthBackoff`` (same credentials cannot succeed on retry, and each
+# attempt counts toward the gateway's 10-in-60s lockout) and chat-level
+# errors -- is DETERMINISTIC and marks the bootstrap failed for real.
+#
+# The throttle MUST be matched by its own type, never by ``RuntimeError``:
+# the auth-backoff guard is also a RuntimeError and is the semantic
+# opposite, so a broad catch would hammer an owner into the gateway lockout.
+# Listing it here is what makes a 5-second cooldown survivable -- before it,
+# a status poll connecting ~0.3s ahead of the dispatcher latched the row at
+# ``failed`` permanently, silently costing that owner first contact. The
+# first rung of ``_CONNECT_RETRY_DELAYS_S`` is 5s, exactly the floor, so one
+# retry clears it.
 #
 # NB: being of a transient TYPE is NECESSARY but NOT SUFFICIENT for a
 # cross-poll re-arm. The re-arm also requires that the failure occurred
@@ -183,7 +195,11 @@ _CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
 # ``send_rpc`` ack timeout) is NOT re-armed, because a chat.send may already
 # have been accepted by OpenClaw and a fresh re-dispatch could double-run
 # Friday. See ``maybe_dispatch_bootstrap``'s classifier for the full rule.
-_TRANSIENT_DISPATCH_ERRORS: tuple[type[BaseException], ...] = (OSError, TimeoutError)
+_TRANSIENT_DISPATCH_ERRORS: tuple[type[BaseException], ...] = (
+    OSError,
+    TimeoutError,
+    GatewayReconnectThrottled,
+)
 
 
 def _paperclip_repo():

@@ -102,7 +102,7 @@ async def send_to_owner(
         if not (settings.AGENT_EMAIL_DOMAIN or "").strip():
             return "disabled"
 
-        repo = PaperclipRepo()
+        repo = PaperclipRepo(table_name="paperclip-companies")
         onboarding = await repo.get_onboarding_state(owner_id) or {}
         generation = onboarding.get("onboarding_generation") or ""
         row_user_id = onboarding.get("user_id") or owner_id

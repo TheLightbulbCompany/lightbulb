@@ -101,6 +101,30 @@ _RECONNECT_FLOOR_S = 5
 _AUTH_BACKOFF_BASE_S = 60
 _AUTH_BACKOFF_CAP_S = 300
 
+
+class GatewayReconnectThrottled(RuntimeError):
+    """Refused by the reconnect floor.
+
+    TRANSIENT by construction: the floor is ``_RECONNECT_FLOOR_S`` seconds and
+    nothing else has to change for the next attempt to succeed. Callers that
+    retry on a ladder should treat this as retryable.
+    """
+
+
+class GatewayAuthBackoff(RuntimeError):
+    """Suppressed by the auth-failure hold.
+
+    The semantic OPPOSITE of ``GatewayReconnectThrottled``, despite both
+    guarding ``ensure_connection``: retrying with the same credentials cannot
+    succeed, and each attempt counts toward the gateway's 10-in-60s lockout.
+    Callers must NOT treat this as retryable.
+
+    These are distinct types precisely so ``except RuntimeError`` can never
+    catch both — that conflation latched bootstrap dispatch at ``failed`` on a
+    5-second cooldown.
+    """
+
+
 # How stale `last_event_at` on an active run must be before the parked
 # connection counts as "agent appears stuck" for observability. Set by spec
 # §6 — we don't ESCALATE on this (deferred follow-up); we only
@@ -2776,14 +2800,19 @@ class GatewayConnectionPool:
         Keeps a misbehaving container from burning the open-handshake
         budget at sub-second cadence when the frontend's exponential
         reconnect collides with multiple in-flight retries server-side.
-        Stamps the attempt time even when raising so the floor is
-        sticky across the caller-retry boundary.
+
+        The stamp is taken only on the pass-through path — a throttled
+        attempt does NOT extend the floor, so a caller waiting out
+        ``_RECONNECT_FLOOR_S`` always gets through on its next try. (An
+        earlier version of this docstring claimed the stamp was sticky
+        across raises; the code never did that, and designing a retry
+        policy around the claim would over-back-off.)
         """
         now = time.monotonic()
         last = self._last_reconnect_at.get(user_id, 0.0)
         if last and (now - last) < _RECONNECT_FLOOR_S:
             put_metric("gateway.connection", dimensions={"event": "reconnect_throttled"})
-            raise RuntimeError(
+            raise GatewayReconnectThrottled(
                 f"Gateway reconnect throttled for user {user_id} — "
                 f"last attempt {now - last:.1f}s ago, floor {_RECONNECT_FLOOR_S}s"
             )
@@ -2803,7 +2832,7 @@ class GatewayConnectionPool:
         remaining = until - time.monotonic()
         if remaining > 0:
             put_metric("gateway.connection", dimensions={"event": "auth_backoff"})
-            raise RuntimeError(
+            raise GatewayAuthBackoff(
                 f"Gateway reconnect suppressed for user {user_id} — auth backoff active for another {remaining:.1f}s"
             )
 

@@ -55,7 +55,6 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
-from core.observability.product_analytics import capture_product_event
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.onboarding_brief import build_onboarding_brief_text, reconcile_pending_brief
 from core.services.status_events import publish_status_changed
@@ -139,28 +138,29 @@ async def submit_brief(
         brief_text=brief_text,
         submitted_by=auth.user_id,
     )
+    # Fired on BOTH outcomes, deliberately. A duplicate submit is very often
+    # the user trying to unstick a brief that is sitting undrained -- it is the
+    # only lever the funnel gives them -- so the one path where a retry is most
+    # wanted must not be the path that skips it. reconcile_pending_brief
+    # dedupes concurrent drains for the same owner itself, and never raises.
+    asyncio.create_task(reconcile_pending_brief(owner_id))
+
     if not landed:
         # An answer is already pending for this company (a peer member, or a
-        # double submit). Same terminal verdict the client gets from a
+        # double submit). Same terminal verdict the client gets from an
         # already-claimed funnel -- stop showing them the funnel.
         return {"status": "already_submitted"}
 
-    # Nudge the owner's tabs: `compute_status` now reports funnel_state
+    # Nudge the owner's tabs: `compute_status` reports funnel_state
     # "submitted" off this pending item, so every tab on this company (not
     # just the submitter's) can drop the funnel without waiting out the poll.
     publish_status_changed(owner_id)
 
-    # Fire the drain in case the workspace is ALREADY up -- makes the split
-    # invisible for a user who took their time on the funnel. If it is still
-    # provisioning this is a cheap no-op and the /container/status poll drains
-    # it later; reconcile_pending_brief never raises.
-    asyncio.create_task(reconcile_pending_brief(owner_id))
+    # NO analytics event here. `first_run_brief_submitted` is emitted by the
+    # drain, once the goal and project actually exist
+    # (core.services.onboarding_brief) -- emitting it at intake would report a
+    # 100% onboarding funnel straight through a fleet-wide fulfilment outage.
 
-    capture_product_event(
-        distinct_id=auth.user_id,
-        event="first_run_brief_submitted",
-        properties={"path": body.path, "no_idea": body.input is None},
-    )
     # "staged" is kept as the wire word for a fresh intake: it already means
     # "the server has your brief", so a frontend/backend deploy skew is a
     # non-event.

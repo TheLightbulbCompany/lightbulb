@@ -137,6 +137,49 @@ describe("FirstRunFunnel", () => {
   });
 
   // The funnel is a committed front door with no skip; a persistently-failing
+  it("posts exactly once against a current backend", async () => {
+    // The endpoint is durable intake: it records the answer and returns, so
+    // there is nothing for the client to wait out. The loop this replaces gave
+    // up after ~16s while the Paperclip org seed takes ~33s, so every user who
+    // typed fast enough saw an error for a signup that was working.
+    const u = userEvent.setup();
+    await render(<FirstRunFunnel />);
+    await u.press(screen.getByRole("button", { name: "Grow my business" }));
+    await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
+    await u.press(screen.getByRole("button", { name: "Continue →" }));
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockPost).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dismiss the funnel on a 2xx body with no recognised status", async () => {
+    // Deploy-skew guard: an OLDER backend 202s "team workspace provisioning"
+    // while Paperclip warms, and the api client resolves any 2xx. Dismissing
+    // on that would discard the answer, so the body is still checked. The
+    // skew shim retries first, then the error branch takes over — and
+    // briefSubmitted must NOT be stamped, or the funnel is gone for good with
+    // nothing saved.
+    jest.useFakeTimers();
+    try {
+      mockPost.mockReset().mockResolvedValue({ status: "provisioning" });
+      const u = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+      await render(<FirstRunFunnel />);
+      await u.press(screen.getByRole("button", { name: "Grow my business" }));
+      await u.type(screen.getByPlaceholderText("yourcompany.com"), "example.com");
+      await u.press(screen.getByRole("button", { name: "Continue →" }));
+
+      await waitFor(() => expect(mockPost).toHaveBeenCalled());
+      await jest.advanceTimersByTimeAsync(20000);
+
+      // "Retry" only renders on the error branch (the copy around it is split
+      // across Text nodes, so match the link rather than the sentence).
+      expect(await screen.findByText("Retry")).toBeTruthy();
+      expect(mockUpdate).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   // brief must still leave a wrong-account user an exit. A non-409 failure
   // lands straight on the error branch (no retry delay), which now carries the
   // same confirm-then-signOut escape every provision screen has.

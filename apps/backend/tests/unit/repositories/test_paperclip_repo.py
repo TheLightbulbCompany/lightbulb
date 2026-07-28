@@ -1236,10 +1236,12 @@ async def test_onboarding_state_reports_a_pending_brief_against_an_unclaimed_row
     assert state["pending_brief"] is True
 
 
-async def test_onboarding_state_skips_the_pending_read_once_the_funnel_moved(repo):
-    """The steady-state fleet polls this every ~3s. Once the row's own funnel
-    has advanced, the extra read must not happen at all -- proven here by a
-    stale pending item that is nonetheless reported as absent."""
+async def test_onboarding_state_stops_reading_only_once_the_funnel_is_COMPLETE(repo):
+    """The steady-state fleet polls this every ~3s, so the read is gated -- but
+    on "complete", not on "still not_started". The tighter gate looked cheaper
+    and was wrong: a claim that landed and then died mid-seed leaves the row at
+    "submitted" forever, and gating there made the still-undrained brief
+    invisible to the drain permanently."""
     await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="complete"))
     await repo.put_pending_brief(
         "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
@@ -1248,3 +1250,74 @@ async def test_onboarding_state_skips_the_pending_read_once_the_funnel_moved(rep
     state = await repo.get_onboarding_state("u1")
     assert state["pending_brief"] is False
     assert state["funnel_state"] == "complete"
+
+
+async def test_onboarding_state_still_reports_a_pending_brief_under_a_stuck_claim(repo):
+    """funnel_state "submitted" with nothing seeded behind it is the stuck-claim
+    case -- the drain has to stay able to see the brief and recover it."""
+    await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="submitted"))
+    await repo.put_pending_brief(
+        "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
+    )
+
+    assert (await repo.get_onboarding_state("u1"))["pending_brief"] is True
+
+
+# --- Giving up, and letting the user try again -------------------------------
+
+
+async def test_a_failed_brief_stops_dismissing_the_funnel(repo):
+    """Exhausting the drain's budget must hand the funnel BACK. If a failed
+    item kept reporting `pending_brief`, compute_status would keep synthesising
+    funnel_state "submitted" and the user would sit in an empty chat forever
+    with no way to resubmit."""
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="user_abc"
+    )
+    assert (await repo.get_onboarding_state("user_abc"))["pending_brief"] is True
+
+    await repo.fail_pending_brief("user_abc", reason="paperclip exploded")
+
+    assert (await repo.get_onboarding_state("user_abc"))["pending_brief"] is False
+    item = await repo.get_pending_brief("user_abc")
+    # Kept, not deleted: `last_error` is what the next operator reads when
+    # asked why this owner never got Friday.
+    assert item["brief_state"] == "failed"
+    assert item["last_error"] == "paperclip exploded"
+
+
+async def test_a_resubmit_overwrites_a_failed_brief(repo):
+    """The funnel is a committed front door with no skip -- if the put-if-absent
+    guard also refused a failed item, the user would submit into a void."""
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="first idea", detail=None, brief_text="build first", submitted_by="user_abc"
+    )
+    await repo.fail_pending_brief("user_abc", reason="gave up")
+
+    assert await repo.put_pending_brief(
+        "user_abc",
+        path="new",
+        user_input="second idea",
+        detail=None,
+        brief_text="build second",
+        submitted_by="user_abc",
+    )
+    item = await repo.get_pending_brief("user_abc")
+    assert item["input"] == "second idea"
+    assert item["brief_state"] == "pending"
+    assert item["attempts"] == 0
+
+
+async def test_failures_are_counted_on_the_item_not_in_memory(repo):
+    """The process that fails is often not the process that retries -- a
+    rolling deploy, a different task picking up the next poll."""
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="user_abc"
+    )
+
+    assert await repo.record_pending_brief_failure("user_abc", reason="boom") == 1
+    assert await repo.record_pending_brief_failure("user_abc", reason="boom again") == 2
+    item = await repo.get_pending_brief("user_abc")
+    assert item["last_error"] == "boom again"
+    # Still drainable: counting a failure is not giving up.
+    assert item["brief_state"] == "pending"

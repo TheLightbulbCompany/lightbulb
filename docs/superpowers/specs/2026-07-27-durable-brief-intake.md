@@ -187,3 +187,44 @@ backend's 202 would discard the answer. Only the retry loop goes.
   redundant, but a separate cleanup).
 - The `bootstrap_state: not_started` row observed on `org_3H3viG…` after a
   successful submit — different failure, tracked separately.
+
+## Round 2 — what the xhigh review changed
+
+15 verified findings. The design above survived; three of its details did not,
+and all three were the same failure class it exists to prevent.
+
+**The retry engine was leaning on a poll that stops.** Dismissing the funnel
+opens chat → `runtime_phase` goes "ready" → `cadenceFor` drops the client poll
+to 0. The one moment a stranded brief needs another attempt is the moment the
+polling stops. The drain now carries its own bounded retry
+(`_RETRY_BACKOFF_S`, ~3 min) and the poll is a secondary trigger.
+
+**`onboarding_goal_id` was not proof of fulfilment.** `record_onboarding_ids`
+writes it *before* `stage_first_run_files`, whose failure rolls the ids back —
+so a losing drain could retire the pending item for a winner about to revert,
+losing the brief outright. Retirement now needs `funnel_state == "complete"`,
+or ids that have outlived the winner's rollback window (`SETTLED_CLAIM_S`).
+
+**The `funnel_state == "not_started"` read gate created a permanent blind
+spot.** A claim that landed and then died mid-seed leaves the row "submitted"
+forever; the gate hid the still-undrained brief from that moment on, while
+`maybe_dispatch_bootstrap` (guarding on "submitted") still woke Friday into a
+goal-less company. Gate is now `!= "complete"`, and a claim older than
+`STALE_CLAIM_S` with nothing seeded is reverted so it can be re-won.
+
+Also fixed: no attempt cap (a deterministic failure retried forever, creating
+and deleting a Paperclip goal/project pair every poll — now a persisted budget
+that ends in a visible `failed` state which re-shows the funnel); no
+in-flight dedupe (every tab's poll did its own Clerk + Paperclip sign-in); the
+drain hook sat below early returns (parked trial, 402 gates, org-member 202
+could never fulfil); `/debug/user-data` left the sentinel behind, so a wiped
+account inherited the previous run's brief; the conversion event fired at
+intake, so the funnel metric would have read 100% through a fulfilment outage;
+the kickoff dispatch lost its inline onboarding dict and could no-op on GSI
+lag; a duplicate submit skipped the drain, disabling the user's only lever;
+one test asserted its own docstring's opposite; mobile shipped untested.
+
+Kept deliberately: a two-attempt 409/202 retry in both clients as a
+**deploy-skew shim only** (Vercel ships ahead of ECS; the old backend 409s for
+~30s of every signup). Marked for deletion once the durable-intake backend is
+everywhere.

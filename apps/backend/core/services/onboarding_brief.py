@@ -26,9 +26,13 @@ The spec is docs/superpowers/specs/2026-07-12-onboarding-aha-first-run-design.md
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import datetime, timezone
+from enum import Enum
 
 from core.containers.workspace import Workspace
+from core.observability.product_analytics import capture_product_event
 
 logger = logging.getLogger(__name__)
 
@@ -349,42 +353,175 @@ def first_name_from_email(email: str | None) -> str:
     return local.replace(".", " ").title() or "there"
 
 
+class DrainOutcome(str, Enum):
+    """What one pass of ``_fulfil_pending_brief`` achieved."""
+
+    DONE = "done"
+    """Fulfilled, already fulfilled by a peer, or nothing pending. Stop."""
+
+    NOT_READY = "not_ready"
+    """The workspace can't receive a brief yet (no owner row, still
+    provisioning, Friday not seeded). The NORMAL first-run state -- this is
+    what the whole mechanism exists to wait through, so it must never burn a
+    failure attempt."""
+
+    FAILED = "failed"
+    """Fulfilment was attempted and something went wrong. Counted, and the
+    budget below is what stops it going round forever."""
+
+
+# Failure budget, persisted on the pending item (not in memory -- the process
+# that fails is often not the process that retries). Exhausting it flips the
+# item to ``brief_state: "failed"``, which re-shows the funnel with the error
+# instead of leaving the user in an empty chat with an agent that never
+# starts. Sized like ``MAX_BOOTSTRAP_ATTEMPTS``: enough to ride out a
+# Paperclip blip, few enough that a deterministic failure surfaces in ~a
+# minute rather than never.
+MAX_DRAIN_FAILURES = 5
+
+# In-process retry cadence. This exists because the /container/status poll --
+# the other thing that would retry -- STOPS once the funnel dismisses: opening
+# the chat surface makes runtime_phase "ready", and `cadenceFor` drops the
+# poll interval to 0. So the drain cannot rely on being called again; it has
+# to carry its own retry. Bounded, and short enough to stay inside a request
+# lifetime's worth of background work.
+_RETRY_BACKOFF_S = (2, 5, 10, 20, 30, 60, 60)
+
+# A funnel claim held this long with nothing seeded behind it is not a peer
+# mid-flight (a real drain takes seconds) -- it is a claim whose owner died
+# between the CAS and the seed, e.g. a task killed by a rolling deploy. The
+# generation fence has no stale-steal of its own, so without this the row sits
+# at "submitted" with no goal and no project forever, unclaimable.
+STALE_CLAIM_S = 300
+
+# How long after a claim its seeded ids are treated as final. A drain that is
+# going to roll back does so in its own except handler, seconds after
+# recording the ids -- so past this, ids on the row mean the brief really was
+# fulfilled and any pending item still sitting there can be retired.
+SETTLED_CLAIM_S = 60
+
+
+def _claim_age_s(submitted_at) -> float | None:
+    """Seconds since the funnel claim landed, or None if unknown/unparseable.
+    Accepts the datetime the dataclass carries or the ISO string DDB returns."""
+    if submitted_at is None:
+        return None
+    stamped = submitted_at if hasattr(submitted_at, "timestamp") else None
+    if stamped is None:
+        try:
+            stamped = datetime.fromisoformat(str(submitted_at))
+        except ValueError:
+            return None
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamped).total_seconds()
+
+
+# Owners with a drain already running in THIS process. The poll fires this
+# every ~3s per tab and the endpoint fires it once more; without dedupe each
+# call would independently do a Clerk lookup, a Paperclip sign-in (no cache --
+# see paperclip_user_session) and a list_agents, and on a failing owner would
+# create and delete a goal/project pair every time.
+_draining: set[str] = set()
+
+
 async def reconcile_pending_brief(owner_id: str) -> None:
     """Fulfil a submitted funnel answer, if there is one and the workspace can
-    now receive it.
+    now receive it. Retries itself until it succeeds or gives up.
 
     This is the FULFILMENT half of ``POST /onboarding/brief``. The endpoint
     itself does intake only (record what the user said, return); everything
     that needs Paperclip up and Friday seeded happens here, on the same
     server-owned, idempotent, claim-fenced pattern as
-    ``bootstrap_dispatcher.maybe_dispatch_bootstrap`` -- and off the same two
-    call sites:
+    ``bootstrap_dispatcher.maybe_dispatch_bootstrap``. Call sites:
 
-      - ``routers/onboarding.py:submit_brief`` -- immediately after intake, for
-        the case where the workspace is ALREADY up (a re-signup, or a user who
-        took their time on the funnel). Makes the split invisible.
-      - ``routers/container.py:container_status`` -- every ~3s poll while
-        provisioning. This is the one that matters: the funnel renders DURING
-        provisioning, so the first-time path always drains here.
+      - ``routers/onboarding.py:submit_brief`` -- on every accepted POST,
+        including a duplicate one, since a resubmit is often the user trying
+        to unstick exactly this.
+      - ``routers/container.py:container_status`` -- ahead of that endpoint's
+        early returns, so a parked trial / gated / org-member poll still
+        drains.
 
-    Never raises -- both callers fire it as a background task, where an escaping
-    exception is an unretrieved-task error rather than a retry. Anything that
-    isn't ready yet (no owner row, still provisioning, Friday not seeded,
-    Paperclip 5xx) simply returns and leaves the pending item in place for the
-    next poll to retry. That retry loop replaces the one the BROWSER used to
-    run, which lost the brief entirely if the tab closed or the user gave up.
+    **Why it retries itself rather than leaning on the poll.** The poll looks
+    like a free retry engine and isn't: dismissing the funnel opens the chat
+    surface, which makes ``runtime_phase`` "ready", which sets the client's
+    poll interval to 0. The one moment a stranded brief needs another attempt
+    is the moment the polling stops. So this owns its own bounded retry, and
+    the poll is a secondary trigger for the case where the process holding
+    that retry died.
+
+    Never raises -- every caller fires it as a background task, where an
+    escaping exception is an unretrieved-task error rather than a retry.
     """
+    if owner_id in _draining:
+        return
+    _draining.add(owner_id)
     try:
-        await _fulfil_pending_brief(owner_id)
-    except Exception:  # noqa: BLE001 — background task; the next poll retries
+        await _drain_until_settled(owner_id)
+    except Exception:  # noqa: BLE001 — background task
         # CancelledError is NOT an Exception, so a shutdown still propagates
         # (the rollback inside has already run -- see its handler).
-        logger.exception("reconcile_brief: fulfilment failed for %s; will retry", owner_id)
+        logger.exception("reconcile_brief: drain loop failed for %s", owner_id)
+    finally:
+        _draining.discard(owner_id)
 
 
-async def _fulfil_pending_brief(owner_id: str) -> None:
-    """The body of ``reconcile_pending_brief``; may raise, and its caller is
-    the single place that guarantees it doesn't escape."""
+async def _drain_until_settled(owner_id: str) -> None:
+    """Retry ``_fulfil_pending_brief`` until it settles, or the budget is out.
+
+    NOT_READY costs nothing but a wait -- provisioning taking its time is the
+    expected path, not a failure. Only a real FAILED attempt is counted, and
+    only against the persisted budget, so attempts survive the process that
+    made them.
+    """
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+
+    for delay in _RETRY_BACKOFF_S:
+        reason = ""
+        try:
+            outcome = await _fulfil_pending_brief(owner_id)
+        except Exception as e:  # noqa: BLE001 — a raise IS a failed attempt
+            # Deliberately broad. Some of what lands here is transient
+            # (Paperclip warming, a 5xx) and some never resolves (Clerk has no
+            # email for a deleted submitter; a TypeError from a real bug). The
+            # budget below is what tells them apart in the end -- classifying
+            # up front is guesswork, and getting it wrong in the "permanent"
+            # direction is what turned a broken drain into a silent
+            # forever-loop the user could not escape.
+            logger.warning("reconcile_brief: attempt failed for %s: %s", owner_id, e, exc_info=True)
+            outcome, reason = DrainOutcome.FAILED, f"{type(e).__name__}: {e}"
+
+        if outcome is DrainOutcome.DONE:
+            return
+        if outcome is DrainOutcome.FAILED:
+            failures = await repo.record_pending_brief_failure(owner_id, reason=reason)
+            if failures >= MAX_DRAIN_FAILURES:
+                # Give up VISIBLY: the funnel comes back carrying this error,
+                # so the user can answer again instead of sitting in an empty
+                # chat forever.
+                logger.error(
+                    "reconcile_brief: giving up on %s after %s failures (%s)",
+                    owner_id,
+                    failures,
+                    reason,
+                )
+                await repo.fail_pending_brief(owner_id, reason=reason, owner_broadcast_id=owner_id)
+                return
+        await asyncio.sleep(delay)
+
+    # Out of in-process retries without a terminal verdict -- the workspace
+    # never came up. The item stays PENDING (not failed): this is a
+    # provisioning problem, not a bad brief, and the next /container/status
+    # poll re-enters here. Deliberately not marked failed, or a slow provision
+    # would throw away a perfectly good answer.
+    logger.info("reconcile_brief: %s not fulfilled within the in-process retry window; leaving pending", owner_id)
+
+
+async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
+    """One fulfilment pass. May raise; ``_drain_until_settled`` counts that as
+    a FAILED attempt exactly like a returned FAILED."""
     from core.containers import get_workspace
     from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
     from core.services.clerk_admin import get_primary_email
@@ -393,15 +530,17 @@ async def _fulfil_pending_brief(owner_id: str) -> None:
 
     repo = PaperclipRepo(table_name="paperclip-companies")
     pending = await repo.get_pending_brief(owner_id)
-    if pending is None:
-        return
+    if pending is None or pending.get("brief_state") == "failed":
+        # Nothing pending, or we already gave up and handed it back to the
+        # user via the funnel. Either way this loop is over.
+        return DrainOutcome.DONE
 
     # Strong read: we are about to conditionally write this same row.
     owner_row = await repo.resolve_owner_row(owner_id, consistent_read=True)
     if owner_row is None or not owner_row.onboarding_generation or owner_row.status != "active":
         # Not provisioned far enough to receive a brief. The pending item is
-        # the whole point: nothing is lost by waiting for the next poll.
-        return
+        # the whole point: nothing is lost by waiting.
+        return DrainOutcome.NOT_READY
     generation = owner_row.onboarding_generation
 
     submitted_by = pending.get("submitted_by") or owner_row.user_id
@@ -429,13 +568,21 @@ async def _fulfil_pending_brief(owner_id: str) -> None:
         )
         admin = shared_admin_client()
         agents = await admin.list_agents(session_cookie=session_cookie, company_id=owner_row.company_id)
-    except Exception as e:  # noqa: BLE001 — every one of these is retryable
-        logger.info("reconcile_brief: workspace not ready for %s (%s); retrying next poll", owner_id, e)
-        return
+    except Exception as e:  # noqa: BLE001 — classified by the caller's budget
+        # Counted as a FAILURE, not as "not ready". Most of what lands here IS
+        # transient (Paperclip warming, a 5xx), but some of it never resolves:
+        # Clerk raising for a submitter whose account was deleted, or an
+        # AttributeError from a genuine bug in these three calls. Treating the
+        # whole class as "retry next poll" is what turned a permanent error
+        # into a silent forever-loop the user could never escape -- the budget
+        # in _drain_until_settled is what ends it now, and exc_info is what
+        # tells the next person which kind it was.
+        logger.warning("reconcile_brief: fulfilment read phase failed for %s: %s", owner_id, e, exc_info=True)
+        raise
     friday = next((a for a in agents if a.get("role") == "ceo"), None)
     if friday is None:
-        # Paperclip seed hasn't landed Friday yet.
-        return
+        # Paperclip seed hasn't landed Friday yet -- still provisioning.
+        return DrainOutcome.NOT_READY
     friday_id = friday["id"]
 
     claim_result = await repo.claim_funnel_submission(
@@ -446,24 +593,11 @@ async def _fulfil_pending_brief(owner_id: str) -> None:
         brief_text=brief_text,
     )
     if claim_result is FunnelClaimResult.STALE_GENERATION:
-        # Reprovisioned underneath us. Leave the pending item: the next poll
+        # Reprovisioned underneath us. Leave the pending item: the next pass
         # re-reads the new generation and drains against that instead.
-        return
+        return DrainOutcome.NOT_READY
     if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
-        # Someone else won -- a peer drain on another backend instance, or an
-        # earlier drain of ours that got as far as the claim. Retire the
-        # pending item ONLY on evidence that fulfilment actually completed
-        # (the row carries the seeded ids). A drain that is still in flight
-        # can still fail and revert its claim, and deleting here would lose
-        # the brief for good -- the one outcome this whole mechanism exists
-        # to prevent. (For an org this re-read goes through the
-        # eventually-consistent by-org-id GSI, so a just-written id may not
-        # be visible yet; the cost of that is one more poll, in the safe
-        # direction.)
-        fulfilled = await repo.resolve_owner_row(owner_id, consistent_read=True)
-        if fulfilled is not None and fulfilled.onboarding_goal_id:
-            await repo.delete_pending_brief(owner_id)
-        return
+        return await _settle_lost_claim(repo, owner_id, owner_row, generation)
 
     goal_id: str | None = None
     project_id: str | None = None
@@ -534,15 +668,118 @@ async def _fulfil_pending_brief(owner_id: str) -> None:
             logger.error("reconcile_brief: failed to revert funnel claim for %s: %s", owner_id, cleanup_err)
         raise
 
-    await repo.delete_pending_brief(owner_id)
+    # The pending item is deliberately NOT deleted here, even though we won the
+    # claim and finished the work. Deleting it now hands the funnel's dismissal
+    # back to a single signal -- the row's own funnel_state -- which for an org
+    # is read through the eventually-consistent by-org-id GSI. A poll landing
+    # in that replication window would see the item gone AND the row still
+    # "not_started", and re-render the committed front door at a user who just
+    # submitted (empty, since the client clears its draft on success).
+    #
+    # Retirement instead happens at one of two later, lag-free points:
+    #   * the completion sweep in bootstrap_dispatcher, when funnel_state goes
+    #     "complete" -- which is also the moment get_onboarding_state stops
+    #     reading this item at all; or
+    #   * _settle_lost_claim, once the seeded ids have outlived the rollback
+    #     window (SETTLED_CLAIM_S), for the case where the kickoff never
+    #     delivers.
+
+    # The funnel-conversion event belongs HERE, not at intake: it is the
+    # metric that answers "did onboarding work", and an intake-time emission
+    # would have shown 100% success through a fleet-wide fulfilment outage --
+    # the exact failure this whole mechanism exists to make visible.
+    capture_product_event(
+        distinct_id=submitted_by,
+        event="first_run_brief_submitted",
+        properties={"path": path, "no_idea": user_input is None},
+    )
 
     # Same fire-and-forget hand-off the endpoint used to make: if the runtime
     # is already up, Friday's kickoff goes now; if it is still cold, the next
     # /container/status poll dispatches it (bootstrap_dispatcher's own guards
     # make a redundant call a cheap no-op).
+    #
+    # The onboarding dict is passed INLINE rather than letting the dispatcher
+    # re-read the row. For an org that re-read goes through the
+    # eventually-consistent by-org-id GSI, and the claim landed milliseconds
+    # ago -- it would read funnel_state "not_started" and silently skip the
+    # kickoff, which is precisely the miss the old router avoided by passing
+    # this same dict. Every value here is one we just wrote or just read.
     from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 
-    await maybe_dispatch_bootstrap(owner_id)
+    await maybe_dispatch_bootstrap(
+        owner_id,
+        onboarding={
+            "onboarding_generation": generation,
+            "funnel_state": "submitted",
+            "bootstrap_state": owner_row.bootstrap_state or "not_started",
+            "bootstrap_attempts": owner_row.bootstrap_attempts or 0,
+            "user_id": owner_row.user_id,
+            "onboarding_submitted_by": submitted_by,
+            "onboarding_brief_text": brief_text,
+        },
+    )
+    return DrainOutcome.DONE
+
+
+async def _settle_lost_claim(repo, owner_id: str, owner_row, generation: str) -> DrainOutcome:
+    """We lost the funnel claim. Decide what that means for the pending item.
+
+    Three cases, and the distinction is load-bearing:
+
+    * **Fulfilment completed** (``funnel_state == "complete"`` -- set only by
+      ``mark_bootstrap_delivered``, i.e. Friday's kickoff was OBSERVED to
+      deliver). The brief is done; retire the item.
+    * **A peer is mid-flight.** Leave the item alone and stop. It is NOT
+      enough that the row carries ``onboarding_goal_id``: those ids are
+      written by ``record_onboarding_ids`` BEFORE the last fallible step
+      (``stage_first_run_files``), whose failure rolls the goal, the project
+      AND the ids back. Deleting on that evidence loses the brief in exactly
+      the case this mechanism exists to survive -- a winner that reverts.
+    * **The claim is stale.** A drain that won the CAS and then died before
+      seeding (a rolling deploy, a cancelled task) leaves the row at
+      "submitted" with nothing behind it, and the generation fence has no
+      stale-steal of its own -- so the row would sit unclaimable forever
+      while the funnel stays dismissed. Revert the claim so the next pass can
+      win it, the same recovery ``rearm_bootstrap_dispatch`` gives the
+      bootstrap claim.
+    """
+    fresh = await repo.resolve_owner_row(owner_id, consistent_read=True)
+    if fresh is None:
+        return DrainOutcome.NOT_READY
+    if (getattr(fresh, "funnel_state", None) or "") == "complete":
+        await repo.delete_pending_brief(owner_id)
+        return DrainOutcome.DONE
+    age_s = _claim_age_s(getattr(fresh, "funnel_submitted_at", None))
+
+    if fresh.onboarding_goal_id:
+        if age_s is not None and age_s >= SETTLED_CLAIM_S:
+            # Ids present and the winner is long past its own rollback window,
+            # so they are stable: this brief WAS fulfilled, even though the
+            # kickoff has not been observed to deliver yet. Retire the item.
+            # Without this the winner's own delete is the only retirement, and
+            # anything that wrote a second item (a funnel that briefly
+            # re-rendered on a stale read, a racing peer) would leak one
+            # forever -- and a leaked item's put-if-absent key blocks every
+            # future brief for that owner.
+            await repo.delete_pending_brief(owner_id)
+        # Otherwise: seeded moments ago and still inside the window where the
+        # winner could fail and roll the ids back. A peer owns this; leave the
+        # item and let their success path retire it.
+        return DrainOutcome.DONE
+
+    if age_s is not None and age_s < STALE_CLAIM_S:
+        # Young claim with no ids yet: a peer really is mid-seed. Wait.
+        return DrainOutcome.DONE
+
+    logger.warning(
+        "reconcile_brief: reverting a stale funnel claim for %s (age=%ss, no seeded ids)",
+        owner_id,
+        int(age_s) if age_s is not None else "unknown",
+    )
+    await repo.revert_funnel_submission(fresh.user_id, onboarding_generation=generation, owner_id=owner_id)
+    # Reverted, not fulfilled -- come back and claim it properly.
+    return DrainOutcome.NOT_READY
 
 
 def stage_first_run_files(

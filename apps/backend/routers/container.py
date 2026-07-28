@@ -153,11 +153,12 @@ def _maybe_drain_pending_brief(owner_id: str, onboarding: dict) -> None:
     fulfils it (see routers/onboarding.py and
     core.services.onboarding_brief.reconcile_pending_brief).
 
-    ``pending_brief`` rides the SAME onboarding dict compute_status already
-    consumed -- zero extra reads -- and is only ever True while the row's own
-    funnel_state is "not_started", so the steady-state fleet never schedules
-    this. The reconciler re-reads consistently and claims atomically; this
-    pre-check exists purely to keep the common poll from scheduling a no-op.
+    ``pending_brief`` rides the SAME onboarding dict compute_status consumes --
+    one read for both -- and is False for every owner whose funnel has
+    completed, so the steady-state fleet never schedules this. The reconciler
+    re-reads consistently, claims atomically and dedupes concurrent drains for
+    the same owner; this pre-check exists purely to keep the common poll from
+    scheduling a no-op task.
     """
     if onboarding.get("pending_brief"):
         asyncio.create_task(reconcile_pending_brief(owner_id))
@@ -204,6 +205,19 @@ async def container_status(
         from core.services.billing_service import sync_team_seat_quantity
 
         asyncio.create_task(sync_team_seat_quantity(owner_id))
+
+    # Drain a funnel answer submitted before the workspace could take it, BEFORE
+    # any of this endpoint's early returns. It used to sit at the bottom, which
+    # quietly excluded whole cohorts from ever fulfilling: a parked trial (returns
+    # at the wake gate), a bedrock_revoked or trial-cap 402, an org member on the
+    # no-container path (202). None of those block the drain itself -- it needs
+    # Paperclip, not a running container -- so they were dead ends for no reason.
+    #
+    # Costs one paperclip-companies read on every poll, which is why it is also
+    # threaded into compute_status below rather than read twice.
+    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
+    _maybe_drain_pending_brief(owner_id, onboarding)
+
     ecs_manager = get_ecs_manager()
     # Use resolve_running_container so polling triggers the
     # provisioning -> running health-check transition.
@@ -286,19 +300,9 @@ async def container_status(
         # (e.g. an org owner with no provider correctly surfaces
         # provider_selection_required rather than a false "provisioning").
         _dispatch_watched(ensure_user_ready(auth))
-        # Fetched here (rather than letting compute_status read it internally)
-        # so the SAME dict feeds the drain hook below -- zero extra reads, the
-        # pattern the has-container path already uses.
-        onboarding = await readiness_state.resolve_onboarding_state(owner_id)
         contract = await readiness_state.compute_status(owner_id, container=None, onboarding=onboarding)
         contract["container_status"] = "provisioning"
         contract["container_substatus"] = "ensure_user_ready"
-        # The drain belongs on THIS path too, not just the has-container one
-        # below. ensure_user_ready brings Paperclip up BEFORE it dispatches the
-        # container, and the drain only needs Paperclip -- so a brief must not
-        # sit unfulfilled behind a container that is slow (or failing) to
-        # appear. See routers/onboarding.py.
-        _maybe_drain_pending_brief(owner_id, onboarding)
         return _status_response(contract)
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
@@ -360,13 +364,11 @@ async def container_status(
     # phase so the client can render a "Teams needs attention / retry"
     # affordance instead of a hard block. Never gates.
     #
-    # Fetched once, here, and threaded into BOTH compute_status and the
-    # bootstrap-dispatch hook below — resolve_onboarding_state is the same
-    # paperclip-companies read compute_status would otherwise do internally
-    # (a by-org-id GSI query for an org owner), so without this every
-    # ~3s ready poll fleet-wide would pay it TWICE: once here (implicitly,
-    # inside compute_status) and once again inside maybe_dispatch_bootstrap.
-    onboarding = await readiness_state.resolve_onboarding_state(owner_id)
+    # `onboarding` was fetched once at the top of this handler (for the drain
+    # hook) and is threaded into BOTH compute_status and the bootstrap-dispatch
+    # hook below — it is the same paperclip-companies read compute_status would
+    # otherwise do internally (a by-org-id GSI query for an org owner), so
+    # without threading it every ~3s ready poll fleet-wide would pay it twice.
     contract = await readiness_state.compute_status(owner_id, container=container, onboarding=onboarding)
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
@@ -507,8 +509,6 @@ async def container_status(
         and (onboarding.get("bootstrap_state") or "not_started") == "not_started"
     ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
-
-    _maybe_drain_pending_brief(owner_id, onboarding)
 
     # Gateway liveness now lives on the connection-service DDB table (see
     # core/services/connection_service.py's mark_gateway_connected /

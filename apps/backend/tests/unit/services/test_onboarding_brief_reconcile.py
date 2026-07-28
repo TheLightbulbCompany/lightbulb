@@ -2,17 +2,25 @@
 
 ``POST /onboarding/brief`` records the answer and returns (see
 tests/unit/routers/test_onboarding.py). THIS is what turns that answer into a
-funnel claim, a seeded goal + project, a staged BRIEF.md and Friday's kickoff
--- driven off the /container/status poll, so it runs repeatedly and must be
-safe to run when there is nothing to do.
+funnel claim, a seeded goal + project, a staged BRIEF.md and Friday's kickoff.
 
-The property that matters most here, and the reason the split exists: a
-failure ANYWHERE must leave the pending item in place. It is the only record
-of what the user typed. The old fused endpoint held it in the browser, so a
-closed tab lost it.
+Two properties carry the design, and most of what follows pins one of them:
+
+* **A failure anywhere must leave the pending item in place.** It is the only
+  record of what the user typed; the old fused endpoint held it in the browser,
+  so a closed tab lost it. Retirement therefore happens on proof of fulfilment
+  and nothing weaker.
+* **The retry engine has to be here.** The /container/status poll looks like a
+  free one and isn't: dismissing the funnel opens chat, chat makes
+  runtime_phase "ready", and the client's poll interval drops to 0 — the poll
+  stops at exactly the moment a stranded brief needs another attempt.
+
+``_RETRY_BACKOFF_S`` is patched to zeros throughout: the real cadence is
+minutes, and every retry path below would otherwise sleep through it.
 """
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +28,7 @@ import pytest
 
 import core.containers as containers_mod
 import core.repositories.paperclip_repo as repo_mod
+import core.services.onboarding_brief as brief_mod
 import core.services.bootstrap_dispatcher as dispatcher_mod
 import core.services.clerk_admin as clerk_mod
 import core.services.paperclip_admin_client as admin_mod
@@ -51,6 +60,10 @@ def _owner_row(**overrides):
         status="active",
         onboarding_generation="01GEN",
         onboarding_goal_id=None,
+        funnel_state="not_started",
+        funnel_submitted_at=None,
+        bootstrap_state="not_started",
+        bootstrap_attempts=0,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -84,6 +97,15 @@ def env(monkeypatch):
 
     dispatch = AsyncMock()
     monkeypatch.setattr(dispatcher_mod, "maybe_dispatch_bootstrap", dispatch)
+
+    repo.record_pending_brief_failure = AsyncMock(return_value=1)
+    repo.fail_pending_brief = AsyncMock()
+    # Real cadence is 2s..60s. Keep the same NUMBER of attempts (the failure
+    # budget is asserted below) and drop only the waiting.
+    monkeypatch.setattr(brief_mod, "_RETRY_BACKOFF_S", (0,) * len(brief_mod._RETRY_BACKOFF_S))
+    # The drain dedupes concurrent runs per owner in a module-level set; a test
+    # that raises mid-drain must not leave an owner poisoned for the next one.
+    brief_mod._draining.clear()
 
     return SimpleNamespace(repo=repo, admin=admin, ws=ws, dispatch=dispatch)
 
@@ -170,9 +192,24 @@ async def test_drain_claims_seeds_stages_then_retires_the_pending_item(env):
     assert brief_call.args[0] == "user_abc"  # owner id -- the workspace path
     assert brief_call.args[1] == "workspace-friday-uuid/BRIEF.md"
     assert "acme.com" in brief_call.args[2]
-    # Only now is the answer retired, and only now does Friday get woken.
-    env.repo.delete_pending_brief.assert_awaited_once_with("user_abc")
-    env.dispatch.assert_awaited_once_with("user_abc")
+    # The item is deliberately NOT retired here: dismissal would then rest on
+    # the row's funnel_state alone, which for an org is read through the
+    # eventually-consistent by-org-id GSI -- and a poll inside that window
+    # would re-render the funnel at a user who just submitted. Retirement is
+    # the completion sweep (bootstrap_dispatcher) or _settle_lost_claim.
+    env.repo.delete_pending_brief.assert_not_awaited()
+    # The onboarding dict is passed INLINE. Letting the dispatcher re-read the
+    # row would, for an org, go through the eventually-consistent by-org-id
+    # GSI milliseconds after the claim -- it would read "not_started" and skip
+    # the kickoff entirely.
+    env.dispatch.assert_awaited_once()
+    assert env.dispatch.await_args.args[0] == "user_abc"
+    passed = env.dispatch.await_args.kwargs["onboarding"]
+    assert passed["funnel_state"] == "submitted"
+    assert passed["onboarding_generation"] == "01GEN"
+    assert passed["user_id"] == "owner-row-user"
+    assert passed["onboarding_submitted_by"] == "member_zed"
+    assert passed["onboarding_brief_text"] == "work on acme.com"
 
 
 async def test_session_is_minted_for_the_owner_row_not_the_submitter(env, monkeypatch):
@@ -199,7 +236,7 @@ async def test_no_board_seeding_on_drain(env):
 
 async def test_stale_generation_keeps_the_brief_and_reverts_nothing(env):
     """Reprovisioned underneath us: our view is stale, not duplicate. The
-    next poll re-reads the new generation and drains against that."""
+    next pass re-reads the new generation and drains against that."""
     env.repo.claim_funnel_submission.return_value = FunnelClaimResult.STALE_GENERATION
 
     await reconcile_pending_brief("user_abc")
@@ -209,11 +246,11 @@ async def test_stale_generation_keeps_the_brief_and_reverts_nothing(env):
     env.repo.revert_funnel_submission.assert_not_awaited()
 
 
-async def test_already_submitted_retires_the_brief_only_once_seeding_landed(env):
-    """A peer drain won the claim AND finished (the row carries the ids), so
-    this answer is fulfilled -- retire it."""
+async def test_lost_claim_retires_the_brief_once_the_funnel_completed(env):
+    """`funnel_state == "complete"` is set only by mark_bootstrap_delivered,
+    i.e. Friday's kickoff was OBSERVED to deliver. That is unambiguous."""
     env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
-    env.repo.resolve_owner_row.return_value = _owner_row(onboarding_goal_id="goal-1")
+    env.repo.resolve_owner_row.return_value = _owner_row(funnel_state="complete", onboarding_goal_id="goal-1")
 
     await reconcile_pending_brief("user_abc")
 
@@ -221,16 +258,74 @@ async def test_already_submitted_retires_the_brief_only_once_seeding_landed(env)
     env.admin.create_goal.assert_not_awaited()
 
 
-async def test_already_submitted_keeps_the_brief_while_the_winner_is_still_running(env):
-    """THE race that would silently eat a brief: a peer holds the claim but
-    has not finished seeding. It can still fail and revert -- deleting now
-    would leave the company with a submitted funnel, no goal/project, and no
-    record of what the user asked for."""
+async def test_lost_claim_keeps_the_brief_while_the_winner_could_still_revert(env):
+    """THE race that would silently eat a brief. Seeded ids are NOT proof of
+    fulfilment: `record_onboarding_ids` writes them BEFORE the last fallible
+    step (stage_first_run_files), whose failure rolls the goal, the project
+    and the ids back. A peer that deleted on this evidence would leave the
+    company with no claim, no goal and no record of what the user asked for."""
     env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
-    env.repo.resolve_owner_row.return_value = _owner_row(onboarding_goal_id=None)
+    env.repo.resolve_owner_row.return_value = _owner_row(
+        funnel_state="submitted",
+        onboarding_goal_id="goal-1",
+        funnel_submitted_at=datetime.now(timezone.utc),  # winner is mid-flight
+    )
 
     await reconcile_pending_brief("user_abc")
 
+    env.repo.delete_pending_brief.assert_not_awaited()
+
+
+async def test_lost_claim_retires_the_brief_once_the_seeded_ids_have_settled(env):
+    """The winner's rollback runs in its own except handler, seconds after
+    recording the ids. Past SETTLED_CLAIM_S the ids are final, so an item
+    still sitting there (a racing peer, a funnel that briefly re-rendered on a
+    stale read) is retired rather than leaked -- a leaked item's put-if-absent
+    key blocks every future brief for that owner."""
+    env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
+    env.repo.resolve_owner_row.return_value = _owner_row(
+        funnel_state="submitted",
+        onboarding_goal_id="goal-1",
+        funnel_submitted_at=datetime.now(timezone.utc) - timedelta(seconds=brief_mod.SETTLED_CLAIM_S + 5),
+    )
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.delete_pending_brief.assert_awaited_once_with("user_abc")
+
+
+async def test_a_stale_claim_with_nothing_seeded_is_reverted_so_it_can_be_re_won(env):
+    """A drain that won the CAS then died before seeding (rolling deploy,
+    cancelled task) leaves the row "submitted" with nothing behind it. The
+    generation fence has no stale-steal of its own, so without this the row is
+    unclaimable forever while the funnel stays dismissed -- and
+    maybe_dispatch_bootstrap, which guards only on "submitted", would wake
+    Friday into a company with no goal and no project."""
+    env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
+    env.repo.resolve_owner_row.return_value = _owner_row(
+        funnel_state="submitted",
+        onboarding_goal_id=None,
+        funnel_submitted_at=datetime.now(timezone.utc) - timedelta(seconds=brief_mod.STALE_CLAIM_S + 5),
+    )
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.revert_funnel_submission.assert_awaited_with(
+        "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
+    )
+    env.repo.delete_pending_brief.assert_not_awaited()
+
+
+async def test_a_young_claim_with_nothing_seeded_yet_is_left_alone(env):
+    """Seconds old with no ids is a peer mid-seed, not a corpse."""
+    env.repo.claim_funnel_submission.return_value = FunnelClaimResult.ALREADY_SUBMITTED
+    env.repo.resolve_owner_row.return_value = _owner_row(
+        funnel_state="submitted", onboarding_goal_id=None, funnel_submitted_at=datetime.now(timezone.utc)
+    )
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.revert_funnel_submission.assert_not_awaited()
     env.repo.delete_pending_brief.assert_not_awaited()
 
 
@@ -242,7 +337,7 @@ async def test_seed_failure_reverts_the_claim_and_keeps_the_brief(env):
 
     await reconcile_pending_brief("user_abc")
 
-    env.repo.revert_funnel_submission.assert_awaited_once_with(
+    env.repo.revert_funnel_submission.assert_awaited_with(
         "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
     )
     env.ws.write_file.assert_not_called()
@@ -251,14 +346,19 @@ async def test_seed_failure_reverts_the_claim_and_keeps_the_brief(env):
 
 
 async def test_seed_only_failure_does_not_attempt_rollback(env):
-    """seed_goal_and_project already deletes the goal it created when the
-    project create fails, so there is nothing left for us to roll back."""
-    env.admin.create_goal.side_effect = RuntimeError("upstream down")
+    """When the PROJECT create fails, `seed_goal_and_project` deletes the goal
+    it created itself and re-raises, leaving the caller's goal_id/project_id
+    unset -- so the drain's own rollback must stay out of it. Failing
+    `create_goal` here instead would test nothing: that path never reaches any
+    rollback at all, and a double-delete regression would go unnoticed."""
+    env.admin.create_project.side_effect = RuntimeError("upstream down")
 
     await reconcile_pending_brief("user_abc")
 
     env.admin.delete_project.assert_not_awaited()
-    env.admin.delete_goal.assert_not_awaited()
+    # Exactly one delete_goal per attempt, and it comes from the seed helper.
+    assert env.admin.delete_goal.await_count == env.admin.create_goal.await_count
+    env.admin.delete_goal.assert_awaited_with(session_cookie="cookie", goal_id="goal-1")
 
 
 async def test_post_seed_failure_rolls_back_goal_and_project_then_reverts(env):
@@ -269,9 +369,9 @@ async def test_post_seed_failure_rolls_back_goal_and_project_then_reverts(env):
 
     await reconcile_pending_brief("user_abc")
 
-    env.admin.delete_project.assert_awaited_once_with(session_cookie="cookie", project_id="proj-1")
-    env.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-    env.repo.revert_funnel_submission.assert_awaited_once_with(
+    env.admin.delete_project.assert_awaited_with(session_cookie="cookie", project_id="proj-1")
+    env.admin.delete_goal.assert_awaited_with(session_cookie="cookie", goal_id="goal-1")
+    env.repo.revert_funnel_submission.assert_awaited_with(
         "owner-row-user", onboarding_generation="01GEN", owner_id="user_abc"
     )
     env.repo.delete_pending_brief.assert_not_awaited()
@@ -284,8 +384,112 @@ async def test_cleanup_failures_do_not_stop_the_remaining_cleanup(env):
 
     await reconcile_pending_brief("user_abc")
 
-    env.admin.delete_goal.assert_awaited_once_with(session_cookie="cookie", goal_id="goal-1")
-    env.repo.revert_funnel_submission.assert_awaited_once()
+    env.admin.delete_goal.assert_awaited_with(session_cookie="cookie", goal_id="goal-1")
+    env.repo.revert_funnel_submission.assert_awaited()
+
+
+# --- The failure budget ------------------------------------------------------
+
+
+async def test_a_deterministic_failure_gives_up_and_hands_the_funnel_back(env):
+    """The client's 6-attempt bound was deleted with the retry loop; without a
+    server-side one a deterministic failure re-ran forever at poll cadence,
+    creating and deleting a Paperclip goal/project pair every time, while the
+    user sat in an empty chat with an agent that never started and no way to
+    resubmit. Exhausting the budget flips the item to `failed`, which is what
+    brings the funnel BACK."""
+    env.admin.create_goal.side_effect = RuntimeError("deterministically broken")
+    env.repo.record_pending_brief_failure.side_effect = list(range(1, brief_mod.MAX_DRAIN_FAILURES + 1))
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.fail_pending_brief.assert_awaited_once()
+    assert env.repo.fail_pending_brief.await_args.kwargs["reason"]
+    # And it stopped: no further attempts after the budget ran out.
+    assert env.admin.create_goal.await_count == brief_mod.MAX_DRAIN_FAILURES
+
+
+async def test_not_ready_never_burns_a_failure_attempt(env):
+    """Provisioning taking its time is the expected path, not a failure. If
+    waiting counted against the budget, a slow provision would exhaust it
+    before fulfilment was even possible."""
+    env.repo.resolve_owner_row.return_value = None
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.record_pending_brief_failure.assert_not_awaited()
+    env.repo.fail_pending_brief.assert_not_awaited()
+    env.repo.delete_pending_brief.assert_not_awaited()
+
+
+async def test_an_item_we_already_gave_up_on_is_not_drained_again(env):
+    """A `failed` item has been handed back to the user via the funnel; the
+    drain must leave it for them to overwrite."""
+    env.repo.get_pending_brief.return_value = {**PENDING, "brief_state": "failed"}
+
+    await reconcile_pending_brief("user_abc")
+
+    env.repo.resolve_owner_row.assert_not_awaited()
+    env.repo.claim_funnel_submission.assert_not_awaited()
+
+
+async def test_a_second_drain_for_the_same_owner_returns_while_one_is_in_flight(env):
+    """The poll fires this every ~3s per tab and the endpoint fires it again.
+    Without dedupe each call independently does a Clerk lookup, a Paperclip
+    sign-in (no cache) and a list_agents -- and on a failing owner creates and
+    deletes a goal/project pair every time.
+
+    The first drain is suspended mid-flight on purpose: with every dependency
+    mocked there is no suspension point, so calls would simply run one after
+    another and the test would prove nothing about concurrency.
+    """
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_list_agents(**_kwargs):
+        in_flight.set()
+        await release.wait()
+        return [FRIDAY, ATLAS]
+
+    env.admin.list_agents.side_effect = _blocking_list_agents
+
+    first = asyncio.create_task(reconcile_pending_brief("user_abc"))
+    await in_flight.wait()
+
+    await reconcile_pending_brief("user_abc")  # must be a no-op
+    assert env.admin.list_agents.await_count == 1
+
+    release.set()
+    await first
+    assert env.admin.create_goal.await_count == 1
+
+
+# --- Analytics ---------------------------------------------------------------
+
+
+async def test_the_conversion_event_fires_at_fulfilment_not_intake(env, monkeypatch):
+    """This is the metric that answers "did onboarding work". Emitted at
+    intake it would report a 100% funnel straight through a fleet-wide
+    fulfilment outage -- the exact failure this mechanism exists to surface."""
+    capture = MagicMock()
+    monkeypatch.setattr(brief_mod, "capture_product_event", capture)
+
+    await reconcile_pending_brief("user_abc")
+
+    assert capture.call_args.kwargs["event"] == "first_run_brief_submitted"
+    # Attributed to the member who actually submitted, not the row's PK.
+    assert capture.call_args.kwargs["distinct_id"] == "member_zed"
+    assert capture.call_args.kwargs["properties"] == {"path": "grow", "no_idea": False}
+
+
+async def test_no_conversion_event_when_fulfilment_fails(env, monkeypatch):
+    capture = MagicMock()
+    monkeypatch.setattr(brief_mod, "capture_product_event", capture)
+    env.admin.create_goal.side_effect = RuntimeError("upstream down")
+
+    await reconcile_pending_brief("user_abc")
+
+    capture.assert_not_called()
 
 
 @pytest.mark.parametrize(

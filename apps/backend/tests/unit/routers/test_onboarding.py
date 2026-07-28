@@ -111,8 +111,19 @@ def test_second_submit_for_same_company_is_already_submitted(client):
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "already_submitted"}
-    client.reconcile.assert_not_awaited()
     client.nudge.assert_not_called()
+
+
+def test_a_duplicate_submit_still_fires_the_drain(client):
+    """Re-submitting is the ONLY lever the funnel gives a user whose brief is
+    sitting undrained, so the path where a retry is most wanted must not be
+    the one that skips it. The reconciler dedupes concurrent drains itself."""
+    client.put.return_value = False
+
+    resp = client.post("/api/v1/onboarding/brief", json={"path": "new", "input": "An agency"})
+
+    assert resp.json() == {"status": "already_submitted"}
+    client.reconcile.assert_awaited_once_with("user_abc")
 
 
 def test_submit_fires_the_drain_and_nudges_tabs(client):
@@ -126,16 +137,12 @@ def test_submit_fires_the_drain_and_nudges_tabs(client):
     client.nudge.assert_called_once_with("user_abc")
 
 
-def test_submit_captures_analytics_event(client, monkeypatch):
-    capture = MagicMock()
-    monkeypatch.setattr(onboarding_mod, "capture_product_event", capture)
-
-    resp = client.post("/api/v1/onboarding/brief", json={"path": "grow", "input": "https://acme.com"})
-
-    assert resp.status_code == 200
-    kwargs = capture.call_args.kwargs
-    assert kwargs["event"] == "first_run_brief_submitted"
-    assert kwargs["properties"] == {"path": "grow", "no_idea": False}
+def test_intake_emits_no_conversion_event(client):
+    """`first_run_brief_submitted` belongs to the drain, once the goal and
+    project actually exist (core/services/onboarding_brief.py). Emitting it
+    here would report a 100% onboarding funnel straight through a fleet-wide
+    fulfilment outage -- the one signal that would surface it."""
+    assert not hasattr(onboarding_mod, "capture_product_event")
 
 
 # --- "I don't know yet — you pick": submit with no input ---------------------
@@ -157,16 +164,6 @@ def test_new_path_with_blank_input_is_treated_as_no_idea(client):
 
     assert resp.status_code == 200
     assert client.put.await_args.kwargs["user_input"] is None
-
-
-def test_no_idea_submit_is_flagged_in_analytics(client, monkeypatch):
-    capture = MagicMock()
-    monkeypatch.setattr(onboarding_mod, "capture_product_event", capture)
-
-    resp = client.post("/api/v1/onboarding/brief", json={"path": "new"})
-
-    assert resp.status_code == 200
-    assert capture.call_args.kwargs["properties"] == {"path": "new", "no_idea": True}
 
 
 def test_grow_path_still_requires_input(client):

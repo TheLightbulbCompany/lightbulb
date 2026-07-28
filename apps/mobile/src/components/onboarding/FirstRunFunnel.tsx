@@ -29,7 +29,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { createApiClient } from "@isol8/shared";
+import { ApiError, createApiClient } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
@@ -38,6 +38,13 @@ import { writeFirstRun } from "../../lib/firstRun";
 type Path = "new" | "grow";
 /** "noIdea" = they tapped "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
+// DEPLOY-SKEW SHIM — see the web funnel for the full reasoning. The endpoint
+// is durable intake, so there is nothing to wait out; but a build shipped
+// before the backend rollout still meets an OLD backend that 409s "not_ready"
+// (or 202s with no recognised status) for the first ~30s of a signup. DELETE
+// once the durable-intake backend is deployed everywhere.
+const SKEW_RETRY_MS = 3000;
+const SKEW_RETRIES = 2;
 
 export function FirstRunFunnel() {
   const insets = useSafeAreaInsets();
@@ -65,20 +72,32 @@ export function FirstRunFunnel() {
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
       try {
-        // No input at all on the "you pick" button: the absent idea IS the
-        // signal, and BRIEF.md tells Friday to choose one.
-        const resp = await api.post("/onboarding/brief", {
-          path,
-          input: noIdea ? undefined : input.trim(),
-          detail:
-            !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-        });
-        const status = (resp as { status?: string } | null)?.status;
-        if (status !== "staged" && status !== "already_submitted") {
-          // Only reachable against an OLDER backend mid-deploy, whose `_ctx`
-          // dependency 202s while Paperclip warms (any 2xx resolves here).
-          // Better the error than dismissing the funnel over an answer that
-          // was never saved.
+        for (let attempt = 0; ; attempt++) {
+          let resp: unknown;
+          try {
+            // No input at all on the "you pick" button: the absent idea IS the
+            // signal, and BRIEF.md tells Friday to choose one.
+            resp = await api.post("/onboarding/brief", {
+              path,
+              input: noIdea ? undefined : input.trim(),
+              detail:
+                !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+            });
+          } catch (err) {
+            const httpStatus = err instanceof ApiError ? err.status : undefined;
+            if (httpStatus === 409 && attempt < SKEW_RETRIES) {
+              await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+              continue;
+            }
+            throw err;
+          }
+          const status = (resp as { status?: string } | null)?.status;
+          if (status === "staged" || status === "already_submitted") break;
+          if (attempt < SKEW_RETRIES) {
+            await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+            continue;
+          }
+          // Never dismiss the funnel over an answer that was never saved.
           setState("error");
           return;
         }

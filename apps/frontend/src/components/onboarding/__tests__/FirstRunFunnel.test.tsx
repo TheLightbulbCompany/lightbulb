@@ -29,6 +29,10 @@ vi.mock("@clerk/nextjs", () => ({
 
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 
+// Mirrored from FirstRunFunnel.tsx (not exported) — the deploy-skew shim.
+const SKEW_RETRY_MS = 3000;
+const SKEW_RETRIES = 2;
+
 function enterGrowPathAndSubmit() {
   fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
   fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
@@ -111,19 +115,52 @@ describe("FirstRunFunnel", () => {
   });
 
   it("does not write briefSubmitted when the response body is not staged/already_submitted", async () => {
-    // Deploy-skew guard: an OLDER backend still 202s ("team workspace
-    // provisioning") while Paperclip warms, and the api client resolves any
-    // 2xx. Dismissing the funnel on that would discard the answer, so the
-    // body is still checked — it just no longer drives a retry loop.
-    post.mockResolvedValue({ status: "provisioning" });
-    render(<FirstRunFunnel />);
-    enterGrowPathAndSubmit();
+    // Deploy-skew guard: an OLDER backend 202s ("team workspace provisioning")
+    // while Paperclip warms, and the api client resolves any 2xx. Dismissing
+    // the funnel on that would discard the answer, so the body is still
+    // checked — the shim just retries a couple of times first.
+    vi.useFakeTimers();
+    try {
+      post.mockResolvedValue({ status: "provisioning" });
+      render(<FirstRunFunnel />);
+      enterGrowPathAndSubmit();
 
-    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
-    );
-    expect(update).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SKEW_RETRIES * SKEW_RETRY_MS + 1000);
+      });
+
+      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(SKEW_RETRIES + 1));
+      await vi.waitFor(() =>
+        expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+      );
+      expect(update).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rides out an older backend's 409 during a deploy window", async () => {
+    // The frontend ships ahead of the ECS backend, and the old one 409s
+    // "not_ready" for roughly the first ~30s of every first-run signup. Without
+    // the shim every user signing up inside that window sees a red error on a
+    // signup that is working — the exact bug this change exists to kill.
+    vi.useFakeTimers();
+    try {
+      post.mockRejectedValueOnce({ status: 409 });
+      post.mockResolvedValue({ status: "staged" });
+      render(<FirstRunFunnel />);
+      enterGrowPathAndSubmit();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SKEW_RETRY_MS + 500);
+      });
+
+      await vi.waitFor(() => expect(update).toHaveBeenCalled());
+      expect(screen.queryByText(/couldn.t save that just yet/i)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("submits with no input when the user says they don't know yet", async () => {

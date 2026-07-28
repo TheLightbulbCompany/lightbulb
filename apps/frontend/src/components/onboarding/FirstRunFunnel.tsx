@@ -5,20 +5,31 @@
  * (trial_local free-tier signup or organization) while their company's
  * workspace provisions (spec §3). Submitting RECORDS the answer server-side
  * and returns; the seeding it drives (goal, project, BRIEF.md, Friday's
- * kickoff) happens server-owned once the workspace is up, so this posts once
- * and never retries — see core/services/onboarding_brief.py. It is the
- * committed onboarding front door — there is no skip, so submitting the
+ * kickoff) is server-owned and server-retried once the workspace is up — see
+ * core/services/onboarding_brief.py. So this posts once against a current
+ * backend; the only retries left here are the deploy-skew shim below. It is
+ * the committed onboarding front door — there is no skip, so submitting the
  * brief is the only way past it.
  */
 import * as React from "react";
 import { useOrganization, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
-import { capture } from "@/lib/analytics";
 import { writeFirstRun } from "@/lib/firstRun";
 
 type Path = "new" | "grow";
 /** "noIdea" = they clicked "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
+// DEPLOY-SKEW SHIM. The endpoint is durable intake now — it records the answer
+// and returns, so there is nothing to wait out and no retry loop. But Vercel
+// ships this file independently of (and usually ahead of) the ECS backend, and
+// the OLD backend still 409s "not_ready" for roughly the first ~30s of every
+// first-run signup while Paperclip seeds Friday. Without these two retries,
+// every user who signs up inside that deploy window gets a red error on a
+// signup that is working — the exact bug this whole change exists to kill.
+// DELETE both constants and the loop once the durable-intake backend is
+// deployed everywhere.
+const SKEW_RETRY_MS = 3000;
+const SKEW_RETRIES = 2;
 // After this many CONSECUTIVE failed submits carrying the same upstream
 // error, the generic "Couldn't save that just yet. Retry" line — which
 // implies a transient problem — gives way to a persistent error state that
@@ -178,7 +189,6 @@ export function FirstRunFunnel() {
     // owner and write the new workspace's metadata — the exact race this
     // guards. Same derived-state-from-transition pattern (and same rule
     // suppression) as ProvisioningStepper's `previousBackendPhaseRef`.
-    // eslint-disable-next-line react-hooks/refs
     ownerRef.current = draftKey;
     setDraftOwner(draftKey);
     setPath(next.path);
@@ -230,24 +240,42 @@ export function FirstRunFunnel() {
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
       try {
-        // No input at all on the "you pick" button: the absent idea IS the
-        // signal, and BRIEF.md tells Friday to choose one from what she can
-        // find out about them. Sending "" instead would be a brief quoting an
-        // empty string back at her.
-        const resp = await api.post("/onboarding/brief", {
-          path,
-          input: noIdea ? undefined : input.trim(),
-          detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-        });
-        if (ownerChanged()) return;
-        const status = (resp as { status?: string } | null)?.status;
-        if (status !== "staged" && status !== "already_submitted") {
-          // The current backend records the answer unconditionally, so this
-          // only fires against an OLDER one mid-deploy (its `_ctx` dependency
-          // 202s "team workspace provisioning" while Paperclip warms, and the
-          // api client resolves any 2xx). Treat it as a failure rather than
-          // dismissing the funnel over a brief that was never saved —
-          // the one thing worse than the error is losing what they typed.
+        let resp: unknown;
+        let status: string | undefined;
+        // Single POST against a current backend. The loop is the deploy-skew
+        // shim only: an old backend signals "not ready" two ways — a thrown
+        // 409, and a 2xx (202) whose body carries no recognised status — and
+        // both are retried a couple of times before we call it an error.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            // No input at all on the "you pick" button: the absent idea IS the
+            // signal, and BRIEF.md tells Friday to choose one from what she can
+            // find out about them. Sending "" instead would be a brief quoting
+            // an empty string back at her.
+            resp = await api.post("/onboarding/brief", {
+              path,
+              input: noIdea ? undefined : input.trim(),
+              detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+            });
+          } catch (err) {
+            if (ownerChanged()) return;
+            if ((err as { status?: number }).status === 409 && attempt < SKEW_RETRIES) {
+              await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+              if (ownerChanged()) return;
+              continue;
+            }
+            throw err;
+          }
+          if (ownerChanged()) return;
+          status = (resp as { status?: string } | null)?.status;
+          if (status === "staged" || status === "already_submitted") break;
+          if (attempt < SKEW_RETRIES) {
+            await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+            if (ownerChanged()) return;
+            continue;
+          }
+          // Never dismiss the funnel over a brief that was never saved — the
+          // one thing worse than showing the error is losing what they typed.
           recordFailure(
             typeof (resp as { detail?: unknown } | null)?.detail === "string"
               ? (resp as { detail: string }).detail
@@ -277,15 +305,11 @@ export function FirstRunFunnel() {
           briefSubmitted: true,
           path: path ?? undefined,
         });
-        // Analytics only on a first intake: the backend emits this same
-        // event name on exactly the same condition. Firing it for
-        // "already_submitted" too would inflate the count with peers who
-        // only ever hit a claim someone else had already made.
-        if (status === "staged") {
-          // snake_case to match both the repo's property convention and
-          // the backend's emission of this same event name.
-          capture("first_run_brief_submitted", { path, no_idea: noIdea });
-        }
+        // NO `first_run_brief_submitted` here. The backend emits it, and only
+        // once the goal and project actually exist
+        // (core/services/onboarding_brief.py). Emitting it from the client at
+        // submit time would report a 100% onboarding funnel straight through a
+        // fleet-wide fulfilment outage, and double-count every submit besides.
       } catch (err) {
         if (ownerChanged()) return;
         recordFailure(extractErrorDetail(err));

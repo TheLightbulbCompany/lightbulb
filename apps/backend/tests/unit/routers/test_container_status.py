@@ -940,6 +940,45 @@ class TestContainerStatusEnsureUserReadyDispatch:
         assert "reconcile_pending_brief" in captured, f"expected the drain dispatched, got {captured}"
 
     @pytest.mark.asyncio
+    async def test_status_drains_a_pending_brief_even_when_the_poll_returns_early(self):
+        """The drain hook sits ABOVE this endpoint's early returns on purpose.
+        It used to sit at the bottom, which quietly excluded whole cohorts from
+        ever fulfilling -- here, an org member, who 202s on the no-container
+        path long before the old hook. The drain needs Paperclip, not a
+        container, so those were dead ends for no reason."""
+        from fastapi import HTTPException
+
+        from routers.container import container_status
+
+        captured: list[str] = []
+
+        def capture_task(coro):
+            captured.append(coro.__qualname__)
+            coro.close()
+
+        onboarding = _onboarding_state_stub()
+        onboarding["pending_brief"] = True
+        repo = _paperclip_repo_stub()
+        repo.get_onboarding_state = AsyncMock(return_value=onboarding)
+
+        fake_ecs = MagicMock(
+            resolve_running_container=AsyncMock(return_value=(None, None)),
+            get_service_status=AsyncMock(return_value=None),
+        )
+        with (
+            patch("routers.container.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch("routers.container.ensure_user_ready", new=_noop_ensure_user_ready),
+            patch("core.repositories.paperclip_repo.PaperclipRepo", return_value=repo),
+            patch("routers.container.asyncio.create_task", side_effect=capture_task),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_status(_org_member_auth("user_member", "org_xyz", "m@example.com"))
+
+        assert exc.value.status_code == 202
+        assert "reconcile_pending_brief" in captured, f"expected the drain dispatched, got {captured}"
+
+    @pytest.mark.asyncio
     async def test_status_without_a_pending_brief_does_not_dispatch_the_drain(self):
         """The steady-state fleet polls this every ~3s — an onboarded owner
         must not schedule a no-op task on every one."""

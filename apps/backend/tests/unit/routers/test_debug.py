@@ -72,6 +72,7 @@ class TestDeleteUserData:
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=3)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         ecs_mgr = MagicMock()
         ecs_mgr.delete_user_service = AsyncMock()
@@ -101,11 +102,20 @@ class TestDeleteUserData:
         # generation/funnel/bootstrap fields) must be part of the atomic
         # wipe -- INV-10, "atomic wipe leaves zero orphan".
         assert "paperclip-companies" in body["deleted"]["ddb"]
+        # ...and its pending-brief sentinel, which lives in the SAME table under
+        # a synthetic PK the row delete does not reach. Left behind, it outlives
+        # the teardown by design (a pending brief deliberately survives
+        # reprovisioning) -- and since this endpoint does not delete the Clerk
+        # account, the next signup reuses the owner_id and silently inherits the
+        # previous run's answer: no funnel, and a new company seeded from an old
+        # brief.
+        assert "paperclip-companies:pending-brief" in body["deleted"]["ddb"]
 
         ecs_mgr.delete_user_service.assert_called_once_with("user_test_123")
         ws.delete_user_dir.assert_called_once_with("user_test_123")
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
+        mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
     @patch("routers.debug.PaperclipRepo")
@@ -158,6 +168,7 @@ class TestDeleteUserData:
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         ecs_mgr = MagicMock()
         ecs_mgr.delete_user_service = AsyncMock()
@@ -226,6 +237,7 @@ class TestDeleteUserData:
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         ws = MagicMock()
         ws.delete_user_dir = MagicMock()
@@ -295,6 +307,7 @@ class TestDeleteUserData:
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         # ECS teardown blows up — every other step should still run.
         ecs_mgr = MagicMock()
@@ -361,6 +374,7 @@ class TestDeleteUserData:
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
         mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         # Service still exists in ECS even though DDB row is gone.
         ecs_mgr = MagicMock()

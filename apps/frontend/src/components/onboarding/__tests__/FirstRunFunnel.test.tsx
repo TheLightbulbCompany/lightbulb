@@ -29,10 +29,6 @@ vi.mock("@clerk/nextjs", () => ({
 
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 
-// RETRY_MS / MAX_RETRIES mirrored from FirstRunFunnel.tsx (not exported).
-const RETRY_MS = 3000;
-const MAX_RETRIES = 5;
-
 function enterGrowPathAndSubmit() {
   fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
   fireEvent.change(screen.getByPlaceholderText(/yourcompany\.com/i), {
@@ -54,7 +50,7 @@ beforeEach(() => {
 
 describe("FirstRunFunnel", () => {
   it("walks grow path: choose -> enter url -> submit -> writes metadata", async () => {
-    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    post.mockResolvedValue({ status: "staged" });
     render(<FirstRunFunnel />);
 
     fireEvent.click(screen.getByRole("button", { name: /grow my business/i }));
@@ -88,7 +84,7 @@ describe("FirstRunFunnel", () => {
     // backend's own onboarding_generation, so there is no client-side
     // started/completed latch left to reset here.
     unsafeMetadata = { firstRun: { briefSubmitted: true } };
-    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    post.mockResolvedValue({ status: "staged" });
     render(<FirstRunFunnel />);
 
     enterGrowPathAndSubmit();
@@ -100,57 +96,40 @@ describe("FirstRunFunnel", () => {
     });
   });
 
-  it("does not write briefSubmitted when the response body is not staged/already_submitted", async () => {
-    // Regression: the backend's `_ctx` dependency can return HTTP 202 while
-    // Paperclip is still provisioning. The api client treats any 2xx as a
-    // resolved promise, so the funnel must check the BODY, not just that
-    // the POST resolved -- otherwise it writes briefSubmitted:true with
-    // nothing staged, permanently bricking the show.
-    vi.useFakeTimers();
-    try {
-      post.mockResolvedValue({ status: "provisioning" });
-      render(<FirstRunFunnel />);
-      enterGrowPathAndSubmit();
+  it("posts exactly once — no client-side retry loop", async () => {
+    // The endpoint is durable intake now: it records the answer under the
+    // owner id and returns, so there is nothing for the client to wait out.
+    // The retry loop this replaces gave up after ~16s while provisioning took
+    // ~33s, and every first-run user who typed fast enough saw an error for a
+    // signup that was working.
+    post.mockResolvedValue({ status: "staged" });
+    render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
 
-      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() =>
-        expect(screen.getByRole("button", { name: /setting things up/i })).toBeInTheDocument(),
-      );
-      expect(update).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
-  it("retries an unexpected response body exactly like a 409, then lands in the error state", async () => {
-    vi.useFakeTimers();
-    try {
-      post.mockResolvedValue({ detail: "still working" });
-      render(<FirstRunFunnel />);
-      enterGrowPathAndSubmit();
+  it("does not write briefSubmitted when the response body is not staged/already_submitted", async () => {
+    // Deploy-skew guard: an OLDER backend still 202s ("team workspace
+    // provisioning") while Paperclip warms, and the api client resolves any
+    // 2xx. Dismissing the funnel on that would discard the answer, so the
+    // body is still checked — it just no longer drives a retry loop.
+    post.mockResolvedValue({ status: "provisioning" });
+    render(<FirstRunFunnel />);
+    enterGrowPathAndSubmit();
 
-      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-
-      // 5 retries at RETRY_MS apart before the funnel gives up on attempt
-      // MAX_RETRIES (6 total POSTs).
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(MAX_RETRIES * RETRY_MS + 1000);
-      });
-
-      await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(MAX_RETRIES + 1));
-      await vi.waitFor(() =>
-        expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
-      );
-      expect(update).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("submits with no input when the user says they don't know yet", async () => {
     // The absent idea IS the signal: BRIEF.md then tells Friday to look them
     // up and pick one. Sending "" instead would brief her with an empty quote.
-    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    post.mockResolvedValue({ status: "staged" });
     render(<FirstRunFunnel />);
 
     fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
@@ -181,33 +160,25 @@ describe("FirstRunFunnel", () => {
     // Regression guard: Retry must replay the SAME submission. Replaying it as
     // a normal one would hit the >=3-char guard against an empty textarea and
     // silently do nothing, stranding the user on the error state forever.
-    vi.useFakeTimers();
-    try {
-      post.mockRejectedValue({ status: 409 });
-      render(<FirstRunFunnel />);
-      fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
-      fireEvent.click(screen.getByRole("button", { name: /don.t know yet/i }));
+    post.mockRejectedValue({ status: 500 });
+    render(<FirstRunFunnel />);
+    fireEvent.click(screen.getByRole("button", { name: /start something new/i }));
+    fireEvent.click(screen.getByRole("button", { name: /don.t know yet/i }));
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(MAX_RETRIES * RETRY_MS + 1000);
+    await waitFor(() =>
+      expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
+    );
+
+    post.mockResolvedValue({ status: "staged" });
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenLastCalledWith("/onboarding/brief", {
+        path: "new",
+        input: undefined,
+        detail: undefined,
       });
-      await vi.waitFor(() =>
-        expect(screen.getByText(/couldn.t save that just yet/i)).toBeInTheDocument(),
-      );
-
-      post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
-      fireEvent.click(screen.getByRole("button", { name: /retry/i }));
-
-      await vi.waitFor(() => {
-        expect(post).toHaveBeenLastCalledWith("/onboarding/brief", {
-          path: "new",
-          input: undefined,
-          detail: undefined,
-        });
-      });
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 
   it("switches to a persistent error with upstream detail after 3 identical failures", async () => {
@@ -306,7 +277,7 @@ describe("FirstRunFunnel", () => {
   });
 
   it("drops the draft once the brief is submitted", async () => {
-    post.mockResolvedValue({ status: "staged", friday_agent_id: "f1" });
+    post.mockResolvedValue({ status: "staged" });
     const { unmount } = render(<FirstRunFunnel />);
     enterGrowPathAndSubmit();
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
@@ -400,7 +371,7 @@ describe("FirstRunFunnel", () => {
     expect(screen.getByRole("button", { name: /continue/i })).not.toBeDisabled();
 
     // Org A's in-flight call landing later must not write org B's metadata.
-    resolvePost({ status: "staged", friday_agent_id: "f1" });
+    resolvePost({ status: "staged" });
     await act(async () => { await Promise.resolve(); });
     expect(update).not.toHaveBeenCalled();
   });

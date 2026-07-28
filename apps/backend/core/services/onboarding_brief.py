@@ -343,6 +343,208 @@ async def seed_goal_and_project(
     return goal_id, project["id"]
 
 
+def first_name_from_email(email: str | None) -> str:
+    """ "priya.sharma@acme.co" -> "Priya Sharma". Names the seeded project."""
+    local = (email or "").split("@")[0].strip()
+    return local.replace(".", " ").title() or "there"
+
+
+async def reconcile_pending_brief(owner_id: str) -> None:
+    """Fulfil a submitted funnel answer, if there is one and the workspace can
+    now receive it.
+
+    This is the FULFILMENT half of ``POST /onboarding/brief``. The endpoint
+    itself does intake only (record what the user said, return); everything
+    that needs Paperclip up and Friday seeded happens here, on the same
+    server-owned, idempotent, claim-fenced pattern as
+    ``bootstrap_dispatcher.maybe_dispatch_bootstrap`` -- and off the same two
+    call sites:
+
+      - ``routers/onboarding.py:submit_brief`` -- immediately after intake, for
+        the case where the workspace is ALREADY up (a re-signup, or a user who
+        took their time on the funnel). Makes the split invisible.
+      - ``routers/container.py:container_status`` -- every ~3s poll while
+        provisioning. This is the one that matters: the funnel renders DURING
+        provisioning, so the first-time path always drains here.
+
+    Never raises -- both callers fire it as a background task, where an escaping
+    exception is an unretrieved-task error rather than a retry. Anything that
+    isn't ready yet (no owner row, still provisioning, Friday not seeded,
+    Paperclip 5xx) simply returns and leaves the pending item in place for the
+    next poll to retry. That retry loop replaces the one the BROWSER used to
+    run, which lost the brief entirely if the tab closed or the user gave up.
+    """
+    try:
+        await _fulfil_pending_brief(owner_id)
+    except Exception:  # noqa: BLE001 — background task; the next poll retries
+        # CancelledError is NOT an Exception, so a shutdown still propagates
+        # (the rollback inside has already run -- see its handler).
+        logger.exception("reconcile_brief: fulfilment failed for %s; will retry", owner_id)
+
+
+async def _fulfil_pending_brief(owner_id: str) -> None:
+    """The body of ``reconcile_pending_brief``; may raise, and its caller is
+    the single place that guarantees it doesn't escape."""
+    from core.containers import get_workspace
+    from core.repositories.paperclip_repo import FunnelClaimResult, PaperclipRepo
+    from core.services.clerk_admin import get_primary_email
+    from core.services.paperclip_admin_client import shared_admin_client
+    from core.services.paperclip_user_session import get_user_session_cookie
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    pending = await repo.get_pending_brief(owner_id)
+    if pending is None:
+        return
+
+    # Strong read: we are about to conditionally write this same row.
+    owner_row = await repo.resolve_owner_row(owner_id, consistent_read=True)
+    if owner_row is None or not owner_row.onboarding_generation or owner_row.status != "active":
+        # Not provisioned far enough to receive a brief. The pending item is
+        # the whole point: nothing is lost by waiting for the next poll.
+        return
+    generation = owner_row.onboarding_generation
+
+    submitted_by = pending.get("submitted_by") or owner_row.user_id
+    path = pending.get("path") or "new"
+    user_input = pending.get("input")
+    detail = pending.get("detail")
+    brief_text = pending.get("brief_text")
+
+    # Everything below the claim has side effects; everything above it is a
+    # read. So do ALL the reads first -- a Paperclip blip then costs nothing,
+    # where the pre-split code claimed first and had to unwind the claim on
+    # the way back out.
+    try:
+        email = await get_primary_email(submitted_by)
+        # Minted for the OWNER row's user (the org creator / provisioner),
+        # not the submitter: an org member who submitted the funnel may not
+        # have a Paperclip row of their own yet, and the creator is
+        # guaranteed to -- it is the row we just resolved. Both are members
+        # of the same company, so the goal/project land identically.
+        session_cookie = await get_user_session_cookie(
+            user_id=owner_row.user_id,
+            repo=repo,
+            admin_client=shared_admin_client(),
+            clerk_email_resolver=get_primary_email,
+        )
+        admin = shared_admin_client()
+        agents = await admin.list_agents(session_cookie=session_cookie, company_id=owner_row.company_id)
+    except Exception as e:  # noqa: BLE001 — every one of these is retryable
+        logger.info("reconcile_brief: workspace not ready for %s (%s); retrying next poll", owner_id, e)
+        return
+    friday = next((a for a in agents if a.get("role") == "ceo"), None)
+    if friday is None:
+        # Paperclip seed hasn't landed Friday yet.
+        return
+    friday_id = friday["id"]
+
+    claim_result = await repo.claim_funnel_submission(
+        owner_row.user_id,
+        onboarding_generation=generation,
+        submitted_by=submitted_by,
+        owner_id=owner_id,
+        brief_text=brief_text,
+    )
+    if claim_result is FunnelClaimResult.STALE_GENERATION:
+        # Reprovisioned underneath us. Leave the pending item: the next poll
+        # re-reads the new generation and drains against that instead.
+        return
+    if claim_result is FunnelClaimResult.ALREADY_SUBMITTED:
+        # Someone else won -- a peer drain on another backend instance, or an
+        # earlier drain of ours that got as far as the claim. Retire the
+        # pending item ONLY on evidence that fulfilment actually completed
+        # (the row carries the seeded ids). A drain that is still in flight
+        # can still fail and revert its claim, and deleting here would lose
+        # the brief for good -- the one outcome this whole mechanism exists
+        # to prevent. (For an org this re-read goes through the
+        # eventually-consistent by-org-id GSI, so a just-written id may not
+        # be visible yet; the cost of that is one more poll, in the safe
+        # direction.)
+        fulfilled = await repo.resolve_owner_row(owner_id, consistent_read=True)
+        if fulfilled is not None and fulfilled.onboarding_goal_id:
+            await repo.delete_pending_brief(owner_id)
+        return
+
+    goal_id: str | None = None
+    project_id: str | None = None
+    try:
+        first_name = first_name_from_email(email)
+        # Seeded BEFORE the kickoff dispatches, or Friday wakes into a company
+        # with no project to work against.
+        goal_id, project_id = await seed_goal_and_project(
+            admin=admin,
+            session_cookie=session_cookie,
+            company_id=owner_row.company_id,
+            friday_agent_id=friday_id,
+            goal_title=derive_goal_title(path=path, user_input=user_input),
+            project_name=project_name_for(first_name),
+        )
+        # Recorded BEFORE staging the workspace file, not after: this is the
+        # generation-fenced write that decides who wins. Staging is a visible
+        # side effect on Friday's NEXT boot -- if this write raced a
+        # reprovision (generation moved on) and staging ran first anyway,
+        # Friday could boot against dead goal/project ids.
+        await repo.record_onboarding_ids(
+            owner_row.user_id,
+            onboarding_generation=generation,
+            goal_id=goal_id,
+            project_id=project_id,
+            owner_id=owner_id,
+        )
+        stage_first_run_files(
+            workspace=get_workspace(),
+            owner_id=owner_id,
+            friday_agent_id=friday_id,
+            brief_md=render_brief_md(
+                path=path,
+                user_input=user_input,
+                detail=detail,
+                display_name=first_name,
+                email=email or "",
+            ),
+        )
+    except BaseException:
+        # BaseException, not Exception: asyncio.CancelledError (backend
+        # shutdown mid-drain) inherits from BaseException. Skipping the revert
+        # would strand the claim in ``submitted`` forever -- the generation
+        # fence has no stale-steal safety net, so a stuck claim permanently
+        # blocks this generation from ever being re-submitted.
+        #
+        # Roll back whatever landed, then release the claim. Each step runs
+        # independently of the others' success, and none may raise past this
+        # block or a cleanup failure would replace the original error.
+        #
+        # The PENDING ITEM IS DELIBERATELY LEFT IN PLACE: it is what makes the
+        # next poll retry the whole thing. It is only deleted on the success
+        # path below.
+        if goal_id is not None and project_id is not None:
+            try:
+                await admin.delete_project(session_cookie=session_cookie, project_id=project_id)
+            except Exception as cleanup_err:
+                logger.error(
+                    "reconcile_brief: failed to roll back project %s for %s: %s", project_id, owner_id, cleanup_err
+                )
+            try:
+                await admin.delete_goal(session_cookie=session_cookie, goal_id=goal_id)
+            except Exception as cleanup_err:
+                logger.error("reconcile_brief: failed to roll back goal %s for %s: %s", goal_id, owner_id, cleanup_err)
+        try:
+            await repo.revert_funnel_submission(owner_row.user_id, onboarding_generation=generation, owner_id=owner_id)
+        except Exception as cleanup_err:
+            logger.error("reconcile_brief: failed to revert funnel claim for %s: %s", owner_id, cleanup_err)
+        raise
+
+    await repo.delete_pending_brief(owner_id)
+
+    # Same fire-and-forget hand-off the endpoint used to make: if the runtime
+    # is already up, Friday's kickoff goes now; if it is still cold, the next
+    # /container/status poll dispatches it (bootstrap_dispatcher's own guards
+    # make a redundant call a cheap no-op).
+    from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
+
+    await maybe_dispatch_bootstrap(owner_id)
+
+
 def stage_first_run_files(
     *,
     workspace: Workspace,

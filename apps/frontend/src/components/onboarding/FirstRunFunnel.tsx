@@ -3,11 +3,12 @@
 /**
  * Two-path onboarding funnel shown to a first-time owner or org member
  * (trial_local free-tier signup or organization) while their company's
- * workspace provisions (spec §3). Submitting stages BRIEF.md server-side;
- * the firstRun metadata write flips ProvisioningStepper's branch off,
- * falling through to the cold-start card. It is the committed onboarding
- * front door — there is no skip, so submitting the brief is the only way
- * past it.
+ * workspace provisions (spec §3). Submitting RECORDS the answer server-side
+ * and returns; the seeding it drives (goal, project, BRIEF.md, Friday's
+ * kickoff) happens server-owned once the workspace is up, so this posts once
+ * and never retries — see core/services/onboarding_brief.py. It is the
+ * committed onboarding front door — there is no skip, so submitting the
+ * brief is the only way past it.
  */
 import * as React from "react";
 import { useOrganization, useUser } from "@clerk/nextjs";
@@ -18,8 +19,6 @@ import { writeFirstRun } from "@/lib/firstRun";
 type Path = "new" | "grow";
 /** "noIdea" = they clicked "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
-const RETRY_MS = 3000;
-const MAX_RETRIES = 5;
 // After this many CONSECUTIVE failed submits carrying the same upstream
 // error, the generic "Couldn't save that just yet. Retry" line — which
 // implies a transient problem — gives way to a persistent error state that
@@ -143,7 +142,7 @@ export function FirstRunFunnel() {
   const [input, setInput] = React.useState(restored.input);
   const [detail, setDetail] = React.useState(restored.detail);
 
-  const [state, setState] = React.useState<"idle" | "submitting" | "waiting" | "error">("idle");
+  const [state, setState] = React.useState<"idle" | "submitting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one. Passed
   // explicitly into submit() rather than read from here — this state only
   // exists to survive the round trip to the Retry button.
@@ -167,10 +166,9 @@ export function FirstRunFunnel() {
   // status poll to unmount the funnel), so a partial reset would leave the new
   // workspace's funnel inheriting `state: "submitting"` — Continue disabled,
   // permanently, on the committed onboarding front door. `ownerRef` is the
-  // matching half: any submit already in flight for the OLD owner checks it
-  // after each await and abandons, so a late response can't write the new
-  // workspace's metadata and a queued retry can't POST the old workspace's
-  // brief under the new one's token.
+  // matching half: a submit already in flight for the OLD owner checks it when
+  // its POST resolves and abandons, so a late response can't write the new
+  // workspace's metadata or clear its draft.
   const ownerRef = React.useRef(draftKey);
   const [draftOwner, setDraftOwner] = React.useState(draftKey);
   if (draftOwner !== draftKey) {
@@ -223,99 +221,81 @@ export function FirstRunFunnel() {
       const noIdea = submitMode === "noIdea";
       setMode(submitMode);
       if (!user) return;
-      // The owner this submission belongs to. Every await below re-checks it
-      // against `ownerRef` and abandons if the active workspace changed —
-      // otherwise a late response writes the NEW workspace's metadata, and a
-      // queued retry re-POSTs THIS workspace's brief under the new one's token.
+      // The owner this submission belongs to, re-checked against `ownerRef`
+      // once the POST resolves: a workspace switch mid-flight (Clerk's
+      // `setActive` re-renders in place) must not let this response write the
+      // NEW workspace's metadata or clear its draft.
       const submitOwner = ownerRef.current;
       const ownerChanged = () => ownerRef.current !== submitOwner;
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          // No input at all on the "you pick" button: the absent idea IS the
-          // signal, and BRIEF.md tells Friday to choose one from what she can
-          // find out about them. Sending "" instead would be a brief quoting an
-          // empty string back at her.
-          const resp = await api.post("/onboarding/brief", {
-            path,
-            input: noIdea ? undefined : input.trim(),
-            detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-          });
-          // The backend `_ctx` dependency can 202 while Paperclip is still
-          // provisioning — the api client treats any 2xx as success, so we
-          // check the body to tell "staged" apart from "not really". Anything
-          // else (including that 202 shape) is retried via the same loop.
-          if (ownerChanged()) return;
-          const status = (resp as { status?: string } | null)?.status;
-          if (status === "staged" || status === "already_submitted") {
-            setFailure(null);
-            // The brief is in. Drop the draft so a LATER funnel cycle — a
-            // wiped / reprovisioned container legitimately re-shows it —
-            // opens clean instead of resurrecting this answer.
-            try {
-              if (submitOwner) window.sessionStorage.removeItem(submitOwner);
-            } catch {
-              /* best-effort */
-            }
-            // "staged" and "already_submitted" both dismiss the funnel for
-            // THIS user. The kickoff itself is server-owned now (spec PR-6,
-            // BOOTSTRAP): the backend dispatches Friday's first-run kickoff
-            // (and observes its own chat.final) once the funnel claim lands
-            // and the runtime is up — see
-            // core/services/bootstrap_dispatcher.py. `briefSubmitted` is
-            // written here purely as an optimistic pre-poll paint (dismisses
-            // the funnel THIS session without waiting for the next
-            // /container/status poll to catch up); it is never read as
-            // authority for whether the kickoff ran.
-            await writeFirstRun(user, {
-              briefSubmitted: true,
-              path: path ?? undefined,
-            });
-            // Analytics only on a real seed: the backend emits this same
-            // event name exclusively on "staged" (the actual goal/project
-            // creation). Firing it here for "already_submitted" too would
-            // inflate the count with non-seeding submitters who only ever
-            // hit the pre-existing company claim.
-            if (status === "staged") {
-              // snake_case to match both the repo's property convention and
-              // the backend's emission of this same event name.
-              capture("first_run_brief_submitted", { path, no_idea: noIdea });
-            }
-            return;
-          }
-          if (attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
-            if (ownerChanged()) return;
-            continue;
-          }
+      try {
+        // No input at all on the "you pick" button: the absent idea IS the
+        // signal, and BRIEF.md tells Friday to choose one from what she can
+        // find out about them. Sending "" instead would be a brief quoting an
+        // empty string back at her.
+        const resp = await api.post("/onboarding/brief", {
+          path,
+          input: noIdea ? undefined : input.trim(),
+          detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+        });
+        if (ownerChanged()) return;
+        const status = (resp as { status?: string } | null)?.status;
+        if (status !== "staged" && status !== "already_submitted") {
+          // The current backend records the answer unconditionally, so this
+          // only fires against an OLDER one mid-deploy (its `_ctx` dependency
+          // 202s "team workspace provisioning" while Paperclip warms, and the
+          // api client resolves any 2xx). Treat it as a failure rather than
+          // dismissing the funnel over a brief that was never saved —
+          // the one thing worse than the error is losing what they typed.
           recordFailure(
             typeof (resp as { detail?: unknown } | null)?.detail === "string"
-              ? ((resp as { detail: string }).detail)
+              ? (resp as { detail: string }).detail
               : `Unexpected response: ${JSON.stringify(resp) ?? "empty"}`,
           );
           setState("error");
           return;
-        } catch (err) {
-          if (ownerChanged()) return;
-          const httpStatus = (err as { status?: number }).status;
-          if (httpStatus === 409 && attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
-            if (ownerChanged()) return;
-            continue;
-          }
-          recordFailure(extractErrorDetail(err));
-          setState("error");
-          return;
         }
+        setFailure(null);
+        // The brief is in. Drop the draft so a LATER funnel cycle — a
+        // wiped / reprovisioned container legitimately re-shows it —
+        // opens clean instead of resurrecting this answer.
+        try {
+          if (submitOwner) window.sessionStorage.removeItem(submitOwner);
+        } catch {
+          /* best-effort */
+        }
+        // The kickoff is server-owned (spec PR-6, BOOTSTRAP): the backend
+        // seeds the goal/project and dispatches Friday's first-run kickoff
+        // (observing its own chat.final) once the workspace is up — see
+        // core/services/onboarding_brief.reconcile_pending_brief. This
+        // metadata write is purely an optimistic pre-poll paint (dismisses
+        // the funnel THIS session without waiting for the next
+        // /container/status poll); it is never read as authority for
+        // whether the kickoff ran.
+        await writeFirstRun(user, {
+          briefSubmitted: true,
+          path: path ?? undefined,
+        });
+        // Analytics only on a first intake: the backend emits this same
+        // event name on exactly the same condition. Firing it for
+        // "already_submitted" too would inflate the count with peers who
+        // only ever hit a claim someone else had already made.
+        if (status === "staged") {
+          // snake_case to match both the repo's property convention and
+          // the backend's emission of this same event name.
+          capture("first_run_brief_submitted", { path, no_idea: noIdea });
+        }
+      } catch (err) {
+        if (ownerChanged()) return;
+        recordFailure(extractErrorDetail(err));
+        setState("error");
       }
     },
     [api, user, path, input, detail, recordFailure],
   );
 
-  const busy = state === "submitting" || state === "waiting";
+  const busy = state === "submitting";
 
   return (
     <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
@@ -385,7 +365,7 @@ export function FirstRunFunnel() {
                 disabled={busy || input.trim().length < 3}
                 onClick={() => submit("idea")}
               >
-                {state === "waiting" && mode === "idea" ? "Setting things up…" : "Continue →"}
+                {busy && mode === "idea" ? "Setting things up…" : "Continue →"}
               </button>
               {path === "new" && (
                 <div className="space-y-1.5 pt-1">

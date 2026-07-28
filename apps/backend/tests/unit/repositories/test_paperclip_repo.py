@@ -1153,3 +1153,98 @@ async def test_onboarding_state_projects_first_contact_and_friday(repo):
     assert state["first_contact_attempts"] == 0
     # Friday is seeded FIRST in provision_org, so she is index 0.
     assert state["friday_agent_id"] == "agent_friday"
+
+
+# --- Pending brief (intake before the workspace can receive it) --------------
+
+
+async def test_pending_brief_round_trip(repo):
+    landed = await repo.put_pending_brief(
+        "user_abc",
+        path="grow",
+        user_input="acme.com",
+        detail=None,
+        brief_text="work on acme.com",
+        submitted_by="member_zed",
+    )
+    assert landed is True
+
+    item = await repo.get_pending_brief("user_abc")
+    assert item["owner_id"] == "user_abc"
+    assert item["path"] == "grow"
+    assert item["input"] == "acme.com"
+    assert item["brief_text"] == "work on acme.com"
+    assert item["submitted_by"] == "member_zed"
+    # Absent, not "" -- "no detail" must not come back as a blank string a
+    # later reader would quote at Friday.
+    assert "detail" not in item
+
+    await repo.delete_pending_brief("user_abc")
+    assert await repo.get_pending_brief("user_abc") is None
+
+
+async def test_pending_brief_is_put_if_absent(repo):
+    """One-shot per COMPANY even before the owner row exists: a second org
+    member submitting concurrently must lose, not overwrite."""
+    assert await repo.put_pending_brief(
+        "org_x", path="new", user_input="first idea", detail=None, brief_text="build first idea", submitted_by="m1"
+    )
+    assert not await repo.put_pending_brief(
+        "org_x", path="new", user_input="second idea", detail=None, brief_text="build second idea", submitted_by="m2"
+    )
+
+    item = await repo.get_pending_brief("org_x")
+    assert item["input"] == "first idea"
+    assert item["submitted_by"] == "m1"
+
+
+async def test_pending_brief_is_invisible_to_the_org_gsi(repo):
+    """The sentinel item deliberately carries no org_id, so it can never be
+    mistaken for a company row by find_owner_row / get_org_company_id."""
+    await repo.put(_make_company(user_id="u1", org_id="org_x", onboarding_generation="01G"))
+    await repo.put_pending_brief(
+        "org_x", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
+    )
+
+    rows = await repo.list_by_org_id("org_x")
+    assert [r["user_id"] for r in rows] == ["u1"]
+
+
+async def test_onboarding_state_reports_a_pending_brief_before_the_row_exists(repo):
+    """The first-run case: the funnel is answered while provisioning is still
+    running, so there is no owner row yet. compute_status turns this into
+    funnel_state "submitted" so the funnel stops being shown."""
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="user_abc"
+    )
+
+    state = await repo.get_onboarding_state("user_abc")
+    assert state["pending_brief"] is True
+    # The RAW funnel_state stays not_started -- bootstrap_dispatcher reads this
+    # dict too, and waking Friday before the drain has seeded her goal and
+    # project would hand her a company with nothing to work on.
+    assert state["funnel_state"] == "not_started"
+
+
+async def test_onboarding_state_reports_a_pending_brief_against_an_unclaimed_row(repo):
+    await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G"))
+    await repo.put_pending_brief(
+        "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
+    )
+
+    state = await repo.get_onboarding_state("u1")
+    assert state["pending_brief"] is True
+
+
+async def test_onboarding_state_skips_the_pending_read_once_the_funnel_moved(repo):
+    """The steady-state fleet polls this every ~3s. Once the row's own funnel
+    has advanced, the extra read must not happen at all -- proven here by a
+    stale pending item that is nonetheless reported as absent."""
+    await repo.put(_make_company(user_id="u1", org_id="u1", onboarding_generation="01G", funnel_state="complete"))
+    await repo.put_pending_brief(
+        "u1", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="u1"
+    )
+
+    state = await repo.get_onboarding_state("u1")
+    assert state["pending_brief"] is False
+    assert state["funnel_state"] == "complete"

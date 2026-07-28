@@ -21,6 +21,7 @@ from core.containers.ecs_manager import (
 from core.services import container_wake, wake_policy
 from core.services import readiness_state
 from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
+from core.services.onboarding_brief import reconcile_pending_brief
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo
@@ -141,6 +142,25 @@ async def _assert_provision_allowed(
     )
     if gate is not None:
         raise HTTPException(status_code=402, detail=gate.to_payload())
+
+
+def _maybe_drain_pending_brief(owner_id: str, onboarding: dict) -> None:
+    """Fire the onboarding-brief drain if this owner has an answer waiting.
+
+    The funnel renders DURING provisioning, so a first-time user's brief
+    almost always lands before there is an owner row to claim it against;
+    ``POST /onboarding/brief`` records it and returns, and THIS poll is what
+    fulfils it (see routers/onboarding.py and
+    core.services.onboarding_brief.reconcile_pending_brief).
+
+    ``pending_brief`` rides the SAME onboarding dict compute_status already
+    consumed -- zero extra reads -- and is only ever True while the row's own
+    funnel_state is "not_started", so the steady-state fleet never schedules
+    this. The reconciler re-reads consistently and claims atomically; this
+    pre-check exists purely to keep the common poll from scheduling a no-op.
+    """
+    if onboarding.get("pending_brief"):
+        asyncio.create_task(reconcile_pending_brief(owner_id))
 
 
 @router.get(
@@ -266,9 +286,19 @@ async def container_status(
         # (e.g. an org owner with no provider correctly surfaces
         # provider_selection_required rather than a false "provisioning").
         _dispatch_watched(ensure_user_ready(auth))
-        contract = await readiness_state.compute_status(owner_id, container=None)
+        # Fetched here (rather than letting compute_status read it internally)
+        # so the SAME dict feeds the drain hook below -- zero extra reads, the
+        # pattern the has-container path already uses.
+        onboarding = await readiness_state.resolve_onboarding_state(owner_id)
+        contract = await readiness_state.compute_status(owner_id, container=None, onboarding=onboarding)
         contract["container_status"] = "provisioning"
         contract["container_substatus"] = "ensure_user_ready"
+        # The drain belongs on THIS path too, not just the has-container one
+        # below. ensure_user_ready brings Paperclip up BEFORE it dispatches the
+        # container, and the drain only needs Paperclip -- so a brief must not
+        # sit unfulfilled behind a container that is slow (or failing) to
+        # appear. See routers/onboarding.py.
+        _maybe_drain_pending_brief(owner_id, onboarding)
         return _status_response(contract)
 
     # Daily Bedrock restore: a capped-out (or previously-expired-and-now-
@@ -477,6 +507,8 @@ async def container_status(
         and (onboarding.get("bootstrap_state") or "not_started") == "not_started"
     ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
+
+    _maybe_drain_pending_brief(owner_id, onboarding)
 
     # Gateway liveness now lives on the connection-service DDB table (see
     # core/services/connection_service.py's mark_gateway_connected /

@@ -4,15 +4,16 @@
  * and submit semantics in sync.
  *
  * Shown full-screen (FirstRunGate) while the trial container provisions.
- * Submitting stages BRIEF.md server-side; the firstRun metadata write flips
- * the gate off. It is the committed onboarding front door — there is no
- * skip, so submitting the brief is the only way past it.
+ * Submitting RECORDS the answer server-side; the firstRun metadata write
+ * flips the gate off. It is the committed onboarding front door — there is
+ * no skip, so submitting the brief is the only way past it.
  *
- * Retry semantics match the web: the backend 409s (`not_ready`) while
- * Paperclip is still seeding Friday, and can 2xx without `staged` while the
- * `_ctx` dependency warms — both retry on a fixed cadence. Client-side
- * analytics are web-only; the backend emits `first_run_brief_submitted`
- * itself.
+ * One POST, no retry — matching the web: the endpoint is durable intake, and
+ * the seeding it drives (goal, project, BRIEF.md, Friday's kickoff) happens
+ * server-owned once the workspace is up, retried by the /container/status
+ * poll rather than by the client (see core/services/onboarding_brief.py).
+ * Client-side analytics are web-only; the backend emits
+ * `first_run_brief_submitted` itself.
  */
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -28,7 +29,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ApiError, createApiClient } from "@isol8/shared";
+import { createApiClient } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
@@ -37,8 +38,6 @@ import { writeFirstRun } from "../../lib/firstRun";
 type Path = "new" | "grow";
 /** "noIdea" = they tapped "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
-const RETRY_MS = 3000;
-const MAX_RETRIES = 5;
 
 export function FirstRunFunnel() {
   const insets = useSafeAreaInsets();
@@ -54,9 +53,7 @@ export function FirstRunFunnel() {
   const [path, setPath] = useState<Path | null>(null);
   const [input, setInput] = useState("");
   const [detail, setDetail] = useState("");
-  const [state, setState] = useState<"idle" | "submitting" | "waiting" | "error">(
-    "idle",
-  );
+  const [state, setState] = useState<"idle" | "submitting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one.
   const [mode, setMode] = useState<Mode>("idea");
 
@@ -67,49 +64,35 @@ export function FirstRunFunnel() {
       if (!user) return;
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          // No input at all on the "you pick" button: the absent idea IS the
-          // signal, and BRIEF.md tells Friday to choose one.
-          const resp = await api.post("/onboarding/brief", {
-            path,
-            input: noIdea ? undefined : input.trim(),
-            detail:
-              !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-          });
-          const status = (resp as { status?: string } | null)?.status;
-          if (status === "staged" || status === "already_submitted") {
-            // "staged" and "already_submitted" both dismiss the funnel for
-            // THIS user. The kickoff itself is server-owned now (spec PR-6,
-            // BOOTSTRAP): the backend dispatches Friday's first-run kickoff
-            // (and observes its own chat.final) once the funnel claim lands
-            // and the runtime is up. `briefSubmitted` is written here purely
-            // as an optimistic pre-poll paint (dismisses the funnel THIS
-            // session); it is never read as authority for whether the
-            // kickoff ran.
-            await writeFirstRun(user, {
-              briefSubmitted: true,
-              path: path ?? undefined,
-            });
-            return;
-          }
-          if (attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
-            continue;
-          }
-          setState("error");
-          return;
-        } catch (err) {
-          const httpStatus = err instanceof ApiError ? err.status : undefined;
-          if (httpStatus === 409 && attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
-            continue;
-          }
+      try {
+        // No input at all on the "you pick" button: the absent idea IS the
+        // signal, and BRIEF.md tells Friday to choose one.
+        const resp = await api.post("/onboarding/brief", {
+          path,
+          input: noIdea ? undefined : input.trim(),
+          detail:
+            !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+        });
+        const status = (resp as { status?: string } | null)?.status;
+        if (status !== "staged" && status !== "already_submitted") {
+          // Only reachable against an OLDER backend mid-deploy, whose `_ctx`
+          // dependency 202s while Paperclip warms (any 2xx resolves here).
+          // Better the error than dismissing the funnel over an answer that
+          // was never saved.
           setState("error");
           return;
         }
+        // Intake is durable server-side the moment this resolves; the seeding
+        // it drives is server-owned. `briefSubmitted` is written here purely
+        // as an optimistic pre-poll paint (dismisses the funnel THIS
+        // session); it is never read as authority for whether the kickoff
+        // ran.
+        await writeFirstRun(user, {
+          briefSubmitted: true,
+          path: path ?? undefined,
+        });
+      } catch {
+        setState("error");
       }
     },
     [api, user, path, input, detail],
@@ -127,7 +110,7 @@ export function FirstRunFunnel() {
     ]);
   }, [signOut]);
 
-  const busy = state === "submitting" || state === "waiting";
+  const busy = state === "submitting";
 
   return (
     <KeyboardAvoidingView
@@ -219,7 +202,7 @@ export function FirstRunFunnel() {
               accessibilityRole="button"
             >
               <Text style={styles.choiceBtnText}>
-                {state === "waiting" && mode === "idea"
+                {busy && mode === "idea"
                   ? "Setting things up…"
                   : "Continue →"}
               </Text>

@@ -75,6 +75,26 @@ describe("SesInboundStack", () => {
     });
   });
 
+  test("apex SPF authorizes Google AND SES, and preserves the site-verification token", () => {
+    // The apex had no SPF at all, so Workspace mail from admin@isol8.co
+    // evaluated spf=none; with Google's default gappssmtp DKIM being
+    // unaligned to isol8.co, DMARC failed outright and the inbound
+    // anti-spoof gate dropped the owner's own replies to their agent.
+    //
+    // Both values are asserted because a Route53 TXT record is a SET that
+    // CloudFormation UPSERTs wholesale: dropping the verification token from
+    // this array silently deletes it from the zone and can unverify the
+    // domain in Google Workspace.
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "isol8.co.",
+      Type: "TXT",
+      ResourceRecords: [
+        '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
+        '"google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8"',
+      ],
+    });
+  });
+
   test("catch-all rule wires both the S3 action and the Lambda action", () => {
     template.hasResourceProperties("AWS::SES::ReceiptRule", {
       Rule: Match.objectLike({
@@ -158,8 +178,9 @@ describe("SesInboundStack", () => {
     template.hasResourceProperties("AWS::SES::EmailIdentity", {
       EmailIdentity: "isol8.co",
     });
-    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit _dmarc TXT.
-    template.resourceCountIs("AWS::Route53::RecordSet", 6);
+    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit _dmarc TXT
+    // + apex SPF TXT.
+    template.resourceCountIs("AWS::Route53::RecordSet", 7);
   });
 
   test("creates the raw-mail and attachments S3 buckets, both private", () => {

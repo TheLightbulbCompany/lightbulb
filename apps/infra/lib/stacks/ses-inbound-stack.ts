@@ -131,6 +131,47 @@ export class SesInboundStack extends cdk.Stack {
     });
 
     // -------------------------------------------------------------------------
+    // APEX SPF. The apex had NO SPF record at all, so mail from `isol8.co`
+    // authenticated as `spf=none` — and because Google Workspace signs
+    // outbound DKIM as `<domain>.<date>.gappssmtp.com` until a domain key is
+    // published, DKIM was not ALIGNED with `header.from=isol8.co` either.
+    // DMARC needs one aligned pass and had neither, so every message from
+    // admin@isol8.co evaluated `dmarc=fail` — including the owner's own reply
+    // to their agent, which the inbound anti-spoof gate then correctly
+    // dropped. Only `p=none` kept this from bouncing everywhere.
+    //
+    // Note the wildcard above does NOT cover the apex (`*.isol8.co` matches
+    // `a.isol8.co`, never `isol8.co`), which is why this looked configured
+    // while being absent — the same trap documented for `_dmarc` below.
+    //
+    // Every apex sender must be listed here, because publishing a record
+    // moves unlisted senders from neutral to softfail:
+    //   * `_spf.google.com` — Workspace user mail (admin@, prasiddha@)
+    //   * `amazonses.com`   — SES directly, AND Resend, which sends over SES
+    //                         infrastructure (EMAIL_FROM_WELCOME hello@isol8.co,
+    //                         EMAIL_FROM_TICKETS tickets@isol8.co)
+    // ~all (softfail) not -all: a hard fail would bounce any apex sender this
+    // list has missed. Tighten only after the DMARC rua reports come back clean.
+    //
+    // SPF permits 10 DNS lookups; this costs ~5 (_spf.google.com ~4, SES 1).
+    //
+    // The google-site-verification string is carried here DELIBERATELY. A
+    // Route53 TXT record is a SET keyed by (name, type), and CloudFormation
+    // UPSERTs the whole set — so declaring the apex TXT with only the SPF
+    // value would DELETE that verification token and can unverify the domain
+    // in Google Workspace. Any future apex TXT value must be added to this
+    // array, never declared as a second TxtRecord on the same name.
+    // -------------------------------------------------------------------------
+    new route53.TxtRecord(this, "AgentMailApexSpf", {
+      zone: hostedZone,
+      recordName: mailDomain,
+      values: [
+        "v=spf1 include:_spf.google.com include:amazonses.com ~all",
+        "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",
+      ],
+    });
+
+    // -------------------------------------------------------------------------
     // DEV mail domain — `{slug}.dev.isol8.co`.
     //
     // These records live in THIS (prod) stack on purpose. A second receipt

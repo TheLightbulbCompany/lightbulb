@@ -266,6 +266,11 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
                 "agent_id": row["agent_id"],
                 "reply_to": sender,
                 "in_reply_to": body.headers.get("Message-ID", "") or body.headers.get("Message-Id", ""),
+                # Carried so the reply can emit the FULL chain. Without it the
+                # relay could only echo the parent, which truncates References
+                # on every agent reply and lets the thread root drift — see
+                # agent_mail_reply for why that matters.
+                "references": body.headers.get("References", "") or body.headers.get("references", ""),
                 "subject": body.subject,
             }
         )

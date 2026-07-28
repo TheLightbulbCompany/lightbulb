@@ -81,10 +81,10 @@ describe("SesInboundStack", () => {
     // unaligned to isol8.co, DMARC failed outright and the inbound
     // anti-spoof gate dropped the owner's own replies to their agent.
     //
-    // Both values are asserted because a Route53 TXT record is a SET that
-    // CloudFormation UPSERTs wholesale: dropping the verification token from
-    // this array silently deletes it from the zone and can unverify the
-    // domain in Google Workspace.
+    // Both values are asserted because a Route53 TXT record is a SET, and
+    // the `deleteExisting` below removes the pre-existing set before creating
+    // this one — so a value dropped from this array is GONE from the zone.
+    // Losing the verification token can unverify the domain in Workspace.
     template.hasResourceProperties("AWS::Route53::RecordSet", {
       Name: "isol8.co.",
       Type: "TXT",
@@ -93,6 +93,15 @@ describe("SesInboundStack", () => {
         '"google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8"',
       ],
     });
+  });
+
+  test("apex SPF deletes the pre-existing unmanaged TXT set before creating", () => {
+    // Without this, the deploy FAILS and rolls the stack back:
+    //   Tried to create resource record set [name='isol8.co.', type='TXT']
+    //   but it already exists
+    // CloudFormation's Route53 CREATE does not upsert, and a TXT set already
+    // existed at the apex outside CFN. This cost one failed prod deploy.
+    template.resourceCountIs("Custom::DeleteExistingRecordSet", 1);
   });
 
   test("catch-all rule wires both the S3 action and the Lambda action", () => {

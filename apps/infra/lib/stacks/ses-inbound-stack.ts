@@ -155,16 +155,28 @@ export class SesInboundStack extends cdk.Stack {
     //
     // SPF permits 10 DNS lookups; this costs ~5 (_spf.google.com ~4, SES 1).
     //
-    // The google-site-verification string is carried here DELIBERATELY. A
-    // Route53 TXT record is a SET keyed by (name, type), and CloudFormation
-    // UPSERTs the whole set — so declaring the apex TXT with only the SPF
-    // value would DELETE that verification token and can unverify the domain
-    // in Google Workspace. Any future apex TXT value must be added to this
+    // `deleteExisting` is REQUIRED, not optional tidiness. A TXT record set
+    // already existed at the apex (created outside CFN, holding the
+    // google-site-verification token), and CloudFormation's Route53 CREATE
+    // does NOT upsert — it fails outright:
+    //
+    //   Tried to create resource record set [name='isol8.co.', type='TXT']
+    //   but it already exists
+    //
+    // which rolled the whole stack back. `deleteExisting` removes the
+    // unmanaged set first so CFN can adopt the name.
+    //
+    // The google-site-verification string is therefore carried in this array
+    // DELIBERATELY: a TXT record is a SET keyed by (name, type), and the
+    // delete-then-create replaces it wholesale, so a value omitted here is
+    // GONE from the zone — losing that token can unverify the domain in
+    // Google Workspace. Any future apex TXT value must be appended to this
     // array, never declared as a second TxtRecord on the same name.
     // -------------------------------------------------------------------------
     new route53.TxtRecord(this, "AgentMailApexSpf", {
       zone: hostedZone,
       recordName: mailDomain,
+      deleteExisting: true,
       values: [
         "v=spf1 include:_spf.google.com include:amazonses.com ~all",
         "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",

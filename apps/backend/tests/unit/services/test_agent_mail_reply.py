@@ -188,6 +188,72 @@ async def test_send_reply_happy_path(monkeypatch):
     assert kwargs["body_text"] == "thanks"
 
 
+# --- References chain (RFC 5322 3.6.4) -------------------------------------
+#
+# The reply's References must be the PARENT'S References plus the parent's
+# Message-ID. Emitting only the parent truncates the chain on every agent
+# reply and lets the thread ROOT drift: Friday sends A, owner replies
+# (refs "A"), Friday replies (refs "B" -- A gone), owner replies (refs "B C").
+# Any thread identity read off References[0] then splits one conversation
+# into several, and strict mail clients fragment the thread.
+
+
+def test_references_chain_appends_parent_to_the_inherited_chain():
+    assert agent_mail_reply.build_references("<a@x> <b@x>", "<c@x>") == "<a@x> <b@x> <c@x>"
+
+
+def test_references_chain_is_just_the_parent_when_there_is_no_history():
+    assert agent_mail_reply.build_references("", "<a@x>") == "<a@x>"
+
+
+def test_references_chain_dedupes_a_parent_already_present():
+    """Some clients append the parent's Message-ID to References themselves;
+    repeating it would grow the header without adding ancestry."""
+    assert agent_mail_reply.build_references("<a@x> <b@x>", "<b@x>") == "<a@x> <b@x>"
+
+
+def test_references_truncation_keeps_the_ROOT_and_the_recent_tail():
+    """RFC 5322 permits dropping ids from an over-long chain, and the root is
+    the one id that must survive -- it is the thread's identity. Dropping the
+    head instead would move the root and split the conversation."""
+    ids = [f"<m{i}@x>" for i in range(40)]
+    out = agent_mail_reply.build_references(" ".join(ids[:-1]), ids[-1]).split()
+
+    assert len(out) == agent_mail_reply._MAX_REFERENCES
+    assert out[0] == "<m0@x>", "root must be preserved"
+    assert out[-1] == "<m39@x>", "most recent ancestor must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_send_reply_emits_the_full_inherited_chain(monkeypatch):
+    monkeypatch.setattr(agent_mail_reply.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
+    monkeypatch.setattr(
+        agent_mail_reply.agent_email_repo,
+        "query_by_owner",
+        AsyncMock(
+            return_value=[
+                {"address": "acme@agents.isol8.co", "agent_id": "a1", "status": "active"},
+            ]
+        ),
+    )
+    send_mock = AsyncMock(return_value="ses-123")
+    monkeypatch.setattr(agent_mail_reply.ses_email, "send_ses_reply", send_mock)
+
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<b@x>",
+        "references": "<a@x>",
+        "subject": "Need help",
+    }
+    assert await agent_mail_reply.send_reply(ctx=ctx, body_text="thanks") == "sent"
+
+    _, kwargs = send_mock.call_args
+    assert kwargs["headers"]["In-Reply-To"] == "<b@x>"
+    assert kwargs["headers"]["References"] == "<a@x> <b@x>", "root <a@x> must survive"
+
+
 @pytest.mark.asyncio
 async def test_send_reply_first_contact_uses_subject_verbatim_no_re_prefix(monkeypatch):
     """A first contact (empty in_reply_to) is a brand-new email, not a reply --

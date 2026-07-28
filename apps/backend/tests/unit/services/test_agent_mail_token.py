@@ -85,3 +85,38 @@ def test_decode_valid_round_trip_still_returns_full_context():
         "in_reply_to",
         "subject",
     }
+
+
+def test_token_without_references_still_decodes():
+    """`references` was added after tokens were already in flight inside
+    container conversations. It must stay OUT of the required-key set: making
+    it required would decode every pre-existing token as None and silently
+    break replies to any thread already in progress."""
+    from core.services.agent_mail_token import decode_reply_token, encode_reply_token
+
+    legacy = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<m@x>",
+        "subject": "Need help",
+    }
+    decoded = decode_reply_token(encode_reply_token(legacy))
+    assert decoded is not None
+    assert decoded.get("references", "") == ""
+
+
+def test_token_roundtrips_references_when_present():
+    from core.services.agent_mail_token import decode_reply_token, encode_reply_token
+
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<b@x>",
+        "references": "<a@x>",
+        "subject": "Need help",
+    }
+    decoded = decode_reply_token(encode_reply_token(ctx))
+    assert decoded is not None
+    assert decoded["references"] == "<a@x>"

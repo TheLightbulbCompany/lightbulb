@@ -9,7 +9,7 @@ with the outbound relay (Plan 3), which is the sole decoder.
 """
 
 import json
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from core.encryption import decrypt, encrypt  # use the real names from core/encryption.py
 
@@ -20,6 +20,13 @@ class ReplyContext(TypedDict):
     reply_to: str
     in_reply_to: str
     subject: str
+    # The inbound message's own References chain, carried so the outbound
+    # reply can emit `<inbound References> <inbound Message-ID>` rather than
+    # just the parent. Deliberately NOT in `_REQUIRED_KEYS`: tokens minted
+    # before this field existed are still in flight inside container
+    # conversations, and requiring it would make every one of them decode as
+    # None — silently breaking replies to any thread already in progress.
+    references: NotRequired[str]
 
 
 def encode_reply_token(ctx: ReplyContext) -> str:

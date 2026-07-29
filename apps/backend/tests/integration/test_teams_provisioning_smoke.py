@@ -403,9 +403,11 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
     # without an issueId.
     assert adapter_config["sessionKeyStrategy"] == "issue"
 
-    # 6. sessionKey is the user_id (so the gateway routes to the right
-    # OpenClaw container regardless of which agent is calling).
-    assert adapter_config["sessionKey"] == smoke_user_id
+    # 6. sessionKey is the per-creator fallback for wakes with no issueId,
+    # namespaced under "paperclip:" so that once agentId is set the adapter's
+    # agent:<agentId>: prefix cannot make it collide with the owner's /chat
+    # "General" key (build_chat_session_key(agent_id, user_id, None)).
+    assert adapter_config["sessionKey"] == f"paperclip:{smoke_user_id}"
 
     # 7. Defense-in-depth: forbidden fields that earlier audit flagged
     # as smuggling carriers MUST NOT appear in adapterConfig.

@@ -255,7 +255,7 @@ async def register_paperclip_agent_devices(
     )
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
-        claimed_api_key_path,
+        desired_agent_adapter_fields,
     )
 
     agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
@@ -300,22 +300,17 @@ async def register_paperclip_agent_devices(
             )
         )
 
-        # Bind the agent's connect token to the container gateway token AND
-        # point claimedApiKeyPath at the agent's own per-agent identity file
-        # (the singular default collides across agents). Idempotent: skip the
-        # round-trip when both are already current.
-        desired_claimed_path = claimed_api_key_path(agent["id"])
-        if cfg.get("authToken") != gateway_token or cfg.get("claimedApiKeyPath") != desired_claimed_path:
+        # Bring the agent's per-agent adapterConfig fields current — see
+        # `desired_agent_adapter_fields` for what each one does and why.
+        # Idempotent: skip the round-trip when all of them already match.
+        desired = desired_agent_adapter_fields(agent_id=agent["id"], gateway_token=gateway_token)
+        if any(cfg.get(k) != v for k, v in desired.items()):
             try:
                 await admin_client.patch_agent(
                     session_cookie=cookie,
                     agent_id=agent["id"],
                     body={
-                        "adapterConfig": {
-                            **cfg,
-                            "authToken": gateway_token,
-                            "claimedApiKeyPath": desired_claimed_path,
-                        },
+                        "adapterConfig": {**cfg, **desired},
                         "replaceAdapterConfig": True,
                     },
                 )
@@ -367,7 +362,7 @@ async def ensure_operator_device_paired(
     from core.services.friday_identity import stage_paperclip_identity_for_agent
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
-        claimed_api_key_path,
+        desired_agent_adapter_fields,
     )
     from core.services.paperclip_api_key import ensure_paperclip_api_key
 
@@ -422,13 +417,11 @@ async def ensure_operator_device_paired(
             e,
         )
 
-    # 2. Bind the agent's connect token to the container gateway token so the
-    #    device's signed auth.token authenticates against the token-mode gateway,
-    #    AND point claimedApiKeyPath at the agent's own per-agent identity file
-    #    (the singular default collides across agents). Idempotent: skip the
-    #    round-trip when both are already current.
-    desired_claimed_path = claimed_api_key_path(agent_id)
-    if cfg.get("authToken") != gateway_token or cfg.get("claimedApiKeyPath") != desired_claimed_path:
+    # 2. Bring the agent's per-agent adapterConfig fields current — see
+    #    `desired_agent_adapter_fields` for what each one does and why.
+    #    Idempotent: skip the round-trip when all of them already match.
+    desired = desired_agent_adapter_fields(agent_id=agent_id, gateway_token=gateway_token)
+    if any(cfg.get(k) != v for k, v in desired.items()):
         try:
             async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
                 admin = PaperclipAdminClient(http_client=http)
@@ -437,11 +430,7 @@ async def ensure_operator_device_paired(
                     session_cookie=cookie,
                     agent_id=agent_id,
                     body={
-                        "adapterConfig": {
-                            **cfg,
-                            "authToken": gateway_token,
-                            "claimedApiKeyPath": desired_claimed_path,
-                        },
+                        "adapterConfig": {**cfg, **desired},
                         "replaceAdapterConfig": True,
                     },
                 )

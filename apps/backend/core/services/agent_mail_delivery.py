@@ -75,6 +75,19 @@ async def deliver_to_agent(*, owner_id: str, agent_id: str, message: str, idempo
             "agentId": agent_id,
             "name": "Email",
             "idempotencyKey": idempotency_key,
+            # Delivery opt-out. OpenClaw "channels" are transport PLUGINS
+            # (slack/discord/telegram); our email is not one of them — the
+            # agent answers by invoking isol8-owner-email.sh, which comes back
+            # through our own backend to SES. Upstream defaults `deliver` to
+            # true (`resolveHookDeliver`: anything but false means deliver)
+            # and `channel` to "last", so after the run did its work OpenClaw
+            # tried to deliver the final message to a channel, found none, and
+            # ended EVERY inbound-email run with
+            #     status=error "Channel is required (no configured channels...)"
+            # even on a fully successful reply. That permanently poisoned
+            # status=error as a signal — a real failure looked identical to a
+            # working one. Opting out is what this field exists for.
+            "deliver": False,
         }
         headers = {"Authorization": f"Bearer {hook_token}"}
 

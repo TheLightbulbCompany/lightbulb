@@ -21,9 +21,23 @@ to an agent gets its own OpenClaw session
 transcripts across unrelated issues; long-term knowledge still
 persists across sessions via OpenClaw's memory plugin (MEMORY.md).
 The ``sessionKey`` field is the fallback for wakes without an issueId
-(manual ``Run Heartbeat``, sibling-agent wake, etc.) and is set to
-the agent creator's user_id so manual wakes route to a stable
-per-creator session.
+(manual ``Run Heartbeat``, sibling-agent wake, etc.) and is
+``paperclip:<user_id>`` so manual wakes route to a stable per-creator
+session that is still unambiguously a Paperclip one.
+
+The ``paperclip:`` prefix on that fallback is load-bearing, not
+cosmetic. Once ``agentId`` is set the adapter prefixes the fallback with
+``agent:<agentId>:`` (openclaw-gateway execute.ts:137-139), so a bare
+``user_id`` fallback would resolve to ``agent:<agentId>:<user_id>`` —
+byte-identical to what ``build_chat_session_key(agent_id, user_id,
+session_id=None)`` (routers/websocket_chat.py) produces for the owner's
+"General" /chat session. Every heartbeat/manual wake would then land IN
+the owner's real chat conversation: appended to that transcript, loading
+its whole history as context, and streamed live into their open chat
+window (``_parse_session_key`` would classify it ``source="webchat"``,
+so ``is_isolated_session`` is False). Keeping ``paperclip`` at parts[2]
+makes ``_parse_session_key`` return ``source="paperclip"`` — the shape
+its own docstring already documents as the bare fallback key.
 """
 
 from __future__ import annotations
@@ -77,6 +91,34 @@ def claimed_api_key_path(agent_id: str) -> str:
     return f"~/.openclaw/workspace-{agent_id}/paperclip-claimed-api-key.json"
 
 
+def desired_agent_adapter_fields(*, agent_id: str, gateway_token: str) -> dict:
+    """The per-agent ``adapterConfig`` fields the pairing seams must keep current.
+
+    ONE definition, consumed by both seams
+    (``register_paperclip_agent_devices`` / ``ensure_operator_device_paired``)
+    for BOTH their drift check and their patch body. They previously hand-rolled
+    the same dict twice, so the drift condition and the written body could
+    disagree, and adding a field meant remembering four places.
+
+    - ``authToken`` — the container's gateway token. The adapter's signed connect
+      computes its signature over ``auth.token``, so this must match the
+      container or the connect is rejected. (The URL keeps ``?token=<service
+      JWT>`` for the API Gateway authorizer; different token, different job.)
+    - ``agentId`` — routes the run to THIS agent. Unset, the ``chat.send``
+      carries no agent and OpenClaw falls back to the ``default: true`` agent —
+      the ``role="ceo"`` one (``containers/config.py`` ``_build_agents_list``),
+      i.e. Friday — so every other agent's run executes AS Friday, in Friday's
+      workspace, reading Friday's claimed key.
+    - ``claimedApiKeyPath`` — the agent's own per-agent identity file; the
+      singular ``~/.openclaw/workspace`` default collides across agents.
+    """
+    return {
+        "authToken": gateway_token,
+        "agentId": agent_id,
+        "claimedApiKeyPath": claimed_api_key_path(agent_id),
+    }
+
+
 class AdapterConfigError(Exception):
     """Raised when adapter-config inputs fail validation."""
 
@@ -110,13 +152,13 @@ def synthesize_openclaw_adapter(
     EXISTING PEM on update so the deviceId — and its seeded paired.json entry —
     stay stable across edits; a fresh keypair is minted only when absent (create).
 
-    ``agent_id``: when supplied, the returned config carries a per-agent
-    ``claimedApiKeyPath`` pointing at the agent's own workspace identity file.
-    Create-time callers don't yet know the id (Paperclip assigns it), so they
-    omit it; the per-agent path is applied post-create at the pairing seam
-    (``register_paperclip_agent_devices`` / ``ensure_operator_device_paired``)
-    once the id is known. Omitted ⇒ ``claimedApiKeyPath`` is left off so the
-    create-time wire shape is unchanged.
+    ``agent_id``: when supplied, the returned config carries the per-agent
+    ``agentId`` + ``claimedApiKeyPath`` (see ``desired_agent_adapter_fields``
+    for what each does). Create-time callers don't yet know the id — Paperclip
+    assigns it — so they omit it and the pairing seams apply both post-create.
+    ``desired_agent_adapter_fields`` is the authority for the seams; this
+    branch only keeps the two shapes consistent for callers that DO know the id
+    up front. Omitted ⇒ both are left off, unchanged create-time wire shape.
     """
     validate_gateway_url(gateway_url)
     if not service_token or not isinstance(service_token, str):
@@ -146,7 +188,10 @@ def synthesize_openclaw_adapter(
         "url": f"{gateway_url}?token={service_token}&clientId={PAPERCLIP_OPERATOR_CLIENT_ID}",
         "authToken": service_token,
         "sessionKeyStrategy": "issue",
-        "sessionKey": user_id,
+        # `paperclip:` prefix is REQUIRED — see the session-key note in the
+        # module docstring. Bare `user_id` collides with the owner's /chat
+        # "General" session key once `agentId` is set.
+        "sessionKey": f"paperclip:{user_id}",
         "devicePrivateKeyPem": device_pem,
         # Raise the run + wait timeout off the adapter's 120s default; our agents'
         # runs routinely exceed 2 min and 120s mislabels them `timed_out` and
@@ -165,5 +210,6 @@ def synthesize_openclaw_adapter(
     if settings.PAPERCLIP_INTERNAL_URL:
         cfg["paperclipApiUrl"] = settings.PAPERCLIP_INTERNAL_URL
     if agent_id:
+        cfg["agentId"] = agent_id
         cfg["claimedApiKeyPath"] = claimed_api_key_path(agent_id)
     return cfg

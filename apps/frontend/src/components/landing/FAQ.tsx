@@ -4,6 +4,10 @@ import { useCallback, useState } from "react";
 
 const faqs = [
   {
+    q: "Can isol8 really run my business?",
+    a: "It runs the operational work your business is made of — sales outreach, customer support, finance ops, reporting, scheduling — autonomously and in the background. You set the goals and approve anything risky; the agents do the doing. Most founders start by handing off one workflow, then keep going until the week runs itself.",
+  },
+  {
     q: "What is an agent?",
     a: "An agent is an AI that doesn’t just chat — it takes action. It can read your emails, update your CRM, schedule meetings, search the web, and run multi-step tasks on its own. Think of it like a digital employee that works 24/7 and gets smarter the more you use it.",
   },

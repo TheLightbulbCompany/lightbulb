@@ -16,8 +16,8 @@ export function PricingThreeCard() {
           One price. <em>Three ways to power it.</em>
         </h2>
         <p className="ld-lede" data-ld-reveal>
-          Every plan is the same always-on agent infrastructure — your pod,
-          your team, every channel. Choose how you want to pay for inference.
+          Everything it takes to run an autonomous business — your pod, your
+          team, every channel. Choose how you want to pay for inference.
         </p>
         <div className="ld-price-note" data-ld-reveal>
           <span className="ld-price-big">

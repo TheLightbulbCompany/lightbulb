@@ -118,29 +118,31 @@ export function Hero() {
       <div className="ld-hero-inner">
         <div className="ld-hero-topline">
           <p className="ld-mono">
-            <b>isol8</b> — private ai pods
+            <b>isol8</b> — autonomous businesses
           </p>
-          <p className="ld-mono">always-on · isolated · yours</p>
+          <p className="ld-mono">always-on · agent-run · yours</p>
         </div>
 
         <h1 className="ld-hero-h1">
           <span className="ld-line">
-            <span className="ld-line-inner">Your AI workforce,</span>
+            <span className="ld-line-inner">The best businesses</span>
           </span>
           <span className="ld-line">
             <span className="ld-line-inner">
-              <em>isolated.</em>
+              run themselves. <em>Yours can too.</em>
             </span>
           </span>
         </h1>
 
         <div className="ld-hero-row">
           <p className="ld-hero-sub">
-            One private pod, an entire team of agents. They connect to the
-            tools you already use, run multi-step workflows on their own, and
-            report back — led by <strong>Friday</strong>, your AI chief of
-            staff. Every pod is <strong>sandboxed in the cloud</strong>,
-            reaching only the tools you connect.
+            isol8 is live. Point agents at the business you already run and the
+            manual work goes away: sales, support, finance, whatever&rsquo;s
+            eating your week. Or start the thing you never had the headcount for
+            and let it run itself from day one. Agents deploy in{" "}
+            <strong>one click</strong>, run things the way you would, and hand
+            off to each other, so work moves <strong>end to end</strong> without
+            you in the middle.
           </p>
 
           <div className="ld-hero-actions">
@@ -156,7 +158,7 @@ export function Hero() {
                   })
                 }
               >
-                Start your pod
+                Start your business
                 <span className="ld-btn-arrow" aria-hidden="true">
                   →
                 </span>

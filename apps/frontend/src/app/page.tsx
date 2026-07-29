@@ -23,12 +23,12 @@ export default function LandingPage() {
         </div>
         <Team />
         <div className="ld-rule">
-          <span>containment</span>
+          <span>cloud_sandbox</span>
         </div>
         <Isolation />
         <MarketplaceSection />
         <div className="ld-rule">
-          <span>pod_contents</span>
+          <span>what_you_get</span>
         </div>
         <Features />
         <Pricing />

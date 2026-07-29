@@ -7,10 +7,10 @@ export function Footer() {
         <div className="ld-footer-top">
           <div className="ld-footer-cta">
             <h2>
-              Your pod is ready when <em>you are.</em>
+              Your business is ready when <em>you are.</em>
             </h2>
             <Link href="/chat" className="ld-btn">
-              Start your pod
+              Start your business
               <span className="ld-btn-arrow" aria-hidden="true">
                 →
               </span>
@@ -44,7 +44,7 @@ export function Footer() {
 
         <div className="ld-footer-base">
           <span>© {new Date().getFullYear()} isol8 Inc. All rights reserved.</span>
-          <span>Private AI pods · built on OpenClaw</span>
+          <span>Autonomous businesses · built on OpenClaw</span>
         </div>
 
         <span className="ld-footer-word" aria-hidden="true">

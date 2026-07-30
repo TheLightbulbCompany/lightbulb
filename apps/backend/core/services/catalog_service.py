@@ -459,6 +459,13 @@ class CatalogService:
                 ip=container_ip,
                 token=container_token,
                 extra_update_fields=extra_update_fields,
+                # ``_apply_aux`` below writes this same agent_entry — name and
+                # identity included — into openclaw.json durably, so the update
+                # RPC only buys instant appearance. Don't spend the full RPC
+                # window on it: a container mid-reload answered it in 24.7s on
+                # prod, and the pair's retry then wrote config again, triggering
+                # another reload. That feedback loop is what made a Hire take 85s.
+                display_update_is_cosmetic=True,
             )
 
             # Selection-aware additions (marketplace publish flow): the

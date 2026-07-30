@@ -47,6 +47,17 @@ logger = logging.getLogger(__name__)
 _PAIR_MAX_ATTEMPTS = 2
 _PAIR_RETRY_BACKOFF_S = 0.5
 
+# Short bound for the display-name update when the caller has told us it is
+# cosmetic (``display_update_is_cosmetic``). Measured on prod: a marketplace Hire
+# took 85s because the container was mid-config-reload — agents.create answered in
+# 10.9s, agents.update in 24.7s, and one response outran the RPC window entirely,
+# so the pair retried and wrote config AGAIN. Each config write triggers another
+# reload, and each reload re-adopts OAuth credentials per agent over the network
+# (``fetch timeout after 5000ms … chatgpt.com`` in the container log), which is
+# what blocks the event loop. 10s is comfortably above a healthy container's
+# sub-second answer and far below the stalled case we refuse to wait for.
+_COSMETIC_UPDATE_TIMEOUT_S = 10
+
 
 def _is_org_owner_id(owner_id: str) -> bool:
     """Delegates to core.auth.is_org_owner_id — single edit point for the prefix convention."""
@@ -484,6 +495,7 @@ async def pair_with_openclaw(
     ip: str,
     token: str,
     extra_update_fields: dict[str, Any] | None = None,
+    display_update_is_cosmetic: bool = False,
 ) -> None:
     """Pair one Paperclip agent with the owner's OpenClaw container.
 
@@ -509,6 +521,14 @@ async def pair_with_openclaw(
     interceptor) can return them to the user. Container reachability
     is the caller's responsibility — this helper assumes the gateway
     pool can reach the owner's container.
+
+    ``display_update_is_cosmetic`` — set by callers that persist the same
+    display fields (``name``, ``identity``) to ``openclaw.json`` themselves right
+    after this returns, so the ``agents.update`` RPC only buys instant
+    appearance, not correctness. For those callers the update gets a short
+    timeout and a timeout is swallowed rather than retried. Default False keeps
+    the strict behaviour for the chat / teams create paths, where this RPC pair
+    IS the only write and a lost update strands the agent at ``name=<uuid>``.
 
     Note: ``gateway_pool.send_rpc`` takes a ``user_id`` kwarg by name,
     but the gateway pool is keyed by container owner. Always pass the
@@ -561,14 +581,32 @@ async def pair_with_openclaw(
                     owner_id,
                 )
 
-            await gateway_pool.send_rpc(
-                user_id=owner_id,  # gateway pool is keyed by owner_id
-                req_id=f"pair-update-{secrets.token_hex(8)}",
-                method="agents.update",
-                params=update_params,
-                ip=ip,
-                token=token,
-            )
+            try:
+                await gateway_pool.send_rpc(
+                    user_id=owner_id,  # gateway pool is keyed by owner_id
+                    req_id=f"pair-update-{secrets.token_hex(8)}",
+                    method="agents.update",
+                    params=update_params,
+                    ip=ip,
+                    token=token,
+                    **({"timeout": _COSMETIC_UPDATE_TIMEOUT_S} if display_update_is_cosmetic else {}),
+                )
+            except TimeoutError:
+                if not display_update_is_cosmetic:
+                    raise
+                # The caller writes these same display fields durably right
+                # after us, so losing this RPC costs a few seconds of
+                # ``name=<uuid>`` in the sidebar, not correctness. Swallowing it
+                # is the whole point: re-raising would retry, and each retry
+                # writes config again, which triggers another container reload —
+                # the stall that made this RPC slow in the first place.
+                logger.info(
+                    "pair_with_openclaw: cosmetic display update timed out for owner=%s agent=%s "
+                    "after %ss — leaving it to the caller's durable config write",
+                    owner_id,
+                    pc_uuid,
+                    _COSMETIC_UPDATE_TIMEOUT_S,
+                )
             return
         except TimeoutError:
             if attempt >= _PAIR_MAX_ATTEMPTS:

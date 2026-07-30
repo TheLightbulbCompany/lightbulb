@@ -926,3 +926,106 @@ async def test_ensure_operator_device_paired_token_bind_failure_is_swallowed(mon
     await ensure_operator_device_paired(owner_id="o", paperclip_agent=agent, gateway_token="GW_TOKEN")
     # Device still merged despite the token-bind failure.
     assert ident.device_id in paired
+
+
+# ---------------------------------------------------------------------------
+# The display-name update: cosmetic vs load-bearing.
+#
+# A marketplace Hire took 85s on prod because the container was applying a config
+# reload: agents.create answered in 10.9s, agents.update in 24.7s, and one
+# response outran the RPC window entirely — so the pair retried and wrote config
+# AGAIN, triggering another reload. Each reload re-adopts OAuth credentials per
+# agent over the network, which is what blocks the container's event loop. The
+# deploy path already persists the same display fields itself, so it opts the
+# update out of that cost; the chat / teams paths cannot, because there the RPC
+# pair IS the only write.
+
+
+def _pool_where_update_times_out():
+    """Gateway pool stub whose agents.update never answers, agents.create does."""
+    calls: list[dict] = []
+
+    async def send_rpc(**kwargs):
+        calls.append(kwargs)
+        if kwargs["method"] == "agents.update":
+            raise TimeoutError("no response")
+        return {"ok": True}
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=send_rpc)
+    return pool, calls
+
+
+@pytest.mark.asyncio
+async def test_cosmetic_display_update_timeout_does_not_fail_the_pairing():
+    pool, calls = _pool_where_update_times_out()
+
+    await pair_with_openclaw(
+        owner_id="org_1",
+        paperclip_agent={"id": "agent_1", "name": "Pulse"},
+        gateway_pool=pool,
+        ip="10.0.0.1",
+        token="gw",
+        display_update_is_cosmetic=True,
+    )
+
+    updates = [c for c in calls if c["method"] == "agents.update"]
+    creates = [c for c in calls if c["method"] == "agents.create"]
+    # Swallowed, NOT retried: a retry writes config again and feeds the stall.
+    assert len(updates) == 1, "cosmetic update must not be retried"
+    assert len(creates) == 1
+    # And it must not sit on the full default RPC window.
+    assert updates[0]["timeout"] == 10
+
+
+@pytest.mark.asyncio
+async def test_load_bearing_display_update_timeout_still_retries_and_raises():
+    """Default behaviour is unchanged for the chat / teams create paths.
+
+    There the RPC pair is the only write, so a swallowed update would strand the
+    agent at ``name=<uuid>`` with nothing to heal it.
+    """
+    pool, calls = _pool_where_update_times_out()
+
+    with pytest.raises(TimeoutError):
+        await pair_with_openclaw(
+            owner_id="org_1",
+            paperclip_agent={"id": "agent_1", "name": "Pulse"},
+            gateway_pool=pool,
+            ip="10.0.0.1",
+            token="gw",
+        )
+
+    assert len([c for c in calls if c["method"] == "agents.update"]) == 2, "should retry once"
+    # No timeout override — the caller needs this answer, so it waits the default.
+    assert all("timeout" not in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_cosmetic_mode_still_retries_a_create_timeout():
+    """Only the display update is negotiable. Registering the agent is not."""
+    calls: list[dict] = []
+    state = {"create_attempts": 0}
+
+    async def send_rpc(**kwargs):
+        calls.append(kwargs)
+        if kwargs["method"] == "agents.create":
+            state["create_attempts"] += 1
+            if state["create_attempts"] == 1:
+                raise TimeoutError("no response")
+        return {"ok": True}
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=send_rpc)
+
+    await pair_with_openclaw(
+        owner_id="org_1",
+        paperclip_agent={"id": "agent_1", "name": "Pulse"},
+        gateway_pool=pool,
+        ip="10.0.0.1",
+        token="gw",
+        display_update_is_cosmetic=True,
+    )
+
+    assert state["create_attempts"] == 2
+    assert len([c for c in calls if c["method"] == "agents.update"]) == 1

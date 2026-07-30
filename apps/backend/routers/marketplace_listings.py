@@ -9,7 +9,7 @@ we don't need an external SaaS index.
 import asyncio
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 import boto3
 from botocore.exceptions import ClientError
@@ -556,6 +556,24 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
         raise HTTPException(status_code=500, detail="failed to fetch listing artifact") from exc
 
 
+def _live_install_of(catalog: Any, *, owner_id: str, slug: str | None) -> dict | None:
+    """The owner's still-live install of ``slug``, or None.
+
+    A ``.template`` sidecar on its own isn't proof the agent exists: the Teams
+    REST delete (``routers/teams/agents.py``) removes only the Paperclip row,
+    so a deleted agent can leave its ``workspace-{id}/`` dir — and the sidecar
+    inside it — behind. Cross-check openclaw.json's ``agents.list``, which the
+    deploy file-merges the agent entry into, so a stale sidecar can't hand back
+    a dead agent id and permanently block a re-hire.
+    """
+    sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
+    if not sidecars:
+        return None
+    config = get_workspace().read_openclaw_config(owner_id) or {}
+    registered = {a.get("id") for a in ((config.get("agents") or {}).get("list") or []) if isinstance(a, dict)}
+    return next((d for d in sidecars if d.get("agent_id") in registered), None)
+
+
 @router.post("/listings/{listing_id}/deploy")
 async def deploy_listing(
     listing_id: str,
@@ -678,10 +696,7 @@ async def deploy_listing(
     # retry after a lost response heals into success. The drawer offers Hire
     # once per listing (installed cards render "Hired ✓"), so a repeat deploy of
     # a slug the owner already has is always an accidental retry, never intent.
-    already = next(
-        (d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == listing.get("slug")),
-        None,
-    )
+    already = _live_install_of(catalog, owner_id=owner_id, slug=listing.get("slug"))
     if already:
         logger.info(
             "Marketplace deploy: owner=%s already has listing %s as agent %s — returning existing install",

@@ -486,12 +486,28 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     assert resp.json()["config_registered"] is False
 
 
+def _catalog_with_install(agent_id: str = "agent_first", slug: str = "demo-agent"):
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = [
+        {"agent_id": agent_id, "template_slug": slug, "template_version": 1},
+    ]
+    catalog.deploy_from_artifact = AsyncMock()
+    return catalog
+
+
+def _workspace_with_agents(*agent_ids: str):
+    ws = MagicMock()
+    ws.read_openclaw_config.return_value = {"agents": {"list": [{"id": i} for i in agent_ids]}}
+    return ws
+
+
+@patch("routers.marketplace_listings.get_workspace")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
-    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, client
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_workspace, client
 ):
     """A retry after a lost response must resolve, not duplicate.
 
@@ -501,12 +517,9 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     and the retry minted a second agent from the same listing.
     """
     mock_get_published.return_value = _published_listing(price_cents=0)
-    catalog = MagicMock()
-    catalog.list_deployed_for_user.return_value = [
-        {"agent_id": "agent_first", "template_slug": "demo-agent", "template_version": 1},
-    ]
-    catalog.deploy_from_artifact = AsyncMock()
+    catalog = _catalog_with_install()
     mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents("agent_first")
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 200, resp.text
@@ -520,6 +533,51 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     mock_create_pc.assert_not_awaited()
     catalog.deploy_from_artifact.assert_not_awaited()
     mock_boto.assert_not_called()
+
+
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_ignores_a_stale_sidecar_whose_agent_is_gone(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_workspace,
+    mock_pair,
+    mock_routines,
+    client,
+):
+    """A leftover ``.template`` must not permanently block a re-hire.
+
+    The Teams REST delete removes only the Paperclip row, so a deleted agent
+    can leave its ``workspace-{id}/`` dir — sidecar included — behind. The
+    idempotency check cross-references openclaw.json's ``agents.list``, so an
+    unregistered agent id reads as "not installed" and the deploy proceeds.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = _catalog_with_install(agent_id="agent_deleted")
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={"slug": "demo-agent", "version": 1, "agent_id": "agent_new", "name": "Demo Agent"}
+    )
+    mock_get_catalog.return_value = catalog
+    # openclaw.json no longer registers agent_deleted — the sidecar is stale.
+    mock_get_workspace.return_value = _workspace_with_agents("agent_unrelated")
+    mock_create_pc.return_value = {"id": "agent_new", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("already_installed") is None
+    assert resp.json()["agent_id"] == "agent_new"
+    catalog.deploy_from_artifact.assert_awaited_once()
 
 
 @patch("core.repositories.marketplace_repo._purchases_table")

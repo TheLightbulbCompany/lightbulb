@@ -10,6 +10,7 @@ import { getRecentRequestIds } from "@/lib/requestIdLog";
 export const SUPPORT_CATEGORIES = [
   "Bug report",
   "Feature request",
+  "Integration request",
   "Billing question",
   "Account issue",
   "GooseTown",
@@ -23,6 +24,8 @@ export interface SupportTicketDialogProps {
   onClose: () => void;
   /** Pre-fill the category (e.g. "Bug report" from the ErrorBoundary). */
   presetCategory?: string;
+  /** Pre-fill the message body (e.g. "I'd like to use Instagram."). */
+  presetMessage?: string;
   /** When opened from an error surface, the captured error to attach. */
   presetError?: { message: string; stack?: string };
   /** Backend X-Request-ID for the failing request (error surfaces only). */
@@ -35,14 +38,14 @@ export interface SupportTicketDialogProps {
  * it to the support inbox. Used by /support, the ErrorBoundary, the app-shell
  * Help button, and error toasts.
  */
-export function SupportTicketDialog({ open, onClose, presetCategory, presetError, presetRequestId }: SupportTicketDialogProps) {
+export function SupportTicketDialog({ open, onClose, presetCategory, presetMessage, presetError, presetRequestId }: SupportTicketDialogProps) {
   const api = useApi();
   const pathname = usePathname();
   // State initializes once per mount. The provider remounts this dialog (via a
   // changing `key`) on every open, so each open starts fresh from the current
   // preset — no reset effect needed, and no stale category/message carried over.
   const [category, setCategory] = useState(presetCategory ?? "Bug report");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(presetMessage ?? "");
   const [state, setState] = useState<SubmitState>("idle");
 
   if (!open) return null;

@@ -41,14 +41,14 @@ def test_catalog_is_public_and_lists_everything(client):
     body = resp.json()
 
     got_integrations = {i["key"] for i in body["integrations"]}
-    assert got_integrations == {k for k, p in registry.all_providers().items() if registry.visible_in_env(p)}
+    assert got_integrations == set(registry.all_providers().keys())
 
     got_channels = {c["key"] for c in body["channels"]}
     assert got_channels == set(CHANNEL_PROVIDER_IDS)
 
     # Each integration carries exactly the projected fields, nothing else.
     for entry in body["integrations"]:
-        assert set(entry.keys()) == {"key", "display_name", "byo_required"}
+        assert set(entry.keys()) == {"key", "display_name", "byo_required", "requestable"}
     for entry in body["channels"]:
         assert set(entry.keys()) == {"key", "display_name"}
 
@@ -63,21 +63,30 @@ def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
 
     body = client.get(PREFIX).json()
     entry = next(i for i in body["integrations"] if i["key"] == "acme")
-    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True}
+    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True, "requestable": False}
 
 
-def test_env_gated_provider_is_not_advertised(client, monkeypatch):
-    """A provider gated off this environment must NOT appear in the catalog.
-
-    The Integrations tab hides it (routers/connections.py:_available_for), so
-    advertising it here sent agents to a dead end: prod owners were told to
-    "connect Instagram" against a tab with no such button.
+def test_env_gated_provider_is_hidden_unless_it_opts_in(client, monkeypatch):
+    """A gate still means HIDDEN on this unauthenticated route. Advertising a
+    gated provider as requestable is an explicit per-provider opt-in
+    (``offer_request_access``) — otherwise adding a half-wired dev-only provider
+    would have agents pitching it to every prod owner, with no knob to stop it.
     """
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
-    assert "instagram" in {i["key"] for i in client.get(PREFIX).json()["integrations"]}
+    dev = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert dev["instagram"]["requestable"] is False
 
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
-    assert "instagram" not in {i["key"] for i in client.get(PREFIX).json()["integrations"]}
+    prod = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert registry.get_provider("instagram").offer_request_access is False
+    assert "instagram" not in prod
+
+    # Opted in → advertised, flagged requestable, so the agent tells the owner to
+    # request it rather than claiming it is one click away.
+    opted_in = registry.get_provider("instagram").model_copy(update={"offer_request_access": True})
+    monkeypatch.setattr(platform_info.registry, "all_providers", lambda: {"instagram": opted_in})
+    body = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert body["instagram"]["requestable"] is True
 
 
 def test_new_channel_surfaces_with_no_name_map(client, monkeypatch):

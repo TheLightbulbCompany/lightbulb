@@ -9,6 +9,8 @@ import { useApi, BACKEND_URL } from "@/lib/api";
 import { ApiError, type Connection } from "@/hooks/useConnections";
 import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
+import { useSupport } from "@/components/support/SupportProvider";
+import { capture } from "@/lib/analytics";
 
 interface ConnectButtonProps {
   connection: Connection;
@@ -68,6 +70,7 @@ export function ConnectButton({
 }: ConnectButtonProps) {
   const { provider, display_name, acquisition, status } = connection;
   const api = useApi();
+  const { openSupport } = useSupport();
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -255,6 +258,37 @@ export function ConnectButton({
       </div>
     );
   };
+
+  // Gated off this owner: the authorize leg would 404, so never offer Connect.
+  // Request access emails support with the owner's account already enriched
+  // server-side — which is exactly what an operator needs to add them as a
+  // provider tester and to owner_allowlist. Checked before every
+  // acquisition-specific branch (paste_token / direct_oauth / aws_sts) so it
+  // wins for every acquisition type.
+  if (connection.requestable) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        // Same admin gate as every other action in this row. Without it a
+        // non-admin member could file a request against an org whose admin never
+        // asked for it — and since no request record is stored, the admin would
+        // have no way to see it happened.
+        disabled={!canManage}
+        title={canManage ? undefined : NON_ADMIN_MSG}
+        onClick={() => {
+          capture("integration_access_requested", { provider: connection.provider });
+          openSupport({
+            category: "Integration request",
+            message: `I'd like to use ${connection.display_name}.`,
+          });
+        }}
+        aria-label={`Request access to ${connection.display_name}`}
+      >
+        Request access
+      </Button>
+    );
+  }
 
   // Connected → Disconnect, plus the BYO setup affordance when this owner still
   // needs to store their own app (non-destructive migration off the old

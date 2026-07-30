@@ -52,6 +52,10 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
     <div className="space-y-2">
       {connections.map((connection) => {
         const connected = connection.status === "connected";
+        // Gated off this owner. Distinct from "not connected": there is nothing
+        // they can click to change it, so the row must not read as one step away
+        // — and must not promise capabilities we cannot deliver to them yet.
+        const unavailable = connection.status === "unavailable";
         const receipt = INTEGRATION_RECEIPTS[connection.provider];
         return (
           <div
@@ -67,7 +71,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
               <p className="text-xs text-[#8a8578]">
-                {connected ? "Connected" : "Not connected"}
+                {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
                 {connection.acquisition === "direct_oauth"
                   ? " · OAuth"
                   : connection.acquisition === "aws_sts"
@@ -76,7 +80,7 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               </p>
               {receipt && (
                 <p className="text-xs text-[#8a8578] mt-0.5">
-                  {connected ? "Delivered: " : "Will deliver: "}
+                  {connected ? "Delivered: " : unavailable ? "Would deliver: " : "Will deliver: "}
                   <span className={connected ? "text-[#2d8a4e]" : undefined}>
                     {receipt.delivers}
                   </span>

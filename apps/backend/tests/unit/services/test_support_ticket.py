@@ -93,3 +93,47 @@ async def test_submit_ticket_survives_enrichment_failure():
 
     assert result == "email_1"
     mock_send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_undelivered_ticket_is_logged_with_its_content(caplog):
+    """The email is the ONLY capture path — no ticket table exists — so a failed
+    send must leave support something actionable, not just a user id."""
+    auth = AuthContext(user_id="user_9", email="ada@example.com")
+    req = SupportTicketRequest(message="I'd like to use Instagram.", category="Integration request")
+
+    with (
+        patch("core.services.support_ticket.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.support_ticket.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.support_ticket.email_service.send_email", new=AsyncMock(return_value=None)),
+        caplog.at_level("WARNING", logger="core.services.support_ticket"),
+    ):
+        result = await support_ticket.submit_ticket(auth, req)
+
+    assert result is None
+    undelivered = [r.getMessage() for r in caplog.records if "UNDELIVERED" in r.getMessage()]
+    assert len(undelivered) == 1
+    line = undelivered[0]
+    assert "I'd like to use Instagram." in line  # the ask itself
+    assert "Integration request" in line  # what it is about
+    assert "ada@example.com" in line  # how to answer without the email
+
+
+@pytest.mark.asyncio
+async def test_undelivered_log_bounds_the_message(caplog):
+    """A pasted stack trace can't flood the log group: 8000-char schema max,
+    2000-char log bound."""
+    auth = AuthContext(user_id="user_9", email="x@y.com")
+    req = SupportTicketRequest(message="A" * 8000, category="Other")
+
+    with (
+        patch("core.services.support_ticket.container_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.support_ticket.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.support_ticket.email_service.send_email", new=AsyncMock(return_value=None)),
+        caplog.at_level("WARNING", logger="core.services.support_ticket"),
+    ):
+        await support_ticket.submit_ticket(auth, req)
+
+    line = next(r.getMessage() for r in caplog.records if "UNDELIVERED" in r.getMessage())
+    assert "A" * 2000 in line
+    assert "A" * 2001 not in line

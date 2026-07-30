@@ -253,9 +253,11 @@ class TestListConnections:
 
 
 class TestEnvGatedProvider:
-    """A provider with an `environments` list (Instagram: [local, dev]) is only
-    listed + connectable in those envs. The test env resolves to dev (empty
-    ENVIRONMENT), so it's available by default; force prod to prove the gate."""
+    """A provider with an `environments` list (Instagram: [local, dev]) is
+    listed everywhere but only connectable within those envs — outside them
+    it's listed as requestable=true/status=unavailable so the UI can offer
+    Request access. The test env resolves to dev (empty ENVIRONMENT), so it's
+    connectable by default; force prod to prove the gate."""
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -267,22 +269,66 @@ class TestEnvGatedProvider:
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
-    async def test_instagram_hidden_in_prod(self, mock_repo, async_client, monkeypatch):
+    async def test_gated_provider_is_hidden_in_prod_by_default(self, mock_repo, async_client, monkeypatch):
+        # A gate still means HIDDEN. Being requestable is an explicit opt-in
+        # (offer_request_access), so a half-wired dev-only provider is never
+        # advertised to a prod owner just because it exists in the registry.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert registry.get_provider("instagram").offer_request_access is False
         assert "instagram" not in by_key
         # A non-gated provider is unaffected.
         assert "google" in by_key
 
     @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_opted_in_gated_provider_is_listed_as_requestable(self, mock_repo, async_client, monkeypatch):
+        # With offer_request_access=true the gated provider IS listed, with
+        # requestable=true and status=unavailable, so the UI offers Request
+        # access instead of hiding the integration entirely.
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        p = registry.get_provider("instagram").model_copy(update={"offer_request_access": True})
+        monkeypatch.setattr(registry, "all_providers", lambda: {"instagram": p})
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["instagram"]["requestable"] is True
+        assert by_key["instagram"]["status"] == "unavailable"
+
+    @pytest.mark.asyncio
     async def test_instagram_authorize_404s_in_prod(self, async_client, monkeypatch):
-        # Gated provider is not just hidden — the connect path 404s outside its
-        # envs, so it can't be reached by a hand-crafted request either.
+        # Gated provider is listed as requestable, but the connect path still
+        # 404s outside its envs, so it can't be reached by a hand-crafted
+        # request either.
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections/instagram/authorize")
         assert response.status_code == 404
+
+    def test_gated_provider_is_listed_as_requestable(self, monkeypatch):
+        """A provider gated off this env is LISTED (not skipped) with
+        requestable=true, so the UI can offer Request access instead of hiding
+        the integration entirely."""
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        p = registry.get_provider("instagram")
+        assert connections._available_for(p, "org_other") is False
+        # projection helper is what the route uses per provider
+        row = connections._connection_row("instagram", p, connected={}, byo=False, owner_id="org_other")
+        assert row["requestable"] is True
+        assert row["status"] == "unavailable"
+
+    def test_allowlisted_owner_is_not_requestable(self, monkeypatch):
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        p = registry.get_provider("instagram")
+        # Read the real allowlist rather than a literal, so repointing it in the
+        # YAML doesn't need a test edit — but fail loudly if it is ever emptied,
+        # instead of quietly falling back to an org that proves nothing.
+        assert p.owner_allowlist, "instagram must keep a prod-dogfood owner_allowlist"
+        owner = p.owner_allowlist[0]
+        row = connections._connection_row("instagram", p, connected={}, byo=False, owner_id=owner)
+        assert row["requestable"] is False
+        assert row["status"] == "disconnected"
 
     def test_available_for_owner_allowlist(self, monkeypatch):
         # A dev-gated provider with an owner_allowlist: open to everyone in dev,

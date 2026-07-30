@@ -52,7 +52,13 @@ async def send_email(
     # the CDK secret holds until an operator sets the real key, so we never 403
     # against it. Presence of a real key is the only switch — no enable flag.
     if not settings.RESEND_API_KEY.startswith("re_"):
-        logger.debug("no real Resend key configured; skipping %s send to %s", kind, to)
+        # Emit a metric, not just a debug line. The other two outcomes are
+        # observable (result=ok / result=error) but this one was silent, so an
+        # env holding the placeholder key dropped every send with nothing in
+        # CloudWatch to see it — and for support tickets the email IS the only
+        # capture path, so a silent skip loses the request outright.
+        put_metric("email.send", dimensions={"result": "skipped_no_key", "kind": kind})
+        logger.warning("no real Resend key configured; skipping %s send to %s", kind, to)
         return None
 
     # Tag non-prod mail so dev/staging test sends are obvious in the inbox

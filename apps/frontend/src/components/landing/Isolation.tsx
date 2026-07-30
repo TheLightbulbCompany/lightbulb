@@ -28,20 +28,19 @@ export function Isolation() {
           </div>
 
           <div className="ld-iso-body">
-            <span className="ld-iso-kicker">isolated by default</span>
+            <span className="ld-iso-kicker">runs in the cloud</span>
             <h3>
-              Your agent can&apos;t touch what you <em>don&apos;t hand it.</em>
+              Your business lives in the cloud, <em>not on your laptop.</em>
             </h3>
             <p>
-              Every pod runs in its own cloud sandbox, never on your laptop. It
-              can&apos;t reach your whole machine the way a locally-installed
-              agent can. It sees <strong>only the files and tools you
-              connect</strong>, so even with your own API key, you set the
-              scope, not the model.
+              Every pod runs always-on in its own cloud sandbox — the work keeps
+              moving after you close your laptop. And because it&apos;s isolated,
+              your agents reach <strong>only the tools and files you
+              connect</strong>. You set the scope, not the model.
             </p>
           </div>
 
-          <span className="ld-iso-pill">sandboxed · scoped · yours</span>
+          <span className="ld-iso-pill">always-on · scoped · yours</span>
         </div>
       </div>
     </section>

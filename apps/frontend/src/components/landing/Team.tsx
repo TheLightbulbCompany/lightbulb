@@ -46,16 +46,16 @@ export function Team() {
     <section className="ld-team" id="team">
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
-          your team
+          your org chart
         </div>
         <h2 className="ld-h2" data-ld-reveal>
-          One brief. <em>The whole team listens.</em>
+          One brief. <em>The whole company moves.</em>
         </h2>
         <p className="ld-lede" data-ld-reveal>
           Every pod is a company, with a real <strong>Teams Inbox</strong>.
-          File an issue and <strong>Friday</strong> staffs it — specialists
-          report back in threads you can read end-to-end, and nothing risky
-          ships without your approval.
+          Hand off a goal and <strong>Friday</strong>, your AI chief of staff,
+          staffs it — specialists pick up the work, report back in threads you
+          can read end-to-end, and nothing risky ships without your sign-off.
         </p>
 
         <div className="ld-team-stage" data-ld-reveal>

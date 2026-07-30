@@ -35,6 +35,13 @@ vi.mock("../MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ openListingDetail: mockOpenListingDetail }),
 }));
 
+// The hire dialog reads the roster to populate its "reports to" picker.
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: () => ({ data: { agents: [] }, isLoading: false, error: null }),
+  }),
+}));
+
 function listing(overrides: Partial<Listing> = {}): Listing {
   return {
     listing_id: "lst_atlas",
@@ -121,5 +128,26 @@ describe("Drawer ListingCard — own-listing (Manage)", () => {
     render(<ListingCard listing={listing({ seller_id: "u_other_seller" })} installed={false} />);
     expect(screen.getByRole("button", { name: /^Hire$/i })).toBeInTheDocument();
     expect(screen.queryByTestId("manage-listing")).toBeNull();
+  });
+});
+
+describe("Drawer ListingCard — hire dialog placement", () => {
+  beforeEach(() => {
+    mockHire.mockReset();
+    mockUseOrganization.mockReturnValue({ membership: null });
+  });
+
+  it("renders the hire dialog outside the card, not as its descendant", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const { container } = render(<ListingCard listing={listing()} installed={false} />);
+    await userEvent.click(screen.getByRole("button", { name: /^Hire$/i }));
+
+    const dialog = screen.getByRole("dialog");
+    // The card carries `hover:-translate-y-0.5`, and a non-none translate makes
+    // it a containing block for position:fixed descendants — in-tree, the
+    // full-screen overlay collapsed into the card (clipped, half-width) and
+    // flickered, because the overlay itself kept the card hovered. The dialog
+    // must stay portalled out of the card.
+    expect(container.querySelector("article")?.contains(dialog)).toBe(false);
   });
 });

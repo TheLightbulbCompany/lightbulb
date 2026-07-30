@@ -13,6 +13,39 @@ from fastapi.testclient import TestClient  # noqa: E402
 from core.auth import AuthContext  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _stub_deploy_claim():
+    """Keep the marketplace-deploy claim off the network for every test here.
+
+    ``container_repo`` resolves its table through ``core.dynamodb.get_table`` —
+    a DIFFERENT boto3 handle from the ``boto3.client`` these tests patch — so a
+    test that drives ``/deploy`` without stubbing the claim makes a REAL
+    DynamoDB call and only "passes" by riding ``try_claim_listing_deploy``'s
+    fail-open branch (verified: it logs ``DDB fault
+    (ResourceNotFoundException) … admitting the deploy UNFENCED``). That made
+    two tests quietly depend on outbound AWS access, and meant neither was
+    exercising the path it claimed to.
+
+    Autouse so a future ``/deploy`` test can't reintroduce it. Tests needing a
+    specific claim outcome still override with their own ``@patch`` — a
+    decorator patch is applied after this fixture, so it wins for that test. The
+    real conditional-write semantics are covered against a live DynamoDB engine
+    in ``tests/unit/repositories/test_container_repo_deploy_claim.py``.
+    """
+    with (
+        patch(
+            "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+            new_callable=AsyncMock,
+            return_value="test-claim-token",
+        ),
+        patch(
+            "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+            new_callable=AsyncMock,
+        ),
+    ):
+        yield
+
+
 @pytest.fixture
 def unauth_client():
     """Plain TestClient without auth override (for endpoints that 401 unauthenticated).
@@ -484,6 +517,195 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     kwargs = catalog.deploy_from_artifact.await_args.kwargs
     assert kwargs["slice_"] == {}
     assert resp.json()["config_registered"] is False
+
+
+def _catalog_with_install(agent_id: str = "agent_first", slug: str = "demo-agent"):
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = [
+        {"agent_id": agent_id, "template_slug": slug, "template_version": 1},
+    ]
+    catalog.deploy_from_artifact = AsyncMock()
+    return catalog
+
+
+def _workspace_with_agents(*agent_ids: str):
+    ws = MagicMock()
+    ws.read_openclaw_config.return_value = {"agents": {"list": [{"id": i} for i in agent_ids]}}
+    return ws
+
+
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_workspace, client
+):
+    """A retry after a lost response must resolve, not duplicate.
+
+    Prod grew a "Pulse" and a "Pulse 2" from one buyer: the deploy took 85s
+    (pair_with_openclaw burns a 30s gateway-RPC timeout before its retry
+    succeeds), the browser lost the response, the drawer said "Couldn't hire",
+    and the retry minted a second agent from the same listing.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = _catalog_with_install()
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents("agent_first")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["already_installed"] is True
+    # Same agent the first deploy landed — the drawer's toast + freshly-
+    # installed marker key off this, so the retry reads as success.
+    assert body["agent_id"] == "agent_first"
+    assert body["agent_uuid"] == "agent_first"
+    # No second Paperclip mint, no second artifact fetch, no second deploy.
+    mock_create_pc.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_not_awaited()
+    mock_boto.assert_not_called()
+
+
+@patch(
+    "routers.marketplace_listings.container_repo.get_by_owner_id",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+    new_callable=AsyncMock,
+)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_workspace,
+    mock_claim,
+    mock_release,
+    mock_get_container,
+    client,
+):
+    """Overlapping deploys must not both mint an agent.
+
+    The sidecar read can't catch this — the sidecar lands near the END of
+    deploy_from_artifact, so deploy #2 sees "not installed" while #1 is still
+    running. That is how prod grew "Pulse 2". A conditional write on the
+    per-owner containers row fences it across ECS tasks.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents()
+    mock_boto.return_value = _stub_s3_get_object()
+    mock_claim.return_value = None  # another deploy holds it
+    mock_get_container.return_value = {"owner_id": "user_test"}  # container exists
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"error": "deploy_in_progress"}
+    # Refused BEFORE the mint — that's the whole point.
+    mock_create_pc.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_not_awaited()
+    # Never took the claim, so it must not release someone else's.
+    mock_release.assert_not_awaited()
+
+
+@patch(
+    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    new_callable=AsyncMock,
+)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_releases_the_claim_even_when_the_paperclip_mint_fails(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_release,
+    client,
+):
+    """A leaked claim would wedge the listing for DEPLOY_CLAIM_STALE_S.
+
+    The mint raises before the rollback-wrapped block, so the release has to sit
+    in a ``finally`` that spans it — not inside the inner try/except.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    mock_get_catalog.return_value = catalog
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+    mock_create_pc.side_effect = RuntimeError("paperclip down")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 503, resp.text
+    mock_release.assert_awaited_once()
+    assert mock_release.await_args.kwargs["listing_id"] == "lst_1"
+    # Fenced release: the token from the claim must be threaded back, so a
+    # taken-over straggler can't delete its successor's live claim.
+    assert mock_release.await_args.kwargs["token"]
+
+
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_ignores_a_stale_sidecar_whose_agent_is_gone(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_workspace,
+    mock_pair,
+    mock_routines,
+    client,
+):
+    """A leftover ``.template`` must not permanently block a re-hire.
+
+    The Teams REST delete removes only the Paperclip row, so a deleted agent
+    can leave its ``workspace-{id}/`` dir — sidecar included — behind. The
+    idempotency check cross-references openclaw.json's ``agents.list``, so an
+    unregistered agent id reads as "not installed" and the deploy proceeds.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = _catalog_with_install(agent_id="agent_deleted")
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={"slug": "demo-agent", "version": 1, "agent_id": "agent_new", "name": "Demo Agent"}
+    )
+    mock_get_catalog.return_value = catalog
+    # openclaw.json no longer registers agent_deleted — the sidecar is stale.
+    mock_get_workspace.return_value = _workspace_with_agents("agent_unrelated")
+    mock_create_pc.return_value = {"id": "agent_new", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("already_installed") is None
+    assert resp.json()["agent_id"] == "agent_new"
+    catalog.deploy_from_artifact.assert_awaited_once()
 
 
 @patch("core.repositories.marketplace_repo._purchases_table")

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { Listing } from "@/lib/marketplace/types";
@@ -32,12 +33,26 @@ export function HireManagerDialog({
   const ceo = agents.find((a) => a.role === "ceo");
   const selected = picked === undefined ? (ceo?.id ?? null) : picked;
 
-  return (
+  // Portalled to <body>: the caller renders this inside the listing card, and
+  // that card carries `hover:-translate-y-0.5`. A non-none `translate` makes
+  // the card a containing block for fixed-position descendants, so in-tree the
+  // backdrop collapsed into the card — clipped, half-width, and flickering
+  // (full-screen backdrop keeps the card hovered → collapse → pointer leaves
+  // the card → un-hover → full-screen again, forever).
+  //
+  // z-[70] is load-bearing, not decorative. MarketplaceDrawer's <aside> is an
+  // OPAQUE z-[60] panel covering min(920px,98vw) from the right edge. In-tree,
+  // this dialog lived inside that panel's stacking context, so its z-index was
+  // never compared against it; portalled to <body> it becomes a root-level
+  // sibling, and z-50 painted the whole dialog UNDERNEATH the drawer —
+  // invisible on a normal viewport. Keep above the drawer's 60, below
+  // MarketplaceToast's z-[100].
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
       aria-label={`Hire ${listing.name}`}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 p-4"
       onClick={onClose}
     >
       <div
@@ -96,6 +111,7 @@ export function HireManagerDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

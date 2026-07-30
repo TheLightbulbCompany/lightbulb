@@ -1563,10 +1563,26 @@ def build_openclaw_config_dict(
             # refuse to start. DO NOT REMOVE. "isol8-" is for our own
             # session-key conventions used by internal callers.
             "allowedSessionKeyPrefixes": ["isol8-", "hook:"],
-            # Lock the request to server-derived session keys only;
-            # untrusted callers don't get to claim arbitrary session
-            # ownership via a header.
-            "allowRequestSessionKey": False,
+            # Inbound agent email needs a STABLE per-thread session key so a
+            # reply continues the same conversation instead of cold-starting a
+            # throwaway `hook:<uuid>` every time (see agent_mail_thread). Both
+            # a request-supplied key AND a mapping-TEMPLATED one are gated by
+            # this single flag upstream (resolveHookSessionKey), so there is no
+            # way to get per-thread sessions with it false.
+            #
+            # What still bounds a leaked/replayed hook token, now that it can
+            # name a session rather than only create one:
+            #   * allowedSessionKeyPrefixes below — it can only reach
+            #     `isol8-*` / `hook:*` keys, and `isol8-email:<sha256>` is the
+            #     only isol8- OpenClaw session key we mint (the `isol8-` in
+            #     routers/connections.py is an STS RoleSessionName, not this).
+            #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
+            # The delta accepted deliberately: previously such a token could
+            # only start fresh sessions; it can now target an existing one and
+            # read its prior context. Tightening the prefix to
+            # `isol8-email:` would shrink that further and is the obvious next
+            # step if anything else ever mints an isol8- session key.
+            "allowRequestSessionKey": True,
             # Bound which agents a hook call may target: the seeded roster at
             # write time ("main" for the legacy fallback shape). Nothing in
             # the backend drives /hooks today, so this is pure hardening of

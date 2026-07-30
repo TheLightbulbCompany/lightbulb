@@ -59,7 +59,17 @@ def test_hooks_max_body_bytes_overrides_upstream_64kb_default():
 
 def test_hooks_session_key_safety_settings():
     cfg = _cfg()
-    assert cfg["hooks"]["allowRequestSessionKey"] is False
+    # TRUE deliberately: inbound agent email needs a stable per-thread session
+    # key (agent_mail_thread) so a reply continues the same conversation
+    # instead of cold-starting a throwaway `hook:<uuid>`. Upstream gates BOTH a
+    # request-supplied key and a mapping-templated one behind this single flag,
+    # so per-thread sessions are impossible with it false.
+    #
+    # The safety argument therefore rests entirely on the two bounds below —
+    # the prefix allowlist and allowedAgentIds. Do not relax either while this
+    # is true. The accepted delta: a leaked hook token could previously only
+    # CREATE sessions; it can now target an existing one and read its context.
+    assert cfg["hooks"]["allowRequestSessionKey"] is True
     prefixes = cfg["hooks"]["allowedSessionKeyPrefixes"]
     assert "isol8-" in prefixes
     # OpenClaw v2026.5.7 (gateway/hooks.ts:75-95) crashes at boot when
@@ -133,3 +143,13 @@ def test_context_pruning_enabled_on_every_provider_path():
         cfg = build_openclaw_config_dict(user_id="u_1", gateway_token="gw-token", **case)
         pruning = cfg["agents"]["defaults"]["contextPruning"]
         assert pruning["mode"] == "cache-ttl", case["provider_choice"]
+
+
+def test_hooks_agent_id_allowlist_still_bounds_a_leaked_token():
+    """With allowRequestSessionKey true, allowedAgentIds is one of only two
+    remaining bounds on a leaked/replayed hook token — it must never be absent
+    or empty, or a token could aim at an arbitrary agent."""
+    cfg = _cfg()
+    allowed = cfg["hooks"]["allowedAgentIds"]
+    assert isinstance(allowed, list)
+    assert allowed, "an empty allowlist would bound nothing"

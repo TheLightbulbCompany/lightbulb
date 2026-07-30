@@ -62,6 +62,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.agent_email_repo import get_by_address, normalize
 from core.services.agent_mail_autoreply import send_cap_autoreply
+from core.services.agent_mail_thread import thread_session_key
 from core.services.agent_mail_delivery import deliver_to_agent
 from core.services.agent_mail_inbound import (
     build_attachment_manifest,
@@ -295,6 +296,10 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
             agent_id=row["agent_id"],
             message=message,
             idempotency_key=body.message_id,
+            # Same mail thread -> same OpenClaw session, so a reply is a
+            # continuation rather than a cold start. None (no usable
+            # message-id) keeps the old per-message throwaway session.
+            session_key=thread_session_key(body.headers),
         )
         if result == "woken":
             # deliver_to_agent just started an asleep, under-cap owner's

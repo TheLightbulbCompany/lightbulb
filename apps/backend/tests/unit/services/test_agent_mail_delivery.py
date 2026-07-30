@@ -44,6 +44,10 @@ async def test_delivers_to_running_container(monkeypatch):
     body = _j.loads(captured["json"])
     assert body["message"] == "hi"
     assert body["agentId"] == "agent_friday"
+    # No session_key argument -> the key is OMITTED entirely, so the container
+    # mints its own throwaway `hook:<uuid>` (the pre-threading behaviour, and
+    # the right fallback for mail with no usable message-id). Sending an
+    # empty/None key instead would be rejected upstream.
     assert "sessionKey" not in body
     # Delivery opt-out. Upstream defaults `deliver` to true and `channel` to
     # "last"; our email is not an OpenClaw channel plugin (the agent replies by
@@ -161,3 +165,100 @@ async def test_non_2xx_response_is_not_reported_delivered(monkeypatch):
         owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
     )
     assert result == "error"
+
+
+@pytest.mark.asyncio
+async def test_session_key_is_forwarded_when_given(monkeypatch):
+    """A stable per-thread key is what turns a reply into a CONTINUATION of the
+    same session instead of a cold start.
+
+    It only reaches the agent because the container config sets
+    hooks.allowRequestSessionKey=true; upstream rejects a request-supplied key
+    otherwise (resolveHookSessionKey, source="request").
+    """
+    captured = {}
+
+    def handler(request):
+        captured["json"] = request.read()
+        return httpx.Response(200, json={"ok": True, "runId": "run_1"})
+
+    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "t"}, "10.0.0.5"))
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+
+    result = await delivery.deliver_to_agent(
+        owner_id="org_1",
+        agent_id="agent_friday",
+        message="hi",
+        idempotency_key="eml_1",
+        session_key="isol8-email:deadbeefdeadbeef",
+    )
+
+    assert result == "delivered"
+    import json as _j
+
+    body = _j.loads(captured["json"])
+    assert body["sessionKey"] == "isol8-email:deadbeefdeadbeef"
+
+
+@pytest.mark.asyncio
+async def test_pre_flag_container_rejecting_session_key_retries_unthreaded(monkeypatch):
+    """A container older than hooks.allowRequestSessionKey 400s a supplied key.
+
+    Without the fallback this became "error" -> the router's 503 -> SES retry ->
+    the same 400 forever: inbound email BROKEN for every container whose
+    openclaw.json predates the flag. Config lives on per-owner EFS, so a
+    backend deploy does not update them.
+
+    Degrading to the throwaway session is strictly better than failing -- the
+    message still reaches the agent, just without thread continuity.
+    """
+    calls = []
+
+    def handler(request):
+        import json as _j
+
+        body = _j.loads(request.read())
+        calls.append(body)
+        if "sessionKey" in body:
+            return httpx.Response(400, json={"ok": False, "error": "sessionKey is disabled for ..."})
+        return httpx.Response(200, json={"ok": True, "runId": "run_1"})
+
+    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "t"}, "10.0.0.5"))
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+
+    result = await delivery.deliver_to_agent(
+        owner_id="org_1",
+        agent_id="agent_friday",
+        message="hi",
+        idempotency_key="eml_1",
+        session_key="isol8-email:deadbeefdeadbeef",
+    )
+
+    assert result == "delivered", "must not fail just because the container is older than the flag"
+    assert len(calls) == 2, "one threaded attempt, then one unthreaded retry"
+    assert "sessionKey" in calls[0]
+    assert "sessionKey" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_a_400_without_a_session_key_is_not_retried(monkeypatch):
+    """The retry is scoped to the session-key case. A 400 we did NOT cause by
+    supplying a key is a real error and must not be re-sent."""
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(400, json={"ok": False, "error": "message required"})
+
+    monkeypatch.setattr(delivery, "get_ecs_manager", lambda: _fake_ecs({"hook_token": "t"}, "10.0.0.5"))
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(delivery, "_client_factory", lambda: httpx.AsyncClient(transport=transport))
+
+    result = await delivery.deliver_to_agent(
+        owner_id="org_1", agent_id="agent_friday", message="hi", idempotency_key="eml_1"
+    )
+
+    assert result == "error"
+    assert len(calls) == 1, "no retry when we never supplied a sessionKey"

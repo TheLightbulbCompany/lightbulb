@@ -268,11 +268,18 @@ class TestEnvGatedProvider:
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     async def test_instagram_hidden_in_prod(self, mock_repo, async_client, monkeypatch):
+        # OLD BEHAVIOR TEST (renamed/updated): Instagram is no longer hidden in prod;
+        # it's listed with requestable=true so the UI can offer "Request access".
+        # This test now verifies that the old hide behavior is gone.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
-        assert "instagram" not in by_key
+        # Instagram is now LISTED (not hidden)
+        assert "instagram" in by_key
+        # With requestable=true and status=unavailable
+        assert by_key["instagram"]["requestable"] is True
+        assert by_key["instagram"]["status"] == "unavailable"
         # A non-gated provider is unaffected.
         assert "google" in by_key
 
@@ -283,6 +290,26 @@ class TestEnvGatedProvider:
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections/instagram/authorize")
         assert response.status_code == 404
+
+    def test_gated_provider_is_listed_as_requestable(self, monkeypatch):
+        """A provider gated off this env is LISTED (not skipped) with
+        requestable=true, so the UI can offer Request access instead of hiding
+        the integration entirely."""
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        p = registry.get_provider("instagram")
+        assert connections._available_for(p, "org_other") is False
+        # projection helper is what the route uses per provider
+        row = connections._connection_row("instagram", p, connected={}, byo=False, owner_id="org_other")
+        assert row["requestable"] is True
+        assert row["status"] == "unavailable"
+
+    def test_allowlisted_owner_is_not_requestable(self, monkeypatch):
+        monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
+        p = registry.get_provider("instagram")
+        owner = (p.owner_allowlist or ["org_founder"])[0]
+        row = connections._connection_row("instagram", p, connected={}, byo=False, owner_id=owner)
+        assert row["requestable"] is False
+        assert row["status"] == "disconnected"
 
     def test_available_for_owner_allowlist(self, monkeypatch):
         # A dev-gated provider with an owner_allowlist: open to everyone in dev,

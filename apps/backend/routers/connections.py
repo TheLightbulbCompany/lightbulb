@@ -223,6 +223,37 @@ async def _byo_active(owner_id: str, provider_key: str) -> bool:
     return bool(app and app.get("client_id") and app.get("client_secret"))
 
 
+def _connection_row(
+    key: str,
+    v: registry.Provider,
+    connected: dict[str, str],
+    byo: bool,
+    owner_id: str | None,
+) -> dict:
+    """One row of GET /connections.
+
+    `requestable` is the inverse of "this owner can connect it now". A gated
+    provider is no longer hidden: it is listed so the UI can offer Request
+    access, which emails support. `status` is "unavailable" rather than
+    "disconnected" so the frontend never renders a Connect button that would
+    404 at the authorize leg.
+    """
+    requestable = not registry.available_for(v, owner_id)
+    return {
+        "provider": key,
+        "display_name": v.display_name,
+        "acquisition": v.acquisition,
+        "status": "unavailable" if requestable else connected.get(key, "disconnected"),
+        "requestable": requestable,
+        # byo_required: provider has no managed app, owner must bring one.
+        # byo_configured: whether THIS owner has stored their own app.
+        # byo_setup_url: where to register one.
+        "byo_required": v.byo_required,
+        "byo_configured": byo,
+        "byo_setup_url": v.byo_setup_url,
+    }
+
+
 async def _validate_token(p: registry.Provider, token: str) -> bool:
     if not p.validation:
         return True
@@ -280,25 +311,8 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
         asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale(owner_id))
     connections = []
     for k, v in registry.all_providers().items():
-        # Skip env-gated providers outside their envs so a dev-only integration
-        # never appears in the prod connections list.
-        if not _available_for(v, owner_id):
-            continue
         byo = await _byo_active(owner_id, k)
-        connections.append(
-            {
-                "provider": k,
-                "display_name": v.display_name,
-                "acquisition": v.acquisition,
-                "status": connected.get(k, "disconnected"),
-                # byo_required: provider has no managed app, owner must bring one.
-                # byo_configured: whether THIS owner has stored their own app.
-                # byo_setup_url: where to register one.
-                "byo_required": v.byo_required,
-                "byo_configured": byo,
-                "byo_setup_url": v.byo_setup_url,
-            }
-        )
+        connections.append(_connection_row(k, v, connected, byo, owner_id))
     return {"connections": connections}
 
 

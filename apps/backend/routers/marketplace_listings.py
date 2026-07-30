@@ -666,6 +666,43 @@ async def deploy_listing(
             detail="purchase required to deploy this listing",
         )
 
+    catalog = get_catalog_service()
+    owner_id = resolve_owner_id(auth)
+
+    # Idempotency. A deploy can take a minute-plus when the buyer's container
+    # is busy (pair_with_openclaw eats a 30s gateway-RPC timeout, then the
+    # retry succeeds) — long enough that the browser can lose the response and
+    # report "Couldn't hire". The buyer then clicks Hire again and mints a
+    # SECOND agent from the same listing: prod grew a "Pulse" and a "Pulse 2"
+    # this way. Resolve the existing install instead of duplicating it, so a
+    # retry after a lost response heals into success. The drawer offers Hire
+    # once per listing (installed cards render "Hired ✓"), so a repeat deploy of
+    # a slug the owner already has is always an accidental retry, never intent.
+    already = next(
+        (d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == listing.get("slug")),
+        None,
+    )
+    if already:
+        logger.info(
+            "Marketplace deploy: owner=%s already has listing %s as agent %s — returning existing install",
+            owner_id,
+            listing.get("listing_id"),
+            already.get("agent_id"),
+        )
+        return {
+            "slug": listing.get("slug"),
+            "version": already.get("template_version") or listing.get("version", 1),
+            "agent_id": already.get("agent_id"),
+            "agent_uuid": already.get("agent_id"),
+            "name": listing.get("name") or listing.get("slug"),
+            "skills_added": [],
+            "plugins_enabled": [],
+            # Nothing was installed this call, so there is nothing new to warn
+            # about — the warnings belong to the deploy that actually ran.
+            "warnings": [],
+            "already_installed": True,
+        }
+
     tar_bytes, slice_ = _fetch_agent_artifact(listing)
 
     # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
@@ -678,9 +715,6 @@ async def deploy_listing(
     manifest = dict(manifest)
     manifest.setdefault("version", listing.get("version", 1))
     manifest.setdefault("name", listing.get("name", listing.get("slug")))
-
-    catalog = get_catalog_service()
-    owner_id = resolve_owner_id(auth)
 
     # Paperclip-first agent mint. Paperclip's create_agent returns an
     # agent UUID that we thread through to catalog_service as

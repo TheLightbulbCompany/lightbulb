@@ -486,6 +486,42 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     assert resp.json()["config_registered"] is False
 
 
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, client
+):
+    """A retry after a lost response must resolve, not duplicate.
+
+    Prod grew a "Pulse" and a "Pulse 2" from one buyer: the deploy took 85s
+    (pair_with_openclaw burns a 30s gateway-RPC timeout before its retry
+    succeeds), the browser lost the response, the drawer said "Couldn't hire",
+    and the retry minted a second agent from the same listing.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = [
+        {"agent_id": "agent_first", "template_slug": "demo-agent", "template_version": 1},
+    ]
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["already_installed"] is True
+    # Same agent the first deploy landed — the drawer's toast + freshly-
+    # installed marker key off this, so the retry reads as success.
+    assert body["agent_id"] == "agent_first"
+    assert body["agent_uuid"] == "agent_first"
+    # No second Paperclip mint, no second artifact fetch, no second deploy.
+    mock_create_pc.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_not_awaited()
+    mock_boto.assert_not_called()
+
+
 @patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")

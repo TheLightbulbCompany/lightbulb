@@ -64,8 +64,12 @@ export function ListingCard({ listing, installed }: { listing: Listing; installe
       >
         {listing.name}
       </Link>
-      <p className="text-[13px] text-[#5b5b5b] leading-snug flex-1 line-clamp-2">{tagline}</p>
-      <div className="flex items-center justify-between pt-2.5 border-t border-dashed border-[#e0dbd0]">
+      {/* No `flex-1` here: stretching the box past two lines defeats
+          line-clamp — the ellipsis still lands at line 2 while lines 3+ stay
+          visible ("across chat, email, SMS, an… voice."). The footer's
+          `mt-auto` does the same spacing job without inflating this box. */}
+      <p className="text-[13px] text-[#5b5b5b] leading-snug line-clamp-2">{tagline}</p>
+      <div className="mt-auto flex items-center justify-between pt-2.5 border-t border-dashed border-[#e0dbd0]">
         <span className="text-[11.5px] italic text-[#5b5b5b]">by {byline}</span>
         {isOwn ? (
           <button

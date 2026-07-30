@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import type { Listing } from "@/lib/marketplace/types";
@@ -32,7 +33,13 @@ export function HireManagerDialog({
   const ceo = agents.find((a) => a.role === "ceo");
   const selected = picked === undefined ? (ceo?.id ?? null) : picked;
 
-  return (
+  // Portalled to <body>: the caller renders this inside the listing card, and
+  // that card carries `hover:-translate-y-0.5`. A non-none `translate` makes
+  // the card a containing block for fixed-position descendants, so in-tree the
+  // backdrop collapsed into the card — clipped, half-width, and flickering
+  // (full-screen backdrop keeps the card hovered → collapse → pointer leaves
+  // the card → un-hover → full-screen again, forever).
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -96,6 +103,7 @@ export function HireManagerDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

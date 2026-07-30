@@ -121,6 +121,7 @@ class Harness:
         self.admin = FakeAdmin()
         self.http = FakeHttp()
         self.pair_calls: list[str] = []
+        self.pair_cosmetic: list[bool] = []
         self.ensure_calls: list[str] = []
         self.materialize_calls: list[str] = []
         self.routine_calls: list[dict] = []
@@ -172,8 +173,9 @@ def _install(monkeypatch, h: Harness, plan=None):
     )
 
     # Pairing + materialize.
-    async def fake_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+    async def fake_pair(*, owner_id, paperclip_agent, gateway_pool, ip, token, display_update_is_cosmetic=False):
         h.pair_calls.append(paperclip_agent["id"])
+        h.pair_cosmetic.append(display_update_is_cosmetic)
 
     async def fake_ensure(*, owner_id, paperclip_agent, gateway_token):
         h.ensure_calls.append(paperclip_agent["id"])
@@ -310,6 +312,11 @@ async def test_every_agent_created_paired_and_materialized(monkeypatch):
     cto_id = h.admin.name_to_id["CTO"]
     worker_id = h.admin.name_to_id["Worker"]
     assert h.pair_calls == [ceo_id, cto_id, worker_id]
+    # The display-name update is cosmetic on this path: materialize_agent writes
+    # the same name into openclaw.json durably right after. Waiting out a stalled
+    # container's RPC window here would multiply by the roster size, and each
+    # retry writes config again — which is what stalls the container.
+    assert h.pair_cosmetic == [True, True, True]
     assert h.ensure_calls == [ceo_id, cto_id, worker_id]
     assert h.materialize_calls == [ceo_id, cto_id, worker_id]
     assert h.deleted == []

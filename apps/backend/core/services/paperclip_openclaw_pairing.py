@@ -526,9 +526,12 @@ async def pair_with_openclaw(
     display fields (``name``, ``identity``) to ``openclaw.json`` themselves right
     after this returns, so the ``agents.update`` RPC only buys instant
     appearance, not correctness. For those callers the update gets a short
-    timeout and a timeout is swallowed rather than retried. Default False keeps
-    the strict behaviour for the chat / teams create paths, where this RPC pair
-    IS the only write and a lost update strands the agent at ``name=<uuid>``.
+    timeout and a timeout is swallowed rather than retried. Set by BOTH
+    marketplace deploy paths — ``catalog_service.deploy_from_artifact`` (single
+    agent) and ``company_deploy_service`` (per agent in a package). Default False
+    keeps the strict behaviour for the chat / teams create paths, where this RPC
+    pair IS the only write and a lost update strands the agent at
+    ``name=<uuid>`` with nothing to heal it.
 
     Note: ``gateway_pool.send_rpc`` takes a ``user_id`` kwarg by name,
     but the gateway pool is keyed by container owner. Always pass the

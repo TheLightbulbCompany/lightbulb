@@ -287,6 +287,15 @@ async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[
                 gateway_pool=gateway_pool,
                 ip=ip,
                 token=gateway_token,
+                # ``materialize_agent`` below writes this agent's ``name`` into
+                # openclaw.json durably (company_agent_materializer builds
+                # ``agent_entry["name"]`` and hands it to apply_aux), so the
+                # update RPC is cosmetic here too. It matters MORE here than on
+                # the single-agent Hire: this loop runs once per agent in the
+                # package, so waiting out a stalled container's RPC window — and
+                # writing config again on every retry, which is what stalls it —
+                # multiplies by the roster size.
+                display_update_is_cosmetic=True,
             )
             await ensure_operator_device_paired(owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token)
 

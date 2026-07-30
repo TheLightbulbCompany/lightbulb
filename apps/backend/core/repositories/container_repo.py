@@ -293,6 +293,92 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
         return True  # fail open — see docstring
 
 
+# How long a marketplace-deploy claim stays exclusive before another deploy may
+# take it over. A deploy runs ~85s on a busy container (pair_with_openclaw burns
+# a 30s gateway-RPC timeout, then its retry succeeds), so this is deliberately
+# far above the slow case: the only thing it needs to survive is an ECS task
+# dying mid-deploy, which would otherwise wedge that listing forever.
+DEPLOY_CLAIM_STALE_S = 900
+
+
+async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> bool:
+    """Take an exclusive lease on "this owner is deploying this listing".
+
+    Returns True when the caller owns the deploy, False when another one is
+    already in flight for the same listing.
+
+    Why durable, and why here: the ``.template``-sidecar check in
+    ``routers/marketplace_listings`` is a read, and the sidecar is written near
+    the END of the deploy — so two OVERLAPPING deploys both see "not installed"
+    and both mint an agent. That is how prod grew "Pulse 2": the second deploy
+    started 35s before the first wrote its sidecar. The backend runs several ECS
+    tasks behind an ALB (the two prod deploys landed on different ones), so the
+    in-memory ``services/idempotency`` cache cannot fence this — it has to be a
+    conditional write. It rides the existing per-owner ``containers`` row rather
+    than a new table, matching ``try_claim_provision`` /
+    ``try_consume_daily_email_send`` on the same row.
+
+    Two writes: the first materializes the ``deploy_claims`` map (DynamoDB
+    rejects a nested SET when the parent path is absent) and is unconditional +
+    idempotent; the second is the actual claim, admitted only when no live claim
+    exists for this listing.
+
+    **Fails OPEN.** A DynamoDB fault returns True. Losing dedupe costs a
+    duplicate agent the owner can delete; failing closed would block a
+    legitimate hire — including a paid one — on a transient fault. Same
+    reasoning as ``try_consume_daily_email_send``.
+    """
+    table = _get_table()
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET deploy_claims = if_not_exists(deploy_claims, :empty)",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":empty": {}},
+        )
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET deploy_claims.#lid = :now",
+            ConditionExpression=("attribute_not_exists(deploy_claims.#lid) OR deploy_claims.#lid < :cutoff"),
+            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeValues={":now": now, ":cutoff": now - DEPLOY_CLAIM_STALE_S},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        logger.warning(
+            "try_claim_listing_deploy: DDB fault for owner=%s listing=%s — admitting the deploy",
+            owner_id,
+            listing_id,
+        )
+        return True  # fail open — see docstring
+
+
+async def release_listing_deploy_claim(owner_id: str, *, listing_id: str) -> None:
+    """Drop the deploy claim. Best-effort: a lost release self-expires after
+    ``DEPLOY_CLAIM_STALE_S``, so a failure here delays a retry rather than
+    wedging the listing. Never raises — it runs in the deploy's ``finally``,
+    where an exception would mask the real deploy error."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE deploy_claims.#lid",
+            ExpressionAttributeNames={"#lid": listing_id},
+        )
+    except ClientError:
+        logger.warning(
+            "release_listing_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
+            owner_id,
+            listing_id,
+            DEPLOY_CLAIM_STALE_S,
+        )
+
+
 async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> None:
     """Stamp a fresh per-SFN-retry ``provision_attempt_token`` onto an
     already-claimed lease. Called by ``scripts/provision_runner`` as its

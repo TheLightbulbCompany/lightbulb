@@ -5,6 +5,7 @@ import { useAuth, useUser } from "@clerk/nextjs";
 
 import { useCatalog } from "@/hooks/useCatalog";
 import { useAgents } from "@/hooks/useAgents";
+import { ApiError } from "@/lib/api";
 import { checkout } from "@/lib/marketplace/api";
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import type { Listing } from "@/lib/marketplace/types";
@@ -97,13 +98,28 @@ export function useHire() {
           });
           window.location.href = result.checkout_url;
         }
-      } catch {
+      } catch (err) {
         // A failed deploy/checkout used to escape as an unhandled rejection,
         // leaving the Hire dialog frozen mid-spinner ("the screen bugging
         // out"). Surface it as a toast and keep the dialog open so the buyer
         // can retry — the backend leaves no orphan on failure, so a retry is
         // clean. The drawer is NOT closed here (only the success path closes).
-        showErrorToast(`Couldn't hire ${listing.name}. Please try again.`);
+        //
+        // 409 deploy_in_progress is NOT a failure: the backend fenced this
+        // click because the buyer's first deploy is still running and will
+        // install the agent. "Couldn't hire… try again" would be the same lie
+        // this change exists to remove — and "try again" is the worst possible
+        // advice, since retrying is what produced a duplicate agent on prod.
+        const inFlight =
+          err instanceof ApiError &&
+          err.status === 409 &&
+          (err.body as { detail?: { error?: string } } | null)?.detail?.error ===
+            "deploy_in_progress";
+        showErrorToast(
+          inFlight
+            ? `${listing.name} is already installing — give it a moment.`
+            : `Couldn't hire ${listing.name}. Please try again.`,
+        );
       } finally {
         setIsHiring(false);
       }

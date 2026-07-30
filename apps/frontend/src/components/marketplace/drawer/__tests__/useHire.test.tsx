@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 
 import { useHire } from "../useHire";
+import { ApiError } from "@/lib/api";
 import type { Listing } from "@/lib/marketplace/types";
 import type { DeployResult } from "@/hooks/useCatalog";
 
@@ -155,5 +156,36 @@ describe("useHire — reliability", () => {
     expect(mockClose).not.toHaveBeenCalled();
     // isHiring resets so the buyer can retry.
     expect(result.current.isHiring).toBe(false);
+  });
+  it("tells the buyer it is still installing on a 409 deploy_in_progress, not to retry", async () => {
+    // The backend fenced an OVERLAPPING second click; the first deploy is still
+    // running and WILL install the agent. "try again" is the advice that
+    // produced a duplicate agent on prod.
+    mockDeploy.mockRejectedValue(
+      new ApiError(409, { detail: { error: "deploy_in_progress" } }, "conflict"),
+    );
+    const { result } = renderHook(() => useHire());
+    await act(async () => {
+      await result.current.hire(listing({ name: "Atlas" }));
+    });
+    expect(mockShowErrorToast).toHaveBeenCalledWith(
+      expect.stringContaining("already installing"),
+    );
+    expect(mockShowErrorToast).not.toHaveBeenCalledWith(
+      expect.stringContaining("try again"),
+    );
+  });
+
+  it("keeps the retry message for a 409 that is NOT deploy_in_progress", async () => {
+    // 409 is also missing_credentials / Requires Ultra Pro — those must not be
+    // relabelled as "installing".
+    mockDeploy.mockRejectedValue(
+      new ApiError(409, { detail: { error: "missing_credentials" } }, "conflict"),
+    );
+    const { result } = renderHook(() => useHire());
+    await act(async () => {
+      await result.current.hire(listing({ name: "Atlas" }));
+    });
+    expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("try again"));
   });
 });

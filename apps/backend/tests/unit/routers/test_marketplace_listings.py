@@ -535,6 +535,92 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     mock_boto.assert_not_called()
 
 
+@patch(
+    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+    new_callable=AsyncMock,
+)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_workspace,
+    mock_claim,
+    mock_release,
+    client,
+):
+    """Overlapping deploys must not both mint an agent.
+
+    The sidecar read can't catch this — the sidecar lands near the END of
+    deploy_from_artifact, so deploy #2 sees "not installed" while #1 is still
+    running. That is how prod grew "Pulse 2". A conditional write on the
+    per-owner containers row fences it across ECS tasks.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents()
+    mock_boto.return_value = _stub_s3_get_object()
+    mock_claim.return_value = False  # another deploy holds it
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"error": "deploy_in_progress"}
+    # Refused BEFORE the mint — that's the whole point.
+    mock_create_pc.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_not_awaited()
+    # Never took the claim, so it must not release someone else's.
+    mock_release.assert_not_awaited()
+
+
+@patch(
+    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    new_callable=AsyncMock,
+)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_releases_the_claim_even_when_the_paperclip_mint_fails(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_release,
+    client,
+):
+    """A leaked claim would wedge the listing for DEPLOY_CLAIM_STALE_S.
+
+    The mint raises before the rollback-wrapped block, so the release has to sit
+    in a ``finally`` that spans it — not inside the inner try/except.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    mock_get_catalog.return_value = catalog
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+    mock_create_pc.side_effect = RuntimeError("paperclip down")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 503, resp.text
+    mock_release.assert_awaited_once()
+    assert mock_release.await_args.kwargs["listing_id"] == "lst_1"
+
+
 @patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.get_workspace")

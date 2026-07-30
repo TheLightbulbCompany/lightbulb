@@ -27,7 +27,7 @@ from core.auth import (
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import ULTRA_CPU, ULTRA_MEMORY_MIB
-from core.repositories import billing_repo, marketplace_repo
+from core.repositories import billing_repo, container_repo, marketplace_repo
 from core.services import (
     agent_export,
     company_deploy_service,
@@ -746,160 +746,173 @@ async def deploy_listing(
     manifest.setdefault("version", listing.get("version", 1))
     manifest.setdefault("name", listing.get("name", listing.get("slug")))
 
-    # Paperclip-first agent mint. Paperclip's create_agent returns an
-    # agent UUID that we thread through to catalog_service as
-    # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
-    # of the /chat agents.create interception in websocket_chat.py and
-    # the /teams create_agent route.
-    #
-    # Build PaperclipMeta from the slice. If the slice's agent entry has
-    # ``params.paperclip``, use those values (seller explicitly tagged
-    # the agent at publish time). Otherwise — typical for listings
-    # published before the meta-roundtrip feature shipped — derive
-    # title + capabilities from the listing fields so the buyer's
-    # Paperclip profile is at least non-empty.
-    slice_agent = slice_.get("agent") or {}
-    has_paperclip_block = isinstance(slice_agent.get("params"), dict) and isinstance(
-        slice_agent["params"].get("paperclip"), dict
-    )
-    if has_paperclip_block:
-        meta = read_from_agent_entry(slice_agent)
-    else:
-        meta = derive_from_listing(
-            name=listing.get("name"),
-            description_md=listing.get("description_md"),
-        )
-
-    agent_name = slice_agent.get("name") or listing.get("name") or listing.get("slug")
-    # Org placement: the buyer optionally picks who the new hire reports to
-    # (its manager in the Paperclip org chart) at Hire time. None leaves it
-    # unparented — one-click deploys with no body land here unchanged.
-    reports_to = payload.reports_to if payload else None
-    try:
-        paperclip_agent = await create_paperclip_for_marketplace(
-            buyer_user_id=auth.user_id,
-            owner_id=owner_id,
-            name=agent_name,
-            # meta.role drives — keeps the precedence rule consistent
-            # with the chat path (see resolve_create_agent_fields).
-            role=None,
-            meta=meta,
-            reports_to=reports_to,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",
-            owner_id,
-            listing.get("listing_id"),
-        )
+    # Exclusive claim for the whole deploy. The sidecar read above is a READ:
+    # the sidecar lands near the END of deploy_from_artifact, so two OVERLAPPING
+    # deploys both see "not installed" and both mint an agent — exactly how prod
+    # grew "Pulse 2" (deploy #2 started 35s before deploy #1 wrote its sidecar).
+    # Held across the Paperclip mint so a mint failure can't leak the claim.
+    if not await container_repo.try_claim_listing_deploy(owner_id, listing_id=listing["listing_id"]):
         raise HTTPException(
-            status_code=503,
-            detail="paperclip unavailable — retry the install in a moment",
-        ) from exc
-
-    new_agent_id = paperclip_agent["id"]
-
-    # Everything after the Paperclip mint must be wrapped so any
-    # exception triggers the orphan-Paperclip rollback. That includes
-    # container resolution (DDB/ECS can throw transient errors), the
-    # 503-on-unreachable-container short-circuit, and the catalog deploy
-    # itself. Without this envelope a transient DDB outage on
-    # ``resolve_running_container`` leaves a phantom Paperclip agent on
-    # every failed deploy.
+            status_code=409,
+            detail={"error": "deploy_in_progress"},
+        )
     try:
-        ecs = get_ecs_manager()
-        container, container_ip = await ecs.resolve_running_container(owner_id)
-        if container is None or container_ip is None:
+        # Paperclip-first agent mint. Paperclip's create_agent returns an
+        # agent UUID that we thread through to catalog_service as
+        # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
+        # of the /chat agents.create interception in websocket_chat.py and
+        # the /teams create_agent route.
+        #
+        # Build PaperclipMeta from the slice. If the slice's agent entry has
+        # ``params.paperclip``, use those values (seller explicitly tagged
+        # the agent at publish time). Otherwise — typical for listings
+        # published before the meta-roundtrip feature shipped — derive
+        # title + capabilities from the listing fields so the buyer's
+        # Paperclip profile is at least non-empty.
+        slice_agent = slice_.get("agent") or {}
+        has_paperclip_block = isinstance(slice_agent.get("params"), dict) and isinstance(
+            slice_agent["params"].get("paperclip"), dict
+        )
+        if has_paperclip_block:
+            meta = read_from_agent_entry(slice_agent)
+        else:
+            meta = derive_from_listing(
+                name=listing.get("name"),
+                description_md=listing.get("description_md"),
+            )
+
+        agent_name = slice_agent.get("name") or listing.get("name") or listing.get("slug")
+        # Org placement: the buyer optionally picks who the new hire reports to
+        # (its manager in the Paperclip org chart) at Hire time. None leaves it
+        # unparented — one-click deploys with no body land here unchanged.
+        reports_to = payload.reports_to if payload else None
+        try:
+            paperclip_agent = await create_paperclip_for_marketplace(
+                buyer_user_id=auth.user_id,
+                owner_id=owner_id,
+                name=agent_name,
+                # meta.role drives — keeps the precedence rule consistent
+                # with the chat path (see resolve_create_agent_fields).
+                role=None,
+                meta=meta,
+                reports_to=reports_to,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",
+                owner_id,
+                listing.get("listing_id"),
+            )
             raise HTTPException(
                 status_code=503,
-                detail="container starting — retry in a moment",
-            )
-        container_token = container["gateway_token"]
+                detail="paperclip unavailable — retry the install in a moment",
+            ) from exc
 
-        result = await catalog.deploy_from_artifact(
-            owner_id=owner_id,
-            slug=listing.get("slug"),
-            manifest=manifest,
-            slice_=slice_,
-            tar_bytes=tar_bytes,
-            new_agent_id=new_agent_id,
-            container_ip=container_ip,
-            container_token=container_token,
-        )
+        new_agent_id = paperclip_agent["id"]
 
-        # Register the deployed agent's operator device into the running
-        # container's paired.json + bind its authToken to the gateway token, so
-        # its first relayed connect isn't rejected NOT_PAIRED. catalog deploy
-        # only RPC-registers the agent (agents.create/update); without this a
-        # marketplace agent — which Paperclip wakes on events and runs through
-        # the operator relay — can't pass the device-auth handshake until the
-        # next reprovision. Mirrors the /teams and /chat create paths.
-        # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
-        await ensure_operator_device_paired(
-            owner_id=owner_id,
-            paperclip_agent=paperclip_agent,
-            gateway_token=container_token,
-        )
-
-        # Recreate the listing's captured routines (schedules) on the buyer,
-        # remapped to the freshly-minted agent and DORMANT (enabled:false). A
-        # failure here propagates into the rollback below — keeping the deploy
-        # all-or-nothing — so it sits inside this same try.
-        await _recreate_routines_for_buyer(
-            owner_id=owner_id,
-            new_agent_id=new_agent_id,
-            manifest_routines=manifest.get("routines") or [],
-        )
-    except Exception as exc:
-        # Catalog or container-resolution failed after Paperclip create
-        # succeeded — roll back the orphan Paperclip agent. Idempotent
-        # + 404-tolerant on the Paperclip side, so a retry doesn't
-        # accumulate phantom records.
-        logger.exception(
-            "Marketplace deploy: post-Paperclip step failed for owner=%s listing=%s — rolling back paperclip agent %s",
-            owner_id,
-            listing.get("listing_id"),
-            new_agent_id,
-        )
-        # Unwind the container/EFS side effects (openclaw.json agent entry +
-        # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
-        # leaves no orphan in the buyer's container — the half-installed
-        # ``name=<uuid>`` ghost the incomplete rollback used to strand.
-        # Self-contained best-effort; never raises.
-        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
+        # Everything after the Paperclip mint must be wrapped so any
+        # exception triggers the orphan-Paperclip rollback. That includes
+        # container resolution (DDB/ECS can throw transient errors), the
+        # 503-on-unreachable-container short-circuit, and the catalog deploy
+        # itself. Without this envelope a transient DDB outage on
+        # ``resolve_running_container`` leaves a phantom Paperclip agent on
+        # every failed deploy.
         try:
-            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-        except Exception:
-            # Roll-back is best-effort; the original exception is what
-            # the caller needs to see.
+            ecs = get_ecs_manager()
+            container, container_ip = await ecs.resolve_running_container(owner_id)
+            if container is None or container_ip is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="container starting — retry in a moment",
+                )
+            container_token = container["gateway_token"]
+
+            result = await catalog.deploy_from_artifact(
+                owner_id=owner_id,
+                slug=listing.get("slug"),
+                manifest=manifest,
+                slice_=slice_,
+                tar_bytes=tar_bytes,
+                new_agent_id=new_agent_id,
+                container_ip=container_ip,
+                container_token=container_token,
+            )
+
+            # Register the deployed agent's operator device into the running
+            # container's paired.json + bind its authToken to the gateway token, so
+            # its first relayed connect isn't rejected NOT_PAIRED. catalog deploy
+            # only RPC-registers the agent (agents.create/update); without this a
+            # marketplace agent — which Paperclip wakes on events and runs through
+            # the operator relay — can't pass the device-auth handshake until the
+            # next reprovision. Mirrors the /teams and /chat create paths.
+            # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
+            await ensure_operator_device_paired(
+                owner_id=owner_id,
+                paperclip_agent=paperclip_agent,
+                gateway_token=container_token,
+            )
+
+            # Recreate the listing's captured routines (schedules) on the buyer,
+            # remapped to the freshly-minted agent and DORMANT (enabled:false). A
+            # failure here propagates into the rollback below — keeping the deploy
+            # all-or-nothing — so it sits inside this same try.
+            await _recreate_routines_for_buyer(
+                owner_id=owner_id,
+                new_agent_id=new_agent_id,
+                manifest_routines=manifest.get("routines") or [],
+            )
+        except Exception as exc:
+            # Catalog or container-resolution failed after Paperclip create
+            # succeeded — roll back the orphan Paperclip agent. Idempotent
+            # + 404-tolerant on the Paperclip side, so a retry doesn't
+            # accumulate phantom records.
             logger.exception(
-                "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                "Marketplace deploy: post-Paperclip step failed for owner=%s listing=%s — rolling back paperclip agent %s",
+                owner_id,
+                listing.get("listing_id"),
                 new_agent_id,
             )
-        # Preserve the original HTTP status — the 503 short-circuit
-        # already carries the right code; only unexpected errors get
-        # mapped to 500.
-        if isinstance(exc, HTTPException):
-            raise
-        # Buyer hasn't connected a provider the agent hard-depends on. The
-        # gate runs first inside deploy_from_artifact, so the orphan
-        # Paperclip agent was already rolled back above. Surface the
-        # provider list so the UI can route to the integrations panel.
-        if isinstance(exc, MissingCredentialsError):
+            # Unwind the container/EFS side effects (openclaw.json agent entry +
+            # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
+            # leaves no orphan in the buyer's container — the half-installed
+            # ``name=<uuid>`` ghost the incomplete rollback used to strand.
+            # Self-contained best-effort; never raises.
+            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
+            try:
+                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+            except Exception:
+                # Roll-back is best-effort; the original exception is what
+                # the caller needs to see.
+                logger.exception(
+                    "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                    new_agent_id,
+                )
+            # Preserve the original HTTP status — the 503 short-circuit
+            # already carries the right code; only unexpected errors get
+            # mapped to 500.
+            if isinstance(exc, HTTPException):
+                raise
+            # Buyer hasn't connected a provider the agent hard-depends on. The
+            # gate runs first inside deploy_from_artifact, so the orphan
+            # Paperclip agent was already rolled back above. Surface the
+            # provider list so the UI can route to the integrations panel.
+            if isinstance(exc, MissingCredentialsError):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "missing_credentials", "missing": exc.missing},
+                ) from exc
             raise HTTPException(
-                status_code=409,
-                detail={"error": "missing_credentials", "missing": exc.missing},
+                status_code=500,
+                detail="deploy failed",
             ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail="deploy failed",
-        ) from exc
 
-    # Surface the honest "these steps will skip" warnings at hire time: byo /
-    # unavailable requirements the platform can't inject or verify. These never
-    # block the deploy (the hard gate already ran inside deploy_from_artifact);
-    # they let the buyer-facing UI tell the truth about what won't run.
-    return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
+        # Surface the honest "these steps will skip" warnings at hire time: byo /
+        # unavailable requirements the platform can't inject or verify. These never
+        # block the deploy (the hard gate already ran inside deploy_from_artifact);
+        # they let the buyer-facing UI tell the truth about what won't run.
+        return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
+    finally:
+        await container_repo.release_listing_deploy_claim(owner_id, listing_id=listing["listing_id"])
 
 
 @router.post("/listings")

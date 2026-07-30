@@ -15,6 +15,7 @@ import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import { timeAgo } from "../../../../lib/teamsData";
 import {
   isActiveRunStatus,
+  RUN_EVENTS_FETCH_LIMIT,
   useRunDetail,
   type RunDetail,
 } from "../../../../lib/teamsRunDetail";
@@ -272,8 +273,18 @@ export default function RunDetailScreen() {
 
       <View style={styles.section}>
         <Text style={styles.overline}>EVENTS</Text>
+        {/* The fetch returns the run's FIRST 1000 events (afterSeq=0, seq
+            ascending) — a capped batch has no true tail, so the notices must
+            not claim recency the data doesn't have. */}
+        {events.length >= RUN_EVENTS_FETCH_LIMIT && (
+          <Text style={styles.notice}>
+            Long run — showing only the first {RUN_EVENTS_FETCH_LIMIT.toLocaleString()} events.
+          </Text>
+        )}
         {events.length > EVENTS_MAX_ROWS && (
-          <Text style={styles.notice}>Showing the latest {EVENTS_MAX_ROWS} events.</Text>
+          <Text style={styles.notice}>
+            Displaying the last {EVENTS_MAX_ROWS} of the fetched events.
+          </Text>
         )}
         {shownEvents.length === 0 ? (
           <Text style={styles.emptyText}>No events recorded.</Text>

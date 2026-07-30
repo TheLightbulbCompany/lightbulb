@@ -11,7 +11,7 @@
  * readiness-gate mapping, loadSeq staleness guards, useFocusEffect refetch.
  */
 import { useFocusEffect } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   createApiClient,
   fetchJsonWithStatus,
@@ -63,8 +63,10 @@ export interface RunEvent {
 
 /** Matches the BFF's RUN_LOG_MAX_LIMIT_BYTES ceiling (web parity). */
 export const RUN_TRANSCRIPT_LIMIT_BYTES = 262_144;
-/** Events ceiling — ask for the max so long runs don't hide late failures. */
-const RUN_EVENTS_LIMIT = 1000;
+/** Events fetch ceiling. Events are seq-ordered ASCENDING with afterSeq=0,
+ * so a capped response is the run's FIRST 1000 events — the screen's notices
+ * must say so (full seq-paging is out of scope at v1, matching web). */
+export const RUN_EVENTS_FETCH_LIMIT = 1000;
 /** Poll cadence while the run is active (web parity). */
 const REFRESH_MS = 15_000;
 
@@ -220,7 +222,7 @@ export function useRunDetail(runId: string | undefined) {
           .catch(() => [] as string[]),
         fetchJsonWithStatus(
           config,
-          `/teams/heartbeat-runs/${encodeURIComponent(runId)}/events?limit=${RUN_EVENTS_LIMIT}`,
+          `/teams/heartbeat-runs/${encodeURIComponent(runId)}/events?limit=${RUN_EVENTS_FETCH_LIMIT}`,
         )
           .then((r) => {
             const list = (r.body as { events?: unknown } | null)?.events;
@@ -263,15 +265,19 @@ export function useRunDetail(runId: string | undefined) {
     }, [load]),
   );
 
-  // Poll while active: status/logBytes/transcript freeze on first render
-  // otherwise and a running run never visually completes (web parity).
+  // Poll while active AND focused: status/logBytes/transcript freeze on first
+  // render otherwise and a running run never visually completes (web parity).
+  // useFocusEffect scopes the interval to the focused screen so a run screen
+  // parked under a pushed sibling doesn't keep polling in the background.
   const active =
     state.kind === "ready" && isActiveRunStatus(state.run.status);
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => void load(), REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [active, load]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!active) return;
+      const timer = setInterval(() => void load(), REFRESH_MS);
+      return () => clearInterval(timer);
+    }, [active, load]),
+  );
 
   const act = useCallback(
     async (kind: "cancel" | "retry" | "resume") => {

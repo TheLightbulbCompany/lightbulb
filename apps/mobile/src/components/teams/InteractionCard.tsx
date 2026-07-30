@@ -88,10 +88,14 @@ export function InteractionCard({
   const [rejectOpen, setRejectOpen] = useState(false);
 
   // Checkbox-confirmation + suggested-task selection state, seeded from the
-  // payload defaults / all tasks selected (web card parity).
-  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(
-    () => new Set(payload?.defaultSelectedOptionIds ?? payload?.options?.map((o) => o.id) ?? []),
-  );
+  // payload defaults / all options (web card parity) — capped at maxSelected
+  // so a bounded selection never mounts already over its own limit.
+  const [selectedOptions, setSelectedOptions] = useState<Set<string>>(() => {
+    const seed =
+      payload?.defaultSelectedOptionIds ?? payload?.options?.map((o) => o.id) ?? [];
+    const max = payload?.maxSelected;
+    return new Set(max != null ? seed.slice(0, max) : seed);
+  });
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(
     () => new Set(payload?.tasks?.map((t) => t.clientKey) ?? []),
   );
@@ -238,7 +242,7 @@ export function InteractionCard({
                   {question.helpText ? (
                     <Text style={styles.optionDetail}>{question.helpText}</Text>
                   ) : null}
-                  {question.options.map((option) => {
+                  {(question.options ?? []).map((option) => {
                     const isSelected = selected.has(option.id);
                     return (
                       <Pressable

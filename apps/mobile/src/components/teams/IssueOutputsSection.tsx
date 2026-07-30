@@ -204,9 +204,12 @@ function AttachmentRow({ attachment }: { attachment: IssueAttachment }) {
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const name = attachment.originalFilename ?? "attachment";
+  // Fail CLOSED on an unknown size: fetchAttachmentDataUri has no cap of its
+  // own, so a null byteSize must not read as "tiny".
   const isImage =
     (attachment.contentType ?? "").startsWith("image/") &&
-    (attachment.byteSize ?? 0) <= IMAGE_PREVIEW_MAX_BYTES;
+    typeof attachment.byteSize === "number" &&
+    attachment.byteSize <= IMAGE_PREVIEW_MAX_BYTES;
   const meta = [attachment.contentType, fmtBytes(attachment.byteSize)]
     .filter(Boolean)
     .join(" · ");

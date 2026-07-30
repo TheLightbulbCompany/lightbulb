@@ -38,10 +38,14 @@ function RoutineRow({
 }: {
   routine: TeamsRoutine;
   agents: TeamsAgent[];
-  onToggle: (id: string, enabled: boolean) => void;
+  onToggle: (id: string, enabled: boolean) => Promise<void>;
   onRunNow: (routine: TeamsRoutine) => Promise<boolean>;
 }) {
   const [runPhase, setRunPhase] = useState<"idle" | "running" | "done">("idle");
+  // Disable the switch while its PATCH settles — the hook's ref-latch already
+  // blocks a duplicate write, but an enabled switch that "snaps back" reads
+  // as an ignored tap.
+  const [toggling, setToggling] = useState(false);
   const enabled = routineEnabled(routine);
   const agentName =
     agents.find((a) => a.id === routine.assigneeAgentId)?.name ?? "Unassigned";
@@ -101,7 +105,11 @@ function RoutineRow({
       )}
       <Switch
         value={enabled}
-        onValueChange={(next) => onToggle(routine.id, next)}
+        disabled={toggling}
+        onValueChange={(next) => {
+          setToggling(true);
+          void onToggle(routine.id, next).finally(() => setToggling(false));
+        }}
         trackColor={{ true: colors.forest, false: colors.creamDeepest }}
         accessibilityLabel={`${routine.title ?? "Routine"} ${enabled ? "active" : "paused"}`}
       />
@@ -184,7 +192,7 @@ export default function RoutinesScreen() {
         <RoutineRow
           routine={item}
           agents={state.agents}
-          onToggle={(id, enabled) => void setEnabled(id, enabled)}
+          onToggle={setEnabled}
           onRunNow={(routine) => runNow(routine.id)}
         />
       )}

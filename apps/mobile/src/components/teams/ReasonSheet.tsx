@@ -1,8 +1,19 @@
-import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import { BottomSheet } from "../ui/BottomSheet";
+
+/** Server contract for reject reasons / issue fields is ≤2000 chars. */
+const MAX_LENGTH = 2000;
 
 /**
  * Cross-platform single-text-input sheet. Two jobs:
@@ -34,10 +45,16 @@ export function ReasonSheet({
   onClose: () => void;
 }) {
   const [reason, setReason] = useState(initialValue);
+  // Double-submit latch: onSubmit fires once per open — the sheet stays
+  // mounted through its ~180ms close animation, where a second tap could land.
+  const submittedRef = useRef(false);
   // Reset the draft to the (possibly new) initial value whenever the sheet
   // opens for a fresh target.
   useEffect(() => {
-    if (visible) setReason(initialValue);
+    if (visible) {
+      setReason(initialValue);
+      submittedRef.current = false;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- initialValue is a seed, not a live binding
   }, [visible]);
 
@@ -46,6 +63,9 @@ export function ReasonSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose} closeLabel="Cancel">
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
       <View style={styles.card}>
         <View style={styles.handle} />
         <Text style={styles.title}>{title}</Text>
@@ -57,6 +77,7 @@ export function ReasonSheet({
           onChangeText={setReason}
           multiline
           autoFocus
+          maxLength={MAX_LENGTH}
           accessibilityLabel={placeholder}
         />
         <View style={styles.actions}>
@@ -76,7 +97,8 @@ export function ReasonSheet({
               pressed && styles.pressed,
             ]}
             onPress={() => {
-              if (!canSubmit) return;
+              if (!canSubmit || submittedRef.current) return;
+              submittedRef.current = true;
               onSubmit(trimmed);
               onClose();
             }}
@@ -88,6 +110,7 @@ export function ReasonSheet({
           </Pressable>
         </View>
       </View>
+      </KeyboardAvoidingView>
     </BottomSheet>
   );
 }

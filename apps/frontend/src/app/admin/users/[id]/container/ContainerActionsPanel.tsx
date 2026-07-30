@@ -65,16 +65,41 @@ export function ContainerActionsPanel({
   const hasImages = images.length > 0;
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
-  // Default to the most-recently-pushed image when ECR returned tags; the
-  // first row is the freshest build, which is the common case for the
-  // "bump this user to the new dev image" workflow. Falls back to "custom"
-  // when ECR errored out so the free-text field gets a useful starting state.
-  const [selectedUri, setSelectedUri] = React.useState<string>(
-    hasImages ? images[0].image_uri : CUSTOM_IMAGE_VALUE,
-  );
+  // Default to the PINNED prod image, not the newest build.
+  //
+  // This used to default to images[0] (freshest). But "Apply now" force-rolls
+  // onto whatever is selected, and the most common reason to touch this
+  // control is a restart to pick up regenerated config on the image the owner
+  // is ALREADY on. Defaulting to the newest build turned that routine action
+  // into a silent version change — nearly rolled a prod owner off the pinned
+  // tag onto an unpromoted build. Rolling forward stays one click; it is just
+  // deliberate now.
+  //
+  // Falls back to the newest row if the pin is somehow absent from the list,
+  // then to "custom" when ECR errored out, so the free-text field still gets
+  // a useful starting state.
+  const defaultUri = React.useMemo(() => {
+    if (!hasImages) return CUSTOM_IMAGE_VALUE;
+    const pinned = currentProdTag
+      ? images.find((img) => img.tag === currentProdTag)
+      : undefined;
+    return (pinned ?? images[0]).image_uri;
+  }, [hasImages, images, currentProdTag]);
+
+  const [selectedUri, setSelectedUri] = React.useState<string>(defaultUri);
   const [customImageUrl, setCustomImageUrl] = React.useState("");
   const [imageDescription, setImageDescription] = React.useState("");
   const [queueing, setQueueing] = React.useState(false);
+
+  // Whether the pending force-roll would CHANGE the owner's image rather than
+  // just restart them on the one they are already pinned to. Surfaced in the
+  // confirm dialog's title so a version change can't happen by accident on a
+  // control whose routine use is "restart to pick up new config".
+  const rollsOffPin =
+    hasImages &&
+    currentProdTag != null &&
+    selectedUri !== CUSTOM_IMAGE_VALUE &&
+    images.find((img) => img.image_uri === selectedUri)?.tag !== currentProdTag;
 
   const usingCustom = selectedUri === CUSTOM_IMAGE_VALUE;
   const effectiveImageUrl = usingCustom ? customImageUrl : selectedUri;
@@ -138,7 +163,7 @@ export function ContainerActionsPanel({
       if (result.ok) {
         setCustomImageUrl("");
         setImageDescription("");
-        if (hasImages) setSelectedUri(images[0].image_uri);
+        if (hasImages) setSelectedUri(defaultUri);
       }
     } finally {
       setQueueing(false);
@@ -167,7 +192,7 @@ export function ContainerActionsPanel({
       if (result.ok) {
         setCustomImageUrl("");
         setImageDescription("");
-        if (hasImages) setSelectedUri(images[0].image_uri);
+        if (hasImages) setSelectedUri(defaultUri);
       }
     } finally {
       setQueueing(false);
@@ -400,7 +425,13 @@ export function ContainerActionsPanel({
             </Button>
             <ConfirmActionDialog
               confirmText={userId}
-              actionLabel="Force-apply image update now"
+              actionLabel={
+                usingCustom
+                  ? "Force-apply a CUSTOM image now"
+                  : rollsOffPin
+                    ? "Force-apply a NON-PINNED image now (changes their version)"
+                    : "Force-apply image update now (same pinned image)"
+              }
               destructive
               onConfirm={handleForceApplyImageUpdate}
             >

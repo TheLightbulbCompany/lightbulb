@@ -44,14 +44,18 @@ describe("SupportTicketDialog", () => {
     });
   });
 
-  it("does not promise a reply when the backend only logged the ticket", async () => {
+  it("does not promise delivery or a record when the email did not go out", async () => {
     post.mockResolvedValue({ status: "received" });
     render(<SupportTicketDialog open onClose={vi.fn()} presetMessage="hello" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect(screen.getByText(/couldn.t email it through/i)).toBeInTheDocument());
+    // Must not promise a reply, and must not claim we hold the message — the
+    // email IS the capture path, so the only honest fallback is a direct address.
+    await waitFor(() => expect(screen.getByText(/support@isol8\.co/i)).toBeInTheDocument());
     expect(screen.queryByText(/on its way to our team/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/we logged your message/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/thanks — we got it/i)).not.toBeInTheDocument();
   });
 
   it("confirms delivery when the email actually went out", async () => {

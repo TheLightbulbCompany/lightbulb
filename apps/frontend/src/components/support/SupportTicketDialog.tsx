@@ -98,14 +98,20 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
       >
         {state === "sent" || state === "received" ? (
           <div className="text-center">
-            <h2 className="mb-2 text-lg font-semibold">Thanks — we got it</h2>
+            <h2 className="mb-2 text-lg font-semibold">
+              {state === "sent" ? "Thanks — we got it" : "Couldn’t send that"}
+            </h2>
             <p className="mb-6 text-sm text-gray-600">
               {state === "sent" ? (
                 <>Your message is on its way to our team. We&rsquo;ll reply to your email.</>
               ) : (
+                // Don't claim a record the user can rely on: delivery is the only
+                // capture path, so on failure the honest move is to hand them one
+                // that doesn't depend on our mail working.
                 <>
-                  We logged your message, but couldn&rsquo;t email it through. If you don&rsquo;t
-                  hear back, reach us at support@isol8.co.
+                  Our email delivery is having trouble, so we can&rsquo;t promise this reached
+                  us. Please send it straight to support@isol8.co and we&rsquo;ll pick it up
+                  there.
                 </>
               )}
             </p>

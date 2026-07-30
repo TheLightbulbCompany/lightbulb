@@ -16,20 +16,20 @@ import {
 // warning at a glance — the snapshot has no severity of its own.
 function valueClass(variant: ReturnType<typeof formatValue>["variant"]): string {
   if (variant === "yes") return "text-[#2d8a4e] font-medium";
-  if (variant === "no") return "text-[#8a8578]";
+  if (variant === "no") return "text-[var(--mute)]";
   if (variant === "error") return "text-red-600";
-  if (variant === "muted") return "text-[#8a8578]/60";
-  return "text-[#1a1a1a]";
+  if (variant === "muted") return "text-[var(--mute)]/60";
+  return "text-[var(--ink)]";
 }
 
 function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
   return (
-    <div className="rounded-lg border border-[#e0dbd0] bg-white p-3 space-y-2">
+    <div className="rounded-lg border border-[var(--edge)] bg-white p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-[#1a1a1a]">
+        <span className="text-sm font-medium text-[var(--ink)]">
           {account.name || account.accountId}
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">
+        <span className="text-[10px] uppercase tracking-wider text-[var(--mute)]/60">
           {account.accountId}
         </span>
       </div>
@@ -38,7 +38,7 @@ function AccountCard({ account }: { account: ChannelAccountSnapshot }) {
           const { text, variant } = formatValue(field, account[field]);
           return (
             <div key={field} className="flex items-center justify-between text-xs">
-              <span className="text-[#8a8578]">{STATUS_LABELS[field] ?? field}</span>
+              <span className="text-[var(--mute)]">{STATUS_LABELS[field] ?? field}</span>
               <span className={cn("truncate max-w-[60%] text-right", valueClass(variant))}>
                 {text}
               </span>
@@ -65,7 +65,7 @@ export function ChannelsStatusPanel() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Channels</h2>
-          <p className="text-xs text-[#8a8578]">
+          <p className="text-xs text-[var(--mute)]">
             Live connectivity for each linked messaging channel.
           </p>
         </div>
@@ -81,7 +81,7 @@ export function ChannelsStatusPanel() {
       </div>
 
       {isLoading && !data ? (
-        <div className="flex items-center gap-2 text-sm text-[#8a8578]">
+        <div className="flex items-center gap-2 text-sm text-[var(--mute)]">
           <Loader2 className="h-4 w-4 animate-spin" /> Probing channels…
         </div>
       ) : error || !data ? (
@@ -91,10 +91,10 @@ export function ChannelsStatusPanel() {
         // failure this panel exists to investigate.
         <div
           data-testid="channels-status-unavailable"
-          className="rounded-lg border border-[#e0dbd0] bg-white p-6 text-center"
+          className="rounded-lg border border-[var(--edge)] bg-white p-6 text-center"
         >
           <AlertTriangle className="h-5 w-5 mx-auto mb-2 text-amber-500" />
-          <p className="text-sm text-[#8a8578]">
+          <p className="text-sm text-[var(--mute)]">
             Couldn&apos;t reach the container to probe channel status.
           </p>
           <Button
@@ -108,9 +108,9 @@ export function ChannelsStatusPanel() {
           </Button>
         </div>
       ) : channelOrder.length === 0 ? (
-        <div className="rounded-lg border border-[#e0dbd0] bg-white p-6 text-center">
-          <Radio className="h-5 w-5 mx-auto mb-2 text-[#8a8578]/50" />
-          <p className="text-sm text-[#8a8578]">
+        <div className="rounded-lg border border-[var(--edge)] bg-white p-6 text-center">
+          <Radio className="h-5 w-5 mx-auto mb-2 text-[var(--mute)]/50" />
+          <p className="text-sm text-[var(--mute)]">
             No channels configured. Link a channel from Settings to see status here.
           </p>
         </div>
@@ -120,11 +120,11 @@ export function ChannelsStatusPanel() {
             const accounts = data?.channelAccounts?.[channelId] ?? [];
             return (
               <div key={channelId} className="space-y-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--mute)]">
                   {data?.channelLabels?.[channelId] ?? channelId}
                 </h3>
                 {accounts.length === 0 ? (
-                  <p className="text-xs text-[#8a8578]/70 pl-1">No accounts linked.</p>
+                  <p className="text-xs text-[var(--mute)]/70 pl-1">No accounts linked.</p>
                 ) : (
                   <div className="space-y-2">
                     {accounts.map((account) => (

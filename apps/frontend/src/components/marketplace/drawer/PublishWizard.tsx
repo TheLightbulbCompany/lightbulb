@@ -417,7 +417,7 @@ export function PublishWizard() {
         {pips.map((n) => (
           <span
             key={n}
-            className={`w-5 h-1 rounded-full ${n <= step ? "bg-[#06402b]" : "bg-[#e0dbd0]"}`}
+            className={`w-5 h-1 rounded-full ${n <= step ? "bg-[var(--forest)]" : "bg-[var(--edge)]"}`}
           />
         ))}
         <span className="text-[11.5px] text-[#5b5b5b] ml-2">
@@ -476,7 +476,7 @@ export function PublishWizard() {
       </div>
 
       {step <= 5 && (
-        <div className="flex justify-between gap-2 pt-3 mt-4 border-t border-[#e0dbd0]">
+        <div className="flex justify-between gap-2 pt-3 mt-4 border-t border-[var(--edge)]">
           <button
             type="button"
             onClick={back}
@@ -505,7 +505,7 @@ export function PublishWizard() {
                 // content surfaces the picker.
                 (step === 5 && profileChecked && !sellerProfile)
               }
-              className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold disabled:opacity-50"
+              className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold disabled:opacity-50"
             >
               {step === 5
                 ? isEditing
@@ -539,7 +539,7 @@ export function PublishWizard() {
       )}
 
       {submitError && (
-        <p role="alert" className="mt-3 text-[13px] text-[#b32424]">
+        <p role="alert" className="mt-3 text-[13px] text-[var(--danger)]">
           {submitError}
         </p>
       )}

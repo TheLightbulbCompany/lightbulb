@@ -118,12 +118,12 @@ export function ScrollManager() {
 
     console.log(
       "%c🏝️ isol8 %c— Your private AI pod",
-      "font-size:20px;font-weight:900;color:#06402B;",
+      "font-size:20px;font-weight:900;color:var(--forest);",
       "font-size:14px;color:#888;"
     );
     console.log(
       "%cCurious? We like that. → https://isol8.co",
-      "font-size:11px;color:#4a9e74;"
+      "font-size:11px;color:var(--forest-soft);"
     );
 
     return () => ctx.revert();

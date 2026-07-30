@@ -113,13 +113,13 @@ function extractErrorDetail(err: unknown): string {
 // Brand-primary recipe used across the app (see ProviderPicker / landing
 // .ld-btn): forest fill (#06402B), cream text, pill, hover #0a5138.
 const CHOICE_BTN =
-  "w-full rounded-full bg-[#06402B] hover:bg-[#0a5138] text-[#faf7f2] py-4 text-sm font-semibold tracking-wide transition-colors";
+  "w-full rounded-full bg-[var(--forest)] hover:bg-[#0a5138] text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
 const INPUT =
-  "w-full rounded-xl border border-[#e0dbd0] bg-white p-3 text-sm text-[#1a1a1a] placeholder:text-[#b5af9f] focus:outline-none focus:border-[#06402B]";
+  "w-full rounded-xl border border-[var(--edge)] bg-white p-3 text-sm text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:outline-none focus:border-[var(--forest)]";
 // Outline, not filled: this is the escape hatch for the undecided, and it
 // should not compete with Continue for the user who already has an idea.
 const SECONDARY_BTN =
-  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[#1a1a1a] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
+  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[var(--ink)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
 
 export function FirstRunFunnel() {
   const { user } = useUser();
@@ -322,15 +322,15 @@ export function FirstRunFunnel() {
   const busy = state === "submitting";
 
   return (
-    <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+    <div className="flex-1 flex items-center justify-center p-6 bg-[var(--cream)]">
       <div className="w-full max-w-md space-y-8">
         {path === null ? (
           <div className="space-y-8 text-center">
             <div className="space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
+              <h1 className="text-3xl font-semibold tracking-tight text-[var(--ink)] font-lora">
                 Let&apos;s get started.
               </h1>
-              <p className="text-sm text-[#8a8578]">
+              <p className="text-sm text-[var(--mute)]">
                 Tell your CEO about your business — she&apos;ll research it and lay out your next moves.
               </p>
             </div>
@@ -339,25 +339,25 @@ export function FirstRunFunnel() {
                 <button className={CHOICE_BTN} onClick={() => setPath("new")}>
                   Start something new
                 </button>
-                <p className="text-xs italic text-[#8a8578]">Start from scratch</p>
+                <p className="text-xs italic text-[var(--mute)]">Start from scratch</p>
               </div>
               <div className="space-y-1.5">
                 <button className={CHOICE_BTN} onClick={() => setPath("grow")}>
                   Grow my business
                 </button>
-                <p className="text-xs italic text-[#8a8578]">Already have a business</p>
+                <p className="text-xs italic text-[var(--mute)]">Already have a business</p>
               </div>
             </div>
           </div>
         ) : (
           <div className="space-y-6">
             <button
-              className="text-xs text-[#8a8578] hover:text-[#1a1a1a] transition-colors"
+              className="text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors"
               onClick={() => setPath(null)}
             >
               ← Back
             </button>
-            <h1 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
+            <h1 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
               {path === "new" ? "What's your idea?" : "What's your company's website?"}
             </h1>
             {path === "new" ? (
@@ -402,7 +402,7 @@ export function FirstRunFunnel() {
                       ? "Setting things up…"
                       : "I don’t know yet — you pick"}
                   </button>
-                  <p className="text-xs italic text-center text-[#8a8578]">
+                  <p className="text-xs italic text-center text-[var(--mute)]">
                     Friday will look you up and choose something
                   </p>
                 </div>
@@ -413,9 +413,9 @@ export function FirstRunFunnel() {
                 // Persistent failure: the same upstream error N times in a
                 // row is not transient — stop implying a retry will fix it.
                 // Show the upstream detail and route to support instead.
-                <div className="space-y-1.5 text-sm text-[#b32424]">
+                <div className="space-y-1.5 text-sm text-[var(--danger)]">
                   <p>We couldn&apos;t save your brief.</p>
-                  <p className="break-words text-xs text-[#8a8578]">{failure.detail}</p>
+                  <p className="break-words text-xs text-[var(--mute)]">{failure.detail}</p>
                   <p>
                     Please{" "}
                     <a className="underline" href="mailto:support@isol8.co">
@@ -425,7 +425,7 @@ export function FirstRunFunnel() {
                   </p>
                 </div>
               ) : (
-                <p className="text-sm text-[#b32424]">
+                <p className="text-sm text-[var(--danger)]">
                   Couldn&apos;t save that just yet.{" "}
                   <button className="underline" onClick={() => submit(mode)}>
                     Retry

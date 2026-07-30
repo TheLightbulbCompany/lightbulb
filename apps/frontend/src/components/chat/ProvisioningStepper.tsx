@@ -798,7 +798,7 @@ export function ProvisioningStepper({
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #faf7f2;
+            background: var(--cream);
           }
           .provision-card {
             text-align: center;
@@ -824,8 +824,8 @@ export function ProvisioningStepper({
           }
           .anim-key-circle {
             width: 56px; height: 56px;
-            border: 2px solid #e0dbd0;
-            border-top-color: #06402B;
+            border: 2px solid var(--edge);
+            border-top-color: var(--forest);
             border-radius: 50%;
           }
           .anim-key-icon {
@@ -837,18 +837,18 @@ export function ProvisioningStepper({
           }
           .provision-title {
             font-family: var(--font-lora-serif), serif;
-            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            font-size: 22px; font-weight: 400; color: var(--ink);
             margin-bottom: 8px;
           }
           .provision-desc {
             font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px; color: #8a8578;
+            font-size: 14px; color: var(--mute);
             margin-bottom: 24px;
           }
           .provision-muted {
             font-family: var(--font-dm-sans), sans-serif;
             font-size: 13px;
-            color: #8a8578;
+            color: var(--mute);
             margin: 0;
           }
           .provision-timeout {
@@ -874,7 +874,7 @@ export function ProvisioningStepper({
               <div className="provision-anim">
                 <div className="anim-key-circle" />
                 <div className="anim-key-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                   </svg>
                 </div>
@@ -899,7 +899,7 @@ export function ProvisioningStepper({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="rounded-full border-[#e0dbd0]"
+                  className="rounded-full border-[var(--edge)]"
                   onClick={() => refresh()}
                 >
                   Check again
@@ -950,7 +950,7 @@ export function ProvisioningStepper({
       setProviderStepDone(true);
     };
     return (
-      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+      <div className="flex-1 flex items-center justify-center p-6 bg-[var(--cream)]">
         <div className="w-full max-w-md">
           {providerChoice === "chatgpt_oauth" && (
             <ChatGPTOAuthStep onComplete={handleProviderComplete} />
@@ -998,25 +998,25 @@ export function ProvisioningStepper({
   if (gatePhase === "blocked" && blocked && providerStepDone && providerSettling) {
     const copy = PROVIDER_SETTLE_COPY[completedProvider ?? "default"];
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)]">
         <div className="w-full max-w-[400px] px-8 py-12 text-center">
           <div className="mb-8 flex justify-center">
             <Logo size="lg" href={null} />
           </div>
           <div className="mx-auto mb-8 flex h-20 w-20 items-center justify-center">
-            <Loader2 className="h-10 w-10 animate-spin text-[#06402B]" aria-hidden="true" />
+            <Loader2 className="h-10 w-10 animate-spin text-[var(--forest)]" aria-hidden="true" />
           </div>
           <h2
             role="status"
             aria-live="polite"
             aria-atomic="true"
-            className="mb-2 text-[22px] font-normal text-[#1a1a1a]"
+            className="mb-2 text-[22px] font-normal text-[var(--ink)]"
             style={{ fontFamily: "var(--font-lora-serif), serif" }}
           >
             {copy.title}
           </h2>
           <p
-            className="text-sm text-[#8a8578]"
+            className="text-sm text-[var(--mute)]"
             style={{ fontFamily: "var(--font-dm-sans), sans-serif" }}
           >
             {copy.desc}
@@ -1038,7 +1038,7 @@ export function ProvisioningStepper({
   // the middle differs.
   if (gatePhase === "blocked" && blocked && blocked.code === "team_billing_required") {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2] px-6 py-12">
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)] px-6 py-12">
         <div className="flex w-full max-w-[440px] flex-col items-center">
           <div className="mb-8 flex justify-center">
             <Logo size="lg" href={null} />
@@ -1056,7 +1056,7 @@ export function ProvisioningStepper({
             <Button
               variant="outline"
               size="sm"
-              className="rounded-full border-[#e0dbd0]"
+              className="rounded-full border-[var(--edge)]"
               onClick={() => refresh()}
             >
               Check again
@@ -1083,7 +1083,7 @@ export function ProvisioningStepper({
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #faf7f2;
+            background: var(--cream);
           }
           .provision-card {
             text-align: center;
@@ -1109,8 +1109,8 @@ export function ProvisioningStepper({
           }
           .anim-key-circle {
             width: 56px; height: 56px;
-            border: 2px solid #e0dbd0;
-            border-top-color: #06402B;
+            border: 2px solid var(--edge);
+            border-top-color: var(--forest);
             border-radius: 50%;
           }
           .anim-key-icon {
@@ -1122,19 +1122,19 @@ export function ProvisioningStepper({
           }
           .provision-title {
             font-family: var(--font-lora-serif), serif;
-            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            font-size: 22px; font-weight: 400; color: var(--ink);
             margin-bottom: 8px;
           }
           .provision-desc {
             font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px; color: #8a8578;
+            font-size: 14px; color: var(--mute);
             margin-bottom: 24px;
           }
           .provision-cta {
             display: inline-block;
             padding: 10px 22px;
             border-radius: 9999px;
-            background: #06402B;
+            background: var(--forest);
             color: #ffffff;
             font-family: var(--font-dm-sans), sans-serif;
             font-size: 14px;
@@ -1145,7 +1145,7 @@ export function ProvisioningStepper({
           .provision-muted {
             font-family: var(--font-dm-sans), sans-serif;
             font-size: 13px;
-            color: #8a8578;
+            color: var(--mute);
             margin: 0;
           }
           .provision-timeout {
@@ -1173,7 +1173,7 @@ export function ProvisioningStepper({
               <div className="provision-anim">
                 <div className="anim-key-circle" />
                 <div className="anim-key-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                   </svg>
                 </div>
@@ -1203,7 +1203,7 @@ export function ProvisioningStepper({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="rounded-full border-[#e0dbd0]"
+                  className="rounded-full border-[var(--edge)]"
                   onClick={() => refresh()}
                 >
                   Check again
@@ -1282,20 +1282,20 @@ export function ProvisioningStepper({
   // on its own; Retry re-checks, but support is the real path if it persists.
   if (isTerminalError) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)]">
         <div className="text-center space-y-6 max-w-sm">
           <StepperDisplay currentPhase={phase} steps={STEPS_PAID} error />
           <div className="space-y-2">
             <XCircle className="h-8 w-8 text-[#dc2626] mx-auto" />
-            <h2 className="text-lg font-medium text-[#1a1a1a]">Setup failed</h2>
-            <p className="text-sm text-[#8a8578]">
+            <h2 className="text-lg font-medium text-[var(--ink)]">Setup failed</h2>
+            <p className="text-sm text-[var(--mute)]">
               {isOrg
                 ? `We couldn't finish setting up the container for ${organization.name}. Retry below — if it keeps failing, contact support and we'll get it sorted.`
                 : "We couldn't finish setting up your container. Retry below — if it keeps failing, contact support and we'll get it sorted."}
             </p>
           </div>
           <div className="flex gap-3 justify-center">
-            <Button variant="outline" className="rounded-full border-[#e0dbd0]" onClick={() => refresh()}>
+            <Button variant="outline" className="rounded-full border-[var(--edge)]" onClick={() => refresh()}>
               Retry
             </Button>
             <Button variant="ghost" className="rounded-full" asChild>
@@ -1323,7 +1323,7 @@ export function ProvisioningStepper({
           display: flex;
           align-items: center;
           justify-content: center;
-          background: #faf7f2;
+          background: var(--cream);
         }
         .provision-card {
           text-align: center;
@@ -1354,8 +1354,8 @@ export function ProvisioningStepper({
         /* Key spinner */
         .anim-key-circle {
           width: 56px; height: 56px;
-          border: 2px solid #e0dbd0;
-          border-top-color: #06402B;
+          border: 2px solid var(--edge);
+          border-top-color: var(--forest);
           border-radius: 50%;
           animation: key-spin 1.2s linear infinite;
         }
@@ -1372,7 +1372,7 @@ export function ProvisioningStepper({
         .anim-pod { position: relative; width: 56px; height: 56px; }
         .pod-body {
           position: absolute; bottom: 0; left: 4px; right: 4px; height: 32px;
-          background: #06402B; border-radius: 0 0 8px 8px;
+          background: var(--forest); border-radius: 0 0 8px 8px;
         }
         .pod-window {
           width: 20px; height: 10px; background: #a8e6c6; border-radius: 4px;
@@ -1402,7 +1402,7 @@ export function ProvisioningStepper({
         }
         .pod-lid-l, .pod-lid-r {
           position: absolute; top: 16px; width: 50%; height: 12px;
-          background: #06402B; transition: transform 600ms ease-out;
+          background: var(--forest); transition: transform 600ms ease-out;
         }
         .pod-lid-l { left: 4px; border-radius: 8px 0 0 0; transform-origin: left center; }
         .pod-lid-r { right: 4px; border-radius: 0 8px 0 0; transform-origin: right center; }
@@ -1432,12 +1432,12 @@ export function ProvisioningStepper({
         /* Title fade */
         .provision-title {
           font-family: var(--font-lora-serif), serif;
-          font-size: 22px; font-weight: 400; color: #1a1a1a;
+          font-size: 22px; font-weight: 400; color: var(--ink);
           margin-bottom: 8px; transition: opacity 150ms ease-out;
         }
         .provision-desc {
           font-family: var(--font-dm-sans), sans-serif;
-          font-size: 14px; color: #8a8578;
+          font-size: 14px; color: var(--mute);
           margin-bottom: 32px; transition: opacity 150ms ease-out;
         }
         .provision-fading { opacity: 0; }
@@ -1470,12 +1470,12 @@ export function ProvisioningStepper({
         }
         .provision-dot {
           width: 10px; height: 10px; border-radius: 50%;
-          background: #e0dbd0; transition: background 300ms ease-out, transform 300ms ease-out;
+          background: var(--edge); transition: background 300ms ease-out, transform 300ms ease-out;
         }
-        .provision-dot.active { background: #06402B; transform: scale(1.2); }
+        .provision-dot.active { background: var(--forest); transform: scale(1.2); }
         .provision-dot.done { background: #2d8a4e; }
         .provision-connector {
-          width: 32px; height: 2px; background: #e0dbd0;
+          width: 32px; height: 2px; background: var(--edge);
           transition: background 300ms ease-out;
         }
         .provision-connector.done { background: #2d8a4e; }
@@ -1490,7 +1490,7 @@ export function ProvisioningStepper({
           color: #2d7a50;
         }
         .provision-free-sub {
-          font-size: 12px; color: #8a8578; margin-top: 8px;
+          font-size: 12px; color: var(--mute); margin-top: 8px;
         }
         /* Live elapsed counter — sits below the dots so the user always
            sees the clock moving even before the soft-timeout copy appears. */
@@ -1545,7 +1545,7 @@ export function ProvisioningStepper({
             <div className={`provision-anim ${phase === "payment" || phase === "container" ? "active" : ""}`}>
               <div className="anim-key-circle" />
               <div className="anim-key-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                 </svg>
               </div>
@@ -1583,7 +1583,7 @@ export function ProvisioningStepper({
             {/* Step: ready — checkmark */}
             <div className={`provision-anim ${(phase as string) === "ready" ? "active" : ""}`}>
               <div className="anim-done">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" className="check-path" />
                 </svg>
               </div>
@@ -1648,7 +1648,7 @@ export function ProvisioningStepper({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="rounded-full border-[#e0dbd0]"
+                  className="rounded-full border-[var(--edge)]"
                   onClick={() => {
                     refresh();
                     setTimedOut(false);
@@ -1705,7 +1705,7 @@ function TeamsDegradedNotice() {
             onClick={() =>
               capture("support_contact_clicked", { source: "teams_degraded_notice" })
             }
-            className="mt-2 inline-block text-xs font-medium text-[#06402B] underline"
+            className="mt-2 inline-block text-xs font-medium text-[var(--forest)] underline"
           >
             Contact support
           </a>
@@ -1749,7 +1749,7 @@ function StepperDisplay({
             ) : isComplete ? (
               <CheckCircle className="h-5 w-5 text-[#2d8a4e] flex-shrink-0" />
             ) : isCurrent ? (
-              <Loader2 className="h-5 w-5 animate-spin text-[#06402B] flex-shrink-0" />
+              <Loader2 className="h-5 w-5 animate-spin text-[var(--forest)] flex-shrink-0" />
             ) : (
               <Circle className="h-5 w-5 text-[#d4cfc5] flex-shrink-0" />
             )}
@@ -1758,9 +1758,9 @@ function StepperDisplay({
                 isErrorStep
                   ? "text-sm text-[#dc2626]"
                   : isComplete
-                    ? "text-sm text-[#1a1a1a]"
+                    ? "text-sm text-[var(--ink)]"
                     : isCurrent
-                      ? "text-sm text-[#1a1a1a] font-medium"
+                      ? "text-sm text-[var(--ink)] font-medium"
                       : "text-sm text-[#c5bfb6]"
               }
             >
@@ -1814,17 +1814,17 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
   }, [api, isOrg]);
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">
+    <div className="flex-1 flex items-center justify-center p-8 bg-[var(--cream)]">
       <div className="max-w-5xl w-full space-y-8 text-center">
         <div className="space-y-3">
           <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4">
-            <rect width="100" height="100" rx="22" fill="#06402B" />
+            <rect width="100" height="100" rx="22" fill="var(--forest)" />
             <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
           </svg>
-          <h2 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
+          <h2 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
             One price. Three ways to power it.
           </h2>
-          <p className="text-[#8a8578] text-sm max-w-md mx-auto">
+          <p className="text-[var(--mute)] text-sm max-w-md mx-auto">
             {isOrg
               ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
               : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure."}
@@ -1841,15 +1841,15 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
               key={card.id}
               className={
                 "rounded-xl border p-6 space-y-4 bg-white text-left flex flex-col " +
-                (card.highlighted ? "border-2 border-[#06402B]" : "border-[#e0dbd0]")
+                (card.highlighted ? "border-2 border-[var(--forest)]" : "border-[var(--edge)]")
               }
             >
               <div className="space-y-1">
-                <h3 className="font-medium text-[#1a1a1a]">{card.title}</h3>
-                <p className="text-sm text-[#8a8578]">{card.subtitle}</p>
-                <p className="text-xs text-[#06402B] font-medium">{card.trialNote}</p>
+                <h3 className="font-medium text-[var(--ink)]">{card.title}</h3>
+                <p className="text-sm text-[var(--mute)]">{card.subtitle}</p>
+                <p className="text-xs text-[var(--forest)] font-medium">{card.trialNote}</p>
                 {isOrg && card.id === "chatgpt_oauth" && (
-                  <p className="text-xs text-[#8a8578]">
+                  <p className="text-xs text-[var(--mute)]">
                     You connect your ChatGPT account (Pro recommended) — one
                     account powers the whole workspace.
                   </p>
@@ -1858,7 +1858,7 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
               <ul className="text-sm text-[#5a5549] space-y-2 flex-1">
                 {card.bullets.map((b) => (
                   <li key={b} className="flex items-start gap-2">
-                    <span aria-hidden className="text-[#06402B]">✓</span>
+                    <span aria-hidden className="text-[var(--forest)]">✓</span>
                     <span>{b}</span>
                   </li>
                 ))}
@@ -1866,8 +1866,8 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
               <Button
                 className={
                   card.highlighted
-                    ? "w-full rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white"
-                    : "w-full rounded-full border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]"
+                    ? "w-full rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white"
+                    : "w-full rounded-full border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
                 }
                 variant={card.highlighted ? "default" : "outline"}
                 onClick={() => handlePick(card.id)}

@@ -45,7 +45,7 @@ export function MarketplaceToast() {
   }
 
   return (
-    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[#06402b] text-white rounded-2xl px-5 py-3.5 shadow-xl">
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[var(--forest)] text-white rounded-2xl px-5 py-3.5 shadow-xl">
       <div className="flex items-center gap-3.5 text-sm">
         <span>
           ✓ <strong>{toast.agentName} installed</strong> in your workspace.

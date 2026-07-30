@@ -76,28 +76,28 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
 
         <div className="space-y-5">
           <div className="space-y-2">
-            <h3 className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <h3 className="text-sm font-medium text-[var(--ink)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               Add your own MCP servers
             </h3>
-            <div className="rounded-md border border-[#e0dbd0] bg-white">
+            <div className="rounded-md border border-[var(--edge)] bg-white">
               <McpServersTab />
             </div>
           </div>
 
-          <div className="rounded-md border border-[#e0dbd0] bg-white">
+          <div className="rounded-md border border-[var(--edge)] bg-white">
             <button
               type="button"
               aria-expanded={advancedOpen}
               onClick={() => setAdvancedOpen((v) => !v)}
               className="flex w-full items-center justify-between p-4 text-left"
             >
-              <span className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+              <span className="text-sm font-medium text-[var(--ink)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
                 Advanced — plugins
               </span>
-              <ChevronDown className={cn("h-4 w-4 text-[#8a8578] transition-transform", !advancedOpen && "-rotate-90")} />
+              <ChevronDown className={cn("h-4 w-4 text-[var(--mute)] transition-transform", !advancedOpen && "-rotate-90")} />
             </button>
             {advancedOpen && (
-              <div className="border-t border-[#e0dbd0]">
+              <div className="border-t border-[var(--edge)]">
                 <PluginsTab />
               </div>
             )}
@@ -108,14 +108,14 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
   }
 
   return (
-    <div className="bg-[#faf7f2] min-h-full">
+    <div className="bg-[var(--cream)] min-h-full">
       <div className="p-6 space-y-5">
         <div>
           <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
             Integrations
           </h2>
           <p
-            className="text-sm text-[#8a8578] mt-0.5"
+            className="text-sm text-[var(--mute)] mt-0.5"
             style={{ fontFamily: "'DM Sans', sans-serif" }}
           >
             Connect third-party tools so your agents can act on your behalf. API-key
@@ -125,7 +125,7 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
         </div>
 
         {!canManage && (
-          <div className="rounded-md border border-[#e0dbd0] bg-white p-4 text-sm text-[#8a8578]">
+          <div className="rounded-md border border-[var(--edge)] bg-white p-4 text-sm text-[var(--mute)]">
             Only organization admins can manage integrations.
           </div>
         )}
@@ -139,10 +139,10 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
             Curated integrations above write the same mcp.servers config; this is
             the manual rail. McpServersTab self-gates non-admins (403). */}
         <div className="space-y-2">
-          <h3 className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <h3 className="text-sm font-medium text-[var(--ink)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
             Add your own MCP servers
           </h3>
-          <div className="rounded-md border border-[#e0dbd0] bg-white">
+          <div className="rounded-md border border-[var(--edge)] bg-white">
             <McpServersTab />
           </div>
         </div>
@@ -150,20 +150,20 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
         {/* Advanced: plugin enable/disable switches. Plugins run in-process with
             the agent, which is why this — unlike MCP — keeps a wall. Channel and
             provider plugins get real homes elsewhere (Channels / Model & Credits). */}
-        <div className="rounded-md border border-[#e0dbd0] bg-white">
+        <div className="rounded-md border border-[var(--edge)] bg-white">
           <button
             type="button"
             aria-expanded={advancedOpen}
             onClick={() => setAdvancedOpen((v) => !v)}
             className="flex w-full items-center justify-between p-4 text-left"
           >
-            <span className="text-sm font-medium text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <span className="text-sm font-medium text-[var(--ink)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               Advanced — plugins
             </span>
-            <ChevronDown className={cn("h-4 w-4 text-[#8a8578] transition-transform", !advancedOpen && "-rotate-90")} />
+            <ChevronDown className={cn("h-4 w-4 text-[var(--mute)] transition-transform", !advancedOpen && "-rotate-90")} />
           </button>
           {advancedOpen && (
-            <div className="border-t border-[#e0dbd0]">
+            <div className="border-t border-[var(--edge)]">
               <PluginsTab />
             </div>
           )}

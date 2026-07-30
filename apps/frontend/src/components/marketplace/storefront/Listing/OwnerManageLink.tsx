@@ -23,7 +23,7 @@ export function OwnerManageLink({
   return (
     <a
       href={`/marketplace/listing/${listingId}/manage`}
-      className="mt-4 inline-block text-[12.5px] font-semibold text-[#06402b] hover:underline"
+      className="mt-4 inline-block text-[12.5px] font-semibold text-[var(--forest)] hover:underline"
     >
       Manage your listing →
     </a>

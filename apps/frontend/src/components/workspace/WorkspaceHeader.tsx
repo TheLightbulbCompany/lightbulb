@@ -30,7 +30,7 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
     <div className="workspace-header">
       <button
         onClick={() => { capture("file_browser_opened"); openPanel("file-viewer"); }}
-        className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1"
+        className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1"
         title="Browse workspace files"
         aria-label="Browse workspace files"
       >
@@ -38,7 +38,7 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
       </button>
       <button
         onClick={onResetLayout}
-        className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1"
+        className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1"
         title="Reset workspace layout"
         aria-label="Reset workspace layout"
       >
@@ -47,7 +47,7 @@ export function WorkspaceHeader({ onResetLayout }: WorkspaceHeaderProps): React.
       <div style={{ flex: 1 }} />
       <button
         onClick={() => openSupport()}
-        className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 mr-1"
+        className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 mr-1"
         title="Get help / report a problem"
         aria-label="Get help"
       >

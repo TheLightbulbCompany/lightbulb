@@ -222,7 +222,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
                   <Monogram agent={displayAgent} size={28} radius={8} />
                   {publishedAgentIds.has(agent.id) && (
                     <span
-                      className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#c2a378] border-2 border-[#faf7f2]"
+                      className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[var(--gold)] border-2 border-[var(--cream)]"
                       aria-label="Published to marketplace"
                       title="Published to marketplace"
                     />

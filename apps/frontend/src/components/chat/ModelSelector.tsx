@@ -199,7 +199,7 @@ export function ModelSelector({
         <Button
           variant="outline"
           size="sm"
-          className="gap-2 h-9 px-3 bg-white border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] hover:border-[#c5bfb6] transition-all"
+          className="gap-2 h-9 px-3 bg-white border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] hover:border-[#c5bfb6] transition-all"
         >
           <span className="flex items-center gap-2">
             <ProviderIcon config={selectedProviderConfig || getProviderConfig("unknown")} size={16} />
@@ -213,7 +213,7 @@ export function ModelSelector({
         side="bottom"
         sideOffset={8}
         collisionPadding={16}
-        className="!w-[320px] !p-0 rounded-xl border-[#e0dbd0] bg-white text-[#1a1a1a] shadow-[0_2px_8px_rgba(26,26,26,0.04),0_12px_32px_rgba(26,26,26,0.10)]"
+        className="!w-[320px] !p-0 rounded-xl border-[var(--edge)] bg-white text-[var(--ink)] shadow-[0_2px_8px_rgba(26,26,26,0.04),0_12px_32px_rgba(26,26,26,0.10)]"
         style={{ maxHeight: 320 }}
       >
         {/* Search header */}
@@ -222,7 +222,7 @@ export function ModelSelector({
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-[#b5ae9e]" />
             <Input
               placeholder="Search models..."
-              className="pl-9 bg-[#f7f3ea] border-[#e8e3d9] text-[#1a1a1a] placeholder:text-[#b5ae9e] h-9"
+              className="pl-9 bg-[#f7f3ea] border-[#e8e3d9] text-[var(--ink)] placeholder:text-[#b5ae9e] h-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -231,7 +231,7 @@ export function ModelSelector({
 
         {/* Scrollable provider groups */}
         <div
-          className="overflow-y-auto overscroll-contain [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[#e0dbd0] [&::-webkit-scrollbar-thumb]:rounded-full"
+          className="overflow-y-auto overscroll-contain [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--edge)] [&::-webkit-scrollbar-thumb]:rounded-full"
           style={{ maxHeight: 240 }}
           onWheel={(e) => {
             const el = e.currentTarget;
@@ -265,10 +265,10 @@ export function ModelSelector({
                         )}
                       />
                       <ProviderIcon config={group.config} size={16} />
-                      <span className="font-medium text-[#1a1a1a]">
+                      <span className="font-medium text-[var(--ink)]">
                         {group.config.displayName}
                       </span>
-                      <span className="ml-auto text-[11px] text-[#8a8578] bg-[#f3efe6] px-1.5 py-0.5 rounded-full">
+                      <span className="ml-auto text-[11px] text-[var(--mute)] bg-[var(--cream-deeper)] px-1.5 py-0.5 rounded-full">
                         {group.models.length}
                       </span>
                     </button>
@@ -289,8 +289,8 @@ export function ModelSelector({
                               className={cn(
                                 "w-full flex items-center justify-between pl-9 pr-3 py-1.5 text-sm transition-colors group",
                                 isSelected
-                                  ? "bg-[#f3efe6] text-[#1a1a1a]"
-                                  : "text-[#5a5549] hover:bg-[#f7f3ea] hover:text-[#1a1a1a]"
+                                  ? "bg-[var(--cream-deeper)] text-[var(--ink)]"
+                                  : "text-[#5a5549] hover:bg-[#f7f3ea] hover:text-[var(--ink)]"
                               )}
                             >
                               <div className="flex items-center gap-2 min-w-0">
@@ -298,13 +298,13 @@ export function ModelSelector({
                                   {model.name}
                                 </span>
                                 {tierModel && isTierModel(model.id, tierModel) && (
-                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[#06402B]/10 text-[#06402B] border border-[#06402B]/15">
+                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-[var(--forest)]/10 text-[var(--forest)] border border-[var(--forest)]/15">
                                     Included
                                   </span>
                                 )}
                               </div>
                               {isSelected && (
-                                <Check className="h-3.5 w-3.5 text-[#06402B] shrink-0 ml-2" />
+                                <Check className="h-3.5 w-3.5 text-[var(--forest)] shrink-0 ml-2" />
                               )}
                             </button>
                           );
@@ -319,7 +319,7 @@ export function ModelSelector({
         </div>
 
         {/* Footer */}
-        <div className="p-2 border-t border-[#f0ece3] bg-[#faf7f2] rounded-b-xl shrink-0">
+        <div className="p-2 border-t border-[#f0ece3] bg-[var(--cream)] rounded-b-xl shrink-0">
           <div className="text-[10px] text-center text-[#b5ae9e]">
             Powered by AWS Bedrock
           </div>

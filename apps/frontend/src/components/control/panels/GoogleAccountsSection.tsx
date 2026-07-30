@@ -85,12 +85,12 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
   };
 
   return (
-    <div className="space-y-5 rounded-md border border-[#e0dbd0] bg-white p-5">
+    <div className="space-y-5 rounded-md border border-[var(--edge)] bg-white p-5">
       <div>
         <h3 className="text-base font-semibold text-[#1c1917]" style={headingStyle}>
           Google accounts
         </h3>
-        <p className="mt-0.5 text-sm text-[#8a8578]" style={bodyStyle}>
+        <p className="mt-0.5 text-sm text-[var(--mute)]" style={bodyStyle}>
           Connect one or more Google accounts and choose which account each
           agent acts as.
         </p>
@@ -106,7 +106,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
       )}
 
       {!error && isLoading && (
-        <p className="text-sm text-[#8a8578]" style={bodyStyle}>
+        <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
           Loading Google accounts…
         </p>
       )}
@@ -115,11 +115,11 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
         <>
           {/* Connected accounts */}
           <div className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-[#8a8578]">
+            <p className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
               Connected accounts
             </p>
             {accounts.length === 0 ? (
-              <p className="text-sm text-[#8a8578]" style={bodyStyle}>
+              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
                 No Google accounts connected yet.
               </p>
             ) : (
@@ -129,7 +129,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                   return (
                     <li
                       key={account.email}
-                      className="flex items-center gap-3 rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-3"
+                      className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3"
                     >
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-[#1c1917]">
@@ -161,7 +161,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
           {/* Connect another account */}
           <div className="space-y-1">
             <ConnectAnotherButton canManage={canManage} />
-            <p className="text-xs text-[#8a8578]" style={bodyStyle}>
+            <p className="text-xs text-[var(--mute)]" style={bodyStyle}>
               Adding an account sends you to Google to sign in. You&apos;ll
               return via Settings with the account connected.
             </p>
@@ -169,19 +169,19 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
 
           {/* Per-agent account assignment */}
           <div className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-[#8a8578]">
+            <p className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
               Per-agent accounts
             </p>
             {agentsLoading ? (
-              <p className="text-sm text-[#8a8578]" style={bodyStyle}>
+              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
                 Loading agents…
               </p>
             ) : agents.length === 0 ? (
-              <p className="text-sm text-[#8a8578]" style={bodyStyle}>
+              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
                 No agents yet.
               </p>
             ) : accounts.length === 0 ? (
-              <p className="text-sm text-[#8a8578]" style={bodyStyle}>
+              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
                 Connect a Google account to assign it to an agent.
               </p>
             ) : (
@@ -193,7 +193,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                   return (
                     <li
                       key={agent.id}
-                      className="flex items-center gap-3 rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-3"
+                      className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3"
                     >
                       <label
                         htmlFor={selectId}
@@ -209,7 +209,7 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                           onChange={(e) =>
                             onAssignmentChange(agent.id, e.target.value)
                           }
-                          className="h-9 w-52 rounded-md border border-[#e0dbd0] bg-white px-2 text-sm text-[#1c1917] disabled:cursor-not-allowed disabled:opacity-50"
+                          className="h-9 w-52 rounded-md border border-[var(--edge)] bg-white px-2 text-sm text-[#1c1917] disabled:cursor-not-allowed disabled:opacity-50"
                           style={bodyStyle}
                         >
                           <option value={DEFAULT_OPTION}>Default</option>

@@ -127,7 +127,7 @@ export function MyListingsView() {
   }
 
   if (!listings || !dashboard) {
-    return <p className="font-editorial-serif italic text-[#8a8578]">Loading…</p>;
+    return <p className="font-editorial-serif italic text-[var(--mute)]">Loading…</p>;
   }
 
   const activeCount = grouped.filter((g) => g.live.status === "published").length;
@@ -162,7 +162,7 @@ export function MyListingsView() {
     <div>
       <div className="flex items-end justify-between gap-3.5 flex-wrap mb-4">
         <div>
-          <h3 className="font-editorial-serif text-2xl text-[#1a1a1a]">My listings</h3>
+          <h3 className="font-editorial-serif text-2xl text-[var(--ink)]">My listings</h3>
           <div className="flex gap-6 mt-2 text-[13px] text-[#5b5b5b]">
             <Stat label="active listings" value={activeCount.toString()} />
             <Stat label="total installs" value={totalInstalls.toLocaleString()} />
@@ -178,14 +178,14 @@ export function MyListingsView() {
         <button
           type="button"
           onClick={() => setView("publish")}
-          className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
+          className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-4 py-2 rounded-full text-[13px] font-semibold"
         >
           + New listing
         </button>
       </div>
 
       {grouped.length === 0 ? (
-        <div className="text-center py-12 border border-dashed border-[#e0dbd0] rounded-2xl bg-white">
+        <div className="text-center py-12 border border-dashed border-[var(--edge)] rounded-2xl bg-white">
           <h4 className="font-editorial-serif text-xl mb-2">No listings yet.</h4>
           <p className="text-[14px] text-[#5b5b5b] mb-4">
             Open chat to publish your first agent.
@@ -193,7 +193,7 @@ export function MyListingsView() {
           <button
             type="button"
             onClick={() => setView("publish")}
-            className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold"
+            className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full text-[14px] font-semibold"
           >
             + Publish your agent
           </button>
@@ -229,14 +229,14 @@ function Stat({
 }) {
   return (
     <div>
-      <strong className="block font-editorial-serif text-lg text-[#1a1a1a]">{value}</strong>
+      <strong className="block font-editorial-serif text-lg text-[var(--ink)]">{value}</strong>
       <span>{label}</span>
       {action && (
         <button
           type="button"
           onClick={onAction}
           disabled={disabled}
-          className="block text-[12px] font-semibold text-[#06402b] hover:underline disabled:opacity-60 mt-1"
+          className="block text-[12px] font-semibold text-[var(--forest)] hover:underline disabled:opacity-60 mt-1"
         >
           {action}
         </button>
@@ -297,7 +297,7 @@ function ListingRow({
     : pending?.status === "review"
       ? "bg-[#fef4e3] text-[#a07520]"
       : live.status === "published"
-        ? "bg-[#e3efe6] text-[#06402b]"
+        ? "bg-[#e3efe6] text-[var(--forest)]"
         : live.status === "review"
           ? "bg-[#fef4e3] text-[#a07520]"
           : liveWasRejected
@@ -311,7 +311,7 @@ function ListingRow({
       data-was-rejected={wasRejected ? "true" : undefined}
       onClick={onClick}
       className={`w-full text-left bg-white border rounded-2xl p-5 flex items-start gap-4 hover:bg-[#fbf9f4] transition-colors ${
-        wasRejected ? "border-[#f0b3a8] bg-[#fff8f5]" : "border-[#e0dbd0]"
+        wasRejected ? "border-[#f0b3a8] bg-[#fff8f5]" : "border-[var(--edge)]"
       }`}
     >
       <div className="flex-1 min-w-0">
@@ -319,7 +319,7 @@ function ListingRow({
         <div className="flex gap-3 text-[12.5px] text-[#5b5b5b] mt-0.5">
           <span>Updated {new Date(live.created_at).toLocaleDateString()}</span>
           <span>{installCount} installs</span>
-          <span className="font-semibold text-[#06402b]">
+          <span className="font-semibold text-[var(--forest)]">
             {live.price_cents === 0 ? "Free" : "Premium tier"}
           </span>
         </div>

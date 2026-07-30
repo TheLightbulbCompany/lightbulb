@@ -680,23 +680,63 @@ async def test_no_stamp_is_false_not_an_error(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_consume_email_cold_wake_is_race_safe(dynamodb_table):
-    """Two concurrent consumers must not both see the stamp as fresh --
-    that would attach the "I was asleep" footer to two separate replies.
-    A read-then-remove implementation loses this race; only a single
-    conditional write (loser gets ConditionalCheckFailedException) is safe."""
-    import asyncio
+async def test_consume_email_cold_wake_is_one_conditional_write(dynamodb_table):
+    """Two concurrent consumers must not both see the stamp as fresh -- that
+    would attach the "I was asleep" footer to two separate replies. Safety
+    comes from ONE conditional write: the condition admits a single winner and
+    the loser gets ConditionalCheckFailedException.
+
+    This asserts that SHAPE rather than racing two callers, because racing them
+    is not a sound test against moto: moto does not serialize conditional
+    writes the way DynamoDB does, so both threads can pass
+    attribute_exists(email_cold_wake_at) before either REMOVEs it and a
+    CORRECT implementation fails intermittently. That flake was hit in CI.
+    Real DynamoDB guarantees the single winner; what our code has to get right
+    -- and what a read-then-remove regression would break -- is issuing one
+    conditional write instead of a read followed by a write.
+    """
+    from unittest.mock import MagicMock, patch
 
     from core.repositories import container_repo
 
     await container_repo.upsert("user_a", {"hook_token": "t"})
     await container_repo.stamp_email_cold_wake("user_a")
 
-    results = await asyncio.gather(
-        container_repo.consume_email_cold_wake("user_a"),
-        container_repo.consume_email_cold_wake("user_a"),
+    real_table = container_repo._get_table()
+    spy = MagicMock(wraps=real_table)
+    with patch.object(container_repo, "_get_table", return_value=spy):
+        assert await container_repo.consume_email_cold_wake("user_a") is True
+
+    # Exactly one write, and NO separate read: a get_item/query first would be
+    # the read-then-remove shape this guards against.
+    assert spy.update_item.call_count == 1
+    assert spy.get_item.call_count == 0
+    kwargs = spy.update_item.call_args.kwargs
+    # The condition is what makes a single winner possible at all.
+    assert "attribute_exists(email_cold_wake_at)" in kwargs["ConditionExpression"]
+    # UPDATED_OLD is how the same write also READS the value it cleared --
+    # without it we would need a second call and the race would be back.
+    assert kwargs["ReturnValues"] == "UPDATED_OLD"
+
+
+@pytest.mark.asyncio
+async def test_consume_email_cold_wake_loser_reports_false(dynamodb_table):
+    """The concurrent LOSER's half of the contract: a
+    ConditionalCheckFailedException means another caller already consumed the
+    stamp, so this caller must report False -- not raise, and not report a
+    cold wake it did not win."""
+    from unittest.mock import MagicMock, patch
+
+    from botocore.exceptions import ClientError
+
+    from core.repositories import container_repo
+
+    spy = MagicMock()
+    spy.update_item.side_effect = ClientError(
+        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no"}}, "UpdateItem"
     )
-    assert sum(results) == 1
+    with patch.object(container_repo, "_get_table", return_value=spy):
+        assert await container_repo.consume_email_cold_wake("user_a") is False
 
 
 @pytest.mark.asyncio

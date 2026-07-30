@@ -141,6 +141,7 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
         return {
             "onboarding_generation": None,
             "funnel_state": "not_started",
+            "pending_brief": False,
             "funnel_submitted_at": None,
             "funnel_completed_at": None,
             "onboarding_goal_id": None,
@@ -255,6 +256,18 @@ async def compute_status(owner_id: str, *, container: Any = _NOT_GIVEN, onboardi
     chat_available = runtime_phase == "ready"  # INV-6: SOLELY runtime_phase.
 
     funnel_state = onboarding.get("funnel_state") or "not_started"
+    # A brief the user has submitted but that the server hasn't been able to
+    # fulfil yet (Paperclip still provisioning -- the common case, since the
+    # funnel deliberately renders DURING provisioning) is "submitted" as far as
+    # the CLIENT is concerned: they answered, so they must not be shown the
+    # funnel again. It is emphatically NOT submitted as far as the row is
+    # concerned -- no claim, no goal, no project -- which is why this mapping
+    # lives here, in the composer, and not in the raw onboarding dict that
+    # `bootstrap_dispatcher` reads to decide whether to wake Friday (see
+    # `PaperclipRepo._has_pending_brief`). INV-1: combining facts into a
+    # verdict is this function's job.
+    if funnel_state == "not_started" and onboarding.get("pending_brief"):
+        funnel_state = "submitted"
     # RECONCILE-WITH-ONBOARD: container.py:554's legacy "onboarded" fact
     # becomes `funnel_state == "complete"` once ONBOARD's writers exist.
     # Until then `onboarding_generation` is always None on this branch (no

@@ -220,6 +220,34 @@ class TestInvariant6ChatAvailabilitySolelyRuntimePhase:
         assert contract["chat_available"] is True
 
     @pytest.mark.asyncio
+    async def test_pending_brief_reads_as_a_submitted_funnel(self):
+        """A brief the user submitted before their workspace could take it is
+        "submitted" as far as the CLIENT is concerned — they answered, so the
+        funnel must stop being shown to them. The row itself is still
+        not_started (no claim, no goal, no project); combining the two facts
+        into one verdict is this composer's job (INV-1)."""
+        repo = MagicMock()
+        repo.get_onboarding_state = AsyncMock(return_value={"funnel_state": "not_started", "pending_brief": True})
+        contract = await _compute("user_x", container={"status": "running"}, account=_account(), paperclip_repo=repo)
+        assert contract["funnel"]["state"] == "submitted"
+
+    @pytest.mark.asyncio
+    async def test_pending_brief_never_overrides_a_real_funnel_state(self):
+        """A stale pending item left over from a drain that already landed
+        must not drag a completed funnel backwards."""
+        repo = MagicMock()
+        repo.get_onboarding_state = AsyncMock(
+            return_value={
+                "funnel_state": "complete",
+                "pending_brief": True,
+                "onboarding_generation": "01GEN",
+            }
+        )
+        contract = await _compute("user_x", container={"status": "running"}, account=_account(), paperclip_repo=repo)
+        assert contract["funnel"]["state"] == "complete"
+        assert contract["onboarded"] is True
+
+    @pytest.mark.asyncio
     async def test_paperclip_read_failure_never_breaks_status(self):
         repo = MagicMock()
         repo.get_onboarding_state = AsyncMock(side_effect=RuntimeError("ddb down"))

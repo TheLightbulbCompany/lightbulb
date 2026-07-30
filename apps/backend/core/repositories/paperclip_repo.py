@@ -153,6 +153,24 @@ def _org_create_claim_key(org_id: str) -> str:
     return f"{_ORG_CREATE_CLAIM_PREFIX}{org_id}"
 
 
+# Reserved user_id namespace for per-OWNER "the user answered the funnel, but
+# their workspace wasn't ready to receive it yet" items. Same synthetic-PK
+# construction as the org-create claim above, and for the same two reasons:
+# reached only by direct get/put (strongly consistent, unlike the by-org-id
+# GSI), and carrying none of the GSI key attributes so it never surfaces in a
+# by-org-id or by-status-purge-at query as if it were a company row.
+#
+# Keyed by OWNER id (org_id for an org, user_id for a personal owner) rather
+# than by the submitting member: onboarding is company-scoped (see the module
+# docstring on routers/onboarding.py), and the owner row this eventually drains
+# into may not exist yet -- so there is no row PK to key it by.
+_PENDING_BRIEF_PREFIX = "__pending_brief__:"
+
+
+def _pending_brief_key(owner_id: str) -> str:
+    return f"{_PENDING_BRIEF_PREFIX}{owner_id}"
+
+
 @dataclass
 class PaperclipCompany:
     """Per-USER row. ``company_id`` is shared across all rows belonging
@@ -509,6 +527,7 @@ class PaperclipRepo:
             return {
                 "onboarding_generation": None,
                 "funnel_state": "not_started",
+                "pending_brief": await self._has_pending_brief(owner_id),
                 "funnel_submitted_at": None,
                 "funnel_completed_at": None,
                 "onboarding_goal_id": None,
@@ -548,9 +567,29 @@ class PaperclipRepo:
         def _iso(value):
             return value.isoformat() if hasattr(value, "isoformat") else value
 
+        funnel_state = getattr(company, "funnel_state", None) or "not_started"
+
         return {
             "onboarding_generation": getattr(company, "onboarding_generation", None),
-            "funnel_state": getattr(company, "funnel_state", None) or "not_started",
+            "funnel_state": funnel_state,
+            # Gated on "not yet COMPLETE", not on "still not_started". The
+            # tighter gate looked cheaper and was wrong: a claim that landed
+            # and then died mid-seed (a rolling deploy, a cancelled task)
+            # leaves the row at "submitted" forever, and gating on
+            # "not_started" made the still-undrained brief invisible to the
+            # drain from that moment on -- permanently, with no recovery
+            # path, while maybe_dispatch_bootstrap (which guards on
+            # "submitted") happily woke Friday into a company with no goal.
+            # "complete" is the one state that proves fulfilment finished
+            # (mark_bootstrap_delivered sets it once Friday's kickoff is
+            # OBSERVED to deliver), so it is the only safe place to stop
+            # looking.
+            #
+            # Cost: one small GetItem per poll for owners below "complete" --
+            # the pre-onboarding window, plus legacy rows that onboarded via
+            # the old containers.onboarded_at stamp and so sit below it
+            # forever. The steady-state fleet skips it entirely.
+            "pending_brief": (await self._has_pending_brief(owner_id) if funnel_state != "complete" else False),
             "funnel_submitted_at": _iso(getattr(company, "funnel_submitted_at", None)),
             "funnel_completed_at": _iso(getattr(company, "funnel_completed_at", None)),
             "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
@@ -1692,6 +1731,213 @@ class PaperclipRepo:
         # after the seed failed and rolled back. Only reached when the write
         # actually landed (the swallowed guard-failure returns above).
         publish_status_changed(owner_id or user_id)
+
+    # --- Pending brief (funnel intake before the workspace can receive it) ---
+    #
+    # ``POST /onboarding/brief`` is INTAKE ONLY: it records what the user said
+    # and returns. Everything that needs Paperclip to be up (the funnel claim,
+    # the goal/project seed, staging BRIEF.md) happens later, in
+    # ``onboarding_brief.reconcile_pending_brief``. These methods are that
+    # hand-off's storage.
+    #
+    # Why this exists at all: the funnel renders DURING provisioning (it fills
+    # the dead time on purpose), so the answer routinely arrives ~30s before
+    # there is an owner row to claim against. It used to be the browser's job
+    # to keep retrying until there was -- which meant a closed tab, or a user
+    # who ran out of patience, silently lost their brief.
+    #
+    # ``brief_state`` is the item's own lifecycle, deliberately separate from
+    # the row's ``funnel_state``:
+    #
+    #   pending -> (drained)   item deleted by the drain that WON the claim
+    #           -> failed      fulfilment failed too many times; the funnel is
+    #                          re-shown so the user can submit again, and that
+    #                          resubmit OVERWRITES this item (the conditional
+    #                          on ``put_pending_brief`` admits a failed item).
+    #
+    # A ``failed`` item is deliberately kept rather than deleted: it carries
+    # ``last_error`` for the next operator who asks why an owner never got
+    # Friday, and its presence is what stops ``_has_pending_brief`` from
+    # dismissing the funnel.
+    #
+    # LIFETIME: a pending item SURVIVES provisioning by design -- and, for the
+    # same reason, survives a reprovision. An item can only still be here if
+    # the brief was never fulfilled, and an owner who answered the funnel and
+    # got nothing for it should have that answer carried into the company that
+    # finally works. Teardown paths that delete an owner's company row must
+    # delete this item too (see routers/debug.py) -- otherwise a wiped account
+    # inherits the previous run's answer.
+
+    async def put_pending_brief(
+        self,
+        owner_id: str,
+        *,
+        path: str,
+        user_input: Optional[str],
+        detail: Optional[str],
+        brief_text: Optional[str],
+        submitted_by: str,
+    ) -> bool:
+        """Record a funnel answer that can't be fulfilled yet.
+
+        Returns True iff this caller's answer landed; False when one is
+        already pending -- a second org member submitting concurrently, or the
+        same user double-clicking. That conditional is what makes intake
+        one-shot per company WITHOUT needing the owner row to exist yet: the
+        funnel claim (``claim_funnel_submission``) is still the authority once
+        there IS a row, and this is the same guarantee projected back onto the
+        window before it.
+
+        A ``failed`` item is NOT protected by that conditional: fulfilment
+        gave up, the funnel has been re-shown, and this submit is the user
+        answering it again. Refusing here would leave them submitting into a
+        void forever -- the funnel is a committed front door with no skip.
+
+        ``brief_text`` is precomputed at intake (rather than at drain time) so
+        the phrasing the user submitted is what Friday eventually opens with,
+        even if the brief-building code changes between the two.
+        """
+        item = {
+            "user_id": _pending_brief_key(owner_id),
+            "kind": "pending_brief",
+            "brief_state": "pending",
+            "attempts": 0,
+            "owner_id": owner_id,
+            "path": path,
+            "submitted_by": submitted_by,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # Absent, not "": "no idea supplied" is a real signal on the "you pick"
+        # path, and it must survive the round trip as None rather than as a
+        # blank string a later reader would quote back at Friday.
+        if user_input:
+            item["input"] = user_input
+        if detail:
+            item["detail"] = detail
+        if brief_text:
+            item["brief_text"] = brief_text
+
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id) OR brief_state = :failed",
+                ExpressionAttributeValues={":failed": "failed"},
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def _has_pending_brief(self, owner_id: str) -> bool:
+        """Cheap existence check for ``get_onboarding_state``'s additive
+        ``pending_brief`` key. True only for an item still worth draining.
+
+        DELIBERATELY additive rather than folded into ``funnel_state``. The
+        same dict is consumed by ``compute_status`` (which SHOULD treat a
+        pending answer as "funnel submitted" -- the user answered, so stop
+        showing them the funnel) and by ``bootstrap_dispatcher`` (which MUST
+        NOT -- dispatching Friday's kickoff off an undrained brief would wake
+        her before the goal and project she is being told to work on exist).
+        Reporting a synthetic ``funnel_state: "submitted"`` here would serve
+        the first and break the second; the composer is where the two facts
+        get combined into a verdict, so that is where the mapping lives.
+
+        A ``failed`` item reports False on purpose: fulfilment gave up, so the
+        funnel must come BACK and let the user submit again. Suppressing it
+        would leave them in an empty chat with an agent that never starts and
+        no way to retry.
+
+        A read failure degrades to False rather than raising, matching this
+        accessor's contract (its caller is the ``/container/status`` poll):
+        the cost is one more poll showing the funnel, and the next drain
+        still fulfils the brief.
+        """
+        try:
+            item = await self.get_pending_brief(owner_id)
+        except Exception:  # noqa: BLE001 — a degraded read must not break /status
+            logger.info("paperclip_repo: pending-brief read failed for owner %s", owner_id, exc_info=True)
+            return False
+        return item is not None and item.get("brief_state") != "failed"
+
+    async def get_pending_brief(self, owner_id: str) -> Optional[dict]:
+        """The pending funnel answer for this owner, or None.
+
+        Strongly consistent: the drain reads this and then conditionally
+        writes the owner row off what it finds, and a status poll that missed
+        a just-written item would re-show the funnel to someone who already
+        answered it.
+        """
+        resp = await run_in_thread(
+            self._table().get_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+            ConsistentRead=True,
+        )
+        return resp.get("Item")
+
+    async def record_pending_brief_failure(self, owner_id: str, *, reason: str) -> int:
+        """Count one FAILED fulfilment attempt; return the new total.
+
+        Only real failures are counted -- "the workspace isn't ready yet" is
+        the normal first-run state and must never burn an attempt, or a slow
+        provision would exhaust the budget before it could possibly succeed.
+
+        The counter is on the item rather than in memory because the process
+        that fails is often not the process that retries (a rolling deploy, a
+        different ECS task picking up the next poll).
+        """
+        resp = await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+            UpdateExpression="ADD attempts :one SET last_error = :e, last_attempt_at = :t",
+            ExpressionAttributeValues={
+                ":one": 1,
+                ":e": reason[:500],
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp.get("Attributes", {}).get("attempts", 0))
+
+    async def fail_pending_brief(self, owner_id: str, *, reason: str, owner_broadcast_id: Optional[str] = None) -> None:
+        """Give up on fulfilling this brief: ``brief_state -> failed``.
+
+        This is what ENDS the retry loop, and it is deliberately visible to
+        the user rather than silent: ``_has_pending_brief`` stops reporting a
+        failed item, so ``compute_status`` stops synthesising
+        ``funnel_state: "submitted"`` and the funnel comes back. The user can
+        then submit again (``put_pending_brief`` overwrites a failed item).
+        Without this a deterministic fulfilment failure left them in an empty
+        chat, with an agent that never starts and no way to retry.
+        """
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+            UpdateExpression="SET brief_state = :failed, last_error = :e, failed_at = :t",
+            ExpressionAttributeValues={
+                ":failed": "failed",
+                ":e": reason[:500],
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        # The funnel is about to re-render for every tab on this company.
+        publish_status_changed(owner_broadcast_id or owner_id)
+
+    async def delete_pending_brief(self, owner_id: str) -> None:
+        """Retire a pending answer once it has demonstrably been fulfilled.
+
+        Callers must be sure fulfilment actually happened -- see
+        ``reconcile_pending_brief``, where only the drain that WON the claim
+        deletes on its own success, and a drain that lost deletes only on the
+        one unambiguous end-state (``funnel_state == "complete"``, i.e.
+        Friday's kickoff was observed to deliver). Deleting on weaker evidence
+        loses the brief in exactly the case this mechanism exists to survive:
+        the winner can still fail and roll everything back.
+        """
+        await run_in_thread(
+            self._table().delete_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+        )
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

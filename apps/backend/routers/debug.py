@@ -343,6 +343,20 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
                 "paperclip-companies",
                 lambda: PaperclipRepo(table_name="paperclip-companies").delete(user_id),
             ),
+            # The pending-brief sentinel lives in the SAME table under a
+            # synthetic PK, so the row delete above does not reach it, and it
+            # is keyed by OWNER id (org_id for an org) rather than user_id.
+            # Left behind it outlives the teardown by design -- a pending
+            # brief deliberately survives reprovisioning -- and since this
+            # endpoint does not delete the Clerk account, the next signup
+            # reuses the same owner_id and inherits the previous run's answer:
+            # the funnel never renders, and the new company gets seeded from
+            # the old brief. That is the zero-orphan (INV-10) break the
+            # comment above exists to prevent.
+            (
+                "paperclip-companies:pending-brief",
+                lambda: PaperclipRepo(table_name="paperclip-companies").delete_pending_brief(owner_id),
+            ),
         ]
     )
     for table_name, action in ddb_steps:

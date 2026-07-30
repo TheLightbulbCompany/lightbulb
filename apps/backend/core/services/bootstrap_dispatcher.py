@@ -480,6 +480,14 @@ async def maybe_dispatch_bootstrap(owner_id: str, *, onboarding: dict | None = N
                 await repo.mark_bootstrap_delivered(
                     row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id
                 )
+                # Onboarding is now COMPLETE, which is exactly the state that
+                # makes `get_onboarding_state` stop reading the pending-brief
+                # sentinel. Sweep it here, at that boundary: an item that
+                # outlives this moment is one nothing will ever look at again,
+                # and its put-if-absent key would silently block the owner's
+                # next brief (after a reprovision, say). Normally the drain
+                # has already deleted it and this is a no-op delete.
+                await repo.delete_pending_brief(owner_id)
                 await _maybe_nudge_first_contact(
                     repo,
                     row_user_id,

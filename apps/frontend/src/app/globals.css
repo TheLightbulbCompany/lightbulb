@@ -260,6 +260,22 @@
   cursor: not-allowed;
 }
 
+/* FILLED variants need a real disabled treatment, not the blanket alpha
+ * above. At 50% opacity a --forest fill composites to a washed-out sage
+ * (#809b8e) and drags its own --cream label down with it — the label ends up
+ * near the page colour, so it reads as a ghostly blob at ~2.5:1 rather than
+ * as a disabled control. Flattening to a muted surface + --mute label keeps
+ * the shape legible as a STATE (~2.9:1, and it's the design system's own
+ * secondary-text token). Disabled controls are exempt from WCAG 1.4.3, but
+ * this is still an improvement on what it replaces, not a regression. */
+.editorial-btn--primary:disabled,
+.editorial-btn--destructive:disabled {
+  opacity: 1;
+  background: var(--cream-deepest);
+  color: var(--mute);
+  border-color: var(--edge);
+}
+
 .agent-monogram {
   display: inline-flex;
   align-items: center;

@@ -9,6 +9,8 @@
 //      refresh can't resurrect the dismissed filter.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const routerSpy = vi.fn();
 vi.mock("@/components/teams/TeamsPanelRouter", () => ({
@@ -103,6 +105,25 @@ describe("TeamsDockPanel — scroll-container wrapper", () => {
     for (const cls of ["editorial-page", "workspace-panel-page", "h-full", "overflow-auto"]) {
       expect(wrapper.classList.contains(cls)).toBe(true);
     }
+  });
+
+  it("keeps the wrapper a containing block for out-of-flow panel content", () => {
+    // jsdom computes no layout, so this pins the CSS declaration itself.
+    // dockview gives `.dv-view` overflow:auto and its `.dv-groupview` child is
+    // position:static — drop `position: relative` here and a panel's
+    // absolutely positioned descendants (Tailwind `sr-only` is
+    // position:absolute) resolve their containing block up to `.dv-view`,
+    // handing an 838px slot thousands of px of scrollable overflow. Measured
+    // on a long task page: scrollHeight 4640 vs clientHeight 838, a second
+    // scrollbar that drags the whole group off-screen.
+    // `container-type: size` does NOT substitute — its computed `contain` is
+    // `none` and it establishes no containing block.
+    const css = readFileSync(
+      resolve(process.cwd(), "src/components/workspace/workspace.css"),
+      "utf8",
+    );
+    const rule = css.slice(css.indexOf(".workspace-panel-page.editorial-page"));
+    expect(rule.slice(0, rule.indexOf("}"))).toMatch(/position:\s*relative/);
   });
 });
 

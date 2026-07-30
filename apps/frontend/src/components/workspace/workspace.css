@@ -92,6 +92,20 @@
   /* h-full wins: the wrapper is exactly the dock slot, and its
    * overflow-auto scrollport equals the visible area. */
   min-height: 0;
+  /* Containing block for out-of-flow descendants. Load-bearing, not cosmetic:
+   * dockview gives `.dv-view` (the dock slot) `overflow: auto`, and its
+   * `.dv-groupview` child is position:static. So an absolutely positioned
+   * descendant of a panel — e.g. Tailwind `sr-only`, which is
+   * position:absolute — resolves its containing block past this wrapper all
+   * the way up to `.dv-view`, escaping BOTH this scrollport and the
+   * groupview's overflow:hidden. A 1px hidden file input sitting 4640px down
+   * a long task page then gives the 838px slot 4640px of scrollable
+   * overflow: a second scrollbar that drags the whole group out of view and
+   * exposes the dock background beneath it.
+   * `container-type: size` does NOT cover this — its computed `contain` is
+   * `none`, and it establishes no containing block (measured: removing this
+   * one declaration restores scrollHeight 4640 vs clientHeight 838). */
+  position: relative;
   /* Size container: descendants size viewport-height regions against the
    * SLOT (100cqh) instead of the viewport. The wrapper's own size is
    * already content-independent (h-full), so size containment is free. */

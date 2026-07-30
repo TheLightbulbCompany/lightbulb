@@ -93,13 +93,147 @@ export interface ChildIssue {
   status?: string | null;
 }
 
-/** An agent run from `GET /teams/issues/{id}/runs` (`{runs:[…]}`, web parity). */
+/** An agent run from `GET /teams/issues/{id}/runs` (`{runs:[…]}`, web parity).
+ * Error surfaces ride along so a failed row can show WHY before the user
+ * opens the run screen. */
 export interface IssueRun {
   runId: string;
   status: string;
   agentId?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+  createdAt?: string | null;
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue thread interactions (web shared/types.ts port, trimmed to the fields
+// the mobile card renders). An interaction is an inline agent-initiated
+// request in the issue thread — suggest_tasks / ask_user_questions /
+// request_confirmation / request_checkbox_confirmation — resolved via the
+// accept/reject/respond POST routes. Payloads are upstream-verbatim.
+// ---------------------------------------------------------------------------
+
+export type InteractionKind =
+  | "suggest_tasks"
+  | "ask_user_questions"
+  | "request_confirmation"
+  | "request_checkbox_confirmation";
+
+export type InteractionStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "answered"
+  | "cancelled"
+  | "expired"
+  | "failed";
+
+export interface InteractionOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface InteractionQuestion {
+  id: string;
+  prompt: string;
+  helpText?: string | null;
+  selectionMode: "single" | "multi";
+  required?: boolean;
+  options: InteractionOption[];
+}
+
+export interface SuggestedTask {
+  clientKey: string;
+  parentClientKey?: string | null;
+  title: string;
+  description?: string | null;
+  priority?: string | null;
+}
+
+/** One row from `GET /teams/issues/{id}/interactions` (`{interactions:[…]}`).
+ * Payload fields are a defensive union across the four kinds. */
+export interface IssueInteraction {
+  id: string;
+  issueId: string;
+  kind: InteractionKind;
+  status: InteractionStatus;
+  title?: string | null;
+  summary?: string | null;
+  createdByAgentId?: string | null;
+  createdAt?: string | null;
+  resolvedAt?: string | null;
+  payload?: {
+    prompt?: string;
+    detailsMarkdown?: string | null;
+    acceptLabel?: string | null;
+    rejectLabel?: string | null;
+    rejectRequiresReason?: boolean;
+    options?: InteractionOption[];
+    defaultSelectedOptionIds?: string[];
+    minSelected?: number;
+    maxSelected?: number | null;
+    questions?: InteractionQuestion[];
+    tasks?: SuggestedTask[];
+    title?: string | null;
+    submitLabel?: string | null;
+  } | null;
+  result?: {
+    outcome?: string;
+    reason?: string | null;
+    selectedOptionIds?: string[];
+    answers?: { questionId: string; optionIds: string[]; otherText?: string | null }[];
+    createdTasks?: { clientKey: string; issueId: string; identifier?: string | null }[];
+    skippedClientKeys?: string[];
+  } | null;
+}
+
+/** One answer to an ask_user_questions interaction (camelCase wire aliases). */
+export interface InteractionAnswer {
+  questionId: string;
+  optionIds: string[];
+  otherText?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue outputs (web shared/types.ts ports, trimmed): work-products, documents,
+// attachments — the "what did the agent produce" read surfaces.
+// ---------------------------------------------------------------------------
+
+/** A typed deliverable from `GET /teams/issues/{id}/work-products`. */
+export interface IssueWorkProduct {
+  id: string;
+  issueId?: string | null;
+  type: string;
+  provider?: string | null;
+  title: string;
+  url?: string | null;
+  status?: string | null;
+  reviewState?: string | null;
+  isPrimary?: boolean;
+  summary?: string | null;
+  createdAt?: string | null;
+}
+
+/** A markdown document from `GET /teams/issues/{id}/documents`. */
+export interface IssueDocument {
+  id: string;
+  key: string;
+  title?: string | null;
+  format?: string | null;
+  body?: string | null;
+  updatedAt?: string | null;
+}
+
+/** A binary attachment from `GET /teams/issues/{id}/attachments`. Content
+ * downloads through `/teams/attachments/{id}/content` (bearer-auth). */
+export interface IssueAttachment {
+  id: string;
+  originalFilename?: string | null;
+  contentType?: string | null;
+  byteSize?: number | null;
   createdAt?: string | null;
 }
 
@@ -180,7 +314,7 @@ const PROVISIONING_DETAIL = "team workspace provisioning";
  * `"provisioning"` when the BFF answered 202 (or, defensively, a 200 carrying
  * the provisioning detail — mirrors the web read layer), else null (real data).
  */
-function gateFromSuccess(status: number, body: unknown): TeamsGate | null {
+export function gateFromSuccess(status: number, body: unknown): TeamsGate | null {
   if (status === 202) return "provisioning";
   if (
     body &&
@@ -196,7 +330,7 @@ function gateFromSuccess(status: number, body: unknown): TeamsGate | null {
  * Map an `ApiError` from a `_ctx`-gated call onto a `TeamsGate`, or null when
  * it is a genuine data error (404, etc.) the caller should surface as an error.
  */
-function gateFromError(err: unknown): TeamsGate | null {
+export function gateFromError(err: unknown): TeamsGate | null {
   if (!(err instanceof ApiError)) return "unavailable";
   if (err.status === 202) return "provisioning"; // defensive; 202 rarely throws
   if (err.status === 402) return "needs_subscription";
@@ -205,7 +339,7 @@ function gateFromError(err: unknown): TeamsGate | null {
 }
 
 /** Build a stable ApiClientConfig around a ref-pinned getToken. */
-function useTeamsConfig(): PlatformAdapter {
+export function useTeamsConfig(): PlatformAdapter {
   const { getToken } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
@@ -242,24 +376,83 @@ function fetchMembers(config: PlatformAdapter): Promise<CompanyMember[]> {
 
 // ---------------------------------------------------------------------------
 // Inbox hook — the Teams index surface. One gate-bearing call (`/teams/inbox`)
-// doubles as the workspace-readiness probe AND the data source.
+// doubles as the workspace-readiness probe AND the data source. The tab +
+// search params ride the same server-side filters the web inbox uses
+// (`GET /teams/inbox?tab=…&search=…`); a failed-runs feed (`/teams/inbox/runs`,
+// web NeedsAttentionBand parity) loads best-effort alongside.
 // ---------------------------------------------------------------------------
+
+/** The four list views `GET /teams/inbox` composes server-side (web parity).
+ * `mine` = touched-by-you + not-archived; `recent`/`unread` are status/read
+ * overlays; `all` is the unfiltered company list. */
+export const INBOX_TABS = ["mine", "recent", "unread", "all"] as const;
+export type InboxTab = (typeof INBOX_TABS)[number];
+
+export const INBOX_TAB_LABELS: Record<InboxTab, string> = {
+  mine: "Mine",
+  recent: "Recent",
+  unread: "Unread",
+  all: "All",
+};
+
+/** A failed heartbeat run from `GET /teams/inbox/runs` (`{runs:[…]}`). */
+export interface FailedRun {
+  id: string;
+  agentId?: string | null;
+  status?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  failureReason?: string | null;
+}
 
 export type InboxState =
   | { kind: "loading" }
   | { kind: "gate"; gate: TeamsGate; message: string | null }
-  | { kind: "ready"; items: InboxItem[] };
+  | { kind: "ready"; items: InboxItem[]; failedRuns: FailedRun[]; agents: TeamsAgent[] };
 
 function extractItems(body: unknown): InboxItem[] {
   const items = (body as { items?: unknown } | null)?.items;
   return Array.isArray(items) ? (items as InboxItem[]) : [];
 }
 
-export function useTeamsInbox() {
+/** Best-effort `GET /teams/inbox/runs` → failed heartbeat runs. The BFF
+ * forwards status=failed upstream; re-filter defensively (web parity). */
+function fetchFailedRuns(config: PlatformAdapter): Promise<FailedRun[]> {
+  return fetchJsonWithStatus(config, "/teams/inbox/runs")
+    .then((r) => {
+      const list = (r.body as { runs?: unknown } | null)?.runs;
+      const runs = Array.isArray(list) ? (list as FailedRun[]) : [];
+      return runs.filter((run) => run.status === "failed");
+    })
+    .catch(() => [] as FailedRun[]);
+}
+
+/**
+ * POST /teams/agents/{id}/wakeup — retry lever for a failed run (web
+ * useAgentWake parity: an on-demand wake whose reason reads "retry").
+ */
+export async function wakeAgentForRetry(
+  config: PlatformAdapter,
+  agentId: string,
+  reason = "retry",
+  payload?: Record<string, unknown>,
+): Promise<{ id?: string; message?: string } | null> {
+  const res = await createApiClient(config).post(
+    `/teams/agents/${encodeURIComponent(agentId)}/wakeup`,
+    payload ? { source: "on_demand", reason, payload } : { source: "on_demand", reason },
+  );
+  return (res ?? null) as { id?: string; message?: string } | null;
+}
+
+export function useTeamsInbox(tab: InboxTab, search: string) {
   const config = useTeamsConfig();
   const [state, setState] = useState<InboxState>({ kind: "loading" });
   const [refreshing, setRefreshing] = useState(false);
   const loadSeq = useRef(0);
+  // Locally-dismissed failed-run ids (web useAcknowledgedRuns parity, session-
+  // scoped): dismissal is a local acknowledgement, not a server write.
+  const [dismissedRunIds, setDismissedRunIds] = useState<Set<string>>(new Set());
+  const retryingRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(
     async (isRefresh = false) => {
@@ -268,17 +461,25 @@ export function useTeamsInbox() {
       if (isRefresh) setRefreshing(true);
       else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
       try {
-        const { status, body } = await fetchJsonWithStatus(
-          config,
-          "/teams/inbox?tab=mine",
-        );
+        const q = search.trim();
+        const path =
+          `/teams/inbox?tab=${tab}` + (q ? `&search=${encodeURIComponent(q)}` : "");
+        const { status, body } = await fetchJsonWithStatus(config, path);
         if (loadSeq.current !== seq) return;
         const gate = gateFromSuccess(status, body);
         if (gate) {
           setState({ kind: "gate", gate, message: null });
-        } else {
-          setState({ kind: "ready", items: extractItems(body) });
+          return;
         }
+        const items = extractItems(body);
+        // Failed runs + agent names are best-effort — either failure must not
+        // blank an inbox that loaded fine.
+        const [failedRuns, agents] = await Promise.all([
+          fetchFailedRuns(config),
+          fetchAgents(config),
+        ]);
+        if (loadSeq.current !== seq) return;
+        setState({ kind: "ready", items, failedRuns, agents });
       } catch (err) {
         if (loadSeq.current !== seq) return;
         const gate = gateFromError(err);
@@ -291,7 +492,7 @@ export function useTeamsInbox() {
         if (loadSeq.current === seq && isRefresh) setRefreshing(false);
       }
     },
-    [config],
+    [config, tab, search],
   );
 
   useFocusEffect(
@@ -300,9 +501,40 @@ export function useTeamsInbox() {
     }, [load]),
   );
 
+  const dismissFailedRun = useCallback((runId: string) => {
+    setDismissedRunIds((prev) => {
+      const next = new Set(prev);
+      next.add(runId);
+      return next;
+    });
+  }, []);
+
+  // Retry wakes the SAME agent that produced the failed run (web FailedRunRow
+  // parity). Ref-latched per run; failure surfaces via Alert.
+  const retryFailedRun = useCallback(
+    async (run: FailedRun) => {
+      if (!run.agentId || retryingRef.current.has(run.id)) return;
+      retryingRef.current.add(run.id);
+      try {
+        await wakeAgentForRetry(config, run.agentId);
+      } catch (err) {
+        Alert.alert(
+          "Couldn’t retry run",
+          err instanceof Error ? err.message : "The retry failed. Please try again.",
+        );
+      } finally {
+        retryingRef.current.delete(run.id);
+      }
+    },
+    [config],
+  );
+
   return {
     state,
     refreshing,
+    dismissedRunIds,
+    dismissFailedRun,
+    retryFailedRun,
     retry: () => load(false),
     refresh: () => load(true),
   };
@@ -327,7 +559,29 @@ export type IssueDetailState =
       members: CompanyMember[];
       approvals: TeamsApproval[];
       runs: IssueRun[];
+      interactions: IssueInteraction[];
+      workProducts: IssueWorkProduct[];
+      documents: IssueDocument[];
+      attachments: IssueAttachment[];
     };
+
+/** Best-effort `{key:[…]}` list fetch — the issue-detail secondary-read idiom. */
+function fetchIssueList<T>(
+  config: PlatformAdapter,
+  issueId: string,
+  segment: string,
+  key: string,
+): Promise<T[]> {
+  return fetchJsonWithStatus(
+    config,
+    `/teams/issues/${encodeURIComponent(issueId)}/${segment}`,
+  )
+    .then((r) => {
+      const list = (r.body as Record<string, unknown> | null)?.[key];
+      return Array.isArray(list) ? (list as T[]) : [];
+    })
+    .catch(() => [] as T[]);
+}
 
 export function useTeamsIssue(issueId: string | undefined) {
   const config = useTeamsConfig();
@@ -346,6 +600,11 @@ export function useTeamsIssue(issueId: string | undefined) {
   const creatingRef = useRef(false);
   // Per-approval in-flight latch for the issue-detail approve/reject actions.
   const decidingRef = useRef<Set<string>>(new Set());
+  // Once-per-mount latch for the open-marks-read write.
+  const markedReadRef = useRef(false);
+  // Per-interaction and per-work-product in-flight latches.
+  const resolvingRef = useRef<Set<string>>(new Set());
+  const reviewingRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     if (!issueId) {
@@ -372,7 +631,18 @@ export function useTeamsIssue(issueId: string | undefined) {
 
       // Secondary reads are best-effort: a comments/children/agents/members
       // failure must not blank out an issue that loaded fine.
-      const [comments, children, agents, members, approvals, runs] = await Promise.all([
+      const [
+        comments,
+        children,
+        agents,
+        members,
+        approvals,
+        runs,
+        interactions,
+        workProducts,
+        documents,
+        attachments,
+      ] = await Promise.all([
         // Upstream defaults to newest-first; the web thread view renders
         // ascending chronological, so request asc and defensively re-sort by
         // createdAt in case the query param isn't honored.
@@ -408,9 +678,36 @@ export function useTeamsIssue(issueId: string | undefined) {
             return [...runRows].sort((a, b) => runTime(b) - runTime(a));
           })
           .catch(() => [] as IssueRun[]),
+        // Thread interactions (agent mid-run questions/confirmations) + the
+        // three output surfaces — best-effort like every secondary read.
+        fetchIssueList<IssueInteraction>(config, issueId, "interactions", "interactions"),
+        fetchIssueList<IssueWorkProduct>(config, issueId, "work-products", "workProducts"),
+        fetchIssueList<IssueDocument>(config, issueId, "documents", "documents"),
+        fetchIssueList<IssueAttachment>(config, issueId, "attachments", "attachments"),
       ]);
       if (loadSeq.current !== seq) return;
-      setState({ kind: "ready", issue, comments, children, agents, members, approvals, runs });
+      setState({
+        kind: "ready",
+        issue,
+        comments,
+        children,
+        agents,
+        members,
+        approvals,
+        runs,
+        interactions,
+        workProducts,
+        documents,
+        attachments,
+      });
+      // Opening the detail IS reading the issue: clear the unread pip (fire
+      // and forget — a failure just leaves the pip for the next open).
+      if (!markedReadRef.current) {
+        markedReadRef.current = true;
+        createApiClient(config)
+          .post(`/teams/issues/${encodeURIComponent(issueId)}/mark-read`, {})
+          .catch(() => {});
+      }
     } catch (err) {
       if (loadSeq.current !== seq) return;
       const gate = gateFromError(err);
@@ -645,6 +942,155 @@ export function useTeamsIssue(issueId: string | undefined) {
     [decideApproval, config],
   );
 
+  // Title / description edits via the shared field PATCH — same optimistic +
+  // reconcile + revert shape as status/priority.
+  const setTitle = useCallback(
+    (title: string) => {
+      const trimmed = title.trim();
+      if (!trimmed) return Promise.resolve();
+      return patchField(
+        "title",
+        (issue) => ({ ...issue, title: trimmed }),
+        () => updateIssueField(config, issueId as string, { title: trimmed }),
+      );
+    },
+    [patchField, config, issueId],
+  );
+
+  const setDescription = useCallback(
+    (description: string) =>
+      patchField(
+        "description",
+        (issue) => ({ ...issue, description }),
+        () => updateIssueField(config, issueId as string, { description }),
+      ),
+    [patchField, config, issueId],
+  );
+
+  // Resolve a thread interaction (accept / reject / respond). Optimistically
+  // flip the row's status (which collapses its action UI), write, reconcile via
+  // refetch — the resolution can append a thread comment server-side, so the
+  // reload also picks that up. Revert + Alert on failure.
+  const resolveInteraction = useCallback(
+    async (
+      interactionId: string,
+      optimisticStatus: InteractionStatus,
+      write: () => Promise<void>,
+    ) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready" || !issueId) return;
+      if (resolvingRef.current.has(interactionId)) return;
+      const prevInteractions = current.interactions;
+      resolvingRef.current.add(interactionId);
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              interactions: prev.interactions.map((i) =>
+                i.id === interactionId ? { ...i, status: optimisticStatus } : i,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await write();
+        await load();
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, interactions: prevInteractions } : prev,
+        );
+        Alert.alert(
+          "Couldn’t resolve request",
+          err instanceof Error ? err.message : "The response failed. Please try again.",
+        );
+      } finally {
+        resolvingRef.current.delete(interactionId);
+      }
+    },
+    [issueId, load],
+  );
+
+  const acceptInteraction = useCallback(
+    (
+      interactionId: string,
+      selection?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
+    ) =>
+      resolveInteraction(interactionId, "accepted", async () => {
+        const body: Record<string, unknown> = {};
+        if (selection?.selectedClientKeys)
+          body.selectedClientKeys = selection.selectedClientKeys;
+        if (selection?.selectedOptionIds)
+          body.selectedOptionIds = selection.selectedOptionIds;
+        await createApiClient(config).post(
+          `/teams/issues/${encodeURIComponent(issueId as string)}/interactions/${encodeURIComponent(interactionId)}/accept`,
+          body,
+        );
+      }),
+    [resolveInteraction, config, issueId],
+  );
+
+  const rejectInteraction = useCallback(
+    (interactionId: string, reason?: string) =>
+      resolveInteraction(interactionId, "rejected", async () => {
+        await createApiClient(config).post(
+          `/teams/issues/${encodeURIComponent(issueId as string)}/interactions/${encodeURIComponent(interactionId)}/reject`,
+          reason?.trim() ? { reason: reason.trim() } : {},
+        );
+      }),
+    [resolveInteraction, config, issueId],
+  );
+
+  const respondInteraction = useCallback(
+    (interactionId: string, answers: InteractionAnswer[]) =>
+      resolveInteraction(interactionId, "answered", async () => {
+        await createApiClient(config).post(
+          `/teams/issues/${encodeURIComponent(issueId as string)}/interactions/${encodeURIComponent(interactionId)}/respond`,
+          { answers },
+        );
+      }),
+    [resolveInteraction, config, issueId],
+  );
+
+  // Board review verdict on a work product (web IssueWorkProductsSection
+  // parity): Approve / Request changes while reviewState=needs_board_review.
+  const reviewWorkProduct = useCallback(
+    async (workProductId: string, reviewState: "approved" | "changes_requested") => {
+      const current = stateRef.current;
+      if (current.kind !== "ready" || !issueId) return;
+      if (reviewingRef.current.has(workProductId)) return;
+      const prevWorkProducts = current.workProducts;
+      reviewingRef.current.add(workProductId);
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              workProducts: prev.workProducts.map((w) =>
+                w.id === workProductId ? { ...w, reviewState } : w,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await createApiClient(config).patch(
+          `/teams/issues/${encodeURIComponent(issueId)}/work-products/${encodeURIComponent(workProductId)}`,
+          { reviewState },
+        );
+        await load();
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, workProducts: prevWorkProducts } : prev,
+        );
+        Alert.alert(
+          "Couldn’t submit review",
+          err instanceof Error ? err.message : "The review failed. Please try again.",
+        );
+      } finally {
+        reviewingRef.current.delete(workProductId);
+      }
+    },
+    [config, issueId, load],
+  );
+
   return {
     state,
     retry: load,
@@ -653,11 +1099,49 @@ export function useTeamsIssue(issueId: string | undefined) {
     setPriority,
     setAssignee,
     setUserAssignee,
+    setTitle,
+    setDescription,
     addComment,
     createChild,
     approveApproval: approveIssueApproval,
     rejectApproval: rejectIssueApproval,
+    acceptInteraction,
+    rejectInteraction,
+    respondInteraction,
+    reviewWorkProduct,
   };
+}
+
+/**
+ * Fetch an attachment's bytes (bearer-auth) and return a data URI for inline
+ * preview, or null on failure. Dependency-free by design: expo-file-system /
+ * expo-sharing are not installed, and adding them would change the native
+ * fingerprint (no OTA). Image-sized payloads only — callers gate on
+ * contentType + byteSize before asking.
+ */
+export async function fetchAttachmentDataUri(
+  config: PlatformAdapter,
+  attachmentId: string,
+): Promise<string | null> {
+  try {
+    const token = await config.getToken();
+    if (!token) return null;
+    const res = await fetch(
+      `${config.apiUrl}/teams/attachments/${encodeURIComponent(attachmentId)}/content`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () =>
+        resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1509,6 +1993,181 @@ export function useTeamsDashboard() {
     refreshing,
     retry: () => load(false),
     refresh: () => load(true),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Routines — the automation surface (web RoutinesPanel parity, list-level
+// controls only: pause/resume + run-now; create/edit stays on web). The BFF
+// forwards upstream `RoutineListItem` rows: `title` / `assigneeAgentId` /
+// `status` / `triggers[]` / `variables[]`.
+// ---------------------------------------------------------------------------
+
+export interface RoutineTrigger {
+  id: string;
+  kind: string;
+  label?: string | null;
+  enabled?: boolean;
+  cronExpression?: string | null;
+  timezone?: string | null;
+  nextRunAt?: string | null;
+}
+
+export interface TeamsRoutine {
+  id: string;
+  title?: string | null;
+  assigneeAgentId?: string | null;
+  /** "active" | "paused" | "draft" | "archived" — free string, defensive. */
+  status?: string | null;
+  triggers?: RoutineTrigger[];
+  /** Variable definitions; non-empty means run-now needs inputs mobile
+   * doesn't collect — the run button defers those to web. */
+  variables?: { name: string; required?: boolean }[];
+  lastTriggeredAt?: string | null;
+}
+
+/** Display cron: first enabled trigger's expression, else any trigger's. */
+export function routineCron(routine: TeamsRoutine): string | null {
+  const triggers = routine.triggers ?? [];
+  return (
+    triggers.find((t) => t.enabled !== false && t.cronExpression)?.cronExpression ??
+    triggers.find((t) => t.cronExpression)?.cronExpression ??
+    null
+  );
+}
+
+export type RoutinesState =
+  | { kind: "loading" }
+  | { kind: "gate"; gate: TeamsGate; message: string | null }
+  | { kind: "ready"; routines: TeamsRoutine[]; agents: TeamsAgent[] };
+
+/**
+ * Human copy for a blocked-gate 402 (e.g. routines_require_subscription): the
+ * shared client keeps the parsed body, whose structured detail carries the
+ * actual upgrade prompt (web RoutinesPanel gateMessage parity).
+ */
+function blockedMessage(err: unknown): string {
+  const body = (err as { body?: { detail?: { message?: unknown } } } | null)?.body;
+  const msg = body?.detail?.message;
+  if (typeof msg === "string" && msg) return msg;
+  return err instanceof Error ? err.message : "Request failed";
+}
+
+export function useTeamsRoutines() {
+  const config = useTeamsConfig();
+  const [state, setState] = useState<RoutinesState>({ kind: "loading" });
+  const [refreshing, setRefreshing] = useState(false);
+  const loadSeq = useRef(0);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const busyRef = useRef<Set<string>>(new Set());
+
+  const load = useCallback(
+    async (isRefresh = false) => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      if (isRefresh) setRefreshing(true);
+      else setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
+      try {
+        const { status, body } = await fetchJsonWithStatus(config, "/teams/routines");
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromSuccess(status, body);
+        if (gate) {
+          setState({ kind: "gate", gate, message: null });
+          return;
+        }
+        const list = (body as { routines?: unknown } | null)?.routines;
+        const routines = Array.isArray(list) ? (list as TeamsRoutine[]) : [];
+        const agents = await fetchAgents(config);
+        if (loadSeq.current !== seq) return;
+        setState({ kind: "ready", routines, agents });
+      } catch (err) {
+        if (loadSeq.current !== seq) return;
+        const gate = gateFromError(err);
+        setState({
+          kind: "gate",
+          gate: gate ?? "unavailable",
+          message: err instanceof Error ? err.message : "Request failed",
+        });
+      } finally {
+        if (loadSeq.current === seq && isRefresh) setRefreshing(false);
+      }
+    },
+    [config],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  // Pause/resume is a status flip (upstream has no `enabled` field). Optimistic
+  // + reconcile + revert-and-Alert; per-routine ref-latch.
+  const setEnabled = useCallback(
+    async (routineId: string, enabled: boolean) => {
+      const current = stateRef.current;
+      if (current.kind !== "ready") return;
+      if (busyRef.current.has(routineId)) return;
+      const prevRoutines = current.routines;
+      busyRef.current.add(routineId);
+      setState((prev) =>
+        prev.kind === "ready"
+          ? {
+              ...prev,
+              routines: prev.routines.map((r) =>
+                r.id === routineId ? { ...r, status: enabled ? "active" : "paused" } : r,
+              ),
+            }
+          : prev,
+      );
+      try {
+        await createApiClient(config).patch(
+          `/teams/routines/${encodeURIComponent(routineId)}`,
+          { status: enabled ? "active" : "paused" },
+        );
+        await load(false);
+      } catch (err) {
+        setState((prev) =>
+          prev.kind === "ready" ? { ...prev, routines: prevRoutines } : prev,
+        );
+        Alert.alert("Couldn’t update routine", blockedMessage(err));
+      } finally {
+        busyRef.current.delete(routineId);
+      }
+    },
+    [config, load],
+  );
+
+  // Manual fire (`source:"manual"` distinguishes UI runs in upstream history).
+  // Returns whether the run was accepted so the row can acknowledge.
+  const runNow = useCallback(
+    async (routineId: string): Promise<boolean> => {
+      if (busyRef.current.has(routineId)) return false;
+      busyRef.current.add(routineId);
+      try {
+        await createApiClient(config).post(
+          `/teams/routines/${encodeURIComponent(routineId)}/run`,
+          { source: "manual" },
+        );
+        return true;
+      } catch (err) {
+        Alert.alert("Couldn’t run routine", blockedMessage(err));
+        return false;
+      } finally {
+        busyRef.current.delete(routineId);
+      }
+    },
+    [config],
+  );
+
+  return {
+    state,
+    refreshing,
+    retry: () => load(false),
+    refresh: () => load(true),
+    setEnabled,
+    runNow,
   };
 }
 

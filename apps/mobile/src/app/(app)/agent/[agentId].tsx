@@ -64,6 +64,29 @@ import { useGateway } from "../../../providers/gateway";
 const HISTORY_RETRY_WINDOW_MS = 60_000;
 const HISTORY_RETRY_MAX_ATTEMPTS = 8;
 
+// A user-initiated Stop is delivered as an `error` frame ("Agent run was
+// cancelled") — a normal outcome, not a failure (web ABORTED_PATTERN parity).
+const ABORTED_PATTERN = /Agent run was cancelled/i;
+
+// Known transport/infra error strings → friendly copy (web useAgentChat
+// ERROR_PATTERNS parity). Everything else passes through verbatim.
+const ERROR_PATTERNS: [RegExp, string][] = [
+  [/timed out during opening handshake/i, "Your agent is starting up — please try again in a moment."],
+  [/Gateway not healthy/i, "Your agent is not ready yet. Please try again in a moment."],
+  [/health check timed out/i, "Your agent is not responding. Please try again in a moment."],
+  [/Gateway connection lost/i, "Lost connection to your agent. Retrying..."],
+  [/Connection closed/i, "Connection to your agent was interrupted. Please try again."],
+  [/session file locked/i, "Your agent is busy with another request. Please wait a moment and try again."],
+  [/Model access is denied/i, "This model is not available. Try switching to a different model in settings."],
+];
+
+function friendlyError(raw: string): string {
+  for (const [pattern, friendly] of ERROR_PATTERNS) {
+    if (pattern.test(raw)) return friendly;
+  }
+  return raw;
+}
+
 /**
  * Slim reconnecting banner shown above the composer while the gateway
  * socket is down (spec §4): amber well with a pulsing dot.
@@ -190,6 +213,9 @@ function AgentChat() {
   const historyRetryReentryRef = useRef(false);
   const historyRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
+  // Runs whose run_ended already arrived — a stray late frame for one of
+  // these must not re-adopt it as the active run (web drainedRunIds parity).
+  const drainedRunIdsRef = useRef<Set<string>>(new Set());
   // Cumulative-stream bookkeeping for the active run: how many chars of the
   // cumulative text earlier segments already display, the current segment
   // ordinal (keys stay unique when tools split the stream), and the last
@@ -225,9 +251,42 @@ function AgentChat() {
       const isUntaggedError = msg.type === "error" && frameSessionId === null;
       if (frameSessionId !== activeSessionIdRef.current && !isUntaggedError)
         return;
+
+      // Server-truth busy signal (backend forwards OpenClaw sessions.changed;
+      // carries no runId). active:true marks busy before an external run's
+      // first frame arrives; active:false releases a latch a lost terminal
+      // frame stranded (web run_active parity).
+      if (msg.type === "run_active") {
+        if (msg.active) {
+          setBusy(true);
+        } else {
+          activeRunIdRef.current = null;
+          setBusy(false);
+        }
+        return;
+      }
+
       const runId = "runId" in msg ? msg.runId : undefined;
-      // Only render frames for the run this screen started — background runs
-      // (cron, channels) for the same agent stay out of this transcript.
+      // Adopt an externally-started run when this screen has none — a run
+      // started from web, cron, or a previous app session must render here
+      // and hold the composer busy, instead of the old false-idle (frames
+      // silently dropped, sends dispatched into the live run; there is no
+      // server-side chat gate). Ended runs must not re-arm the gate.
+      if (
+        runId &&
+        activeRunIdRef.current === null &&
+        !drainedRunIdsRef.current.has(runId) &&
+        msg.type !== "run_ended"
+      ) {
+        activeRunIdRef.current = runId;
+        committedOffsetRef.current = 0;
+        segmentRef.current = 0;
+        lastCumulativeLenRef.current = 0;
+        cumulativeTextRef.current = null;
+        setBusy(true);
+      }
+      // Only render frames for the active run — other concurrent runs for the
+      // same agent stay out of this transcript.
       if (runId && runId !== activeRunIdRef.current) return;
 
       if (msg.type === "chunk") {
@@ -298,9 +357,23 @@ function AgentChat() {
           ),
         );
       } else if (msg.type === "error") {
+        // Benign backend frame — another surface's send raced this one; not
+        // terminal for anything this screen shows (web parity: no-op).
+        if (msg.code === "agent_busy") {
+          return;
+        }
+        // container_waking (common on mobile: backgrounding parks the socket,
+        // trial containers scale to zero) and a user-initiated Stop are
+        // NORMAL outcomes — render calm plain text, not a red error card
+        // (web parity). Both are still terminal: release the gate below.
+        const text = friendlyError(msg.message);
+        const calm =
+          msg.code === "container_waking" || ABORTED_PATTERN.test(msg.message);
         setItems((prev) => [
           ...prev,
-          { id: randomUUID(), role: "error", text: msg.message, code: msg.code },
+          calm
+            ? { id: randomUUID(), role: "assistant", text }
+            : { id: randomUUID(), role: "error", text, code: msg.code },
         ]);
         // Additive gate release: gate-level errors are terminal but never
         // followed by a run_ended, so the error frame itself must release
@@ -309,6 +382,8 @@ function AgentChat() {
         activeRunIdRef.current = null;
         setBusy(false);
       } else if (msg.type === "run_ended") {
+        // Remember ended runs so a stray late frame can't re-adopt one.
+        if (runId) drainedRunIdsRef.current.add(runId);
         setItems((prev) =>
           prev.map((it) => (it.streaming ? { ...it, streaming: false } : it)),
         );

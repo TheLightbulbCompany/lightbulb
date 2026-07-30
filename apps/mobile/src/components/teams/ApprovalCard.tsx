@@ -1,5 +1,6 @@
 import Feather from "@expo/vector-icons/Feather";
-import { Alert, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "../../config/theme";
 import {
@@ -12,6 +13,7 @@ import {
   type TeamsAgent,
   type TeamsApproval,
 } from "../../lib/teamsData";
+import { ReasonSheet } from "./ReasonSheet";
 
 // ---------------------------------------------------------------------------
 // Approval card (Teams v3 T3b). Rows carry no title — the label is synthesized
@@ -19,42 +21,9 @@ import {
 // via the shared agent/member resolvers), relative time, a status chip, and —
 // while actionable — inline Approve / Reject actions. Tapping the card body
 // (not the buttons) navigates to the linked issue when the approval has one.
+// Reject collects its required reason via the cross-platform ReasonSheet
+// (the old iOS-only Alert.prompt dead-ended Android).
 // ---------------------------------------------------------------------------
-
-/**
- * Prompt for a required rejection reason (Alert.prompt, iOS). Blocks an empty
- * reason. On platforms without `Alert.prompt` (Android), degrades to a plain
- * alert explaining the reason must be entered on iOS — mobile ships iOS-only.
- */
-export function promptRejectReason(onSubmit: (reason: string) => void): void {
-  if (Platform.OS === "ios" && typeof Alert.prompt === "function") {
-    Alert.prompt(
-      "Reject approval",
-      "Add a reason for rejecting this request. A reason is required.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Reject",
-          style: "destructive",
-          onPress: (reason?: string) => {
-            const trimmed = (reason ?? "").trim();
-            if (!trimmed) {
-              Alert.alert("Reason required", "You must provide a reason to reject.");
-              return;
-            }
-            onSubmit(trimmed);
-          },
-        },
-      ],
-      "plain-text",
-    );
-    return;
-  }
-  Alert.alert(
-    "Reason required",
-    "Rejecting an approval requires a reason. Please reject from the iOS app.",
-  );
-}
 
 export interface ApprovalCardProps {
   approval: TeamsApproval;
@@ -74,6 +43,7 @@ export function ApprovalCard({
   onReject,
   onOpenIssue,
 }: ApprovalCardProps) {
+  const [rejectOpen, setRejectOpen] = useState(false);
   const label = approvalLabel(approval);
   const requester = approvalRequesterLabel(approval, agents, members);
   const when = timeAgo(approval.createdAt);
@@ -144,7 +114,7 @@ export function ApprovalCard({
               <Text style={styles.approveText}>Approve</Text>
             </Pressable>
             <Pressable
-              onPress={() => promptRejectReason((reason) => onReject(approval.id, reason))}
+              onPress={() => setRejectOpen(true)}
               style={({ pressed }) => [
                 styles.actionBtn,
                 styles.rejectBtn,
@@ -159,6 +129,14 @@ export function ApprovalCard({
           </View>
         ) : null}
       </View>
+
+      <ReasonSheet
+        visible={rejectOpen}
+        title="Reject approval"
+        placeholder="Why are you rejecting this request?"
+        onSubmit={(reason) => onReject(approval.id, reason)}
+        onClose={() => setRejectOpen(false)}
+      />
     </View>
   );
 }

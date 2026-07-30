@@ -1,6 +1,6 @@
 import Feather from "@expo/vector-icons/Feather";
 import { Stack, router } from "expo-router";
-import { useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import {
   Animated,
   FlatList,
@@ -10,6 +10,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -29,9 +30,14 @@ import {
   useTeamsApprovals,
   useTeamsDashboard,
   useTeamsInbox,
+  INBOX_TABS,
+  INBOX_TAB_LABELS,
   type CreateIssueInput,
+  type FailedRun,
   type InboxItem,
+  type InboxTab,
   type RunActivityDay,
+  type TeamsAgent,
 } from "../../../lib/teamsData";
 
 // Teams is a subscription-gated, web-managed surface: when the workspace needs
@@ -467,6 +473,16 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
         ) : null}
       </View>
       {activity.length > 0 ? <RunActivityCard days={activity} /> : null}
+      <Pressable
+        style={({ pressed }) => [styles.linkRow, pressed && styles.rowPressed]}
+        onPress={() => router.push("/(app)/teams/routines")}
+        accessibilityRole="button"
+        accessibilityLabel="Routines"
+      >
+        <Feather name="repeat" size={16} color={colors.forest} />
+        <Text style={styles.linkRowText}>Routines</Text>
+        <Feather name="chevron-right" size={16} color={colors.muteSoft} />
+      </Pressable>
     </ScrollView>
   );
 }
@@ -581,12 +597,175 @@ function ApprovalsView() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Inbox — tabbed list (Mine / Recent / Unread / All, server-side filters) with
+// search and a failed-runs band (web InboxToolbar + NeedsAttentionBand parity).
+// ---------------------------------------------------------------------------
+
+/** Copy for the tab-appropriate empty state. `mine` explains its real
+ * semantics — touched-by-you, NOT assigned-to-you (the old copy was wrong). */
+const INBOX_EMPTY_COPY: Record<InboxTab, { title: string; detail: string }> = {
+  mine: {
+    title: "Nothing here yet",
+    detail:
+      "Tasks you’ve touched show up here. Switch to All to see everything your team is working on.",
+  },
+  recent: { title: "No recent activity", detail: "Recently active tasks show up here." },
+  unread: { title: "You’re all caught up", detail: "Unread updates show up here." },
+  all: { title: "No tasks yet", detail: "Create one with the + button." },
+};
+
+function InboxTabChips({
+  tab,
+  onChange,
+}: {
+  tab: InboxTab;
+  onChange: (tab: InboxTab) => void;
+}) {
+  return (
+    <View style={styles.tabRow}>
+      {INBOX_TABS.map((key) => {
+        const active = tab === key;
+        return (
+          <Pressable
+            key={key}
+            style={[styles.tabChip, active && styles.tabChipActive]}
+            onPress={() => onChange(key)}
+            accessibilityRole="button"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={`${INBOX_TAB_LABELS[key]} tab`}
+          >
+            <Text style={[styles.tabChipText, active && styles.tabChipTextActive]}>
+              {INBOX_TAB_LABELS[key]}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** One failed heartbeat run (web FailedRunRow parity): agent — reason, with
+ * View / Retry / Dismiss. Dismiss is a local acknowledgement. */
+function FailedRunRow({
+  run,
+  agents,
+  onRetry,
+  onDismiss,
+}: {
+  run: FailedRun;
+  agents: TeamsAgent[];
+  onRetry: (run: FailedRun) => Promise<void>;
+  onDismiss: (runId: string) => void;
+}) {
+  const [retryPhase, setRetryPhase] = useState<"idle" | "retrying" | "done">("idle");
+  const agentName = agents.find((a) => a.id === run.agentId)?.name ?? "Agent";
+  const title = `${agentName} — ${run.failureReason || "run failed"}`;
+  return (
+    <View style={styles.failedRow}>
+      <Feather name="alert-triangle" size={14} color={colors.danger} />
+      <View style={styles.failedRowText}>
+        <Text style={styles.failedRowTitle} numberOfLines={2}>
+          {title}
+        </Text>
+        {run.startedAt ? (
+          <Text style={styles.metaLine}>{timeAgo(run.startedAt)}</Text>
+        ) : null}
+      </View>
+      <Pressable
+        onPress={() =>
+          router.push({ pathname: "/(app)/teams/run/[runId]", params: { runId: run.id } })
+        }
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={`View run ${run.id}`}
+      >
+        <Text style={styles.failedRowAction}>View</Text>
+      </Pressable>
+      {run.agentId ? (
+        <Pressable
+          onPress={() => {
+            if (retryPhase !== "idle") return;
+            setRetryPhase("retrying");
+            void onRetry(run).then(() => setRetryPhase("done"));
+          }}
+          hitSlop={6}
+          disabled={retryPhase !== "idle"}
+          accessibilityRole="button"
+          accessibilityLabel="Retry run"
+        >
+          <Text
+            style={[styles.failedRowAction, retryPhase !== "idle" && styles.failedRowActionMuted]}
+          >
+            {retryPhase === "retrying" ? "Retrying…" : retryPhase === "done" ? "Retried" : "Retry"}
+          </Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        onPress={() => onDismiss(run.id)}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel="Dismiss failed run"
+      >
+        <Text style={styles.failedRowActionMuted}>Dismiss</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function InboxView() {
-  const { state, refreshing, retry, refresh } = useTeamsInbox();
+  const [tab, setTab] = useState<InboxTab>("mine");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  // Debounce the server-side search so each keystroke doesn't fire a request.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput), 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+  const {
+    state,
+    refreshing,
+    retry,
+    refresh,
+    dismissedRunIds,
+    dismissFailedRun,
+    retryFailedRun,
+  } = useTeamsInbox(tab, search);
+
+  const controls = (
+    <View style={styles.inboxControls}>
+      <InboxTabChips tab={tab} onChange={setTab} />
+      <View style={styles.searchBox}>
+        <Feather name="search" size={14} color={colors.mute} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search tasks"
+          placeholderTextColor={colors.placeholder}
+          value={searchInput}
+          onChangeText={setSearchInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="search"
+          accessibilityLabel="Search tasks"
+        />
+        {searchInput !== "" && (
+          <Pressable
+            onPress={() => setSearchInput("")}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Feather name="x" size={14} color={colors.mute} />
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
 
   if (state.kind === "loading") {
     return (
       <View style={styles.page}>
+        {controls}
         <SkeletonRows />
       </View>
     );
@@ -637,36 +816,59 @@ function InboxView() {
 
   // ready
   const empty = state.items.length === 0;
+  const failedRuns = state.failedRuns.filter((run) => !dismissedRunIds.has(run.id));
+  const emptyCopy = search.trim()
+    ? { title: "No matches", detail: `Nothing matches “${search.trim()}”.` }
+    : INBOX_EMPTY_COPY[tab];
   return (
-    <FlatList
-      style={styles.page}
-      data={state.items}
-      keyExtractor={(item) => item.id}
-      contentContainerStyle={[styles.listContent, empty && styles.grow]}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={refresh}
-          tintColor={colors.mute}
-        />
-      }
-      ListHeaderComponent={
-        !empty ? (
-          <Text style={styles.sectionLabel}>
-            INBOX
-            <Text style={styles.sectionCount}> · {state.items.length}</Text>
-          </Text>
-        ) : null
-      }
-      ListEmptyComponent={
-        <CenteredState
-          glyph={<Text style={styles.emptyGlyph}>8</Text>}
-          title="No items"
-          detail="Issues assigned to you will show up here."
-        />
-      }
-      renderItem={({ item }) => <InboxRow item={item} />}
-    />
+    <View style={styles.page}>
+      {controls}
+      <FlatList
+        style={styles.page}
+        data={state.items}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={[styles.listContent, empty && styles.grow]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor={colors.mute}
+          />
+        }
+        ListHeaderComponent={
+          <>
+            {failedRuns.length > 0 && (
+              <View style={styles.failedBand}>
+                <Text style={styles.failedBandLabel}>NEEDS ATTENTION</Text>
+                {failedRuns.map((run) => (
+                  <FailedRunRow
+                    key={run.id}
+                    run={run}
+                    agents={state.agents}
+                    onRetry={retryFailedRun}
+                    onDismiss={dismissFailedRun}
+                  />
+                ))}
+              </View>
+            )}
+            {!empty && (
+              <Text style={styles.sectionLabel}>
+                INBOX
+                <Text style={styles.sectionCount}> · {state.items.length}</Text>
+              </Text>
+            )}
+          </>
+        }
+        ListEmptyComponent={
+          <CenteredState
+            glyph={<Text style={styles.emptyGlyph}>8</Text>}
+            title={emptyCopy.title}
+            detail={emptyCopy.detail}
+          />
+        }
+        renderItem={({ item }) => <InboxRow item={item} />}
+      />
+    </View>
   );
 }
 
@@ -734,6 +936,112 @@ const styles = StyleSheet.create({
 
   // Approvals list — spacing between approval cards.
   approvalItem: { marginBottom: spacing.md },
+
+  // Inbox controls: tab chips + search (web InboxToolbar parity, phone-sized).
+  inboxControls: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+    gap: spacing.sm,
+  },
+  tabRow: { flexDirection: "row", gap: spacing.xs },
+  tabChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radii.xl,
+    backgroundColor: colors.creamDeeper,
+  },
+  tabChipActive: {
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.edge,
+  },
+  tabChipText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.mute,
+  },
+  tabChipTextActive: { color: colors.ink },
+  searchBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.ink,
+    padding: 0,
+  },
+
+  // Failed-runs band (web NeedsAttentionBand parity).
+  failedBand: {
+    backgroundColor: colors.errorBg,
+    borderWidth: 1,
+    borderColor: colors.errorBorder,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  failedBandLabel: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    lineHeight: 14,
+    letterSpacing: 1.4,
+    color: colors.danger,
+  },
+  failedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  failedRowText: { flex: 1, gap: 2 },
+  failedRowTitle: {
+    fontFamily: fonts.dmSans,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.ink,
+  },
+  failedRowAction: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.forest,
+  },
+  failedRowActionMuted: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.mute,
+  },
+
+  // Overview → Routines link row.
+  linkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.white,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.edge,
+    padding: spacing.lg,
+  },
+  linkRowText: {
+    flex: 1,
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 14,
+    lineHeight: 19,
+    color: colors.ink,
+  },
 
   // Inbox rows (spec §5).
   row: {

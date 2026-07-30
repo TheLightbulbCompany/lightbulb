@@ -573,13 +573,20 @@ def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None
 
     SEQUENTIAL retries only — this is a read, not a lock. The sidecar is written
     near the END of ``deploy_from_artifact``, so two deploys that OVERLAP both
-    see "not installed" and both mint an agent. That is exactly how prod grew
-    "Pulse 2": deploy #2 started 35s before deploy #1 wrote its sidecar (a page
-    reload cleared the drawer's ``isHiring``, which is the only thing stopping a
-    second submit). Closing that needs a distributed claim — a conditional DDB
-    write held for the deploy's duration — not a wider read. Deliberately not
-    built yet: it wants a home for the lock row, and the common shape is the
-    sequential retry this does cover.
+    see "not installed" here. That is exactly how prod grew "Pulse 2": deploy #2
+    started 35s before deploy #1 wrote its sidecar (a page reload cleared the
+    drawer's ``isHiring``, which is the only thing stopping a second submit).
+    Overlap is fenced separately, by
+    ``container_repo.try_claim_listing_deploy`` below — this read only has to
+    catch the retry that arrives AFTER the first deploy finished, which is the
+    case the claim has already released.
+
+    Keyed on ``slug`` while the claim is keyed on ``listing_id``, deliberately:
+    a republish mints a new listing_id for the same slug, so this read still
+    recognises "already installed" across versions. The flip side is that two
+    OVERLAPPING deploys of different listing_ids for the same slug (one tab
+    holding a pre-republish listing page) are not fenced — a live
+    republish-during-hire race, left uncovered.
     """
     sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
     if not sidecars:
@@ -719,6 +726,10 @@ async def deploy_listing(
             listing.get("listing_id"),
             already.get("agent_id"),
         )
+        # A ``reports_to`` on the retry is intentionally dropped: the agent
+        # already exists with the placement the first deploy gave it, and a
+        # retry is an accidental duplicate of the same intent, not a request to
+        # move it. Re-parenting lives in Teams.
         return {
             "slug": listing.get("slug"),
             "version": already.get("template_version") or listing.get("version", 1),

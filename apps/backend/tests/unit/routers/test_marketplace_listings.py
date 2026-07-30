@@ -13,6 +13,39 @@ from fastapi.testclient import TestClient  # noqa: E402
 from core.auth import AuthContext  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _stub_deploy_claim():
+    """Keep the marketplace-deploy claim off the network for every test here.
+
+    ``container_repo`` resolves its table through ``core.dynamodb.get_table`` —
+    a DIFFERENT boto3 handle from the ``boto3.client`` these tests patch — so a
+    test that drives ``/deploy`` without stubbing the claim makes a REAL
+    DynamoDB call and only "passes" by riding ``try_claim_listing_deploy``'s
+    fail-open branch (verified: it logs ``DDB fault
+    (ResourceNotFoundException) … admitting the deploy UNFENCED``). That made
+    two tests quietly depend on outbound AWS access, and meant neither was
+    exercising the path it claimed to.
+
+    Autouse so a future ``/deploy`` test can't reintroduce it. Tests needing a
+    specific claim outcome still override with their own ``@patch`` — a
+    decorator patch is applied after this fixture, so it wins for that test. The
+    real conditional-write semantics are covered against a live DynamoDB engine
+    in ``tests/unit/repositories/test_container_repo_deploy_claim.py``.
+    """
+    with (
+        patch(
+            "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+            new_callable=AsyncMock,
+            return_value="test-claim-token",
+        ),
+        patch(
+            "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+            new_callable=AsyncMock,
+        ),
+    ):
+        yield
+
+
 @pytest.fixture
 def unauth_client():
     """Plain TestClient without auth override (for endpoints that 401 unauthenticated).

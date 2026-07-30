@@ -34,14 +34,15 @@ async def get_platform_info() -> dict:
             "key": provider.key,
             "display_name": provider.display_name,
             "byo_required": provider.byo_required,
+            # Gated on this environment → the owner cannot connect it directly;
+            # the Integrations tab shows Request access instead. This route is
+            # public and ownerless, so it can only evaluate the env half of the
+            # gate: an owner_allowlist'd owner sees requestable=true here while
+            # their own tab offers Connect. The skill resolves that by treating
+            # its own toolset as ground truth.
+            "requestable": not registry.visible_in_env(provider),
         }
         for provider in registry.all_providers().values()
-        # Env-gated providers are invisible on this environment's Integrations
-        # tab, so advertising them here would send agents to a dead end ("connect
-        # Instagram" for a prod owner who has no such button). The owner_allowlist
-        # half of the gate needs an owner id this public route deliberately
-        # doesn't have — allowlisted owners just see one extra entry in their tab.
-        if registry.visible_in_env(provider)
     ]
     channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

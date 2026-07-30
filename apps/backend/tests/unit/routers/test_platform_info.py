@@ -41,14 +41,14 @@ def test_catalog_is_public_and_lists_everything(client):
     body = resp.json()
 
     got_integrations = {i["key"] for i in body["integrations"]}
-    assert got_integrations == {k for k, p in registry.all_providers().items() if registry.visible_in_env(p)}
+    assert got_integrations == set(registry.all_providers().keys())
 
     got_channels = {c["key"] for c in body["channels"]}
     assert got_channels == set(CHANNEL_PROVIDER_IDS)
 
     # Each integration carries exactly the projected fields, nothing else.
     for entry in body["integrations"]:
-        assert set(entry.keys()) == {"key", "display_name", "byo_required"}
+        assert set(entry.keys()) == {"key", "display_name", "byo_required", "requestable"}
     for entry in body["channels"]:
         assert set(entry.keys()) == {"key", "display_name"}
 
@@ -63,21 +63,25 @@ def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
 
     body = client.get(PREFIX).json()
     entry = next(i for i in body["integrations"] if i["key"] == "acme")
-    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True}
+    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True, "requestable": False}
 
 
-def test_env_gated_provider_is_not_advertised(client, monkeypatch):
-    """A provider gated off this environment must NOT appear in the catalog.
+def test_env_gated_provider_is_advertised_as_requestable(client, monkeypatch):
+    """A provider gated off this environment is still advertised, flagged
+    requestable, so an agent can tell the owner to request it rather than
+    either (a) claiming it is one click away or (b) never mentioning it.
 
-    The Integrations tab hides it (routers/connections.py:_available_for), so
-    advertising it here sent agents to a dead end: prod owners were told to
-    "connect Instagram" against a tab with no such button.
+    Replaces test_env_gated_provider_is_not_advertised: hiding it was the
+    right fix while there was no request affordance, and the wrong one now.
     """
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
-    assert "instagram" in {i["key"] for i in client.get(PREFIX).json()["integrations"]}
+    dev = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert dev["instagram"]["requestable"] is False
 
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
-    assert "instagram" not in {i["key"] for i in client.get(PREFIX).json()["integrations"]}
+    prod = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert "instagram" in prod
+    assert prod["instagram"]["requestable"] is True
 
 
 def test_new_channel_surfaces_with_no_name_map(client, monkeypatch):

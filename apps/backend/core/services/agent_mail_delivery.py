@@ -45,7 +45,14 @@ def _client_factory() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=10)
 
 
-async def deliver_to_agent(*, owner_id: str, agent_id: str, message: str, idempotency_key: str) -> str:
+async def deliver_to_agent(
+    *,
+    owner_id: str,
+    agent_id: str,
+    message: str,
+    idempotency_key: str,
+    session_key: str | None = None,
+) -> str:
     """POST an inbound message to the owner's running container's agent hook.
 
     Returns one of ``"delivered"``, ``"woken"``, ``"container_not_running"``,
@@ -75,6 +82,17 @@ async def deliver_to_agent(*, owner_id: str, agent_id: str, message: str, idempo
             "agentId": agent_id,
             "name": "Email",
             "idempotencyKey": idempotency_key,
+            # Stable per-thread session so a reply reaches the SAME session as
+            # the message it answers. Omitted -> the container generates its
+            # own `hook:<uuid>`, i.e. the old cold-start-per-email behaviour,
+            # which is the right fallback for mail with no usable message-id.
+            #
+            # Requires hooks.allowRequestSessionKey=true in the container
+            # config: upstream rejects a request-supplied key otherwise
+            # (resolveHookSessionKey, source="request"). The key is bounded by
+            # hooks.allowedSessionKeyPrefixes, which is what keeps a leaked
+            # hook token from claiming arbitrary session ownership.
+            **({"sessionKey": session_key} if session_key else {}),
             # Delivery opt-out. OpenClaw "channels" are transport PLUGINS
             # (slack/discord/telegram); our email is not one of them — the
             # agent answers by invoking isol8-owner-email.sh, which comes back
@@ -93,6 +111,34 @@ async def deliver_to_agent(*, owner_id: str, agent_id: str, message: str, idempo
 
         async with _client_factory() as client:
             response = await client.post(target, json=body, headers=headers)
+
+            # BACKWARD COMPATIBILITY, and it is load-bearing: a container
+            # provisioned before hooks.allowRequestSessionKey was enabled
+            # REJECTS a request-supplied session key with a hard 400 --
+            #     if (!sessionKey.ok) sendJson(res, 400, ...)
+            # (gateway/server/hooks-request-handler.ts). raise_for_status would
+            # turn that into "error" -> the router's 503 -> SES retries -> the
+            # same 400 forever, i.e. inbound email BROKEN on every container
+            # whose openclaw.json predates the flag. Config lives on each
+            # owner's EFS volume, so a backend deploy does NOT update them;
+            # they only pick it up on reprovision or via
+            # scripts/reapply_openclaw_config.py.
+            #
+            # So a 400 while we supplied a key means "this container is older
+            # than the flag" -- retry once WITHOUT it and take the throwaway
+            # session. Strictly better than failing: the message still reaches
+            # the agent, just without thread continuity. Self-healing too, with
+            # no need to track which containers have been updated.
+            if response.status_code == 400 and session_key:
+                logger.info(
+                    "agent_mail_delivery: container rejected sessionKey (pre-flag config), "
+                    "retrying unthreaded owner=%s agent=%s",
+                    owner_id,
+                    agent_id,
+                )
+                body.pop("sessionKey", None)
+                response = await client.post(target, json=body, headers=headers)
+
         response.raise_for_status()
         return "delivered"
     except Exception as exc:  # noqa: BLE001 — must never raise; every failure -> "error"

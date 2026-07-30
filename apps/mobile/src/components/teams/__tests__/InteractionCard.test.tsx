@@ -141,6 +141,43 @@ describe("InteractionCard", () => {
     expect(onAccept).toHaveBeenCalledWith("int_1", { selectedClientKeys: ["t1"] });
   });
 
+  it("checkbox confirmation enforces minSelected/maxSelected", async () => {
+    const onAccept = jest.fn();
+    await render(
+      <InteractionCard
+        interaction={makeInteraction({
+          kind: "request_checkbox_confirmation",
+          payload: {
+            prompt: "Pick 1-2",
+            options: [
+              { id: "a", label: "Option A" },
+              { id: "b", label: "Option B" },
+              { id: "c", label: "Option C" },
+            ],
+            defaultSelectedOptionIds: [],
+            minSelected: 1,
+            maxSelected: 2,
+          },
+        })}
+        agents={agents}
+        onAccept={onAccept}
+        onReject={jest.fn()}
+        onRespond={jest.fn()}
+      />,
+    );
+    // Below min: Accept is blocked and the hint explains why.
+    await fireEvent.press(screen.getByLabelText("Accept"));
+    expect(onAccept).not.toHaveBeenCalled();
+    expect(screen.getByText("Select at least 1 option.")).toBeTruthy();
+
+    await fireEvent.press(screen.getByLabelText("Option A"));
+    await fireEvent.press(screen.getByLabelText("Option B"));
+    // At max: a third selection is locked out.
+    await fireEvent.press(screen.getByLabelText("Option C"));
+    await fireEvent.press(screen.getByLabelText("Accept"));
+    expect(onAccept).toHaveBeenCalledWith("int_1", { selectedOptionIds: ["a", "b"] });
+  });
+
   it("resolved interaction collapses to a summary with no action buttons", async () => {
     await render(
       <InteractionCard

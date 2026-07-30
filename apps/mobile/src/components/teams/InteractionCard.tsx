@@ -104,6 +104,22 @@ export function InteractionCard({
     return (answers.get(q.id)?.size ?? 0) > 0;
   });
 
+  // Checkbox-confirmation selection bounds (web card parity): unchecked rows
+  // lock at maxSelected, Accept gates on the min/max window, and the accept
+  // body is capped belt-and-braces.
+  const minSelected = payload?.minSelected ?? 0;
+  const maxSelected = payload?.maxSelected ?? null;
+  const selectedCount = selectedOptions.size;
+  const atMax = maxSelected != null && selectedCount >= maxSelected;
+  const belowMin = selectedCount < minSelected;
+  const aboveMax = maxSelected != null && selectedCount > maxSelected;
+  const selectionValid = !belowMin && !aboveMax;
+  const selectionHint = belowMin
+    ? `Select at least ${minSelected} option${minSelected === 1 ? "" : "s"}.`
+    : aboveMax && maxSelected != null
+      ? `Select at most ${maxSelected} option${maxSelected === 1 ? "" : "s"}.`
+      : null;
+
   const toggle = (set: Set<string>, id: string): Set<string> => {
     const next = new Set(set);
     if (next.has(id)) next.delete(id);
@@ -154,24 +170,37 @@ export function InteractionCard({
         <>
           {kind === "request_checkbox_confirmation" && (
             <View style={styles.optionList}>
-              {(payload?.options ?? []).map((option) => (
-                <Pressable
-                  key={option.id}
-                  style={styles.optionRow}
-                  onPress={() => setSelectedOptions((prev) => toggle(prev, option.id))}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: selectedOptions.has(option.id) }}
-                  accessibilityLabel={option.label}
-                >
-                  <Checkbox checked={selectedOptions.has(option.id)} />
-                  <View style={styles.optionText}>
-                    <Text style={styles.optionLabel}>{option.label}</Text>
-                    {option.description ? (
-                      <Text style={styles.optionDetail}>{option.description}</Text>
-                    ) : null}
-                  </View>
-                </Pressable>
-              ))}
+              {(payload?.options ?? []).map((option) => {
+                const isSelected = selectedOptions.has(option.id);
+                // Unchecked rows lock once the selection hits maxSelected —
+                // unchecking always stays available.
+                const locked = !isSelected && atMax;
+                return (
+                  <Pressable
+                    key={option.id}
+                    style={[styles.optionRow, locked && styles.optionLocked]}
+                    onPress={() => {
+                      if (locked) return;
+                      setSelectedOptions((prev) => toggle(prev, option.id));
+                    }}
+                    disabled={locked}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: isSelected, disabled: locked }}
+                    accessibilityLabel={option.label}
+                  >
+                    <Checkbox checked={isSelected} />
+                    <View style={styles.optionText}>
+                      <Text style={styles.optionLabel}>{option.label}</Text>
+                      {option.description ? (
+                        <Text style={styles.optionDetail}>{option.description}</Text>
+                      ) : null}
+                    </View>
+                  </Pressable>
+                );
+              })}
+              {selectionHint ? (
+                <Text style={styles.selectionHint}>{selectionHint}</Text>
+              ) : null}
             </View>
           )}
 
@@ -270,24 +299,44 @@ export function InteractionCard({
                 <Text style={styles.acceptText}>{payload?.submitLabel ?? "Submit"}</Text>
               </Pressable>
             ) : (
-              <Pressable
-                style={({ pressed }) => [styles.acceptBtn, pressed && styles.pressed]}
-                onPress={() =>
-                  onAccept(
-                    interaction.id,
-                    kind === "request_checkbox_confirmation"
-                      ? { selectedOptionIds: [...selectedOptions] }
-                      : kind === "suggest_tasks"
-                        ? { selectedClientKeys: [...selectedTasks] }
-                        : undefined,
-                  )
-                }
-                accessibilityRole="button"
-                accessibilityLabel={payload?.acceptLabel ?? "Accept"}
-              >
-                <Feather name="check" size={14} color={colors.white} />
-                <Text style={styles.acceptText}>{payload?.acceptLabel ?? "Accept"}</Text>
-              </Pressable>
+              (() => {
+                const acceptBlocked =
+                  kind === "request_checkbox_confirmation" && !selectionValid;
+                return (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.acceptBtn,
+                      acceptBlocked && styles.btnDisabled,
+                      pressed && styles.pressed,
+                    ]}
+                    disabled={acceptBlocked}
+                    onPress={() =>
+                      onAccept(
+                        interaction.id,
+                        kind === "request_checkbox_confirmation"
+                          ? {
+                              // Belt-and-braces cap alongside the toggle lock
+                              // (web parity: slice at maxSelected).
+                              selectedOptionIds:
+                                maxSelected != null
+                                  ? [...selectedOptions].slice(0, maxSelected)
+                                  : [...selectedOptions],
+                            }
+                          : kind === "suggest_tasks"
+                            ? { selectedClientKeys: [...selectedTasks] }
+                            : undefined,
+                      )
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel={payload?.acceptLabel ?? "Accept"}
+                  >
+                    <Feather name="check" size={14} color={colors.white} />
+                    <Text style={styles.acceptText}>
+                      {payload?.acceptLabel ?? "Accept"}
+                    </Text>
+                  </Pressable>
+                );
+              })()
             )}
             <Pressable
               style={({ pressed }) => [styles.rejectBtn, pressed && styles.pressed]}
@@ -375,6 +424,14 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   checkboxChecked: { backgroundColor: colors.forest, borderColor: colors.forest },
+
+  optionLocked: { opacity: 0.45 },
+  selectionHint: {
+    fontFamily: fonts.dmSans,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.warn,
+  },
 
   questionBlock: { gap: spacing.sm },
   questionPrompt: {

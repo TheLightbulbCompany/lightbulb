@@ -415,15 +415,30 @@ function extractItems(body: unknown): InboxItem[] {
   return Array.isArray(items) ? (items as InboxItem[]) : [];
 }
 
-/** Best-effort `GET /teams/inbox/runs` → failed heartbeat runs. The BFF
- * forwards status=failed upstream; re-filter defensively (web parity). */
+/**
+ * Extract failed-run rows from a `GET /teams/inbox/runs` response. The BFF
+ * forwards upstream's payload VERBATIM (no `envelope_list`, unlike its
+ * `/issues/{id}/runs` sibling), so the shape is upstream's to change — web's
+ * `useInboxTriage.asRuns` hedges against bare array / `{runs}` / `{items}`
+ * for this exact endpoint, and we must too or the band silently renders empty.
+ */
+export function extractFailedRuns(body: unknown): FailedRun[] {
+  const list = Array.isArray(body)
+    ? body
+    : (() => {
+        const rec = body as { runs?: unknown; items?: unknown } | null;
+        if (Array.isArray(rec?.runs)) return rec.runs;
+        if (Array.isArray(rec?.items)) return rec.items;
+        return [] as unknown[];
+      })();
+  // The BFF forwards status=failed upstream; re-filter defensively (web parity).
+  return (list as FailedRun[]).filter((run) => run.status === "failed");
+}
+
+/** Best-effort `GET /teams/inbox/runs` → failed heartbeat runs. */
 function fetchFailedRuns(config: PlatformAdapter): Promise<FailedRun[]> {
   return fetchJsonWithStatus(config, "/teams/inbox/runs")
-    .then((r) => {
-      const list = (r.body as { runs?: unknown } | null)?.runs;
-      const runs = Array.isArray(list) ? (list as FailedRun[]) : [];
-      return runs.filter((run) => run.status === "failed");
-    })
+    .then((r) => extractFailedRuns(r.body))
     .catch(() => [] as FailedRun[]);
 }
 

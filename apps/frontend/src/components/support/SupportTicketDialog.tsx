@@ -17,7 +17,7 @@ export const SUPPORT_CATEGORIES = [
   "Other",
 ] as const;
 
-type SubmitState = "idle" | "sending" | "sent" | "error";
+type SubmitState = "idle" | "sending" | "sent" | "received" | "error";
 
 export interface SupportTicketDialogProps {
   open: boolean;
@@ -54,7 +54,7 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
     if (!message.trim()) return;
     setState("sending");
     try {
-      await api.post("/support/tickets", {
+      const res = await api.post("/support/tickets", {
         message,
         category,
         route: pathname,
@@ -68,12 +68,18 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
           new Set([presetRequestId, ...getRecentRequestIds()].filter(Boolean) as string[]),
         ).slice(0, 20),
       });
+      // The route 200s either way: "sent" = the email left, "received" = email
+      // is disabled or the send failed and the ticket exists only in the backend
+      // log. Promising a reply in the second case is a lie the user acts on, so
+      // the two get different copy.
+      const delivered = (res as { status?: string } | null)?.status !== "received";
       capture("support_ticket_submitted", {
         category,
         route: pathname,
         from_error: !!presetError,
+        delivered,
       });
-      setState("sent");
+      setState(delivered ? "sent" : "received");
     } catch {
       setState("error");
     }
@@ -90,11 +96,18 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
         className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {state === "sent" ? (
+        {state === "sent" || state === "received" ? (
           <div className="text-center">
             <h2 className="mb-2 text-lg font-semibold">Thanks — we got it</h2>
             <p className="mb-6 text-sm text-gray-600">
-              Your message is on its way to our team. We&rsquo;ll reply to your email.
+              {state === "sent" ? (
+                <>Your message is on its way to our team. We&rsquo;ll reply to your email.</>
+              ) : (
+                <>
+                  We logged your message, but couldn&rsquo;t email it through. If you don&rsquo;t
+                  hear back, reach us at support@isol8.co.
+                </>
+              )}
             </p>
             <button
               type="button"

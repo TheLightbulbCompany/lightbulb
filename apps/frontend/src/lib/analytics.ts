@@ -116,6 +116,8 @@ export type AnalyticsEvent =
   | "landing_download_clicked"
   | "landing_pricing_card_clicked"
   | "landing_viewed"
+  // Integrations
+  | "integration_access_requested"
   // MCP
   | "mcp_server_added"
   | "mcp_server_removed"

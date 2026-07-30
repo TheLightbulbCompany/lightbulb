@@ -66,13 +66,11 @@ def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
     assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True, "requestable": False}
 
 
-def test_env_gated_provider_is_advertised_as_requestable(client, monkeypatch):
-    """A provider gated off this environment is still advertised, flagged
-    requestable, so an agent can tell the owner to request it rather than
-    either (a) claiming it is one click away or (b) never mentioning it.
-
-    Replaces test_env_gated_provider_is_not_advertised: hiding it was the
-    right fix while there was no request affordance, and the wrong one now.
+def test_env_gated_provider_is_hidden_unless_it_opts_in(client, monkeypatch):
+    """A gate still means HIDDEN on this unauthenticated route. Advertising a
+    gated provider as requestable is an explicit per-provider opt-in
+    (``offer_request_access``) — otherwise adding a half-wired dev-only provider
+    would have agents pitching it to every prod owner, with no knob to stop it.
     """
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
     dev = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
@@ -80,8 +78,15 @@ def test_env_gated_provider_is_advertised_as_requestable(client, monkeypatch):
 
     monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
     prod = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
-    assert "instagram" in prod
-    assert prod["instagram"]["requestable"] is True
+    assert registry.get_provider("instagram").offer_request_access is False
+    assert "instagram" not in prod
+
+    # Opted in → advertised, flagged requestable, so the agent tells the owner to
+    # request it rather than claiming it is one click away.
+    opted_in = registry.get_provider("instagram").model_copy(update={"offer_request_access": True})
+    monkeypatch.setattr(platform_info.registry, "all_providers", lambda: {"instagram": opted_in})
+    body = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert body["instagram"]["requestable"] is True
 
 
 def test_new_channel_surfaces_with_no_name_map(client, monkeypatch):

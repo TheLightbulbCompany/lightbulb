@@ -34,15 +34,23 @@ async def get_platform_info() -> dict:
             "key": provider.key,
             "display_name": provider.display_name,
             "byo_required": provider.byo_required,
-            # Gated on this environment → the owner cannot connect it directly;
-            # the Integrations tab shows Request access instead. This route is
-            # public and ownerless, so it can only evaluate the env half of the
-            # gate: an owner_allowlist'd owner sees requestable=true here while
-            # their own tab offers Connect. The skill resolves that by treating
-            # its own toolset as ground truth.
+            # Gated off this environment → the owner cannot connect it directly;
+            # the Integrations tab shows Request access instead.
+            #
+            # This route is public and OWNERLESS, so it evaluates only the env
+            # half of the gate. An owner on the provider's owner_allowlist
+            # therefore reads requestable=true here while their own tab offers
+            # Connect. The skill tells agents to send owners to the Integrations
+            # tab and describe what they find, rather than naming a button — so
+            # this skew changes the wording, never the destination.
             "requestable": not registry.visible_in_env(provider),
         }
         for provider in registry.all_providers().values()
+        # A gate still means HIDDEN unless the provider opts into being requested.
+        # Without this, adding a half-wired provider gated `environments:
+        # [local, dev]` would publish it on this unauthenticated route and have
+        # agents pitch it, with no config knob left to suppress it.
+        if registry.visible_in_env(provider) or provider.offer_request_access
     ]
     channels = [{"key": key, "display_name": key.replace("_", " ").title()} for key in CHANNEL_PROVIDER_IDS]
     return {"integrations": integrations, "channels": channels}

@@ -68,4 +68,13 @@ describe("ConnectButton requestable", () => {
       message: "I'd like to use Instagram.",
     });
   });
+
+  it("disables Request access for a non-admin member", () => {
+    renderButton({ canManage: false });
+
+    const button = screen.getByRole("button", { name: /request access/i });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(openSupport).not.toHaveBeenCalled();
+  });
 });

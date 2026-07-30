@@ -10,6 +10,7 @@ import { ApiError, type Connection } from "@/hooks/useConnections";
 import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
 import { useSupport } from "@/components/support/SupportProvider";
+import { capture } from "@/lib/analytics";
 
 interface ConnectButtonProps {
   connection: Connection;
@@ -269,12 +270,19 @@ export function ConnectButton({
       <Button
         size="sm"
         variant="outline"
-        onClick={() =>
+        // Same admin gate as every other action in this row. Without it a
+        // non-admin member could file a request against an org whose admin never
+        // asked for it — and since no request record is stored, the admin would
+        // have no way to see it happened.
+        disabled={!canManage}
+        title={canManage ? undefined : NON_ADMIN_MSG}
+        onClick={() => {
+          capture("integration_access_requested", { provider: connection.provider });
           openSupport({
             category: "Integration request",
             message: `I'd like to use ${connection.display_name}.`,
-          })
-        }
+          });
+        }}
         aria-label={`Request access to ${connection.display_name}`}
       >
         Request access

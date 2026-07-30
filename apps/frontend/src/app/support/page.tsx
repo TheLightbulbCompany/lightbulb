@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { capture } from "@/lib/analytics";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
+import { SUPPORT_CATEGORIES } from "@/components/support/SupportTicketDialog";
 
 export default function SupportPage() {
   const router = useRouter();
@@ -66,12 +67,11 @@ export default function SupportPage() {
               <label htmlFor="subject">Subject</label>
               <select id="subject" name="subject" required defaultValue="">
                 <option value="" disabled>Select a topic</option>
-                <option value="Bug report">Bug report</option>
-                <option value="Feature request">Feature request</option>
-                <option value="Billing question">Billing question</option>
-                <option value="Account issue">Account issue</option>
-                <option value="GooseTown">GooseTown</option>
-                <option value="Other">Other</option>
+                {SUPPORT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
               </select>
             </div>
 

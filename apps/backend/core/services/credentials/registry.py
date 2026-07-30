@@ -235,6 +235,26 @@ class Provider(BaseModel):
     # dark (no dead "Connect" button they can't complete pre-review). Owner ids
     # are Clerk org_/user_ ids. None/empty = no extra owners.
     owner_allowlist: list[str] | None = None
+    # What a gate MEANS for this provider when it excludes an owner.
+    #
+    # False (default) — HIDDEN. The provider is absent from the owner's
+    #   connections list and from the public platform-info catalog, exactly as
+    #   before `requestable` existed. This is what keeps a half-wired provider
+    #   gated `environments: [local, dev]` off prod entirely: dropping this
+    #   default would publish it on an unauthenticated route and have agents
+    #   pitch it, with no knob left to suppress it short of deleting the entry.
+    #
+    # True — REQUESTABLE. The provider is listed with `requestable: true` so the
+    #   Integrations tab can offer "Request access" (emails support) instead of a
+    #   Connect button whose authorize leg would 404. Opt in ONLY for providers
+    #   we can actually grant by hand — i.e. a Meta integration where an operator
+    #   adds the owner as a provider tester and to `owner_allowlist`.
+    #
+    # Flip this AFTER the extended image carrying the matching isol8 SKILL.md is
+    # promoted for the env (openclaw-version.json). Containers bake the skill, so
+    # a backend-first flip leaves live agents on copy that has never heard of
+    # `requestable` and still says "connect it in the Integrations tab".
+    offer_request_access: bool = False
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
     # AWS STS rail config. Only set for the `aws` provider (acquisition
@@ -298,6 +318,16 @@ def visible_in_env(p: Provider) -> bool:
     that advertises providers agrees on what this environment offers.
     """
     return p.environments is None or current_env() in p.environments
+
+
+def is_listable(p: Provider, owner_id: str | None) -> bool:
+    """Whether this provider appears in the owner's connections list at all.
+
+    Connectable providers always list. A gated one lists only if it opts into
+    `offer_request_access` — otherwise a gate still means HIDDEN, which is what
+    keeps a provider that is merely half-built out of prod.
+    """
+    return available_for(p, owner_id) or p.offer_request_access
 
 
 def available_for(p: Provider, owner_id: str | None) -> bool:

@@ -49,7 +49,7 @@ export function BrowseView() {
   return (
     <div>
       <div className="flex gap-2.5 mb-4 items-center flex-wrap">
-        <div className="flex-1 min-w-[220px] flex items-center gap-2.5 bg-white border border-[#e0dbd0] rounded-xl px-3.5 py-2.5">
+        <div className="flex-1 min-w-[220px] flex items-center gap-2.5 bg-white border border-[var(--edge)] rounded-xl px-3.5 py-2.5">
           <Search className="w-4 h-4 text-[#5b5b5b]" />
           <input
             value={q}
@@ -58,7 +58,7 @@ export function BrowseView() {
             className="flex-1 outline-0 bg-transparent text-sm"
           />
         </div>
-        <button className="bg-white border border-[#e0dbd0] rounded-xl px-3.5 py-2.5 text-[13px] text-[#5b5b5b]">
+        <button className="bg-white border border-[var(--edge)] rounded-xl px-3.5 py-2.5 text-[13px] text-[#5b5b5b]">
           Most installed ▾
         </button>
       </div>
@@ -70,8 +70,8 @@ export function BrowseView() {
             onClick={() => setCategory(c)}
             className={`px-3 py-1.5 rounded-full text-[12.5px] border ${
               category === c
-                ? "bg-[#06402b] text-white border-[#06402b]"
-                : "bg-transparent text-[#5b5b5b] border-[#e0dbd0]"
+                ? "bg-[var(--forest)] text-white border-[var(--forest)]"
+                : "bg-transparent text-[#5b5b5b] border-[var(--edge)]"
             }`}
           >
             {c[0].toUpperCase() + c.slice(1)}
@@ -80,9 +80,9 @@ export function BrowseView() {
       </div>
       <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
         {loading && items.length === 0 ? (
-          <p className="font-editorial-serif italic text-[#8a8578] col-span-full">Loading…</p>
+          <p className="font-editorial-serif italic text-[var(--mute)] col-span-full">Loading…</p>
         ) : items.length === 0 ? (
-          <p className="font-editorial-serif italic text-[#8a8578] col-span-full">
+          <p className="font-editorial-serif italic text-[var(--mute)] col-span-full">
             No agents fit that brief.
           </p>
         ) : (

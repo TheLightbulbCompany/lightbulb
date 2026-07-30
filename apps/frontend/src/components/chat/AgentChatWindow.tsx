@@ -413,7 +413,7 @@ export function AgentChatWindow({
     // only: a send dispatched before the history projection lands would
     // be clobbered when setChatMessages replaces the message list.
     return (
-      <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+      <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
         {/* Mirror MessageList's geometry (same pane padding, max-w-3xl column,
             space-y-10 turn rhythm) and anchor to the bottom, where a loaded
             transcript sits — so the placeholder occupies the region the
@@ -459,7 +459,7 @@ export function AgentChatWindow({
 
   if (isInitialState) {
     return (
-      <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+      <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
         {/* justify-center-safe, not justify-center: unsafe centering splits the
             overflow across BOTH ends, so once the content outgrows a short dock
             slot the top is clipped and unreachable even with overflow-y-auto
@@ -470,14 +470,14 @@ export function AgentChatWindow({
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
-              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "#1a1a1a", lineHeight: 1 }}>8</span>
+              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--ink)", lineHeight: 1 }}>8</span>
             </div>
-            <h1 className="text-3xl mb-3 text-[#1a1a1a] tracking-tight font-lora">
+            <h1 className="text-3xl mb-3 text-[var(--ink)] tracking-tight font-lora">
               {agentId
                 ? agentDisplayName(activeAgent ?? { id: agentId })
                 : "Select an agent"}
             </h1>
-            <p className="text-[#8a8578] text-base">
+            <p className="text-[var(--mute)] text-base">
               Start a conversation with your agent
             </p>
           </div>
@@ -507,9 +507,9 @@ export function AgentChatWindow({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+    <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
       {historyTruncated && (
-        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[#8a8578] bg-[#f3efe6] border-b border-[#e0dbd0]">
+        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--mute)] bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
           Some large tool output in this conversation was shortened to fit.
         </div>
       )}

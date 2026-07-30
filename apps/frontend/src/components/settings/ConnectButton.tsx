@@ -173,7 +173,7 @@ export function ConnectButton({
     }
 
     return (
-      <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[#e0dbd0] bg-[#faf8f3] p-3">
+      <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-[#faf8f3] p-3">
         <p className="text-sm font-medium text-[#1c1917]">{setupLabel}</p>
         {connection.byo_setup_url && (
           <Link
@@ -185,7 +185,7 @@ export function ConnectButton({
             Register an OAuth app →
           </Link>
         )}
-        <ol className="list-decimal pl-4 text-xs text-[#8a8578] space-y-0.5">
+        <ol className="list-decimal pl-4 text-xs text-[var(--mute)] space-y-0.5">
           <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
           {provider === "google" && (
             <li>
@@ -209,12 +209,12 @@ export function ConnectButton({
           <li>Paste the Client ID and secret here.</li>
         </ol>
         <div className="flex flex-col gap-1">
-          <span className="text-xs text-[#8a8578]">Authorized redirect URI to register:</span>
-          <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[#e0dbd0]">
+          <span className="text-xs text-[var(--mute)]">Authorized redirect URI to register:</span>
+          <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[var(--edge)]">
             {byoRedirectUri(provider)}
           </code>
         </div>
-        <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[#8a8578]">
+        <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[var(--mute)]">
           Client ID
         </label>
         <Input
@@ -228,7 +228,7 @@ export function ConnectButton({
           onChange={(e) => setClientId(e.target.value)}
           className="h-9 bg-white"
         />
-        <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[#8a8578]">
+        <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[var(--mute)]">
           Client secret
         </label>
         <Input

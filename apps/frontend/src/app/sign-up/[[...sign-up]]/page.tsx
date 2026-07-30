@@ -18,7 +18,7 @@ export default function Page() {
 
         /* ── LEFT PANEL ── */
         .auth-brand {
-          background: #06402B;
+          background: var(--forest);
           display: flex;
           flex-direction: column;
           justify-content: space-between;
@@ -67,7 +67,7 @@ export default function Page() {
           font-weight: 700;
           letter-spacing: 4px;
           text-transform: uppercase;
-          color: #4a9e74;
+          color: var(--forest-soft);
           margin-bottom: 20px;
         }
         .auth-tagline {
@@ -133,7 +133,7 @@ export default function Page() {
 
         /* ── RIGHT PANEL ── */
         .auth-form-panel {
-          background: #faf7f2;
+          background: var(--cream);
           display: flex;
           flex-direction: column;
           align-items: center;
@@ -179,7 +179,7 @@ export default function Page() {
           line-height: 1.5;
         }
         .auth-footer-links a {
-          color: #06402B;
+          color: var(--forest);
           font-weight: 600;
           text-decoration: none;
           transition: color 200ms ease-out;
@@ -199,7 +199,7 @@ export default function Page() {
           text-decoration: none;
           transition: color 200ms ease-out;
         }
-        .auth-legal-links a:hover { color: #06402B; }
+        .auth-legal-links a:hover { color: var(--forest); }
 
         /* ── MOBILE ── */
         @media (max-width: 767px) {

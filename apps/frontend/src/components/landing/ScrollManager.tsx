@@ -116,6 +116,10 @@ export function ScrollManager() {
     // Layout shifts after webfonts land; recompute trigger positions.
     document.fonts?.ready.then(() => ScrollTrigger.refresh()).catch(() => {});
 
+    // Literal hex, NOT var(--token): devtools renders `%c` styles in its own
+    // frontend, outside the inspected page, so it can't see :root — a var()
+    // here silently drops the colour. --forest / --forest-soft; keep in sync
+    // with globals.css by hand.
     console.log(
       "%c🏝️ isol8 %c— Your private AI pod",
       "font-size:20px;font-weight:900;color:#06402B;",

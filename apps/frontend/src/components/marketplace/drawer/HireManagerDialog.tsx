@@ -56,10 +56,10 @@ export function HireManagerDialog({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-2xl border border-[#e0dbd0] bg-[#fbf8f1] p-5 shadow-xl"
+        className="w-full max-w-sm rounded-2xl border border-[var(--edge)] bg-[#fbf8f1] p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 className="font-editorial-serif text-lg text-[#1a1a1a]">
+        <h2 className="font-editorial-serif text-lg text-[var(--ink)]">
           Hire {listing.name}
         </h2>
         <p className="mt-1 text-[13px] text-[#5b5b5b]">
@@ -74,7 +74,7 @@ export function HireManagerDialog({
           disabled={isLoading || isHiring}
           value={selected ?? ""}
           onChange={(e) => setPicked(e.target.value === "" ? null : e.target.value)}
-          className="mt-1.5 w-full rounded-lg border border-[#d8cfbf] bg-white px-3 py-2 text-[13px] text-[#1a1a1a] disabled:opacity-60"
+          className="mt-1.5 w-full rounded-lg border border-[#d8cfbf] bg-white px-3 py-2 text-[13px] text-[var(--ink)] disabled:opacity-60"
         >
           <option value="">No manager (top level)</option>
           {agents.map((a) => (
@@ -96,7 +96,7 @@ export function HireManagerDialog({
             type="button"
             onClick={onClose}
             disabled={isHiring}
-            className="px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold text-[#5b5b5b] hover:text-[#1a1a1a] disabled:opacity-60"
+            className="px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold text-[#5b5b5b] hover:text-[var(--ink)] disabled:opacity-60"
           >
             Cancel
           </button>
@@ -105,7 +105,7 @@ export function HireManagerDialog({
             data-testid="confirm-hire"
             onClick={() => onConfirm(selected)}
             disabled={isHiring || isLoading}
-            className="bg-[#06402b] text-white px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-60"
+            className="bg-[var(--forest)] text-white px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-60"
           >
             {isHiring ? "Hiring…" : "Hire"}
           </button>

@@ -70,7 +70,7 @@ export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
               "px-3 py-1.5 rounded-md text-xs font-medium font-mono transition-colors",
               selectedFile === name
                 ? "bg-[var(--cream)] text-[var(--forest)]"
-                : "text-[#8a8578] hover:text-[#1a1a1a]",
+                : "text-[var(--mute)] hover:text-[var(--ink)]",
             )}
             onClick={() => handleSelectFile(name)}
           >
@@ -79,11 +79,11 @@ export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
         ))}
       </div>
 
-      <p className="text-[11px] text-[#8a8578] mb-3">
+      <p className="text-[11px] text-[var(--mute)] mb-3">
         Changes apply on the agent&apos;s next session.
       </p>
 
-      <div className="flex-1 min-h-0 border border-[#e0dbd0] rounded-md overflow-hidden">
+      <div className="flex-1 min-h-0 border border-[var(--edge)] rounded-md overflow-hidden">
         <FileContentViewer
           file={file}
           isLoading={isLoading}

@@ -131,20 +131,20 @@ export function ClawHubSearch({
   if (!trimmed) return null;
 
   return (
-    <div className="rounded-xl border border-[#e0dbd0] bg-white p-4 space-y-3">
+    <div className="rounded-xl border border-[var(--edge)] bg-white p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <p
           className="text-sm text-[#5a5549]"
           style={{ fontFamily: "'DM Sans', sans-serif" }}
         >
           Not in your list? Search the{" "}
-          <strong className="text-[#1a1a1a]">ClawHub</strong> registry.
+          <strong className="text-[var(--ink)]">ClawHub</strong> registry.
         </p>
         <Button
           size="sm"
           onClick={runSearch}
           disabled={loading}
-          className="text-xs bg-[#06402B] hover:bg-[#052f20] text-white shrink-0"
+          className="text-xs bg-[var(--forest)] hover:bg-[#052f20] text-white shrink-0"
           style={{ fontFamily: "'DM Sans', sans-serif" }}
         >
           {loading ? (
@@ -163,7 +163,7 @@ export function ClawHubSearch({
       )}
 
       {results && results.length === 0 && (
-        <p className="text-xs text-[#8a8578]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+        <p className="text-xs text-[var(--mute)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
           No skills on ClawHub match &ldquo;{searchedFor}&rdquo;.
         </p>
       )}
@@ -178,24 +178,24 @@ export function ClawHubSearch({
             return (
               <div
                 key={r.slug}
-                className="rounded-lg border border-[#e0dbd0] bg-[#faf7f2] p-3 space-y-2"
+                className="rounded-lg border border-[var(--edge)] bg-[var(--cream)] p-3 space-y-2"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h4
-                        className="text-sm font-semibold text-[#1a1a1a] truncate"
+                        className="text-sm font-semibold text-[var(--ink)] truncate"
                         style={{ fontFamily: "'DM Sans', sans-serif" }}
                       >
                         {r.displayName || r.slug}
                       </h4>
-                      <span className="text-[11px] text-[#8a8578] font-mono shrink-0">{r.slug}</span>
+                      <span className="text-[11px] text-[var(--mute)] font-mono shrink-0">{r.slug}</span>
                       {r.version && (
                         <span className="text-[10px] text-[#b5ae9e] shrink-0">v{r.version}</span>
                       )}
                     </div>
                     {r.summary && (
-                      <p className="text-xs text-[#8a8578] mt-0.5 line-clamp-2">{r.summary}</p>
+                      <p className="text-xs text-[var(--mute)] mt-0.5 line-clamp-2">{r.summary}</p>
                     )}
                   </div>
                   <Button
@@ -205,8 +205,8 @@ export function ClawHubSearch({
                     onClick={() => install(r.slug, false)}
                     className={
                       isInstalled
-                        ? "text-xs border-[#e0dbd0] text-[#2d8a4e] shrink-0"
-                        : "text-xs bg-[#06402B] hover:bg-[#052f20] text-white shrink-0"
+                        ? "text-xs border-[var(--edge)] text-[#2d8a4e] shrink-0"
+                        : "text-xs bg-[var(--forest)] hover:bg-[#052f20] text-white shrink-0"
                     }
                     style={{ fontFamily: "'DM Sans', sans-serif" }}
                   >
@@ -262,7 +262,7 @@ export function ClawHubSearch({
         href="https://clawhub.ai/skills?sort=downloads&nonSuspicious=true"
         target="_blank"
         rel="noopener noreferrer"
-        className="inline-flex items-center gap-1.5 text-xs text-[#8a8578] hover:text-[#06402B] transition-colors"
+        className="inline-flex items-center gap-1.5 text-xs text-[var(--mute)] hover:text-[var(--forest)] transition-colors"
         style={{ fontFamily: "'DM Sans', sans-serif" }}
       >
         Browse the full registry on ClawHub

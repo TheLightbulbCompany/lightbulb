@@ -123,7 +123,7 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
             </p>
             <button
               onClick={start}
-              className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-5 py-2 text-sm font-medium"
+              className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-5 py-2 text-sm font-medium"
             >
               Get a new code
             </button>
@@ -147,7 +147,7 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
         </p>
         <button
           onClick={start}
-          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-6 py-3 font-medium"
+          className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-6 py-3 font-medium"
         >
           Try again
         </button>
@@ -170,7 +170,7 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
   // taken automatically.
   return (
     <div className="flex flex-col items-center gap-3 py-8">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-[#06402B]" />
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-[var(--forest)]" />
       <p className="text-sm text-muted-foreground">Starting ChatGPT sign-in&hellip;</p>
     </div>
   );

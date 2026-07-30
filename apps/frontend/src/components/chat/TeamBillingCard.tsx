@@ -85,7 +85,7 @@ export function TeamBillingCard({
     <div
       data-testid="team-billing-card"
       style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}
-      className="w-full max-w-[440px] rounded-2xl border border-[#e0dbd0] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
+      className="w-full max-w-[440px] rounded-2xl border border-[var(--edge)] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
     >
       {/*
         Body copy keeps the literal #6b655e rather than var(--mute) (#8a8578).
@@ -117,7 +117,7 @@ export function TeamBillingCard({
 
       <div className="mt-4">
         {!canAct ? (
-          <p className="rounded-[10px] border border-[#e0dbd0] bg-[#faf7f2] px-3.5 py-3 text-[13px] leading-[1.5] text-[#6b655e]">
+          <p className="rounded-[10px] border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-[13px] leading-[1.5] text-[#6b655e]">
             Ask your org admin to set up Teams billing. Only an organization admin can start the team
             subscription.
           </p>
@@ -126,7 +126,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onManage)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full border border-[rgba(6,64,43,0.2)] px-[18px] py-2.5 text-[13px] font-semibold text-[#06402B] transition-colors hover:border-[rgba(6,64,43,0.35)] hover:bg-[rgba(6,64,43,0.05)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full border border-[rgba(6,64,43,0.2)] px-[18px] py-2.5 text-[13px] font-semibold text-[var(--forest)] transition-colors hover:border-[rgba(6,64,43,0.35)] hover:bg-[rgba(6,64,43,0.05)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Manage billing
           </button>
@@ -135,7 +135,7 @@ export function TeamBillingCard({
             type="button"
             disabled={busy}
             onClick={() => run(onSubscribe)}
-            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[#06402B] px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#054d33] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--forest)] px-6 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#054d33] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? "Starting checkout…" : "Subscribe your team"}
           </button>

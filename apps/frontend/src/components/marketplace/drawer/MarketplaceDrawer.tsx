@@ -31,11 +31,11 @@ export function MarketplaceDrawer() {
       />
       <aside
         data-mode={isPublish ? "publish" : undefined}
-        className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[#faf7f2] border-l border-[#e0dbd0] shadow-[-30px_0_80px_rgba(10,30,20,0.16)] flex flex-col transform translate-x-0 transition-transform duration-350"
+        className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[var(--cream)] border-l border-[var(--edge)] shadow-[-30px_0_80px_rgba(10,30,20,0.16)] flex flex-col transform translate-x-0 transition-transform duration-350"
         aria-label="Marketplace drawer"
       >
         {/* HEADER */}
-        <div className="px-6 py-3.5 border-b border-[#e0dbd0] bg-[#faf7f2] flex items-center justify-between gap-3.5">
+        <div className="px-6 py-3.5 border-b border-[var(--edge)] bg-[var(--cream)] flex items-center justify-between gap-3.5">
           {isPublish ? <PublishHeader /> : isDetail ? <DetailHeader /> : <DefaultHeader />}
           <div className="flex items-center gap-2.5 flex-shrink-0">
             {showActions && (
@@ -43,7 +43,7 @@ export function MarketplaceDrawer() {
                 <button
                   type="button"
                   onClick={() => open({ view: "publish" })}
-                  className="bg-[#06402b] hover:bg-[#0a5a3d] text-white rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
+                  className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white rounded-full px-4 py-2 text-[13px] font-semibold inline-flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   Publish your agent
@@ -52,7 +52,7 @@ export function MarketplaceDrawer() {
                   href="/marketplace"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[12.5px] text-[#5b5b5b] hover:text-[#1a1a1a] inline-flex items-center gap-1"
+                  className="text-[12.5px] text-[#5b5b5b] hover:text-[var(--ink)] inline-flex items-center gap-1"
                 >
                   Open in full page <ExternalLink className="w-3 h-3" />
                 </Link>
@@ -62,7 +62,7 @@ export function MarketplaceDrawer() {
               type="button"
               onClick={close}
               aria-label="Close drawer"
-              className="w-8 h-8 rounded-full border border-[#e0dbd0] bg-white text-[#5b5b5b] hover:text-[#1a1a1a] flex items-center justify-center"
+              className="w-8 h-8 rounded-full border border-[var(--edge)] bg-white text-[#5b5b5b] hover:text-[var(--ink)] flex items-center justify-center"
             >
               <X className="w-4 h-4" />
             </button>
@@ -92,7 +92,7 @@ function DefaultHeader() {
           onClick={() => setView("browse")}
           className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
             state.view === "browse"
-              ? "bg-white text-[#1a1a1a] shadow-sm"
+              ? "bg-white text-[var(--ink)] shadow-sm"
               : "text-[#5b5b5b]"
           }`}
         >
@@ -103,7 +103,7 @@ function DefaultHeader() {
           onClick={() => setView("mine")}
           className={`px-4 py-1.5 rounded-full text-[13px] font-medium ${
             state.view === "mine"
-              ? "bg-white text-[#1a1a1a] shadow-sm"
+              ? "bg-white text-[var(--ink)] shadow-sm"
               : "text-[#5b5b5b]"
           }`}
         >
@@ -123,7 +123,7 @@ function PublishHeader() {
       <button
         type="button"
         onClick={() => setView(previous)}
-        className="inline-flex items-center gap-1.5 text-[13px] text-[#5b5b5b] hover:text-[#1a1a1a] hover:bg-[#f3eee5] rounded-full px-2.5 py-1.5"
+        className="inline-flex items-center gap-1.5 text-[13px] text-[#5b5b5b] hover:text-[var(--ink)] hover:bg-[#f3eee5] rounded-full px-2.5 py-1.5"
       >
         <ChevronLeft className="w-3.5 h-3.5" />
         Marketplace
@@ -154,7 +154,7 @@ function DetailBody() {
       <button
         type="button"
         onClick={() => setView("mine")}
-        className="text-[12.5px] font-semibold text-[#06402b] hover:underline mb-3"
+        className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline mb-3"
       >
         ← Back to my listings
       </button>

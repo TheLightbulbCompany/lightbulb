@@ -83,10 +83,10 @@ export default function ManagePage({
   return (
     <MarketplaceDrawerProvider>
       <main className="min-h-screen bg-[#fbf9f4]">
-        <nav className="border-b border-[#e0dbd0] px-6 py-3">
+        <nav className="border-b border-[var(--edge)] px-6 py-3">
           <a
             href="/marketplace"
-            className="text-[12.5px] font-semibold text-[#06402b] hover:underline"
+            className="text-[12.5px] font-semibold text-[var(--forest)] hover:underline"
           >
             ← Marketplace
           </a>

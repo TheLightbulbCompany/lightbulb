@@ -277,7 +277,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
                 <p className="mt-1 text-xs text-white/50">{card.subtitle}</p>
               </div>
               {current && (
-                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[#06402B]">
+                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[var(--forest)]">
                   Current
                 </span>
               )}
@@ -336,7 +336,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
           <li>
             Enter this code:
             <div className="mt-2">
-              <code className="rounded bg-[#f3efe6] px-3 py-2 font-mono text-lg tracking-widest text-[#1a1a1a]">
+              <code className="rounded bg-[var(--cream-deeper)] px-3 py-2 font-mono text-lg tracking-widest text-[var(--ink)]">
                 {state.userCode}
               </code>
             </div>

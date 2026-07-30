@@ -175,15 +175,15 @@ export function HandlePicker({
   }
 
   return (
-    <div className={`flex flex-col ${gap} ${padding} rounded-2xl border border-[#e0dbd0] bg-white`}>
+    <div className={`flex flex-col ${gap} ${padding} rounded-2xl border border-[var(--edge)] bg-white`}>
       <div>
         <label
           htmlFor="marketplace-handle"
-          className="block text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5"
+          className="block text-[12.5px] font-semibold text-[var(--ink)] mb-1.5"
         >
           Marketplace handle
         </label>
-        <div className="flex items-center rounded-lg border border-[#cfc7b8] bg-[#faf7f2] focus-within:border-[#06402b] focus-within:ring-1 focus-within:ring-[#06402b]/20">
+        <div className="flex items-center rounded-lg border border-[#cfc7b8] bg-[var(--cream)] focus-within:border-[var(--forest)] focus-within:ring-1 focus-within:ring-[var(--forest)]/20">
           <span className="pl-3 pr-1 text-[#8a8478] text-[14px] select-none">@</span>
           <input
             id="marketplace-handle"
@@ -193,7 +193,7 @@ export function HandlePicker({
             placeholder="your-handle"
             autoComplete="off"
             spellCheck={false}
-            className="flex-1 bg-transparent py-2 pr-3 text-[14px] text-[#1a1a1a] placeholder:text-[#b5af9f] outline-none"
+            className="flex-1 bg-transparent py-2 pr-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute-soft)] outline-none"
             maxLength={32}
           />
           <span className="pr-3 text-[11.5px] min-w-[80px] text-right">
@@ -209,7 +209,7 @@ export function HandlePicker({
       <div>
         <label
           htmlFor="marketplace-display-name"
-          className="block text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5"
+          className="block text-[12.5px] font-semibold text-[var(--ink)] mb-1.5"
         >
           Display name <span className="text-[#8a8478] font-normal">(optional)</span>
         </label>
@@ -219,7 +219,7 @@ export function HandlePicker({
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
           placeholder="What people call you"
-          className="w-full rounded-lg border border-[#cfc7b8] bg-[#faf7f2] py-2 px-3 text-[14px] text-[#1a1a1a] placeholder:text-[#b5af9f] focus:border-[#06402b] focus:outline-none focus:ring-1 focus:ring-[#06402b]/20"
+          className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:border-[var(--forest)] focus:outline-none focus:ring-1 focus:ring-[var(--forest)]/20"
           maxLength={64}
         />
       </div>
@@ -228,7 +228,7 @@ export function HandlePicker({
         <div>
           <label
             htmlFor="marketplace-bio"
-            className="block text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5"
+            className="block text-[12.5px] font-semibold text-[var(--ink)] mb-1.5"
           >
             Bio <span className="text-[#8a8478] font-normal">(optional, up to 280)</span>
           </label>
@@ -238,7 +238,7 @@ export function HandlePicker({
             onChange={(e) => setBio(e.target.value)}
             placeholder="Builders should know..."
             rows={3}
-            className="w-full rounded-lg border border-[#cfc7b8] bg-[#faf7f2] py-2 px-3 text-[14px] text-[#1a1a1a] placeholder:text-[#b5af9f] focus:border-[#06402b] focus:outline-none focus:ring-1 focus:ring-[#06402b]/20 resize-none"
+            className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:border-[var(--forest)] focus:outline-none focus:ring-1 focus:ring-[var(--forest)]/20 resize-none"
             maxLength={280}
           />
         </div>
@@ -256,7 +256,7 @@ export function HandlePicker({
             type="button"
             onClick={onCancel}
             disabled={submitting}
-            className="text-[12.5px] text-[#5b5b5b] hover:text-[#1a1a1a] px-3.5 py-1.5"
+            className="text-[12.5px] text-[#5b5b5b] hover:text-[var(--ink)] px-3.5 py-1.5"
           >
             Cancel
           </button>
@@ -265,7 +265,7 @@ export function HandlePicker({
           type="button"
           onClick={save}
           disabled={!canSave}
-          className="bg-[#06402b] text-white px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-50 disabled:cursor-not-allowed"
+          className="bg-[var(--forest)] text-white px-4 py-1.5 rounded-full text-[12.5px] font-semibold hover:bg-[#0a5a3d] disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {submitting ? "Saving…" : saveLabel}
         </button>
@@ -275,9 +275,9 @@ export function HandlePicker({
 }
 
 function AvailabilityIndicator({ status }: { status: Status }) {
-  if (status.kind === "idle") return <span className="text-[#b5af9f]">—</span>;
+  if (status.kind === "idle") return <span className="text-[var(--mute-soft)]">—</span>;
   if (status.kind === "checking") return <span className="text-[#8a8478]">checking…</span>;
-  if (status.kind === "available") return <span className="text-[#06402b]">available</span>;
+  if (status.kind === "available") return <span className="text-[var(--forest)]">available</span>;
   if (status.kind === "error") return <span className="text-[#8a3a2a]">offline</span>;
   // unavailable
   if (status.reason === "format") return <span className="text-[#8a3a2a]">format</span>;

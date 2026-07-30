@@ -9,6 +9,9 @@ gsap.registerPlugin(ScrollTrigger);
 
 const PARTICLE_COUNT = 5200;
 const POD_RADIUS = 2.15;
+// Literal hex, NOT var(--token): THREE.Color parses the string itself and has
+// no access to the CSS cascade. MOSS is --forest-soft; keep it in sync with
+// globals.css by hand.
 const INK = new THREE.Color("#0a3d2a");
 const MOSS = new THREE.Color("#4a9e74");
 

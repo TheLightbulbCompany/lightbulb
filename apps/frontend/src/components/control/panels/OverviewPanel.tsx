@@ -198,7 +198,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
       </div>
     );
   }
@@ -216,7 +216,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
 
   if (!rawHealth && !container) {
     return (
-      <div className="p-6 text-sm text-[#8a8578]">No container available.</div>
+      <div className="p-6 text-sm text-[var(--mute)]">No container available.</div>
     );
   }
 
@@ -242,7 +242,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Overview</h2>
-          <p className="text-xs text-[#8a8578]">
+          <p className="text-xs text-[var(--mute)]">
             Container status and gateway health snapshot.
           </p>
         </div>
@@ -266,8 +266,8 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       {/* Two-column: Container Info + Snapshot */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Container Info */}
-        <div className="rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
+        <div className="rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--mute)]">
             Container Info
           </h3>
           <div className="space-y-2">
@@ -307,8 +307,8 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
         </div>
 
         {/* Snapshot */}
-        <div className="rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
+        <div className="rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--mute)]">
             Snapshot
           </h3>
           <div className="space-y-2">
@@ -374,7 +374,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
       </div>
 
       {/* Health Summary */}
-      <div className="rounded-lg border border-[#d5d0c7] bg-[#f3efe6] p-4">
+      <div className="rounded-lg border border-[#d5d0c7] bg-[var(--cream-deeper)] p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span
@@ -385,7 +385,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
                 "bg-red-500"
               )}
             />
-            <span className="text-sm font-medium text-[#1a1a1a]">
+            <span className="text-sm font-medium text-[var(--ink)]">
               {healthState === "HEALTHY" ? "System Healthy" :
                healthState === "STARTING" ? "Starting..." :
                healthState === "RECOVERING" ? "Recovering..." :
@@ -409,7 +409,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
             </Button>
           )}
         </div>
-        <p className="text-xs text-[#8a8578] mt-1">{healthReason}</p>
+        <p className="text-xs text-[var(--mute)] mt-1">{healthReason}</p>
       </div>
 
       {/* Raw openclaw.json viewer — read-only, syntax-highlighting kept
@@ -423,13 +423,13 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
               Read-only view of the configuration your container is running.
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[60vh] overflow-auto rounded-md border border-[#e0dbd0] bg-[#fafaf6] p-3">
+          <div className="max-h-[60vh] overflow-auto rounded-md border border-[var(--edge)] bg-[#fafaf6] p-3">
             {configLoading ? (
-              <div className="flex items-center gap-2 text-sm text-[#8a8578]">
+              <div className="flex items-center gap-2 text-sm text-[var(--mute)]">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading…
               </div>
             ) : configForbidden ? (
-              <p className="text-sm text-[#8a8578]">
+              <p className="text-sm text-[var(--mute)]">
                 Org admins only. The configuration carries shared secrets
                 (channel tokens, MCP env) — ask your org admin to view it.
               </p>
@@ -438,7 +438,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
                 {JSON.stringify(configData.config, null, 2)}
               </pre>
             ) : (
-              <p className="text-sm text-[#8a8578]">
+              <p className="text-sm text-[var(--mute)]">
                 No config on disk yet. This is normal during provisioning.
               </p>
             )}
@@ -475,7 +475,7 @@ function InfoRow({
 
   return (
     <div className="flex items-center justify-between text-sm">
-      <div className="flex items-center gap-2 text-[#8a8578]">
+      <div className="flex items-center gap-2 text-[var(--mute)]">
         {icon}
         <span>{label}</span>
       </div>
@@ -512,14 +512,14 @@ function SummaryCard({
       type={interactive ? "button" : undefined}
       onClick={onClick}
       className={cn(
-        "rounded-lg border border-[#e0dbd0] bg-white p-3 text-center w-full",
+        "rounded-lg border border-[var(--edge)] bg-white p-3 text-center w-full",
         interactive &&
-          "cursor-pointer hover:border-[#cfc7b8] hover:bg-[#fafaf6] transition focus:outline-none focus:ring-2 focus:ring-[#06402b]/30",
+          "cursor-pointer hover:border-[#cfc7b8] hover:bg-[#fafaf6] transition focus:outline-none focus:ring-2 focus:ring-[var(--forest)]/30",
       )}
     >
       <div className="flex items-center justify-center gap-1.5 mb-1">
-        <Icon className="h-3 w-3 text-[#8a8578]/60" />
-        <span className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">
+        <Icon className="h-3 w-3 text-[var(--mute)]/60" />
+        <span className="text-[10px] uppercase tracking-wider text-[var(--mute)]/60">
           {label}
         </span>
       </div>
@@ -532,7 +532,7 @@ function SummaryCard({
               ? "text-red-600"
               : subLabelTone === "amber"
                 ? "text-amber-600"
-                : "text-[#8a8578]/60",
+                : "text-[var(--mute)]/60",
           )}
         >
           {subLabel}

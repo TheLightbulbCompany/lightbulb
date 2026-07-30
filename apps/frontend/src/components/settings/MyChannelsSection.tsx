@@ -67,7 +67,7 @@ function MyChannelsSectionInner() {
   }
 
   if (isLoading || !data) {
-    return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
+    return <div className="p-4 text-sm text-[var(--mute)]">Loading channels…</div>;
   }
 
   const performUnlink = async () => {
@@ -86,7 +86,7 @@ function MyChannelsSectionInner() {
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold">My Channels</h2>
-        <p className="text-xs text-[#8a8578]">
+        <p className="text-xs text-[var(--mute)]">
           Link your Telegram, Discord, and Slack identities to your organization&apos;s bots.
         </p>
       </div>
@@ -95,11 +95,11 @@ function MyChannelsSectionInner() {
         const bots = data[provider];
         return (
           <div key={provider} className="space-y-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[#8a8578]">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--mute)]">
               {PROVIDER_LABELS[provider]}
             </h3>
             {bots.length === 0 ? (
-              <div className="rounded-md border border-[#e0dbd0] p-3 text-xs text-[#8a8578]">
+              <div className="rounded-md border border-[var(--edge)] p-3 text-xs text-[var(--mute)]">
                 {!isSubscribed ? (
                   <>Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.</>
                 ) : (
@@ -114,7 +114,7 @@ function MyChannelsSectionInner() {
                 {bots.map((bot) => (
                   <div
                     key={bot.agent_id}
-                    className="flex items-center gap-3 rounded-md border border-[#e0dbd0] p-3"
+                    className="flex items-center gap-3 rounded-md border border-[var(--edge)] p-3"
                   >
                     {bot.linked ? (
                       <CheckCircle2 className="h-4 w-4 text-[#2d8a4e]" />
@@ -123,7 +123,7 @@ function MyChannelsSectionInner() {
                     )}
                     <div className="flex-1">
                       <p className="text-sm font-mono">{formatBotHandle(provider, bot.bot_username)}</p>
-                      <p className="text-xs text-[#8a8578]">{bot.agent_id}</p>
+                      <p className="text-xs text-[var(--mute)]">{bot.agent_id}</p>
                     </div>
                     {bot.linked ? (
                       <Button

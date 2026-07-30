@@ -127,8 +127,8 @@ export function PickAgentStep({
                 isMain
                   ? "opacity-45 cursor-not-allowed bg-[#f3eee5]"
                   : isSelected
-                    ? "border-[#06402b] bg-[#f4f8f4] shadow-[0_0_0_3px_rgba(6,64,43,0.08)]"
-                    : "border-[#e0dbd0] hover:border-[#cfc7b8] hover:-translate-y-px"
+                    ? "border-[var(--forest)] bg-[#f4f8f4] shadow-[0_0_0_3px_rgba(6,64,43,0.08)]"
+                    : "border-[var(--edge)] hover:border-[#cfc7b8] hover:-translate-y-px"
               }`}
               title={isMain ? "main agent can't be published" : undefined}
             >
@@ -173,7 +173,7 @@ export function DetailsStep({
         <input
           value={form.name}
           onChange={(e) => onChange({ name: e.target.value })}
-          className="border border-[#e0dbd0] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[#06402b] outline-0"
+          className="border border-[var(--edge)] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--forest)] outline-0"
         />
       </Field>
       <Field label="One-line tagline" hint="Max 80 characters.">
@@ -181,7 +181,7 @@ export function DetailsStep({
           maxLength={80}
           value={form.tagline}
           onChange={(e) => onChange({ tagline: e.target.value })}
-          className="border border-[#e0dbd0] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[#06402b] outline-0"
+          className="border border-[var(--edge)] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--forest)] outline-0"
         />
       </Field>
       <Field label="Description" hint="Markdown allowed.">
@@ -189,7 +189,7 @@ export function DetailsStep({
           rows={4}
           value={form.description}
           onChange={(e) => onChange({ description: e.target.value })}
-          className="border border-[#e0dbd0] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[#06402b] outline-0 min-h-[88px] resize-y"
+          className="border border-[var(--edge)] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--forest)] outline-0 min-h-[88px] resize-y"
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
@@ -197,7 +197,7 @@ export function DetailsStep({
           <select
             value={form.category}
             onChange={(e) => onChange({ category: e.target.value })}
-            className="border border-[#e0dbd0] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[#06402b] outline-0"
+            className="border border-[var(--edge)] bg-white rounded-xl px-3.5 py-2.5 text-sm w-full focus:border-[var(--forest)] outline-0"
           >
             {["Operations", "Sales", "Engineering", "Research", "Finance", "Marketing", "Personal"].map(
               (c) => (
@@ -207,17 +207,17 @@ export function DetailsStep({
           </select>
         </Field>
         <Field label="Tags (max 5)">
-          <div className="flex gap-1.5 flex-wrap items-center p-2 bg-white border border-[#e0dbd0] rounded-xl min-h-[44px]">
+          <div className="flex gap-1.5 flex-wrap items-center p-2 bg-white border border-[var(--edge)] rounded-xl min-h-[44px]">
             {form.tags.map((t) => (
               <span
                 key={t}
-                className="bg-[#f3eee5] text-[#1a1a1a] text-[12px] px-2.5 py-1 rounded-full inline-flex items-center gap-1.5"
+                className="bg-[#f3eee5] text-[var(--ink)] text-[12px] px-2.5 py-1 rounded-full inline-flex items-center gap-1.5"
               >
                 {t}
                 <button
                   type="button"
                   onClick={() => onChange({ tags: form.tags.filter((x) => x !== t) })}
-                  className="text-[#5b5b5b] hover:text-[#1a1a1a]"
+                  className="text-[#5b5b5b] hover:text-[var(--ink)]"
                 >
                   ×
                 </button>
@@ -256,7 +256,7 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-1.5 mb-3.5">
-      <label className="text-[12.5px] font-semibold text-[#1a1a1a]">{label}</label>
+      <label className="text-[12.5px] font-semibold text-[var(--ink)]">{label}</label>
       {children}
       {hint && <span className="text-[11.5px] text-[#5b5b5b]">{hint}</span>}
     </div>
@@ -316,7 +316,7 @@ export function BundleStep({
 
       {isLoading && <div className="text-[13px] text-[#5b5b5b]">Loading…</div>}
       {error && (
-        <div role="alert" className="text-[13px] text-[#b32424] mb-3">
+        <div role="alert" className="text-[13px] text-[var(--danger)] mb-3">
           Couldn&apos;t load preview: {error}
         </div>
       )}
@@ -324,7 +324,7 @@ export function BundleStep({
       {preview && (
         <>
           <section className="mb-5" data-testid="bundle-mcps">
-            <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-2">
+            <h4 className="text-[12.5px] font-semibold text-[var(--ink)] mb-2">
               MCP servers
             </h4>
             {preview.available_mcps.length === 0 ? (
@@ -354,7 +354,7 @@ export function BundleStep({
           </section>
 
           <section className="mb-5" data-testid="bundle-skills">
-            <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-2">
+            <h4 className="text-[12.5px] font-semibold text-[var(--ink)] mb-2">
               Skills
             </h4>
             {preview.available_skills.length === 0 &&
@@ -415,7 +415,7 @@ export function BundleStep({
 
           {preview.persona_files.length > 0 && (
             <section className="mb-2" data-testid="bundle-persona-files">
-              <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5">
+              <h4 className="text-[12.5px] font-semibold text-[var(--ink)] mb-1.5">
                 Personality files (always included)
               </h4>
               <p className="text-[11.5px] text-[#5b5b5b] mb-1.5">
@@ -440,7 +440,7 @@ export function BundleStep({
       {/* ACP coding-harness delegation. Container-wide capability (not a
           per-MCP/skill toggle), so it sits outside the preview-gated sections
           and renders even when the agent has no MCPs/skills configured. */}
-      <section className="mt-4 border-t border-[#e0dbd0] pt-4" data-testid="bundle-acp">
+      <section className="mt-4 border-t border-[var(--edge)] pt-4" data-testid="bundle-acp">
         <label className="flex items-start gap-2.5 cursor-pointer">
           <input
             type="checkbox"
@@ -450,7 +450,7 @@ export function BundleStep({
             className="mt-0.5"
           />
           <span>
-            <span className="block text-[12.5px] font-semibold text-[#1a1a1a]">
+            <span className="block text-[12.5px] font-semibold text-[var(--ink)]">
               Enable ACP coding-harness delegation
             </span>
             <span className="block text-[11.5px] text-[#5b5b5b] leading-snug mt-0.5">
@@ -471,7 +471,7 @@ function SafetyFlagRow({ flag }: { flag: SafetyFlag }) {
       ? "bg-[#fbe9e7] text-[#8a3a2a] border-[#f0b3a8]"
       : flag.severity === "medium"
         ? "bg-[#fff4d6] text-[#7d5f1a] border-[#e8d49a]"
-        : "bg-[#f3eee5] text-[#5b5b5b] border-[#e0dbd0]";
+        : "bg-[#f3eee5] text-[#5b5b5b] border-[var(--edge)]";
   return (
     <li className={`border rounded-lg px-2.5 py-1.5 text-[12px] ${tone}`}>
       <div className="flex items-center justify-between gap-2">
@@ -529,7 +529,7 @@ export function PricingStep({
           onClick={() => onChange({ priceTier: "free" })}
           className={`flex-1 px-3.5 py-2.5 rounded-xl text-sm ${
             form.priceTier === "free"
-              ? "bg-white text-[#1a1a1a] shadow-sm font-semibold"
+              ? "bg-white text-[var(--ink)] shadow-sm font-semibold"
               : "text-[#5b5b5b]"
           }`}
         >
@@ -540,7 +540,7 @@ export function PricingStep({
           onClick={() => onChange({ priceTier: "paid" })}
           className={`flex-1 px-3.5 py-2.5 rounded-xl text-sm ${
             form.priceTier === "paid"
-              ? "bg-white text-[#1a1a1a] shadow-sm font-semibold"
+              ? "bg-white text-[var(--ink)] shadow-sm font-semibold"
               : "text-[#5b5b5b]"
           }`}
         >
@@ -554,7 +554,7 @@ export function PricingStep({
           data-testid="payout-setup-gate"
           className="mb-4 rounded-xl border border-[#e8d49a] bg-[#fff4d6] px-3.5 py-3 text-[13px] text-[#7d5f1a] leading-snug"
         >
-          <strong className="block text-[#1a1a1a] mb-0.5">
+          <strong className="block text-[var(--ink)] mb-0.5">
             Set up payouts first.
           </strong>
           We can&apos;t charge buyers without a Stripe Connect account on file.
@@ -564,7 +564,7 @@ export function PricingStep({
             type="button"
             onClick={startPayoutOnboarding}
             disabled={payoutBusy}
-            className="block mt-2 bg-[#06402b] hover:bg-[#0a5a3d] disabled:opacity-60 text-white px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold"
+            className="block mt-2 bg-[var(--forest)] hover:bg-[#0a5a3d] disabled:opacity-60 text-white px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold"
           >
             {payoutBusy ? "Opening Stripe…" : "Set up payouts →"}
           </button>
@@ -572,17 +572,17 @@ export function PricingStep({
       )}
 
       {form.priceTier === "free" ? (
-        <div className="bg-white border border-[#e0dbd0] rounded-xl p-4 text-[#5b5b5b] text-[13.5px] leading-snug">
-          <strong className="text-[#1a1a1a]">Free agents install instantly.</strong>
+        <div className="bg-white border border-[var(--edge)] rounded-xl p-4 text-[#5b5b5b] text-[13.5px] leading-snug">
+          <strong className="text-[var(--ink)]">Free agents install instantly.</strong>
           <br />
           No payout setup needed. You can switch this listing to a premium tier anytime.
         </div>
       ) : (
         <>
-          <label className="block text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5">
+          <label className="block text-[12.5px] font-semibold text-[var(--ink)] mb-1.5">
             Price per install (USD)
           </label>
-          <div className="flex items-center bg-white border border-[#e0dbd0] rounded-xl px-3.5 py-3 gap-2 mb-2">
+          <div className="flex items-center bg-white border border-[var(--edge)] rounded-xl px-3.5 py-3 gap-2 mb-2">
             <span className="font-editorial-serif text-2xl text-[#5b5b5b]">$</span>
             <input
               type="number"
@@ -600,13 +600,13 @@ export function PricingStep({
           <p className="text-[11.5px] text-[#5b5b5b] mb-3">
             Suggested range: $5–$20. Listings over $20 require Isol8 approval.
           </p>
-          <div className="bg-white border border-[#e0dbd0] rounded-xl px-4 py-3.5 text-[13px]">
+          <div className="bg-white border border-[var(--edge)] rounded-xl px-4 py-3.5 text-[13px]">
             <Row label="List price" value={`$${v.toFixed(2)}`} />
             <Row label="Stripe processing fee (2.9% + $0.30)" value={`−$${stripe.toFixed(2)}`} />
             <Row label="Isol8 platform fee (15%)" value={`−$${platform.toFixed(2)}`} />
-            <div className="flex justify-between border-t border-[#e0dbd0] mt-1.5 pt-2.5 text-[#1a1a1a] font-semibold">
+            <div className="flex justify-between border-t border-[var(--edge)] mt-1.5 pt-2.5 text-[var(--ink)] font-semibold">
               <span>Your take-home per install</span>
-              <span className="font-editorial-serif text-[#06402b] text-base">
+              <span className="font-editorial-serif text-[var(--forest)] text-base">
                 ${take.toFixed(2)}
               </span>
             </div>
@@ -651,7 +651,7 @@ export function ReviewStep({ form }: { form: PublishForm }) {
         Here&apos;s how your listing will appear. Submit when ready — listings go live after
         admin moderation (usually within 24h).
       </p>
-      <div className="bg-white border border-[#e0dbd0] rounded-2xl p-5">
+      <div className="bg-white border border-[var(--edge)] rounded-2xl p-5">
         <div className="font-editorial-serif text-xl">{form.name || "Untitled"}</div>
         <div className="text-[12px] text-[#5b5b5b] italic mt-0.5">by you</div>
         <p className="text-[13.5px] text-[#5b5b5b] leading-snug mt-2">{form.tagline || "—"}</p>
@@ -667,13 +667,13 @@ export function ReviewStep({ form }: { form: PublishForm }) {
             ))}
           </div>
         )}
-        <div className="flex justify-between text-[12.5px] text-[#5b5b5b] mt-3 pt-3 border-t border-dashed border-[#e0dbd0]">
+        <div className="flex justify-between text-[12.5px] text-[#5b5b5b] mt-3 pt-3 border-t border-dashed border-[var(--edge)]">
           <span data-testid="review-bundle-summary">
             Bundled: {mcpCount} MCP{mcpCount === 1 ? "" : "s"} · {skillCount} skill
             {skillCount === 1 ? "" : "s"} · {personaCount} persona file
             {personaCount === 1 ? "" : "s"}
           </span>
-          <span className="font-semibold text-[#06402b]">
+          <span className="font-semibold text-[var(--forest)]">
             {form.priceTier === "free" ? "Free" : "Premium tier"}
           </span>
         </div>
@@ -697,7 +697,7 @@ export function ReviewStep({ form }: { form: PublishForm }) {
           aria-label="Safety scan findings"
           data-testid="review-safety-flags"
         >
-          <h4 className="text-[12.5px] font-semibold text-[#1a1a1a] mb-1.5">
+          <h4 className="text-[12.5px] font-semibold text-[var(--ink)] mb-1.5">
             Safety scan: {safetyFlags.length} finding{safetyFlags.length === 1 ? "" : "s"}
           </h4>
           <p className="text-[11.5px] text-[#5b5b5b] mb-2">
@@ -714,12 +714,12 @@ export function ReviewStep({ form }: { form: PublishForm }) {
 
       <p className="text-[12px] text-[#5b5b5b] leading-snug mt-3">
         By publishing, you agree to the{" "}
-        <a href="#" className="text-[#06402b] underline">
+        <a href="#" className="text-[var(--forest)] underline">
           Marketplace Terms
         </a>{" "}
         and confirm this agent is yours to publish. Isol8 retains the right to remove listings
         that violate the{" "}
-        <a href="#" className="text-[#06402b] underline">
+        <a href="#" className="text-[var(--forest)] underline">
           Acceptable Use Policy
         </a>
         .
@@ -746,7 +746,7 @@ export function SuccessStep({
       </p>
       <button
         onClick={onViewMine}
-        className="bg-[#06402b] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full font-semibold"
+        className="bg-[var(--forest)] hover:bg-[#0a5a3d] text-white px-5 py-2 rounded-full font-semibold"
       >
         View my listings →
       </button>

@@ -111,7 +111,7 @@ export function DesktopPermissionsGate() {
       aria-labelledby="desktop-permissions-title"
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4"
     >
-      <div className="w-full max-w-[560px] rounded-lg border border-[#ded8cc] bg-[#faf7f2] p-5 shadow-2xl">
+      <div className="w-full max-w-[560px] rounded-lg border border-[#ded8cc] bg-[var(--cream)] p-5 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2
@@ -125,7 +125,7 @@ export function DesktopPermissionsGate() {
               folders later in Settings.
             </p>
           </div>
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#1f1b16] text-[#faf7f2]">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#1f1b16] text-[var(--cream)]">
             <Check size={18} />
           </div>
         </div>
@@ -146,7 +146,7 @@ export function DesktopPermissionsGate() {
                 ].join(" ")}
                 aria-pressed={enabled}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#ded8cc] bg-[#faf7f2] text-[#1f1b16]">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[#ded8cc] bg-[var(--cream)] text-[#1f1b16]">
                   <Icon size={17} />
                 </span>
                 <span className="min-w-0 flex-1">

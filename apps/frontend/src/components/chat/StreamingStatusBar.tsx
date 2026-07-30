@@ -61,7 +61,7 @@ export function StreamingStatusBar({
       data-testid="streaming-status-bar"
       className="flex justify-center pointer-events-none px-4 pt-2 pb-1"
     >
-      <div className="flex items-center gap-2 text-xs text-[#8a8578] bg-[#f3efe6]/80 backdrop-blur-sm rounded-full px-3 py-1.5 shadow-sm">
+      <div className="flex items-center gap-2 text-xs text-[var(--mute)] bg-[var(--cream-deeper)]/80 backdrop-blur-sm rounded-full px-3 py-1.5 shadow-sm">
         <AgentGlyph state="thinking" size={16} />
         <span className="font-medium tracking-tight">{label}…</span>
       </div>

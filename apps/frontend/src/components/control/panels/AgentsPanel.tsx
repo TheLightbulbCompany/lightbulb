@@ -85,7 +85,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
       </div>
     );
   }
@@ -113,10 +113,10 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#e0dbd0]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--edge)]">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold">Agents</h2>
-          <span className="text-xs text-[#8a8578]">{agents.length}</span>
+          <span className="text-xs text-[var(--mute)]">{agents.length}</span>
         </div>
         <div className="flex items-center gap-1">
           <Button variant="outline" size="sm" onClick={() => setShowCreateForm(true)}>
@@ -129,7 +129,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
       </div>
 
       {showCreateForm && (
-        <div className="px-4 py-3 border-b border-[#e0dbd0]">
+        <div className="px-4 py-3 border-b border-[var(--edge)]">
           <AgentCreateForm
             // Names only — the id is the identity, never a name (see dialog).
             existingNames={agents
@@ -143,7 +143,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
 
       <div className="flex flex-1 min-h-0">
         {/* Agent list */}
-        <div className="w-48 border-r border-[#e0dbd0] overflow-y-auto">
+        <div className="w-48 border-r border-[var(--edge)] overflow-y-auto">
           {agents.map((agent) => (
             <button
               key={agent.id}
@@ -151,7 +151,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                 "w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors group",
                 selectedAgent === agent.id
                   ? "bg-[#e8f5e9] text-[#2d8a4e]"
-                  : "hover:bg-[#f3efe6]",
+                  : "hover:bg-[var(--cream-deeper)]",
               )}
               onClick={() => {
                 setSelectedAgent(agent.id);
@@ -162,7 +162,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               <span className="truncate flex-1">
                 {agent.name || agent.id}
                 {agent.id === defaultId && (
-                  <span className="text-[10px] text-[#8a8578] ml-1">(default)</span>
+                  <span className="text-[10px] text-[var(--mute)] ml-1">(default)</span>
                 )}
               </span>
               {agent.id !== defaultId && (
@@ -190,7 +190,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
         <div className="flex-1 overflow-y-auto px-4">
           {selected ? (
             <>
-              <div className="flex items-center justify-between gap-2 border-b border-[#e0dbd0] py-2">
+              <div className="flex items-center justify-between gap-2 border-b border-[var(--edge)] py-2">
                 <div className="flex items-center gap-1">
                   {(
                     [
@@ -207,7 +207,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
                         "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
                         activeTab === tab.id
                           ? "bg-[#e8f5e9] text-[#2d8a4e]"
-                          : "text-[#8a8578] hover:text-[#1a1a1a]",
+                          : "text-[var(--mute)] hover:text-[var(--ink)]",
                       )}
                       onClick={() => setActiveTab(tab.id)}
                     >
@@ -229,7 +229,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               )}
             </>
           ) : (
-            <div className="flex items-center justify-center py-12 text-sm text-[#8a8578]">
+            <div className="flex items-center justify-center py-12 text-sm text-[var(--mute)]">
               Select an agent to view details
             </div>
           )}

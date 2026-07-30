@@ -110,7 +110,7 @@ export function PluginsTab() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
       </div>
     );
   }
@@ -127,19 +127,19 @@ export function PluginsTab() {
   }
 
   return (
-    <div className="bg-[#faf7f2] min-h-full">
+    <div className="bg-[var(--cream)] min-h-full">
       <div className="p-6 space-y-5">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
               Plugins
             </h2>
-            <p className="text-sm text-[#8a8578] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <p className="text-sm text-[var(--mute)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               OpenClaw plugins loaded in your container. A plugin bundles tools, skills,
               providers and channels. Isol8-managed plugins are locked.
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[#8a8578] hover:text-[#1a1a1a]">
+          <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--mute)] hover:text-[var(--ink)]">
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
         </div>
@@ -151,26 +151,26 @@ export function PluginsTab() {
         )}
 
         {rows.length === 0 && (
-          <p className="text-sm text-[#8a8578] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <p className="text-sm text-[var(--mute)] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
             No plugins configured.
           </p>
         )}
 
         <div className="grid gap-3" data-testid="plugins-list">
           {rows.map((row) => (
-            <div key={row.id} className="rounded-xl border border-[#e0dbd0] bg-white p-4">
+            <div key={row.id} className="rounded-xl border border-[var(--edge)] bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 min-w-0 flex-1">
-                  <Package className="h-5 w-5 text-[#8a8578] flex-shrink-0 mt-0.5" />
+                  <Package className="h-5 w-5 text-[var(--mute)] flex-shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3
-                        className="text-sm font-semibold text-[#1a1a1a] truncate"
+                        className="text-sm font-semibold text-[var(--ink)] truncate"
                         style={{ fontFamily: "'DM Sans', sans-serif" }}
                       >
                         {row.id}
                       </h3>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#8a8578] flex-shrink-0">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--mute)] flex-shrink-0">
                         {row.kind}
                       </span>
                       {row.locked && (
@@ -179,7 +179,7 @@ export function PluginsTab() {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-[#8a8578] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                    <p className="text-xs text-[var(--mute)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
                       {row.toolCount > 0
                         ? `Provides ${row.toolCount} tool${row.toolCount === 1 ? "" : "s"}`
                         : "No tools contributed"}
@@ -195,7 +195,7 @@ export function PluginsTab() {
                     <button
                       onClick={() => handleToggle(row)}
                       disabled={busyId !== null}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[#e0dbd0] text-[#8a8578] hover:text-[#1a1a1a] hover:border-[#c5c0b6] transition-colors disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[#c5c0b6] transition-colors disabled:opacity-50"
                       style={{ fontFamily: "'DM Sans', sans-serif" }}
                     >
                       {busyId === row.id ? (
@@ -213,7 +213,7 @@ export function PluginsTab() {
           ))}
         </div>
 
-        <p className="text-xs text-[#8a8578]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+        <p className="text-xs text-[var(--mute)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
           Channel plugins (Slack, Discord, Telegram…) are managed in the Channels panel.
         </p>
       </div>

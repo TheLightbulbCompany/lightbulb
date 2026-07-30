@@ -4,8 +4,8 @@ import { useState } from "react";
 import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 
-const CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
+const CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--mute)]/60";
 
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
@@ -84,21 +84,21 @@ export function CreditsSection() {
       <div className={CARD}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Wallet className="h-3.5 w-3.5 text-[#8a8578]" />
+            <Wallet className="h-3.5 w-3.5 text-[var(--mute)]" />
             <span className={EYEBROW}>BALANCE</span>
           </div>
           <button
             type="button"
             onClick={() => refresh()}
             aria-label="Refresh"
-            className="text-[#8a8578] hover:text-[#1a1a1a]"
+            className="text-[var(--mute)] hover:text-[var(--ink)]"
           >
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
-        <div className="text-3xl font-semibold font-mono text-[#1a1a1a]">{balanceDisplay}</div>
+        <div className="text-3xl font-semibold font-mono text-[var(--ink)]">{balanceDisplay}</div>
         {balance && balance.balance_dollars === null && (
-          <p className="text-xs text-[#8a8578]">
+          <p className="text-xs text-[var(--mute)]">
             Balance unavailable right now — try refreshing in a moment.
           </p>
         )}
@@ -116,8 +116,8 @@ export function CreditsSection() {
                 className={
                   "rounded-md border px-3 py-1.5 text-sm transition-colors " +
                   (active
-                    ? "border-[#06402B] bg-[#06402B]/5 text-[#06402B]"
-                    : "border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]")
+                    ? "border-[var(--forest)] bg-[var(--forest)]/5 text-[var(--forest)]"
+                    : "border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)]")
                 }
               >
                 ${c / 100}
@@ -126,7 +126,7 @@ export function CreditsSection() {
           })}
         </div>
         {!autoChargeEnabled && (
-          <label className="flex items-start gap-2 text-xs text-[#8a8578]">
+          <label className="flex items-start gap-2 text-xs text-[var(--mute)]">
             <input
               type="checkbox"
               checked={optIn}
@@ -155,7 +155,7 @@ export function CreditsSection() {
               lifecycleEnabled === false ||
               topUpAmount < 500
             }
-            className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+            className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
           >
             {topUpSubmitting
               ? "Loading…"
@@ -167,12 +167,12 @@ export function CreditsSection() {
           <button
             onClick={handleCheckout}
             disabled={topUpSubmitting || lifecycleEnabled === false || topUpAmount < 500}
-            className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+            className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
           >
             {topUpSubmitting ? "Redirecting…" : `Continue to payment — $${topUpAmount / 100}`}
           </button>
         )}
-        <p className="text-xs text-[#8a8578]">
+        <p className="text-xs text-[var(--mute)]">
           {lifecycleEnabled === false
             ? "Claude credits are not yet available in this environment — choose a different provider for now."
             : autoChargeEnabled
@@ -184,7 +184,7 @@ export function CreditsSection() {
             type="button"
             onClick={handleDisableAutoCharge}
             disabled={disabling}
-            className="text-xs text-[#8a8578] underline hover:text-[#1a1a1a] disabled:opacity-50 text-left"
+            className="text-xs text-[var(--mute)] underline hover:text-[var(--ink)] disabled:opacity-50 text-left"
           >
             {disabling ? "Disabling…" : "Disable one-click top-ups"}
           </button>

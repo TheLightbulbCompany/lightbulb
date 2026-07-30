@@ -29,13 +29,13 @@ type ViewerTab = "workspace" | "config";
 function Breadcrumbs({ path, onNavigate }: { path: string; onNavigate: (segment: string) => void }) {
   const segments = path.split("/");
   return (
-    <div className="flex items-center gap-1 text-sm text-[#8a8578] min-w-0">
+    <div className="flex items-center gap-1 text-sm text-[var(--mute)] min-w-0">
       {segments.map((segment, i) => (
         <React.Fragment key={i}>
           {i > 0 && <span className="text-[#cdc7ba]">/</span>}
           <button
             onClick={() => onNavigate(segments.slice(0, i + 1).join("/"))}
-            className="hover:text-[#1a1a1a] transition-colors truncate"
+            className="hover:text-[var(--ink)] transition-colors truncate"
           >
             {segment}
           </button>
@@ -161,8 +161,8 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onClick={() => handleTabChange("workspace")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "workspace"
-                ? "bg-white text-[#1a1a1a] shadow-sm font-medium"
-                : "text-[#8a8578] hover:text-[#1a1a1a]"
+                ? "bg-white text-[var(--ink)] shadow-sm font-medium"
+                : "text-[var(--mute)] hover:text-[var(--ink)]"
             }`}
           >
             Workspace
@@ -175,8 +175,8 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onClick={() => handleTabChange("config")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "config"
-                ? "bg-white text-[#1a1a1a] shadow-sm font-medium"
-                : "text-[#8a8578] hover:text-[#1a1a1a]"
+                ? "bg-white text-[var(--ink)] shadow-sm font-medium"
+                : "text-[var(--mute)] hover:text-[var(--ink)]"
             }`}
           >
             Config
@@ -188,13 +188,13 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
         {selectedPath && file && (
           <>
             <Breadcrumbs path={relativeFilePath ?? selectedPath} onNavigate={() => {}} />
-            <span className="text-xs text-[#8a8578] flex-shrink-0 ml-2">
+            <span className="text-xs text-[var(--mute)] flex-shrink-0 ml-2">
               {formatFileSize(file.size)} · {formatDate(file.modified_at)}
             </span>
             {file.content && (
               <button
                 onClick={handleCopyContent}
-                className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
+                className="text-[var(--mute)] hover:text-[var(--ink)] transition-colors flex-shrink-0 ml-2"
                 title="Copy file content"
               >
                 <Copy className="h-4 w-4" />
@@ -205,7 +205,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
 
         <button
           onClick={handleCloseRequested}
-          className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
+          className="text-[var(--mute)] hover:text-[var(--ink)] transition-colors flex-shrink-0 ml-2"
           title="Close file viewer"
         >
           <X className="h-4 w-4" />

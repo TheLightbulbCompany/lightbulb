@@ -367,7 +367,7 @@ export function ChatLayout({
                         <Monogram agent={displayAgent} size={28} radius={8} />
                         {publishedAgentIds.has(agent.id) && (
                           <span
-                            className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[#c2a378] border-2 border-[#faf7f2]"
+                            className="absolute top-0 right-0 w-2 h-2 rounded-full bg-[var(--gold)] border-2 border-[var(--cream)]"
                             aria-label="Published to marketplace"
                             title="Published to marketplace"
                           />
@@ -489,7 +489,7 @@ export function ChatLayout({
             {onOpenFile && (
               <button
                 onClick={() => { capture("file_browser_opened"); onOpenFile?.(""); }}
-                className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1"
+                className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1"
                 title="Browse workspace files"
               >
                 <FolderOpen size={18} />
@@ -505,7 +505,7 @@ export function ChatLayout({
                 <button
                   type="button"
                   onClick={() => openAgentInspector?.(currentAgentId)}
-                  className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
                   title="Open agent inspector"
                   aria-label="Open agent inspector"
                 >
@@ -514,7 +514,7 @@ export function ChatLayout({
                 <button
                   type="button"
                   onClick={() => openAgentIssues?.(currentAgentId)}
-                  className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+                  className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
                   title="See this agent's work"
                   aria-label="See this agent's work"
                 >
@@ -524,7 +524,7 @@ export function ChatLayout({
                   type="button"
                   onClick={() => { void handleTogglePauseResume(); }}
                   disabled={agentActionBusy}
-                  className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)] disabled:opacity-50"
+                  className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)] disabled:opacity-50"
                   title={currentAgentPaused ? "Resume agent" : "Pause agent"}
                   aria-label={currentAgentPaused ? "Resume agent" : "Pause agent"}
                 >
@@ -535,7 +535,7 @@ export function ChatLayout({
             <div style={{ flex: 1 }} />
             <button
               onClick={() => openSupport()}
-              className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1 mr-1"
+              className="flex items-center justify-center text-[var(--mute)] hover:text-[var(--ink)] transition-colors p-1 mr-1"
               title="Get help / report a problem"
               aria-label="Get help"
             >

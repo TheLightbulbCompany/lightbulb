@@ -215,7 +215,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center py-20">
-        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
+        <Loader2 className="h-5 w-5 animate-spin text-[var(--mute)]" />
       </div>
     );
   }
@@ -232,7 +232,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
   }
 
   return (
-    <div className="bg-[#faf7f2] min-h-full">
+    <div className="bg-[var(--cream)] min-h-full">
       <div className="p-6 space-y-5">
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -240,7 +240,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             <h2 className="text-xl font-semibold" style={{ fontFamily: "'Lora', serif" }}>
               Skill Store
             </h2>
-            <p className="text-sm text-[#8a8578] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <p className="text-sm text-[var(--mute)] mt-0.5" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               Discover and install skills for your agent
             </p>
           </div>
@@ -253,12 +253,12 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 setCopied(false);
               }}
               aria-expanded={showCreate}
-              className="text-xs border-[#e0dbd0]"
+              className="text-xs border-[var(--edge)]"
               style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
               + Create custom skill
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[#8a8578] hover:text-[#1a1a1a]">
+            <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--mute)] hover:text-[var(--ink)]">
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           </div>
@@ -266,18 +266,18 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
         {/* Create-custom-skill helper */}
         {showCreate && (
-          <div className="rounded-xl border border-[#e0dbd0] bg-white p-4 space-y-3">
-            <p className="text-sm text-[#1a1a1a]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <div className="rounded-xl border border-[var(--edge)] bg-white p-4 space-y-3">
+            <p className="text-sm text-[var(--ink)]" style={{ fontFamily: "'DM Sans', sans-serif" }}>
               Your agent writes custom skills itself — it has a built-in <strong>skill-creator</strong> skill.
               Describe what you want in chat; the new skill appears here once it&apos;s written.
             </p>
-            <pre className="text-xs text-[#5a5549] bg-[#faf7f2] border border-[#e0dbd0] rounded-md p-3 whitespace-pre-wrap">
+            <pre className="text-xs text-[#5a5549] bg-[var(--cream)] border border-[var(--edge)] rounded-md p-3 whitespace-pre-wrap">
               {CREATE_SKILL_PROMPT}
             </pre>
             <Button
               variant="outline"
               size="sm"
-              className="text-xs border-[#e0dbd0]"
+              className="text-xs border-[var(--edge)]"
               onClick={() => {
                 void navigator.clipboard?.writeText(CREATE_SKILL_PROMPT).then(() => setCopied(true));
               }}
@@ -289,10 +289,10 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
         {/* Search bar */}
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#8a8578]" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--mute)]" />
           <Input
             placeholder="Search skills..."
-            className="pl-10 h-10 text-sm bg-white border-[#e0dbd0] rounded-lg"
+            className="pl-10 h-10 text-sm bg-white border-[var(--edge)] rounded-lg"
             style={{ fontFamily: "'DM Sans', sans-serif" }}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -311,8 +311,8 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               className={cn(
                 "px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors border",
                 activeCategory === cat
-                  ? "bg-[#06402B] text-white border-[#06402B]"
-                  : "bg-white text-[#5a5549] border-[#e0dbd0] hover:border-[#c5c0b6]",
+                  ? "bg-[var(--forest)] text-white border-[var(--forest)]"
+                  : "bg-white text-[#5a5549] border-[var(--edge)] hover:border-[#c5c0b6]",
               )}
               style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
@@ -324,7 +324,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
         {/* No results */}
         {filtered.length === 0 && (
-          <p className="text-sm text-[#8a8578] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+          <p className="text-sm text-[var(--mute)] text-center py-8" style={{ fontFamily: "'DM Sans', sans-serif" }}>
             No skills found.
           </p>
         )}
@@ -333,7 +333,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         {installedSkills.length > 0 && activeCategory !== "Installed" && (
           <div className="space-y-3">
             <h3
-              className="text-sm font-semibold text-[#1a1a1a] tracking-wide"
+              className="text-sm font-semibold text-[var(--ink)] tracking-wide"
               style={{ fontFamily: "'Lora', serif" }}
             >
               Installed
@@ -371,7 +371,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         {availableSkills.length > 0 && activeCategory !== "Installed" && (
           <div className="space-y-3">
             <h3
-              className="text-sm font-semibold text-[#1a1a1a] tracking-wide"
+              className="text-sm font-semibold text-[var(--ink)] tracking-wide"
               style={{ fontFamily: "'Lora', serif" }}
             >
               Available
@@ -395,7 +395,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
           <div className="space-y-3">
             <button
               onClick={() => setUnsupportedCollapsed(!unsupportedCollapsed)}
-              className="flex items-center gap-2 text-sm font-semibold text-[#b5ae9e] hover:text-[#8a8578] transition-colors w-full text-left"
+              className="flex items-center gap-2 text-sm font-semibold text-[#b5ae9e] hover:text-[var(--mute)] transition-colors w-full text-left"
               style={{ fontFamily: "'Lora', serif" }}
             >
               <ChevronDown
@@ -420,7 +420,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                   {unsupportedSkills.map((skill) => (
                     <div
                       key={skill.skillKey || skill.name}
-                      className="rounded-xl border border-[#e0dbd0] bg-white/60 p-3 opacity-60"
+                      className="rounded-xl border border-[var(--edge)] bg-white/60 p-3 opacity-60"
                     >
                       <div className="flex items-center gap-3">
                         <span className="text-lg flex-shrink-0 grayscale">
@@ -429,12 +429,12 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <h3
-                              className="text-xs font-semibold text-[#8a8578] truncate"
+                              className="text-xs font-semibold text-[var(--mute)] truncate"
                               style={{ fontFamily: "'DM Sans', sans-serif" }}
                             >
                               {skill.name}
                             </h3>
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#8a8578] flex-shrink-0">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--mute)] flex-shrink-0">
                               <Monitor className="h-2.5 w-2.5" />
                               Desktop Only
                             </span>
@@ -471,7 +471,7 @@ function IntegrationChip({ skillName }: { skillName: string }) {
   return (
     <a
       href="/chat?panel=integrations"
-      className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#5a5549] hover:text-[#1a1a1a] flex-shrink-0"
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#5a5549] hover:text-[var(--ink)] flex-shrink-0"
       style={{ fontFamily: "'DM Sans', sans-serif" }}
       title="Connect this account under Integrations"
     >
@@ -548,7 +548,7 @@ function SkillCard({
 
   if (variant === "installed") {
     return (
-      <div className="rounded-xl border border-[#e0dbd0] bg-white p-4 space-y-3">
+      <div className="rounded-xl border border-[var(--edge)] bg-white p-4 space-y-3">
         {/* Top row: icon + info + badge + actions */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0 flex-1">
@@ -556,7 +556,7 @@ function SkillCard({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <h3
-                  className="text-sm font-semibold text-[#1a1a1a] truncate"
+                  className="text-sm font-semibold text-[var(--ink)] truncate"
                   style={{ fontFamily: "'DM Sans', sans-serif" }}
                 >
                   {skill.name}
@@ -567,7 +567,7 @@ function SkillCard({
                 <IntegrationChip skillName={skill.name} />
               </div>
               <p
-                className="text-xs text-[#8a8578] mt-0.5 line-clamp-2"
+                className="text-xs text-[var(--mute)] mt-0.5 line-clamp-2"
                 style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 {friendlyDesc}
@@ -580,7 +580,7 @@ function SkillCard({
               // Managed/required skills have no toggle. Explain why, so it doesn't
               // read as "I can't modify this and don't know why".
               <span
-                className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#8a8578] cursor-help"
+                className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[var(--mute)] cursor-help"
                 title="This skill is always on — it's managed by Isol8 and can't be turned off."
                 style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
@@ -590,7 +590,7 @@ function SkillCard({
               <button
                 onClick={handleToggle}
                 disabled={toggleLoading}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[#e0dbd0] text-[#8a8578] hover:text-[#1a1a1a] hover:border-[#c5c0b6] transition-colors"
+                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--edge)] text-[var(--mute)] hover:text-[var(--ink)] hover:border-[#c5c0b6] transition-colors"
                 style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 {toggleLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Disable"}
@@ -661,14 +661,14 @@ function SkillCard({
 
   // --- Available (disabled) skill card ---
   return (
-    <div className="rounded-xl border border-[#e0dbd0] bg-white p-4">
+    <div className="rounded-xl border border-[var(--edge)] bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0 flex-1">
           <span className="text-2xl flex-shrink-0 mt-0.5">{skill.emoji || "🧩"}</span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h3
-                className="text-sm font-semibold text-[#1a1a1a] truncate"
+                className="text-sm font-semibold text-[var(--ink)] truncate"
                 style={{ fontFamily: "'DM Sans', sans-serif" }}
               >
                 {skill.name}
@@ -676,7 +676,7 @@ function SkillCard({
               <IntegrationChip skillName={skill.name} />
             </div>
             <p
-              className="text-xs text-[#8a8578] mt-0.5 line-clamp-2"
+              className="text-xs text-[var(--mute)] mt-0.5 line-clamp-2"
               style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
               {friendlyDesc}

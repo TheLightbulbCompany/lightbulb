@@ -50,9 +50,9 @@ const epilogue = Epilogue({
   weight: ["300", "400", "500"],
 });
 
-const SITE_TITLE = "isol8 - Your AI Pod";
+const SITE_TITLE = "isol8 — Autonomous Businesses";
 const SITE_DESCRIPTION =
-  "Your own isolated AI pod with persistent memory, custom personality, and skills that grow with you.";
+  "Point agents at the business you already run — sales, support, finance — and let it run itself. Always-on, cloud-isolated, and yours.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://isol8.co"),

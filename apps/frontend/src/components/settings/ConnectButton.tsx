@@ -9,6 +9,7 @@ import { useApi, BACKEND_URL } from "@/lib/api";
 import { ApiError, type Connection } from "@/hooks/useConnections";
 import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
+import { useSupport } from "@/components/support/SupportProvider";
 
 interface ConnectButtonProps {
   connection: Connection;
@@ -68,6 +69,7 @@ export function ConnectButton({
 }: ConnectButtonProps) {
   const { provider, display_name, acquisition, status } = connection;
   const api = useApi();
+  const { openSupport } = useSupport();
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -255,6 +257,28 @@ export function ConnectButton({
       </div>
     );
   };
+
+  // Gated off this owner: the authorize leg would 404, so never offer Connect.
+  // Request access emails support with the owner's account already enriched
+  // server-side — which is exactly what an operator needs to add them as a
+  // provider tester and to owner_allowlist. Checked before every
+  // acquisition-specific branch (paste_token / direct_oauth / aws_sts) so it
+  // wins for every acquisition type.
+  if (connection.requestable) {
+    return (
+      <Button
+        variant="outline"
+        onClick={() =>
+          openSupport({
+            category: "Integration request",
+            message: `I'd like to use ${connection.display_name}.`,
+          })
+        }
+      >
+        Request access
+      </Button>
+    );
+  }
 
   // Connected → Disconnect, plus the BYO setup affordance when this owner still
   // needs to store their own app (non-destructive migration off the old

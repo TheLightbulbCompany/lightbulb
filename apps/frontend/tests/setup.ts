@@ -82,3 +82,12 @@ vi.mock('@clerk/nextjs', () => ({
   SignedOut: () => null,
   ClerkProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
+
+// useSupport() throws outside a <SupportProvider>. ConnectButton (and other
+// surfaces) call it unconditionally, so — like the Clerk mock above — stub it
+// globally rather than making every unrelated test wrap its tree in a real
+// provider. A test asserting on openSupport's call args (e.g. the "Request
+// access" flow) overrides this with its own vi.mock of the same module.
+vi.mock('@/components/support/SupportProvider', () => ({
+  useSupport: () => ({ openSupport: vi.fn(), closeSupport: vi.fn() }),
+}));

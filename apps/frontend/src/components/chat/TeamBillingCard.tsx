@@ -88,7 +88,7 @@ export function TeamBillingCard({
       className="w-full max-w-[440px] rounded-2xl border border-[var(--edge)] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
     >
       {/*
-        Body copy keeps the literal #6b655e rather than var(--mute) (var(--mute)).
+        Body copy keeps the literal #6b655e rather than var(--mute) (#8a8578).
         --mute is ~3.7:1 on white — below WCAG AA — and this paragraph carries
         the price the owner is about to be charged. --ink and --danger below
         ARE the tokens; they're contrast-equivalent to what they replaced.

@@ -733,30 +733,43 @@ async def deploy_listing(
             "already_installed": True,
         }
 
-    tar_bytes, slice_ = _fetch_agent_artifact(listing)
-
-    # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
-    # listing's manifest_json column). The marketplace manifest doesn't
-    # follow the admin catalog's schema — it uses {name, description,
-    # format, exported_at, agent_id, file_count} — but
-    # deploy_from_artifact only reads ``version`` and ``name`` for the
-    # response payload, so passing through what we have is fine.
-    manifest = listing.get("manifest_json") or {}
-    manifest = dict(manifest)
-    manifest.setdefault("version", listing.get("version", 1))
-    manifest.setdefault("name", listing.get("name", listing.get("slug")))
-
     # Exclusive claim for the whole deploy. The sidecar read above is a READ:
     # the sidecar lands near the END of deploy_from_artifact, so two OVERLAPPING
     # deploys both see "not installed" and both mint an agent — exactly how prod
     # grew "Pulse 2" (deploy #2 started 35s before deploy #1 wrote its sidecar).
-    # Held across the Paperclip mint so a mint failure can't leak the claim.
-    if not await container_repo.try_claim_listing_deploy(owner_id, listing_id=listing["listing_id"]):
+    # Taken BEFORE the S3 artifact fetch (a loser shouldn't pay for the GET) and
+    # held across the Paperclip mint, so a mint failure can't leak the claim.
+    claim_token = await container_repo.try_claim_listing_deploy(owner_id, listing_id=listing["listing_id"])
+    if not claim_token:
+        # Two ways to lose the claim, and they are different errors. The claim
+        # is conditioned on ``attribute_exists(owner_id)`` — it never conjures a
+        # container row — so an owner whose container hasn't been provisioned
+        # yet is refused too. Reporting that as "a deploy is already running"
+        # would send anyone reading the logs hunting a phantom concurrent
+        # deploy. Only runs on the refusal path, so it costs nothing normally.
+        if await container_repo.get_by_owner_id(owner_id) is None:
+            raise HTTPException(
+                status_code=503,
+                detail="container starting — retry in a moment",
+            )
         raise HTTPException(
             status_code=409,
             detail={"error": "deploy_in_progress"},
         )
     try:
+        tar_bytes, slice_ = _fetch_agent_artifact(listing)
+
+        # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
+        # listing's manifest_json column). The marketplace manifest doesn't
+        # follow the admin catalog's schema — it uses {name, description,
+        # format, exported_at, agent_id, file_count} — but
+        # deploy_from_artifact only reads ``version`` and ``name`` for the
+        # response payload, so passing through what we have is fine.
+        manifest = listing.get("manifest_json") or {}
+        manifest = dict(manifest)
+        manifest.setdefault("version", listing.get("version", 1))
+        manifest.setdefault("name", listing.get("name", listing.get("slug")))
+
         # Paperclip-first agent mint. Paperclip's create_agent returns an
         # agent UUID that we thread through to catalog_service as
         # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
@@ -912,7 +925,7 @@ async def deploy_listing(
         # they let the buyer-facing UI tell the truth about what won't run.
         return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
     finally:
-        await container_repo.release_listing_deploy_claim(owner_id, listing_id=listing["listing_id"])
+        await container_repo.release_listing_deploy_claim(owner_id, listing_id=listing["listing_id"], token=claim_token)
 
 
 @router.post("/listings")

@@ -301,11 +301,16 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 DEPLOY_CLAIM_STALE_S = 900
 
 
-async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> bool:
+async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | None:
     """Take an exclusive lease on "this owner is deploying this listing".
 
-    Returns True when the caller owns the deploy, False when another one is
-    already in flight for the same listing.
+    Returns a FENCING TOKEN when the caller owns the deploy, None when another
+    one is already in flight for the same listing. Pass the token back to
+    ``release_listing_deploy_claim`` — an unconditional release would let a
+    caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was therefore taken
+    over) delete the live claim of whoever succeeded it, reopening the exact
+    overlap window this exists to close. Same fencing discipline as
+    ``try_claim_provision``'s ``provision_claim_id``.
 
     Why durable, and why here: the ``.template``-sidecar check in
     ``routers/marketplace_listings`` is a read, and the sidecar is written near
@@ -321,15 +326,22 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> bool:
     Two writes: the first materializes the ``deploy_claims`` map (DynamoDB
     rejects a nested SET when the parent path is absent) and is unconditional +
     idempotent; the second is the actual claim, admitted only when no live claim
-    exists for this listing.
+    exists for this listing. Each claim is stored as
+    ``{"claimed_at": epoch, "tok": …}`` — ``claimed_at`` drives takeover of an
+    abandoned claim, ``tok`` fences the release. NOT ``at``: that is a reserved
+    DynamoDB keyword, and an unaliased ``deploy_claims.#lid.at`` in the
+    condition is a ValidationException, which the fail-open below would have
+    quietly turned into "no fence at all".
 
-    **Fails OPEN.** A DynamoDB fault returns True. Losing dedupe costs a
-    duplicate agent the owner can delete; failing closed would block a
-    legitimate hire — including a paid one — on a transient fault. Same
-    reasoning as ``try_consume_daily_email_send``.
+    **Fails OPEN.** A DynamoDB fault admits the deploy (returning a token that
+    fences nothing, since no claim was stored). Losing dedupe costs a duplicate
+    agent the owner can delete; failing closed would block a legitimate hire —
+    including a paid one — on a transient fault. Same reasoning as
+    ``try_consume_daily_email_send``.
     """
     table = _get_table()
     now = int(time.time())
+    token = uuid.uuid4().hex
     try:
         await run_in_thread(
             table.update_item,
@@ -341,36 +353,62 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> bool:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET deploy_claims.#lid = :now",
-            ConditionExpression=("attribute_not_exists(deploy_claims.#lid) OR deploy_claims.#lid < :cutoff"),
+            UpdateExpression="SET deploy_claims.#lid = :claim",
+            ConditionExpression=("attribute_not_exists(deploy_claims.#lid) OR deploy_claims.#lid.claimed_at < :cutoff"),
             ExpressionAttributeNames={"#lid": listing_id},
-            ExpressionAttributeValues={":now": now, ":cutoff": now - DEPLOY_CLAIM_STALE_S},
+            ExpressionAttributeValues={
+                ":claim": {"claimed_at": now, "tok": token},
+                ":cutoff": now - DEPLOY_CLAIM_STALE_S,
+            },
         )
-        return True
+        return token
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        logger.warning(
-            "try_claim_listing_deploy: DDB fault for owner=%s listing=%s — admitting the deploy",
+            return None
+        # ERROR, with the code: fail-open makes a MALFORMED expression look
+        # exactly like a transient fault, and a ValidationException here means
+        # the fence is off for every deploy until someone notices.
+        logger.error(
+            "try_claim_listing_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            e.response["Error"].get("Code"),
+            e.response["Error"].get("Message"),
             owner_id,
             listing_id,
         )
-        return True  # fail open — see docstring
+        return token  # fail open — see docstring
 
 
-async def release_listing_deploy_claim(owner_id: str, *, listing_id: str) -> None:
-    """Drop the deploy claim. Best-effort: a lost release self-expires after
-    ``DEPLOY_CLAIM_STALE_S``, so a failure here delays a retry rather than
-    wedging the listing. Never raises — it runs in the deploy's ``finally``,
-    where an exception would mask the real deploy error."""
+async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:
+    """Drop the deploy claim, but only if ``token`` still holds it.
+
+    The condition is the point: a deploy that hung past
+    ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here
+    would delete its successor's live claim — letting a third caller in and
+    reopening the overlap window. A ConditionalCheckFailed means "not ours
+    anymore", which is a no-op, not an error.
+
+    Best-effort otherwise: a lost release self-expires after
+    ``DEPLOY_CLAIM_STALE_S``, so a fault delays a retry rather than wedging the
+    listing. Never raises — it runs in the deploy's ``finally``, where an
+    exception would mask the real deploy error.
+    """
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="REMOVE deploy_claims.#lid",
+            ConditionExpression="deploy_claims.#lid.tok = :tok",
             ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeValues={":tok": token},
         )
-    except ClientError:
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.info(
+                "release_listing_deploy_claim: claim for owner=%s listing=%s is no longer ours — leaving it",
+                owner_id,
+                listing_id,
+            )
+            return
         logger.warning(
             "release_listing_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
             owner_id,

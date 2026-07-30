@@ -1755,7 +1755,22 @@ class EcsManager:
         if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 
-        ip = self.discover_ip(container["service_name"])
+        # A `provisioning` row EXISTS BEFORE its ECS service does. The
+        # provisioning claim's first act is the atomic conditional write that
+        # creates the row as status="provisioning" (see
+        # container_repo.claim_provisioning) -- `service_name` is only stamped
+        # once the service has actually been created. Subscripting it here
+        # raised KeyError('service_name') for the whole window in between,
+        # which surfaced as `RPC agents.list failed ... error_class=KeyError`
+        # every ~3s and a 500 on `GET /container/status?wake=1` -- observed on
+        # prod 2026-07-29 01:20:52-01:21:09 during a fresh provision. No
+        # service means nothing to discover, which is exactly the
+        # "not reachable yet" case the caller already handles.
+        service_name = container.get("service_name")
+        if not service_name:
+            return container, None
+
+        ip = self.discover_ip(service_name)
         if not ip:
             # DDB row says provisioning/running but ECS has no running task
             # for the service. Either the task is still pulling the image

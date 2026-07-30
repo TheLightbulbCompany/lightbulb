@@ -1389,6 +1389,30 @@ class TestResolveRunningContainer:
             assert ip == "10.0.1.42"
 
     @pytest.mark.asyncio
+    async def test_provisioning_row_without_service_name_does_not_raise(self, manager):
+        """A `provisioning` row EXISTS BEFORE its ECS service does.
+
+        claim_provisioning's first act creates the row as
+        status="provisioning"; `service_name` is stamped only once the service
+        exists. Subscripting it raised KeyError('service_name') for that whole
+        window, which surfaced on prod 2026-07-29 as
+        `RPC agents.list failed ... error_class=KeyError` every ~3s plus a 500
+        on `GET /container/status?wake=1` during a fresh provision.
+        """
+        row = _make_container_dict(status="provisioning")
+        row.pop("service_name", None)
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            manager.discover_ip = MagicMock(side_effect=AssertionError("must not probe without a service"))
+
+            container, ip = await manager.resolve_running_container("user_test_123")
+
+            # Same shape as the "service exists but no task yet" branch: the
+            # row is still reported, just not reachable.
+            assert container == row
+            assert ip is None
+
+    @pytest.mark.asyncio
     async def test_returns_none_for_missing_container(self, manager):
         """Returns (None, None) when no container exists."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:

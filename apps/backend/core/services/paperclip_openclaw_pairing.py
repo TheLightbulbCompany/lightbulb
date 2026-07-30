@@ -603,7 +603,10 @@ async def pair_with_openclaw(
                 # is the whole point: re-raising would retry, and each retry
                 # writes config again, which triggers another container reload —
                 # the stall that made this RPC slow in the first place.
-                logger.info(
+                # WARNING, not info: this fires exactly when a container is
+                # stalled on its own config reloads, which is the condition worth
+                # noticing. At info it blends into normal traffic.
+                logger.warning(
                     "pair_with_openclaw: cosmetic display update timed out for owner=%s agent=%s "
                     "after %ss — leaving it to the caller's durable config write",
                     owner_id,

@@ -67,6 +67,17 @@ describe("InlineTeamsPanel", () => {
     expect(screen.getByTestId("subscribe-overlay")).toBeInTheDocument();
     expect(screen.queryByTestId("teams-panel")).toBeNull();
   });
+  it("makes its scrollport a containing block for out-of-flow panel content", () => {
+    // `relative` is load-bearing: this host and ChatLayout's `.main-content`
+    // around it are both position:static, so without it a panel's absolutely
+    // positioned descendants (Tailwind `sr-only`) resolve their containing
+    // block past this scrollport and inflate an outer scroller with phantom
+    // height — the same defect the dock host fixes in workspace.css.
+    const { container } = render(<InlineTeamsPanel panel="teams-dashboard" />);
+    const scrollport = container.querySelector(".editorial-page") as HTMLElement;
+    expect(scrollport.classList.contains("relative")).toBe(true);
+    expect(scrollport.classList.contains("overflow-auto")).toBe(true);
+  });
   it("threads detailId through to TeamsPanelRouter", () => {
     render(
       <InlineTeamsPanel panel="teams-issue-detail" detailId="iss_42" />,

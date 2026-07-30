@@ -61,7 +61,14 @@ export function InlineTeamsPanel({
     >
       <TeamsEventsProvider>
         <CommandPaletteProvider>
-          <div className="editorial-page h-full overflow-auto">
+          {/* `relative` is the same load-bearing containing block the dock host
+              needs (workspace.css `.workspace-panel-page.editorial-page`):
+              without it, a panel's absolutely positioned descendants (Tailwind
+              `sr-only` and friends) resolve their containing block past this
+              scrollport — which is position:static, as is ChatLayout's
+              `.main-content` around it — and inflate an outer scroller with
+              thousands of px of phantom height. */}
+          <div className="editorial-page relative h-full overflow-auto">
             <TeamsPanelRouter
               panel={teamsPanel}
               detailId={detailId}

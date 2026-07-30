@@ -267,6 +267,7 @@ export function ConnectButton({
   if (connection.requestable) {
     return (
       <Button
+        size="sm"
         variant="outline"
         onClick={() =>
           openSupport({
@@ -274,6 +275,7 @@ export function ConnectButton({
             message: `I'd like to use ${connection.display_name}.`,
           })
         }
+        aria-label={`Request access to ${connection.display_name}`}
       >
         Request access
       </Button>

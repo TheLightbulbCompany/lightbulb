@@ -253,9 +253,11 @@ class TestListConnections:
 
 
 class TestEnvGatedProvider:
-    """A provider with an `environments` list (Instagram: [local, dev]) is only
-    listed + connectable in those envs. The test env resolves to dev (empty
-    ENVIRONMENT), so it's available by default; force prod to prove the gate."""
+    """A provider with an `environments` list (Instagram: [local, dev]) is
+    listed everywhere but only connectable within those envs — outside them
+    it's listed as requestable=true/status=unavailable so the UI can offer
+    Request access. The test env resolves to dev (empty ENVIRONMENT), so it's
+    connectable by default; force prod to prove the gate."""
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -267,17 +269,15 @@ class TestEnvGatedProvider:
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
-    async def test_instagram_hidden_in_prod(self, mock_repo, async_client, monkeypatch):
-        # OLD BEHAVIOR TEST (renamed/updated): Instagram is no longer hidden in prod;
-        # it's listed with requestable=true so the UI can offer "Request access".
-        # This test now verifies that the old hide behavior is gone.
+    async def test_instagram_listed_as_unavailable_in_prod(self, mock_repo, async_client, monkeypatch):
+        # Instagram is gated off prod but still LISTED — with requestable=true
+        # and status=unavailable — so the UI can offer "Request access"
+        # instead of hiding the integration entirely.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
-        # Instagram is now LISTED (not hidden)
         assert "instagram" in by_key
-        # With requestable=true and status=unavailable
         assert by_key["instagram"]["requestable"] is True
         assert by_key["instagram"]["status"] == "unavailable"
         # A non-gated provider is unaffected.
@@ -285,8 +285,9 @@ class TestEnvGatedProvider:
 
     @pytest.mark.asyncio
     async def test_instagram_authorize_404s_in_prod(self, async_client, monkeypatch):
-        # Gated provider is not just hidden — the connect path 404s outside its
-        # envs, so it can't be reached by a hand-crafted request either.
+        # Gated provider is listed as requestable, but the connect path still
+        # 404s outside its envs, so it can't be reached by a hand-crafted
+        # request either.
         monkeypatch.setattr(connections.settings, "ENVIRONMENT", "prod")
         response = await async_client.get("/api/v1/connections/instagram/authorize")
         assert response.status_code == 404

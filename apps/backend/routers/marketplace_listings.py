@@ -9,7 +9,7 @@ we don't need an external SaaS index.
 import asyncio
 import json
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 
 import boto3
 from botocore.exceptions import ClientError
@@ -40,7 +40,12 @@ from core.services import (
 )
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.agent_routine_provisioning import create_agent_routines
-from core.services.catalog_service import MissingCredentialsError, get_catalog_service, warn_rows
+from core.services.catalog_service import (
+    CatalogService,
+    MissingCredentialsError,
+    get_catalog_service,
+    warn_rows,
+)
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
@@ -556,7 +561,7 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
         raise HTTPException(status_code=500, detail="failed to fetch listing artifact") from exc
 
 
-def _live_install_of(catalog: Any, *, owner_id: str, slug: str | None) -> dict | None:
+def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None) -> dict | None:
     """The owner's still-live install of ``slug``, or None.
 
     A ``.template`` sidecar on its own isn't proof the agent exists: the Teams
@@ -565,6 +570,16 @@ def _live_install_of(catalog: Any, *, owner_id: str, slug: str | None) -> dict |
     inside it — behind. Cross-check openclaw.json's ``agents.list``, which the
     deploy file-merges the agent entry into, so a stale sidecar can't hand back
     a dead agent id and permanently block a re-hire.
+
+    SEQUENTIAL retries only — this is a read, not a lock. The sidecar is written
+    near the END of ``deploy_from_artifact``, so two deploys that OVERLAP both
+    see "not installed" and both mint an agent. That is exactly how prod grew
+    "Pulse 2": deploy #2 started 35s before deploy #1 wrote its sidecar (a page
+    reload cleared the drawer's ``isHiring``, which is the only thing stopping a
+    second submit). Closing that needs a distributed claim — a conditional DDB
+    write held for the deploy's duration — not a wider read. Deliberately not
+    built yet: it wants a home for the lock row, and the common shape is the
+    sequential retry this does cover.
     """
     sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
     if not sidecars:

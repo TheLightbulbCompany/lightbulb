@@ -269,10 +269,6 @@ export default function Chat() {
             <Text style={styles.tileName} numberOfLines={2}>
               {agentDisplayName(item)}
             </Text>
-            <View style={styles.tileStatus}>
-              <View style={styles.statusDot} />
-              <Text style={styles.statusLabel}>Active</Text>
-            </View>
           </Pressable>
         )}
       />
@@ -454,24 +450,6 @@ const styles = StyleSheet.create({
     color: colors.ink,
     textAlign: "center",
   },
-  tileStatus: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.forestSoft,
-  },
-  statusLabel: {
-    fontFamily: fonts.dmSans,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.mute,
-  },
-
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
   emptyGlyph: {

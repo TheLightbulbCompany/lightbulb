@@ -111,8 +111,8 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
       }
 
       try {
-        // BFF: POST /teams/inbox/{id}/archive (path here without "/teams" prefix; useTeamsApi adds it)
-        await post(`/inbox/${issueId}/archive`, {});
+        // BFF: POST /teams/issues/{id}/archive (path here without "/teams" prefix; useTeamsApi adds it)
+        await post(`/issues/${issueId}/archive`, {});
         // Success: push onto undo stack via functional updater (avoids stale closure).
         setUndoStack((prev) => [...prev, issueId]);
       } catch (err) {
@@ -156,7 +156,7 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
     if (!issueId) return;
 
     try {
-      await post(`/inbox/${issueId}/unarchive`, {});
+      await post(`/issues/${issueId}/unarchive`, {});
     } catch (err) {
       // Restore the popped id back onto the stack.
       setUndoStack((prev) => [...prev, issueId!]);
@@ -188,7 +188,7 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
         );
       }
       try {
-        await post(`/inbox/${issueId}/mark-read`, {});
+        await post(`/issues/${issueId}/mark-read`, {});
       } catch (err) {
         // Rollback.
         for (const { key, prev } of snapshots) {
@@ -224,7 +224,7 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
         );
       }
       try {
-        await post(`/inbox/${issueId}/mark-unread`, {});
+        await post(`/issues/${issueId}/mark-unread`, {});
       } catch (err) {
         // Rollback.
         for (const { key, prev } of snapshots) {

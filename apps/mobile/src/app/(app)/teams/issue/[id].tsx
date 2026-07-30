@@ -20,8 +20,15 @@ import { ApprovalCard } from "../../../../components/teams/ApprovalCard";
 import { AssigneeAvatar } from "../../../../components/teams/AssigneeAvatar";
 import { CommentComposer } from "../../../../components/teams/CommentComposer";
 import { CreateIssueSheet } from "../../../../components/teams/CreateIssueSheet";
+import { InteractionCard } from "../../../../components/teams/InteractionCard";
+import {
+  AttachmentsSection,
+  DocumentsSection,
+  WorkProductsSection,
+} from "../../../../components/teams/IssueOutputsSection";
 import { IssueRunsSection } from "../../../../components/teams/IssueRunsSection";
 import { PickerSheet, type PickerOption } from "../../../../components/teams/PickerSheet";
+import { ReasonSheet } from "../../../../components/teams/ReasonSheet";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import {
   BOARD_STATUSES,
@@ -42,9 +49,14 @@ import {
   type ChildIssue,
   type CompanyMember,
   type CreateIssueInput,
+  type InteractionAnswer,
+  type IssueAttachment,
   type IssueComment,
   type IssueDetail,
+  type IssueDocument,
+  type IssueInteraction,
   type IssueRun,
+  type IssueWorkProduct,
   type Priority,
   type TeamsAgent,
   type TeamsApproval,
@@ -258,10 +270,16 @@ export default function IssueDetailScreen() {
     setPriority,
     setAssignee,
     setUserAssignee,
+    setTitle,
+    setDescription,
     addComment,
     createChild,
     approveApproval,
     rejectApproval,
+    acceptInteraction,
+    rejectInteraction,
+    respondInteraction,
+    reviewWorkProduct,
   } = useTeamsIssue(id);
   const { user } = useUser();
   const currentUserId = user?.id ?? null;
@@ -320,9 +338,15 @@ export default function IssueDetailScreen() {
         onSetPriority={setPriority}
         onSetAssignee={setAssignee}
         onSetUserAssignee={setUserAssignee}
+        onSetTitle={setTitle}
+        onSetDescription={setDescription}
         onCreateChild={createChild}
         onApproveApproval={approveApproval}
         onRejectApproval={rejectApproval}
+        onAcceptInteraction={acceptInteraction}
+        onRejectInteraction={rejectInteraction}
+        onRespondInteraction={respondInteraction}
+        onReviewWorkProduct={reviewWorkProduct}
       />
     );
   }
@@ -347,6 +371,13 @@ export default function IssueDetailScreen() {
 }
 
 type OpenPicker = "status" | "priority" | "assignee" | null;
+type OpenEditor = "title" | "description" | null;
+
+/** One thread entry — comments and agent interactions interleaved by time
+ * (web IssueComments buildTeamsThreadItems parity). */
+type ThreadItem =
+  | { kind: "comment"; at: string; comment: IssueComment }
+  | { kind: "interaction"; at: string; interaction: IssueInteraction };
 
 function ReadyBody({
   state,
@@ -355,9 +386,15 @@ function ReadyBody({
   onSetPriority,
   onSetAssignee,
   onSetUserAssignee,
+  onSetTitle,
+  onSetDescription,
   onCreateChild,
   onApproveApproval,
   onRejectApproval,
+  onAcceptInteraction,
+  onRejectInteraction,
+  onRespondInteraction,
+  onReviewWorkProduct,
 }: {
   state: {
     issue: IssueDetail;
@@ -367,24 +404,70 @@ function ReadyBody({
     members: CompanyMember[];
     approvals: TeamsApproval[];
     runs: IssueRun[];
+    interactions: IssueInteraction[];
+    workProducts: IssueWorkProduct[];
+    documents: IssueDocument[];
+    attachments: IssueAttachment[];
   };
   currentUserId: string | null;
   onSetStatus: (status: BoardStatus) => void;
   onSetPriority: (priority: Priority) => void;
   onSetAssignee: (agentId: string | null) => void;
   onSetUserAssignee: (userId: string | null) => void;
+  onSetTitle: (title: string) => void;
+  onSetDescription: (description: string) => void;
   onCreateChild: (input: CreateIssueInput) => Promise<boolean>;
   onApproveApproval: (approvalId: string) => void;
   onRejectApproval: (approvalId: string, reason: string) => void;
+  onAcceptInteraction: (
+    id: string,
+    selection?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
+  ) => void;
+  onRejectInteraction: (id: string, reason?: string) => void;
+  onRespondInteraction: (id: string, answers: InteractionAnswer[]) => void;
+  onReviewWorkProduct: (id: string, verdict: "approved" | "changes_requested") => void;
 }) {
-  const { issue, comments, children, agents, members, approvals, runs } = state;
+  const {
+    issue,
+    comments,
+    children,
+    agents,
+    members,
+    approvals,
+    runs,
+    interactions,
+    workProducts,
+    documents,
+    attachments,
+  } = state;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const assignee = resolveAssignee(issue, agents, members);
   const created = issue.createdAt ? timeAgo(issue.createdAt) : null;
   const prColor = priorityColor(issue.priority);
 
   const [picker, setPicker] = useState<OpenPicker>(null);
+  const [editor, setEditor] = useState<OpenEditor>(null);
   const [addingChild, setAddingChild] = useState(false);
+
+  // Comments + agent interactions interleaved chronologically — an agent
+  // waiting on an answer must be visible IN the thread, not siloed (the old
+  // comments-only thread silently hid pending interactions, so a blocked
+  // agent read as "went quiet").
+  const thread = useMemo<ThreadItem[]>(() => {
+    const items: ThreadItem[] = [
+      ...comments.map((comment) => ({
+        kind: "comment" as const,
+        at: comment.createdAt,
+        comment,
+      })),
+      ...interactions.map((interaction) => ({
+        kind: "interaction" as const,
+        at: String(interaction.createdAt ?? ""),
+        interaction,
+      })),
+    ];
+    return items.sort((a, b) => a.at.localeCompare(b.at));
+  }, [comments, interactions]);
 
   // Sectioned assignee options: Unassigned, then agent monograms, then people.
   // Keys are prefixed (`agent:`/`user:`) so onSelect routes to the right write
@@ -426,10 +509,19 @@ function ReadyBody({
 
   return (
     <>
-      {/* Title + identifier */}
+      {/* Title + identifier — tap the title to edit it. */}
       <View style={styles.headerBlock}>
         <Text style={styles.identifier}>{identifier}</Text>
-        <Text style={styles.issueTitle}>{issue.title}</Text>
+        <Pressable
+          onPress={() => setEditor("title")}
+          accessibilityRole="button"
+          accessibilityLabel="Edit title"
+        >
+          <Text style={styles.issueTitle}>
+            {issue.title}
+            <Text style={styles.editGlyph}>  ✎</Text>
+          </Text>
+        </Pressable>
       </View>
 
       {/* Properties — status/priority/agent are tappable → picker sheets. */}
@@ -458,13 +550,25 @@ function ReadyBody({
         {created != null && <StaticRow label="CREATED" value={created} />}
       </View>
 
-      {/* Description */}
-      {issue.description != null && issue.description.trim() !== "" && (
-        <View style={styles.section}>
+      {/* Description — pencil edits (or adds) it. */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeadRow}>
           <Text style={styles.sectionLabel}>DESCRIPTION</Text>
-          <BodyText text={issue.description} />
+          <Pressable
+            onPress={() => setEditor("description")}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Edit description"
+          >
+            <Feather name="edit-2" size={13} color={colors.mute} />
+          </Pressable>
         </View>
-      )}
+        {issue.description != null && issue.description.trim() !== "" ? (
+          <BodyText text={issue.description} />
+        ) : (
+          <Text style={styles.emptyComments}>No description.</Text>
+        )}
+      </View>
 
       {/* Approvals — the issue's approval requests with inline Approve/Reject. */}
       {approvals.length > 0 && (
@@ -490,6 +594,11 @@ function ReadyBody({
 
       {/* Agent runs against this issue (web IssueRunsSection parity). */}
       <IssueRunsSection runs={runs} agents={agents} />
+
+      {/* Outputs — work products (with board review), documents, attachments. */}
+      <WorkProductsSection workProducts={workProducts} onReview={onReviewWorkProduct} />
+      <DocumentsSection documents={documents} />
+      <AttachmentsSection attachments={attachments} />
 
       {/* Sub-issues — interactive mini-cards + add affordance. */}
       <View style={styles.section}>
@@ -517,27 +626,38 @@ function ReadyBody({
         </Pressable>
       </View>
 
-      {/* Comments thread */}
+      {/* Thread — comments AND agent interactions, chronological. */}
       <View style={styles.section}>
         <Text style={styles.sectionLabel}>
           COMMENTS
-          {comments.length > 0 && (
-            <Text style={styles.sectionCount}> · {comments.length}</Text>
+          {thread.length > 0 && (
+            <Text style={styles.sectionCount}> · {thread.length}</Text>
           )}
         </Text>
-        {comments.length === 0 ? (
+        {thread.length === 0 ? (
           <Text style={styles.emptyComments}>No comments yet.</Text>
         ) : (
           <View style={styles.commentList}>
-            {comments.map((comment) => (
-              <CommentRow
-                key={comment.id}
-                comment={comment}
-                agents={agents}
-                members={members}
-                currentUserId={currentUserId}
-              />
-            ))}
+            {thread.map((item) =>
+              item.kind === "comment" ? (
+                <CommentRow
+                  key={`c-${item.comment.id}`}
+                  comment={item.comment}
+                  agents={agents}
+                  members={members}
+                  currentUserId={currentUserId}
+                />
+              ) : (
+                <InteractionCard
+                  key={`i-${item.interaction.id}`}
+                  interaction={item.interaction}
+                  agents={agents}
+                  onAccept={onAcceptInteraction}
+                  onReject={onRejectInteraction}
+                  onRespond={onRespondInteraction}
+                />
+              ),
+            )}
           </View>
         )}
       </View>
@@ -598,6 +718,29 @@ function ReadyBody({
         mode="subissue"
         onSubmit={onCreateChild}
         onClose={() => setAddingChild(false)}
+      />
+
+      {/* Title / description edit sheets. */}
+      <ReasonSheet
+        visible={editor === "title"}
+        title="Edit title"
+        placeholder="Title"
+        submitLabel="Save"
+        tone="primary"
+        initialValue={issue.title}
+        onSubmit={onSetTitle}
+        onClose={() => setEditor(null)}
+      />
+      <ReasonSheet
+        visible={editor === "description"}
+        title="Edit description"
+        placeholder="Description"
+        submitLabel="Save"
+        tone="primary"
+        required={false}
+        initialValue={issue.description ?? ""}
+        onSubmit={onSetDescription}
+        onClose={() => setEditor(null)}
       />
     </>
   );
@@ -671,6 +814,12 @@ const styles = StyleSheet.create({
   section: { gap: spacing.sm },
   sectionLabel: { ...type.overline },
   sectionCount: { color: colors.sectionCount },
+  sectionHeadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  editGlyph: { color: colors.muteSoft, fontSize: 13 },
 
   plainBody: {
     fontFamily: fonts.dmSans,

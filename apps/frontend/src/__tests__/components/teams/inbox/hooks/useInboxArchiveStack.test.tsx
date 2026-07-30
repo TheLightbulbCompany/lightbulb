@@ -49,7 +49,7 @@ describe("useInboxArchiveStack", () => {
     await act(async () => {
       await result.current.archive("iss_1");
     });
-    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_1/archive", {});
+    expect(mockPost).toHaveBeenCalledWith("/issues/iss_1/archive", {});
     // Success path: 3 optimistic mutates only — no settle revalidate.
     // Settle-on-success raced eventual consistency; reviewer (#3c) flagged this.
     expect(mockMutate).toHaveBeenCalledTimes(3);
@@ -141,7 +141,7 @@ describe("useInboxArchiveStack", () => {
       await result.current.undoArchive();
     });
     // Most recent (iss_2) is undone first
-    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_2/unarchive", {});
+    expect(mockPost).toHaveBeenCalledWith("/issues/iss_2/unarchive", {});
   });
 
   test("undoArchive on empty stack is a no-op", async () => {
@@ -192,8 +192,8 @@ describe("useInboxArchiveStack", () => {
       archiveBPromise = result.current.archive("iss_b");
     });
     // Both posts fired
-    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_a/archive", {});
-    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_b/archive", {});
+    expect(mockPost).toHaveBeenCalledWith("/issues/iss_a/archive", {});
+    expect(mockPost).toHaveBeenCalledWith("/issues/iss_b/archive", {});
 
     await act(async () => {
       resolveA({});
@@ -208,11 +208,11 @@ describe("useInboxArchiveStack", () => {
     await act(async () => {
       await result.current.undoArchive();
     });
-    expect(mockPost).toHaveBeenLastCalledWith("/inbox/iss_b/unarchive", {});
+    expect(mockPost).toHaveBeenLastCalledWith("/issues/iss_b/unarchive", {});
     await act(async () => {
       await result.current.undoArchive();
     });
-    expect(mockPost).toHaveBeenLastCalledWith("/inbox/iss_a/unarchive", {});
+    expect(mockPost).toHaveBeenLastCalledWith("/issues/iss_a/unarchive", {});
     // Stack is now empty.
     expect(result.current.hasUndoableArchive).toBe(false);
   });
@@ -226,7 +226,7 @@ describe("useInboxArchiveStack", () => {
     await act(async () => {
       await result.current.markRead("iss_1");
     });
-    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_1/mark-read", {});
+    expect(mockPost).toHaveBeenCalledWith("/issues/iss_1/mark-read", {});
     // Find the optimistic mutate calls — second arg is a function. Apply it
     // to the cached snapshot and check that unread flipped to false.
     const optimistic = mockMutate.mock.calls.filter(
@@ -270,7 +270,7 @@ describe("useInboxArchiveStack", () => {
     await act(async () => {
       await result.current.markUnread("iss_1");
     });
-    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_1/mark-unread", {});
+    expect(mockPost).toHaveBeenCalledWith("/issues/iss_1/mark-unread", {});
     const optimistic = mockMutate.mock.calls.filter(
       ([, value]) => typeof value === "function",
     );

@@ -1,14 +1,16 @@
-import { StyleSheet, Text, View } from "react-native";
+import Feather from "@expo/vector-icons/Feather";
+import { router } from "expo-router";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, spacing, type } from "../../config/theme";
 import { timeAgo, type IssueRun, type TeamsAgent } from "../../lib/teamsData";
 
 // Port of the web IssueRunsSection (issues/IssueRunsSection.tsx), minus the
-// live-runs join (no /inbox/live-runs feed on mobile yet) and the "View run"
-// link (no run-detail screen yet): one row per run — status · agent · when.
-// The caller sorts newest-first (useTeamsIssue) and hides the section by not
-// rendering it... but an empty list also self-hides here so callers can pass
-// state through unconditionally.
+// live-runs join (no /inbox/live-runs feed on mobile yet). Each row is
+// tappable → the run-detail screen (status · agent · when · chevron); failed
+// rows surface the error snippet inline so a failure is inspectable at a
+// glance. An empty list self-hides so callers can pass state through
+// unconditionally.
 
 function statusColor(status: string | null | undefined): string {
   const s = (status ?? "").toLowerCase();
@@ -34,16 +36,39 @@ export function IssueRunsSection({
       <Text style={styles.overline}>RUNS</Text>
       {runs.map((run) => {
         const when = run.startedAt ?? run.createdAt;
+        const errorSnippet =
+          (run.status ?? "").toLowerCase() === "failed"
+            ? run.error ?? run.errorCode ?? null
+            : null;
         return (
-          <View key={run.runId} style={styles.row}>
-            <Text style={[styles.status, { color: statusColor(run.status) }]}>
-              {run.status}
-            </Text>
-            <Text style={styles.agent} numberOfLines={1}>
-              {agentName(run.agentId)}
-            </Text>
-            {when ? <Text style={styles.when}>{timeAgo(when)}</Text> : null}
-          </View>
+          <Pressable
+            key={run.runId}
+            style={({ pressed }) => [styles.rowOuter, pressed && styles.rowPressed]}
+            onPress={() =>
+              router.push({
+                pathname: "/(app)/teams/run/[runId]",
+                params: { runId: run.runId },
+              })
+            }
+            accessibilityRole="button"
+            accessibilityLabel={`View run — ${run.status}`}
+          >
+            <View style={styles.row}>
+              <Text style={[styles.status, { color: statusColor(run.status) }]}>
+                {run.status}
+              </Text>
+              <Text style={styles.agent} numberOfLines={1}>
+                {agentName(run.agentId)}
+              </Text>
+              {when ? <Text style={styles.when}>{timeAgo(when)}</Text> : null}
+              <Feather name="chevron-right" size={14} color={colors.mute} />
+            </View>
+            {errorSnippet ? (
+              <Text style={styles.error} numberOfLines={2}>
+                {errorSnippet}
+              </Text>
+            ) : null}
+          </Pressable>
         );
       })}
     </View>
@@ -58,11 +83,12 @@ const styles = StyleSheet.create({
     borderTopColor: colors.edge,
   },
   overline: { ...type.overline },
+  rowOuter: { paddingVertical: spacing.xs, gap: 2 },
+  rowPressed: { opacity: 0.6 },
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    paddingVertical: spacing.xs,
   },
   status: {
     fontFamily: fonts.dmSansMedium,
@@ -82,5 +108,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 14,
     color: colors.mute,
+  },
+  error: {
+    fontFamily: fonts.dmSans,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.danger,
   },
 });

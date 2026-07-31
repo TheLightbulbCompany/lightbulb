@@ -20,6 +20,7 @@
         "minWidth": 800,
         "minHeight": 600,
         "titleBarStyle": "Visible",
+        "dragDropEnabled": false,
         "url": "https://dev.isol8.co/chat"
       }
     ],

@@ -42,7 +42,9 @@ import {
 
 // Teams is a subscription-gated, web-managed surface: when the workspace needs
 // a subscription the mobile app deep-links out rather than running checkout.
-const MANAGE_URL = "https://isol8.co/teams";
+// Teams is a PANEL inside the workspace, not a route. The /teams/* URL tree
+// was removed and isol8.co/teams now 404s, so this must point at /chat.
+const MANAGE_URL = "https://isol8.co/chat";
 
 // ---------------------------------------------------------------------------
 // Readiness affordance (spec §7) — pulsing dot for the provisioning state.

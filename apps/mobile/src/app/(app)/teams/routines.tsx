@@ -24,7 +24,9 @@ import {
 // levers — pause/resume a misfiring automation, fire one now — live here;
 // create/edit stays on web (deep-link), matching the control-surface pattern.
 
-const MANAGE_URL = "https://isol8.co/teams";
+// Teams is a PANEL inside the workspace, not a route. The /teams/* URL tree
+// was removed and isol8.co/teams now 404s, so this must point at /chat.
+const MANAGE_URL = "https://isol8.co/chat";
 
 function routineEnabled(routine: TeamsRoutine): boolean {
   return routine.status === "active";

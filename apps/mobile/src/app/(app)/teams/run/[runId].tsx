@@ -24,7 +24,9 @@ import {
 // (Cancel / Retry / Resume), error surfaces, transcript (bounded tail of the
 // run log), event timeline, and the metadata props. Polls while active.
 
-const MANAGE_URL = "https://isol8.co/teams";
+// Teams is a PANEL inside the workspace, not a route. The /teams/* URL tree
+// was removed and isol8.co/teams now 404s, so this must point at /chat.
+const MANAGE_URL = "https://isol8.co/chat";
 
 // Bound what one RN Text renders — a 256KiB transcript in a single Text is a
 // jank risk the web's scrollable <pre> doesn't have. The tail is what matters.

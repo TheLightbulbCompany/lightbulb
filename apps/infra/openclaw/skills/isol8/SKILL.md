@@ -87,9 +87,10 @@ that, say so plainly instead of implying it exists.
 |---|---|---|
 | Chat | isol8.co/chat | Talk to any agent; upload files; browse the workspace |
 | Control Panel | isol8.co/chat (right-hand panel) | Tabs: Overview, Agents, Skills, Sessions, Channels, Usage (org admins only), Model & Credits, **Integrations**, Dreams, Skill Proposals |
-| Teams | isol8.co/teams | The company board: agents, tasks (issues), threads — where work is assigned and tracked |
+| Teams | isol8.co/chat (Teams panel) | The company board: agents, tasks (issues), threads — where work is assigned and tracked. It is a panel inside the workspace, NOT a standalone URL: `isol8.co/teams` is a 404, so never send the owner there |
 | Marketplace | isol8.co/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | isol8.co/settings | Account, billing, connections |
+| Blog | isol8.co/blog | Public writing on agents, persistent workspaces, and building an AI team. Safe to link an owner to when they want background reading — it needs no login |
 | Desktop app | Isol8 for macOS | Same UI, plus: pairs the owner's Chrome for your browser tool, and shows exec-approval prompts natively |
 | Channels | Channels tab (Control Panel) | Chat with agents from outside the web app — read the live channel list from platform-info (see the "Integrations and channels" section below) |
 

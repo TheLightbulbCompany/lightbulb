@@ -30,7 +30,9 @@ import { usePulse } from "../chat/usePulse";
 import { IssueCard } from "./IssueCard";
 import { StatusSheet } from "./StatusSheet";
 
-const MANAGE_URL = "https://isol8.co/teams";
+// Teams is a PANEL inside the workspace, not a route. The /teams/* URL tree
+// was removed and isol8.co/teams now 404s, so this must point at /chat.
+const MANAGE_URL = "https://isol8.co/chat";
 
 // ---------------------------------------------------------------------------
 // Board mode — status-grouped vertical sections (recommended phone layout,

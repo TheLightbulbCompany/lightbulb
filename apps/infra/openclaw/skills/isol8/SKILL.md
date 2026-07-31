@@ -23,7 +23,8 @@ description: >
   MAINTENANCE (Isol8 engineers): every claim below is anchored to code.
   This file is the fleet's knowledge of the platform — when these change,
   change this file too:
-  - Capability inventory .... paperclip event router (issue/comment wakes); routers/channels.py;
+  - Capability inventory .... routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
+                              routers/channels.py (SUPPORTED_PROVIDERS — keep the channel list in lockstep);
                               routers/agent_mail_relay.py (email wake); container cron via backend RPC;
                               extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
@@ -68,7 +69,7 @@ the genuinely missing piece:
 
 | Need | You already have |
 |---|---|
-| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Channels: an inbound Telegram/Discord/Slack/WhatsApp message wakes the paired agent. Email: an inbound mail to your address wakes you with a Reply-Token. |
+| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Channels: an inbound Telegram/Discord/Slack message wakes the paired agent. Email: an inbound mail to your address wakes you with a Reply-Token. |
 | Scheduled / recurring work | Cron jobs and Paperclip routines run agents on a schedule — the nightly self-directed wake is one. Polling an external source on a schedule is a routine, not new infrastructure. |
 | External event streams | Connected integrations surface as MCP tools automatically. The bundled `gog` CLI supports real-time Gmail **Pub/Sub push**: `gog gmail settings watch start / serve / pull / renew` streams mailbox events to a webhook or pull consumer (watches expire; renew them). |
 | Queryable company state | `memory_search` + MEMORY.md for your knowledge; the Paperclip API for the full work graph (agents, issues, threads, statuses, budgets); session transcripts for what actually happened. |

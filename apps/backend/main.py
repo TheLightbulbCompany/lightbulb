@@ -52,6 +52,7 @@ from routers import (
     onboarding,
     ops,
     orgs,
+    paperclip_events,
     paperclip_proxy,
     platform_info,
     ses_inbound,
@@ -758,6 +759,10 @@ app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"]
 # SES-inbound agent-email ingest (provisioned agent email, inbound leg).
 # A Lambda parses raw SES mail and POSTs the clean JSON payload here.
 app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
+# Paperclip isol8.notifications plugin events (approvals + run lifecycle →
+# push notifications). Bearer-secret auth; disabled when the secret is unset.
+app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")

@@ -29,6 +29,7 @@ export class AuthStack extends cdk.Stack {
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
   public readonly platformOpsTokenKey: secretsmanager.Secret;
+  public readonly paperclipEventsWebhookSecret: secretsmanager.Secret;
   public readonly wsInternalSecret: secretsmanager.Secret;
   public readonly paperclipAdminCredentials: secretsmanager.Secret;
   public readonly gogKeyringPassword: secretsmanager.Secret;
@@ -120,6 +121,18 @@ export class AuthStack extends cdk.Stack {
       "platform_ops_token_key",
       { passwordLength: 64, excludePunctuation: true },
       "Dedicated symmetric secret for signing/verifying platform_ops tokens (owner-scoped ops API).",
+    );
+
+    // Shared bearer secret between the isol8.notifications Paperclip plugin
+    // and the backend's /webhooks/paperclip-events receiver. Generated here;
+    // the backend reads it as an env secret, and
+    // scripts/configure_paperclip_notify_plugin.py pushes the same value into
+    // the plugin's configJson (plugin workers cannot read env vars).
+    this.paperclipEventsWebhookSecret = createSecret(
+      "PaperclipEventsWebhookSecret",
+      "paperclip_events_webhook_secret",
+      { passwordLength: 64, excludePunctuation: true },
+      "Bearer secret the isol8.notifications Paperclip plugin sends to the backend paperclip-events webhook.",
     );
 
     // Shared secret that authenticates the CALLER of the backend /api/v1/ws/*

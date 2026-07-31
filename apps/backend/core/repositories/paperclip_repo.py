@@ -656,6 +656,32 @@ class PaperclipRepo:
         base = await self.get(first["user_id"])
         return base.company_id if base is not None else None
 
+    async def get_user_ids_for_company(self, company_id: str) -> list[str]:
+        """Return the Clerk user_ids of every ACTIVE row in ``company_id``.
+
+        Push-notification audience for inbound Paperclip plugin events
+        (``routers/paperclip_events.py``): a personal company has exactly one
+        row; an org company has one row per member, all sharing the same
+        ``company_id``. Queries the ``by-company-id`` GSI (PK: ``company_id``,
+        projection INCLUDE ``status``) declared in ``database-stack.ts``.
+        """
+        kwargs = {
+            "IndexName": "by-company-id",
+            "KeyConditionExpression": Key("company_id").eq(company_id),
+        }
+        user_ids: list[str] = []
+        while True:
+            resp = await run_in_thread(self._table().query, **kwargs)
+            user_ids.extend(
+                item["user_id"]
+                for item in resp.get("Items", [])
+                if item.get("status") == "active" and item.get("user_id")
+            )
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return user_ids
+            kwargs["ExclusiveStartKey"] = last_key
+
     async def list_by_org_id(self, org_id: str) -> list[dict]:
         """Return all rows in ``org_id`` via the ``by-org-id`` GSI.
 

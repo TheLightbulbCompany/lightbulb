@@ -90,6 +90,7 @@ function build(environment: "dev" | "prod"): {
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
+      paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
       platformOpsTokenKey: `isol8/${environment}/platform_ops_token_key`,
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,

@@ -304,6 +304,12 @@ class Settings(BaseSettings):
     # from Secrets Manager + KMS by the CDK service stack at deploy time.
     # Re-used by paperclip_proxy to sign the proxy's own session cookie.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = os.getenv("PAPERCLIP_SERVICE_TOKEN_KEY", "")
+    # Shared bearer token the isol8.notifications Paperclip plugin sends on
+    # POST /webhooks/paperclip-events. Empty disables the receiver (404).
+    # Populated from Secrets Manager by the CDK service stack; the same value
+    # is pushed into the plugin's configJson by
+    # scripts/configure_paperclip_notify_plugin.py.
+    PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = os.getenv("PAPERCLIP_EVENTS_WEBHOOK_SECRET", "")
     # --- Platform Ops (operator console + owner-scoped ops API) ---
     # The founder's owner_id (user_* or org_*). The platform_ops token's
     # `sub` must equal this; it gates the agent path on /ops/*.

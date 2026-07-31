@@ -71,6 +71,12 @@ export interface SecretNames {
    */
   platformOpsTokenKey: string;
   /**
+   * Bearer secret the isol8.notifications Paperclip plugin attaches to
+   * POST /webhooks/paperclip-events. Same CMK, so KmsDecryptForSecrets
+   * covers it.
+   */
+  paperclipEventsWebhookSecret: string;
+  /**
    * Shared password for the gog CLI file-keyring backend. The backend
    * materializes the owner's Google OAuth keyring on EFS by running gog with
    * this password; the same secret is injected into every per-user OpenClaw
@@ -1438,6 +1444,15 @@ export class ServiceStack extends cdk.Stack {
           this,
           "ImportPlatformOpsTokenKey",
           props.secretNames.platformOpsTokenKey,
+        ),
+      ),
+      // Bearer secret validated by /webhooks/paperclip-events (inbound
+      // Paperclip plugin events). Same CMK, covered by KmsDecryptForSecrets.
+      PAPERCLIP_EVENTS_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportPaperclipEventsWebhookSecret",
+          props.secretNames.paperclipEventsWebhookSecret,
         ),
       ),
       // Shared password for the gog CLI file keyring. The backend's gog_cli

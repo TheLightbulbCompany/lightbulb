@@ -288,6 +288,16 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "org_id", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+    // Reverse lookup companyId -> member user_ids for the inbound Paperclip
+    // plugin-event receiver (routers/paperclip_events.py): push-notification
+    // audience resolution. INCLUDE status so the active-row filter needs no
+    // base-table chase (rows also carry encrypted creds — do not project ALL).
+    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
+      indexName: "by-company-id",
+      partitionKey: { name: "company_id", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.INCLUDE,
+      nonKeyAttributes: ["status"],
+    });
 
     new cdk.CfnOutput(this, "OAuthTokensTableName", {
       value: this.oauthTokensTable.tableName,

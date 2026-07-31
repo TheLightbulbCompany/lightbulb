@@ -26,7 +26,8 @@ import {
 
 // Teams is a PANEL inside the workspace, not a route. The /teams/* URL tree
 // was removed and isol8.co/teams now 404s, so this must point at /chat.
-const MANAGE_URL = "https://isol8.co/chat";
+const manageUrl = (id: string) =>
+  `https://isol8.co/chat?panel=teams-run-detail&detailId=${encodeURIComponent(id)}`;
 
 // Bound what one RN Text renders — a 256KiB transcript in a single Text is a
 // jank risk the web's scrollable <pre> doesn't have. The tail is what matters.
@@ -163,7 +164,7 @@ export default function RunDetailScreen() {
         {isSubscription ? (
           <ActionButton
             label="Manage on isol8.co"
-            onPress={() => void Linking.openURL(MANAGE_URL)}
+            onPress={() => void Linking.openURL(manageUrl(runId))}
           />
         ) : (
           <ActionButton label="Retry" onPress={() => void retry()} />

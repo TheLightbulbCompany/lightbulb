@@ -64,7 +64,8 @@ import {
 
 // Teams is a PANEL inside the workspace, not a route. The /teams/* URL tree
 // was removed and isol8.co/teams now 404s, so this must point at /chat.
-const MANAGE_URL = "https://isol8.co/chat";
+const manageUrl = (issueId: string) =>
+  `https://isol8.co/chat?panel=teams-issue-detail&detailId=${encodeURIComponent(issueId)}`;
 const UNASSIGNED_KEY = "__unassigned__";
 const AGENT_PREFIX = "agent:";
 const USER_PREFIX = "user:";
@@ -310,7 +311,7 @@ export default function IssueDetailScreen() {
           action={
             <OutlineButton
               label="Manage on isol8.co"
-              onPress={() => void Linking.openURL(MANAGE_URL)}
+              onPress={() => void Linking.openURL(manageUrl(params.id))}
             />
           }
         />

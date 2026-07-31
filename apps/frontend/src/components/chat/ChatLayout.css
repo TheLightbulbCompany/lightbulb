@@ -71,7 +71,7 @@
   line-height: 1;
 }
 .sidebar-settings-link {
-  color: #8a8578;
+  color: var(--mute);
   transition: color 0.15s;
   display: flex;
   align-items: center;
@@ -97,7 +97,7 @@
   cursor: pointer;
   transition: all 0.15s;
   background: transparent;
-  color: #8a8578;
+  color: var(--mute);
 }
 .tab-btn.active {
   background: #fff;
@@ -178,7 +178,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 4px 6px;
-  color: #8a8578;
+  color: var(--mute);
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 10px;
   letter-spacing: 0.14em;
@@ -241,7 +241,7 @@
 }
 .agent-model {
   font-size: 11px;
-  color: #8a8578;
+  color: var(--mute);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -272,7 +272,7 @@
   height: 22px;
   border: 0;
   background: transparent;
-  color: #8a8578;
+  color: var(--mute);
   border-radius: 4px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
@@ -351,7 +351,7 @@
   border: 0;
   background: transparent;
   border-radius: 6px;
-  color: #8a8578;
+  color: var(--mute);
   cursor: pointer;
 }
 .session-row:hover .session-rename,
@@ -391,7 +391,7 @@
   border: 0;
   background: transparent;
   border-radius: 7px;
-  color: #8a8578;
+  color: var(--mute);
   font-size: 12px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
@@ -442,7 +442,7 @@
   padding: 1px 6px;
   border-radius: 4px;
   background: #e8e3d9;
-  color: #8a8578;
+  color: var(--mute);
 }
 .version-text {
   text-align: center;
@@ -492,7 +492,7 @@
   cursor: pointer;
   padding: 10px;
   margin: -6px;
-  color: #8a8578;
+  color: var(--mute);
   transition: color 0.15s;
 }
 .mobile-hamburger:hover {

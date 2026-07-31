@@ -23,7 +23,6 @@ ENV/
 .env
 .env.*
 !.env.example
-!.env.localstack
 
 # ========================
 # FastAPI / ASGI

@@ -194,5 +194,18 @@ async def test_friday_identity_skipped_on_reprovision(monkeypatch, tmp_path):
         workspace=workspace,
     )
 
-    # User's edit is preserved.
-    assert soul_path.read_text() == "CUSTOM SOUL — user edited this"
+    # User's edit is preserved. The self-grounding migration APPENDS its
+    # section to a SOUL.md that lacks the heading (that heal is the point —
+    # pre-grounding Fridays must learn the isol8 skill covers strategy
+    # conversations), so the file is prefix-preserved, not byte-identical.
+    content = soul_path.read_text()
+    assert content.startswith("CUSTOM SOUL — user edited this")
+    assert content.count("## You are made of Isol8") == 1
+
+    # Third provision: the migration is idempotent — no second append.
+    await friday_identity.pre_stage_friday_identity(
+        owner_id=owner_id,
+        paperclip_agents=paperclip_agents,
+        workspace=workspace,
+    )
+    assert soul_path.read_text() == content

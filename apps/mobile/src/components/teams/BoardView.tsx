@@ -31,7 +31,6 @@ import { IssueCard } from "./IssueCard";
 import { StatusSheet } from "./StatusSheet";
 import { teamsPanelUrl } from "../../lib/webLinks";
 
-
 // ---------------------------------------------------------------------------
 // Board mode — status-grouped vertical sections (recommended phone layout,
 // contract §6). Each non-empty status column is a section; tap a card → detail,

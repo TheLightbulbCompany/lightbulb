@@ -25,7 +25,6 @@ import { teamsPanelUrl } from "../../../lib/webLinks";
 // levers — pause/resume a misfiring automation, fire one now — live here;
 // create/edit stays on web (deep-link), matching the control-surface pattern.
 
-
 function routineEnabled(routine: TeamsRoutine): boolean {
   return routine.status === "active";
 }

@@ -71,7 +71,11 @@
   --gold: #c2a378;
   --ink: #1a1a1a;
   --ink-soft: #3d3d3d;
-  --mute: #8a8578;
+  /* #767061, not the older #8a8578: --mute is secondary BODY text, and
+   * #8a8578 measured 3.44:1 on --cream — under the 4.5:1 WCAG AA floor.
+   * #767061 keeps the same warm-grey hue at 4.61:1. Verified in-browser,
+   * not computed from the hex alone. */
+  --mute: #767061;
   --mute-soft: #b5af9f;
   --warn: #c47a1d;
   --danger: #b32424;
@@ -830,7 +834,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .shelf-frame-label {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: #8a8578;
+  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--mute);
 }
 .shelf-grid {
   display: grid;
@@ -873,7 +877,7 @@ button:focus-visible { border-radius: 999px; }
   flex-shrink: 0;
 }
 .price.free {
-  color: #8a8578; background: #f3efe6; border: 1px solid #e0dbd0;
+  color: var(--mute); background: #f3efe6; border: 1px solid #e0dbd0;
 }
 
 /* "Browse all" tile */
@@ -890,7 +894,7 @@ button:focus-visible { border-radius: 999px; }
 .listing.more .more-lbl {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
-  color: #8a8578;
+  color: var(--mute);
 }
 .listing.more .more-cta {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -1463,13 +1467,13 @@ button:focus-visible { border-radius: 999px; }
 .orch-frame-label {
   position: absolute; top: 16px; left: 22px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: #8a8578;
+  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--mute);
 }
 .orch-frame-meta {
   position: absolute; top: 16px; right: 22px;
   display: inline-flex; align-items: center; gap: 8px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .14em; color: #8a8578;
+  font-size: 10px; letter-spacing: .14em; color: var(--mute);
 }
 
 .puck {
@@ -1489,7 +1493,7 @@ button:focus-visible { border-radius: 999px; }
 .puck-status {
   position: absolute; top: calc(100% + 26px); left: 50%; transform: translateX(-50%);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9.5px; color: #8a8578; letter-spacing: .04em; white-space: nowrap;
+  font-size: 9.5px; color: var(--mute); letter-spacing: .04em; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 5px;
 }
 
@@ -1566,7 +1570,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .skill-chip-mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px; color: #8a8578;
+  font-size: 11px; color: var(--mute);
 }
 
 @media (max-width: 980px) {

@@ -170,8 +170,8 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     # 4. Deploy the snapshot into the container (write files + register live in
     #    openclaw.json). Roll back the orphan Paperclip agent on any failure —
     #    same envelope as the marketplace deploy path.
+    catalog = get_catalog_service()
     try:
-        catalog = get_catalog_service()
         await catalog.deploy_from_artifact(
             owner_id=owner_id,
             slug=_slugify(payload.name),
@@ -189,6 +189,13 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             payload.staging_agent_id,
             new_agent_id,
         )
+        # Unwind the container/EFS side effects first (openclaw.json agents.list
+        # entry + extracted workspace dirs), mirroring the marketplace deploy
+        # router. Without this every failed attempt strands a half-installed
+        # ``name=<uuid>`` ghost in the owner's config — and if the entry is the
+        # thing that failed validation, it keeps the whole config invalid until
+        # an admin regenerates it. Self-contained best-effort; never raises.
+        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
         try:
             await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
         except Exception:

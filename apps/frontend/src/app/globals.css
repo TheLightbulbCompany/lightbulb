@@ -1467,7 +1467,7 @@ button:focus-visible { border-radius: 999px; }
 .brand-logo-link:hover .brand-logo--cream { color: #ffffff; }
 
 /* ── TEAM (formerly Orchestration) ── */
-.landing-orch { background: var(--cream-deeper, var(--cream-deeper)); padding: 128px 48px; border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
+.landing-orch { background: var(--cream-deeper); padding: 128px 48px; border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge); }
 .landing-orch .agents-lede { font-size: 16px; color: #5c5c5c; line-height: 1.7; max-width: 620px; margin: 0 0 56px; }
 .landing-orch .agents-lede strong { color: var(--ink); font-weight: 600; }
 
@@ -1521,7 +1521,7 @@ button:focus-visible { border-radius: 999px; }
 /* ── FEATURES: skills shelf folded in ── */
 .skills-strip {
   margin-top: 48px; padding: 28px 32px;
-  background: var(--cream-deeper, var(--cream-deeper)); border: 1px solid var(--edge);
+  background: var(--cream-deeper); border: 1px solid var(--edge);
   border-radius: 16px;
   display: grid; grid-template-columns: 1.1fr 2fr; gap: 36px; align-items: center;
 }

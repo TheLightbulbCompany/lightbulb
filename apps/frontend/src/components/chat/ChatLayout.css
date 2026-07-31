@@ -108,8 +108,8 @@
   color: var(--ink);
 }
 /* Co-equal create pill: two first-class create actions (agent | task) in one
-   forest control, reusing the primary-button treatment (same forest var(--forest),
-   cream var(--cream), 8px radius, 13px/500 type, and sidebar margins). Each half is
+   forest control, reusing the primary-button treatment (same forest #06402B,
+   cream #faf7f2, 8px radius, 13px/500 type, and sidebar margins). Each half is
    an equal flex segment; a whisper-quiet cream hairline divides them, and only
    the hovered half lightens so the affordance is per-action. */
 .create-pill {

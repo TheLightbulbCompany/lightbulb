@@ -47,10 +47,17 @@ def _render_welcome_html(first_name: str | None, base_url: str) -> str:
     <li>Ask her to research something and report back. It's the fastest way to see how she works.</li>
     <li>Browse the <a href="{base_url}/marketplace" style="color:#111">marketplace</a> and hire a specialist onto your team.</li>
   </ol>
+  <p>
+    One more thing: once Friday has settled in, <strong>she'll email you
+    herself</strong> — from her own address, with what she's found. Reply to her
+    and it goes straight back to her, no app needed.
+  </p>
   <p style="color:#666;font-size:14px">
-    Still have questions? The <a href="{base_url}/#faq" style="color:#111">FAQ</a>
-    covers the common ones — and you can just reply to this email. It reaches a
-    real person (and a few of our own agents).
+    Want to read more first? The <a href="{base_url}/blog" style="color:#111">blog</a>
+    covers how persistent agent workspaces work, and the
+    <a href="{base_url}/#faq" style="color:#111">FAQ</a> handles the common
+    questions. Or just reply to this email — it reaches a real person (and a few
+    of our own agents).
   </p>
   <p style="color:#999;font-size:13px">— The Isol8 team</p>
 </div>"""
@@ -84,9 +91,14 @@ Three things worth trying first:
   3. Browse the marketplace and hire a specialist onto your team:
      {base_url}/marketplace
 
-Still have questions? The FAQ covers the common ones ({base_url}/#faq) — and
-you can just reply to this email. It reaches a real person (and a few of our
-own agents).
+One more thing: once Friday has settled in, she'll email you herself — from
+her own address, with what she's found. Reply to her and it goes straight
+back to her, no app needed.
+
+Want to read more first? The blog covers how persistent agent workspaces
+work ({base_url}/blog), and the FAQ handles the common questions
+({base_url}/#faq). Or just reply to this email — it reaches a real person
+(and a few of our own agents).
 
 — The Isol8 team"""
 

@@ -2883,6 +2883,30 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def set_plugin_config(
+        self,
+        *,
+        session_cookie: str,
+        plugin_key: str,
+        config_json: dict,
+    ) -> dict:
+        """Write a plugin's instance-wide ``configJson``.
+
+        Maps to ``POST /api/plugins/{pluginId}/config`` — instance-admin only,
+        so ``session_cookie`` must be the bootstrap-admin session
+        (``get_admin_session_cookie``). ``plugin_key`` may be the manifest key
+        (e.g. ``isol8.notifications``); Paperclip resolves keys as well as
+        UUIDs. Used by scripts/configure_paperclip_notify_plugin.py to hand
+        the notifications-forwarder plugin its backend URL + bearer token
+        (workers cannot read env vars, and plugin secret-refs are disabled in
+        the fork — configJson is the only supported channel).
+        """
+        return await self._post(
+            f"/api/plugins/{plugin_key}/config",
+            json={"configJson": config_json},
+            session_cookie=session_cookie,
+        )
+
 
 # Module-level shared httpx client. Created lazily on first use, reused for
 # the lifetime of the process. Not closed explicitly — the OS reclaims socket

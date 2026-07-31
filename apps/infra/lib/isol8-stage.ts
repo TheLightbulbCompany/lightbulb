@@ -154,6 +154,7 @@ export class Isol8Stage extends cdk.Stage {
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         platformOpsTokenKey: auth.platformOpsTokenKey.secretName,
+        paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,

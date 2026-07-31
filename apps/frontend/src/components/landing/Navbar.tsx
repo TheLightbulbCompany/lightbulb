@@ -15,6 +15,7 @@ export function Navbar() {
   const pathname = usePathname() ?? "/";
   const onLanding = pathname === "/";
   const onMarketplace = pathname.startsWith("/marketplace");
+  const onBlog = pathname.startsWith("/blog");
 
   // From a non-landing route, scroll anchors must navigate back to "/" first.
   const anchor = (id: string) => (onLanding ? `#${id}` : `/#${id}`);
@@ -82,6 +83,7 @@ export function Navbar() {
   const initialActive = (id: string) => {
     if (onLanding) return id === "home" ? "active" : undefined;
     if (onMarketplace) return id === "marketplace" ? "active" : undefined;
+    if (onBlog) return id === "blog" ? "active" : undefined;
     return undefined;
   };
 
@@ -106,6 +108,9 @@ export function Navbar() {
         </Link>
         <Link href={anchor("faq")} data-section="faq" className={initialActive("faq")}>
           FAQ
+        </Link>
+        <Link href="/blog" data-section="blog" className={initialActive("blog")}>
+          Blog
         </Link>
         <Link href={anchor("goosetown")} data-section="goosetown" className={initialActive("goosetown")}>
           GooseTown<span className="nav-alpha">alpha</span>

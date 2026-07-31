@@ -258,7 +258,7 @@ export function DashboardPanel() {
       {/* Metric tiles — single continuous strip with internal hairlines */}
       <section
         aria-label="Key metrics"
-        className="editorial-card grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 overflow-hidden"
+        className="editorial-card grid grid-cols-1 @md:grid-cols-2 @4xl:grid-cols-4 overflow-hidden"
       >
         <MetricCard
           icon={Bot}
@@ -317,7 +317,7 @@ export function DashboardPanel() {
       {/* Charts grid */}
       <section
         aria-label="Activity charts"
-        className="grid gap-3 sm:gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        className="grid gap-3 @md:gap-4 @xl:grid-cols-2 @5xl:grid-cols-4"
       >
         <ChartCard title="Run Activity" subtitle="Last 14 days">
           <RunActivityChart activity={dashboard.runActivity} />

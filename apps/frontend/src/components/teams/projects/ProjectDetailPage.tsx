@@ -183,7 +183,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
       />
 
       {tab === "overview" && (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
+        <div className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
           <main className="flex flex-col gap-6 min-w-0">
             <ProjectHeader
               project={project}
@@ -200,7 +200,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
               }}
             />
           </main>
-          <aside className="lg:sticky lg:top-4 lg:self-start">
+          <aside className="@3xl:sticky @3xl:top-4 @3xl:self-start">
             <ProjectProperties
               project={project}
               issueCount={issues.length}

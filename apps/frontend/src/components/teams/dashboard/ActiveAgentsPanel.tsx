@@ -256,7 +256,7 @@ export function ActiveAgentsPanel({
           No active agent runs.
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3 @md:gap-4 @xl:grid-cols-2 @5xl:grid-cols-4">
           {visibleRuns.map((run) => (
             <AgentRunCard
               key={run.id}

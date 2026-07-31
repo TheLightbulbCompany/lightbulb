@@ -274,7 +274,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
 
   return (
     <div
-      className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
+      className="grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
       style={{ background: "var(--cream)", color: "var(--ink)" }}
     >
       <main className="flex flex-col gap-6 min-w-0">
@@ -392,7 +392,7 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           />
         </div>
       </main>
-      <aside className="lg:sticky lg:top-4 lg:self-start">
+      <aside className="@3xl:sticky @3xl:top-4 @3xl:self-start">
         <IssueProperties
           issue={issue}
           agents={agents}

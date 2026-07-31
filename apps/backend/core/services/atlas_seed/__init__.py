@@ -15,12 +15,13 @@ Best-effort: the caller (ecs_manager.write_user_configs) wraps this in
 try/except; additionally each file write is guarded so one unreadable file can't
 strand the remaining ~150. This function never raises.
 
-By default each file is staged via ``write_file_if_missing`` (O_EXCL), so a
-container that already has Atlas's files keeps them on a normal reprovision —
-the rewritten bundle is NOT picked up. Pass ``force=True`` (see
-``scripts/restage_atlas.py``) to overwrite every staged file via
-``Workspace.write_file`` instead, so an existing container is brought current
-with the repo bundle. The bridge-URL substitution + ACP augmentation still
+By default each file is staged via ``write_file_if_missing`` (O_EXCL) — but a
+bundle-fingerprint marker (``.isol8-seed-fingerprint`` in Atlas's workspace)
+detects when an EXISTING workspace was staged from an older bundle, and that
+pass auto-flips to force-overwrite. So any path through
+``write_user_configs`` (fresh provision, reprovision, admin
+regenerate-config) brings a stale bundle current; ``scripts/restage_atlas.py``
+remains as the explicit-force ops lever. The bridge-URL substitution + ACP augmentation still
 apply under force (the loop is told to skip those pre-written files so the
 substituted/augmented copies survive). The ``.openclaw/workspace-state.json``
 marker is EXEMPT from force: it is seeded one-shot into a freshly created
@@ -28,6 +29,7 @@ workspace only — re-writing it into a booted workspace bricks every agent run
 (see ``friday_identity.seed_workspace_state``, #1429).
 """
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -117,6 +119,36 @@ def _bridge_url(owner_id: str) -> str:
 # into the vendored tree (mirrors agent_export's hygiene filter).
 _SKIP = {".DS_Store", "__pycache__", ".git"}
 
+# Marker file recording which bundle fingerprint an EXISTING workspace was last
+# staged with. A dotfile so agent_export's hygiene filter keeps it out of
+# marketplace snapshots. Lives inside Atlas's workspace so it travels with the
+# workspace (a recreated Atlas gets a fresh one).
+_FINGERPRINT_FILENAME = ".isol8-seed-fingerprint"
+
+
+def _bundle_fingerprint() -> str:
+    """Content hash of everything a stage pass would write.
+
+    Covers the vendored ``files/`` tree (paths + bytes) and the stage-time
+    AGENTS.md ACP augmentation. Deliberately NOT covered: the per-owner bridge
+    URL (owner/env-derived, stable for a given container) — a change to
+    ``_bridge_url``'s shape alone won't bump the fingerprint, which is fine
+    because in practice bridge changes ship with a build.lobster edit.
+    """
+    h = hashlib.sha256()
+    for abs_path in sorted(_FILES_DIR.rglob("*")):
+        if not abs_path.is_file():
+            continue
+        rel_path = abs_path.relative_to(_FILES_DIR)
+        if any(part in _SKIP for part in rel_path.parts):
+            continue
+        h.update(rel_path.as_posix().encode())
+        h.update(b"\0")
+        h.update(abs_path.read_bytes())
+        h.update(b"\0")
+    h.update(_ACP_DELEGATION_SECTION.encode())
+    return h.hexdigest()
+
 
 def _skip_result(*, force: bool, reason: str) -> dict:
     """Counts dict for an early skip (no Atlas / ambiguous), shaped like the
@@ -128,6 +160,7 @@ def _skip_result(*, force: bool, reason: str) -> dict:
         "errored": 0,
         "overwritten": 0,
         "force": force,
+        "auto_refreshed": False,
         "reason": reason,
     }
 
@@ -183,6 +216,43 @@ async def pre_stage_atlas(
         return _skip_result(force=force, reason="no_atlas")
 
     atlas_uuid = atlas["id"]
+
+    # ── Bundle-staleness auto-refresh ──────────────────────────────────────
+    # write_file_if_missing means an EXISTING workspace never picks up a
+    # rewritten bundle: a container provisioned before a bundle change keeps
+    # the old files through every reprovision (the founders' Atlas shipped
+    # without the bridge files for exactly this reason). Detect staleness with
+    # a content fingerprint: the marker file records which bundle the
+    # workspace was last staged with, and a mismatch on an existing workspace
+    # flips this pass to force-overwrite — so any path through
+    # write_user_configs (provision, reprovision, admin regenerate-config)
+    # self-heals a stale bundle. Fresh workspaces (dir absent) stay on the
+    # plain missing-only path: everything is new there anyway, and the marker
+    # written below records the bundle they got. Best-effort like the rest of
+    # the seeder: a fingerprint failure falls back to missing-only staging.
+    auto_refreshed = False
+    fingerprint: str | None = None
+    try:
+        fingerprint = _bundle_fingerprint()
+        if not force and workspace.agent_workspace_path(owner_id, atlas_uuid).is_dir():
+            try:
+                staged_fp = workspace.read_file(owner_id, f"workspace-{atlas_uuid}/{_FINGERPRINT_FILENAME}").strip()
+            except Exception:  # noqa: BLE001 — missing/unreadable marker = pre-marker workspace
+                staged_fp = None
+            if staged_fp != fingerprint:
+                auto_refreshed = True
+                put_metric("atlas_seed.auto_refreshed")
+                logger.info(
+                    "atlas_seed: bundle fingerprint mismatch for owner=%s "
+                    "(staged=%s current=%s) — force-refreshing the bundle",
+                    owner_id,
+                    (staged_fp or "<none>")[:12],
+                    fingerprint[:12],
+                )
+    except Exception as exc:  # noqa: BLE001 — best-effort, fall back to missing-only
+        put_metric("atlas_seed.fingerprint_error")
+        logger.warning("atlas_seed: fingerprint check failed owner=%s: %s", owner_id, exc)
+    force = force or auto_refreshed
 
     # Under force, every staged file is overwritten via Workspace.write_file
     # instead of the O_EXCL write_file_if_missing. ``overwritten`` counts those
@@ -315,6 +385,16 @@ async def pre_stage_atlas(
         else:
             skipped += 1
 
+    # Record which bundle this workspace now holds — but only after a clean
+    # pass. Skipping the marker on any per-file error keeps the workspace
+    # "stale" so the next pass through write_user_configs retries the refresh.
+    if fingerprint is not None and errored == 0:
+        try:
+            workspace.write_file(owner_id, f"workspace-{atlas_uuid}/{_FINGERPRINT_FILENAME}", fingerprint + "\n")
+        except Exception as exc:  # noqa: BLE001 — best-effort; next pass just re-checks
+            put_metric("atlas_seed.fingerprint_write_error")
+            logger.warning("atlas_seed: fingerprint marker write failed owner=%s: %s", owner_id, exc)
+
     if written:
         put_metric("atlas_seed.success", value=written)
     if skipped:
@@ -338,5 +418,6 @@ async def pre_stage_atlas(
         "errored": errored,
         "overwritten": overwritten,
         "force": force,
+        "auto_refreshed": auto_refreshed,
         "reason": None,
     }

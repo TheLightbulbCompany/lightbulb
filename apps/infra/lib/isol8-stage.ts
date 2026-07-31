@@ -154,6 +154,7 @@ export class Isol8Stage extends cdk.Stage {
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
         paperclipServiceTokenKey: auth.paperclipServiceTokenKey.secretName,
         platformOpsTokenKey: auth.platformOpsTokenKey.secretName,
+        paperclipEventsWebhookSecret: auth.paperclipEventsWebhookSecret.secretName,
         gogKeyringPassword: auth.gogKeyringPassword.secretName,
         metronomeApiKey: auth.metronomeApiKey.secretName,
         metronomeWebhookSecret: auth.metronomeWebhookSecret.secretName,
@@ -209,6 +210,7 @@ export class Isol8Stage extends cdk.Stage {
       paperclipDbCluster: database.paperclipDbCluster,
       paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
       paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,
+      paperclipEventsWebhookSecretName: auth.paperclipEventsWebhookSecret.secretName,
       // Pass KMS key ARN (not Key object) so PaperclipStack can grant
       // kms:Decrypt on its task execution roles without triggering CDK's
       // cross-stack auto-grant cycle (same pattern as ApiStack).

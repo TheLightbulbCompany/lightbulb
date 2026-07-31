@@ -656,6 +656,42 @@ class PaperclipRepo:
         base = await self.get(first["user_id"])
         return base.company_id if base is not None else None
 
+    async def get_user_ids_for_company(self, company_id: str) -> list[str]:
+        """Return the Clerk user_ids of every ACTIVE row in ``company_id``.
+
+        Push-notification audience for inbound Paperclip plugin events
+        (``routers/paperclip_events.py``): a personal company has exactly one
+        row; an org company has one row per member, all sharing the same
+        ``company_id``. Queries the ``by-company-id`` GSI (PK: ``company_id``,
+        projection INCLUDE ``status``) declared in ``database-stack.ts``.
+        """
+        user_ids: list[str] = []
+        async for page in self._query_pages(
+            IndexName="by-company-id",
+            KeyConditionExpression=Key("company_id").eq(company_id),
+        ):
+            user_ids.extend(
+                item["user_id"]
+                for item in page.get("Items", [])
+                if item.get("status") == "active" and item.get("user_id")
+            )
+        return user_ids
+
+    async def _query_pages(self, **kwargs):
+        """Yield each raw Query response page, following ``LastEvaluatedKey``.
+
+        The one pagination loop for every GSI reader in this repo (Query caps
+        a page at ~1MB regardless of result size). For typical Isol8 org
+        sizes (1-10 users) one page suffices.
+        """
+        while True:
+            resp = await run_in_thread(self._table().query, **kwargs)
+            yield resp
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                return
+            kwargs = {**kwargs, "ExclusiveStartKey": last_key}
+
     async def list_by_org_id(self, org_id: str) -> list[dict]:
         """Return all rows in ``org_id`` via the ``by-org-id`` GSI.
 
@@ -667,24 +703,14 @@ class PaperclipRepo:
         in ``database-stack.ts`` so every field is available without a
         base-table chain read.
 
-        Paginates ``LastEvaluatedKey`` to handle orgs larger than a
-        single Query page; for typical Isol8 org sizes (1-10 users)
-        one page suffices.
         """
         items: list[dict] = []
-        last_evaluated_key: dict | None = None
-        while True:
-            kwargs: dict = {
-                "IndexName": "by-org-id",
-                "KeyConditionExpression": Key("org_id").eq(org_id),
-            }
-            if last_evaluated_key is not None:
-                kwargs["ExclusiveStartKey"] = last_evaluated_key
-            resp = await run_in_thread(self._table().query, **kwargs)
-            items.extend(resp.get("Items", []))
-            last_evaluated_key = resp.get("LastEvaluatedKey")
-            if not last_evaluated_key:
-                return items
+        async for page in self._query_pages(
+            IndexName="by-org-id",
+            KeyConditionExpression=Key("org_id").eq(org_id),
+        ):
+            items.extend(page.get("Items", []))
+        return items
 
     async def count_org_members(self, org_id: str) -> int:
         """Count how many rows currently exist for ``org_id`` via the
@@ -697,26 +723,17 @@ class PaperclipRepo:
         archived; anything else means co-tenants still need it.
 
         Implementation: GSI Query with ``Select="COUNT"`` so DynamoDB
-        returns just the count without materializing items. We
-        paginate ``LastEvaluatedKey`` because Query's per-page count
-        cap (~1MB or 1000 items) would otherwise undercount large orgs.
-        For typical Isol8 org sizes (1-10 users) one page suffices.
+        returns just the count without materializing items; paginated
+        because Query's per-page cap would otherwise undercount.
         """
         count = 0
-        last_evaluated_key: dict | None = None
-        while True:
-            kwargs: dict = {
-                "IndexName": "by-org-id",
-                "KeyConditionExpression": Key("org_id").eq(org_id),
-                "Select": "COUNT",
-            }
-            if last_evaluated_key is not None:
-                kwargs["ExclusiveStartKey"] = last_evaluated_key
-            resp = await run_in_thread(self._table().query, **kwargs)
-            count += int(resp.get("Count", 0))
-            last_evaluated_key = resp.get("LastEvaluatedKey")
-            if not last_evaluated_key:
-                return count
+        async for page in self._query_pages(
+            IndexName="by-org-id",
+            KeyConditionExpression=Key("org_id").eq(org_id),
+            Select="COUNT",
+        ):
+            count += int(page.get("Count", 0))
+        return count
 
     async def update_status(
         self,

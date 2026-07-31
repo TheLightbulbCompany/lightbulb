@@ -102,6 +102,7 @@ function buildStackInstance(environment: "dev" | "prod") {
     paperclipDbCluster: dbCluster,
     paperclipDbSecurityGroup: dbSg,
     paperclipBetterAuthSecretName: `isol8/${environment}/paperclip_better_auth_secret`,
+    paperclipEventsWebhookSecretName: `isol8/${environment}/paperclip_events_webhook_secret`,
     paperclipKmsKeyArn: kmsKey.keyArn,
   });
 

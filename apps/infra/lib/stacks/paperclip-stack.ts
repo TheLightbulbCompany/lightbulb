@@ -79,6 +79,13 @@ export interface PaperclipStackProps extends cdk.StackProps {
    */
   paperclipBetterAuthSecretName: string;
   /**
+   * Bearer secret the isol8.notifications plugin worker attaches to its
+   * outbound POSTs to the backend /webhooks/paperclip-events receiver.
+   * Injected as PAPERCLIP_ISOL8_NOTIFY_TOKEN (name-only, same cross-stack
+   * KMS posture as `paperclipBetterAuthSecretName`).
+   */
+  paperclipEventsWebhookSecretName: string;
+  /**
    * AuthStack KMS key ARN (NOT a Key object) used to encrypt the Paperclip
    * BetterAuth secret. The task execution roles (main + migrate) need
    * `kms:Decrypt` on this key in order for `secretsmanager:GetSecretValue`
@@ -328,6 +335,16 @@ export class PaperclipStack extends cdk.Stack {
       props.paperclipBetterAuthSecretName,
     );
 
+    // Bearer token for the bundled isol8.notifications plugin's outbound
+    // POSTs to the backend paperclip-events receiver. Same name-only import
+    // posture as betterAuthSecret; same CMK, so the execution role's
+    // kms:Decrypt grant below covers it.
+    const notifyWebhookSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "PaperclipEventsWebhookSecretRef",
+      props.paperclipEventsWebhookSecretName,
+    );
+
     // PAPERCLIP_PUBLIC_URL is Better Auth's ORIGIN IDENTITY — it feeds the auth
     // baseURL, the trustedOrigins set, the secure-cookie scheme, and the `Origin`
     // header the backend BFF sends on /api/auth/* calls (server/src/auth/better-auth.ts).
@@ -354,6 +371,14 @@ export class PaperclipStack extends cdk.Stack {
     // reads PAPERCLIP_RUNTIME_API_URL first); the live agent path is the adapterConfig
     // override above, not this.
     const paperclipInternalApiUrl = `http://paperclip.${props.cloudMapNamespace.namespaceName}:3100`;
+
+    // Receiver for the bundled isol8.notifications plugin. MUST be the PUBLIC
+    // backend host: the plugin outbound-fetch SSRF filter rejects private/
+    // reserved IPs, so an in-VPC hostname can never work here.
+    const notifyReceiverUrl =
+      env === "prod"
+        ? "https://api.isol8.co/api/v1/webhooks/paperclip-events"
+        : `https://api-${env}.isol8.co/api/v1/webhooks/paperclip-events`;
 
     taskDefinition.addContainer("paperclip", {
       // Paperclip publishes to GitHub Container Registry, not Docker Hub
@@ -393,6 +418,10 @@ export class PaperclipStack extends cdk.Stack {
         // only path. Inert on images older than isol8.5 (unread env).
         PAPERCLIP_SKIP_BUILTIN_AGENTS: "1",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+        // Receiver URL for the bundled isol8.notifications plugin (worker env
+        // passthrough in the fork's buildPluginWorkerEnv; the token half is a
+        // secret below). Inert on images without the plugin (unread env).
+        PAPERCLIP_ISOL8_NOTIFY_URL: notifyReceiverUrl,
         PAPERCLIP_PUBLIC_URL: paperclipPublicUrl,
         // The API host injected into agent heartbeat runs as PAPERCLIP_API_URL.
         // Must be the in-VPC Cloud Map host (not PAPERCLIP_PUBLIC_URL) so the
@@ -453,6 +482,7 @@ export class PaperclipStack extends cdk.Stack {
         // password — we already baked the rest into env above.
         PGPASSWORD: ecs.Secret.fromSecretsManager(dbCredsSecret, "password"),
         BETTER_AUTH_SECRET: ecs.Secret.fromSecretsManager(betterAuthSecret),
+        PAPERCLIP_ISOL8_NOTIFY_TOKEN: ecs.Secret.fromSecretsManager(notifyWebhookSecret),
       },
       // Paperclip's image entrypoint expects DATABASE_URL. The shim below
       // assembles it from PG* env at container start, then directly execs

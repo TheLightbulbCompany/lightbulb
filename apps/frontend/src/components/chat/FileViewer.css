@@ -4,8 +4,8 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #faf7f2;
-  border-left: 1px solid #e0dbd0;
+  background: var(--cream);
+  border-left: 1px solid var(--edge);
 }
 .file-viewer-header {
   display: flex;
@@ -13,8 +13,8 @@
   gap: 12px;
   padding: 0 16px;
   height: 56px;
-  border-bottom: 1px solid #e0dbd0;
-  background: #faf7f2;
+  border-bottom: 1px solid var(--edge);
+  background: var(--cream);
   flex-shrink: 0;
 }
 .file-viewer-body {
@@ -24,7 +24,7 @@
 }
 .file-viewer-tree {
   width: 220px;
-  border-right: 1px solid #e0dbd0;
+  border-right: 1px solid var(--edge);
   flex-shrink: 0;
   overflow: hidden;
 }

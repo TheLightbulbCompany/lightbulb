@@ -14,8 +14,8 @@
   min-width: 0;
 }
 .cream-sidebar {
-  background: #f3efe6;
-  border-right: 1px solid #e0dbd0;
+  background: var(--cream-deeper);
+  border-right: 1px solid var(--edge);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -33,7 +33,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid #e0dbd0;
+  border-bottom: 1px solid var(--edge);
 }
 .sidebar-logo {
   display: flex;
@@ -44,10 +44,10 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border: 1px solid #e0dbd0;
+  border: 1px solid var(--edge);
   border-radius: 999px;
-  background: #faf7f2;
-  color: #06402B;
+  background: var(--cream);
+  color: var(--forest);
   padding: 5px 10px;
   font-size: 11px;
   font-weight: 700;
@@ -65,7 +65,7 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: #06402B;
+  background: var(--forest);
   color: #fff;
   font-size: 9px;
   line-height: 1;
@@ -77,7 +77,7 @@
   align-items: center;
 }
 .sidebar-settings-link:hover {
-  color: #1a1a1a;
+  color: var(--ink);
 }
 .tab-switcher {
   display: flex;
@@ -101,24 +101,24 @@
 }
 .tab-btn.active {
   background: #fff;
-  color: #1a1a1a;
+  color: var(--ink);
   box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 .tab-btn:not(.active):hover {
-  color: #1a1a1a;
+  color: var(--ink);
 }
 /* Co-equal create pill: two first-class create actions (agent | task) in one
-   forest control, reusing the primary-button treatment (same forest #06402B,
-   cream #faf7f2, 8px radius, 13px/500 type, and sidebar margins). Each half is
+   forest control, reusing the primary-button treatment (same forest var(--forest),
+   cream var(--cream), 8px radius, 13px/500 type, and sidebar margins). Each half is
    an equal flex segment; a whisper-quiet cream hairline divides them, and only
    the hovered half lightens so the affordance is per-action. */
 .create-pill {
   display: flex;
   align-items: stretch;
   margin: 4px 16px 8px;
-  border: 1.5px solid #06402B;
+  border: 1.5px solid var(--forest);
   border-radius: 8px;
-  background: #06402B;
+  background: var(--forest);
   overflow: hidden;
 }
 .create-pill__seg {
@@ -130,7 +130,7 @@
   padding: 8px 10px;
   background: transparent;
   border: none;
-  color: #faf7f2;
+  color: var(--cream);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -146,7 +146,7 @@
   cursor: default;
 }
 .create-pill__seg:focus-visible {
-  outline: 2px solid #faf7f2;
+  outline: 2px solid var(--cream);
   outline-offset: -3px;
 }
 .create-pill__divider {
@@ -234,7 +234,7 @@
 .agent-name {
   font-size: 13px;
   font-weight: 500;
-  color: #1a1a1a;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -279,7 +279,7 @@
 }
 .agent-row-action:hover {
   background: rgba(0, 0, 0, 0.06);
-  color: #1a1a1a;
+  color: var(--ink);
 }
 .agent-row-action--danger:hover {
   color: #dc2626;
@@ -320,11 +320,11 @@
 }
 .session-item:hover {
   background: rgba(255, 255, 255, 0.9);
-  color: #1a1a1a;
+  color: var(--ink);
 }
 .session-item.active {
   background: rgba(45, 138, 78, 0.1);
-  color: #1a1a1a;
+  color: var(--ink);
   font-weight: 500;
 }
 .session-label {
@@ -377,7 +377,7 @@
   border: 1px solid #c8e6c9;
   border-radius: 7px;
   background: #fff;
-  color: #1a1a1a;
+  color: var(--ink);
   font-size: 12px;
   outline: none;
 }
@@ -401,7 +401,7 @@
   color: #2d8a4e;
 }
 .sidebar-footer {
-  border-top: 1px solid #e0dbd0;
+  border-top: 1px solid var(--edge);
   padding: 12px 16px;
 }
 .user-row {
@@ -429,7 +429,7 @@
 .user-name {
   font-size: 13px;
   font-weight: 500;
-  color: #1a1a1a;
+  color: var(--ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -454,7 +454,7 @@
   padding-top: 8px;
 }
 .main-area {
-  background: #faf7f2;
+  background: var(--cream);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -463,12 +463,12 @@
 }
 .main-header {
   height: 56px;
-  border-bottom: 1px solid #e0dbd0;
+  border-bottom: 1px solid var(--edge);
   display: flex;
   align-items: center;
   justify-content: flex-end;
   padding: 0 16px;
-  background: #faf7f2;
+  background: var(--cream);
   position: absolute;
   top: 0;
   left: 0;
@@ -496,7 +496,7 @@
   transition: color 0.15s;
 }
 .mobile-hamburger:hover {
-  color: #1a1a1a;
+  color: var(--ink);
 }
 .sidebar-backdrop {
   display: none;

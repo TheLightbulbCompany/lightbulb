@@ -241,7 +241,7 @@ export function ArtifactsPanel() {
             ) : null}
           </div>
         ) : isExpanded ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
             {sortedArtifacts.map((artifact) => (
               <ArtifactGalleryCard
                 key={artifact.id}
@@ -253,7 +253,7 @@ export function ArtifactsPanel() {
             ))}
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
             {sortedGroups.map((group) => (
               <ArtifactStackCard
                 key={group.id}

@@ -111,10 +111,10 @@ export function ModelEffortPill({
           variant="ghost"
           size="sm"
           data-testid="model-effort-pill"
-          className="gap-1 h-8 px-2.5 rounded-full text-xs font-normal text-[#5a5549] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
+          className="gap-1 h-8 min-w-0 px-2.5 rounded-full text-xs font-normal text-[#5a5549] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
         >
           <span className="truncate max-w-40">{pillLabel}</span>
-          <ChevronDown className="h-3 w-3 text-[#b5ae9e]" />
+          <ChevronDown className="h-3 w-3 shrink-0 text-[#b5ae9e]" />
         </Button>
       </PopoverTrigger>
       <PopoverContent

@@ -68,7 +68,10 @@ export function InlineTeamsPanel({
               scrollport — which is position:static, as is ChatLayout's
               `.main-content` around it — and inflate an outer scroller with
               thousands of px of phantom height. */}
-          <div className="editorial-page relative h-full overflow-auto">
+          {/* `@container` mirrors the dock host's `container-type` so the
+              panels' container-query breakpoints resolve against this wrapper
+              in the mobile shell too, not the viewport fallback. */}
+          <div className="editorial-page relative h-full overflow-auto @container">
             <TeamsPanelRouter
               panel={teamsPanel}
               detailId={detailId}

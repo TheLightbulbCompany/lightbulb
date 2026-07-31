@@ -239,7 +239,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
 
   return (
     <div
-      className="editorial-page grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
+      className="editorial-page grid grid-cols-1 @3xl:grid-cols-[minmax(0,1fr)_320px] gap-6 p-4 sm:p-6"
       style={{ background: "var(--cream)", color: "var(--ink)" }}
     >
       <main className="flex min-w-0 flex-col gap-6">
@@ -388,7 +388,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         </section>
       </main>
 
-      <aside className="lg:sticky lg:top-4 lg:self-start">
+      <aside className="@3xl:sticky @3xl:top-4 @3xl:self-start">
         <dl className="flex flex-col">
           <Prop label="Agent">{agentName}</Prop>
           <Prop label="Trigger">

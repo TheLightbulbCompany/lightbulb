@@ -1,5 +1,6 @@
-"""ses_email.send_ses_reply: gated, off-loop, best-effort SES send for agent replies."""
+"""ses_email: gated, off-loop, best-effort SES send — the one outbound transport."""
 
+import time
 from email import message_from_bytes, policy
 from unittest.mock import MagicMock
 
@@ -113,3 +114,80 @@ async def test_never_raises_when_client_lookup_itself_errors(monkeypatch):
     )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_html_only_body_is_a_single_text_html_part(monkeypatch):
+    """The app-mail path passes body_html with no body_text. EmailMessage has
+    no 'unset body' state, so this must go through set_content(subtype="html")
+    — add_alternative on an empty message would leave a stray text/plain part
+    and the recipient would see raw markup."""
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-html"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    result = await ses_email.send_ses_email(
+        from_addr="Isol8 <hello@isol8.co>",
+        to="alice@x.com",
+        subject="Welcome",
+        body_html="<p>hi</p>",
+        kind="welcome",
+    )
+
+    assert result == "ses-html"
+    _, kwargs = fake_client.send_email.call_args
+    parsed = message_from_bytes(kwargs["Content"]["Raw"]["Data"], policy=policy.default)
+    assert not parsed.is_multipart()
+    assert parsed.get_content_type() == "text/html"
+    assert parsed.get_content().strip() == "<p>hi</p>"
+
+
+@pytest.mark.asyncio
+async def test_list_recipients_are_joined(monkeypatch):
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-multi"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    await ses_email.send_ses_email(
+        from_addr="Isol8 <hello@isol8.co>",
+        to=["a@x.com", "b@x.com"],
+        subject="hi",
+        body_html="<p>hi</p>",
+    )
+
+    _, kwargs = fake_client.send_email.call_args
+    parsed = message_from_bytes(kwargs["Content"]["Raw"]["Data"])
+    assert parsed["To"] == "a@x.com, b@x.com"
+
+
+@pytest.mark.asyncio
+async def test_stalled_send_respects_timeout(monkeypatch):
+    """A send that blocks past the timeout returns None promptly instead of
+    wedging the caller (an agent run, or the Clerk webhook). abandon_on_cancel
+    lets fail_after return at the deadline rather than waiting for the thread."""
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    monkeypatch.setattr(ses_email, "_SEND_TIMEOUT_S", 0.1)
+
+    def slow_send(**_kwargs):
+        time.sleep(2.0)
+        return {"MessageId": "too_late"}
+
+    fake_client = MagicMock()
+    fake_client.send_email.side_effect = slow_send
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    start = time.monotonic()
+    result = await ses_email.send_ses_email(
+        from_addr="Isol8 <hello@isol8.co>",
+        to="a@x.com",
+        subject="hi",
+        body_html="<p>hi</p>",
+    )
+    elapsed = time.monotonic() - start
+
+    assert result is None
+    # Without abandon_on_cancel this blocks ~2s for the thread; the fix returns
+    # at the ~0.1s deadline. Generous bound to stay non-flaky under CI load.
+    assert elapsed < 1.0

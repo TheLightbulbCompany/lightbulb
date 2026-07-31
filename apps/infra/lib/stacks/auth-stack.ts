@@ -10,6 +10,7 @@ import { Construct } from "constructs";
 export interface AuthSecrets {
   clerkIssuer: secretsmanager.ISecret;
   clerkSecretKey: secretsmanager.ISecret;
+  clerkWebhookSecret: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
@@ -77,6 +78,14 @@ export class AuthStack extends cdk.Stack {
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
+      // Svix signing secret for the Clerk webhook endpoint. CDK generates a
+      // random placeholder; the operator overwrites it out-of-band with the
+      // `whsec_…` shown on the endpoint's page in the Clerk dashboard (same
+      // posture as stripeWebhookSecret). Until that happens the backend
+      // REJECTS Clerk deliveries with 503 — _verify_svix_signature fails
+      // closed in any deployed env — and svix retries them, so nothing is
+      // lost as long as the real value lands within the retry window.
+      clerkWebhookSecret: createSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       encryptionKey,
@@ -154,17 +163,16 @@ export class AuthStack extends cdk.Stack {
       "HMAC key for verifying Metronome-Webhook-Signature. Overwritten out-of-band with the value from the Metronome dashboard webhook config.",
     );
 
-    // Resend API key for transactional email (welcome email; support ticket
-    // delivery). CDK generates a random placeholder on first create; the
-    // operator overwrites it out-of-band with the real re_… key via
-    // `aws secretsmanager put-secret-value` once the Resend domain is
-    // verified. Same CMK as the other auth secrets, so the backend task
-    // role's KmsDecryptForSecrets + wildcard SecretsAccess already cover read.
+    // ORPHANED — nothing reads this any more. Transactional email moved from
+    // Resend to SES (core/services/ses_email.py) because isol8.co was already
+    // a verified SES domain identity the backend task role could send as. The
+    // secret is left in place rather than deleted so this refactor stays
+    // non-destructive; delete it (and this block) as a deliberate follow-up.
     this.resendApiKey = createSecret(
       "ResendApiKey",
       "resend_api_key",
       { passwordLength: 48, excludePunctuation: true },
-      "Resend API bearer token for transactional email. Overwritten out-of-band with the real re_… key after the Resend domain runbook.",
+      "ORPHANED after the SES migration — no longer read by any service. Safe to delete.",
     );
 
     // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage

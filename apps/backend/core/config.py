@@ -327,17 +327,16 @@ class Settings(BaseSettings):
     # comma-separated list.
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://dev.isol8.co")
 
-    # --- Transactional email (Resend) ---
-    # Resend is used for OUTBOUND app-generated mail only: the welcome email
-    # on signup and (Plan 2) delivery of support tickets into the support@
-    # inbox. The inbound support mailbox itself is Google Workspace, read by
-    # the founder's agent — NOT Resend.
+    # --- Transactional email ---
+    # OUTBOUND app-generated mail (the welcome email on signup, support-ticket
+    # delivery into the support@ inbox) goes out via AWS SES — the same
+    # transport as agent replies, see core/services/ses_email.py. The inbound
+    # support mailbox itself is Google Workspace, read by the founder's agent.
     #
-    # Sending is gated solely on a real key being present (email_service skips
-    # unless RESEND_API_KEY is re_-prefixed), so the CDK placeholder secret is a
-    # no-op and the feature self-arms the moment a real key is deployed. No
-    # separate enable flag.
-    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    # There is no separate enable flag or API key: sending is gated on
+    # AGENT_EMAIL_DOMAIN, which holds the verified SES domain and is set only
+    # where the prod-only SesInboundStack created that identity.
+    #
     # Shared secret the SES-ingest Lambda presents to POST /webhooks/ses-inbound.
     # Empty disables the SES inbound endpoint entirely (fail-closed).
     SES_INBOUND_SECRET: str = os.getenv("SES_INBOUND_SECRET", "")

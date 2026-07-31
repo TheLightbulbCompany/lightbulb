@@ -95,6 +95,11 @@ async def handle_operator_connect(
                     "Unconfirmed Gone for operator conn=%s — frame dropped, relay kept",
                     connection_id,
                 )
+                # Parity with the other two kill-sites
+                # (gateway.frontend.gone_unconfirmed,
+                # teams.broker.fanout outcome=gone_unconfirmed) so the
+                # spurious-410 rate is visible on every path, not two of three.
+                put_metric("operator.relay.gone_unconfirmed")
                 return
             logger.info(
                 "Operator adapter gone for conn=%s; reaping orphaned relay upstream",

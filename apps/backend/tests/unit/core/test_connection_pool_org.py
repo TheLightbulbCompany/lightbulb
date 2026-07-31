@@ -66,6 +66,13 @@ def make_conn():
             owner_id=owner_id,
         )
         conn._management_api.send_message = MagicMock(return_value=True)
+        # Stub gone_confirmed EXPLICITLY. Without it, the bare MagicMock
+        # returns a truthy Mock for any attribute call, so `not
+        # gone_confirmed(...)` is False and every prune test falls into the
+        # confirmed branch by accident — passing for a reason unrelated to
+        # what it claims to check. Default True keeps the prune tests below
+        # meaningful; the unconfirmed case overrides it to False.
+        conn._management_api.gone_confirmed = MagicMock(return_value=True)
         conn._conn_svc = MagicMock()
         return conn
 
@@ -175,9 +182,33 @@ async def test_forward_does_not_prune_on_transient_exception(make_conn):
 
 
 @pytest.mark.asyncio
+async def test_forward_does_not_prune_on_unconfirmed_gone(make_conn):
+    """A lone Gone must NOT prune — this is the founders'-chat bug itself.
+
+    `_forward_to_frontends` → `_prune_dead_conn` is the exact path that
+    zombified a live connection: one spurious 410 deleted the ws-connections
+    row, after which the tab's pings 401'd forever and it stopped receiving
+    chat fan-out, while the run completed invisibly behind a frozen
+    'Thinking…'. Until gone_confirmed() says the Gone persisted, the row has
+    to survive.
+    """
+    conn = make_conn(owner_id="org_1")
+    conn._conn_svc.delete_connection = MagicMock()
+    conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_live", "m1", "chat")])
+    conn._management_api.send_message = MagicMock(return_value=False)
+    conn._management_api.gone_confirmed = MagicMock(return_value=False)
+
+    await _forward_and_flush(conn, {"type": "chunk"})
+
+    conn._conn_svc.delete_connection.assert_not_called()
+    assert "c_live" not in getattr(conn, "_dead_frontends", set())
+
+
+@pytest.mark.asyncio
 async def test_forward_prunes_on_gone_false(make_conn):
-    """send_message returns False ONLY for a gone connection (GoneException) —
-    prune it."""
+    """A CONFIRMED Gone prunes. send_message returning False is necessary but
+    no longer sufficient — the fixture stubs gone_confirmed=True to stand in
+    for a Gone that has persisted past the confirm window."""
     conn = make_conn(owner_id="org_1")
     conn._conn_svc.delete_connection = MagicMock()
     conn._conn_svc.query_by_owner = AsyncMock(return_value=[("c_dead", "m1", "chat")])

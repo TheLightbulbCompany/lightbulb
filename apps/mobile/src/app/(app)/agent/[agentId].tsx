@@ -36,7 +36,7 @@ import { TimelineSkeleton } from "../../../components/chat/TimelineSkeleton";
 import { ToolPill, type ToolPillStatus } from "../../../components/chat/ToolPill";
 import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing } from "../../../config/theme";
-import { setCurrentAgentId } from "../../../lib/activeAgent";
+import { setCurrentAgentId, setCurrentSessionId } from "../../../lib/activeAgent";
 import {
   buildUploadNotice,
   filterOversized,
@@ -154,6 +154,9 @@ function AgentChat() {
   useFocusEffect(
     useCallback(() => {
       setCurrentAgentId(agentId ?? null);
+      // Republish the session on refocus (setCurrentAgentId(null) on blur
+      // clears both halves); switchSession keeps it current while focused.
+      setCurrentSessionId(activeSessionIdRef.current);
       return () => setCurrentAgentId(null);
     }, [agentId]),
   );
@@ -515,6 +518,8 @@ function AgentChat() {
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
       setActiveSessionLabel(label);
+      // Keep the push-suppression signal on the session actually on screen.
+      setCurrentSessionId(sessionId);
       // Any in-flight run belongs to the previous session — its frames are
       // now dropped by the session demux, so release the busy gate and start
       // this session's timeline clean (history refetches via the effect).

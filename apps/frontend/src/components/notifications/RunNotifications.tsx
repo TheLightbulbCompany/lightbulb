@@ -10,8 +10,10 @@ import {
   notifyLoading,
   notifySuccess,
   notifyFailure,
+  notifyAttention,
   dismissNotification,
 } from "@/lib/notify";
+import { nativeNotify } from "@/lib/desktopNotify";
 import { pushSearchParams } from "@/lib/shellNav";
 import {
   acquireTeamsEvents,
@@ -22,6 +24,7 @@ import {
   createRunToastState,
   reduceChatFrame,
   reduceTeamsRunEvent,
+  reduceTeamsActivityEvent,
   type RunToastAction,
   type RunToastContext,
 } from "./runToastReducer";
@@ -84,13 +87,16 @@ function viewAgentAction(agentId: string): { label: string; onClick: () => void 
   };
 }
 
-function viewTeamsAction(): { label: string; onClick: () => void } {
+function viewTeamsAction(panel: "teams-activity" | "teams-inbox"): {
+  label: string;
+  onClick: () => void;
+} {
   return {
     label: "View",
     onClick: () => {
-      capture("run_notification_clicked", { source: "teams" });
+      capture("run_notification_clicked", { source: panel === "teams-inbox" ? "approval" : "teams" });
       const params = new URLSearchParams(window.location.search);
-      params.set("panel", "teams-activity");
+      params.set("panel", panel);
       params.delete("detailId");
       pushSearchParams(params);
     },
@@ -102,9 +108,21 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
     dismissNotification(action.key);
     return;
   }
+  if (action.kind === "approval") {
+    // Paperclip agent ids don't resolve against the OpenClaw roster, so the
+    // copy stays generic (same reason the teams run toasts do).
+    const message = "An agent is awaiting your approval";
+    capture("run_notification_shown", { source: "teams", kind: action.kind });
+    notifyAttention(message, {
+      dedupeKey: action.key,
+      action: viewTeamsAction("teams-inbox"),
+    });
+    nativeNotify(message);
+    return;
+  }
   const isChat = action.source === "chat";
   const name = isChat ? agentName(action.agentId, agents) : null;
-  const view = isChat ? viewAgentAction(action.agentId) : viewTeamsAction();
+  const view = isChat ? viewAgentAction(action.agentId) : viewTeamsAction("teams-activity");
   capture("run_notification_shown", { source: action.source, kind: action.kind });
   if (action.kind === "working") {
     notifyLoading(isChat ? `${name} is working…` : "A team agent run started…", {
@@ -112,15 +130,13 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
       action: view,
     });
   } else if (action.kind === "success") {
-    notifySuccess(isChat ? `${name} finished a run` : "Team agent run completed", {
-      dedupeKey: action.key,
-      action: view,
-    });
+    const message = isChat ? `${name} finished a run` : "Team agent run completed";
+    notifySuccess(message, { dedupeKey: action.key, action: view });
+    nativeNotify(message);
   } else {
-    notifyFailure(isChat ? `${name} run failed` : "Team agent run failed", {
-      dedupeKey: action.key,
-      action: view,
-    });
+    const message = isChat ? `${name} run failed` : "Team agent run failed";
+    notifyFailure(message, { dedupeKey: action.key, action: view });
+    nativeNotify(message);
   }
 }
 
@@ -197,7 +213,11 @@ export function RunNotifications(props: RunNotificationsProps): null {
     });
     const unsubEvent = onEvent((event, payload) => {
       try {
-        for (const action of reduceTeamsRunEvent(stateRef.current, event, payload, ctxRef.current)) {
+        const actions = [
+          ...reduceTeamsRunEvent(stateRef.current, event, payload, ctxRef.current),
+          ...reduceTeamsActivityEvent(event, payload, ctxRef.current),
+        ];
+        for (const action of actions) {
           executeAction(action, agentsRef.current);
         }
       } catch {

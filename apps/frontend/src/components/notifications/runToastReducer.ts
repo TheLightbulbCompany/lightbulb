@@ -25,6 +25,7 @@ export interface RunToastContext {
 
 export type RunToastAction =
   | { kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams" }
+  | { kind: "approval"; key: string }
   | { kind: "dismiss"; key: string };
 
 interface TrackedRun {
@@ -187,4 +188,32 @@ export function reduceTeamsRunEvent(
     ];
   }
   return [];
+}
+
+// Approval lifecycle rides the generic teams.activity.logged event (Paperclip
+// has no first-class approval live-event type); payload.action is the
+// discriminator. created/resubmitted both mean "the ball is in the user's
+// court"; approved/rejected resolve the wait and clear the toast. Other
+// actions (revision_requested, comment_added, work_product_created) are the
+// user's own moves or too noisy to toast.
+const APPROVAL_ATTENTION_ACTIONS = new Set(["approval.created", "approval.resubmitted"]);
+const APPROVAL_RESOLVED_ACTIONS = new Set(["approval.approved", "approval.rejected"]);
+
+export function reduceTeamsActivityEvent(
+  event: string,
+  payload: unknown,
+  ctx: RunToastContext,
+): RunToastAction[] {
+  if (event !== "teams.activity.logged") return [];
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const action = readString(p.action);
+  const entityId = readString(p.entityId);
+  if (!action || !entityId) return [];
+  const key = `approval:${entityId}`;
+  // Resolution always dismisses (toast.dismiss on an unknown id is a no-op),
+  // covering approvals resolved from another device/tab.
+  if (APPROVAL_RESOLVED_ACTIONS.has(action)) return [{ kind: "dismiss", key }];
+  if (!APPROVAL_ATTENTION_ACTIONS.has(action)) return [];
+  if (ctx.teamsPanelActive) return [];
+  return [{ kind: "approval", key }];
 }

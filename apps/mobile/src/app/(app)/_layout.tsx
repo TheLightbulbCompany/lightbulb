@@ -8,7 +8,7 @@ import { FirstRunGate } from "../../components/onboarding/FirstRunGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { PushRegistration } from "../../components/push/PushRegistration";
 import { colors, fonts } from "../../config/theme";
-import { getCurrentAgentId } from "../../lib/activeAgent";
+import { getCurrentChat } from "../../lib/activeAgent";
 import { GatewayProvider } from "../../providers/gateway";
 
 // Feather glyphs for each top-level tab, mirroring the web sidebar sections.
@@ -29,10 +29,10 @@ export default function AppLayout() {
 
   return (
     <GatewayProvider>
-      {/* getCurrentAgentId reads the chat screen's focused agent (activeAgent.ts)
-          so the notification handler suppresses the banner for a reply the user
-          is actively watching stream in. */}
-      <PushRegistration getCurrentAgentId={getCurrentAgentId} />
+      {/* getCurrentChat reads the chat screen's focused agent + session
+          (activeAgent.ts) so the notification handler suppresses the banner for
+          a reply the user is actively watching stream in. */}
+      <PushRegistration getCurrentChat={getCurrentChat} />
       <ProvisionGate>
         {/* Inside ProvisionGate so blocked/team-pending interstitials win;
             replaces the whole tab shell with the funnel for an eligible

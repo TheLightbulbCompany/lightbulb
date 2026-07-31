@@ -11,18 +11,24 @@ import { makeAdapter } from "../../lib/adapter";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { configureNotificationHandler } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
+import { sessionIdFromKey } from "../../lib/sessionKey";
 
-/** Route a tapped notification (warm OR cold-start launch) to its agent chat. */
+/** Route a tapped notification (warm OR cold-start launch) to its agent chat,
+ * landing on the session the reply belongs to (sessionKey → ?sessionId, which
+ * the chat screen already consumes via useNavParamConsumer). */
 function routeFromResponse(
   response: Notifications.NotificationResponse | null,
 ): void {
   if (!response) return;
   const data = response.notification.request.content.data as
-    | { agentId?: string; url?: string }
+    | { agentId?: string; sessionKey?: string; url?: string }
     | undefined;
   const agentId = data?.agentId;
   if (agentId) {
-    router.push(`/agent/${agentId}`);
+    const sessionId = sessionIdFromKey(data?.sessionKey);
+    router.push(
+      sessionId ? `/agent/${agentId}?sessionId=${sessionId}` : `/agent/${agentId}`,
+    );
     return;
   }
   const parsed = data?.url ? parseAgentDeepLink(data.url) : null;
@@ -36,9 +42,9 @@ function routeFromResponse(
  * one that cold-started the app) to the right agent chat. Renders nothing.
  */
 export function PushRegistration({
-  getCurrentAgentId,
+  getCurrentChat,
 }: {
-  getCurrentAgentId: () => string | null;
+  getCurrentChat: () => { agentId: string | null; sessionId: string | null };
 }) {
   const { getToken, userId } = useAuth();
   const getTokenRef = useRef(getToken);
@@ -107,10 +113,10 @@ export function PushRegistration({
     };
   }, []);
 
-  // Foreground-suppression handler (reads the on-screen agent at handle-time).
+  // Foreground-suppression handler (reads the on-screen chat at handle-time).
   useEffect(() => {
-    configureNotificationHandler(getCurrentAgentId);
-  }, [getCurrentAgentId]);
+    configureNotificationHandler(getCurrentChat);
+  }, [getCurrentChat]);
 
   return null;
 }

@@ -190,7 +190,8 @@ async def test_dispatcher_skips_non_http_websocket_scopes():
 
 
 def test_dispatch_hosts_includes_localhost_alias():
-    """Local-dev hostnames are baked in so ./scripts/local-dev.sh works."""
+    """Local-dev hostnames are baked in so a localhost backend dispatches
+    company.* without extra config."""
     hosts = _paperclip_dispatch_hosts()
     assert "company.localhost" in hosts
 

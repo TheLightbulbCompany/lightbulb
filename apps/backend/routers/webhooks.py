@@ -11,8 +11,8 @@ The signature is the ONLY authentication on this endpoint, so verification
 fails CLOSED in every deployed env: a missing or malformed
 CLERK_WEBHOOK_SECRET returns 503 rather than waving traffic through. The
 check is skipped only when ENVIRONMENT is unset (bare local dev), where no
-Clerk instance signs anything. Note the LocalStack stage sets ENVIRONMENT
-to "local", so that flow fails closed too.
+Clerk instance signs anything. Any deployed stage sets ENVIRONMENT, so the
+fail-closed path is the only one that runs off a laptop.
 
 **Paperclip provisioning dispatch**:
 

@@ -854,8 +854,7 @@ async def test_sync_team_seat_quantity_refreshes_owner_facts(monkeypatch):
     # Pin the key OFF: this test stubs get_organization_member_count only, but
     # the seat count now also reads pending invitations. Without this the
     # unstubbed read escapes to api.clerk.com on any machine that exports
-    # CLERK_SECRET_KEY — which CLAUDE.md's LocalStack setup tells developers
-    # to do. CI happens not to set it; a laptop does.
+    # CLERK_SECRET_KEY. CI happens not to set it; a laptop often does.
     monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
     monkeypatch.setattr(
         billing_service.billing_repo,

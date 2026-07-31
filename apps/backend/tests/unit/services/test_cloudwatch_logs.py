@@ -3,7 +3,7 @@
 Covers:
 - Per-user filter with structured-log JSON parse.
 - nextToken → cursor pagination (CEO E4).
-- ResourceNotFoundException → missing=true (LocalStack / fresh env).
+- ResourceNotFoundException → missing=true (fresh env).
 - Malformed JSON line falls through (raw_json=None, message preserved).
 - Fleet-scoped recent_errors_fleet returns list[dict].
 - Log group ARN matches the actual /ecs/isol8-{env} (not the wrong

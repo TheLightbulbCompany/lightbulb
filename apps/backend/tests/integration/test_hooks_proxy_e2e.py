@@ -5,7 +5,7 @@ and POSTs a real request through the FastAPI app's TestClient.
 Verifies the body is forwarded, the audit row lands, and
 X-Forwarded-* are rewritten with the controlled values.
 
-This test is "integration" in the lightweight sense: no LocalStack,
+This test is "integration" in the lightweight sense: no emulated AWS,
 no real DDB, no real ECS — but it exercises the full request path
 through the FastAPI app, the proxy router, an httpx outbound call,
 and a stub upstream HTTP server. It catches issues that pure

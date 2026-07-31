@@ -31,7 +31,7 @@ async def test_user_created_sends_welcome(async_client, monkeypatch):
         resp = await async_client.post("/api/v1/webhooks/clerk", json=_PAYLOAD, headers=_HEADERS)
 
     assert resp.status_code == 200
-    mock_welcome.assert_awaited_once_with(to_email="ada@example.com", user_id="u_new", first_name="Ada")
+    mock_welcome.assert_awaited_once_with(to_email="ada@example.com", first_name="Ada")
 
 
 @pytest.mark.asyncio

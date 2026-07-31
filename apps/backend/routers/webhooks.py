@@ -55,16 +55,34 @@ router = APIRouter()
 
 
 def _verify_svix_signature(body: bytes, headers: dict) -> None:
-    """Raise HTTPException(400) if the svix signature is invalid.
+    """Raise HTTPException if the svix signature is missing or invalid.
 
     Svix signs the payload with HMAC-SHA256 using a timestamp + body
     combination.  The ``svix-signature`` header contains one or more
     ``v1,<base64>`` tokens; we accept the payload if ANY token matches.
 
-    Skipped when CLERK_WEBHOOK_SECRET is not configured (local dev).
+    **Fails CLOSED in any deployed env.** This endpoint is unauthenticated by
+    design (Clerk has no bearer token to present), so the signature IS the
+    authentication. A misconfigured secret previously fell through to
+    "accept everything", which let anyone who knew the URL forge events —
+    a forged ``user.deleted`` sweeps channel_link rows and disables
+    Paperclip for that user id. Unverifiable mail is now rejected instead.
+
+    The skip survives only for local dev (ENVIRONMENT unset), where there is
+    no Clerk instance to sign anything.
+
+    Misconfiguration returns **503, not 400**: svix retries 5xx with backoff,
+    so events queued during a bad-secret window are redelivered once the
+    secret is fixed rather than being silently dropped.
     """
     secret = settings.CLERK_WEBHOOK_SECRET
+    deployed = bool(settings.ENVIRONMENT.strip())
+
     if not secret:
+        if deployed:
+            put_metric("webhook.clerk.sig_unconfigured")
+            logger.error("CLERK_WEBHOOK_SECRET is not set in a deployed env; rejecting Clerk webhook")
+            raise HTTPException(status_code=503, detail="Webhook signature verification not configured")
         return
 
     # Strip the ``whsec_`` prefix that Clerk/svix adds to the secret.
@@ -72,6 +90,10 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     try:
         key = base64.b64decode(raw_secret)
     except Exception:
+        if deployed:
+            put_metric("webhook.clerk.sig_unconfigured")
+            logger.error("CLERK_WEBHOOK_SECRET is not valid base64; rejecting Clerk webhook")
+            raise HTTPException(status_code=503, detail="Webhook signature secret is malformed")
         logger.warning("CLERK_WEBHOOK_SECRET is not valid base64; skipping signature check")
         return
 
@@ -669,7 +691,6 @@ async def handle_clerk_webhook(request: Request):
 
                     await send_welcome_email(
                         to_email=email,
-                        user_id=user_id,
                         first_name=data.get("first_name"),
                     )
                 except Exception:

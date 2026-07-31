@@ -46,6 +46,11 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
 export interface SecretNames {
   clerkIssuer: string;
   clerkSecretKey: string;
+  /**
+   * Svix signing secret for the Clerk webhook endpoint. This IS the auth on
+   * /webhooks/clerk — the backend rejects deliveries it cannot verify.
+   */
+  clerkWebhookSecret: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   encryptionKey: string;
@@ -77,12 +82,6 @@ export interface SecretNames {
   metronomeApiKey: string;
   /** HMAC key verifying inbound Metronome webhook signatures. */
   metronomeWebhookSecret: string;
-  /**
-   * Resend API key secret name. Same isol8/{env}/* CMK + wildcard read as the
-   * other auth secrets, so no extra IAM. The placeholder is a no-op until a
-   * real re_… key is set (email_service gates on the key prefix).
-   */
-  resendApiKey: string;
   /**
    * Shared secret the WebSocket Lambdas attach to authenticate themselves to
    * the backend /api/v1/ws/* endpoints. Same secret AuthStack creates and the
@@ -1397,6 +1396,9 @@ export class ServiceStack extends cdk.Stack {
       CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkSecretKey", props.secretNames.clerkSecretKey),
       ),
+      CLERK_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkWebhookSecret", props.secretNames.clerkWebhookSecret),
+      ),
       STRIPE_SECRET_KEY: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeSecretKey", props.secretNames.stripeSecretKey),
       ),
@@ -1482,9 +1484,6 @@ export class ServiceStack extends cdk.Stack {
           "ImportMetronomeWebhookSecret",
           props.secretNames.metronomeWebhookSecret,
         ),
-      ),
-      RESEND_API_KEY: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(this, "ImportResendApiKey", props.secretNames.resendApiKey),
       ),
       // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
       // backend compares it (require_ws_internal_caller) only when

@@ -1,10 +1,10 @@
 """Build, enrich, and deliver a support ticket.
 
 Identity + account/container state are derived server-side from the JWT +
-repos — the client is never trusted for them. Delivered via the Plan-1
-email_service to the support@ inbox, From a dedicated tickets@ identity so the
-agent (Plan 3) can filter app tickets from direct customer mail. Best-effort:
-returns the email id or None.
+repos — the client is never trusted for them. Delivered via email_service to
+the support@ inbox, From a dedicated tickets@ identity so the agent can
+filter app tickets from direct customer mail. Best-effort: returns the email
+id or None.
 """
 
 import html
@@ -129,7 +129,7 @@ def _render(req: SupportTicketRequest, meta: dict) -> str:
 
 
 async def submit_ticket(auth: AuthContext, req: SupportTicketRequest) -> str | None:
-    """Enrich + deliver a support ticket. Returns the Resend id or None."""
+    """Enrich + deliver a support ticket. Returns the SES MessageId or None."""
     meta = await _build_metadata(auth, req)
     subject = f"[Support] {req.category}: {req.message[:60]}"
     reply_to = auth.email or settings.EMAIL_SUPPORT_ADDRESS

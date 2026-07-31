@@ -1,8 +1,10 @@
 """The welcome email sent once when a user signs up.
 
-Invoked best-effort from the Clerk user.created webhook. Idempotency-keyed on
-the (stable) Clerk user id so a webhook retry / double-process can't send a
-second welcome within Resend's 24h window.
+Invoked best-effort from the Clerk user.created webhook. Send-once is
+enforced upstream, not here: the webhook dedupes on svix-id and returns
+before reaching this call on any retry (``routers/webhooks.py``). The
+transport itself has no idempotency key — SES has no equivalent of the one
+Resend offered.
 """
 
 import html
@@ -39,8 +41,8 @@ def _render_welcome_html(first_name: str | None, chat_url: str) -> str:
 </div>"""
 
 
-async def send_welcome_email(*, to_email: str, user_id: str, first_name: str | None = None) -> str | None:
-    """Send the welcome email. Best-effort: returns the Resend id or None.
+async def send_welcome_email(*, to_email: str, first_name: str | None = None) -> str | None:
+    """Send the welcome email. Best-effort: returns the SES MessageId or None.
     Never raises (the seam swallows its own errors)."""
     html = _render_welcome_html(first_name, settings.FRONTEND_URL)
     return await email_service.send_email(
@@ -49,6 +51,5 @@ async def send_welcome_email(*, to_email: str, user_id: str, first_name: str | N
         html=html,
         from_addr=settings.EMAIL_FROM_WELCOME,
         reply_to=settings.EMAIL_SUPPORT_ADDRESS,
-        idempotency_key=f"welcome-user/{user_id}",
         kind="welcome",
     )

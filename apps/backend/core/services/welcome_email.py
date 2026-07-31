@@ -18,37 +18,88 @@ logger = logging.getLogger(__name__)
 _SUBJECT = "Welcome to Isol8 \U0001f44b"
 
 
-def _render_welcome_html(first_name: str | None, chat_url: str) -> str:
+def _render_welcome_html(first_name: str | None, base_url: str) -> str:
     # first_name is user-controlled (from Clerk); escape it so a name with
     # markup can't inject HTML into mail sent from the official sender.
     greeting = f"Hi {html.escape(first_name)}," if first_name else "Hi there,"
     return f"""\
-<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5;color:#1a1a1a;max-width:520px;margin:0 auto">
+<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:#1a1a1a;max-width:520px;margin:0 auto">
   <p>{greeting}</p>
-  <p>Welcome to <strong>Isol8</strong> — your own AI agent team is ready.</p>
-  <p>Head to your workspace to meet Friday (your orchestrator) and start delegating work:</p>
+  <p>Thanks for signing up to <strong>Isol8</strong> — and welcome.</p>
   <p>
-    <a href="{chat_url}/chat"
+    You now have your own private AI team, running in a container that belongs
+    only to you. Nothing is shared with anyone else.
+  </p>
+  <p>
+    Start with <strong>Friday</strong>. She's your orchestrator: give her a goal
+    in plain English and she'll break it into work, pull in the right teammates,
+    and report back. You don't assign tasks — you set direction.
+  </p>
+  <p>
+    <a href="{base_url}/chat"
        style="display:inline-block;padding:12px 20px;background:#111;color:#fff;text-decoration:none;border-radius:8px">
       Open your workspace
     </a>
   </p>
+  <p style="margin-bottom:6px"><strong>Three things worth trying first</strong></p>
+  <ol style="margin-top:0;padding-left:20px;color:#333">
+    <li>Tell Friday what you're working on — the more context, the better she delegates.</li>
+    <li>Ask her to research something and report back. It's the fastest way to see how she works.</li>
+    <li>Browse the <a href="{base_url}/marketplace" style="color:#111">marketplace</a> and hire a specialist onto your team.</li>
+  </ol>
   <p style="color:#666;font-size:14px">
-    Questions or hit a snag? Just reply to this email and our team (and our
-    own agents) will help.
+    Still have questions? The <a href="{base_url}/#faq" style="color:#111">FAQ</a>
+    covers the common ones — and you can just reply to this email. It reaches a
+    real person (and a few of our own agents).
   </p>
   <p style="color:#999;font-size:13px">— The Isol8 team</p>
 </div>"""
 
 
+def _render_welcome_text(first_name: str | None, base_url: str) -> str:
+    """Plain-text alternative. Not decoration: an HTML-only message is a
+    deliverability penalty with most providers, and a few clients render it
+    badly. Kept in sync with the HTML above by hand — it's short enough that a
+    templating layer would cost more than it saves."""
+    greeting = f"Hi {first_name}," if first_name else "Hi there,"
+    return f"""\
+{greeting}
+
+Thanks for signing up to Isol8 — and welcome.
+
+You now have your own private AI team, running in a container that belongs
+only to you. Nothing is shared with anyone else.
+
+Start with Friday. She's your orchestrator: give her a goal in plain English
+and she'll break it into work, pull in the right teammates, and report back.
+You don't assign tasks — you set direction.
+
+Open your workspace: {base_url}/chat
+
+Three things worth trying first:
+  1. Tell Friday what you're working on — the more context, the better she
+     delegates.
+  2. Ask her to research something and report back. It's the fastest way to
+     see how she works.
+  3. Browse the marketplace and hire a specialist onto your team:
+     {base_url}/marketplace
+
+Still have questions? The FAQ covers the common ones ({base_url}/#faq) — and
+you can just reply to this email. It reaches a real person (and a few of our
+own agents).
+
+— The Isol8 team"""
+
+
 async def send_welcome_email(*, to_email: str, first_name: str | None = None) -> str | None:
     """Send the welcome email. Best-effort: returns the SES MessageId or None.
     Never raises (the seam swallows its own errors)."""
-    html = _render_welcome_html(first_name, settings.FRONTEND_URL)
+    base_url = settings.FRONTEND_URL.rstrip("/")
     return await email_service.send_email(
         to=to_email,
         subject=_SUBJECT,
-        html=html,
+        html=_render_welcome_html(first_name, base_url),
+        text=_render_welcome_text(first_name, base_url),
         from_addr=settings.EMAIL_FROM_WELCOME,
         reply_to=settings.EMAIL_SUPPORT_ADDRESS,
         kind="welcome",

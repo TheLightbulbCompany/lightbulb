@@ -19,12 +19,12 @@ import {
   useRunDetail,
   type RunDetail,
 } from "../../../../lib/teamsRunDetail";
+import { teamsDetailUrl } from "../../../../lib/webLinks";
 
 // Run-detail screen (web RunDetailPanel parity): status + actions
 // (Cancel / Retry / Resume), error surfaces, transcript (bounded tail of the
 // run log), event timeline, and the metadata props. Polls while active.
 
-const MANAGE_URL = "https://isol8.co/teams";
 
 // Bound what one RN Text renders — a 256KiB transcript in a single Text is a
 // jank risk the web's scrollable <pre> doesn't have. The tail is what matters.
@@ -161,7 +161,7 @@ export default function RunDetailScreen() {
         {isSubscription ? (
           <ActionButton
             label="Manage on isol8.co"
-            onPress={() => void Linking.openURL(MANAGE_URL)}
+            onPress={() => void Linking.openURL(teamsDetailUrl("run", runId, "issues"))}
           />
         ) : (
           <ActionButton label="Retry" onPress={() => void retry()} />

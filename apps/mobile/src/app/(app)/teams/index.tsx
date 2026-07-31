@@ -39,10 +39,10 @@ import {
   type RunActivityDay,
   type TeamsAgent,
 } from "../../../lib/teamsData";
+import { teamsPanelUrl } from "../../../lib/webLinks";
 
 // Teams is a subscription-gated, web-managed surface: when the workspace needs
 // a subscription the mobile app deep-links out rather than running checkout.
-const MANAGE_URL = "https://isol8.co/teams";
 
 // ---------------------------------------------------------------------------
 // Readiness affordance (spec §7) — pulsing dot for the provisioning state.
@@ -418,7 +418,7 @@ function DashboardView({ onOpenApprovals }: { onOpenApprovals: () => void }) {
             action={
               <OutlineButton
                 label="Manage on isol8.co"
-                onPress={() => void Linking.openURL(MANAGE_URL)}
+                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
               />
             }
           />
@@ -526,7 +526,7 @@ function ApprovalsView() {
             action={
               <OutlineButton
                 label="Manage on isol8.co"
-                onPress={() => void Linking.openURL(MANAGE_URL)}
+                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
               />
             }
           />
@@ -794,7 +794,7 @@ function InboxView() {
             action={
               <OutlineButton
                 label="Manage on isol8.co"
-                onPress={() => void Linking.openURL(MANAGE_URL)}
+                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
               />
             }
           />

@@ -19,12 +19,11 @@ import {
   type TeamsAgent,
   type TeamsRoutine,
 } from "../../../lib/teamsData";
+import { teamsPanelUrl } from "../../../lib/webLinks";
 
 // Routines (web RoutinesPanel parity, list-level controls): the operational
 // levers — pause/resume a misfiring automation, fire one now — live here;
 // create/edit stays on web (deep-link), matching the control-surface pattern.
-
-const MANAGE_URL = "https://isol8.co/teams";
 
 function routineEnabled(routine: TeamsRoutine): boolean {
   return routine.status === "active";
@@ -76,7 +75,7 @@ function RoutineRow({
       </View>
       {needsVariables ? (
         <Pressable
-          onPress={() => void Linking.openURL(MANAGE_URL)}
+          onPress={() => void Linking.openURL(teamsPanelUrl("routines"))}
           hitSlop={6}
           accessibilityRole="button"
           accessibilityLabel="Run on isol8.co (this routine needs inputs)"
@@ -148,7 +147,7 @@ export default function RoutinesScreen() {
         <Pressable
           style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
           onPress={
-            isSubscription ? () => void Linking.openURL(MANAGE_URL) : () => void retry()
+            isSubscription ? () => void Linking.openURL(teamsPanelUrl("routines")) : () => void retry()
           }
           accessibilityRole="button"
           accessibilityLabel={isSubscription ? "Manage on isol8.co" : "Retry"}

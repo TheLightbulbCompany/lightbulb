@@ -29,8 +29,7 @@ import {
 import { usePulse } from "../chat/usePulse";
 import { IssueCard } from "./IssueCard";
 import { StatusSheet } from "./StatusSheet";
-
-const MANAGE_URL = "https://isol8.co/teams";
+import { teamsPanelUrl } from "../../lib/webLinks";
 
 // ---------------------------------------------------------------------------
 // Board mode — status-grouped vertical sections (recommended phone layout,
@@ -173,7 +172,7 @@ export function BoardView() {
             action={
               <OutlineButton
                 label="Manage on isol8.co"
-                onPress={() => void Linking.openURL(MANAGE_URL)}
+                onPress={() => void Linking.openURL(teamsPanelUrl("issues"))}
               />
             }
           />

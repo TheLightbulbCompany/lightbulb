@@ -61,8 +61,8 @@ import {
   type TeamsAgent,
   type TeamsApproval,
 } from "../../../../lib/teamsData";
+import { teamsDetailUrl } from "../../../../lib/webLinks";
 
-const MANAGE_URL = "https://isol8.co/teams";
 const UNASSIGNED_KEY = "__unassigned__";
 const AGENT_PREFIX = "agent:";
 const USER_PREFIX = "user:";
@@ -308,7 +308,7 @@ export default function IssueDetailScreen() {
           action={
             <OutlineButton
               label="Manage on isol8.co"
-              onPress={() => void Linking.openURL(MANAGE_URL)}
+              onPress={() => void Linking.openURL(teamsDetailUrl("issue", id, "issues"))}
             />
           }
         />

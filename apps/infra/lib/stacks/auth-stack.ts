@@ -175,6 +175,24 @@ export class AuthStack extends cdk.Stack {
       "ORPHANED after the SES migration — no longer read by any service. Safe to delete.",
     );
 
+    // PHASE 1 of a two-phase cross-stack export removal — do NOT delete this
+    // line in the same change that dropped the consumer.
+    //
+    // isol8-stage.ts used to pass `auth.resendApiKey.secretName` into
+    // ServiceStack. That is a cross-stack reference, so CDK synthesised an
+    // `ExportsOutputRefResendApiKey…` Output here and an Fn::ImportValue
+    // there. Removing the consumer (PR #1529) made CDK drop the Output — but
+    // CloudFormation updates THIS stack before ServiceStack, so at that
+    // moment the export is still imported and the update fails with
+    // "Cannot delete export … as it is in use by another stack", rolling the
+    // whole auth stack back.
+    //
+    // exportValue() re-declares the Output with the identical generated name,
+    // holding it alive while ServiceStack drops its import. Once a deploy has
+    // landed with no importer, a follow-up change can delete this line (and
+    // the secret above) safely.
+    this.exportValue(this.resendApiKey.secretArn);
+
     // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage
     // only) presents as the X-Isol8-SES-Secret header on its POST
     // to /webhooks/ses-inbound; the backend compares it in constant time (see

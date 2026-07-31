@@ -29,7 +29,7 @@ const MERMAID_CONFIG = {
     primaryTextColor: "#1a1a1a",
     secondaryColor: "#ece6d8",
     tertiaryColor: "#f6f2ea",
-    lineColor: "#8a8578",
+    lineColor: "#767061",
     edgeLabelBackground: "#f3efe6",
     fontSize: "13px",
   },

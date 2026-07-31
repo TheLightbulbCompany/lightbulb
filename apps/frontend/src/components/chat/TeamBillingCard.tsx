@@ -88,13 +88,14 @@ export function TeamBillingCard({
       className="w-full max-w-[440px] rounded-2xl border border-[var(--edge)] bg-white px-4 py-5 text-left shadow-[0_1px_2px_rgba(28,25,23,0.04)] sm:p-7"
     >
       {/*
-        Body copy keeps the literal #6b655e rather than var(--mute) (#8a8578).
-        --mute is ~3.7:1 on white — below WCAG AA — and this paragraph carries
-        the price the owner is about to be charged. --ink and --danger below
-        ARE the tokens; they're contrast-equivalent to what they replaced.
+        Body copy used to hardcode #6b655e because --mute was #8a8578, only
+        ~3.7:1 on this white card and under WCAG AA — and this paragraph
+        carries the price the owner is about to be charged. --mute is now
+        #767061, measured 4.93:1 on white, so the workaround is retired and
+        this uses the token like everything around it.
       */}
       <div className="text-base font-semibold leading-[1.4] text-[var(--ink)]">Teams billing</div>
-      <p className="mt-1 text-[13px] leading-[1.5] text-[#6b655e]">
+      <p className="mt-1 text-[13px] leading-[1.5] text-[var(--mute)]">
         {seatsKnown ? (
           <>
             ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
@@ -117,7 +118,7 @@ export function TeamBillingCard({
 
       <div className="mt-4">
         {!canAct ? (
-          <p className="rounded-[10px] border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-[13px] leading-[1.5] text-[#6b655e]">
+          <p className="rounded-[10px] border border-[var(--edge)] bg-[var(--cream)] px-3.5 py-3 text-[13px] leading-[1.5] text-[var(--mute)]">
             Ask your org admin to set up Teams billing. Only an organization admin can start the team
             subscription.
           </p>

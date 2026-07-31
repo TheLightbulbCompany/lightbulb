@@ -195,8 +195,17 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
         if isinstance(exc, HTTPException):
             raise
+        # Carry the failure class + message in the detail. The caller is the
+        # owner's OWN container (hook-token auth), Atlas's protocol is to
+        # report exact errors verbatim, and a bare "deploy failed" turns every
+        # incident into a log-diving session — the founders' first live
+        # registration retried a blind 502 for hours. Capped, no traceback;
+        # exception messages on this path are gateway RPC / tar / config-merge
+        # errors, not secrets.
+        reason = f"{type(exc).__name__}: {exc}"[:300]
         raise HTTPException(
-            status_code=502, detail="deploy into container failed — retry the build in a moment"
+            status_code=502,
+            detail=f"deploy into container failed ({reason}) — retry the build in a moment",
         ) from exc
 
     return {

@@ -200,5 +200,9 @@ def test_deploy_failure_rolls_back_paperclip(
 
     resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
     assert resp.status_code == 502
+    # The detail must carry the failure class + message: Atlas relays exact
+    # errors to the task thread, and a bare "deploy failed" leaves everyone
+    # (agent and operator) retrying blind against a deterministic failure.
+    assert "RuntimeError: untar failed" in resp.json()["detail"]
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "new-agent-uuid"

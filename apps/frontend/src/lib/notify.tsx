@@ -66,6 +66,19 @@ export function notifyFailure(message: string, opts?: NotifyActionOptions): stri
   });
 }
 
+/**
+ * Sticky attention toast (info-styled, never auto-dismisses). For events that
+ * wait on the user (e.g. an agent awaiting approval) — resolved by a
+ * dismissNotification with the same dedupeKey when the wait ends.
+ */
+export function notifyAttention(message: string, opts?: NotifyActionOptions): string | number {
+  return toast.info(message, {
+    id: opts?.dedupeKey,
+    duration: Infinity,
+    action: opts?.action,
+  });
+}
+
 export function dismissNotification(id: string | number): void {
   toast.dismiss(id);
 }

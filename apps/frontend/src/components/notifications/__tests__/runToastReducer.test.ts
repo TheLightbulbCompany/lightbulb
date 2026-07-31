@@ -4,6 +4,7 @@ import {
   createRunToastState,
   reduceChatFrame,
   reduceTeamsRunEvent,
+  reduceTeamsActivityEvent,
   MAX_TRACKED_RUNS,
   type RunToastContext,
 } from "../runToastReducer";
@@ -316,5 +317,78 @@ describe("reduceTeamsRunEvent", () => {
     expect(reduceTeamsRunEvent(s, "teams.heartbeat.run.status", null, bgCtx)).toEqual([]);
     expect(reduceTeamsRunEvent(s, "teams.heartbeat.run.status", { agentId: "pa1", status: "failed" }, bgCtx)).toEqual([]);
     expect(reduceTeamsRunEvent(s, "teams.heartbeat.run.status", { runId: "t7", status: 42 }, bgCtx)).toEqual([]);
+  });
+});
+
+describe("reduceTeamsActivityEvent — approvals", () => {
+  it("emits an approval action on approval.created when no teams panel is active", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.created", entityType: "approval", entityId: "ap1", agentId: "pa1" },
+        bgCtx,
+      ),
+    ).toEqual([{ kind: "approval", key: "approval:ap1" }]);
+  });
+
+  it("emits an approval action on approval.resubmitted (ball back in the user's court)", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.resubmitted", entityId: "ap1" },
+        bgCtx,
+      ),
+    ).toEqual([{ kind: "approval", key: "approval:ap1" }]);
+  });
+
+  it("suppresses while a teams panel is active (the inbox band is on screen)", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.created", entityId: "ap1" },
+        chatCtx([], true),
+      ),
+    ).toEqual([]);
+  });
+
+  it("dismisses on approval.approved / approval.rejected even while suppressed", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.approved", entityId: "ap1" },
+        chatCtx([], true),
+      ),
+    ).toEqual([{ kind: "dismiss", key: "approval:ap1" }]);
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.rejected", entityId: "ap2" },
+        bgCtx,
+      ),
+    ).toEqual([{ kind: "dismiss", key: "approval:ap2" }]);
+  });
+
+  it("ignores non-approval actions, other events, and malformed payloads", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.revision_requested", entityId: "ap1" },
+        bgCtx,
+      ),
+    ).toEqual([]);
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "issue.work_product_created", entityId: "i1" },
+        bgCtx,
+      ),
+    ).toEqual([]);
+    expect(
+      reduceTeamsActivityEvent("teams.heartbeat.run.status", { action: "approval.created", entityId: "x" }, bgCtx),
+    ).toEqual([]);
+    expect(reduceTeamsActivityEvent("teams.activity.logged", null, bgCtx)).toEqual([]);
+    expect(
+      reduceTeamsActivityEvent("teams.activity.logged", { action: "approval.created" }, bgCtx),
+    ).toEqual([]);
   });
 });

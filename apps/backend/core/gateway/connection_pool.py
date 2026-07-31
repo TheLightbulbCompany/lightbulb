@@ -1388,8 +1388,15 @@ class GatewayConnection:
             logger.warning("agents.list for push-name resolution failed", exc_info=True)
             return ""
 
-    def _dispatch_push_notification(self, payload: dict, carried_member: str | None, agent_id: str | None) -> None:
-        """Fire-and-forget push on a completed run (mirrors _record_usage_from_session).
+    def _dispatch_push_notification(
+        self, payload: dict, carried_member: str | None, agent_id: str | None, state: str = "final"
+    ) -> None:
+        """Fire-and-forget push on a terminal run (mirrors _record_usage_from_session).
+
+        *state* is ``"final"`` or ``"error"`` (aborted never pushes — the user
+        cancelled the run themselves). A final with no assistant text (tool-only
+        run) still pushes with a generic body: the run ending is the signal, not
+        the prose.
 
         Audience = *carried_member* (the CANONICAL Clerk id of the dispatching
         member, carried on the active-run entry by ``mark_run_active``), or the
@@ -1398,19 +1405,28 @@ class GatewayConnection:
         — OpenClaw lowercases that, and the users-table PK lookup in
         ``send_push_to_user`` is case-sensitive, so a lowercased id would miss.
         Only pushes to a Clerk user id; an unattributed org session (org_ owner,
-        no carried member) silently no-ops.
+        no carried member) drops with a metric so the gap is visible.
         """
         push_user_id = carried_member or self.owner_id
         if not push_user_id or not push_user_id.startswith("user_"):
+            put_metric("push.unattributed_drop")
             return
-        preview = self._extract_assistant_text(payload)
-        if not preview:
-            return
+        if state == "error":
+            err = payload.get("errorMessage") or payload.get("error")
+            if isinstance(err, dict):
+                err = err.get("message")
+            preview = str(err) if err else "Agent run failed"
+        else:
+            preview = self._extract_assistant_text(payload) or "Finished a run"
         session_key = payload.get("sessionKey")
 
         async def _send():
             try:
                 agent_name = await self._resolve_agent_name(agent_id)
+                if state == "error":
+                    title = f"{agent_name} run failed" if agent_name else "Agent run failed"
+                else:
+                    title = agent_name or "New reply"
                 body = preview if len(preview) <= 120 else preview[:119] + "…"
                 data: Dict[str, str] = {}
                 if agent_id:
@@ -1419,7 +1435,7 @@ class GatewayConnection:
                     data["sessionKey"] = session_key
                 from core.services.push_service import send_push_to_user
 
-                await send_push_to_user(push_user_id, agent_name or "New reply", body, data)
+                await send_push_to_user(push_user_id, title, body, data)
             except Exception:
                 logger.exception("Push dispatch failed for user %s", push_user_id)
 
@@ -2006,7 +2022,7 @@ class GatewayConnection:
                     # frame forwarding below and of whether any browser tab is
                     # even watching. Fires for every TRUE terminal state
                     # (final/error/aborted), not just "final" (unlike the push
-                    # dispatch, which is success-only).
+                    # dispatch, which excludes aborted).
                     self._dispatch_run_completion(run_id, state, payload)
 
                     run_ended: dict = {
@@ -2020,17 +2036,19 @@ class GatewayConnection:
                         run_ended["session_id"] = session_id
                     await self._forward_to_frontends(run_ended, target_member)
 
-                    # Push a notification for a completed reply (fire-and-forget,
+                    # Push a notification for a terminal reply (fire-and-forget,
                     # off the reader-loop hot path — mirrors billing at the
-                    # agent-event lifecycle site). Only on a successful final;
-                    # error/aborted never push. Audience is the CANONICAL member
-                    # carried on the active-run entry, not the echoed/lowercased
+                    # agent-event lifecycle site). Final AND error push (a run
+                    # failing while the user is away deserves notice as much as
+                    # one finishing); aborted never pushes — the user cancelled
+                    # it themselves. Audience is the CANONICAL member carried on
+                    # the active-run entry, not the echoed/lowercased
                     # target_member (which would PK-miss the users table).
                     # Skip side (`/btw`) runs: they carry no member (carried_member
                     # is None → would fall back to the owner) and are not the
-                    # user-initiated primary reply v1 push is for.
-                    if state == "final" and not run_is_side:
-                        self._dispatch_push_notification(payload, carried_member, event_agent_id)
+                    # user-initiated primary reply the push is for.
+                    if state in ("final", "error") and not run_is_side:
+                        self._dispatch_push_notification(payload, carried_member, event_agent_id, state)
 
                     # Clear the non-side active-run window now — AFTER the push
                     # task has been created — so the teardown guard

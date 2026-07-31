@@ -26,7 +26,9 @@ import { PushRegistration } from "./PushRegistration";
 
 it("requests a token and POSTs it once", async () => {
   // RNTL 14's render() is async — await it before asserting effects.
-  await render(<PushRegistration getCurrentAgentId={() => null} />);
+  await render(
+    <PushRegistration getCurrentChat={() => ({ agentId: null, sessionId: null })} />,
+  );
   await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
   const [path, body] = mockPost.mock.calls[0];
   expect(path).toBe("/devices");

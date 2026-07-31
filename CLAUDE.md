@@ -520,17 +520,19 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover. Three paid shapes, each its own Stripe price — do NOT assume "one flat fee for everybody", which this section used to say and which is wrong for orgs:
+Post-2026-04-26 flat-fee cutover. Three paid shapes, each its own Stripe price. This section used to say "a single $50/mo subscription per owner (personal user OR org)" — that is wrong for orgs, which pay a base **plus** per-seat:
 
-| shape | Stripe price | amount | who |
+| shape | Stripe price(s) | amount | who |
 |---|---|---|---|
-| **Flat** | `STRIPE_FLAT_PRICE_ID` | $50/mo | personal owners; `create_flat_checkout` |
-| **Teams per-seat** | `STRIPE_TEAM_SEAT_PRICE_ID` | `TEAM_SEAT_PRICE_USD` = $20/seat/mo | orgs; `create_team_seat_checkout`, quantity = live Clerk member count (floored at 1) |
+| **Flat** | `STRIPE_FLAT_PRICE_ID` | $50/mo | personal owners |
+| **Teams** | `STRIPE_TEAM_BASE_PRICE_ID` **+** `STRIPE_TEAM_SEAT_PRICE_ID` | `TEAM_BASE_PRICE_USD` $50 base **+** `TEAM_SEAT_PRICE_USD` $20/seat | orgs |
 | **Ultra Pro** | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` = $150/mo | large marketplace companies over the flat tier's agent budget |
 
-**Teams has no base fee.** `create_team_seat_checkout` builds the subscription from the seat price ALONE, and `/billing/account` returns `seat_count` + `team_seat_price_usd` but no base — so an org's bill is exactly `seats × $20`. `TeamBillingCard`'s `basePriceUsd` prop exists for a future base tier and is passed by nobody today.
+**A Teams subscription is TWO line items, not one.** `create_team_seat_checkout` builds `[{base, quantity: 1}, {seat, quantity: seat_count}]`, so a 4-person org pays `$50 + 4 × $20 = $130/mo`. Both amounts are echoed to the frontend by `/billing/account` (`team_base_price_usd`, `team_seat_price_usd`) so `TeamBillingCard` renders "$50 + N × $20" without hardcoding either number.
 
-Seat quantity is synced by `sync_team_seat_quantity` (the single writer), driven off Clerk membership webhooks. Pending invitations count as seats from the moment they're sent.
+Two constraints in that code worth not breaking:
+- **Nothing may select the line items by position** — Stripe does not guarantee order. The webhook picks the seat item by price id (`subscription_item_on_price`), and `create_team_seat_checkout` refuses to start if the base and seat price ids are equal.
+- **Seat quantity has a single writer**, `sync_team_seat_quantity`, driven off Clerk membership webhooks. Quantity is floored at 1 so a transient member-count read of 0 never creates a zero-quantity subscription. Pending invitations count as seats from the moment they're sent.
 
 Every container is the same 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). There is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
@@ -672,6 +674,7 @@ POST /marketplace/listings/{slug}/deploy
 | `ENCRYPTION_KEY` | Fernet key for BYOK | Required for key management |
 | `CORS_ORIGINS` | Comma-separated origins | `http://localhost:3000` |
 | `STRIPE_FLAT_PRICE_ID` | Stripe price for the $50/mo flat tier (personal owners) | Required for billing |
+| `STRIPE_TEAM_BASE_PRICE_ID` | Stripe flat-base price for org subscriptions, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). Must differ from the seat price id or checkout refuses to start | Set by CDK |
 | `STRIPE_TEAM_SEAT_PRICE_ID` | Stripe per-seat price for org subscriptions; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20) | Set by CDK |
 | `STRIPE_ULTRA_PRICE_ID` | Stripe price for the Ultra Pro tier. Display dollars mirrored by `ULTRA_PRICE_USD` (150) | Set by CDK |
 | `MARKETPLACE_LISTINGS_TABLE` | DDB listings table (draft / review / published / retired / taken_down rows) | Set by CDK; empty disables marketplace |

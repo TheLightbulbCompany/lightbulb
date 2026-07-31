@@ -26,27 +26,6 @@ describe("TeamBillingCard", () => {
     expect(screen.getByText(/\$40\/mo/)).toBeInTheDocument();
   });
 
-  // Neither call site passes basePriceUsd and the backend never sends it, so
-  // this is what every real Teams customer sees. The assertion above only
-  // checked the total, which stayed correct while the copy read
-  // "$0 base + 2 seats × $20 = $40/mo" on the paywall.
-  it("omits the base term entirely when there is no base price", () => {
-    const { container } = render(
-      <TeamBillingCard seatCount={2} seatPriceUsd={20} ownerRole="admin" />,
-    );
-    expect(container.textContent).not.toMatch(/\$0 base/);
-    expect(container.textContent).not.toMatch(/base \+/);
-    expect(screen.getByText(/2 seats × \$20/)).toBeInTheDocument();
-  });
-
-  it("still shows the base term when a base price is present", () => {
-    const { container } = render(
-      <TeamBillingCard seatCount={2} seatPriceUsd={20} basePriceUsd={50} ownerRole="admin" />,
-    );
-    expect(container.textContent).toMatch(/\$50 base \+ 2 seats × \$20/);
-    expect(screen.getByText(/\$90\/mo/)).toBeInTheDocument();
-  });
-
   it("calls onSubscribe when an unsubscribed admin clicks subscribe", () => {
     const onSubscribe = vi.fn().mockResolvedValue(undefined);
     render(

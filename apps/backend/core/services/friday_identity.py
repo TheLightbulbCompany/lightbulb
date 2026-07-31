@@ -206,6 +206,23 @@ mine to evolve, but they're yours to direct.
 """
 
 
+_SELF_GROUNDING_HEADING = "## You are made of Isol8"
+
+# Leading blank line so both composition sites (mid-template substitution and
+# the append migration) get a clean separator without extra bookkeeping.
+_SELF_GROUNDING_SECTION = """\
+
+## You are made of Isol8
+
+You are not just ON Isol8 — the capabilities in `skill isol8` are YOUR
+capabilities. Whenever the conversation turns to what Isol8 can do, should
+do, or how to build on it — including strategy discussions that never say
+the word "Isol8" — run `skill isol8` FIRST and reason from the platform's
+actual primitives, not from generic first principles. That covers connecting
+integrations, the marketplace, billing, what the UI can do, and any design
+for trigger-based, event-driven, or autonomous operations.
+"""
+
 _SOUL_TEMPLATE = """\
 # SOUL.md - Who You Are
 
@@ -236,11 +253,7 @@ lives on EFS at this workspace. Specifically, you have:
 
 If someone asks "can you do X?", and X is in this list, attempt it. Don't
 explain the theory; just do it.
-
-If {owner_display} asks how Isol8 itself works — connecting integrations,
-the marketplace, billing, what the UI can do — run `skill isol8` for the
-authoritative answers instead of improvising.
-
+{self_grounding_section}
 ## Paperclip / Teams
 
 Beyond chat, you also live in **Paperclip** — Isol8's project management
@@ -296,6 +309,11 @@ should know.
 _This file is yours to evolve. As you learn who you are and who you're
 serving, update it._
 """
+
+# The section is owner-agnostic, so substitute it before .format() ever sees
+# the template — .replace(), not .format(), because the template's real
+# placeholders ({owner_display}) must survive until render time.
+_SOUL_TEMPLATE = _SOUL_TEMPLATE.replace("{self_grounding_section}", _SELF_GROUNDING_SECTION)
 
 
 _USER_TEMPLATE_PERSONAL = """\
@@ -776,6 +794,30 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
     return True
 
 
+def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Append the ``## You are made of Isol8`` section to an EXISTING SOUL.md
+    that predates it.
+
+    SOUL.md is seeded write-if-missing, so already-provisioned Fridays would
+    otherwise never learn that the isol8 skill covers platform-shaped strategy
+    conversations, not just UI mechanics — they answer from generic priors and
+    only read the skill after the owner corrects them. Same shape as
+    ``_migrate_add_nightly_section``: append only when the heading is ABSENT,
+    touch nothing else (SOUL.md is Friday's file to evolve). Returns True when
+    a rewrite happened.
+    """
+    rel_path = f"workspace-{agent_uuid}/SOUL.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no SOUL.md yet; the seed loop writes the full template
+        return False
+    if _SELF_GROUNDING_HEADING in content:
+        return False
+    new_content = content.rstrip("\n") + "\n" + _SELF_GROUNDING_SECTION
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
+
+
 def _render_templates(profile: dict) -> dict[str, str]:
     """Render the seed files from a resolved profile dict.
 
@@ -991,6 +1033,23 @@ async def pre_stage_friday_identity(
         put_metric("friday_identity.agents_md_nightly_migrate_error")
         logger.warning(
             "friday_identity: AGENTS.md nightly-section migration failed for owner=%s: %s",
+            owner_id,
+            exc,
+        )
+
+    # Heal pre-grounding SOUL.md the same way: append the platform
+    # self-knowledge section when it's absent. Best-effort.
+    try:
+        if _migrate_add_soul_grounding(workspace, owner_id, friday_uuid):
+            put_metric("friday_identity.soul_md_grounding_migrated")
+            logger.info(
+                "friday_identity: appended self-grounding section to SOUL.md for owner=%s",
+                owner_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.soul_md_grounding_migrate_error")
+        logger.warning(
+            "friday_identity: SOUL.md grounding migration failed for owner=%s: %s",
             owner_id,
             exc,
         )

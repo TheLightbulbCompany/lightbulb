@@ -1028,6 +1028,56 @@ def test_migrate_add_nightly_section_noop_when_no_file():
     workspace.write_file.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Platform self-grounding section (SOUL.md)
+# ---------------------------------------------------------------------------
+
+
+def test_soul_md_contains_self_grounding_section():
+    soul_md = friday_identity._render_templates(_personal_profile())["SOUL.md"]
+    assert "## You are made of Isol8" in soul_md
+    assert "skill isol8" in soul_md
+    # No leftover substitution placeholder in the rendered output.
+    assert "{self_grounding_section}" not in soul_md
+
+
+def test_migrate_add_soul_grounding_appends_when_absent():
+    """An existing SOUL.md without the section gets it appended; idempotent on
+    a second run."""
+    store = {"workspace-friday-uuid/SOUL.md": "# SOUL.md - Who You Are\n\nFriday's own evolved soul.\n"}
+
+    def read_file(owner_id, rel_path):
+        return store[rel_path]
+
+    def write_file(owner_id, rel_path, content):
+        store[rel_path] = content
+
+    workspace = MagicMock()
+    workspace.read_file = read_file
+    workspace.write_file = write_file
+
+    changed = friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid")
+    assert changed is True
+    migrated = store["workspace-friday-uuid/SOUL.md"]
+    assert "## You are made of Isol8" in migrated
+    assert "Friday's own evolved soul." in migrated
+
+    changed_again = friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid")
+    assert changed_again is False
+
+
+def test_migrate_add_soul_grounding_noop_when_no_file():
+    def read_file(owner_id, rel_path):
+        raise FileNotFoundError(rel_path)
+
+    workspace = MagicMock()
+    workspace.read_file = read_file
+    workspace.write_file = MagicMock()
+
+    assert friday_identity._migrate_add_soul_grounding(workspace, "user_abc", "friday-uuid") is False
+    workspace.write_file.assert_not_called()
+
+
 def test_agents_template_checks_marketplace_before_atlas():
     """The playbook must lead with the marketplace, not Atlas.
 

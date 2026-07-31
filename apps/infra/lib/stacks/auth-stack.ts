@@ -125,9 +125,9 @@ export class AuthStack extends cdk.Stack {
 
     // Shared bearer secret between the isol8.notifications Paperclip plugin
     // and the backend's /webhooks/paperclip-events receiver. Generated here;
-    // the backend reads it as an env secret, and
-    // scripts/configure_paperclip_notify_plugin.py pushes the same value into
-    // the plugin's configJson (plugin workers cannot read env vars).
+    // the backend reads it as an env secret (service-stack), and the
+    // Paperclip task receives the same value as PAPERCLIP_ISOL8_NOTIFY_TOKEN
+    // (paperclip-stack) for the plugin worker's env passthrough.
     this.paperclipEventsWebhookSecret = createSecret(
       "PaperclipEventsWebhookSecret",
       "paperclip_events_webhook_secret",

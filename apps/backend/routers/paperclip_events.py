@@ -11,14 +11,17 @@ retry; this handler acks 200 even when a push fails. Intermittent loss is
 accepted (explicit product decision) — there is deliberately no backstop poll.
 
 Auth: a shared bearer secret (``PAPERCLIP_EVENTS_WEBHOOK_SECRET``). The plugin
-carries it in ``configJson`` (set by scripts/configure_paperclip_notify_plugin
-.py); empty setting disables the route entirely. Events are deduped on the
+worker receives the same value as ``PAPERCLIP_ISOL8_NOTIFY_TOKEN`` via the
+fork's worker-env passthrough (set on the Paperclip task by paperclip-stack);
+empty setting disables the route entirely. Events are deduped on the
 plugin-minted ``eventId`` because a plugin-worker crash-restart re-subscribes
 and can double-deliver.
 """
 
+import asyncio
 import hmac
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -26,7 +29,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.push_service import send_push_to_user
-from core.services.webhook_dedup import WebhookDedupResult, record_event_or_skip
+from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +37,18 @@ router = APIRouter()
 
 # agent.run.finished pushes only for runs a human plausibly initiated or
 # assigned; timer/automation heartbeats would be pure spam. Failures push
-# regardless of source — a broken routine is worth knowing about.
+# regardless of source — a broken routine is worth knowing about — but are
+# rate-limited below so a crashlooping routine can't page every cycle.
 _FINISHED_PUSH_SOURCES = {"assignment", "on_demand"}
+
+# ponytail: fixed hour-bucket cooldown per (company, agent) failure notice;
+# upgrade to a sliding window if the bucket boundary double-push ever matters.
+_FAILURE_COOLDOWN_S = 3600
+
+
+def _payload_of(event: dict) -> dict:
+    payload = event.get("payload")
+    return payload if isinstance(payload, dict) else {}
 
 
 def decide_push(event: dict) -> tuple[str, str] | None:
@@ -46,7 +59,7 @@ def decide_push(event: dict) -> tuple[str, str] | None:
     display name without a per-event Paperclip round-trip.
     """
     event_type = event.get("eventType")
-    payload = event.get("payload") or {}
+    payload = _payload_of(event)
     if event_type in ("approval.created", "approval.resubmitted"):
         body = (
             "An agent resubmitted work for your approval"
@@ -65,13 +78,46 @@ def decide_push(event: dict) -> tuple[str, str] | None:
     return None
 
 
+def push_data(event: dict) -> dict[str, str]:
+    """Identifiers for the push ``data`` payload (future tap-routing).
+
+    Deliberately NO ``agentId`` key: the mobile client routes ``data.agentId``
+    into the gateway agent chat, and a Paperclip agent UUID would land on a
+    nonexistent chat. Teams-side routing keys ship under distinct names.
+    """
+    payload = _payload_of(event)
+    data = {"source": "teams", "eventType": str(event.get("eventType") or "")}
+    for value, key in (
+        (event.get("entityId"), "entityId"),
+        (event.get("companyId"), "companyId"),
+        (payload.get("runId"), "runId"),
+        (payload.get("issueId"), "issueId"),
+    ):
+        if value:
+            data[key] = str(value)
+    return data
+
+
+def _failure_cooldown_key(event: dict) -> str | None:
+    """Coarse rate limit for run-failure pushes: one per (company, agent) per
+    hour bucket, keyed through the same dedup table (30-day TTL is fine for
+    hour-bucketed rows)."""
+    if event.get("eventType") != "agent.run.failed":
+        return None
+    agent_id = _payload_of(event).get("agentId") or "unknown"
+    bucket = int(time.time() // _FAILURE_COOLDOWN_S)
+    return f"pcplugin_failcool_{event.get('companyId')}_{agent_id}_{bucket}"
+
+
 @router.post("/paperclip-events")
 async def receive_paperclip_event(request: Request):
     secret = settings.PAPERCLIP_EVENTS_WEBHOOK_SECRET
     if not secret:
         raise HTTPException(status_code=404, detail="Not found")
     auth = request.headers.get("authorization", "")
-    if not hmac.compare_digest(auth, f"Bearer {secret}"):
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII *str*
+    # input, and this is a public endpoint fed arbitrary header bytes.
+    if not hmac.compare_digest(auth.encode(), f"Bearer {secret}".encode()):
         raise HTTPException(status_code=401, detail="Invalid token")
 
     try:
@@ -89,29 +135,35 @@ async def receive_paperclip_event(request: Request):
     if decision is None:
         return {"ok": True, "pushed": False}
 
+    cooldown_key = _failure_cooldown_key(event)
+    if cooldown_key is not None:
+        if await record_event_or_skip(cooldown_key, source="paperclip-plugin") is WebhookDedupResult.ALREADY_SEEN:
+            return {"ok": True, "pushed": False}
+
     # Dedupe AFTER the decision so non-push events never burn a dedup write.
-    result = await record_event_or_skip(f"pcplugin_{event_id}", source="paperclip-plugin")
-    if result is WebhookDedupResult.ALREADY_SEEN:
+    dedup_key = f"pcplugin_{event_id}"
+    if await record_event_or_skip(dedup_key, source="paperclip-plugin") is WebhookDedupResult.ALREADY_SEEN:
         return {"ok": True, "pushed": False}
 
     title, body = decision
-    repo = PaperclipRepo(table_name="paperclip-companies")
-    user_ids = await repo.get_user_ids_for_company(company_id)
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        user_ids = await repo.get_user_ids_for_company(company_id)
+    except Exception:
+        # Roll the dedup row back so the plugin-restart redelivery (the one
+        # case eventId dedup exists for) can retry instead of hitting
+        # ALREADY_SEEN. Mirrors the metronome webhook's failure handling.
+        await delete_event(dedup_key)
+        raise
     if not user_ids:
         put_metric("paperclip_events.no_audience")
         return {"ok": True, "pushed": False}
 
-    pushed = 0
-    for user_id in user_ids:
-        try:
-            await send_push_to_user(user_id, title, body, {})
-            pushed += 1
-        except Exception:
-            # One member's push failure must not block the rest; loss is
-            # accepted by contract.
-            logger.exception("paperclip-events push failed for %s", user_id)
+    # Concurrent fan-out; send_push_to_user contractually never raises.
+    data = push_data(event)
+    await asyncio.gather(*(send_push_to_user(user_id, title, body, data) for user_id in user_ids))
     put_metric(
         "paperclip_events.push",
         dimensions={"event_type": str(event.get("eventType"))},
     )
-    return {"ok": True, "pushed": pushed > 0}
+    return {"ok": True, "pushed": True}

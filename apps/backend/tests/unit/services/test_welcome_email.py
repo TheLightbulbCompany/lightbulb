@@ -72,7 +72,12 @@ async def test_send_welcome_includes_plaintext_alternative(monkeypatch):
     assert text and text.strip()
     assert "Ada" in text
     assert "<" not in text, "the plain-text part must not contain markup"
-    for link in ("https://app.example.co/chat", "https://app.example.co/marketplace", "https://app.example.co/#faq"):
+    for link in (
+        "https://app.example.co/chat",
+        "https://app.example.co/marketplace",
+        "https://app.example.co/blog",
+        "https://app.example.co/#faq",
+    ):
         assert link in text
         assert link in mock_send.await_args.kwargs["html"]
 

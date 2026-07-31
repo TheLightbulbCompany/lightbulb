@@ -233,6 +233,17 @@ class TeamsEventBroker:
                 try:
                     ok = self._mgmt.send_message(conn_id, wrapped)
                     if ok is False:
+                        # A lone GoneException can be a spurious API Gateway
+                        # blip on a live connection. Deleting the shared
+                        # ws-connections row on it would zombify the tab
+                        # (chat fan-out and ping handling key off that row),
+                        # so only prune once Gone is confirmed persistent.
+                        if not self._mgmt.gone_confirmed(conn_id):
+                            put_metric(
+                                "teams.broker.fanout",
+                                dimensions={"outcome": "gone_unconfirmed"},
+                            )
+                            continue
                         put_metric(
                             "teams.broker.fanout",
                             dimensions={"outcome": "gone"},

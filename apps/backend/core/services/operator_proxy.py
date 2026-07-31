@@ -85,6 +85,17 @@ async def handle_operator_connect(
         # we don't cancel the reader loop from inside its own push callback.
         delivered = management_api.send_message(connection_id, data)
         if delivered is False:
+            # Gate the reap on confirmed Gone: a lone GoneException can be a
+            # spurious API Gateway blip on a live adapter WS, and tearing the
+            # relay down on it kills a healthy container->adapter link. An
+            # unconfirmed blip just drops this frame; a genuinely gone
+            # adapter confirms on a subsequent push.
+            if not management_api.gone_confirmed(connection_id):
+                logger.warning(
+                    "Unconfirmed Gone for operator conn=%s — frame dropped, relay kept",
+                    connection_id,
+                )
+                return
             logger.info(
                 "Operator adapter gone for conn=%s; reaping orphaned relay upstream",
                 connection_id,

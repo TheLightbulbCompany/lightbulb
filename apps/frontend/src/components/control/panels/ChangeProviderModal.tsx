@@ -452,7 +452,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         required
         autoComplete="off"
         spellCheck={false}
-        className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:border-[#7cc6a3]/60 focus:outline-none"
+        className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-[var(--ink)] placeholder:text-[var(--mute)] focus:border-[#7cc6a3]/60 focus:outline-none"
       />
 
       <p className="text-xs text-[var(--mute)]">

@@ -45,7 +45,7 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
         </p>
         <Icon
           className="h-3.5 w-3.5 shrink-0 mt-0.5 transition-colors"
-          style={{ color: "var(--mute-soft)" }}
+          style={{ color: "var(--mute)" }}
           strokeWidth={1.75}
         />
       </div>

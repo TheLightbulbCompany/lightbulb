@@ -480,7 +480,7 @@ function GroupHeader({ label, count }: { label: string; count: number }) {
       <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--mute)]">
         {label}
       </span>
-      <span className="text-[11px] tabular-nums text-[var(--mute-soft)]">
+      <span className="text-[11px] tabular-nums text-[var(--mute)]">
         {count}
       </span>
     </div>

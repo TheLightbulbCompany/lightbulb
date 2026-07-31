@@ -53,7 +53,14 @@
  *   --ink             primary text.
  *   --ink-soft        body-on-cream text (slightly softer than --ink).
  *   --mute            secondary text, overline, tabular labels.
- *   --mute-soft       tertiary text (placeholders, helper).
+ *   --mute-soft       NON-TEXT ONLY — status dots, chart fills + legend
+ *                     swatches, diagram strokes, hairline hover borders.
+ *                     NOT for text: it is 3.44:1 on --cream, which clears
+ *                     the 3:1 bar for non-text (WCAG 1.4.11) but not the
+ *                     4.5:1 body-text bar. There is no lighter text tier
+ *                     available — --mute at 4.61:1 is already the lightest
+ *                     colour that passes AA on cream. Tertiary text uses
+ *                     --mute.
  *   --warn            warning text + low-priority danger.
  *   --danger          destructive button fill, error border + helper text.
  */
@@ -76,7 +83,12 @@
    * #767061 keeps the same warm-grey hue at 4.61:1. Verified in-browser,
    * not computed from the hex alone. */
   --mute: #767061;
-  --mute-soft: #b5af9f;
+  /* #8a8578, not the older #b5af9f: at #b5af9f this measured 2.05:1 on
+   * --cream, which failed even the 3:1 non-text bar — so the status dots and
+   * the get-started diagram it colours were themselves inaccessible, not just
+   * the text that used to reference it. #8a8578 is 3.44:1. (It is the value
+   * --mute held before that token was darkened to #767061 for AA.) */
+  --mute-soft: #8a8578;
   --warn: #c47a1d;
   --danger: #b32424;
 
@@ -1474,35 +1486,6 @@ button:focus-visible { border-radius: 999px; }
   display: inline-flex; align-items: center; gap: 8px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10px; letter-spacing: .14em; color: var(--mute);
-}
-
-.puck {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 56px; height: 56px; border-radius: 14px;
-  background: #faf7f2; border: 1.5px solid #e0dbd0;
-  font-family: var(--font-lora), Georgia, serif; font-style: italic;
-  font-size: 26px; color: #1a1a1a; position: relative;
-}
-.puck.lg { width: 76px; height: 76px; font-size: 34px; }
-.puck.sm { width: 44px; height: 44px; font-size: 20px; border-radius: 12px; }
-.puck.accent { background: #06402B; color: #faf7f2; border-color: #06402B; }
-.puck-name {
-  position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-  font-size: 12px; color: #3d3d3d; font-weight: 500; white-space: nowrap;
-}
-.puck-status {
-  position: absolute; top: calc(100% + 26px); left: 50%; transform: translateX(-50%);
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9.5px; color: var(--mute); letter-spacing: .04em; white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 5px;
-}
-
-.dot      { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.dot.live { background: #4a9e74; box-shadow: 0 0 0 3px rgba(74,158,116,.18); animation: dot-pulse 1.8s ease-in-out infinite; }
-.dot.idle { background: #b5af9f; }
-@keyframes dot-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(74,158,116,.4); }
-  50%      { box-shadow: 0 0 0 6px rgba(74,158,116,0); }
 }
 
 .orch-const {

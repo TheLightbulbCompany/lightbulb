@@ -136,7 +136,7 @@
   font-size: 9.5px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--mute-soft);
+  color: var(--mute);
   white-space: nowrap;
 }
 
@@ -690,7 +690,7 @@
   font-size: 9.5px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--mute-soft);
+  color: var(--mute);
 }
 
 .ld-team-stage .ld-frame-meta,
@@ -866,7 +866,7 @@
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 9px;
   letter-spacing: 0.12em;
-  color: var(--mute-soft);
+  color: var(--mute);
   white-space: nowrap;
 }
 
@@ -995,7 +995,7 @@
   font-size: 9px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--mute-soft);
+  color: var(--mute);
   font-weight: 400;
 }
 
@@ -1533,7 +1533,7 @@
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: var(--mute-soft);
+  color: var(--mute);
   flex-shrink: 0;
   transition: color 0.25s ease;
 }

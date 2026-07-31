@@ -167,7 +167,7 @@ export function AgentCard({
         {lastHeartbeatAt ? (
           <span
             className="shrink-0 whitespace-nowrap"
-            style={{ color: "var(--mute-soft)" }}
+            style={{ color: "var(--mute)" }}
             title={new Date(lastHeartbeatAt).toLocaleString()}
           >
             {timeAgo(lastHeartbeatAt)}

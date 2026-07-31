@@ -432,9 +432,16 @@ def build_provider_block(
         # `openai` plugin subsumes it. Emitting it produces "Unknown model:
         # openai-codex/…" at first chat (nothing migrates it at runtime; only
         # `openclaw doctor --fix` would). The canonical ref is `openai/*`.
+        #
+        # The fallback must be a DIFFERENT model: upstream's fallback runner
+        # dedupes candidates by provider/model key, so a self-fallback leaves
+        # zero failover candidates and a single provider 5xx kills the run
+        # (FailoverError, next=none). gpt-5.4 is the closest tier in the
+        # Codex-routable OAuth allowlist; fallbacks are error-only, and the
+        # plan is flat-rate, so it engages only when gpt-5.5 itself errors.
         return (
             {},
-            {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+            {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
             {},
         )
     if provider_choice == "byo_key":

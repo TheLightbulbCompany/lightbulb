@@ -692,7 +692,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         assert providers == {}
         assert default_model == {
             "primary": "openai/gpt-5.5",
-            "fallbacks": ["openai/gpt-5.5"],
+            "fallbacks": ["openai/gpt-5.4"],
         }
         assert plugin_entries == {}
         # chatgpt_oauth is flat-rate — no premium tier, so the CEO's stale

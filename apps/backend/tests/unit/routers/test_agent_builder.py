@@ -196,6 +196,7 @@ def test_deploy_failure_rolls_back_paperclip(
     mock_get_ecs.return_value = ecs
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("untar failed"))
+    catalog.unwind_partial_deploy = AsyncMock()
     mock_get_catalog.return_value = catalog
 
     resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
@@ -204,5 +205,10 @@ def test_deploy_failure_rolls_back_paperclip(
     # errors to the task thread, and a bare "deploy failed" leaves everyone
     # (agent and operator) retrying blind against a deterministic failure.
     assert "RuntimeError: untar failed" in resp.json()["detail"]
+    # Container/EFS side effects are unwound BEFORE the Paperclip rollback,
+    # mirroring the marketplace envelope — otherwise every failed attempt
+    # strands a half-installed name=<uuid> ghost in the owner's config (and a
+    # validation-failing entry keeps the whole config invalid).
+    catalog.unwind_partial_deploy.assert_awaited_once_with(owner_id=OWNER, new_agent_id="new-agent-uuid")
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "new-agent-uuid"

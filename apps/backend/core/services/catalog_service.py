@@ -41,8 +41,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from core.observability.metrics import put_metric
 from core.services import agent_export
-from core.services.catalog_slice import strip_removed_agent_entry_keys
+from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
 
 logger = logging.getLogger(__name__)
@@ -388,7 +389,20 @@ class CatalogService:
             # Build the agent entry locally so we know the new id + workspace
             # path. Deep-copy the slice's agent dict so we don't mutate the
             # caller's state (matters if s3 returns a cached/shared dict).
-            agent_entry = strip_removed_agent_entry_keys(slice_.get("agent") or {})
+            # Whitelist-sanitize against the strict AgentEntrySchema: one
+            # unrecognized key in the merged entry fails validation for the
+            # WHOLE config and takes the owner's gateway down (Atlas's staging
+            # config shipped an invented ``archetype``; frozen S3 artifacts can
+            # carry retired keys).
+            agent_entry, dropped_keys = sanitize_agent_entry_for_schema(slice_.get("agent") or {})
+            if dropped_keys:
+                put_metric("catalog_deploy.agent_entry_keys_dropped", value=len(dropped_keys))
+                logger.warning(
+                    "deploy_from_artifact: dropped non-schema agent-entry keys %s for owner=%s slug=%s",
+                    dropped_keys,
+                    owner_id,
+                    slug,
+                )
             agent_entry["id"] = new_agent_id
             agent_entry["workspace"] = f".openclaw/workspace-{new_agent_id}"
 

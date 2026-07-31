@@ -163,6 +163,10 @@ async def test_deploy_file_merges_full_agent_entry_into_agents_list():
     slice_["agent"]["agentRuntime"] = {"maxTurns": 50}
     slice_["agent"]["systemPromptOverride"] = "be terse"
     slice_["agent"]["embeddedHarness"] = {}
+    # An INVENTED key no schema ever had — Atlas's skeleton generator shipped
+    # ``archetype`` and one unrecognized key bricks the whole config, so the
+    # sanitizer must be a whitelist, not a list of known-retired keys.
+    slice_["agent"]["archetype"] = "engineer"
 
     await svc.deploy_from_artifact(
         owner_id="user_buyer",
@@ -189,6 +193,8 @@ async def test_deploy_file_merges_full_agent_entry_into_agents_list():
     assert "agentRuntime" not in entry
     assert "systemPromptOverride" not in entry
     assert "embeddedHarness" not in entry
+    # Neither may an author-invented key the schema never knew.
+    assert "archetype" not in entry
 
 
 @pytest.mark.asyncio

@@ -82,3 +82,37 @@ def test_extract_agent_slice_handles_missing_plugins_block():
     openclaw_json = {"agents": {"list": [{"id": "agt_1", "name": "Demo"}]}}
     slice_ = catalog_slice.extract_agent_slice(openclaw_json, "agt_1")
     assert slice_["plugins"] == {}
+
+
+class TestSanitizeAgentEntryForSchema:
+    """Whitelist sanitizer against the strict AgentEntrySchema. One key outside
+    the schema fails validation for the WHOLE config and takes the owner's
+    gateway down — sources of entries (Atlas-built staging configs, seller
+    exports) are not trusted to be schema-shaped."""
+
+    def test_drops_invented_and_retired_keys_and_reports_them(self):
+        from core.services.catalog_slice import sanitize_agent_entry_for_schema
+
+        entry = {
+            "id": "a1",
+            "name": "Jarvis",
+            "skills": ["search"],
+            "archetype": "engineer",  # invented by Atlas's skeleton generator
+            "systemPromptOverride": "be terse",  # retired upstream
+        }
+        sanitized, dropped = sanitize_agent_entry_for_schema(entry)
+        assert sanitized == {"id": "a1", "name": "Jarvis", "skills": ["search"]}
+        assert dropped == ["archetype", "systemPromptOverride"]
+        # Input is not mutated (deep-copy semantics).
+        assert "archetype" in entry
+
+    def test_all_schema_keys_pass_through(self):
+        from core.services.catalog_slice import (
+            ALLOWED_AGENT_ENTRY_KEYS,
+            sanitize_agent_entry_for_schema,
+        )
+
+        entry = {k: "x" for k in ALLOWED_AGENT_ENTRY_KEYS}
+        sanitized, dropped = sanitize_agent_entry_for_schema(entry)
+        assert dropped == []
+        assert set(sanitized) == ALLOWED_AGENT_ENTRY_KEYS

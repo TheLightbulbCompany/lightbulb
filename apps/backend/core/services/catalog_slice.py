@@ -24,9 +24,64 @@ _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
 # AgentEntrySchema. A seller's pre-upgrade config (and any already-published
 # immutable artifact) may still carry one; deep-merging it into a buyer's
 # openclaw.json makes the next strict reload fail and crash-loops the
-# container. Strip on BOTH publish (new slices) and deploy (frozen old
-# artifacts) so neither can carry a now-invalid key into a buyer's config.
+# container. Consumed by update_service's config reconciler, which sweeps
+# retired keys out of EXISTING on-disk configs on image upgrades. The
+# publish/deploy paths use the ALLOWED whitelist below instead — a blacklist
+# can only name the keys we already know about.
 REMOVED_AGENT_ENTRY_KEYS = frozenset({"embeddedHarness", "embeddedPi", "agentRuntime", "systemPromptOverride"})
+
+# The strict AgentEntrySchema's complete top-level key set — OpenClaw's
+# ``agents.list[]`` entries are ``z.object({...}).strict()``, so ONE key
+# outside this set makes the whole config fail validation and takes the
+# owner's gateway down until the config is repaired. Sources of agent entries
+# are not trusted to be schema-shaped: an Atlas-built staging config invented
+# ``archetype`` (bricking the founders' container on the first live
+# register-built-agent), and a seller export can carry anything its author
+# typed. Whitelist, don't blacklist.
+#
+# Derived from the deployed fork tag's ``src/config/zod-schema.agent-runtime.ts``
+# ``AgentEntrySchema`` (verified byte-identical to fork main, 2026-07-31).
+# When the schema gains a key, add it here — until then a new key is stripped
+# at deploy, which degrades one field instead of bricking the container.
+ALLOWED_AGENT_ENTRY_KEYS = frozenset(
+    {
+        "id",
+        "default",
+        "name",
+        "description",
+        "workspace",
+        "agentDir",
+        "model",
+        "utilityModel",
+        "models",
+        "thinkingDefault",
+        "verboseDefault",
+        "toolProgressDetail",
+        "reasoningDefault",
+        "fastModeDefault",
+        "contextInjection",
+        "bootstrapMaxChars",
+        "bootstrapTotalMaxChars",
+        "experimental",
+        "skills",
+        "memorySearch",
+        "humanDelay",
+        "tts",
+        "skillsLimits",
+        "contextLimits",
+        "contextTokens",
+        "heartbeat",
+        "identity",
+        "groupChat",
+        "subagents",
+        "runRetries",
+        "embeddedAgent",
+        "sandbox",
+        "params",
+        "tools",
+        "runtime",
+    }
+)
 
 # Provider plugins are user-config (the buyer picked a provider at signup),
 # not agent-config. Shipping them in the slice would deep-merge over the
@@ -253,17 +308,21 @@ def strip_user_specific_fields(agent_entry: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def strip_removed_agent_entry_keys(agent_entry: dict[str, Any]) -> dict[str, Any]:
-    """Drop top-level keys upstream removed from the strict AgentEntrySchema.
+def sanitize_agent_entry_for_schema(agent_entry: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Drop top-level keys the strict AgentEntrySchema does not accept.
 
     Applied at deploy as well as publish: published artifacts are immutable,
-    so an older slice already in S3 still carries whatever key the seller had
-    before the upgrade, and that key would brick the buyer on the next reload.
+    so an older slice already in S3 still carries whatever keys its author had
+    (retired schema keys, or invented ones like Atlas's ``archetype``), and a
+    single unrecognized key bricks the buyer's whole config on the next
+    strict reload. Returns ``(sanitized_copy, dropped_keys)`` so callers can
+    surface what was removed.
     """
     result = copy.deepcopy(agent_entry)
-    for key in REMOVED_AGENT_ENTRY_KEYS:
+    dropped = sorted(k for k in result if k not in ALLOWED_AGENT_ENTRY_KEYS)
+    for key in dropped:
         result.pop(key, None)
-    return result
+    return result, dropped
 
 
 def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
@@ -373,8 +432,9 @@ def extract_agent_slice(
         raise KeyError(f"agent {agent_id!r} not found in openclaw.json")
     agent_entry = matching[0]
 
+    sanitized_agent, _dropped = sanitize_agent_entry_for_schema(strip_user_specific_fields(agent_entry))
     slice_: dict[str, Any] = {
-        "agent": strip_removed_agent_entry_keys(strip_user_specific_fields(agent_entry)),
+        "agent": sanitized_agent,
         "plugins": _strip_provider_plugins(openclaw_json.get("plugins") or {}),
         "tools": _scrub_tools_block(openclaw_json.get("tools") or {}),
     }

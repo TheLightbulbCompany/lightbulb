@@ -7,8 +7,8 @@ disagree about the gate state.
 
 This module also owns the pure billing-state predicates that
 ``evaluate_provision_gate`` (and several callers outside the gate) need:
-``is_subscription_active``, ``is_trial_blocked``, and
-``has_always_on_entitlement``. They live here so every site that asks
+``is_subscription_active``, ``is_paid_subscription``, ``is_trial_blocked``,
+and ``has_always_on_entitlement``. They live here so every site that asks
 "is this billing account currently usable?" (or "is it paid?") hits
 the same code path — see the call sites in ``core.gateway.connection_pool``,
 ``routers.config``, ``routers.hooks_proxy``, and ``routers.billing``.
@@ -102,26 +102,28 @@ def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
     return status is None and bool(account.get("stripe_subscription_id"))
 
 
-# Statuses that carry the PAID always-on entitlement. Deliberately excludes
+# Statuses that carry a PAID subscription. Deliberately excludes
 # "trial_local" — the no-card local trial grants platform use (see
-# ``_ACTIVE_STATUSES``) but never always-on autonomy.
+# ``_ACTIVE_STATUSES``) but is not a subscription.
 _ENTITLED_STATUSES = frozenset({"active", "trialing"})
 
 
-def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
-    """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
-    Paperclip routines, autonomous heartbeats).
+def is_paid_subscription(account: Mapping[str, Any] | None) -> bool:
+    """PAID predicate — whether this row is on a real (or legacy-implied)
+    Stripe subscription.
 
-    Distinct axis from ``is_subscription_active``: ``trial_local`` owners
-    ARE subscription-active (interactive chat and interactive Teams are
-    part of the free tier) but are NEVER always-on entitled — autonomy is
-    what the $50/mo subscription buys. Fail-closed: no row = not entitled.
+    Distinct axis from ``is_subscription_active`` (platform use):
+    ``trial_local`` owners ARE subscription-active — chat and interactive
+    Teams are part of the free tier — but they have NOT subscribed. The
+    /billing/account ``is_subscribed`` wire field keys off this predicate
+    so billing surfaces render the free tier as "not subscribed" (Subscribe
+    CTA), never as "Active subscription". Fail-closed: no row = not paid.
 
     The legacy fallback mirrors ``is_subscription_active`` exactly:
     it only applies while ``subscription_status`` is None (rows whose
     status hasn't been backfilled yet), so an explicit non-paid status —
     ``trial_local``, ``canceled``, ``past_due`` — can never ride a stale
-    ``stripe_subscription_id`` into entitlement.
+    ``stripe_subscription_id`` into paid status.
     """
     if not account:
         return False
@@ -129,6 +131,19 @@ def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
     if status in _ENTITLED_STATUSES:
         return True
     return status is None and bool(account.get("stripe_subscription_id"))
+
+
+def has_always_on_entitlement(account: Mapping[str, Any] | None) -> bool:
+    """Paid-only predicate for ALWAYS-ON features (webhooks, channels,
+    Paperclip routines, autonomous heartbeats).
+
+    Autonomy is what the $50/mo subscription buys, so this is exactly the
+    paid predicate: a ``trial_local`` owner is NEVER always-on entitled.
+    Kept as a distinct name because entitlement-to-autonomy and
+    rendered-billing-state are different questions that merely share an
+    answer today — call sites should keep saying which one they mean.
+    """
+    return is_paid_subscription(account)
 
 
 def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
@@ -333,6 +348,45 @@ def trial_expired_gate(owner_role: str) -> Gate:
     )
 
 
+async def _first_touch_pending_invitation(owner_id: str) -> bool:
+    """Whether this PERSONAL owner's first touch should block on a pending
+    Clerk org invitation.
+
+    Called only from the no-billing-row personal branch of the gate, so
+    ``owner_id`` IS the Clerk user_id. The Clerk lookup runs first: it is
+    the common-case short-circuit (returns ``[]`` immediately when there are
+    no invitations, and ``clerk_admin`` stubs it to ``[]`` without creds or
+    on any Clerk error — fail-open, a Clerk blip must never wedge a
+    legitimate signup). The containers read runs only when an invitation
+    actually exists, guarding the "no existing personal world" half of the
+    predicate: a user who somehow has a container but lost their billing
+    row must keep the existing signup_required routing, not be walled off
+    behind their invitation. Note the caller path re-runs this on every
+    ~3s poll while the user sits invitation-blocked — the same cadence
+    ``ensure_personal_trial_default``'s own Gate-B Clerk lookup already
+    runs at in that state; accepted (bounded by how many users sit on an
+    unaccepted invitation at once).
+    """
+    from core.services import clerk_admin
+
+    if not await clerk_admin.list_pending_invitations_for_user(owner_id):
+        return False
+
+    from core.repositories import container_repo
+
+    try:
+        if await container_repo.get_by_owner_id(owner_id):
+            return False
+    except Exception:  # noqa: BLE001 — fail-open: never block signup on a read blip
+        logger.warning(
+            "invitation gate: containers read failed for owner %s — not blocking",
+            owner_id,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 async def evaluate_provision_gate(
     *,
     owner_id: str,
@@ -368,6 +422,23 @@ async def evaluate_provision_gate(
     return gate
 
 
+async def probe_provision_gate(*, owner_id: str, is_admin: bool = True) -> Gate | None:
+    """Metric-free gate evaluation for diagnostic reads (the admin surface).
+
+    ``evaluate_provision_gate``'s blocked-metric stream feeds the W64
+    spike alarm; an operator inspecting an owner must not inflate it.
+    Same decision logic, no emission.
+
+    Metric-free is not the same as side-effect-free: for a ``bedrock_claude``
+    owner this still calls ``metronome_gate.is_owner_blocked``, and a stale
+    fast-gate row there triggers the same lazy ``getNetBalance`` refresh (cache
+    rewrite + enforcement re-assert + pull-based Bedrock restore) that any
+    other owner poll would — an admin read can self-heal an owner's gate state
+    as a side effect of merely looking at it.
+    """
+    return await _evaluate_provision_gate_inner(owner_id=owner_id, is_admin=is_admin)
+
+
 async def _evaluate_provision_gate_inner(
     *,
     owner_id: str,
@@ -397,6 +468,35 @@ async def _evaluate_provision_gate_inner(
             # Teams-billing paywall off (rather than the personal provider
             # picker).
             return _team_billing_required_gate(owner_role)
+        # FIRST-TOUCH invitation check: a fresh personal signup whose email
+        # holds a PENDING org invitation must not be funneled into the
+        # personal signup path (signup_required → ProviderPicker →
+        # trial_local world) — they are meant to accept the invite and
+        # become a seat, and the personal world built in the meantime is
+        # instant junk (container + billing row + a throwaway Paperclip
+        # company). Only fires on a genuine first touch — no billing row
+        # (this branch) AND no container row — so an established personal
+        # owner who is later invited to an org is untouched (their org/
+        # personal routing is the onboarding gate's job, not this one's).
+        # KNOWN LIMITATION: Clerk matches invitations to VERIFIED emails
+        # only, so an unverified-email signup — and an OAuth signup whose
+        # primary email differs from the invited address — still reads as
+        # a plain personal signup here. This closes the common path, not
+        # every path.
+        if await _first_touch_pending_invitation(owner_id):
+            return Gate(
+                code="invitation_pending",
+                title="You have a pending team invitation",
+                message=(
+                    "Your email has a pending invitation to join a team. "
+                    "Accept it to join your team's workspace instead of "
+                    "starting a personal one."
+                ),
+                action_label="View invitation",
+                action_href="/onboarding",
+                action_admin_only=False,
+                owner_role=owner_role,
+            )
         # Personal owner, no row. Surfaced separately from the inactive
         # cases so /container/status can route to the ProviderPicker (which
         # calls POST /billing/trial-checkout — the only way to create the

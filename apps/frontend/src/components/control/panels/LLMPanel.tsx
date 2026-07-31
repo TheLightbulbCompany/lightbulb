@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
+import { KeyRound, Loader2 } from "lucide-react";
 import { useApi } from "@/lib/api";
 import { notifyApiError } from "@/lib/notify";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
@@ -11,7 +12,15 @@ import { CreditsSection } from "./CreditsSection";
 import { ModelRoutingCard } from "./ModelRoutingCard";
 import { OpenAIIcon, AnthropicIcon } from "@/components/chat/ProviderIcons";
 import { Input } from "@/components/ui/input";
-import { ChangeProviderModal } from "./ChangeProviderModal";
+import {
+  ChangeProviderModal,
+  type CredentialProviderChoice,
+} from "./ChangeProviderModal";
+import {
+  commitProviderChoice,
+  providerCommitErrorMessage,
+  type ByoProvider,
+} from "@/lib/providerCommit";
 import {
   resolveProviderStatus,
   statusToDotColor,
@@ -19,17 +28,19 @@ import {
   type DotColor,
 } from "./llm-auth-status";
 
-import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
-type ByoProvider = "openai" | "anthropic";
+import {
+  PROVIDER_SWITCH_CARDS,
+  type ProviderChoiceId as ProviderChoice,
+} from "@/lib/providerCards";
 
 type UserData = {
   provider_choice?: ProviderChoice | null;
   byo_provider?: ByoProvider | null;
 };
 
-const HERO_TILE = "h-12 w-12 rounded-lg bg-[#f3efe6] flex items-center justify-center flex-shrink-0";
-const ACTION_CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
-const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
+const HERO_TILE = "h-12 w-12 rounded-lg bg-[var(--cream-deeper)] flex items-center justify-center flex-shrink-0";
+const ACTION_CARD = "rounded-lg border border-[var(--edge)] bg-white p-4 space-y-3";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-[var(--mute)]/60";
 
 // Dot color is driven by the container's live models.authStatus, not the
 // chip label — the label states which provider is configured, the dot states
@@ -38,12 +49,12 @@ const DOT_CLASS: Record<DotColor, string> = {
   green: "bg-[#2d8a4e]",
   amber: "bg-amber-500",
   red: "bg-red-500",
-  neutral: "bg-[#8a8578]",
+  neutral: "bg-[var(--mute)]",
 };
 
 function StatusChip({ label, dotColor }: { label: string; dotColor: DotColor }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#06402B]/10 text-[#06402B] px-2 py-0.5 text-xs font-medium">
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--forest)]/10 text-[var(--forest)] px-2 py-0.5 text-xs font-medium">
       <span
         data-testid="provider-health-dot"
         data-color={dotColor}
@@ -68,11 +79,11 @@ function HeroCard({
   dotColor: DotColor;
 }) {
   return (
-    <div className="rounded-xl border border-[#e0dbd0] bg-white p-6 flex items-center gap-4">
+    <div className="rounded-xl border border-[var(--edge)] bg-white p-6 flex items-center gap-4">
       <div className={HERO_TILE}>{icon}</div>
       <div className="flex-1 min-w-0">
-        <h3 className="font-medium text-[#1a1a1a]">{title}</h3>
-        <p className="text-sm text-[#8a8578] truncate">{subtitle}</p>
+        <h3 className="font-medium text-[var(--ink)]">{title}</h3>
+        <p className="text-sm text-[var(--mute)] truncate">{subtitle}</p>
       </div>
       <StatusChip label={status} dotColor={dotColor} />
     </div>
@@ -112,18 +123,18 @@ function ChatGPTOAuthBlock({
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Account</span>
-        <p className="text-sm text-[#1a1a1a]">Connected via OAuth</p>
+        <p className="text-sm text-[var(--ink)]">Connected via OAuth</p>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={onChangeProvider}
-            className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm"
+            className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
           >
             Change provider
           </button>
           <button
             onClick={handleDisconnect}
             disabled={busy}
-            className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm disabled:opacity-50"
+            className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm disabled:opacity-50"
           >
             {busy ? "Disconnecting…" : "Disconnect"}
           </button>
@@ -159,13 +170,13 @@ function ByoKeyBlock({
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>API key</span>
-        <p className="text-xs text-[#8a8578]">
+        <p className="text-xs text-[var(--mute)]">
           Stored encrypted in AWS Secrets Manager. Paste a new key to rotate.
         </p>
         <ReplaceKeyForm currentProvider={byoProvider} onReplaced={onReplaced} />
         <button
           onClick={onChangeProvider}
-          className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm"
+          className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
         >
           Change provider
         </button>
@@ -192,12 +203,12 @@ function BedrockBlock({
       />
       <div className={ACTION_CARD}>
         <span className={EYEBROW}>Provider</span>
-        <p className="text-sm text-[#1a1a1a]">
+        <p className="text-sm text-[var(--ink)]">
           Credits and auto-reload are managed below.
         </p>
         <button
           onClick={onChangeProvider}
-          className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm"
+          className="rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
         >
           Change provider
         </button>
@@ -206,37 +217,114 @@ function BedrockBlock({
   );
 }
 
-function EmptyStateCard({
-  message,
-  onChangeProvider,
+// byo_key spans OpenAI *and* Anthropic, so a vendor mark would misrepresent
+// it — a key glyph is the honest icon there.
+const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
+  bedrock_claude: <AnthropicIcon size={24} />,
+  chatgpt_oauth: <OpenAIIcon size={24} />,
+  byo_key: <KeyRound size={22} className="text-[var(--mute)]" />,
+};
+
+/**
+ * Inline provider picker for the empty state. The three choices are rendered
+ * directly on the panel rather than behind a "Pick a provider" button — a user
+ * with no provider shouldn't have to click blind into a modal to discover what
+ * the options even are.
+ *
+ * Bedrock commits in place (nothing to collect). The other two need a
+ * credential stage, so they hand off to ChangeProviderModal opened straight on
+ * that stage — the modal remains the single owner of the OAuth device-code and
+ * BYO-key flows.
+ */
+function ProviderChoiceCards({
+  onPick,
+  committing,
+  error,
 }: {
-  message?: string;
-  onChangeProvider?: () => void;
+  onPick: (choice: ProviderChoice) => void;
+  committing: ProviderChoice | null;
+  error: string | null;
 }) {
   return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {PROVIDER_SWITCH_CARDS.map((card) => {
+          const busy = committing === card.id;
+          return (
+            <button
+              key={card.id}
+              type="button"
+              onClick={() => onPick(card.id)}
+              disabled={committing !== null}
+              className="rounded-xl border border-[var(--edge)] bg-white p-4 text-left transition-colors hover:border-[var(--forest)]/40 hover:bg-[var(--cream-deeper)]/60 disabled:opacity-60 disabled:hover:bg-white"
+            >
+              {/* Icon sits beside the copy on narrow widths (stacked cards
+                  would otherwise be needlessly tall) and above it once the
+                  grid goes three-across. */}
+              <div className="flex items-start gap-3 sm:block">
+                <div className={`${HERO_TILE} sm:mb-3`}>{PROVIDER_ICONS[card.id]}</div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium text-[var(--ink)]">{card.title}</h3>
+                  <p className="mt-1 text-xs text-[var(--mute)]">{card.subtitle}</p>
+                  {busy && (
+                    <p className="mt-2 flex items-center gap-1.5 text-xs text-[var(--forest)]">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Setting up…
+                    </p>
+                  )}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function EmptyStateCard({
+  message,
+  onPick,
+  committing,
+  error,
+}: {
+  message?: string;
+  /** Absent pre-subscription — nothing to commit against, so link to onboarding. */
+  onPick?: (choice: ProviderChoice) => void;
+  committing?: ProviderChoice | null;
+  error?: string | null;
+}) {
+  const prompt = message ?? "You haven’t picked a provider yet.";
+
+  // When a billing row already exists (e.g. user disconnected ChatGPT OAuth —
+  // provider_choice was cleared but the subscription is still active) the
+  // choices are pickable in-place. The choice cards carry their own card
+  // chrome, so the prompt sits bare on the panel rather than nesting white
+  // cards inside a white card. The ``/onboarding`` link is the
+  // pre-subscription fallback and keeps the single-card treatment.
+  if (onPick) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-[var(--ink)]">{prompt}</p>
+        <ProviderChoiceCards
+          onPick={onPick}
+          committing={committing ?? null}
+          error={error ?? null}
+        />
+      </div>
+    );
+  }
+
+  return (
     <div className={ACTION_CARD}>
-      <p className="text-sm text-[#1a1a1a]">
-        {message ?? "You haven’t picked a provider yet."}
-      </p>
-      {/* When a billing row already exists (e.g. user disconnected ChatGPT
-          OAuth — provider_choice was cleared but the subscription is still
-          active) ``onChangeProvider`` opens the picker in-place. The
-          ``/onboarding`` link is the pre-subscription fallback. */}
-      {onChangeProvider ? (
-        <button
-          onClick={onChangeProvider}
-          className="inline-flex rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
-        >
-          Pick a provider →
-        </button>
-      ) : (
-        <Link
-          href="/onboarding"
-          className="inline-flex rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
-        >
-          Re-onboard →
-        </Link>
-      )}
+      <p className="text-sm text-[var(--ink)]">{prompt}</p>
+      <Link
+        href="/onboarding"
+        className="inline-flex rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
+      >
+        Re-onboard →
+      </Link>
     </div>
   );
 }
@@ -269,10 +357,17 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   const [modalOpen, setModalOpen] = useState(
     () => initialAction === "change-provider",
   );
+  // Which credential stage the modal should open on. null = the full picker,
+  // which is what the "Change provider" buttons and the ?action= intent want.
+  const [modalChoice, setModalChoice] =
+    useState<CredentialProviderChoice | null>(null);
   const [prevInitialAction, setPrevInitialAction] = useState(initialAction);
   if (initialAction !== prevInitialAction) {
     setPrevInitialAction(initialAction);
-    if (initialAction === "change-provider") setModalOpen(true);
+    if (initialAction === "change-provider") {
+      setModalChoice(null);
+      setModalOpen(true);
+    }
   }
 
   useEffect(() => {
@@ -295,9 +390,34 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   );
   const dotColor: DotColor = statusToDotColor(providerStatus);
 
+  // Inline-picker commit state. Bedrock is the only choice committed from the
+  // panel itself; the other two hand off to the modal's credential stages.
+  const [committing, setCommitting] = useState<ProviderChoice | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
+
+  const handlePick = useCallback(
+    (choice: ProviderChoice) => {
+      setPickError(null);
+      if (choice !== "bedrock_claude") {
+        setModalChoice(choice);
+        setModalOpen(true);
+        return;
+      }
+      setCommitting(choice);
+      void commitProviderChoice(api.post, choice)
+        .then(() => mutate())
+        .catch((e: unknown) => setPickError(providerCommitErrorMessage(e)))
+        .finally(() => setCommitting(null));
+    },
+    [api, mutate],
+  );
+
   if (!user) return <div className="p-6 text-sm">Loading…</div>;
 
-  const openModal = () => setModalOpen(true);
+  const openModal = () => {
+    setModalChoice(null);
+    setModalOpen(true);
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -316,7 +436,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
               revalidateAuthStatus(),
             )
           }
-          className="rounded-md border border-[#e0dbd0] text-[#8a8578] hover:bg-[#f3efe6] px-2.5 py-1 text-xs"
+          className="rounded-md border border-[var(--edge)] text-[var(--mute)] hover:bg-[var(--cream-deeper)] px-2.5 py-1 text-xs"
         >
           Refresh status
         </button>
@@ -345,7 +465,9 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       {user.provider_choice === "byo_key" && !user.byo_provider && (
         <EmptyStateCard
           message="Your bring-your-own-key configuration is incomplete. Pick a provider to finish setting up."
-          onChangeProvider={openModal}
+          onPick={handlePick}
+          committing={committing}
+          error={pickError}
         />
       )}
 
@@ -353,7 +475,13 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         <BedrockBlock onChangeProvider={openModal} dotColor={dotColor} />
       )}
 
-      {!user.provider_choice && <EmptyStateCard onChangeProvider={openModal} />}
+      {!user.provider_choice && (
+        <EmptyStateCard
+          onPick={handlePick}
+          committing={committing}
+          error={pickError}
+        />
+      )}
 
       {/* Credits live inline for Bedrock owners — the former Credits panel.
           Non-Bedrock providers bill through their own account, so nothing
@@ -369,10 +497,11 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
         open={modalOpen}
         currentProvider={user.provider_choice ?? null}
         currentByoProvider={user.byo_provider ?? null}
+        initialChoice={modalChoice}
         onClose={() => setModalOpen(false)}
         onCommitted={() => {
           // SWR refetch picks up the new provider_choice. The container
-          // restart fires asynchronously in the background_provision task;
+          // restart fires asynchronously in the dispatch_provision task;
           // the existing chat surface re-evaluates the provision gate on
           // its next /container/status poll and shows the right blocked
           // state if needed.
@@ -420,7 +549,7 @@ function ReplaceKeyForm({
         <button
           type="submit"
           disabled={submitting || !apiKey}
-          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+          className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
         >
           Save
         </button>

@@ -11,6 +11,10 @@ import { useApi, ApiError } from "@/lib/api";
 // =============================================================================
 
 export interface BillingAccount {
+  // PAID predicate (backend `is_paid_subscription`): true for active /
+  // legacy-trialing rows, FALSE for the no-card trial_local free tier —
+  // free-tier users must see a Subscribe CTA, never "Active subscription".
+  // Platform-use gating (which trial_local DOES pass) is server-side.
   is_subscribed: boolean;
   current_spend: number;
   lifetime_spend: number;
@@ -32,6 +36,9 @@ export interface BillingAccount {
   // config so the paywall never hardcodes the per-seat price.
   seat_count: number | null;
   team_seat_price_usd: number | null;
+  // Flat monthly base charged alongside the per-seat item. null for personal
+  // owners.
+  team_base_price_usd?: number | null;
   // True only for org owners on a REAL per-seat Stripe subscription (one
   // that recorded a subscription_item_id via the webhook). False for
   // personal owners and for flat/comped/grandfathered org subs — those
@@ -112,6 +119,21 @@ export function useBilling() {
     window.location.href = checkout_url;
   }, [api]);
 
+  // Flat-fee subscribe for a free-tier (trial_local) owner. POST
+  // /billing/trial-checkout is the flat $50/mo checkout despite the legacy
+  // path name (billed immediately, no Stripe trial) — the same route the
+  // ProviderPicker cards hit at signup. The free tier already runs
+  // Bedrock-managed Claude, so the upgrade keeps that path
+  // (provider_choice: bedrock_claude); POST /billing/provider handles any
+  // later switch.
+  const startTrialCheckout = useCallback(async () => {
+    const { checkout_url } = (await api.post("/billing/trial-checkout", {
+      provider_choice: "bedrock_claude",
+    })) as { checkout_url?: string };
+    if (!checkout_url) throw new Error("No checkout_url returned");
+    window.location.href = checkout_url;
+  }, [api]);
+
   // Upgrade the owner to the Ultra Pro tier via POST /billing/ultra-checkout.
   // Two response shapes (see routers/billing.py create_ultra_checkout):
   //   - {checkout_url}   → free-tier / no live sub: a fresh Ultra Checkout
@@ -152,6 +174,7 @@ export function useBilling() {
     isSubscribed,
     openPortal,
     startTeamCheckout,
+    startTrialCheckout,
     upgradeToUltra,
     fetchUsage,
     refresh,

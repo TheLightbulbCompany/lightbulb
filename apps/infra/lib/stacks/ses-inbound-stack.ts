@@ -56,6 +56,22 @@ export interface SesInboundStackProps extends cdk.StackProps {
   sesIngestSecretName: string;
   /** Base mail domain, e.g. "isol8.co". Verified for BOTH receiving and sending. */
   mailDomain: string;
+  /**
+   * Dev mail domain, e.g. "dev.isol8.co". When set, this stack also publishes
+   * `*.{devMailDomain}` MX + SPF and the ingest Lambda routes recipients under
+   * that suffix to the DEV backend instead of prod (see `_route_for`).
+   *
+   * It is configured HERE, in the prod stack, because dev cannot own an SES
+   * receipt rule set — `SetActiveReceiptRuleSet` is account+region scoped.
+   * Omit to keep every dev path inert.
+   */
+  devMailDomain?: string;
+  /**
+   * Name of the DEV `ses_ingest_secret`. Required whenever `devMailDomain` is
+   * set — each backend verifies the shared secret against its OWN copy, so
+   * presenting prod's secret to dev would 401.
+   */
+  devSesIngestSecretName?: string;
 }
 
 export class SesInboundStack extends cdk.Stack {
@@ -71,7 +87,16 @@ export class SesInboundStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: SesInboundStackProps) {
     super(scope, id, props);
 
-    const { envName, hostedZone, mailDomain } = props;
+    const { envName, hostedZone, mailDomain, devMailDomain } = props;
+
+    if (devMailDomain && !props.devSesIngestSecretName) {
+      // Fail at synth, not at the first dev email. Routing dev mail to the dev
+      // backend while presenting prod's secret would 401 on every message, and
+      // the only symptom would be silently undelivered mail.
+      throw new Error(
+        "SesInboundStack: devSesIngestSecretName is required when devMailDomain is set",
+      );
+    }
 
     // -------------------------------------------------------------------------
     // Domain identity — verifies `mailDomain` for BOTH receiving and sending.
@@ -103,6 +128,125 @@ export class SesInboundStack extends cdk.Stack {
       zone: hostedZone,
       recordName: `*.${mailDomain}`,
       values: ["v=spf1 include:amazonses.com ~all"],
+    });
+
+    // -------------------------------------------------------------------------
+    // APEX SPF. The apex had NO SPF record at all, so mail from `isol8.co`
+    // authenticated as `spf=none` — and because Google Workspace signs
+    // outbound DKIM as `<domain>.<date>.gappssmtp.com` until a domain key is
+    // published, DKIM was not ALIGNED with `header.from=isol8.co` either.
+    // DMARC needs one aligned pass and had neither, so every message from
+    // admin@isol8.co evaluated `dmarc=fail` — including the owner's own reply
+    // to their agent, which the inbound anti-spoof gate then correctly
+    // dropped. Only `p=none` kept this from bouncing everywhere.
+    //
+    // Note the wildcard above does NOT cover the apex (`*.isol8.co` matches
+    // `a.isol8.co`, never `isol8.co`), which is why this looked configured
+    // while being absent — the same trap documented for `_dmarc` below.
+    //
+    // Every apex sender must be listed here, because publishing a record
+    // moves unlisted senders from neutral to softfail:
+    //   * `_spf.google.com` — Workspace user mail (admin@, prasiddha@)
+    //   * `amazonses.com`   — SES directly, AND Resend, which sends over SES
+    //                         infrastructure (EMAIL_FROM_WELCOME hello@isol8.co,
+    //                         EMAIL_FROM_TICKETS tickets@isol8.co)
+    // ~all (softfail) not -all: a hard fail would bounce any apex sender this
+    // list has missed. Tighten only after the DMARC rua reports come back clean.
+    //
+    // SPF permits 10 DNS lookups; this costs ~5 (_spf.google.com ~4, SES 1).
+    //
+    // `deleteExisting` is REQUIRED, not optional tidiness. A TXT record set
+    // already existed at the apex (created outside CFN, holding the
+    // google-site-verification token), and CloudFormation's Route53 CREATE
+    // does NOT upsert — it fails outright:
+    //
+    //   Tried to create resource record set [name='isol8.co.', type='TXT']
+    //   but it already exists
+    //
+    // which rolled the whole stack back. `deleteExisting` removes the
+    // unmanaged set first so CFN can adopt the name.
+    //
+    // The google-site-verification string is therefore carried in this array
+    // DELIBERATELY: a TXT record is a SET keyed by (name, type), and the
+    // delete-then-create replaces it wholesale, so a value omitted here is
+    // GONE from the zone — losing that token can unverify the domain in
+    // Google Workspace. Any future apex TXT value must be appended to this
+    // array, never declared as a second TxtRecord on the same name.
+    // -------------------------------------------------------------------------
+    new route53.TxtRecord(this, "AgentMailApexSpf", {
+      zone: hostedZone,
+      recordName: mailDomain,
+      deleteExisting: true,
+      values: [
+        "v=spf1 include:_spf.google.com include:amazonses.com ~all",
+        "google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8",
+      ],
+    });
+
+    // -------------------------------------------------------------------------
+    // DEV mail domain — `{slug}.dev.isol8.co`.
+    //
+    // These records live in THIS (prod) stack on purpose. A second receipt
+    // rule set is impossible — SetActiveReceiptRuleSet is account+region
+    // scoped and this stack owns the active one — so dev cannot run its own
+    // SES-inbound stack. It does not need to: SES matches a recipient
+    // condition against the domain AND its subdomains, so the catch-all rule
+    // for `isol8.co` already catches `friday@acme.dev.isol8.co`. Only DNS and
+    // per-environment backend routing are missing, and both are here.
+    //
+    // A single-label wildcard does not nest: `*.isol8.co` matches
+    // `acme.isol8.co` but NOT `acme.dev.isol8.co`, hence the second pair.
+    // -------------------------------------------------------------------------
+    if (devMailDomain) {
+      new route53.MxRecord(this, "AgentMailDevWildcardMx", {
+        zone: hostedZone,
+        recordName: `*.${devMailDomain}`,
+        values: [{ priority: 10, hostName: "inbound-smtp.us-east-1.amazonaws.com" }],
+      });
+
+      new route53.TxtRecord(this, "AgentMailDevWildcardSpf", {
+        zone: hostedZone,
+        recordName: `*.${devMailDomain}`,
+        values: ["v=spf1 include:amazonses.com ~all"],
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // DMARC policy at the ORGANIZATIONAL domain.
+    //
+    // This record is NOT optional decoration — without it the zone actively
+    // LOOKS configured while having no policy at all. The wildcard SPF TXT
+    // above matches `_dmarc.isol8.co` (`_dmarc` is just another label under
+    // the zone), so a receiver querying for DMARC gets back
+    // `"v=spf1 include:amazonses.com ~all"`. That is not a DMARC record — it
+    // does not start with `v=DMARC1` — so every receiver reads the domain as
+    // having NO published policy. An explicit record is the only fix, since
+    // an explicit name always beats a wildcard match.
+    //
+    // One record at the org domain covers every company subdomain too:
+    // `_dmarc.acme.isol8.co` also resolves to the wildcard SPF junk, and
+    // RFC 7489 §6.6.3 says a query returning no VALID DMARC record falls
+    // through to the organizational domain — landing here. (A wildcard can't
+    // help anyway: DNS wildcards must be leftmost, and `_dmarc.*.isol8.co`
+    // is not a legal wildcard name.)
+    //
+    // `p=none` is deliberate and load-bearing. This policy governs ALL
+    // isol8.co mail — Google Workspace on the apex, Resend, Clerk, and SES —
+    // and only SES alignment has been verified. Monitor-only publishes the
+    // policy and turns on aggregate reporting without putting a single
+    // existing mail flow at risk of quarantine/reject. Tighten to
+    // quarantine/reject only after the rua reports show every sender aligned.
+    // -------------------------------------------------------------------------
+    // Aggregate reports go to an address that ALREADY EXISTS on the apex
+    // (Google Workspace). A same-domain `rua` needs no authorization record
+    // at the receiving domain, and reusing a live mailbox means publishing
+    // DMARC costs no new Workspace seat, alias, or admin-console change.
+    const reportMailbox = `admin@${mailDomain}`;
+
+    new route53.TxtRecord(this, "AgentMailDmarc", {
+      zone: hostedZone,
+      recordName: `_dmarc.${mailDomain}`,
+      values: [`v=DMARC1; p=none; rua=mailto:${reportMailbox}; fo=1`],
     });
 
     // Deterministic literal names (not read off the live construct — see
@@ -169,6 +313,17 @@ export class SesInboundStack extends cdk.Stack {
       props.sesIngestSecretName,
     );
 
+    // The DEV backend verifies against its OWN copy of the shared secret, so
+    // the Lambda must be able to read both. AuthStack already creates both
+    // unconditionally; before dev routing existed only prod's was ever read.
+    const devSesIngestSecret = props.devSesIngestSecretName
+      ? secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportDevSesIngestSecret",
+          props.devSesIngestSecretName,
+        )
+      : undefined;
+
     // -------------------------------------------------------------------------
     // The ses-inbound ingest Lambda. Stdlib-only (requirements.txt is empty)
     // so a plain Code.fromAsset needs no bundling. Non-VPC — it only talks to
@@ -186,6 +341,15 @@ export class SesInboundStack extends cdk.Stack {
         ATTACHMENTS_BUCKET: this.attachmentsBucket.bucketName,
         BACKEND_INGEST_URL: `https://api.${mailDomain}/api/v1/webhooks/ses-inbound`,
         SES_INBOUND_SECRET_ARN: sesIngestSecret.secretArn,
+        // Per-environment routing. Absent => every message goes to prod,
+        // which is the behaviour before dev is enabled (see `_route_for`).
+        ...(devMailDomain && devSesIngestSecret
+          ? {
+              DEV_MAIL_SUFFIX: devMailDomain,
+              DEV_BACKEND_INGEST_URL: `https://api-dev.${mailDomain}/api/v1/webhooks/ses-inbound`,
+              DEV_SES_INBOUND_SECRET_ARN: devSesIngestSecret.secretArn,
+            }
+          : {}),
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
@@ -201,6 +365,7 @@ export class SesInboundStack extends cdk.Stack {
     // kms:ViaService=secretsmanager instead of a specific key ARN. Read-only
     // (no GenerateDataKey) — this Lambda never writes the secret.
     sesIngestSecret.grantRead(this.ingestFunction);
+    devSesIngestSecret?.grantRead(this.ingestFunction);
     this.ingestFunction.addToRolePolicy(
       new iam.PolicyStatement({
         sid: "KmsDecryptViaSecretsManager",
@@ -216,9 +381,18 @@ export class SesInboundStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // Receipt rule set + catch-all rule. `recipients: [mailDomain]` matches
-    // the domain AND all its subdomains (SES semantics), so one rule covers
-    // every company's `{slug}.isol8.co` mailbox.
+    // Receipt rule set + catch-all rule.
+    //
+    // BOTH entries are required. In SES, a bare domain matches ONLY that exact
+    // domain; matching subdomains needs a LEADING DOT. Every agent mailbox
+    // lives on a subdomain (`friday@{slug}.isol8.co`), so `[mailDomain]` alone
+    // matched nothing an agent could ever be reached at — mail hit SES (the
+    // `*.isol8.co` MX resolves) and was dropped with no S3 object and no
+    // Lambda invocation. Inbound agent mail had never once been delivered.
+    //
+    // An earlier comment here asserted that a bare domain also matches
+    // subdomains. It does not, and the whole inbound design rested on that
+    // untested claim. `mailDomain` is kept so the apex keeps working.
     //
     // No fixed `receiptRuleSetName` — CDK auto-generates one, avoiding the
     // CREATE-before-DELETE collision risk a fixed name would have on replace
@@ -236,7 +410,7 @@ export class SesInboundStack extends cdk.Stack {
     this.ruleSet = new ses.ReceiptRuleSet(this, "AgentMailRuleSet");
 
     const catchAllRule = this.ruleSet.addRule("AgentMailCatchAll", {
-      recipients: [mailDomain],
+      recipients: [mailDomain, `.${mailDomain}`],
       scanEnabled: true,
       actions: [
         new sesActions.S3({ bucket: this.rawBucket, objectKeyPrefix: "inbound/" }),

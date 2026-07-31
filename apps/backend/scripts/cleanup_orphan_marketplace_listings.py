@@ -15,7 +15,8 @@ It NEVER deletes a ``published`` or ``retired`` row: a published row backs the l
 storefront + every buyer's redeploy, and a retired row resolves past buyers'
 entitlements — removing either breaks deploys, so that's the takedown flow's job
 (it preserves entitlements), not this cleaner's. ``review`` rows and recent drafts
-are also kept. v0 slug sentinels are left to ``sweep_orphan_slug_sentinels``.
+are also kept. v0 slug sentinels are skipped entirely — see the ``_ver(r) == 0``
+guard below.
 
 Removing a *duplicate* published listing (two published listing_ids for one
 agent) is deliberately NOT done here — it's unsafe to hard-delete a published
@@ -89,7 +90,7 @@ def _plan_deletions(rows: list[dict], *, max_age_days: int, now: float) -> dict:
     kept_published: list[str] = []
     for r in rows:
         if _ver(r) == 0:
-            continue  # v0 slug sentinel — owned by sweep_orphan_slug_sentinels
+            continue  # v0 slug sentinel — never a real listing row
         st = r.get("status")
         if st == "published":
             kept_published.append(f"listing {str(r.get('listing_id'))[:8]} agent={str(r.get('agent_id') or '-')[:12]}")

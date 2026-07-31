@@ -8,6 +8,7 @@ from core.services.provision_gate import (
     Gate,
     evaluate_provision_gate,
     has_always_on_entitlement,
+    is_paid_subscription,
     is_subscription_active,
     is_trial_blocked,
 )
@@ -49,6 +50,135 @@ async def test_no_billing_org_owner_returns_team_billing_required():
     assert gate is not None
     assert gate.code == "team_billing_required"
     assert gate.action_admin_only is True
+
+
+# ---------------------------------------------------------------------------
+# First-touch pending-invitation gate
+# ---------------------------------------------------------------------------
+#
+# A fresh personal signup (no billing row, no container row) whose email
+# holds a PENDING Clerk org invitation must be blocked with a structured
+# invitation_pending card instead of being funneled into the personal
+# signup path — otherwise a full personal trial world (container + billing
+# + throwaway Paperclip company) is built for a user who is about to
+# become an org seat. Known limitation (documented at the gate): Clerk only
+# matches invitations to VERIFIED emails, so unverified-email signups still
+# read as plain personal signups.
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_first_touch_returns_invitation_pending():
+    """No billing row + no container row + a pending org invitation →
+    invitation_pending, routed to /onboarding to accept the invite."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "invitation_pending"
+    assert gate.action_href == "/onboarding"
+    assert gate.action_admin_only is False
+
+
+@pytest.mark.asyncio
+async def test_pending_invitation_with_existing_container_keeps_signup_required():
+    """A user who already HAS a personal world (container row present, even
+    with the billing row gone) is not walled off behind their invitation —
+    the existing signup_required routing stands. No regression for personal
+    users later invited to orgs."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_x", "status": "running"}),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "signup_required"
+
+
+@pytest.mark.asyncio
+async def test_no_pending_invitation_keeps_signup_required_without_container_read():
+    """No invitations → the common case: signup_required, and the containers
+    read is never spent (Clerk-first ordering — the container check only
+    guards the rare invitation-exists path)."""
+    container_read = AsyncMock(return_value=None)
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch("core.repositories.container_repo.get_by_owner_id", container_read),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "signup_required"
+    container_read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_existing_billing_row_never_reaches_the_invitation_check():
+    """An established owner (billing row present) is untouched: the
+    invitation lookup must not run — this gate is FIRST-TOUCH only, and a
+    per-poll Clerk call for every active owner would be a regression."""
+    invites = AsyncMock(return_value=[{"id": "orginv_1"}])
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch("core.services.clerk_admin.list_pending_invitations_for_user", invites),
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "subscription_status": "active",
+                "provider_choice": "byo_key",
+                "byo_provider": "anthropic",
+            },
+        )
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is None
+    invites.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invitation_container_read_failure_fails_open_to_signup_required():
+    """A containers-read blip must never wedge a legitimate signup — the
+    gate falls open to the normal signup_required routing."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.trial_cap.billing_repo", repo),
+        patch(
+            "core.services.clerk_admin.list_pending_invitations_for_user",
+            new=AsyncMock(return_value=[{"id": "orginv_1"}]),
+        ),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("ddb down")),
+        ),
+    ):
+        repo.get_by_owner_id = AsyncMock(return_value=None)
+        gate = await evaluate_provision_gate(owner_id="user_x")
+    assert gate is not None
+    assert gate.code == "signup_required"
 
 
 @pytest.mark.asyncio
@@ -710,12 +840,15 @@ def test_gate_to_payload_shape():
 
 
 # ---------------------------------------------------------------------------
-# Pure predicates: is_subscription_active / is_trial_blocked
+# Pure predicates: is_subscription_active / is_paid_subscription /
+# is_trial_blocked
 # ---------------------------------------------------------------------------
 #
-# Every gate site (chat, provision, channel-binding, /billing/account
-# response) consults ``is_subscription_active``. Pinning every Stripe
-# status case here is what locks the predicate's contract.
+# Every gate site (chat, provision, channel-binding) consults
+# ``is_subscription_active``; the /billing/account response's
+# ``is_subscribed`` wire field consults ``is_paid_subscription`` (the paid
+# axis — trial_local is usable but NOT subscribed). Pinning every Stripe
+# status case here is what locks each predicate's contract.
 #
 # The single load-bearing case is ``canceled + stale stripe_subscription_id``
 # at the bottom of the table — it's the convergence case from the
@@ -775,6 +908,47 @@ def test_gate_to_payload_shape():
 )
 def test_is_subscription_active_table(account, expected):
     assert is_subscription_active(account) is expected
+
+
+@pytest.mark.parametrize(
+    "account, expected",
+    [
+        # Missing / empty rows — fail-closed.
+        (None, False),
+        ({}, False),
+        # Paid states.
+        ({"subscription_status": "active"}, True),
+        ({"subscription_status": "trialing"}, True),
+        # *** THE DIVERGENCE CASE ***
+        # trial_local grants platform use (is_subscription_active → True)
+        # but is NOT a subscription. Wiring /billing/account's
+        # ``is_subscribed`` from the platform-use predicate rendered free
+        # users an "Active subscription — $50/month" card with no way to
+        # subscribe; this row pins the paid predicate to False.
+        ({"subscription_status": "trial_local"}, False),
+        # Non-paid explicit states.
+        ({"subscription_status": "past_due"}, False),
+        ({"subscription_status": "canceled"}, False),
+        ({"subscription_status": "unpaid"}, False),
+        ({"subscription_status": "paused"}, False),
+        # Legacy fallback: status not yet backfilled, sub_id present —
+        # same strict None-status guard as is_subscription_active.
+        ({"subscription_status": None, "stripe_subscription_id": "sub_legacy"}, True),
+        ({"subscription_status": None, "stripe_subscription_id": None}, False),
+        ({"subscription_status": None}, False),
+        # An explicit non-paid status never rides a stale sub_id into paid.
+        (
+            {"subscription_status": "canceled", "stripe_subscription_id": "sub_stale"},
+            False,
+        ),
+        (
+            {"subscription_status": "trial_local", "stripe_subscription_id": "sub_x"},
+            False,
+        ),
+    ],
+)
+def test_is_paid_subscription_table(account, expected):
+    assert is_paid_subscription(account) is expected
 
 
 @pytest.mark.parametrize(
@@ -858,6 +1032,42 @@ class TestHasAlwaysOnEntitlement:
             )
             is False
         )
+
+
+@pytest.mark.asyncio
+async def test_probe_provision_gate_skips_metric_emission(monkeypatch):
+    """probe_provision_gate returns the same Gate as evaluate_provision_gate
+    but must NOT emit provision.gate.blocked (the W64 alarm stream)."""
+    from core.services import provision_gate
+
+    sentinel = provision_gate.Gate(
+        code="subscription_required",
+        title="t",
+        message="m",
+        action_label="a",
+        action_href="/settings/billing",
+        action_admin_only=False,
+        owner_role="admin",
+    )
+
+    async def fake_inner(*, owner_id, is_admin):
+        return sentinel
+
+    emitted = []
+    monkeypatch.setattr(provision_gate, "_evaluate_provision_gate_inner", fake_inner)
+    # Record every telemetry path evaluate_provision_gate would have taken:
+    # put_metric (the W64 alarm stream + coded breakdown) and the PostHog
+    # trial_expired capture. The probe must touch neither.
+    monkeypatch.setattr(provision_gate, "put_metric", lambda *a, **kw: emitted.append(("put_metric", a, kw)))
+    monkeypatch.setattr(
+        provision_gate,
+        "capture_once_per_owner_per_day",
+        lambda *a, **kw: emitted.append(("capture", a, kw)),
+    )
+
+    gate = await provision_gate.probe_provision_gate(owner_id="user_x")
+    assert gate is sentinel
+    assert emitted == []
 
 
 @pytest.mark.asyncio

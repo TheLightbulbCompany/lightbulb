@@ -1,148 +1,132 @@
-"""The email_service.send_email seam: gated, off-loop, best-effort."""
+"""email_service.send_email: the app-mail concerns layered over the SES transport.
 
-import time
-from unittest.mock import patch
+The transport itself (gating, off-loop, best-effort) is covered by
+test_ses_email.py — these assert only what this seam adds: [ENV] subject
+tagging and Reply-To routing, plus the end-to-end shape of the message a
+signup actually receives.
+"""
+
+from email import message_from_bytes, policy
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.config import settings
-from core.services import email_service
+from core.services import email_service, ses_email
+
+
+@pytest.fixture
+def sent(monkeypatch):
+    """Capture the kwargs email_service hands the SES transport."""
+    send_mock = AsyncMock(return_value="ses-123")
+    monkeypatch.setattr(ses_email, "send_ses_email", send_mock)
+    return send_mock
 
 
 @pytest.mark.asyncio
-async def test_placeholder_key_is_noop(monkeypatch):
-    """A non-re_ placeholder key (the CDK default) -> None, never calls Resend."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "PLACEHOLDERnotARealKey")
-
-    with patch("resend.Emails.send") as mock_send:
-        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
-
-    assert result is None
-    mock_send.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_missing_key_is_noop(monkeypatch):
-    """No key -> returns None and never calls Resend."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "")
-
-    with patch("resend.Emails.send") as mock_send:
-        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
-
-    assert result is None
-    mock_send.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_sends_with_params_and_idempotency(monkeypatch):
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
-
-    with patch("resend.Emails.send", return_value={"id": "email_abc"}) as mock_send:
-        result = await email_service.send_email(
-            to="a@b.com",
-            subject="Welcome",
-            html="<p>hi</p>",
-            from_addr="Isol8 <hello@isol8.co>",
-            reply_to="support@isol8.co",
-            idempotency_key="welcome-user/u_1",
-            kind="welcome",
-        )
-
-    assert result == "email_abc"
-    mock_send.assert_called_once()
-    params, options = mock_send.call_args.args
-    assert params["from"] == "Isol8 <hello@isol8.co>"
-    assert params["to"] == "a@b.com"
-    assert params["subject"] == "Welcome"
-    assert params["html"] == "<p>hi</p>"
-    assert params["reply_to"] == "support@isol8.co"
-    assert options == {"idempotency_key": "welcome-user/u_1"}
-
-
-@pytest.mark.asyncio
-async def test_sends_with_custom_headers(monkeypatch):
-    """headers is passed through verbatim for reply threading (In-Reply-To/References)."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
-
-    with patch("resend.Emails.send", return_value={"id": "email_abc"}) as mock_send:
-        await email_service.send_email(
-            to="a@b.com",
-            subject="Re: Welcome",
-            html="<p>hi</p>",
-            from_addr="Isol8 <hello@isol8.co>",
-            headers={"In-Reply-To": "<m@x>", "References": "<m@x>"},
-        )
-
-    params, _ = mock_send.call_args.args
-    assert params["headers"] == {"In-Reply-To": "<m@x>", "References": "<m@x>"}
-
-
-@pytest.mark.asyncio
-async def test_no_headers_key_when_omitted(monkeypatch):
-    """No regression: omitting headers must not add a headers key at all."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
-
-    with patch("resend.Emails.send", return_value={"id": "email_abc"}) as mock_send:
-        await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
-
-    params, _ = mock_send.call_args.args
-    assert "headers" not in params
-
-
-@pytest.mark.asyncio
-async def test_non_prod_env_prefixes_subject(monkeypatch):
-    """Dev/staging sends get a [ENV] subject tag so test mail is obvious."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+async def test_non_prod_env_prefixes_subject(monkeypatch, sent):
+    """Dev/staging sends get an [ENV] subject tag so test mail is obvious."""
     monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
 
-    with patch("resend.Emails.send", return_value={"id": "x"}) as mock_send:
-        await email_service.send_email(to="a@b.com", subject="Welcome", html="<p>hi</p>", from_addr="x@y.com")
+    await email_service.send_email(to="a@b.com", subject="Welcome", html="<p>hi</p>", from_addr="x@y.com")
 
-    params, _ = mock_send.call_args.args
-    assert params["subject"] == "[DEV] Welcome"
+    assert sent.call_args.kwargs["subject"] == "[DEV] Welcome"
 
 
 @pytest.mark.asyncio
-async def test_prod_env_has_no_prefix(monkeypatch):
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+async def test_prod_env_has_no_prefix(monkeypatch, sent):
     monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
 
-    with patch("resend.Emails.send", return_value={"id": "x"}) as mock_send:
-        await email_service.send_email(to="a@b.com", subject="Welcome", html="<p>hi</p>", from_addr="x@y.com")
+    await email_service.send_email(to="a@b.com", subject="Welcome", html="<p>hi</p>", from_addr="x@y.com")
 
-    params, _ = mock_send.call_args.args
-    assert params["subject"] == "Welcome"
+    assert sent.call_args.kwargs["subject"] == "Welcome"
 
 
 @pytest.mark.asyncio
-async def test_failure_is_swallowed(monkeypatch):
-    """Resend raising -> returns None, does not raise."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
+async def test_reply_to_becomes_a_header(monkeypatch, sent):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
 
-    with patch("resend.Emails.send", side_effect=RuntimeError("boom")):
-        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
+    await email_service.send_email(
+        to="a@b.com",
+        subject="Welcome",
+        html="<p>hi</p>",
+        from_addr="Isol8 <hello@isol8.co>",
+        reply_to="support@isol8.co",
+        kind="welcome",
+    )
 
-    assert result is None
+    kwargs = sent.call_args.kwargs
+    assert kwargs["headers"] == {"Reply-To": "support@isol8.co"}
+    assert kwargs["from_addr"] == "Isol8 <hello@isol8.co>"
+    assert kwargs["body_html"] == "<p>hi</p>"
+    assert kwargs["kind"] == "welcome"
+    assert kwargs["body_text"] is None
 
 
 @pytest.mark.asyncio
-async def test_stalled_send_respects_timeout(monkeypatch):
-    """A send that blocks past the timeout returns None promptly instead of
-    wedging the caller. abandon_on_cancel lets fail_after return at the
-    deadline rather than waiting for the stalled worker thread."""
-    monkeypatch.setattr(settings, "RESEND_API_KEY", "re_test")
-    monkeypatch.setattr(email_service, "_SEND_TIMEOUT_S", 0.1)
+async def test_no_headers_when_reply_to_omitted(monkeypatch, sent):
+    """Omitting reply_to must not attach an empty headers dict."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
 
-    def slow_send(*_args, **_kwargs):
-        time.sleep(2.0)
-        return {"id": "too_late"}
+    await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
 
-    start = time.monotonic()
-    with patch("resend.Emails.send", side_effect=slow_send):
-        result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
-    elapsed = time.monotonic() - start
+    assert sent.call_args.kwargs["headers"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_reply_to_is_joined(monkeypatch, sent):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+
+    await email_service.send_email(
+        to="a@b.com",
+        subject="hi",
+        html="<p>hi</p>",
+        from_addr="x@y.com",
+        reply_to=["a@isol8.co", "b@isol8.co"],
+    )
+
+    assert sent.call_args.kwargs["headers"] == {"Reply-To": "a@isol8.co, b@isol8.co"}
+
+
+@pytest.mark.asyncio
+async def test_welcome_email_renders_as_html_not_plaintext(monkeypatch):
+    """The signup email must arrive as text/html — an HTML body accidentally
+    sent as text/plain would show the user raw markup."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    fake_client = MagicMock()
+    fake_client.send_email.return_value = {"MessageId": "ses-1"}
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    result = await email_service.send_email(
+        to="a@b.com",
+        subject="Welcome to Isol8",
+        html="<p>hi</p>",
+        from_addr="Isol8 <hello@isol8.co>",
+        reply_to="support@isol8.co",
+        kind="welcome",
+    )
+
+    assert result == "ses-1"
+    _, kwargs = fake_client.send_email.call_args
+    parsed = message_from_bytes(kwargs["Content"]["Raw"]["Data"], policy=policy.default)
+    assert parsed.get_content_type() == "text/html"
+    assert not parsed.is_multipart()
+    assert parsed["Reply-To"] == "support@isol8.co"
+    assert parsed["Subject"] == "Welcome to Isol8"
+    assert parsed.get_content().strip() == "<p>hi</p>"
+
+
+@pytest.mark.asyncio
+async def test_gate_is_inherited_from_transport(monkeypatch):
+    """No AGENT_EMAIL_DOMAIN -> no send, no raise. App mail inherits the same
+    prod-only gate as agent replies."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "")
+    fake_client = MagicMock()
+    monkeypatch.setattr(ses_email, "_client", lambda: fake_client)
+
+    result = await email_service.send_email(to="a@b.com", subject="hi", html="<p>hi</p>", from_addr="x@y.com")
 
     assert result is None
-    # Without abandon_on_cancel this blocks ~2s for the thread; the fix returns
-    # at the ~0.1s deadline. Generous bound to stay non-flaky under CI load.
-    assert elapsed < 1.0
+    fake_client.send_email.assert_not_called()

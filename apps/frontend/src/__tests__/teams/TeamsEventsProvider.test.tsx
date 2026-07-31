@@ -28,20 +28,6 @@ vi.mock("swr", () => ({
   useSWRConfig: () => ({ mutate: mutateMock }),
 }));
 
-// Mirrors the `gatewayState` mutable-ref pattern above: each test sets
-// `userState.current` before rendering to control what `readFirstRun`
-// sees, overriding the global `@clerk/nextjs` mock from tests/setup.ts
-// (which carries no `unsafeMetadata.firstRun`).
-const userState: { current: { unsafeMetadata?: Record<string, unknown> } | null } = {
-  current: { unsafeMetadata: {} },
-};
-vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({ user: userState.current }),
-}));
-
-const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
-vi.mock("@/lib/analytics", () => ({ capture: captureMock }));
-
 /**
  * The provider switched from `mutate(stringKey)` to `mutate(predicate)` so
  * query-stringed cache keys (e.g. `/teams/inbox?tab=mine`) get invalidated
@@ -116,10 +102,8 @@ beforeEach(() => {
   sendMock.mockReset();
   mutateMock.mockReset();
   setIsConnected.mockReset();
-  captureMock.mockReset();
   eventHandler = null;
   gatewayState.isConnected = false;
-  userState.current = { unsafeMetadata: {} };
   _resetTeamsEventsForTests();
 });
 
@@ -329,46 +313,6 @@ describe("TeamsEventsProvider", () => {
     expect(keys).toEqual(expect.arrayContaining([
       "/teams/routines", "/teams/projects", "/teams/goals", "/teams/agents",
     ]));
-  });
-
-  it("captures first_run_board_pulse on teams.activity.logged during an active first-run show", () => {
-    gatewayState.isConnected = true;
-    userState.current = { unsafeMetadata: { firstRun: { started: true, completed: false } } };
-    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    act(() => {
-      eventHandler!("teams.activity.logged", {});
-    });
-    expect(captureMock).toHaveBeenCalledWith("first_run_board_pulse");
-  });
-
-  it("does not capture first_run_board_pulse once the first-run show has completed", () => {
-    gatewayState.isConnected = true;
-    userState.current = { unsafeMetadata: { firstRun: { started: true, completed: true } } };
-    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    act(() => {
-      eventHandler!("teams.activity.logged", {});
-    });
-    expect(captureMock).not.toHaveBeenCalled();
-  });
-
-  it("does not capture first_run_board_pulse for a user who never entered the first-run show", () => {
-    gatewayState.isConnected = true;
-    userState.current = { unsafeMetadata: {} };
-    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    act(() => {
-      eventHandler!("teams.activity.logged", {});
-    });
-    expect(captureMock).not.toHaveBeenCalled();
-  });
-
-  it("does not capture first_run_board_pulse for unrelated teams events during an active show", () => {
-    gatewayState.isConnected = true;
-    userState.current = { unsafeMetadata: { firstRun: { started: true, completed: false } } };
-    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
-    act(() => {
-      eventHandler!("teams.agent.status", {});
-    });
-    expect(captureMock).not.toHaveBeenCalled();
   });
 
   it("invalidates dashboard + agents on teams.agent.status", () => {
@@ -660,6 +604,80 @@ describe("TeamsEventsProvider revalidation throttle", () => {
     });
 
     expect(countMatching("/teams/inbox")).toBe(2);
+  });
+});
+
+/**
+ * Board keeper. A raw setInterval that revalidates the board keys every 20s
+ * while the tab is visible — the central backstop for the failure mode where a
+ * panel's self-rescheduling SWR `refreshInterval` chain is throttle-killed by
+ * Chrome occlusion and `revalidateOnFocus` never gets its focus transition, so
+ * the board sits stale with data already present. A raw interval survives the
+ * throttle where the SWR chain does not (same reason ProvisioningStepper's
+ * watchdog uses one).
+ */
+describe("TeamsEventsProvider board keeper", () => {
+  // Mirrors BOARD_KEEPER_INTERVAL_MS in the provider — a local literal (like
+  // REVALIDATE_WINDOW_MS above) so a change to the cadence has to be made here
+  // too, deliberately, rather than silently redefining what these assert.
+  const KEEPER_INTERVAL_MS = 20_000;
+
+  // The keeper reads document.visibilityState on every tick. jsdom exposes it
+  // as a prototype getter; we shadow it with an instance property so each test
+  // controls it, then remove the override in afterEach.
+  let visibility: DocumentVisibilityState = "visible";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    visibility = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+  });
+
+  it("revalidates the board keys after 20s while the tab is visible", () => {
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+    // Timer-driven, not mount-driven: nothing fires before the interval elapses.
+    expect(mutateMock).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(KEEPER_INTERVAL_MS);
+    });
+
+    // The keeper reconciles the same board keys the provider already manages
+    // (ALL_KEYS) — issues + goals + projects + inbox/dashboard among them.
+    const keys = invalidatedKeys();
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "/teams/issues",
+        "/teams/goals",
+        "/teams/projects",
+        "/teams/inbox",
+        "/teams/dashboard",
+      ]),
+    );
+  });
+
+  it("does NOT revalidate while the tab is hidden (background tabs must not spin)", () => {
+    visibility = "hidden";
+    gatewayState.isConnected = true;
+    render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+    mutateMock.mockClear(); // drop the first-subscribe reconcile
+
+    act(() => {
+      vi.advanceTimersByTime(KEEPER_INTERVAL_MS * 3);
+    });
+
+    expect(mutateMock).not.toHaveBeenCalled();
   });
 });
 

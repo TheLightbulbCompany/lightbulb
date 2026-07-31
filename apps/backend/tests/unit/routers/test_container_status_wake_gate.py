@@ -46,7 +46,7 @@ def _patches(row: dict, *, parked: bool, budget_ok: bool = True, trial_reason=No
         patch("routers.container._assert_provision_allowed", new=AsyncMock()),
         patch("routers.container.wake_policy.is_parked_trial", new=AsyncMock(return_value=parked)),
         patch("routers.container.wake_policy.legacy_wake_allowed", new=AsyncMock(return_value=budget_ok)),
-        patch("routers.container._background_provision", new=AsyncMock()),
+        patch("routers.container.dispatch_provision", new=AsyncMock()),
     ]
 
 
@@ -69,9 +69,13 @@ class TestWakeGate:
     @pytest.mark.asyncio
     async def test_parked_wake0_suppresses_and_reports_parked(self):
         body, dispatch, _ = await _call("0", _patches(_parked_row(), parked=True))
-        assert body["phase"] == "parked"
+        # Explicit wake=0 override: lifecycle="parked" + parked=True +
+        # wake_retry_after_s (spec PR-9, CLIENT-HOOK) -- NOT the old
+        # phase="parked" flat string, which no longer exists on the wire.
+        assert body["lifecycle"] == "parked"
         assert body["parked"] is True
-        assert body["status"] == "stopped"
+        assert body["wake_retry_after_s"] == 30
+        assert body["container_status"] == "stopped"
         dispatch.assert_not_called()
 
     @pytest.mark.asyncio
@@ -79,31 +83,42 @@ class TestWakeGate:
         body, dispatch, budget = await _call(None, _patches(_parked_row(), parked=True, budget_ok=True))
         dispatch.assert_called_once()
         budget.assert_awaited_once()
-        assert body["status"] == "provisioning"
-        assert body["substatus"] == "auto_retry"
+        assert body["container_status"] == "provisioning"
+        assert body["container_substatus"] == "auto_retry"
 
     @pytest.mark.asyncio
-    async def test_parked_legacy_over_budget_suppresses_with_legacy_shape(self):
+    async def test_parked_legacy_over_budget_suppresses_reflecting_the_composed_contract(self):
+        # No more "legacy bundle" field-set distinction (spec PR-9,
+        # CLIENT-HOOK): _status_response emits the ONE composed contract
+        # always. This branch's own is_parked_trial check (mocked True here)
+        # already flows into the SAME contract compute_status composed, so
+        # `parked`/`lifecycle` reflect that truth even without the explicit
+        # wake=0 override -- only `wake_retry_after_s` is specific to that
+        # override, and is absent here.
         body, dispatch, _ = await _call(None, _patches(_parked_row(), parked=True, budget_ok=False))
         dispatch.assert_not_called()
-        # Legacy bundles get today's field set — plain stopped, no parked keys.
-        assert body["status"] == "stopped"
-        assert "parked" not in body
-        assert body["phase"] == "provisioning"
+        assert body["container_status"] == "stopped"
+        assert body["parked"] is True
+        assert body["lifecycle"] == "parked"
+        assert "wake_retry_after_s" not in body
 
     @pytest.mark.asyncio
     async def test_parked_explicit_wake1_dispatches(self):
         body, dispatch, budget = await _call("1", _patches(_parked_row(), parked=True))
         dispatch.assert_called_once()
         budget.assert_not_awaited()
-        assert body["status"] == "provisioning"
+        assert body["container_status"] == "provisioning"
 
     @pytest.mark.asyncio
     async def test_error_row_self_heal_ignores_wake0(self):
         row = {"service_name": "s", "status": "error"}
         body, dispatch, _ = await _call("0", _patches(row, parked=False))
+        # The self-heal still fires (dispatch called) regardless of wake=0 —
+        # but the status is now reported HONESTLY: a retryable error is
+        # error/error_retrying, never masked as "provisioning" (Part B).
         dispatch.assert_called_once()
-        assert body["status"] == "provisioning"
+        assert body["container_status"] == "error"
+        assert body["container_substatus"] == "error_retrying"
 
     @pytest.mark.asyncio
     async def test_trial_gate_fires_before_parked_logic(self):

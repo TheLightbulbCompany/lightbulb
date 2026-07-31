@@ -20,7 +20,6 @@ from fastapi.responses import JSONResponse
 from core.auth import get_current_user
 from core.config import settings
 from core.containers import (
-    get_ecs_manager,
     get_gateway_pool,
     startup_containers,
     shutdown_containers,
@@ -32,6 +31,7 @@ from core.services.update_service import run_scheduled_worker
 from routers import (
     agent_builder,
     agent_mail_relay,
+    agent_mail_send,
     billing,
     channels,
     config,
@@ -257,28 +257,47 @@ async def _running_count_gauge_loop():
         await asyncio.sleep(60)
 
 
-async def _resume_provisioning_transitions() -> None:
-    """Resume the provisioning -> running poller for any containers that were
-    mid-transition when the backend last shut down.
+async def _resume_wake_resize_transitions() -> None:
+    """Resume the provisioning -> running poller for containers that were
+    mid-transition on a NON-provisioning path (wake-from-stopped, resize)
+    when the backend last shut down.
 
-    ``_await_running_transition`` is an in-process asyncio task — a deploy or
-    crash kills it mid-poll. DDB ``status="provisioning"`` is the durable
-    marker that the transition hasn't completed; on startup we find those
-    rows and re-kick the poller. The poller itself is idempotent (if the
-    container is already healthy, the first iteration transitions it to
-    running and exits).
+    SFN-owned rows are explicitly EXCLUDED (``provision_claim_id`` present):
+    the PROVISION Step Functions executor (spec §7, PR-10) survives backend
+    process death natively — bounded per-attempt + total timeout, its own
+    retries — so a "provisioning" row created via ``dispatch_provision`` no
+    longer needs an in-process resume at all; that used to be this function's
+    main job (the old boot-reconciler re-arm) and is now dead weight AT BEST
+    and UNSAFE at worst — resuming a bare, unfenced ``_await_running_transition``
+    (claim_id=None -> plain ``update_fields``, no condition) over a row an
+    SFN execution still owns could race the runner's own FENCED write with
+    an unconditioned one.
+
+    ``start_user_service`` (wake) and ``resize_user_container`` never claim a
+    provision lease — their "provisioning" writes carry no
+    ``provision_claim_id`` — so their in-process pollers dying mid-poll (a
+    deploy or crash) still leaves a real gap this covers: on boot, find
+    provisioning rows with NO stamped claim and re-kick a plain (unfenced)
+    poller for them, exactly as before. Idempotent (a poller finding an
+    already-healthy container transitions it on its first iteration and
+    exits).
     """
+    from core.containers import get_ecs_manager
+
     try:
         rows = await container_repo.get_by_status("provisioning")
     except Exception:
-        logger.warning("Could not resume provisioning transitions on startup", exc_info=True)
+        logger.warning("Could not resume wake/resize transitions on startup", exc_info=True)
         return
 
     ecs = get_ecs_manager()
     for row in rows:
+        if row.get("provision_claim_id"):
+            # SFN-owned — see docstring. Not ours to resume.
+            continue
         owner_id = row["owner_id"]
         asyncio.create_task(ecs._await_running_transition(owner_id))
-        logger.info("Resumed provisioning -> running poller for %s", owner_id)
+        logger.info("Resumed provisioning -> running poller for %s (wake/resize, unclaimed)", owner_id)
 
 
 async def _reconcile_trial_idle_containers() -> None:
@@ -410,7 +429,7 @@ async def lifespan(app: FastAPI):
     # stale "shutting down" from a prior shutdown.
     set_shutting_down(False)
     await startup_containers()
-    await _resume_provisioning_transitions()
+    await _resume_wake_resize_transitions()
     await _reconcile_trial_idle_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
 
@@ -834,6 +853,13 @@ app.include_router(hooks_credentials.router, prefix="/api/v1/hooks", tags=["hook
 # model (reply_token names the owner; hook_token proves the caller IS that
 # owner's container).
 app.include_router(agent_mail_relay.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
+
+# Agent-INITIATED owner email (hook_token auth, no Clerk) — the same container
+# calling out unprompted rather than replying. Same auth shape minus the
+# reply_token, and with no recipient parameter at all: the owner is named in
+# the path and the recipient is resolved server-side, so nothing a caller
+# supplies can redirect the message. See routers/agent_mail_send.py.
+app.include_router(agent_mail_send.router, prefix="/api/v1/agent-mail", tags=["agent-mail"])
 
 # Admin dashboard — every endpoint gated by Depends(require_platform_admin).
 from routers import admin as admin_router  # noqa: E402

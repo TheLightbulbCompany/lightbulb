@@ -1,51 +1,13 @@
 // apps/frontend/src/hooks/internal/types.ts
 //
-// Shared types used by useAgentChat and its helper modules. Mirrors
-// the upstream OpenClaw control-ui shape (~/Desktop/openclaw/ui/src/ui)
-// with Isol8-specific additions (live thinking) called out inline.
+// Web-only render types for useAgentChat and its helper modules.
+//
+// The WIRE types (ContentBlock, HistoryMessage) moved to @isol8/shared
+// (packages/shared/src/chat/history.ts) — mobile had its own copy of them and
+// the pair had drifted. Re-exported here so existing imports are unaffected.
 
-/** A content block within a HistoryMessage. Field shapes vary by `type`. */
-export interface ContentBlock {
-  type: string;
-  // text-flavored
-  text?: string;
-  // thinking-flavored
-  thinking?: string;
-  // tool_use-flavored
-  id?: string;
-  name?: string;
-  args?: unknown;
-  arguments?: unknown;
-  input?: unknown;
-  /** Live incremental output (tool phase:update / command_output) shown in the
-   *  tool pill while running; superseded by the tool_result block on terminal. */
-  progressText?: string;
-  // tool_result-flavored
-  tool_use_id?: string;
-  toolUseId?: string;
-  toolCallId?: string;
-  content?: unknown;
-  result?: unknown;
-  isError?: boolean;
-  // image-flavored (after upstream's chat-display-projection)
-  omitted?: boolean;
-  bytes?: number;
-}
-
-/** A whole message from chat.history or synthesized at chat.final. */
-export interface HistoryMessage {
-  role: string;
-  content?: ContentBlock[];
-  text?: string;
-  timestamp?: number;
-  runId?: string;
-  toolCallId?: string;
-  tool_call_id?: string;
-  toolName?: string;
-  tool_name?: string;
-  errorCode?: string;
-  __openclaw?: { kind?: string };
-}
+export type { ContentBlock, HistoryMessage } from "@isol8/shared";
+import type { HistoryMessage } from "@isol8/shared";
 
 /** Live tool tracking entry (private to useAgentChat). */
 export interface ToolStreamEntry {

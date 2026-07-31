@@ -39,7 +39,7 @@ Idempotent: re-running re-overwrites with the same bundle. Owners with no
 Paperclip company / no Atlas agent / an ambiguous "Atlas" name are reported
 and skipped (``pre_stage_atlas`` refuses to seed in those cases).
 
-``--env`` is informational only (matches ``backfill_paperclip_for_legacy_users``):
+``--env`` is informational only:
 DDB/EFS targeting comes from the process's environment + settings, not this flag.
 """
 
@@ -71,7 +71,7 @@ def _split_owner_ids(raw: list[str] | None) -> list[str]:
 async def _scan_owner_ids() -> list[str]:
     """Paginate the ``containers`` table and return every ``owner_id``.
 
-    Mirrors ``backfill_paperclip_for_legacy_users._scan_owner_ids``. Sorted for
+    Sorted for
     deterministic output across runs.
     """
     from core.dynamodb import get_table, run_in_thread

@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     ECS_SUBNETS: str = os.getenv("ECS_SUBNETS", "")  # comma-separated
     ECS_SECURITY_GROUP_ID: str = os.getenv("ECS_SECURITY_GROUP_ID", "")
 
+    # PROVISION Step Functions state machine ARN — THE provisioning executor
+    # (spec §7, PR-10; no flag, active on merge). Dispatched by
+    # core.services.provision_dispatch.dispatch_provision via StartExecution;
+    # the one-shot scripts/provision_runner.py runs as an ECS task the
+    # machine supervises, never in-process in this backend.
+    PROVISION_STATE_MACHINE_ARN: str = os.getenv("PROVISION_STATE_MACHINE_ARN", "")
+
     # --- Cloud Map ---
     CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
     CLOUD_MAP_NAMESPACE_NAME: str = os.getenv("CLOUD_MAP_NAMESPACE_NAME", "")
@@ -147,15 +154,6 @@ class Settings(BaseSettings):
     METRONOME_RATE_CARD_ID: str = os.getenv("METRONOME_RATE_CARD_ID", "")
     """Rate card the per-customer contract references at provision time.
     Created once per env in the Metronome console (runbook step)."""
-    ACP_ENABLED: bool = os.getenv("ACP_ENABLED", "false").lower() == "true"
-    """Master switch for the ACP coding-harness runtime (acpx). When True,
-    write_openclaw_config emits the acp block + plugins.entries.acpx so a
-    native agent (e.g. Jarvis) can sessions_spawn Claude Code / Codex / Gemini,
-    with allowedAgents DERIVED from the owner's provider_choice. Dark by
-    default: keep False until the acpx-baked extended image (Dockerfile
-    Layer 12) is promoted in openclaw-version.json for the env — enabling it
-    against an image without /app/dist/extensions/acpx makes every ACP spawn
-    fail with 'ACP runtime backend is not configured'."""
     METRONOME_CREDITS_PRODUCT_ID: str = os.getenv("METRONOME_CREDITS_PRODUCT_ID", "")
     """Metronome product id the prepaid credit commit draws against. Per-env."""
     METRONOME_USD_CENTS_CREDIT_TYPE_ID: str = "2714e483-4ff1-48e4-9e25-ac732e8f24f2"
@@ -230,6 +228,10 @@ class Settings(BaseSettings):
     # the app boots without it; CDK-wired in dev/prod. Quantity = org member
     # count, no trial. This is the billing source of truth for "$20/seat".
     STRIPE_TEAM_SEAT_PRICE_ID: str = ""
+    # Flat monthly base for the Teams (org) subscription, charged once
+    # alongside the per-seat item. Empty default so the app boots without it;
+    # CDK-wired in dev/prod. This is the billing source of truth for "$50 base".
+    STRIPE_TEAM_BASE_PRICE_ID: str = ""
     # Stripe price for the Ultra Pro tier (large marketplace companies exceeding
     # the flat tier's agent budget). Empty default so the app boots without it;
     # CDK-wired in dev/prod. This is the billing source of truth for "$150".
@@ -238,9 +240,11 @@ class Settings(BaseSettings):
     # so the paywall renders "N × $20" without hardcoding the number in the UI.
     # Kept in lockstep with STRIPE_TEAM_SEAT_PRICE_ID's unit amount in Stripe.
     TEAM_SEAT_PRICE_USD: int = 20
-    # Display dollars for the Ultra Pro tier, kept in lockstep with
-    # STRIPE_ULTRA_PRICE_ID's unit amount in Stripe.
-    ULTRA_PRICE_USD: int = 150
+    # Display dollars for the Teams base, echoed to the frontend via
+    # /billing/account so the paywall renders "$50 + N × $20" without
+    # hardcoding the number in the UI. Kept in lockstep with
+    # STRIPE_TEAM_BASE_PRICE_ID's unit amount in Stripe.
+    TEAM_BASE_PRICE_USD: int = 50
 
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).
@@ -323,17 +327,16 @@ class Settings(BaseSettings):
     # comma-separated list.
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://dev.isol8.co")
 
-    # --- Transactional email (Resend) ---
-    # Resend is used for OUTBOUND app-generated mail only: the welcome email
-    # on signup and (Plan 2) delivery of support tickets into the support@
-    # inbox. The inbound support mailbox itself is Google Workspace, read by
-    # the founder's agent — NOT Resend.
+    # --- Transactional email ---
+    # OUTBOUND app-generated mail (the welcome email on signup, support-ticket
+    # delivery into the support@ inbox) goes out via AWS SES — the same
+    # transport as agent replies, see core/services/ses_email.py. The inbound
+    # support mailbox itself is Google Workspace, read by the founder's agent.
     #
-    # Sending is gated solely on a real key being present (email_service skips
-    # unless RESEND_API_KEY is re_-prefixed), so the CDK placeholder secret is a
-    # no-op and the feature self-arms the moment a real key is deployed. No
-    # separate enable flag.
-    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    # There is no separate enable flag or API key: sending is gated on
+    # AGENT_EMAIL_DOMAIN, which holds the verified SES domain and is set only
+    # where the prod-only SesInboundStack created that identity.
+    #
     # Shared secret the SES-ingest Lambda presents to POST /webhooks/ses-inbound.
     # Empty disables the SES inbound endpoint entirely (fail-closed).
     SES_INBOUND_SECRET: str = os.getenv("SES_INBOUND_SECRET", "")

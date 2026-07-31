@@ -193,20 +193,11 @@ async def _self_account_role_is_pinned(role_arn: str, owner_id: str, external_id
         return False
 
 
-def _current_env() -> str:
-    # Empty ENVIRONMENT (local dev) is treated as "dev", matching the
-    # integration_secret_store / provider-secret naming convention.
-    return settings.ENVIRONMENT or "dev"
-
-
 def _available_for(p: registry.Provider, owner_id: str | None) -> bool:
-    """Whether this provider is exposed to this owner in the running environment.
-    Available when it's not env-gated, OR the current env is in its `environments`,
-    OR this owner is on its `owner_allowlist` (the prod-dogfood escape hatch — a
-    dev-gated provider still reachable by a named founder container on prod)."""
-    if p.environments is None or _current_env() in p.environments:
-        return True
-    return bool(owner_id and p.owner_allowlist and owner_id in p.owner_allowlist)
+    """Router-local alias; the policy itself lives in registry.available_for so
+    that ownerless surfaces (routers/platform_info.py) share the env half of the
+    gate instead of re-deriving it and drifting."""
+    return registry.available_for(p, owner_id)
 
 
 def _get_provider_or_404(provider: str, owner_id: str | None = None) -> registry.Provider:
@@ -222,6 +213,21 @@ def _get_provider_or_404(provider: str, owner_id: str | None = None) -> registry
     return p
 
 
+def _get_provider_for_teardown(provider: str) -> registry.Provider:
+    """Like `_get_provider_or_404` but WITHOUT the availability gate.
+
+    Revoking access can only ever remove capability, so the gate must not block
+    it. An owner who connected while allowlisted, and whose allowlist entry was
+    then removed, would otherwise hold a credential the backend keeps refreshing
+    and the UI cannot delete. Existence is still checked, so an unknown provider
+    is still a 404.
+    """
+    try:
+        return registry.get_provider(provider)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown integration provider: {provider}")
+
+
 async def _byo_active(owner_id: str, provider_key: str) -> bool:
     """True when the owner has stored their OWN OAuth app (client id + secret)
     for a byo-required provider — the prerequisite for connecting it."""
@@ -230,6 +236,45 @@ async def _byo_active(owner_id: str, provider_key: str) -> bool:
         return False
     app = await oauth_app_store.get(owner_id, provider_key)
     return bool(app and app.get("client_id") and app.get("client_secret"))
+
+
+def _connection_row(
+    key: str,
+    v: registry.Provider,
+    connected: dict[str, str],
+    byo: bool,
+    owner_id: str | None,
+) -> dict:
+    """One row of GET /connections.
+
+    `requestable` means "this owner cannot START a connection" — the authorize
+    leg would 404 — so the UI offers Request access (emails support) instead of a
+    Connect button. `status` is then "unavailable" rather than "disconnected", so
+    no surface mistakes it for one click away.
+
+    An ALREADY-CONNECTED owner is never requestable, even if the gate has since
+    closed on them (allowlist edited, env changed). Masking a live credential as
+    "unavailable" would hide a working integration AND strip its only Disconnect
+    affordance, while the lazy token refresher below kept renewing it — an
+    unrevokable credential the owner is told they don't have. Revocation must
+    always survive a gate change, so teardown does not consult the gate either
+    (see `_get_provider_for_teardown`).
+    """
+    live = connected.get(key)
+    requestable = not live and not registry.available_for(v, owner_id)
+    return {
+        "provider": key,
+        "display_name": v.display_name,
+        "acquisition": v.acquisition,
+        "status": "unavailable" if requestable else (live or "disconnected"),
+        "requestable": requestable,
+        # byo_required: provider has no managed app, owner must bring one.
+        # byo_configured: whether THIS owner has stored their own app.
+        # byo_setup_url: where to register one.
+        "byo_required": v.byo_required,
+        "byo_configured": byo,
+        "byo_setup_url": v.byo_setup_url,
+    }
 
 
 async def _validate_token(p: registry.Provider, token: str) -> bool:
@@ -289,25 +334,13 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
         asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale(owner_id))
     connections = []
     for k, v in registry.all_providers().items():
-        # Skip env-gated providers outside their envs so a dev-only integration
-        # never appears in the prod connections list.
-        if not _available_for(v, owner_id):
+        # A gate still means HIDDEN unless the provider opts into being requested,
+        # or this owner is already connected (never hide a live credential — they
+        # need the row to revoke it).
+        if not registry.is_listable(v, owner_id) and k not in connected:
             continue
         byo = await _byo_active(owner_id, k)
-        connections.append(
-            {
-                "provider": k,
-                "display_name": v.display_name,
-                "acquisition": v.acquisition,
-                "status": connected.get(k, "disconnected"),
-                # byo_required: provider has no managed app, owner must bring one.
-                # byo_configured: whether THIS owner has stored their own app.
-                # byo_setup_url: where to register one.
-                "byo_required": v.byo_required,
-                "byo_configured": byo,
-                "byo_setup_url": v.byo_setup_url,
-            }
-        )
+        connections.append(_connection_row(k, v, connected, byo, owner_id))
     return {"connections": connections}
 
 
@@ -640,7 +673,9 @@ async def _disconnect_one_google_account(owner_id: str, p: registry.Provider, ac
 async def disconnect(provider: str, account: str | None = None, auth: AuthContext = Depends(get_current_user)):
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    p = _get_provider_or_404(provider, owner_id)
+    # Teardown deliberately skips the availability gate — see
+    # _get_provider_for_teardown. Revocation must outlive a gate change.
+    p = _get_provider_for_teardown(provider)
     # ?account= scopes the disconnect to one Google account. It is Google-specific
     # (one provider, many accounts), so reject it on any other provider rather
     # than silently honoring it.

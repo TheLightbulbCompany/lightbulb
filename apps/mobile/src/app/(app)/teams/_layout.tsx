@@ -25,6 +25,8 @@ export default function TeamsLayout() {
     >
       <Stack.Screen name="index" options={{ title: "Teams" }} />
       <Stack.Screen name="issue/[id]" options={{ title: "Issue" }} />
+      <Stack.Screen name="run/[runId]" options={{ title: "Run" }} />
+      <Stack.Screen name="routines" options={{ title: "Routines" }} />
     </Stack>
   );
 }

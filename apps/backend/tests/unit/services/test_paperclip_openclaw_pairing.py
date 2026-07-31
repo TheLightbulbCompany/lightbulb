@@ -12,6 +12,7 @@ from core.services.paperclip_openclaw_pairing import (
     fetch_paperclip_agents_for_owner,
     pair_with_openclaw,
     register_paperclip_agent_devices,
+    resolve_company_id_for_owner,
 )
 
 
@@ -23,6 +24,7 @@ def _gw_agent(
     adapter_type="openclaw_gateway",
     name="Friday",
     claimed_api_key_path=None,
+    config_agent_id=None,
 ):
     cfg = {
         "url": "wss://ws.isol8.co?token=svc&clientId=paperclip-operator",
@@ -34,6 +36,8 @@ def _gw_agent(
         cfg["devicePrivateKeyPem"] = pem
     if claimed_api_key_path is not None:
         cfg["claimedApiKeyPath"] = claimed_api_key_path
+    if config_agent_id is not None:
+        cfg["agentId"] = config_agent_id
     return {"id": agent_id, "name": name, "adapterType": adapter_type, "adapterConfig": cfg}
 
 
@@ -111,6 +115,7 @@ async def test_register_is_idempotent_when_token_and_path_already_bound(monkeypa
         pem=private_key_pem(generate_operator_device()),
         auth_token="GW",
         claimed_api_key_path=_claimed_path("a1"),
+        config_agent_id="a1",
     )
     admin, repo = _mock_admin_and_repo([agent], monkeypatch)
     entries = await register_paperclip_agent_devices(
@@ -121,10 +126,101 @@ async def test_register_is_idempotent_when_token_and_path_already_bound(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_register_patches_when_only_agent_id_missing(monkeypatch):
+    """authToken + claimedApiKeyPath current but agentId absent → still patch.
+
+    This is the pre-fix state of every already-provisioned agent. Without
+    agentId the adapter sends no agent on chat.send and OpenClaw runs the
+    default (ceo) agent, so every agent's run executes as Friday.
+    """
+    agent = _gw_agent(
+        "a1",
+        pem=private_key_pem(generate_operator_device()),
+        auth_token="GW",
+        claimed_api_key_path=_claimed_path("a1"),
+    )
+    admin, repo = _mock_admin_and_repo([agent], monkeypatch)
+    await register_paperclip_agent_devices(owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin)
+    admin.patch_agent.assert_awaited_once()
+    body = admin.patch_agent.await_args.kwargs["body"]
+    assert body["adapterConfig"]["agentId"] == "a1"
+    # The already-current fields survive the rewrite.
+    assert body["adapterConfig"]["authToken"] == "GW"
+    assert body["adapterConfig"]["claimedApiKeyPath"] == _claimed_path("a1")
+
+
+@pytest.mark.asyncio
+async def test_register_patches_when_only_auth_token_stale(monkeypatch):
+    """agentId + claimedApiKeyPath current, authToken stale -> still patch.
+
+    Pins the authToken clause on its own. Before this test every positive-patch
+    case in the register seam was also stale on agentId, so dropping the
+    authToken clause left the suite green.
+    """
+    agent = _gw_agent(
+        "a1",
+        pem=private_key_pem(generate_operator_device()),
+        auth_token="STALE",
+        claimed_api_key_path=_claimed_path("a1"),
+        config_agent_id="a1",
+    )
+    admin, repo = _mock_admin_and_repo([agent], monkeypatch)
+    await register_paperclip_agent_devices(owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin)
+    admin.patch_agent.assert_awaited_once()
+    assert admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]["authToken"] == "GW"
+
+
+@pytest.mark.asyncio
+async def test_ensure_operator_device_paired_patches_when_only_agent_id_missing(monkeypatch):
+    """The ensure seam's agentId clause, pinned independently of the register seam.
+
+    Live-created agents (/teams create, /chat agents.create interception,
+    marketplace Hire) only ever go through THIS seam until a full reprovision,
+    so without this test the clause could be dropped and every one of them would
+    silently resume running as Friday with the suite still green.
+    """
+    paired, admin, _ = _mock_live_pairing_deps(monkeypatch)
+    ident = generate_operator_device()
+    agent = _gw_agent(
+        "agent_live",
+        pem=private_key_pem(ident),
+        auth_token="GW_TOKEN",
+        claimed_api_key_path=_claimed_path("agent_live"),
+    )
+
+    await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
+
+    admin.patch_agent.assert_awaited_once()
+    assert admin.patch_agent.await_args.kwargs["body"]["adapterConfig"]["agentId"] == "agent_live"
+
+
+@pytest.mark.asyncio
+async def test_register_stamps_each_agents_own_id_not_the_default(monkeypatch):
+    """Distinct agents get distinct agentIds — the whole point of the field."""
+    agents = [
+        _gw_agent("friday_id", pem=private_key_pem(generate_operator_device()), name="Friday"),
+        _gw_agent("atlas_id", pem=private_key_pem(generate_operator_device()), name="Atlas"),
+    ]
+    admin, repo = _mock_admin_and_repo(agents, monkeypatch)
+    await register_paperclip_agent_devices(owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin)
+    stamped = {
+        c.kwargs["agent_id"]: c.kwargs["body"]["adapterConfig"]["agentId"] for c in admin.patch_agent.await_args_list
+    }
+    assert stamped == {"friday_id": "friday_id", "atlas_id": "atlas_id"}
+
+
+@pytest.mark.asyncio
 async def test_register_patches_when_claimed_path_stale_even_if_token_current(monkeypatch):
-    """authToken already bound but claimedApiKeyPath missing → still patch so
-    the per-agent path lands (otherwise the agent keeps the colliding default)."""
-    agent = _gw_agent("a1", pem=private_key_pem(generate_operator_device()), auth_token="GW")
+    """authToken + agentId already current but claimedApiKeyPath missing → still
+    patch so the per-agent path lands (otherwise the agent keeps the colliding
+    default). config_agent_id is set so THIS clause is the only stale one —
+    without it the assertion would be satisfied by the agentId clause instead."""
+    agent = _gw_agent(
+        "a1",
+        pem=private_key_pem(generate_operator_device()),
+        auth_token="GW",
+        config_agent_id="a1",
+    )
     admin, repo = _mock_admin_and_repo([agent], monkeypatch)
     await register_paperclip_agent_devices(owner_id="user_1", gateway_token="GW", repo=repo, admin_client=admin)
     admin.patch_agent.assert_awaited_once()
@@ -180,13 +276,14 @@ async def test_fetch_for_personal_user_returns_their_company_agents(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_fetch_for_org_uses_get_org_company_id(monkeypatch):
+async def test_fetch_for_org_uses_list_by_org_id(monkeypatch):
     """Org owner (owner_id starts with 'org_') resolves company via
-    repo.get_org_company_id, NOT repo.get."""
+    repo.list_by_org_id (the org's ACTIVE row), NOT repo.get and NOT
+    repo.get_org_company_id (which would return a failed row's id)."""
     pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
     repo = MagicMock()
     repo.get = AsyncMock()  # should NOT be called
-    repo.get_org_company_id = AsyncMock(return_value="co_xyz")
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_xyz"}])
     admin_client = MagicMock()
     admin_client.list_agents = AsyncMock(return_value=[{"id": pc_uuid, "name": "Friday", "role": "ceo"}])
 
@@ -203,15 +300,15 @@ async def test_fetch_for_org_uses_get_org_company_id(monkeypatch):
 
     assert len(result) == 1
     repo.get.assert_not_awaited()
-    repo.get_org_company_id.assert_awaited_once_with("org_xyz")
+    repo.list_by_org_id.assert_awaited_once_with("org_xyz")
 
 
 @pytest.mark.asyncio
 async def test_fetch_for_org_with_no_company_returns_empty():
-    """Org never had Paperclip provisioned -> return []. Container provision
-    falls back to 'main'."""
+    """Org never had Paperclip provisioned (no active row) -> return [].
+    Container provision falls back to 'main'."""
     repo = MagicMock()
-    repo.get_org_company_id = AsyncMock(return_value=None)
+    repo.list_by_org_id = AsyncMock(return_value=[])
     admin_client = MagicMock()
 
     result = await fetch_paperclip_agents_for_owner(
@@ -222,6 +319,75 @@ async def test_fetch_for_org_with_no_company_returns_empty():
 
     assert result == []
     admin_client.list_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_personal_failed_marker():
+    """A personal owner whose only row is a net-new ``failed`` marker
+    (``company_id=""``) resolves to None — NOT the empty string. Every caller
+    guards with ``if company_id is None``, so an "" would slip through into a
+    doomed Paperclip call with an empty company id."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id=""))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_personal_failed_row_with_company():
+    """Even a ``failed`` row that happens to carry a company_id resolves to
+    None: a failed provision is treated as "no company" for pairing/lifecycle."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="failed", company_id="co_partial"))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_org_failed_marker_empty():
+    """An org whose only row is a net-new ``failed`` marker (empty company_id)
+    resolves to None: list_by_org_id has no active row."""
+    repo = MagicMock()
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "failed", "company_id": ""}])
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_returns_id_for_active_personal_row():
+    """Regression guard: a healthy active row still resolves to its company_id."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(status="active", company_id="co_live"))
+
+    assert await resolve_company_id_for_owner(owner_id="user_abc", repo=repo) == "co_live"
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_none_for_org_failed_row_with_company():
+    """An ORG whose only row is ``failed`` but carries a REAL adopted company_id
+    (the reconcile Friday-partial case) must resolve to None — a deliberately-
+    failed workspace must not leak its id to the ``if company_id is None``
+    callers. ``get_org_company_id`` is mocked to prove the OLD path returned the
+    id (the bug this fixes); the fix routes org resolution through
+    ``list_by_org_id`` and requires an ACTIVE row, so both are stubbed and the
+    result is None regardless of which the implementation calls."""
+    repo = MagicMock()
+    repo.get_org_company_id = AsyncMock(return_value="co_partial")  # old path returned the id
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "failed", "company_id": "co_partial"}])
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_company_id_returns_id_for_active_org_row():
+    """Regression guard: an ORG with an ``active`` row still resolves to its
+    company_id. Green before and after the fix — the happy org path's outcome is
+    unchanged, only the lookup mechanism (get_org_company_id → list_by_org_id)."""
+    repo = MagicMock()
+    repo.get_org_company_id = AsyncMock(return_value="co_live")
+    repo.list_by_org_id = AsyncMock(return_value=[{"status": "active", "company_id": "co_live"}])
+
+    assert await resolve_company_id_for_owner(owner_id="org_abc", repo=repo) == "co_live"
 
 
 @pytest.mark.asyncio
@@ -640,6 +806,8 @@ async def test_ensure_operator_device_paired_merges_and_binds(monkeypatch):
     body = admin.patch_agent.await_args.kwargs["body"]
     assert body["adapterConfig"]["authToken"] == "GW_TOKEN"
     assert body["adapterConfig"]["claimedApiKeyPath"] == _claimed_path("agent_live")
+    #    agentId routes the run to THIS agent instead of the container default.
+    assert body["adapterConfig"]["agentId"] == "agent_live"
     assert body["replaceAdapterConfig"] is True
     # 3. The agent's per-agent Paperclip identity file is minted + staged so the
     #    claimedApiKeyPath above resolves to a real credentials file. Live-create
@@ -667,6 +835,7 @@ async def test_ensure_operator_device_paired_stages_identity_even_when_token_alr
         pem=private_key_pem(ident),
         auth_token="GW_TOKEN",
         claimed_api_key_path=_claimed_path("agent_live"),
+        config_agent_id="agent_live",
     )
 
     await ensure_operator_device_paired(owner_id="user_1", paperclip_agent=agent, gateway_token="GW_TOKEN")
@@ -699,8 +868,8 @@ async def test_ensure_operator_device_paired_staging_failure_is_swallowed(monkey
 @pytest.mark.asyncio
 async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
     """A device already present with the same pubkey is left untouched (its
-    metadata/tokens preserved) and no duplicate write occurs when authToken AND
-    claimedApiKeyPath are already current."""
+    metadata/tokens preserved) and no duplicate write occurs when authToken,
+    agentId AND claimedApiKeyPath are already current."""
     paired, admin, _ = _mock_live_pairing_deps(monkeypatch)
     ident = generate_operator_device()
     agent = _gw_agent(
@@ -708,6 +877,7 @@ async def test_ensure_operator_device_paired_is_idempotent(monkeypatch):
         pem=private_key_pem(ident),
         auth_token="GW_TOKEN",
         claimed_api_key_path=_claimed_path("agent_live"),
+        config_agent_id="agent_live",
     )
     sentinel = {"publicKey": ident.public_key_b64, "role": "operator", "_marker": "keep"}
     paired[ident.device_id] = sentinel

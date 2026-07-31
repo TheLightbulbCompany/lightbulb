@@ -4,19 +4,21 @@
  * and submit semantics in sync.
  *
  * Shown full-screen (FirstRunGate) while the trial container provisions.
- * Submitting stages BRIEF.md server-side; the firstRun metadata write flips
- * the gate off. It is the committed onboarding front door — there is no
- * skip, so submitting the brief is the only way past it.
+ * Submitting RECORDS the answer server-side; the firstRun metadata write
+ * flips the gate off. It is the committed onboarding front door — there is
+ * no skip, so submitting the brief is the only way past it.
  *
- * Retry semantics match the web: the backend 409s (`not_ready`) while
- * Paperclip is still seeding Friday, and can 2xx without `staged` while the
- * `_ctx` dependency warms — both retry on a fixed cadence. Client-side
- * analytics are web-only; the backend emits `first_run_brief_submitted`
- * itself.
+ * One POST, no retry — matching the web: the endpoint is durable intake, and
+ * the seeding it drives (goal, project, BRIEF.md, Friday's kickoff) happens
+ * server-owned once the workspace is up, retried by the /container/status
+ * poll rather than by the client (see core/services/onboarding_brief.py).
+ * Client-side analytics are web-only; the backend emits
+ * `first_run_brief_submitted` itself.
  */
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -36,13 +38,18 @@ import { writeFirstRun } from "../../lib/firstRun";
 type Path = "new" | "grow";
 /** "noIdea" = they tapped "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
-const RETRY_MS = 3000;
-const MAX_RETRIES = 5;
+// DEPLOY-SKEW SHIM — see the web funnel for the full reasoning. The endpoint
+// is durable intake, so there is nothing to wait out; but a build shipped
+// before the backend rollout still meets an OLD backend that 409s "not_ready"
+// (or 202s with no recognised status) for the first ~30s of a signup. DELETE
+// once the durable-intake backend is deployed everywhere.
+const SKEW_RETRY_MS = 3000;
+const SKEW_RETRIES = 2;
 
 export function FirstRunFunnel() {
   const insets = useSafeAreaInsets();
   const { user } = useUser();
-  const { getToken } = useAuth();
+  const { getToken, signOut } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(
@@ -53,9 +60,7 @@ export function FirstRunFunnel() {
   const [path, setPath] = useState<Path | null>(null);
   const [input, setInput] = useState("");
   const [detail, setDetail] = useState("");
-  const [state, setState] = useState<"idle" | "submitting" | "waiting" | "error">(
-    "idle",
-  );
+  const [state, setState] = useState<"idle" | "submitting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one.
   const [mode, setMode] = useState<Mode>("idea");
 
@@ -66,44 +71,65 @@ export function FirstRunFunnel() {
       if (!user) return;
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          // No input at all on the "you pick" button: the absent idea IS the
-          // signal, and BRIEF.md tells Friday to choose one.
-          const resp = await api.post("/onboarding/brief", {
-            path,
-            input: noIdea ? undefined : input.trim(),
-            detail:
-              !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-          });
+      try {
+        for (let attempt = 0; ; attempt++) {
+          let resp: unknown;
+          try {
+            // No input at all on the "you pick" button: the absent idea IS the
+            // signal, and BRIEF.md tells Friday to choose one.
+            resp = await api.post("/onboarding/brief", {
+              path,
+              input: noIdea ? undefined : input.trim(),
+              detail:
+                !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+            });
+          } catch (err) {
+            const httpStatus = err instanceof ApiError ? err.status : undefined;
+            if (httpStatus === 409 && attempt < SKEW_RETRIES) {
+              await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+              continue;
+            }
+            throw err;
+          }
           const status = (resp as { status?: string } | null)?.status;
-          if (status === "staged" || status === "already_submitted") {
-            await writeFirstRun(user, { briefSubmitted: true, path: path ?? undefined });
-            return;
-          }
-          if (attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
+          if (status === "staged" || status === "already_submitted") break;
+          if (attempt < SKEW_RETRIES) {
+            await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
             continue;
           }
-          setState("error");
-          return;
-        } catch (err) {
-          const httpStatus = err instanceof ApiError ? err.status : undefined;
-          if (httpStatus === 409 && attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
-            continue;
-          }
+          // Never dismiss the funnel over an answer that was never saved.
           setState("error");
           return;
         }
+        // Intake is durable server-side the moment this resolves; the seeding
+        // it drives is server-owned. `briefSubmitted` is written here purely
+        // as an optimistic pre-poll paint (dismisses the funnel THIS
+        // session); it is never read as authority for whether the kickoff
+        // ran.
+        await writeFirstRun(user, {
+          briefSubmitted: true,
+          path: path ?? undefined,
+        });
+      } catch {
+        setState("error");
       }
     },
     [api, user, path, input, detail],
   );
 
-  const busy = state === "submitting" || state === "waiting";
+  // The funnel replaces the whole tab shell and has no skip (committed front
+  // door), so a persistently-failing brief would otherwise trap the user with
+  // only Retry. Offer the same confirm-then-signOut escape every provision
+  // screen has (ProvisionGate's Interstitial). NOT a skip — submitting the
+  // brief stays the only way forward.
+  const onSignOut = useCallback(() => {
+    Alert.alert("Sign out", "Sign out of this account?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => void signOut() },
+    ]);
+  }, [signOut]);
+
+  const busy = state === "submitting";
 
   return (
     <KeyboardAvoidingView
@@ -195,7 +221,7 @@ export function FirstRunFunnel() {
               accessibilityRole="button"
             >
               <Text style={styles.choiceBtnText}>
-                {state === "waiting" && mode === "idea"
+                {busy && mode === "idea"
                   ? "Setting things up…"
                   : "Continue →"}
               </Text>
@@ -224,12 +250,25 @@ export function FirstRunFunnel() {
               </View>
             )}
             {state === "error" && (
-              <Text style={styles.errorText}>
-                Couldn’t save that just yet.{" "}
-                <Text style={styles.retryLink} onPress={() => void submit(mode)}>
-                  Retry
+              <View style={styles.errorBlock}>
+                <Text style={styles.errorText}>
+                  Couldn’t save that just yet.{" "}
+                  <Text style={styles.retryLink} onPress={() => void submit(mode)}>
+                    Retry
+                  </Text>
                 </Text>
-              </Text>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.signOutButton,
+                    pressed && styles.pressed,
+                  ]}
+                  onPress={onSignOut}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sign out"
+                >
+                  <Text style={styles.signOutText}>Sign out</Text>
+                </Pressable>
+              </View>
             )}
           </View>
         )}
@@ -325,6 +364,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
   inputMultiline: { minHeight: 112, textAlignVertical: "top" },
+  errorBlock: { gap: spacing.sm, alignItems: "flex-start" },
   errorText: {
     fontFamily: fonts.dmSans,
     fontSize: 13,
@@ -332,6 +372,20 @@ const styles = StyleSheet.create({
     color: colors.danger,
   },
   retryLink: { textDecorationLine: "underline", color: colors.danger },
+  // Matches ProvisionGate's Interstitial signOut recipe; the negative left
+  // margin flushes the label under the error text while keeping the padded
+  // tap target.
+  signOutButton: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+    marginLeft: -spacing.lg,
+  },
+  signOutText: {
+    fontFamily: fonts.dmSans,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.mute,
+  },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.85 },
 });

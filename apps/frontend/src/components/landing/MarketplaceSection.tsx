@@ -22,11 +22,12 @@ export async function MarketplaceSection() {
               the marketplace
             </div>
             <h2 className="ld-h2" data-ld-reveal>
-              Hire an <em>agent.</em>
+              Staff up in <em>one click.</em>
             </h2>
             <p className="ld-lede" data-ld-reveal>
-              A growing storefront of production-grade agents you can deploy
-              into your isol8 container in one click.{" "}
+              A growing storefront of production-grade agents you can drop
+              straight into your business. Need a sales rep, a bookkeeper, a
+              researcher? Hire one and it starts working today.{" "}
               <strong>Curated, vetted, and yours to own.</strong>
             </p>
           </div>

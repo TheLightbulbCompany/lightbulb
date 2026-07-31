@@ -5,7 +5,7 @@ intent door.
 interaction-after-idle, retry buttons, the Teams wake button) and
 ``request_wake_silent`` backs the chat-send stopped branch. Both funnel into
 the same dispatch so a wake can never race itself: the actual start is
-``background_provision``, whose atomic ``try_claim_provision`` lease already
+``dispatch_provision``, whose atomic ``try_claim_provision`` lease already
 serializes concurrent dispatches (this module does NO status pre-write — a
 pre-write would race concurrent callers into double-dispatch, the exact
 incident class the lease closed).
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.services import wake_policy
-from core.services.container_provision import background_provision
+from core.services.provision_dispatch import dispatch_provision
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class WakeResult:
     gate_payload: dict[str, Any] | None = None
 
 
-async def request_wake(owner_id: str, *, reason: str, is_admin: bool, user_id: str) -> WakeResult:
+async def request_wake(owner_id: str, *, reason: str, is_admin: bool) -> WakeResult:
     """Wake the owner's container in response to explicit intent.
 
     Returns a ``WakeResult`` — the router maps ``blocked`` to a 402 with the
@@ -77,10 +77,10 @@ async def request_wake(owner_id: str, *, reason: str, is_admin: bool, user_id: s
     if status == "provisioning" and not container_repo.is_provision_claim_stale(container):
         return WakeResult(outcome="in_flight")
 
-    # stopped / error / stale-lease: dispatch. background_provision's lease
+    # stopped / error / stale-lease: dispatch. dispatch_provision's lease
     # claim makes concurrent dispatches (this verb, a legacy poll, a second
     # tab) collapse to exactly one provision.
-    asyncio.create_task(background_provision(owner_id, user_id))
+    asyncio.create_task(dispatch_provision(owner_id))
     wake_policy.note_wake_dispatched(door="wake_endpoint", intent=reason)
     logger.info("container wake dispatched owner=%s reason=%s", owner_id, reason)
     return WakeResult(outcome="dispatched")
@@ -92,7 +92,7 @@ async def request_wake(owner_id: str, *, reason: str, is_admin: bool, user_id: s
 _OPERATOR_STOP_REASONS = frozenset({"admin", "killswitch"})
 
 
-async def request_wake_silent(owner_id: str, *, user_id: str, door: str = "chat_send") -> str:
+async def request_wake_silent(owner_id: str, *, door: str = "chat_send") -> str:
     """Best-effort wake for server-side intent (a message arrived for a
     stopped container). Same gate ordering as ``request_wake`` — the trial
     gates AND ``evaluate_provision_gate`` (subscription/credits/OAuth) both
@@ -125,7 +125,7 @@ async def request_wake_silent(owner_id: str, *, user_id: str, door: str = "chat_
             return "already_running"
         if status == "provisioning" and not container_repo.is_provision_claim_stale(container):
             return "in_flight"
-        asyncio.create_task(background_provision(owner_id, user_id))
+        asyncio.create_task(dispatch_provision(owner_id))
         wake_policy.note_wake_dispatched(door=door, intent="message_send")
         logger.info("container wake dispatched (silent) owner=%s door=%s", owner_id, door)
         return "dispatched"

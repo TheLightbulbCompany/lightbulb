@@ -25,6 +25,7 @@ export interface RunToastContext {
 
 export type RunToastAction =
   | { kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams" }
+  | { kind: "approval"; key: string }
   | { kind: "dismiss"; key: string };
 
 interface TrackedRun {
@@ -129,7 +130,11 @@ export function reduceChatFrame(
 }
 
 const TEAMS_WORKING_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
-const TEAMS_FAILURE_STATUSES = new Set(["failed", "timed_out"]);
+// `interrupted` is the terminal status published on a graceful BFF shutdown
+// (spec PR-7) -- without it here a run stuck mid-flight when the BFF
+// restarts falls through to `return []` below and leaves its "working"
+// toast at a stuck Infinity duration forever.
+const TEAMS_FAILURE_STATUSES = new Set(["failed", "timed_out", "interrupted"]);
 
 function readString(v: unknown): string | undefined {
   return typeof v === "string" && v ? v : undefined;
@@ -183,4 +188,32 @@ export function reduceTeamsRunEvent(
     ];
   }
   return [];
+}
+
+// Approval lifecycle rides the generic teams.activity.logged event (Paperclip
+// has no first-class approval live-event type); payload.action is the
+// discriminator. created/resubmitted both mean "the ball is in the user's
+// court"; approved/rejected resolve the wait and clear the toast. Other
+// actions (revision_requested, comment_added, work_product_created) are the
+// user's own moves or too noisy to toast.
+const APPROVAL_ATTENTION_ACTIONS = new Set(["approval.created", "approval.resubmitted"]);
+const APPROVAL_RESOLVED_ACTIONS = new Set(["approval.approved", "approval.rejected"]);
+
+export function reduceTeamsActivityEvent(
+  event: string,
+  payload: unknown,
+  ctx: RunToastContext,
+): RunToastAction[] {
+  if (event !== "teams.activity.logged") return [];
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const action = readString(p.action);
+  const entityId = readString(p.entityId);
+  if (!action || !entityId) return [];
+  const key = `approval:${entityId}`;
+  // Resolution always dismisses (toast.dismiss on an unknown id is a no-op),
+  // covering approvals resolved from another device/tab.
+  if (APPROVAL_RESOLVED_ACTIONS.has(action)) return [{ kind: "dismiss", key }];
+  if (!APPROVAL_ATTENTION_ACTIONS.has(action)) return [];
+  if (ctx.teamsPanelActive) return [];
+  return [{ kind: "approval", key }];
 }

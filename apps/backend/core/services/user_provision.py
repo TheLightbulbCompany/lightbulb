@@ -26,15 +26,15 @@ from core.auth import AuthContext
 from core.billing.metronome_provisioning import ensure_metronome_customer
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
-from core.repositories import billing_repo
-from core.services import clerk_admin
+from core.repositories import billing_repo, container_repo
+from core.services import clerk_admin, wake_policy
 from core.services.agent_routine_provisioning import (
     NIGHTLY_CEO_ROUTINE_CRON,
     NIGHTLY_CEO_ROUTINE_DESCRIPTION,
     NIGHTLY_CEO_ROUTINE_TITLE,
     create_enabled_schedule_routine,
 )
-from core.services.container_provision import background_provision
+from core.services.provision_dispatch import dispatch_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_owner_email import lookup_owner_email
@@ -111,31 +111,32 @@ async def ensure_personal_trial_default(auth: AuthContext, owner_id: str) -> Non
         capture_product_event(distinct_id=owner_id, event="trial_started")
 
 
-async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = True) -> None:
+async def ensure_user_ready(auth: AuthContext) -> None:
     """Single canonical readiness entry point. Idempotent.
 
     Flow:
       1. Resolve readiness gate via evaluate_provision_gate. If a gate
          is up, return — pre-conditions not satisfied. (No exception:
          this is a normal "not ready yet" outcome.)
-      2. Paperclip workspace (role-blind for org context):
-           - Org context: create the org's ONE shared company if it
-             doesn't exist yet, otherwise join it. The decision is
-             company existence, never Clerk role.
-           - Personal: always sole owner of their own company.
-      3. Container (ECS) provisioning is a SEPARATE concern. Dispatched
-         only when the caller is a container-owner (personal user OR org
-         admin) AND provision_container is True. The /container/status
-         running-container poll path passes provision_container=False
-         because provision_user_container force-restarts an already-running
-         service — calling it on every ~3s poll would restart the box.
+      2. Paperclip workspace JOIN (org context; role-blind). The org's
+         ONE shared company is normally CREATED by the provisioning
+         executor's runner (scripts.provision_runner step 0), not here.
+      3. Container (ECS) provisioning + the owner company-CREATE, for
+         container-owners only (personal user OR org admin), via
+         ``_provision_or_reconcile`` — which reads the container row and
+         decides between "dispatch the executor" and "seed here",
+         because those are the same job routed by live state. See its
+         docstring; there is no caller-supplied flag any more (the old
+         ``provision_container`` kwarg made every caller re-derive that
+         decision, and got it wrong for the seed half — a self-healing
+         poll on a running container seeded nothing).
     """
     owner_id = auth.org_id if auth.is_org_context else auth.user_id
 
     # Auto-default a brand-new personal owner into a card-less trial_local
     # BEFORE the gate is evaluated, so the gate (which treats trial_local as
     # active + provision-eligible) returns None below and the normal
-    # Paperclip-seed + background_provision flow runs. Personal-only + the
+    # Paperclip-seed + dispatch_provision flow runs. Personal-only + the
     # rationale for the shared helper live in its docstring; /container/status
     # calls the SAME helper before its own gate.
     await ensure_personal_trial_default(auth, owner_id)
@@ -147,6 +148,36 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
         is_admin=auth.is_org_admin if auth.is_org_context else True,
     )
     if gate is not None:
+        # A provision gate speaks to CONTAINER-provisioning (and company-
+        # CREATE) economics; it must NOT swallow an org-context caller's
+        # idempotent membership-add to an already-active shared company.
+        # Root cause of the silent orphan-member incident: an org whose
+        # Bedrock credits hit zero fires ``credits_required`` on every
+        # poll, and this early return used to no-op the membership-add at
+        # DEBUG level forever — the joining member could reach the running
+        # shared container (which made them LOOK joined) while every Teams
+        # surface 401'd on the missing Paperclip membership, with zero
+        # log lines carrying their user id. Join-only by construction:
+        # ``_ensure_paperclip_for_member`` never creates a company (it
+        # returns gracefully when no ACTIVE company exists), so company
+        # CREATE stays behind the gate — an admin bootstrapping a brand-new
+        # org still needs the gate clear.
+        if auth.is_org_context:
+            try:
+                await _ensure_paperclip_for_member(
+                    org_id=auth.org_id,
+                    member_user_id=auth.user_id,
+                    member_email=auth.email or "",
+                )
+            except Exception:
+                put_metric("paperclip.seed.error")
+                logger.exception(
+                    "ensure_user_ready: paperclip membership-add failed for "
+                    "owner=%s user=%s (gate=%s) — will retry on next poll",
+                    owner_id,
+                    auth.user_id,
+                    gate.code,
+                )
         logger.debug(
             "ensure_user_ready: gate up for owner=%s code=%s — no-op",
             owner_id,
@@ -172,58 +203,154 @@ async def ensure_user_ready(auth: AuthContext, *, provision_container: bool = Tr
                 owner_id,
             )
 
-    if auth.is_org_context:
-        # JOIN is role-blind — a co-admin (or member) of an
-        # already-provisioned org joins the org's ONE shared company, never
-        # creates a second one. CREATE is gated to admins: bootstrapping the
-        # org's shared company mirrors who bootstraps the shared container
-        # (admins; members ride). A member polling a not-yet-bootstrapped
-        # org waits for an admin — avoids a company seeded with Friday/Atlas
-        # whose adapters point at a container no member can provision yet.
-        await _ensure_paperclip_for_org(
-            org_id=auth.org_id,
-            user_id=auth.user_id,
-            email=auth.email or "",
-            is_admin=auth.is_org_admin,
-        )
-    else:
-        # Personal owner: always the sole owner of their own company.
-        await _ensure_paperclip_for_owner(
-            owner_id=owner_id,
-            owner_user_id=auth.user_id,
-            owner_email=auth.email or "",
-            org_id=None,
+    # Paperclip (Teams) seed is a SEPARATE concern from the container (ECS)
+    # dispatch below. A seed/join failure must NOT abort provisioning: the box
+    # still boots and serves chat because ecs_manager falls back to the legacy
+    # `main` agent when no Paperclip company exists. The failure is recorded on
+    # the paperclip-companies row (by _mark_failed) and surfaced via
+    # /container/status; here we only guarantee it never wedges the container.
+    # Best-effort — mirrors the ensure_metronome_customer guard above; the next
+    # /container/status poll retries. Do NOT narrow the except: it can fail with
+    # PaperclipApiError (non-409) OR any transient error, and all of them must
+    # fall through to the dispatch rather than escape the poll.
+    #
+    # The org member JOIN (_ensure_paperclip_for_member) lives here: a seat-add
+    # is NOT a company-creation race, so it never needed the executor's
+    # single-flight — co-admins/members join the shared company the runner
+    # creates, and the creator's own re-poll no-ops on their already-active
+    # owner row. The owner company-CREATE is _provision_or_reconcile's job
+    # below. Personal owners have no join, so nothing runs in this block for
+    # them.
+    try:
+        if auth.is_org_context:
+            await _ensure_paperclip_for_member(
+                org_id=auth.org_id,
+                member_user_id=auth.user_id,
+                member_email=auth.email or "",
+            )
+    except Exception:
+        put_metric("paperclip.seed.error")
+        logger.exception(
+            "Paperclip seed failed for owner %s — provisioning continues; Teams degraded",
+            owner_id,
         )
 
-    # Container (ECS) provisioning is a SEPARATE concern from the Paperclip
-    # workspace above. Dispatch it only when:
-    #   (a) the caller is a container-owner — personal user or org ADMIN.
-    #       Org members ride the shared org container; they never spin one
-    #       up. (This role check is about WHO SPINS UP THE BOX, which is
-    #       unrelated to Teams/Paperclip access — that is role-blind above.)
-    #   (b) provision_container is True. The /container/status running-
-    #       container branch passes False, because provision_user_container
-    #       force-restarts an already-running service (ecs_manager docstring
-    #       scenario 3) — calling it every ~3s poll would restart the box.
-    # background_provision is idempotent on the absent/0-desired cases, so
-    # repeated owner polls on a not-yet-running container are safe.
-    if provision_container and (not auth.is_org_context or auth.is_org_admin):
-        asyncio.create_task(background_provision(owner_id, auth.user_id))
+    # Container + owner-seed, for container-owners only — personal user or org
+    # ADMIN. Org members ride the shared org container; they never spin one up.
+    # (This role check is about WHO SPINS UP THE BOX and is unrelated to
+    # Teams/Paperclip access, which is role-blind above.)
+    if not auth.is_org_context or auth.is_org_admin:
+        await _provision_or_reconcile(auth, owner_id)
 
-    # Nightly CEO loop (issue #1273): arm the paid, ENABLED nightly routine on
+    # Nightly CEO loop: arm the paid, ENABLED nightly routine on
     # Friday for the container OWNER (personal owner or org admin) — never an
     # org member, never a trial owner (gated on has_always_on_entitlement
-    # inside). Deliberately NOT gated on provision_container: it must also run
-    # on the running-container poll (org path, provision_container=False) so
-    # pre-existing paid owners and free→paid upgrades get armed on their next
-    # /container/status poll — not only brand-new provisions. Idempotent +
+    # inside). Runs on EVERY owner poll, including the running-container one,
+    # so pre-existing paid owners and free→paid upgrades get armed on their
+    # next /container/status poll — not only brand-new provisions. Idempotent +
     # best-effort (never raises).
     if not auth.is_org_context or auth.is_org_admin:
         await _maybe_arm_nightly_ceo(auth, owner_id)
 
 
+async def _provision_or_reconcile(auth: AuthContext, owner_id: str) -> None:
+    """Container-owner half of ``ensure_user_ready``: dispatch the provisioning
+    executor, or — when no provision can run — reconcile the Paperclip seed
+    here instead.
+
+    ONE decision, made from live container state rather than from a
+    caller-supplied flag, because the two halves are not independent:
+
+    * **Row absent / error / stopped / stale-provisioning → DISPATCH.** The
+      executor's runner does the seed itself (step 0) under
+      ``try_claim_provision``'s one-execution-per-owner election, which is what
+      makes the duplicate-company race (#1442 — a load-balanced poll fan-out
+      double-running ``provision_org``) structurally impossible for a first
+      provision. Seeding here as well would put that race straight back.
+    * **Row already ``running`` → NO dispatch, seed HERE.**
+      ``try_claim_provision`` refuses a ``running`` row by design (see its
+      docstring: "NOT claimable: running"), so a dispatch would only lose the
+      claim and stand down — no execution, and therefore no step 0. The seed
+      still has work to do in exactly this state (a ``failed`` Teams row on a
+      healthy box; a legacy container that never had a company), so it runs on
+      this thread. No new race: an owner with a RUNNING container has already
+      been through a provision, so this path never competes with the executor
+      for a first CREATE.
+    * **Deliberately parked trial box → NO dispatch, seed HERE.** Both passive
+      -read doors (``/container/status``'s auto-retry and the ``/teams``
+      reconcile) must consult ``wake_policy`` and never wake a parked trial box
+      — see that module's docstring. ``ensure_user_ready`` is only ever called
+      from those passive doors (explicit intent goes through
+      ``container_wake.request_wake`` / ``request_wake_silent``), so the
+      suppression belongs here, once, instead of being re-derived per caller.
+      Paperclip seeding needs no container, so the seed still runs.
+
+    The extra containers-row read is the price of making the decision from
+    state; ``ensure_user_ready`` always runs off the request path (a background
+    task at every call site), so it costs no response latency.
+    """
+    row = await container_repo.get_by_owner_id(owner_id)
+    if await wake_policy.is_parked_trial(owner_id, row):
+        wake_policy.note_wake_suppressed(owner_id, row, door="ensure_user_ready", reason="gated")
+    elif (row or {}).get("status") != "running":
+        # dispatch_provision is idempotent on the absent/0-desired cases, so
+        # repeated owner polls on a not-yet-running container are safe: the
+        # atomic claim collapses them to one execution.
+        asyncio.create_task(dispatch_provision(owner_id))
+        return
+
+    try:
+        await _reconcile_owner_seed(auth, owner_id)
+    except Exception:
+        put_metric("paperclip.seed.error")
+        logger.exception(
+            "Paperclip seed reconcile failed for owner %s — container unaffected; Teams degraded",
+            owner_id,
+        )
+
+
+async def _reconcile_owner_seed(auth: AuthContext, owner_id: str) -> None:
+    """Run the OWNER company seed on the poll thread, for the one case the
+    executor's step 0 cannot cover: no provision is going to run at all.
+
+    Personal owner → ``_ensure_paperclip_for_owner``: idempotent
+    (``provision_org`` short-circuits on an active row) and genuinely
+    reconciling on a ``failed`` one, which is the state this path exists for.
+
+    Org admin → ``_ensure_paperclip_for_org``, but only when the org has NO
+    active company. The JOIN half already ran on this thread
+    (``_ensure_paperclip_for_member``, role-blind, above); calling the
+    join-or-create helper unconditionally would re-issue that member-add — a
+    Paperclip round trip + a Clerk email lookup — on every ~3s poll of a
+    healthy org. What is left to reconcile here is CREATE only.
+    """
+    if auth.is_org_context:
+        if not auth.is_org_admin:
+            return  # members never create; they joined above
+        provisioning = await build_paperclip_provisioning()
+        try:
+            if await provisioning.find_org_owner(owner_id) is not None:
+                return
+        finally:
+            await close_paperclip_provisioning(provisioning)
+        await _ensure_paperclip_for_org(
+            org_id=owner_id,
+            user_id=auth.user_id,
+            email=auth.email or "",
+            is_admin=auth.is_org_admin,
+        )
+        return
+
+    await _ensure_paperclip_for_owner(
+        owner_id=owner_id,
+        owner_user_id=auth.user_id,
+        owner_email=auth.email or "",
+        org_id=None,
+    )
+
+
 async def _maybe_arm_nightly_ceo(auth: AuthContext, owner_id: str) -> None:
-    """Idempotently arm the paid nightly CEO routine on Friday (issue #1273).
+    """Idempotently arm the paid nightly CEO routine on Friday.
 
     Paid-only: ``has_always_on_entitlement`` returns True only for Stripe
     ``active``/``trialing`` (or the legacy None+stripe_sub row) and fail-closes
@@ -304,6 +431,18 @@ async def _ensure_paperclip_for_org(
 ) -> None:
     """Ensure this user has a row in the org's shared Paperclip company.
 
+    CALLERS: ``scripts.provision_runner._seed_owner_paperclip`` (step 0 of the
+    provisioning executor's runner — the normal path, passing the Clerk org
+    CREATOR as ``user_id`` with ``is_admin=True``), and
+    ``_reconcile_owner_seed`` for the one state the executor never reaches (an
+    org whose container is already running or parked, so no provision — and
+    therefore no step 0 — will run). A FIRST provision always goes through the
+    executor, where try_claim_provision elects one execution per owner, so the
+    duplicate-company race stays closed on the path that had it. The
+    per-org asyncio lock and ``try_acquire_org_create_claim`` below are KEPT as
+    defense-in-depth for the reconcile path (and for a bare/local runner
+    invocation outside the state machine).
+
     Decided by company existence:
       - Company exists → JOIN it (provision_member), regardless of role.
         This is the role-blind fix: admins and members alike join the one
@@ -316,8 +455,9 @@ async def _ensure_paperclip_for_org(
         create here would seed Friday/Atlas pointing at a container members
         can't provision, leaving a company-without-container window.
 
-    The underlying helpers treat a duplicate-409 as idempotent success, so
-    this is safe to call on every /container/status poll.
+    The underlying helpers treat a concurrent-create 409 as idempotent
+    success and a duplicate-email 422 (Better Auth) as a recorded failure —
+    neither re-raises — so this is safe to call on every /container/status poll.
     """
     async with _org_provision_locks[org_id]:
         provisioning = await build_paperclip_provisioning()
@@ -431,12 +571,17 @@ async def _ensure_paperclip_for_owner(
     existing active row (see ``core/services/paperclip_provisioning.py``
     ``provision_org`` docstring).
 
+    CALLERS: ``scripts.provision_runner._seed_owner_paperclip`` (step 0,
+    personal owners — the normal path, where the company CREATE inherits the
+    executor's one-runner-per-owner election), ``_ensure_paperclip_for_org``'s
+    create branch, and ``_reconcile_owner_seed`` when no provision will run at
+    all (container already running, or a deliberately parked trial box).
+
     Resolves ``owner_email`` via ``lookup_owner_email`` when not
-    supplied on the AuthContext (e.g. retry callers without a JWT
-    email claim). The caller (``ensure_user_ready``) is the source
-    of truth for org-vs-personal context via ``auth.is_org_context``
-    and forwards ``org_id`` here explicitly — None for personal
-    owners, the Clerk org_id for org admins.
+    supplied by the caller (e.g. a runner invocation with no JWT
+    email claim). The caller is the source of truth for
+    org-vs-personal context and forwards ``org_id`` here explicitly —
+    None for personal owners, the Clerk org_id for orgs.
     """
     if not owner_email:
         owner_email = (
@@ -466,19 +611,39 @@ async def _ensure_paperclip_for_owner(
                 owner_email=owner_email,
             )
         except PaperclipApiError as exc:
-            # Duplicate-owner 409: race condition — the previous
-            # /container/status poll already kicked off a provision_org
-            # for this owner that hasn't yet written the
-            # ``status="active"`` DDB row. /container/status is the
-            # canonical poll trigger; provision_org may fire on every
-            # ~3s poll until ECS creates the container row, so duplicate
-            # calls must no-op. Mirrors the member-path pattern in
+            # 409: a CONCURRENT provision_org (the previous ~3s
+            # /container/status poll) is mid-flight and hasn't written the
+            # ``status="active"`` row yet. Benign idempotent no-op — the next
+            # poll finds the active row. Mirrors the member-path pattern in
             # ``_ensure_paperclip_for_member``.
             if exc.status_code == 409:
                 logger.info(
-                    "ensure_user_ready (owner): %s already in paperclip — no-op (sign_up_user 409)",
+                    "ensure_user_ready (owner): %s paperclip provision already in flight — no-op (409)",
                     owner_id,
                 )
+            elif exc.status_code == 422:
+                # Better Auth returns 422 (NOT 409) for a duplicate email: the
+                # Paperclip account already exists but provision_org could not
+                # (re)provision the company — e.g. an orphaned Better Auth user
+                # whose password was wiped, so it can neither adopt (no stored
+                # password) nor re-sign-up. This is NOT success: provision_org's
+                # own _mark_failed writes a durable ``failed`` marker (via
+                # put-if-absent when no row exists), which is what surfaces the
+                # failure — /teams → 503 and teams_status="failed" on
+                # /container/status — instead of an eternal provisioning spinner.
+                # We swallow the exception here (a duplicate is an EXPECTED
+                # terminal outcome, not a transient error worth re-raising on
+                # every poll) but record it as a FAILURE — never a success no-op,
+                # so nothing reports Teams as ready over a broken workspace. Full
+                # orphan RECOVERY (adopt/reset the Better Auth user) needs a
+                # Paperclip user-delete the platform doesn't expose — out of
+                # scope for this fix.
+                logger.warning(
+                    "ensure_user_ready (owner): %s paperclip duplicate-email 422 — "
+                    "recorded failure; Teams degraded (orphaned Better Auth account)",
+                    owner_id,
+                )
+                put_metric("paperclip.seed.duplicate_email", dimensions={"path": "owner"})
             else:
                 raise
     finally:
@@ -492,6 +657,11 @@ async def _ensure_paperclip_for_member(
     member_email: str,
 ) -> None:
     """Add the org member to the org's existing Paperclip company.
+
+    JOIN-ONLY: this helper never creates a company, which is why
+    ``ensure_user_ready``'s gate-up branch may call it directly for any
+    org-context caller — a provision gate (credits, oauth, billing) must
+    not orphan a joining member, but company CREATE stays gated.
 
     Returns gracefully if the owner's company row doesn't exist or
     isn't active yet. The pending state is implicit ("Clerk-membership
@@ -510,14 +680,21 @@ async def _ensure_paperclip_for_member(
     that helper means the owner's company is either missing or not yet
     active — indistinguishable for our purposes (both → return gracefully).
 
-    Idempotent on duplicate-add: ``provision_member`` calls
-    ``sign_up_user`` for the joining member; on a duplicate
-    (member already in Paperclip from a previous successful add)
-    Paperclip's Better Auth returns 409 and ``sign_up_user`` raises
-    ``PaperclipApiError(status_code=409)``. /container/status is the
-    canonical poll trigger and may fire this helper on every member
-    poll, so duplicate calls must no-op. We catch the 409 and return —
-    other PaperclipApiError statuses re-raise.
+    Two DISTINCT duplicate outcomes, same request body, opposite verdicts —
+    ``/container/status`` is the canonical poll trigger and may fire this helper
+    on every member poll, so both must be handled:
+
+    * **409 = join/concurrency path (idempotent no-op).** A concurrent
+      member-join is mid-flight, or the member was already added by a prior
+      successful run. Paperclip returns 409; we swallow and return success.
+    * **422 = sign-up duplicate email (recorded FAILURE).** Better Auth returns
+      422 (NOT 409) when the member's email already exists as an account it
+      can't (re)provision. This is NOT success: ``provision_member``'s own
+      ``_mark_failed`` records a durable ``failed`` marker, which is what
+      surfaces the failure (``/teams`` → 503, ``teams_status="failed"`` on
+      ``/container/status``) — no longer merely a log line. We swallow (don't
+      re-raise on every poll) but record it as a failure. Other
+      PaperclipApiError statuses re-raise.
     """
     provisioning = await build_paperclip_provisioning()
     try:
@@ -525,10 +702,12 @@ async def _ensure_paperclip_for_member(
         if owner_company is None:
             logger.info(
                 "ensure_user_ready (member): owner's paperclip company "
-                "for org=%s not active yet — skipping; will retry on "
-                "member's next /container/status poll",
+                "for org=%s not active yet — skipping membership-add for "
+                "user=%s; will retry on member's next /container/status poll",
                 org_id,
+                member_user_id,
             )
+            put_metric("paperclip.member_add", dimensions={"outcome": "no_company"})
             return
 
         if not member_email:
@@ -542,6 +721,7 @@ async def _ensure_paperclip_for_member(
                 "ensure_user_ready.no_email",
                 dimensions={"path": "member"},
             )
+            put_metric("paperclip.member_add", dimensions={"outcome": "no_email"})
             return
 
         # ``lookup_owner_email`` short-circuits to None when
@@ -559,6 +739,16 @@ async def _ensure_paperclip_for_member(
             or ""
         )
 
+        # Membership-add observability (the orphan-member incident was a
+        # SILENT skip): one INFO on dispatch and one INFO/WARNING on the
+        # outcome, both carrying org + user ids, plus the bounded-outcome
+        # ``paperclip.member_add`` metric — so "no member-add ever ran for
+        # this user" is a log search away, and its absence is alarmable.
+        logger.info(
+            "ensure_user_ready (member): dispatching paperclip membership-add org=%s user=%s",
+            org_id,
+            member_user_id,
+        )
         try:
             await provisioning.provision_member(
                 owner_id=org_id,
@@ -567,17 +757,57 @@ async def _ensure_paperclip_for_member(
                 owner_email=owner_email,
             )
         except PaperclipApiError as exc:
-            # Duplicate-member 409: the member was already added in a
-            # prior successful run. /container/status is the canonical
-            # poll trigger and may fire this on every member poll, so
-            # treat as idempotent success. Any other status re-raises.
+            # 409: a concurrent member-join is mid-flight (or the member was
+            # already added by a prior successful run). /container/status is the
+            # canonical poll trigger and may fire this on every member poll, so
+            # treat as an idempotent no-op success.
             if exc.status_code == 409:
-                logger.debug(
-                    "ensure_user_ready (member): %s already in paperclip company for org=%s — no-op (sign_up_user 409)",
+                logger.info(
+                    "ensure_user_ready (member): %s already in paperclip company for org=%s — no-op (409)",
                     member_user_id,
                     org_id,
                 )
+                put_metric("paperclip.member_add", dimensions={"outcome": "already_active"})
+            elif exc.status_code == 422:
+                # Better Auth returns 422 (NOT 409) for a duplicate email — same
+                # recorded-failure semantics as the owner guard: the account
+                # already exists but the member could not be (re)provisioned. NOT
+                # success; provision_member's own _mark_failed writes a durable
+                # ``failed`` marker (put-if-absent when no row exists), which
+                # surfaces it — /teams → 503, teams_status="failed" — not a mere
+                # log line. Swallow (don't re-raise on every poll) but record it
+                # as a FAILURE, never a success no-op.
+                logger.warning(
+                    "ensure_user_ready (member): %s paperclip duplicate-email 422 for org=%s — "
+                    "recorded failure; Teams degraded",
+                    member_user_id,
+                    org_id,
+                )
+                put_metric("paperclip.seed.duplicate_email", dimensions={"path": "member"})
+                put_metric("paperclip.member_add", dimensions={"outcome": "duplicate_email"})
             else:
+                logger.warning(
+                    "ensure_user_ready (member): paperclip membership-add failed org=%s user=%s status=%s",
+                    org_id,
+                    member_user_id,
+                    exc.status_code,
+                )
+                put_metric("paperclip.member_add", dimensions={"outcome": "error"})
                 raise
+        except Exception:
+            logger.warning(
+                "ensure_user_ready (member): paperclip membership-add failed org=%s user=%s",
+                org_id,
+                member_user_id,
+            )
+            put_metric("paperclip.member_add", dimensions={"outcome": "error"})
+            raise
+        else:
+            logger.info(
+                "ensure_user_ready (member): paperclip membership-add ok org=%s user=%s",
+                org_id,
+                member_user_id,
+            )
+            put_metric("paperclip.member_add", dimensions={"outcome": "ok"})
     finally:
         await close_paperclip_provisioning(provisioning)

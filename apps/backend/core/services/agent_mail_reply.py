@@ -18,10 +18,35 @@ caller can log/metric on instead.
 import logging
 
 from core.config import settings
-from core.repositories import agent_email_repo
+from core.repositories import agent_email_repo, billing_repo, container_repo
 from core.services import ses_email
 
 logger = logging.getLogger(__name__)
+
+_COLD_WAKE_FOOTER = (
+    "\n\n———\n"
+    "I was asleep when this arrived — on the free plan I sleep when idle, so "
+    "replies wait for me to wake. https://isol8.co/settings\n"
+)
+
+
+async def _maybe_cold_wake_footer(owner_id: str) -> str:
+    """The free-tier "I was asleep" note, or "".
+
+    Consumed (and cleared) here so it appears exactly once. Free tier only: a
+    paid container never sleeps, so the note would be a lie. Never raises — a
+    footer must not cost a reply.
+    """
+    try:
+        if not await container_repo.consume_email_cold_wake(owner_id):
+            return ""
+        account = await billing_repo.get_by_owner_id(owner_id) or {}
+        if account.get("subscription_status") != "trial_local":
+            return ""
+        return _COLD_WAKE_FOOTER
+    except Exception:  # noqa: BLE001
+        logger.warning("cold-wake footer lookup failed for %s", owner_id)
+        return ""
 
 
 def _header_safe(value: str) -> str:
@@ -30,6 +55,30 @@ def _header_safe(value: str) -> str:
     sender-controlled, so we sanitize before it reaches the provider — defense
     in depth against header injection regardless of the provider's own handling."""
     return "".join(ch for ch in value if ch == "\t" or (ch >= " " and ch != "\x7f")).strip()
+
+
+# Cap on how many message-ids the References chain carries. RFC 5322 §3.6.4
+# explicitly permits truncating an over-long chain, and prescribes keeping the
+# FIRST id — the thread root — which is also what any thread identity derived
+# from References[0] depends on. So drop from the middle, never the head.
+_MAX_REFERENCES = 20
+
+
+def build_references(parent_refs: str, parent_message_id: str) -> str:
+    """The reply's References: the parent's chain plus the parent's Message-ID.
+
+    Truncates from the MIDDLE when the chain grows past ``_MAX_REFERENCES``,
+    preserving the root and the most recent ancestors — dropping the head
+    instead would move the thread root and split one conversation in two.
+    """
+    ids = [part for part in f"{parent_refs} {parent_message_id}".split() if part]
+    # De-dupe while preserving order: a client that already appended the
+    # parent's Message-ID to References would otherwise repeat it.
+    seen: set[str] = set()
+    deduped = [i for i in ids if not (i in seen or seen.add(i))]
+    if len(deduped) <= _MAX_REFERENCES:
+        return " ".join(deduped)
+    return " ".join([deduped[0], *deduped[-(_MAX_REFERENCES - 1) :]])
 
 
 def reply_subject(original: str) -> str:
@@ -69,12 +118,25 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None)
         headers: dict[str, str] = {}
         if in_reply_to:
             headers["In-Reply-To"] = in_reply_to
-            headers["References"] = in_reply_to
+            # RFC 5322 §3.6.4: References is the PARENT'S References plus the
+            # parent's Message-ID — the whole ancestry, not just the parent.
+            #
+            # This used to be `headers["References"] = in_reply_to`, which
+            # truncated the chain on every agent reply and let the thread root
+            # drift: Friday sends A, owner replies (refs "A"), Friday replies
+            # (refs "B" — A is gone), owner replies (refs "B C"). The root now
+            # reads as B. Any thread identity derived from References[0] would
+            # therefore split one conversation into several, and strict mail
+            # clients fragment the thread.
+            parent_refs = _header_safe(ctx.get("references") or "")
+            headers["References"] = build_references(parent_refs, in_reply_to)
 
         # A first contact (no in_reply_to -- no thread to answer) is a brand
         # new email Friday is sending unprompted, not a reply -- prepending
         # "Re: " to it would be a lie about what it is.
         subject = ctx["subject"] if not in_reply_to else reply_subject(ctx["subject"])
+
+        body_text = body_text + await _maybe_cold_wake_footer(ctx["owner_id"])
 
         message_id = await ses_email.send_ses_reply(
             from_addr=from_addr,

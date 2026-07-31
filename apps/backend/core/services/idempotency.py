@@ -1,6 +1,6 @@
 """Per-endpoint idempotency decorator using an in-memory TTL cache.
 
-Per CEO D1 (#351): admin write endpoints accept an optional
+Per CEO D1: admin write endpoints accept an optional
 `Idempotency-Key` HTTP header. Two POSTs with the same key within
 TTL_S return the cached response and short-circuit the underlying
 service call. Defends against rapid double-clicks and two-admin races.

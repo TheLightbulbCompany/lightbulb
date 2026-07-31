@@ -146,8 +146,14 @@ describe("InboxPage", () => {
     ).not.toBeNull();
   });
 
-  test("renders 'Inbox zero.' empty state on mine tab when there are no issues", () => {
+  test("renders 'Nothing here.' empty state on the default all tab when there are no issues", () => {
     render(<InboxPage {...baseProps} />);
+    expect(screen.getByText(/nothing here/i)).toBeInTheDocument();
+  });
+
+  test("clicking the mine tab swaps the empty-state copy", () => {
+    render(<InboxPage {...baseProps} />);
+    fireEvent.click(screen.getByRole("tab", { name: /mine/i }));
     expect(screen.getByText(/inbox zero/i)).toBeInTheDocument();
   });
 
@@ -164,12 +170,12 @@ describe("InboxPage", () => {
 
   test("an unknown initialTab falls back to the stored/default tab", () => {
     render(<InboxPage {...baseProps} initialTab="constructor" />);
-    expect(screen.getByText(/inbox zero/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing here/i)).toBeInTheDocument();
   });
 
   test("a re-delivered initialTab re-applies on an already-mounted page", () => {
     const { rerender } = render(<InboxPage {...baseProps} />);
-    expect(screen.getByText(/inbox zero/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing here/i)).toBeInTheDocument();
     rerender(<InboxPage {...baseProps} initialTab="recent" />);
     expect(screen.getByText(/no recent inbox items/i)).toBeInTheDocument();
   });
@@ -182,9 +188,9 @@ describe("InboxPage", () => {
 
   test("renders InboxList rows when the active tab has issues", () => {
     vi.mocked(useInboxData).mockReturnValue({
-      mineIssues: [makeIssue({ id: "iss_1" })],
+      mineIssues: [],
       touchedIssues: [],
-      allIssues: [],
+      allIssues: [makeIssue({ id: "iss_1" })],
       isLoading: false,
       isError: false,
       error: null,
@@ -194,14 +200,14 @@ describe("InboxPage", () => {
       container.querySelector("[data-inbox-item-id='iss_1']"),
     ).not.toBeNull();
     // Empty-state copy should NOT be visible.
-    expect(screen.queryByText(/inbox zero/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nothing here/i)).not.toBeInTheDocument();
   });
 
   test("typing in search shows the no-search-match empty state", () => {
     vi.mocked(useInboxData).mockReturnValue({
-      mineIssues: [makeIssue({ id: "iss_1", title: "Apples" })],
+      mineIssues: [],
       touchedIssues: [],
-      allIssues: [],
+      allIssues: [makeIssue({ id: "iss_1", title: "Apples" })],
       isLoading: false,
       isError: false,
       error: null,
@@ -218,9 +224,9 @@ describe("InboxPage", () => {
 
   test("Mark all as read button is disabled when there are no unread items", () => {
     vi.mocked(useInboxData).mockReturnValue({
-      mineIssues: [makeIssue({ id: "iss_1", unread: false })],
+      mineIssues: [],
       touchedIssues: [],
-      allIssues: [],
+      allIssues: [makeIssue({ id: "iss_1", unread: false })],
       isLoading: false,
       isError: false,
       error: null,
@@ -233,9 +239,9 @@ describe("InboxPage", () => {
 
   test("Mark all as read button is enabled when there are unread items", () => {
     vi.mocked(useInboxData).mockReturnValue({
-      mineIssues: [makeIssue({ id: "iss_1", unread: true })],
+      mineIssues: [],
       touchedIssues: [],
-      allIssues: [],
+      allIssues: [makeIssue({ id: "iss_1", unread: true })],
       isLoading: false,
       isError: false,
       error: null,
@@ -272,12 +278,12 @@ describe("InboxPage", () => {
       clearAll: vi.fn(),
     });
     vi.mocked(useInboxData).mockReturnValue({
-      mineIssues: [
+      mineIssues: [],
+      touchedIssues: [],
+      allIssues: [
         makeIssue({ id: "iss_1", title: "Unread", unread: true }),
         makeIssue({ id: "iss_2", title: "Read", unread: false }),
       ],
-      touchedIssues: [],
-      allIssues: [],
       isLoading: false,
       isError: false,
       error: null,

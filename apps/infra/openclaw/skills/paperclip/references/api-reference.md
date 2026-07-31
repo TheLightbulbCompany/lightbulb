@@ -878,6 +878,20 @@ Terminal states: `done`, `cancelled`
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
 - `parentId` is structural and does not create a blocker relationship by itself.
+
+### `status` on create is not optional in practice
+
+`status` is technically omittable on `POST /api/companies/:companyId/issues`, but the server-side default depends on the assignee:
+
+| Body | Resulting status | Effect |
+| ---- | ---------------- | ------ |
+| no `status`, no assignee | `backlog` | Filed. Nothing runs. |
+| no `status`, **with** assignee | **`todo`** | **Assignee is woken — a run starts immediately.** |
+| explicit `status` | as given | As given. |
+
+An assigned issue in any status other than `backlog` dispatches an agent run on create, and a server-side reconciler re-dispatches assigned `todo`/`in_progress` issues that have no live execution path roughly every 30 seconds until they escalate to `blocked`. So an omitted `status` on an assigned create is a decision to spend the owner's money, repeatedly.
+
+**Always send `status` explicitly when the body carries an assignee.** `/app/skills/paperclip/scripts/paperclip-api.sh` enforces this: `create` / `subtask` with `--assignee` and no `--status` send an explicit `backlog`.
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.

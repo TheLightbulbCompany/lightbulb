@@ -1,12 +1,17 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useCredits } from "@/hooks/useCredits";
+import { useCredits, isCreditsExhausted } from "@/hooks/useCredits";
 import { replaceSearchParams } from "@/lib/shellNav";
 
 type Props = { onComplete: () => void };
 
 const PRESET_AMOUNTS_CENTS = [1000, 2000, 5000, 10000]; // $10, $20, $50, $100
+
+// Grace window for the one-click `requested` latch before it un-sticks itself
+// with a retryable error. Comfortably longer than the "usually under a minute"
+// happy path so a normally-collecting charge advances the wizard first.
+const REQUESTED_TIMEOUT_MS = 90_000;
 
 // Onboarding design system — mirrors the stepper branch this step renders
 // inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
@@ -16,11 +21,11 @@ const SERIF_FONT = { fontFamily: "var(--font-lora-serif), serif" } as const;
 const SANS_FONT = { fontFamily: "var(--font-dm-sans), sans-serif" } as const;
 
 const PRIMARY_BUTTON =
-  "rounded-full bg-[#06402B] px-6 py-2.5 text-sm font-medium text-white " +
-  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[#06402B]";
+  "rounded-full bg-[var(--forest)] px-6 py-2.5 text-sm font-medium text-white " +
+  "transition-colors hover:bg-[#052e1f] disabled:opacity-50 disabled:hover:bg-[var(--forest)]";
 
 const TEXT_INPUT =
-  "rounded-lg border border-[#e0dbd0] bg-white px-3 py-2.5 text-sm text-[#1a1a1a] " +
+  "rounded-lg border border-[var(--edge)] bg-white px-3 py-2.5 text-sm text-[var(--ink)] " +
   "focus:outline-none focus:border-[rgba(6,64,43,0.25)] focus:ring-2 focus:ring-[rgba(6,64,43,0.25)]";
 
 /**
@@ -37,8 +42,15 @@ const TEXT_INPUT =
  * when the payment collects and the same balance poll advances the wizard.
  */
 export function CreditsStep({ onComplete }: Props) {
-  const { balance, lifecycleEnabled, autoChargeEnabled, refresh, startTopUp, startTopUpCheckout } =
-    useCredits();
+  const {
+    balance,
+    lifecycleEnabled,
+    autoChargeEnabled,
+    refresh,
+    startTopUp,
+    rotateRequestId,
+    startTopUpCheckout,
+  } = useCredits();
   const [amount, setAmount] = useState<number>(2000);
   const [submitting, setSubmitting] = useState(false);
   const [requested, setRequested] = useState(false);
@@ -49,13 +61,18 @@ export function CreditsStep({ onComplete }: Props) {
   // Returning from a cancelled Checkout: surface it instead of a blank form.
   const checkoutCancelled = searchParams.get("credits") === "cancel";
 
-  // On mount and on every balance bump, check whether we already have
-  // credits — if so, a previous top-up has landed (or the owner arrived
+  // On mount and on every balance bump, check whether the balance is already
+  // spendable — if so, a previous top-up has landed (or the owner arrived
   // here with a pre-existing balance) and the wizard should skip past the
-  // top-up step.
+  // top-up step. Uses the same isCreditsExhausted predicate as
+  // OutOfCreditsBanner (see useCredits.ts) rather than a raw `> 0` check: the
+  // bedrock-gate refuses admission below its own reservation threshold, so a
+  // small positive balance (e.g. $0.20) is NOT spendable — completing here
+  // for it would land the owner back in chat facing the same "out of
+  // credits" banner with no way to reach this top-up form again.
   useEffect(() => {
     if (advancedRef.current) return;
-    if (balance && balance.balance_microcents !== null && balance.balance_microcents > 0) {
+    if (balance && !isCreditsExhausted(balance)) {
       advancedRef.current = true;
       onComplete();
     }
@@ -66,6 +83,35 @@ export function CreditsStep({ onComplete }: Props) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Time-box the one-click `requested` latch. The latch keeps the button
+  // disabled while the async charge collects and credits are expected to land
+  // shortly (the balance poll then advances the wizard). But if the charge
+  // silently FAILS after acceptance (e.g. the card is declined once it
+  // actually collects), no balance ever arrives and the button would stay
+  // "Payment requested" forever — a dead end. So after a grace window, if the
+  // wizard hasn't advanced (advancedRef still false), un-stick the button and
+  // surface a retryable error. Pure client-side backstop: a precise decline
+  // reason would need a backend charge-status field, but this alone kills the
+  // stuck-forever state.
+  //
+  // Rotate the idempotency token FIRST: this timeout means the prior attempt is
+  // presumed dead, so the next click must be a NEW top-up intent. Reusing the
+  // token would replay the accepted-but-uncollected commit (or 409 on an
+  // idempotency/body conflict if the amount changed), re-sticking the user in
+  // the same failed cycle.
+  useEffect(() => {
+    if (!requested) return;
+    const t = setTimeout(() => {
+      if (advancedRef.current) return;
+      rotateRequestId();
+      setRequested(false);
+      setError(
+        "That's taking longer than expected — the charge may not have gone through. You can try again.",
+      );
+    }, REQUESTED_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [requested, rotateRequestId]);
 
   // The stepper's only "go back" mechanism is the `?provider=` URL param:
   // stripping it exits the provider step and re-enters the main flow (the
@@ -86,10 +132,10 @@ export function CreditsStep({ onComplete }: Props) {
         className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center"
         style={SANS_FONT}
       >
-        <h3 className="text-[22px] font-normal text-[#1a1a1a]" style={SERIF_FONT}>
+        <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
           Claude credits aren&apos;t available yet
         </h3>
-        <p className="text-sm text-[#8a8578]">
+        <p className="text-sm text-[var(--mute)]">
           Claude credits are not yet available in this environment — choose a
           different provider for now.
         </p>
@@ -143,10 +189,10 @@ export function CreditsStep({ onComplete }: Props) {
 
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>
-      <h3 className="text-[22px] font-normal text-[#1a1a1a]" style={SERIF_FONT}>
+      <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
         Add Claude credits
       </h3>
-      <p className="text-sm text-[#8a8578]">
+      <p className="text-sm text-[var(--mute)]">
         {autoChargeEnabled
           ? "Prepay for Claude inference — charged automatically to your card on file. Add any amount, top up later anytime."
           : "Prepay for Claude inference. You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
@@ -162,8 +208,8 @@ export function CreditsStep({ onComplete }: Props) {
             className={
               "rounded-full border px-3 py-2 text-sm transition-colors " +
               (amount === c
-                ? "border-[#06402B] bg-[#e6efe9] text-[#06402B] font-medium"
-                : "border-[#e0dbd0] bg-white text-[#1a1a1a] hover:bg-[#f3efe6]")
+                ? "border-[var(--forest)] bg-[var(--forest-tint)] text-[var(--forest)] font-medium"
+                : "border-[var(--edge)] bg-white text-[var(--ink)] hover:bg-[var(--cream-deeper)]")
             }
           >
             ${c / 100}
@@ -182,12 +228,12 @@ export function CreditsStep({ onComplete }: Props) {
       />
 
       {!autoChargeEnabled && (
-        <label className="flex items-start gap-2 text-[13px] text-[#8a8578]">
+        <label className="flex items-start gap-2 text-[13px] text-[var(--mute)]">
           <input
             type="checkbox"
             checked={optIn}
             onChange={(e) => setOptIn(e.target.checked)}
-            className="mt-0.5 accent-[#06402B]"
+            className="mt-0.5 accent-[var(--forest)]"
           />
           <span>
             Enable one-click top-ups — save this card so future credit
@@ -198,14 +244,14 @@ export function CreditsStep({ onComplete }: Props) {
       )}
 
       {checkoutCancelled && !requested && !error && (
-        <p className="text-sm text-[#8a8578]">
+        <p className="text-sm text-[var(--mute)]">
           Checkout was cancelled — nothing was charged. Pick an amount to try
           again.
         </p>
       )}
-      {error && <p className="text-sm text-[#b32424]">{error}</p>}
+      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
       {requested && (
-        <p className="text-sm text-[#8a8578]">
+        <p className="text-sm text-[var(--mute)]">
           Payment requested — your card on file is being charged in the
           background. This step advances automatically once the credits land
           (usually under a minute).

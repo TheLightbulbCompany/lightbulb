@@ -16,12 +16,10 @@ import { resolveSessionModelRef } from "@/lib/models";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
 import { isSnoozed, setSnoozed, updateSnoozeKey } from "@/lib/snooze";
-import { readFirstRun, writeFirstRun } from "@/lib/firstRun";
-import { useAuth, useOrganization, useUser } from "@clerk/nextjs";
+import { useAuth, useOrganization } from "@clerk/nextjs";
 import { Loader2, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGateway } from "@/hooks/useGateway";
-import { useFirstRunKickoff } from "@/hooks/useFirstRunKickoff";
 
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
 
@@ -240,7 +238,6 @@ export function AgentChatWindow({
 }: AgentChatWindowProps): React.ReactElement {
   const { userId } = useAuth();
   const { organization } = useOrganization();
-  const { user } = useUser();
   // Every user gets their own session — isolates chat history from cron,
   // channels, and other system activity. Matches backend (websocket_chat.py).
   // userId is always defined here — ChatLayout gates on clerkLoaded && isSignedIn.
@@ -253,17 +250,6 @@ export function AgentChatWindow({
   const isTrialLocal = account?.subscription_status === "trial_local";
   const trialFirstResponseFiredRef = useRef(false);
   const handleChatCompleted = useCallback(() => {
-    // First-run kickoff completion (spec §4.C) — independent of the
-    // trial-local gate below: a run only ever has firstRun.started === true
-    // when the kickoff hook fired it, which already implies a trial_local
-    // owner (FirstRunFunnel only renders for trial_local).
-    const fr = readFirstRun(user);
-    if (user && fr.started && !fr.completed) {
-      void writeFirstRun(user, { completed: true }).catch((err) =>
-        console.error("first-run completion write failed", err),
-      );
-      capture("first_run_show_completed");
-    }
     if (!isTrialLocal || trialFirstResponseFiredRef.current) return;
     trialFirstResponseFiredRef.current = true;
     const storageKey = `${TRIAL_FIRST_RESPONSE_STORAGE_KEY}:${organization?.id ?? userId ?? "anon"}`;
@@ -280,7 +266,7 @@ export function AgentChatWindow({
       /* best-effort */
     }
     capture("trial_first_agent_response");
-  }, [isTrialLocal, organization?.id, userId, user]);
+  }, [isTrialLocal, organization?.id, userId]);
   const {
     renderGroups,
     renderItems,
@@ -336,11 +322,14 @@ export function AgentChatWindow({
       />
     ) : null;
 
-  const { agents, defaultId } = useAgents();
+  const { agents } = useAgents();
   const activeAgent = agents.find((a) => a.id === agentId);
-  const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? agentId ?? undefined;
-
-  useFirstRunKickoff({ user, agentId, defaultId, isConnected, sendMessage });
+  // No raw-UUID fallback: until the roster resolves this agent (e.g. during
+  // the onboarding window, when agents.list is still latched empty), let
+  // MessageList's AgentHead render its neutral "Assistant" default instead
+  // of an agent UUID masquerading as a name. Reactive: flips to the real
+  // name the moment the roster arrives.
+  const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? undefined;
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);
@@ -424,7 +413,7 @@ export function AgentChatWindow({
     // only: a send dispatched before the history projection lands would
     // be clobbered when setChatMessages replaces the message list.
     return (
-      <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+      <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
         {/* Mirror MessageList's geometry (same pane padding, max-w-3xl column,
             space-y-10 turn rhythm) and anchor to the bottom, where a loaded
             transcript sits — so the placeholder occupies the region the
@@ -470,7 +459,7 @@ export function AgentChatWindow({
 
   if (isInitialState) {
     return (
-      <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+      <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
         {/* justify-center-safe, not justify-center: unsafe centering splits the
             overflow across BOTH ends, so once the content outgrows a short dock
             slot the top is clipped and unreachable even with overflow-y-auto
@@ -481,14 +470,14 @@ export function AgentChatWindow({
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center-safe p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
-              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "#1a1a1a", lineHeight: 1 }}>8</span>
+              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "var(--ink)", lineHeight: 1 }}>8</span>
             </div>
-            <h1 className="text-3xl mb-3 text-[#1a1a1a] tracking-tight font-lora">
+            <h1 className="text-3xl mb-3 text-[var(--ink)] tracking-tight font-lora">
               {agentId
                 ? agentDisplayName(activeAgent ?? { id: agentId })
                 : "Select an agent"}
             </h1>
-            <p className="text-[#8a8578] text-base">
+            <p className="text-[var(--mute)] text-base">
               Start a conversation with your agent
             </p>
           </div>
@@ -518,9 +507,9 @@ export function AgentChatWindow({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
+    <div className="flex flex-col h-full min-h-0 bg-[var(--cream)]">
       {historyTruncated && (
-        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[#8a8578] bg-[#f3efe6] border-b border-[#e0dbd0]">
+        <div className="shrink-0 px-4 py-1.5 text-center text-[11px] text-[var(--mute)] bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
           Some large tool output in this conversation was shortened to fit.
         </div>
       )}

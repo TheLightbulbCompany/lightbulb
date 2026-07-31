@@ -32,6 +32,7 @@ class TestDeleteUserData:
             yield
 
     @pytest.mark.asyncio
+    @patch("routers.debug.PaperclipRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -52,6 +53,7 @@ class TestDeleteUserData:
         mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
+        mock_paperclip_repo_cls,
         async_client,
     ):
         """Endpoint returns deleted summary and calls each subsystem teardown."""
@@ -69,6 +71,8 @@ class TestDeleteUserData:
         mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=3)
+        mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         ecs_mgr = MagicMock()
         ecs_mgr.delete_user_service = AsyncMock()
@@ -94,12 +98,27 @@ class TestDeleteUserData:
         assert "channel-links" in body["deleted"]["ddb"]
         assert "integrations" in body["deleted"]["ddb"]
         assert "ws-connections" in body["deleted"]["ddb"]
+        # paperclip-companies (whose row now carries onboarding
+        # generation/funnel/bootstrap fields) must be part of the atomic
+        # wipe -- INV-10, "atomic wipe leaves zero orphan".
+        assert "paperclip-companies" in body["deleted"]["ddb"]
+        # ...and its pending-brief sentinel, which lives in the SAME table under
+        # a synthetic PK the row delete does not reach. Left behind, it outlives
+        # the teardown by design (a pending brief deliberately survives
+        # reprovisioning) -- and since this endpoint does not delete the Clerk
+        # account, the next signup reuses the owner_id and silently inherits the
+        # previous run's answer: no funnel, and a new company seeded from an old
+        # brief.
+        assert "paperclip-companies:pending-brief" in body["deleted"]["ddb"]
 
         ecs_mgr.delete_user_service.assert_called_once_with("user_test_123")
         ws.delete_user_dir.assert_called_once_with("user_test_123")
         mock_user_repo.delete.assert_called_once_with("user_test_123")
+        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
+        mock_paperclip_repo_cls.return_value.delete_pending_brief.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
+    @patch("routers.debug.PaperclipRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -124,6 +143,7 @@ class TestDeleteUserData:
         mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
+        mock_paperclip_repo_cls,
         async_client,
     ):
         """`#`-namespaced sub-records (google#account#..., google#assign#...) have
@@ -147,6 +167,8 @@ class TestDeleteUserData:
         mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+        mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         ecs_mgr = MagicMock()
         ecs_mgr.delete_user_service = AsyncMock()
@@ -175,6 +197,7 @@ class TestDeleteUserData:
         assert res.status_code == 403
 
     @pytest.mark.asyncio
+    @patch("routers.debug.PaperclipRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -195,6 +218,7 @@ class TestDeleteUserData:
         mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
+        mock_paperclip_repo_cls,
         app,
         mock_org_admin_user,
     ):
@@ -212,6 +236,8 @@ class TestDeleteUserData:
         mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+        mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         ws = MagicMock()
         ws.delete_user_dir = MagicMock()
@@ -234,8 +260,13 @@ class TestDeleteUserData:
         # User-scoped: Clerk user_id, NOT org_id
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
+        # paperclip-companies is ALSO user-scoped (the row provision_org
+        # wrote is keyed by the org creator's user_id, not org_id) -- see
+        # PaperclipRepo.resolve_owner_row's docstring.
+        mock_paperclip_repo_cls.return_value.delete.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
+    @patch("routers.debug.PaperclipRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -256,6 +287,7 @@ class TestDeleteUserData:
         mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
+        mock_paperclip_repo_cls,
         async_client,
     ):
         """If ECS or EFS teardown raises, every other step still runs but the
@@ -274,6 +306,8 @@ class TestDeleteUserData:
         mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+        mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         # ECS teardown blows up — every other step should still run.
         ecs_mgr = MagicMock()
@@ -301,6 +335,7 @@ class TestDeleteUserData:
         assert body["deleted"]["ecs"] is False  # ECS step did NOT complete
 
     @pytest.mark.asyncio
+    @patch("routers.debug.PaperclipRepo")
     @patch("routers.debug.container_repo")
     @patch("routers.debug.billing_repo")
     @patch("routers.debug.update_repo")
@@ -321,6 +356,7 @@ class TestDeleteUserData:
         mock_update_repo,
         mock_billing_repo,
         mock_container_repo,
+        mock_paperclip_repo_cls,
         async_client,
     ):
         """Regression: a previous partial run that failed at ECS but
@@ -337,6 +373,8 @@ class TestDeleteUserData:
         mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
         mock_user_repo.delete = AsyncMock()
         mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+        mock_paperclip_repo_cls.return_value.delete = AsyncMock()
+        mock_paperclip_repo_cls.return_value.delete_pending_brief = AsyncMock()
 
         # Service still exists in ECS even though DDB row is gone.
         ecs_mgr = MagicMock()

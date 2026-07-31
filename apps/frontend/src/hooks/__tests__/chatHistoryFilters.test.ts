@@ -110,6 +110,31 @@ describe("isEmptyUserTextOnlyMessage", () => {
     };
     expect(isEmptyUserTextOnlyMessage(m)).toBe(false);
   });
+
+  // The shape OpenClaw ACTUALLY persists for a plain-text turn:
+  // `buildPersistedUserTurnMessage` (src/sessions/user-turn-transcript.ts)
+  // stores `content` as a bare string, and chat.history returns it verbatim.
+  // Reading a non-array `content` as "empty" hid every user message on a
+  // history refetch.
+  it("returns false for user whose content is a bare string", () => {
+    const m: HistoryMessage = { role: "user", content: "Hello" };
+    expect(isEmptyUserTextOnlyMessage(m)).toBe(false);
+  });
+
+  it("returns true for user whose bare-string content is only whitespace", () => {
+    const m: HistoryMessage = { role: "user", content: "   " };
+    expect(isEmptyUserTextOnlyMessage(m)).toBe(true);
+  });
+
+  it("returns false for user carrying its body on the top-level text field", () => {
+    const m: HistoryMessage = { role: "user", text: "Hello" };
+    expect(isEmptyUserTextOnlyMessage(m)).toBe(false);
+  });
+
+  it("returns true for user with neither content nor text", () => {
+    const m: HistoryMessage = { role: "user" };
+    expect(isEmptyUserTextOnlyMessage(m)).toBe(true);
+  });
 });
 
 describe("isSyntheticExecWrapper", () => {
@@ -176,6 +201,16 @@ describe("isSyntheticExecWrapper", () => {
     };
     expect(isSyntheticExecWrapper(m)).toBe(false);
   });
+
+  // Load-bearing: exec wrappers are role:"user" and arrive with bare-string
+  // content, exactly like a typed message. They used to be hidden only as
+  // collateral damage of isEmptyUserTextOnlyMessage's array check — now that
+  // string content is rendered, THIS is the only thing keeping them out.
+  it("matches the marker when content is a bare string", () => {
+    const m: HistoryMessage = { role: "user", content: FULL_TEMPLATE };
+    expect(isSyntheticExecWrapper(m)).toBe(true);
+    expect(shouldHideHistoryMessage(m)).toBe(true);
+  });
 });
 
 describe("shouldHideHistoryMessage", () => {
@@ -189,6 +224,9 @@ describe("shouldHideHistoryMessage", () => {
 });
 
 describe("projectChatHistoryMessages", () => {
+  const firstText = (m: HistoryMessage): string | undefined =>
+    Array.isArray(m.content) ? m.content[0]?.text : undefined;
+
   it("removes hidden messages while preserving order", () => {
     const messages: HistoryMessage[] = [
       { role: "user", content: [{ type: "text", text: "hi" }] },
@@ -197,7 +235,38 @@ describe("projectChatHistoryMessages", () => {
     ];
     const result = projectChatHistoryMessages(messages);
     expect(result).toHaveLength(2);
-    expect(result[0].content?.[0].text).toBe("hi");
-    expect(result[1].content?.[0].text).toBe("hello back");
+    expect(firstText(result[0])).toBe("hi");
+    expect(firstText(result[1])).toBe("hello back");
+  });
+
+  // Regression, verbatim from the dev transcript that exposed this
+  // (agents/<friday>/agent/openclaw-agent.sqlite, table transcript_events):
+  // the server-dispatched onboarding kickoff persists as role:"user" with
+  // bare-string content, immediately followed by Friday's first assistant
+  // turn. The projection used to drop the user row and keep the assistant
+  // one, so the transcript opened on `update_plan` with nothing above it.
+  it("keeps the server-dispatched onboarding kickoff above Friday's first turn", () => {
+    const KICKOFF =
+      "I'm starting a subscription coffee roastery that ships single-origin beans to " +
+      "home brewers — it's for home brewers who care about origin and freshness. Dig " +
+      "into the business and market, write it up, and put my three best next moves in " +
+      "the backlog — don't start any of them yet, just tell me which to tackle first. " +
+      "I'm watching.";
+    const messages: HistoryMessage[] = [
+      { role: "user", content: KICKOFF, timestamp: 1785009807010 },
+      {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "The user wants me to research…" },
+          { type: "toolCall", id: "tooluse_1", name: "update_plan", arguments: {} },
+        ],
+        timestamp: 1785009818955,
+      },
+    ];
+    const result = projectChatHistoryMessages(messages);
+    expect(result).toHaveLength(2);
+    expect(result[0].role).toBe("user");
+    expect(result[0].content).toBe(KICKOFF);
+    expect(result[1].role).toBe("assistant");
   });
 });

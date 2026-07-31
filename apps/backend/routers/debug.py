@@ -24,6 +24,7 @@ from core.repositories import (
     usage_repo,
     user_repo,
 )
+from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import connection_service
 from core.services.credentials import integration_secret_store
 
@@ -198,8 +199,10 @@ async def remove_container(
     summary="DEV/TEST ONLY: atomically delete all per-user data",
     description=(
         "Tears down ECS service, EFS access point, EFS folder, all "
-        "per-user task-def revisions, and rows from all 8 per-user "
-        "DDB tables. Used by the e2e harness at the end of each run. "
+        "per-user task-def revisions, and rows from all 9 per-user "
+        "DDB tables (including paperclip-companies, whose row carries the "
+        "onboarding generation/funnel/bootstrap fields — see INV-10). "
+        "Used by the e2e harness at the end of each run. "
         "Caller can only delete their own data (owner_id derived from JWT)."
     ),
     operation_id="debug_delete_user_data",
@@ -323,6 +326,37 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             ("integrations", _wipe_integrations),
             ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
             ("users", lambda: user_repo.delete(user_id)),
+            # paperclip-companies is keyed by user_id, NOT owner_id (mirrors
+            # "users"/"ws-connections" above) -- for an org, the OWNER row
+            # provision_org wrote is keyed by the org creator's user_id, not
+            # the org_id. Since this endpoint requires org-admin for org
+            # context, the calling admin IS (for the e2e harness's own
+            # throwaway orgs) that creator, so deleting by user_id here
+            # correctly reaches the row and rides its onboarding
+            # generation/funnel/bootstrap fields to zero-orphan (INV-10).
+            # This closes a real pre-existing gap: without it, a full
+            # /debug/user-data teardown left the paperclip-companies row
+            # (and now its onboarding state) behind, so the next fresh
+            # provision would RECONCILE-ADOPT the old company instead of
+            # minting a new onboarding_generation.
+            (
+                "paperclip-companies",
+                lambda: PaperclipRepo(table_name="paperclip-companies").delete(user_id),
+            ),
+            # The pending-brief sentinel lives in the SAME table under a
+            # synthetic PK, so the row delete above does not reach it, and it
+            # is keyed by OWNER id (org_id for an org) rather than user_id.
+            # Left behind it outlives the teardown by design -- a pending
+            # brief deliberately survives reprovisioning -- and since this
+            # endpoint does not delete the Clerk account, the next signup
+            # reuses the same owner_id and inherits the previous run's answer:
+            # the funnel never renders, and the new company gets seeded from
+            # the old brief. That is the zero-orphan (INV-10) break the
+            # comment above exists to prevent.
+            (
+                "paperclip-companies:pending-brief",
+                lambda: PaperclipRepo(table_name="paperclip-companies").delete_pending_brief(owner_id),
+            ),
         ]
     )
     for table_name, action in ddb_steps:

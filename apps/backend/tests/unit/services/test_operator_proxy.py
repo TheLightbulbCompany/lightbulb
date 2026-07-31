@@ -215,14 +215,34 @@ async def test_failed_downstream_push_reaps_orphaned_upstream(mock_ecs, mock_ups
 
     # Capture the push callback the relay installed on the upstream.
     push_cb = mock_upstream.set_client_push_callback.call_args[0][0]
-    # Adapter is now gone: the Management API push returns False.
+    # Adapter is now gone: the Management API push returns False, confirmed.
     mgmt.send_message = MagicMock(return_value=False)
+    mgmt.gone_confirmed = MagicMock(return_value=True)
     await push_cb({"type": "event", "event": "agent"})
     # The reaper defers teardown via create_task — let it run.
     await asyncio.sleep(0)
 
     assert is_operator_connection("conn_reap") is False
     mock_upstream.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_gone_keeps_relay_alive(mock_ecs, mock_upstream):
+    """A lone GoneException can be a spurious API Gateway blip on a live
+    adapter WS — the frame is dropped but the relay must NOT be reaped."""
+    mgmt = MagicMock()
+    mgmt.send_message = MagicMock(return_value=True)
+    await handle_operator_connect(
+        owner_id="o", user_id="o", connection_id="conn_blip", connect_params={}, management_api=mgmt
+    )
+    push_cb = mock_upstream.set_client_push_callback.call_args[0][0]
+    mgmt.send_message = MagicMock(return_value=False)
+    mgmt.gone_confirmed = MagicMock(return_value=False)
+    await push_cb({"type": "event", "event": "agent"})
+    await asyncio.sleep(0)
+
+    assert is_operator_connection("conn_blip") is True
+    mock_upstream.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio

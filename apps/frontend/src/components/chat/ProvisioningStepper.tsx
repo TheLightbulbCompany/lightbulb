@@ -13,10 +13,9 @@ import {
 import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { readFirstRun } from "@/lib/firstRun";
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 import { useBilling } from "@/hooks/useBilling";
-import { useProvisioningState, type ColdStartPhase, type BlockedPayload } from "@/hooks/useProvisioningState";
+import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
@@ -35,11 +34,13 @@ import {
   PROVISION_IDEA_ROTATION_MS as IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS as TIMEOUT_MS,
   formatProvisionElapsed as formatElapsed,
+  deriveUIPhase,
+  type UIPhase,
 } from "@isol8/shared";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
-// container.status="running" / gateway pool not-yet-connected window —
+// container_status="running" / gateway pool not-yet-connected window —
 // the backend can only distinguish provisioning / starting / ready.
 // We split that "starting" window into three visible UI steps via
 // elapsed time so the user sees concrete progress during the 5+min
@@ -182,8 +183,10 @@ export function ProvisioningStepper({
   const isOrg = !!organization;
   const { userId: clerkUserId } = useAuth();
   // Clerk user object — the first-run funnel branch below reads (and its
-  // component writes) user.unsafeMetadata.firstRun.
-  const { user } = useUser();
+  // component writes) user.unsafeMetadata.firstRun. `isLoaded` distinguishes
+  // "Clerk still resolving" (hold a loader) from "loaded, signed out"
+  // (user === null) — see the flash guard before the ready branch.
+  const { user, isLoaded: userLoaded } = useUser();
   // Per-OWNER activation-marker key so a shared/QA browser doesn't let the first
   // account's activation suppress onboarding_ready for a later account's real
   // first cold start. The event is a person-level denominator (PostHog is
@@ -199,11 +202,12 @@ export function ProvisioningStepper({
     refresh: refreshBilling,
     startTeamCheckout,
   } = useBilling();
-  // Free-tier discriminator: trial_local accounts are already is_subscribed
-  // (the backend added trial_local to _ACTIVE_STATUSES) but never set
-  // provider_choice — there is no provider to pick for the free tier. Used
-  // below to keep these users off the payment short-circuit, the poll gate,
-  // and — the actually-broken case — the ProviderPicker fallback.
+  // Free-tier discriminator: trial_local accounts are NOT is_subscribed
+  // (is_subscribed is the PAID predicate; the free tier grants platform use
+  // without a subscription) and never set provider_choice — there is no
+  // provider to pick for the free tier. Used below to keep these users off
+  // the payment short-circuit, the poll gate, and — the actually-broken
+  // case — the ProviderPicker fallback.
   const isTrialLocal = account?.subscription_status === "trial_local";
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -264,41 +268,25 @@ export function ProvisioningStepper({
     return () => clearTimeout(timer);
   }, [providerStepDone]);
 
-  const [reachedReady, setReachedReady] = useState(false);
-  const shouldPollContainer = (isSubscribed || isTrialLocal) && !reachedReady;
-
-  // Single canonical /container/status poller. Gate-driven cadence
-  // wins when blocked (5s/30s); cold-start polling at 3s otherwise so
-  // the user sees fast progress through phase transitions.
-  // No `enabled` gate here: an admin with a `past_due` / `canceled` /
-  // `unpaid` / `paused` billing row has `isSubscribed === false`, but
-  // we still need /container/status to fire so the backend's 402
-  // subscription_required / payment_past_due gate surfaces. The
-  // refreshInterval below already throttles non-blocked polling for
-  // unsubscribed users (interval=0 when !shouldPollContainer); the
-  // gate-driven cadence (5s/30s) still wins for pending states. An
-  // `enabled: isSubscribed` gate would bypass the entire fetch for
-  // inactive subscriptions and lose the /settings/billing reactivation
-  // CTA.
+  // The single canonical `/container/status` reader — a pure consumer of the
+  // ONE shared `useOnboardingStatus` bounded loop (spec PR-9, CLIENT-HOOK).
+  // This call site used to own its own SWR poll (3s cold-start cadence,
+  // `revalidateOnFocus: true`, and a mirrored `pollActive`/`shouldPollContainer`
+  // state machine to zero the interval once ready) — all deleted. Cadence,
+  // visibility gating, and the resume-on-focus/visible kick now live once,
+  // shared by every consumer, inside `useOnboardingStatus` itself.
   const {
     phase: gatePhase,
     blocked,
     container,
     refresh,
-  } = useProvisioningState({
-    refreshInterval: shouldPollContainer ? 3000 : 0,
-  });
-
-  useEffect(() => {
-    const p = container?.phase;
-    if ((p === "ready" || p === "parked") && !reachedReady) setReachedReady(true);
-  }, [container?.phase, reachedReady]);
+  } = useProvisioningState();
 
   // Instant-ready: the backend's connection pool pushes
   // status_change("HEALTHY") over the WebSocket at the exact moment the
   // container handshake completes. Revalidate /container/status right then
   // so the stepper flips to ready in one round trip instead of waiting out
-  // the remainder of the 3s poll interval.
+  // the remainder of the shared bounded loop's cadence.
   const { onEvent } = useGateway();
   useEffect(() => {
     return onEvent((event, payload) => {
@@ -324,10 +312,58 @@ export function ProvisioningStepper({
   // Provisioning is now driven by /container/status: when the gate clears
   // and no container exists, the backend's status endpoint fires
   // ensure_user_ready itself. The frontend stepper is purely passive — it
-  // polls /container/status (every 3s during pre-ready) and renders the
-  // appropriate phase. No explicit POST /container/provision from here.
+  // reads the ONE shared bounded-loop poll (see useProvisioningState above)
+  // and renders the appropriate phase. No explicit POST /container/provision
+  // from here.
 
-  const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
+  const containerReady =
+    container?.container_status === "running" || container?.container_substatus === "gateway_healthy";
+
+  // Honest /container/status error contract: container_status="error" is a
+  // REAL failure — previously masked as "provisioning" so a dead container
+  // spun a stepper forever. The UI keys off `container_substatus`, NEVER
+  // `runtime_phase` (which still resolves to a cold-start value like
+  // "provisioning" for an error row, so it could never tell a dead
+  // container from a live one).
+  //
+  // Error is TERMINAL by DEFAULT — `error_retrying` is the ONLY non-terminal
+  // exception. Keying "terminal" off a specific substatus (e.g. only
+  // `provision_failed`) is too narrow: the backend also emits terminal rows
+  // with `deployment_failed` (rollout circuit breaker) and a bare
+  // `container_status:"error"` with NO substatus (auto-retry gated /
+  // standing down), and those would fall through to the plain spinner with
+  // no Retry/Support CTA — the exact endless-spinner bug this contract
+  // exists to kill. Treating any non-retrying error as terminal restores the
+  // old catch-all's coverage and absorbs any future terminal substatus.
+  // `last_error` carries the reason.
+  const isRetryingError =
+    container?.container_status === "error" && container?.container_substatus === "error_retrying";
+  const isTerminalError =
+    container?.container_status === "error" && !isRetryingError;
+
+  // Readiness decision (backend runtime_phase="provisioning"/"starting"/
+  // "ready", lifecycle="parked"/"error"/…) is sourced from the ONE shared
+  // deriveUIPhase (packages/shared/src/hooks/statusContract.ts) instead of
+  // being reconstructed here — the useMemo ladder this replaced was the
+  // web-specific half of the byte-forked duplicate mobile's
+  // containerStatus.ts carried (mobile onboarding-parity Slice 1/COMPOSER).
+  // `/container/status`'s 200 body IS the composed StatusContract verbatim
+  // (see routers/container.py::_status_response — no legacy flat
+  // duplicates), so the SWR hook's `container` value already IS one.
+  const derived = container ? deriveUIPhase(container) : null;
+
+  // Poll /container/status while the CURRENT phase is pre-ready. Derived,
+  // not latched: an earlier one-way `reachedReady` latch turned polling off
+  // forever after the first ready — so a later regression (reprovision /
+  // wipe / scale-to-zero) rendered the cold-start UI with polling
+  // permanently dead (verified prod incident: frozen 15+ min over a ready
+  // backend). Deriving from the live phase re-arms automatically on
+  // regression and stops at ready/parked (the WS is the live channel
+  // there). This only gates the gateway-health RPC below now — the shared
+  // `useOnboardingStatus` bounded loop behind `useProvisioningState` polls
+  // unconditionally on its own cadence regardless of this flag.
+  const shouldPollContainer =
+    (isSubscribed || isTrialLocal) && derived?.phase !== "ready" && derived?.phase !== "parked";
 
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
@@ -344,27 +380,35 @@ export function ProvisioningStepper({
   // render commits. Without this regression detection, the stepper
   // would flash "agent" / "timed out" for a single frame before
   // settling onto the correct early sub-phase.
-  const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
+  //
+  // Sourced from `derived.phase` (the ONE shared deriveUIPhase output),
+  // NOT the deleted legacy flat `container.phase` field — "parked" is a
+  // `Lifecycle` refinement in the contract, not a `RuntimePhase` value, so
+  // `derived.phase` (which folds both in) is the correct read here.
+  const previousBackendPhaseRef = useRef<UIPhase | undefined>(undefined);
   const isRegressingFromReady =
     // eslint-disable-next-line react-hooks/refs
     (previousBackendPhaseRef.current === "ready" || previousBackendPhaseRef.current === "parked") &&
-    container?.phase !== undefined &&
-    container.phase !== "ready" &&
+    derived?.phase !== undefined &&
+    derived.phase !== "ready" &&
     // Parked is ready-equivalent: a healthy box the backend put to sleep,
     // one intent away from running. Treating ready->parked (or parked
     // holding steady) as a regression would swap the whole chat surface
     // for a cold-start stepper over a perfectly readable page.
-    container.phase !== "parked";
+    derived.phase !== "parked";
   // Mutate the ref during render — refs are React-blessed for this
   // pattern (derived state from prop transitions).
   // eslint-disable-next-line react-hooks/refs
-  previousBackendPhaseRef.current = container?.phase;
+  previousBackendPhaseRef.current = derived?.phase;
 
   // Derive phase purely from data. The cold-start window (backend
-  // phase="starting", roughly ECS RUNNING through gateway-pool-connected)
+  // runtimePhase="starting", roughly ECS RUNNING through gateway-connected)
   // is split into three visible UI sub-phases by elapsed time so the
   // user sees concrete progress through what is currently a 5+min wait
-  // in upstream's sidecars.channels.
+  // in upstream's sidecars.channels. That elapsed-time sub-stepping is a
+  // presentation-only refinement of ONE composer-decided phase
+  // ("cold_start") — not itself a readiness decision — so it stays here
+  // rather than in the shared deriveUIPhase.
   const phase: Phase = useMemo(() => {
     // Just regressed from ready -> not-ready? Force the conservative
     // early step until the reset effect clears stale timing state.
@@ -379,38 +423,34 @@ export function ProvisioningStepper({
     // Provider-specific signup step runs before container provision.
     if (needsProviderStep) return "provider";
 
-    // Trust the backend's phase field when it's present; fall back to
-    // the legacy status check for older backends still in flight.
-    const backendPhase = container?.phase;
-
-    if (!container) return "container";
+    if (!container || !derived) return "container";
     // Parked (wake-gated trial box, deliberately asleep): render the app —
     // content stays readable, and any interaction / message send wakes it.
     // Checked BEFORE the error/status branches: a parked row's status is
     // "stopped", which the legacy checks would misread as a cold start.
-    if (backendPhase === "parked") return resolvePostAgentPhase();
-    if (container.status === "error") return "container";
-    if (backendPhase === "provisioning") {
+    if (derived.phase === "parked") return resolvePostAgentPhase();
+    if (derived.phase === "error") return "container";
+    if (derived.runtimePhase === "provisioning") {
       // substatus "task_running" = the ECS task is RUNNING with an IP but
       // the gateway port hasn't opened yet (image pulled, OpenClaw
       // booting) — the real "gateway" window.
-      return container.substatus === "task_running" ? "gateway" : "container";
+      return container.container_substatus === "task_running" ? "gateway" : "container";
     }
-    if (backendPhase === undefined && !containerReady) return "container";
+    if (!containerReady && derived.runtimePhase !== "starting") return "container";
 
-    if (backendPhase === "starting" || (backendPhase === undefined && !gatewayHealth)) {
-      // phase="starting" means the gateway port answered the TCP probe:
-      // the gateway is up and OpenClaw is loading channels/sidecars.
+    if (derived.runtimePhase === "starting" || (!derived.chatAvailable && !gatewayHealth)) {
+      // runtimePhase="starting" means the gateway port answered the TCP
+      // probe: the gateway is up and OpenClaw is loading channels/sidecars.
       // Once the health RPC answers, only the pool handshake remains —
       // the "agent" step. Every transition here is a real signal.
       return gatewayHealth ? "agent" : "channels-sidecars";
     }
 
-    // backend phase="ready" (or legacy: gatewayHealth present) — chat is
-    // ready. Channel setup is no longer forced here; it is nudged via the
-    // Get Started guide and lives in Settings → Channels.
+    // derived.runtimePhase === "ready" (chatAvailable) — chat is ready.
+    // Channel setup is no longer forced here; it is nudged via the Get
+    // Started guide and lives in Settings → Channels.
     return resolvePostAgentPhase();
-  }, [trigger, isSubscribed, isTrialLocal, container, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
+  }, [trigger, isSubscribed, isTrialLocal, container, derived, containerReady, gatewayHealth, needsProviderStep, isRegressingFromReady]);
 
   // Analytics: fire `onboarding_step_completed` (step LEFT) + `onboarding_step_entered`
   // (step ARRIVED) per phase transition.
@@ -437,10 +477,10 @@ export function ProvisioningStepper({
   // first-activation milestone, so it must fire at most once per browser, ever.
   const sawColdStartRef = useRef(false);
   useEffect(() => {
-    if (container?.phase === "provisioning" || container?.phase === "starting") {
+    if (container?.runtime_phase === "provisioning" || container?.runtime_phase === "starting") {
       sawColdStartRef.current = true;
     }
-  }, [container?.phase]);
+  }, [container?.runtime_phase]);
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
@@ -591,6 +631,15 @@ export function ProvisioningStepper({
     }
   }, [phase]);
 
+  // Elapsed-time tick ONLY — the poll-watchdog half of this effect (an
+  // out-of-band `refresh()` fired at most once/10s to route around a
+  // throttled SWR chain) is DELETED (spec PR-9, CLIENT-HOOK). That was a
+  // compensating layer for the 3s-poll `useProvisioningState` call this
+  // stepper used to own; the shared `useOnboardingStatus` bounded loop
+  // behind it now has its own belt-and-suspenders backstop (a raw
+  // `setInterval`, independent of SWR's self-rescheduling chain, plus a
+  // fetch-timeout so a genuinely hung request can't wedge it either — see
+  // that hook's module doc) instead of each consumer improvising its own.
   useEffect(() => {
     if (
       phase !== "container" &&
@@ -632,27 +681,105 @@ export function ProvisioningStepper({
   // "Have we onboarded?" is a PER-CONTAINER fact, not per-user: an org
   // shares one container, so onboarding happens once for the whole org. The
   // backend stamps it on the container row and surfaces it as
-  // `container.onboarded` on /container/status (already polled above), so
-  // once anyone on this container completes the funnel, no one on it sees
-  // the funnel again — including a second org member whose own per-user
-  // marker is empty. No extra request: it rides on the poll we already do.
-  // `firstRun.briefSubmitted` stays only as an instant local latch, so the
-  // submitter doesn't see a flash between submitting and the next poll
-  // flipping `onboarded`.
-  const firstRun = readFirstRun(user);
+  // `container.onboarded` on /container/status, so once anyone on this
+  // container completes the funnel, no one on it sees the funnel again —
+  // including a second org member whose own per-user marker is empty.
+  // `container.onboarded` is the SOLE durable authority for "have we
+  // onboarded?": the backend resets it when a container is wiped/
+  // reprovisioned, so a legitimately reprovisioned owner re-onboards.
+  //
+  // No SAME-SESSION flash-bridge (spec PR-9, CLIENT-HOOK deleted the
+  // `briefBaselineRef`/`sessionBriefSubmittedRef` latch): the funnel dismisses
+  // purely on the backend's own per-generation `funnel_state` advancing off
+  // "not_started" on the next shared bounded-loop poll (~1-2s via the realtime
+  // nudge, 5s backstop), rather than an in-memory guess at Clerk's
+  // `firstRun.briefSubmitted` re-render. NOTE (Option B, "watch Friday work"):
+  // the dismiss trigger is funnel SUBMISSION, not onboarding COMPLETION — see
+  // `awaitingBrief` below. `container.onboarded` is still the SOLE durable
+  // authority for the reprovision guard (a legacy row onboarded via the old
+  // onboarded_at, with funnel_state "not_started", must never re-show the
+  // funnel), which is why `awaitingBrief` keeps the `!containerOnboarded` term.
   const containerOnboarded = container?.onboarded === true;
+  // Option B ("watch Friday work"): the funnel owns the screen only until the
+  // brief is SUBMITTED — not until onboarding COMPLETES. The moment the backend
+  // funnel_state advances past "not_started", we drop straight into Friday's
+  // chat so the user watches the server-dispatched first-run kickoff stream in
+  // live (goal/project/tasks appearing as she works), matching mobile's
+  // submit -> roster -> Friday redirect. `funnel_state` is the per-generation
+  // backend signal (resets to "not_started" when a container is recreated), so
+  // this keeps the reprovision safety `container.onboarded` gave; and the
+  // `!containerOnboarded` guard means a legacy-onboarded container (onboarded
+  // via the old onboarded_at, funnel_state still "not_started") never re-shows
+  // the funnel. Propagation from submit is ~1-2s via the realtime nudge (5s
+  // poll backstop), during which FirstRunFunnel shows its own "submitting" state
+  // — a brief confirmation, then live chat.
+  const funnelState = container?.funnel?.state ?? "not_started";
+  const awaitingBrief = !containerOnboarded && funnelState === "not_started";
   if (
     !!user &&
     gatePhase === "normal" &&
-    !containerOnboarded &&
-    !firstRun.briefSubmitted
+    // A terminally-failed container must fall through to the Setup-failed card
+    // below, never the funnel — submitting a brief to a dead backend is a
+    // dead end. (A retrying error is NOT terminal, so it still shows the
+    // funnel/provisioning UI like any live cold start.)
+    !isTerminalError &&
+    awaitingBrief
   ) {
     return <FirstRunFunnel />;
   }
 
-  // Ready — render children
+  // Hold a neutral loader until Clerk resolves `user`. The funnel branch above
+  // requires a loaded user, so a not-yet-onboarded container would otherwise
+  // flash `children` (or the stepper) for a frame before the funnel takes over
+  // once `user` loads. Only matters where the funnel COULD show — a
+  // normal-gate, not-yet-onboarded, non-terminal container. A terminal error
+  // still routes to its card below.
+  if (!userLoaded && gatePhase === "normal" && awaitingBrief && !isTerminalError) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // A ready-but-not-onboarded container BELONGS to the first-run funnel above,
+  // whatever the owner type (trial_local OR paid, personal OR org) — the funnel
+  // is keyed on `container.onboarded === false`, the authoritative per-container
+  // fact, NOT on the plan. But the funnel needs a truthy Clerk `user` (its
+  // submit writes user.unsafeMetadata), so its gate is `!!user`. When the
+  // container is already warm-ready while `user` is still resolving — the
+  // {isLoaded:true, user:null} window useUser returns right after an org
+  // `setActive` JWT refresh, which is exactly the paid-org-owner path (the
+  // personal path resolves `user` inline in useOnboardingGate, so it never hits
+  // this) — the funnel gate is skipped, the `!userLoaded` loader above is also
+  // skipped (Clerk reports loaded), and `phase === "ready"` below would hand
+  // straight off to the dockable workspace. That early ready-return beating the
+  // funnel IS the bug: a paid org owner is booted into a contextless workspace,
+  // the brief is never submitted, and Friday starts with zero goals/projects.
+  // Hold a neutral loader until `user` resolves so the funnel — not the dock —
+  // wins. On the auth-gated chat surface `user === null` is never "signed out"
+  // (WorkspaceShell / ChatLayout only mount this once isSignedIn), so it always
+  // resolves; an onboarded container falls through to children below.
+  if (phase === "ready" && !user && awaitingBrief) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Ready — render children. `teams_state: "failed"` is a NON-BLOCKING
+  // signal on the composed contract: Teams (Friday/Atlas) seeding failed
+  // but the container itself is healthy and chat works — so we render the
+  // app as normal and layer a small dismissible "Teams needs attention"
+  // notice over it, never a blocking interstitial.
   if (phase === "ready") {
-    return <>{children}</>;
+    return (
+      <>
+        {children}
+        {container?.teams_state === "failed" && <TeamsDegradedNotice />}
+      </>
+    );
   }
 
   // Team-pending: org member whose admin hasn't provisioned the shared
@@ -671,7 +798,7 @@ export function ProvisioningStepper({
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #faf7f2;
+            background: var(--cream);
           }
           .provision-card {
             text-align: center;
@@ -697,8 +824,8 @@ export function ProvisioningStepper({
           }
           .anim-key-circle {
             width: 56px; height: 56px;
-            border: 2px solid #e0dbd0;
-            border-top-color: #06402B;
+            border: 2px solid var(--edge);
+            border-top-color: var(--forest);
             border-radius: 50%;
           }
           .anim-key-icon {
@@ -710,18 +837,18 @@ export function ProvisioningStepper({
           }
           .provision-title {
             font-family: var(--font-lora-serif), serif;
-            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            font-size: 22px; font-weight: 400; color: var(--ink);
             margin-bottom: 8px;
           }
           .provision-desc {
             font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px; color: #8a8578;
+            font-size: 14px; color: var(--mute);
             margin-bottom: 24px;
           }
           .provision-muted {
             font-family: var(--font-dm-sans), sans-serif;
             font-size: 13px;
-            color: #8a8578;
+            color: var(--mute);
             margin: 0;
           }
           .provision-timeout {
@@ -747,7 +874,7 @@ export function ProvisioningStepper({
               <div className="provision-anim">
                 <div className="anim-key-circle" />
                 <div className="anim-key-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                   </svg>
                 </div>
@@ -772,7 +899,7 @@ export function ProvisioningStepper({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="rounded-full border-[#e0dbd0]"
+                  className="rounded-full border-[var(--edge)]"
                   onClick={() => refresh()}
                 >
                   Check again
@@ -823,7 +950,7 @@ export function ProvisioningStepper({
       setProviderStepDone(true);
     };
     return (
-      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+      <div className="flex-1 flex items-center justify-center p-6 bg-[var(--cream)]">
         <div className="w-full max-w-md">
           {providerChoice === "chatgpt_oauth" && (
             <ChatGPTOAuthStep onComplete={handleProviderComplete} />
@@ -871,25 +998,25 @@ export function ProvisioningStepper({
   if (gatePhase === "blocked" && blocked && providerStepDone && providerSettling) {
     const copy = PROVIDER_SETTLE_COPY[completedProvider ?? "default"];
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)]">
         <div className="w-full max-w-[400px] px-8 py-12 text-center">
           <div className="mb-8 flex justify-center">
             <Logo size="lg" href={null} />
           </div>
           <div className="mx-auto mb-8 flex h-20 w-20 items-center justify-center">
-            <Loader2 className="h-10 w-10 animate-spin text-[#06402B]" aria-hidden="true" />
+            <Loader2 className="h-10 w-10 animate-spin text-[var(--forest)]" aria-hidden="true" />
           </div>
           <h2
             role="status"
             aria-live="polite"
             aria-atomic="true"
-            className="mb-2 text-[22px] font-normal text-[#1a1a1a]"
+            className="mb-2 text-[22px] font-normal text-[var(--ink)]"
             style={{ fontFamily: "var(--font-lora-serif), serif" }}
           >
             {copy.title}
           </h2>
           <p
-            className="text-sm text-[#8a8578]"
+            className="text-sm text-[var(--mute)]"
             style={{ fontFamily: "var(--font-dm-sans), sans-serif" }}
           >
             {copy.desc}
@@ -902,17 +1029,46 @@ export function ProvisioningStepper({
   // Teams billing paywall: the gate returns team_billing_required for an org
   // owner (or member) with no billing row. Render the real per-seat checkout
   // card instead of the generic blocked card. TeamBillingCard is admin-gated
-  // internally — a member sees "ask your org admin" with no CTA.
+  // internally — a member sees "ask your org admin" with no CTA — and takes
+  // the gate's own `action.admin_only` rather than assuming it.
+  //
+  // The wrapper mirrors the generic blocked card below (logo centerpiece +
+  // Check again / Contact support footer on the #faf7f2 canvas) so a blocked
+  // org lands on the same shaped screen as every other gate; only the card in
+  // the middle differs.
   if (gatePhase === "blocked" && blocked && blocked.code === "team_billing_required") {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
-        <TeamBillingCard
-          seatCount={account?.seat_count ?? null}
-          seatPriceUsd={account?.team_seat_price_usd ?? null}
-          ownerRole={blocked.owner_role}
-          isSubscribed={false}
-          onSubscribe={startTeamCheckout}
-        />
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)] px-6 py-12">
+        <div className="flex w-full max-w-[440px] flex-col items-center">
+          <div className="mb-8 flex justify-center">
+            <Logo size="lg" href={null} />
+          </div>
+          <TeamBillingCard
+            seatCount={account?.seat_count ?? null}
+            seatPriceUsd={account?.team_seat_price_usd ?? null}
+            basePriceUsd={account?.team_base_price_usd ?? null}
+            ownerRole={blocked.owner_role}
+            adminOnly={blocked.action.admin_only}
+            isSubscribed={false}
+            onSubscribe={startTeamCheckout}
+          />
+          <div className="mt-6 flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full border-[var(--edge)]"
+              onClick={() => refresh()}
+            >
+              Check again
+            </Button>
+            <Button variant="ghost" size="sm" asChild>
+              <a
+                href="mailto:support@isol8.co"
+                onClick={() => capture("support_contact_clicked", { source: "onboarding_stepper", phase })}
+              >Contact support</a>
+            </Button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -927,7 +1083,7 @@ export function ProvisioningStepper({
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #faf7f2;
+            background: var(--cream);
           }
           .provision-card {
             text-align: center;
@@ -953,8 +1109,8 @@ export function ProvisioningStepper({
           }
           .anim-key-circle {
             width: 56px; height: 56px;
-            border: 2px solid #e0dbd0;
-            border-top-color: #06402B;
+            border: 2px solid var(--edge);
+            border-top-color: var(--forest);
             border-radius: 50%;
           }
           .anim-key-icon {
@@ -966,19 +1122,19 @@ export function ProvisioningStepper({
           }
           .provision-title {
             font-family: var(--font-lora-serif), serif;
-            font-size: 22px; font-weight: 400; color: #1a1a1a;
+            font-size: 22px; font-weight: 400; color: var(--ink);
             margin-bottom: 8px;
           }
           .provision-desc {
             font-family: var(--font-dm-sans), sans-serif;
-            font-size: 14px; color: #8a8578;
+            font-size: 14px; color: var(--mute);
             margin-bottom: 24px;
           }
           .provision-cta {
             display: inline-block;
             padding: 10px 22px;
             border-radius: 9999px;
-            background: #06402B;
+            background: var(--forest);
             color: #ffffff;
             font-family: var(--font-dm-sans), sans-serif;
             font-size: 14px;
@@ -989,7 +1145,7 @@ export function ProvisioningStepper({
           .provision-muted {
             font-family: var(--font-dm-sans), sans-serif;
             font-size: 13px;
-            color: #8a8578;
+            color: var(--mute);
             margin: 0;
           }
           .provision-timeout {
@@ -1017,7 +1173,7 @@ export function ProvisioningStepper({
               <div className="provision-anim">
                 <div className="anim-key-circle" />
                 <div className="anim-key-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                   </svg>
                 </div>
@@ -1047,7 +1203,7 @@ export function ProvisioningStepper({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="rounded-full border-[#e0dbd0]"
+                  className="rounded-full border-[var(--edge)]"
                   onClick={() => refresh()}
                 >
                   Check again
@@ -1100,12 +1256,12 @@ export function ProvisioningStepper({
   //      `account.provider_choice` is set but `isSubscribed` is false.
   //      They MUST see the picker again to restart checkout.
   //
-  //   3. trial_local (free-tier) owner: is_subscribed is TRUE (backend
-  //      treats trial_local as an active subscription) but provider_choice
-  //      is never set — there's no provider to pick on the free tier. The
-  //      `isTrialLocal` guard keeps these users off the picker so they flow
-  //      straight into container/gateway/ready instead of being shown a
-  //      payment step they don't need.
+  //   3. trial_local (free-tier) owner: is_subscribed is FALSE (it's the
+  //      PAID predicate — the free tier is usable but not subscribed) and
+  //      provider_choice is never set — there's no provider to pick on the
+  //      free tier. The `isTrialLocal` guard keeps these users off the
+  //      picker so they flow straight into container/gateway/ready instead
+  //      of being shown a payment step they don't need.
   //   4. A provisioning container (200 from /container/status) means the
   //      backend already gated this user in. For a fresh personal signup the
   //      trial_local row is created there, and /billing/account may not have
@@ -1117,23 +1273,29 @@ export function ProvisioningStepper({
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
-  // Error state
-  if (container?.status === "error") {
+  // Terminal error — any status="error" that isn't `error_retrying` (see
+  // isTerminalError above). Keyed off substatus, NOT `phase` (which resolves to
+  // "container" for an error row). A retrying error deliberately does NOT match:
+  // it falls through to the provisioning stepper below with a subtle "retrying"
+  // note instead of this terminal card. Copy is honest about a real failure —
+  // no "usually temporary" reassurance — since the container will not recover
+  // on its own; Retry re-checks, but support is the real path if it persists.
+  if (isTerminalError) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+      <div className="flex-1 flex items-center justify-center bg-[var(--cream)]">
         <div className="text-center space-y-6 max-w-sm">
           <StepperDisplay currentPhase={phase} steps={STEPS_PAID} error />
           <div className="space-y-2">
             <XCircle className="h-8 w-8 text-[#dc2626] mx-auto" />
-            <h2 className="text-lg font-medium text-[#1a1a1a]">Setup failed</h2>
-            <p className="text-sm text-[#8a8578]">
+            <h2 className="text-lg font-medium text-[var(--ink)]">Setup failed</h2>
+            <p className="text-sm text-[var(--mute)]">
               {isOrg
-                ? `Something went wrong while setting up the container for ${organization.name}. This is usually temporary.`
-                : "Something went wrong while setting up your container. This is usually temporary."}
+                ? `We couldn't finish setting up the container for ${organization.name}. Retry below — if it keeps failing, contact support and we'll get it sorted.`
+                : "We couldn't finish setting up your container. Retry below — if it keeps failing, contact support and we'll get it sorted."}
             </p>
           </div>
           <div className="flex gap-3 justify-center">
-            <Button variant="outline" className="rounded-full border-[#e0dbd0]" onClick={() => refresh()}>
+            <Button variant="outline" className="rounded-full border-[var(--edge)]" onClick={() => refresh()}>
               Retry
             </Button>
             <Button variant="ghost" className="rounded-full" asChild>
@@ -1161,7 +1323,7 @@ export function ProvisioningStepper({
           display: flex;
           align-items: center;
           justify-content: center;
-          background: #faf7f2;
+          background: var(--cream);
         }
         .provision-card {
           text-align: center;
@@ -1192,8 +1354,8 @@ export function ProvisioningStepper({
         /* Key spinner */
         .anim-key-circle {
           width: 56px; height: 56px;
-          border: 2px solid #e0dbd0;
-          border-top-color: #06402B;
+          border: 2px solid var(--edge);
+          border-top-color: var(--forest);
           border-radius: 50%;
           animation: key-spin 1.2s linear infinite;
         }
@@ -1210,7 +1372,7 @@ export function ProvisioningStepper({
         .anim-pod { position: relative; width: 56px; height: 56px; }
         .pod-body {
           position: absolute; bottom: 0; left: 4px; right: 4px; height: 32px;
-          background: #06402B; border-radius: 0 0 8px 8px;
+          background: var(--forest); border-radius: 0 0 8px 8px;
         }
         .pod-window {
           width: 20px; height: 10px; background: #a8e6c6; border-radius: 4px;
@@ -1240,7 +1402,7 @@ export function ProvisioningStepper({
         }
         .pod-lid-l, .pod-lid-r {
           position: absolute; top: 16px; width: 50%; height: 12px;
-          background: #06402B; transition: transform 600ms ease-out;
+          background: var(--forest); transition: transform 600ms ease-out;
         }
         .pod-lid-l { left: 4px; border-radius: 8px 0 0 0; transform-origin: left center; }
         .pod-lid-r { right: 4px; border-radius: 0 8px 0 0; transform-origin: right center; }
@@ -1270,12 +1432,12 @@ export function ProvisioningStepper({
         /* Title fade */
         .provision-title {
           font-family: var(--font-lora-serif), serif;
-          font-size: 22px; font-weight: 400; color: #1a1a1a;
+          font-size: 22px; font-weight: 400; color: var(--ink);
           margin-bottom: 8px; transition: opacity 150ms ease-out;
         }
         .provision-desc {
           font-family: var(--font-dm-sans), sans-serif;
-          font-size: 14px; color: #8a8578;
+          font-size: 14px; color: var(--mute);
           margin-bottom: 32px; transition: opacity 150ms ease-out;
         }
         .provision-fading { opacity: 0; }
@@ -1308,12 +1470,12 @@ export function ProvisioningStepper({
         }
         .provision-dot {
           width: 10px; height: 10px; border-radius: 50%;
-          background: #e0dbd0; transition: background 300ms ease-out, transform 300ms ease-out;
+          background: var(--edge); transition: background 300ms ease-out, transform 300ms ease-out;
         }
-        .provision-dot.active { background: #06402B; transform: scale(1.2); }
+        .provision-dot.active { background: var(--forest); transform: scale(1.2); }
         .provision-dot.done { background: #2d8a4e; }
         .provision-connector {
-          width: 32px; height: 2px; background: #e0dbd0;
+          width: 32px; height: 2px; background: var(--edge);
           transition: background 300ms ease-out;
         }
         .provision-connector.done { background: #2d8a4e; }
@@ -1328,7 +1490,7 @@ export function ProvisioningStepper({
           color: #2d7a50;
         }
         .provision-free-sub {
-          font-size: 12px; color: #8a8578; margin-top: 8px;
+          font-size: 12px; color: var(--mute); margin-top: 8px;
         }
         /* Live elapsed counter — sits below the dots so the user always
            sees the clock moving even before the soft-timeout copy appears. */
@@ -1383,7 +1545,7 @@ export function ProvisioningStepper({
             <div className={`provision-anim ${phase === "payment" || phase === "container" ? "active" : ""}`}>
               <div className="anim-key-circle" />
               <div className="anim-key-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                 </svg>
               </div>
@@ -1421,7 +1583,7 @@ export function ProvisioningStepper({
             {/* Step: ready — checkmark */}
             <div className={`provision-anim ${(phase as string) === "ready" ? "active" : ""}`}>
               <div className="anim-done">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--forest)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" className="check-path" />
                 </svg>
               </div>
@@ -1468,6 +1630,15 @@ export function ProvisioningStepper({
               </div>
             )}
 
+          {/* Transient error (status="error" + substatus="error_retrying"): the
+              backend is auto-retrying, so we keep the stepper and add a calm,
+              non-alarming line rather than the terminal "Setup failed" card. */}
+          {isRetryingError && (
+            <div className="provision-elapsed" role="status" aria-live="polite">
+              Hit a snag — retrying automatically.
+            </div>
+          )}
+
           {timedOut && (
             <div className="provision-timeout">
               <p className="provision-timeout-msg">
@@ -1477,7 +1648,7 @@ export function ProvisioningStepper({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="rounded-full border-[#e0dbd0]"
+                  className="rounded-full border-[var(--edge)]"
                   onClick={() => {
                     refresh();
                     setTimedOut(false);
@@ -1499,6 +1670,56 @@ export function ProvisioningStepper({
         </div>
       </div>
     </>
+  );
+}
+
+
+/**
+ * Non-blocking "Teams needs attention" affordance layered over the ready app
+ * when /container/status reports `teams_state: "failed"` — Teams (Friday/Atlas)
+ * seeding failed but the container is healthy and chat works. Fixed, small, and
+ * dismissible so it never blocks the app. Owns its own dismiss state so the
+ * ready branch stays a plain `children` return with no extra parent hook.
+ */
+function TeamsDegradedNotice() {
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    capture("teams_degraded_notice_shown");
+  }, []);
+  if (dismissed) return null;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 right-4 z-50 max-w-xs rounded-xl border border-[#e7c9a8] bg-[#fdf6ec] px-4 py-3 shadow-lg"
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <p className="text-sm font-medium text-[#7a4a12]">Teams needs attention</p>
+          <p className="mt-1 text-xs text-[#8a6a3a]">
+            Your team workspace didn&apos;t finish setting up, so some team
+            features may be unavailable. Chat works normally.
+          </p>
+          <a
+            href="mailto:support@isol8.co"
+            onClick={() =>
+              capture("support_contact_clicked", { source: "teams_degraded_notice" })
+            }
+            className="mt-2 inline-block text-xs font-medium text-[var(--forest)] underline"
+          >
+            Contact support
+          </a>
+        </div>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={() => setDismissed(true)}
+          className="text-lg leading-none text-[#b08a5a] hover:text-[#7a4a12]"
+        >
+          ×
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -1528,7 +1749,7 @@ function StepperDisplay({
             ) : isComplete ? (
               <CheckCircle className="h-5 w-5 text-[#2d8a4e] flex-shrink-0" />
             ) : isCurrent ? (
-              <Loader2 className="h-5 w-5 animate-spin text-[#06402B] flex-shrink-0" />
+              <Loader2 className="h-5 w-5 animate-spin text-[var(--forest)] flex-shrink-0" />
             ) : (
               <Circle className="h-5 w-5 text-[#d4cfc5] flex-shrink-0" />
             )}
@@ -1537,9 +1758,9 @@ function StepperDisplay({
                 isErrorStep
                   ? "text-sm text-[#dc2626]"
                   : isComplete
-                    ? "text-sm text-[#1a1a1a]"
+                    ? "text-sm text-[var(--ink)]"
                     : isCurrent
-                      ? "text-sm text-[#1a1a1a] font-medium"
+                      ? "text-sm text-[var(--ink)] font-medium"
                       : "text-sm text-[#c5bfb6]"
               }
             >
@@ -1593,17 +1814,17 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
   }, [api, isOrg]);
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">
+    <div className="flex-1 flex items-center justify-center p-8 bg-[var(--cream)]">
       <div className="max-w-5xl w-full space-y-8 text-center">
         <div className="space-y-3">
           <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4">
-            <rect width="100" height="100" rx="22" fill="#06402B" />
+            <rect width="100" height="100" rx="22" fill="var(--forest)" />
             <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
           </svg>
-          <h2 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
+          <h2 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
             One price. Three ways to power it.
           </h2>
-          <p className="text-[#8a8578] text-sm max-w-md mx-auto">
+          <p className="text-[var(--mute)] text-sm max-w-md mx-auto">
             {isOrg
               ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
               : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure."}
@@ -1620,15 +1841,15 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
               key={card.id}
               className={
                 "rounded-xl border p-6 space-y-4 bg-white text-left flex flex-col " +
-                (card.highlighted ? "border-2 border-[#06402B]" : "border-[#e0dbd0]")
+                (card.highlighted ? "border-2 border-[var(--forest)]" : "border-[var(--edge)]")
               }
             >
               <div className="space-y-1">
-                <h3 className="font-medium text-[#1a1a1a]">{card.title}</h3>
-                <p className="text-sm text-[#8a8578]">{card.subtitle}</p>
-                <p className="text-xs text-[#06402B] font-medium">{card.trialNote}</p>
+                <h3 className="font-medium text-[var(--ink)]">{card.title}</h3>
+                <p className="text-sm text-[var(--mute)]">{card.subtitle}</p>
+                <p className="text-xs text-[var(--forest)] font-medium">{card.trialNote}</p>
                 {isOrg && card.id === "chatgpt_oauth" && (
-                  <p className="text-xs text-[#8a8578]">
+                  <p className="text-xs text-[var(--mute)]">
                     You connect your ChatGPT account (Pro recommended) — one
                     account powers the whole workspace.
                   </p>
@@ -1637,7 +1858,7 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
               <ul className="text-sm text-[#5a5549] space-y-2 flex-1">
                 {card.bullets.map((b) => (
                   <li key={b} className="flex items-start gap-2">
-                    <span aria-hidden className="text-[#06402B]">✓</span>
+                    <span aria-hidden className="text-[var(--forest)]">✓</span>
                     <span>{b}</span>
                   </li>
                 ))}
@@ -1645,8 +1866,8 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
               <Button
                 className={
                   card.highlighted
-                    ? "w-full rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white"
-                    : "w-full rounded-full border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]"
+                    ? "w-full rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white"
+                    : "w-full rounded-full border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
                 }
                 variant={card.highlighted ? "default" : "outline"}
                 onClick={() => handlePick(card.id)}

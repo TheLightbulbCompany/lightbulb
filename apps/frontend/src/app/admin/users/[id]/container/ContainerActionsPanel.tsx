@@ -48,11 +48,11 @@ export interface ContainerActionsPanelProps {
  * Client island for the per-user container lifecycle actions. All four
  * actions use the user_id as the typed-confirm phrase (CEO S5).
  *
- * Note on Resize: post-flat-fee (2026-04 pivot) every user runs the same
- * 0.5 vCPU / 1 GB box, so resize is now a "re-apply standard sizing"
- * recovery action — it forces the ECS service to roll its task definition
- * with the canonical per-user resource profile. The backend's resize
- * endpoint accepts and ignores the legacy `tier` argument.
+ * Note on Resize: post-flat-fee (2026-04 pivot) every user runs a
+ * plan-sized box (standard 1 vCPU / 4 GB; Ultra Pro 2 vCPU / 8 GB), so resize
+ * is now a "re-apply standard sizing" recovery action — it forces the ECS
+ * service to roll its task definition with the canonical per-user resource
+ * profile. The backend's resize endpoint accepts and ignores the legacy `tier` argument.
  */
 export function ContainerActionsPanel({
   userId,
@@ -245,9 +245,10 @@ export function ContainerActionsPanel({
             Re-apply standard sizing
           </h3>
           <p className="text-xs text-zinc-400">
-            Forces the ECS service to roll its task definition with the
-            canonical 0.5 vCPU / 1 GB profile. Use as a recovery action when
-            a container is wedged on a stale task def.
+            Forces the ECS service to roll its task definition back to the
+            owner&apos;s plan-sized profile (standard 1 vCPU / 4 GB; Ultra
+            Pro 2 vCPU / 8 GB). Use as a recovery action when a container is
+            wedged on a stale task def.
           </p>
           <ConfirmActionDialog
             confirmText={userId}

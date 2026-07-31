@@ -585,9 +585,8 @@ class CatalogService:
             "config_registered": slice_has_agent,
             # Lets the storefront distinguish "deployed with harness
             # delegation live" from "needs ACP but it couldn't be turned on"
-            # (flag off, or the buyer's provider can't auth any harness) so it
-            # can render a soft note instead of silently shipping a degraded
-            # agent.
+            # (the buyer's provider can't auth any harness) so it can render a
+            # soft note instead of silently shipping a degraded agent.
             "acp_requested": acp_requested,
             "acp_enabled": acp_enabled,
         }
@@ -642,8 +641,6 @@ class CatalogService:
 
         Returns True iff the ACP block was written. Returns False (no-op) when:
           - the listing doesn't require ACP,
-          - ``settings.ACP_ENABLED`` is off (the platform-wide rollout flag —
-            the acpx runtime is only baked + promoted behind it),
           - the buyer's provider can't authenticate any harness
             (``derive_enabled_harnesses`` returns []; e.g. a Gemini-only owner).
 
@@ -657,15 +654,6 @@ class CatalogService:
         another ACP agent just re-merges the same block.
         """
         if not manifest.get("requires_acp"):
-            return False
-
-        from core.config import settings
-
-        if not settings.ACP_ENABLED:
-            logger.info(
-                "deploy: listing requires ACP but ACP_ENABLED is off; skipping for %s",
-                owner_id,
-            )
             return False
 
         from core.containers.config import build_acp_config, derive_enabled_harnesses
@@ -728,7 +716,7 @@ def get_catalog_service() -> CatalogService:
     """Returns the singleton CatalogService used by marketplace deploys.
 
     No longer reads from the admin-catalog S3 bucket — publish + unpublish
-    moved to the marketplace flow (#547). The remaining surface is
+    moved to the marketplace flow. The remaining surface is
     ``deploy_from_artifact`` (called by /marketplace/listings/{slug}/deploy
     after fetching the tarball + slice from the marketplace artifacts
     bucket) and ``list_deployed_for_user`` (called by

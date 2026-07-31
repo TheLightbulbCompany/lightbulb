@@ -21,6 +21,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from core.config import settings
 from core.containers.workspace import get_workspace
 from core.repositories import agent_email_repo, billing_repo
 
@@ -81,11 +82,28 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
 
     provider_choice, byo_provider = provider_choice_from_row(account)
     return {
+        # The container builds its own /u/{owner_id} backend URLs from this,
+        # so there is no second source of truth for who it is acting as.
+        "owner_id": owner_id,
         "plan": plan,
         "subscription_status": status,
         "provider": format_provider_label(provider_choice, byo_provider),
         "provider_choice": provider_choice,
         "owner_kind": "org" if is_org_owner_id(owner_id) else "personal",
+        # TRI-STATE with `email_address` below, and load-bearing.
+        #
+        # `email_address` alone cannot distinguish "email is off for this
+        # owner" from "you can send; your address is created by your first
+        # send" — and the address IS minted by the first send, so it is null
+        # right up until the agent acts. The isol8 skill's rule is "null =>
+        # don't claim an address and don't offer email", so without this flag
+        # the agent reads null, correctly declines, and first contact
+        # deadlocks on its own instructions.
+        #
+        #   email_enabled=False                  -> email is off here
+        #   email_enabled=True,  address=None    -> may send; sending mints it
+        #   email_enabled=True,  address="..."   -> that is the address
+        "email_enabled": bool((settings.AGENT_EMAIL_DOMAIN or "").strip()),
         "email_address": email_address,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

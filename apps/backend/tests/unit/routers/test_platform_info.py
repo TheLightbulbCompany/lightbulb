@@ -35,7 +35,7 @@ def client():
 
 
 def test_catalog_is_public_and_lists_everything(client):
-    """No auth → 200, and every registry provider + channel is present."""
+    """No auth → 200, and every provider offered in THIS env + channel is present."""
     resp = client.get(PREFIX)
     assert resp.status_code == 200
     body = resp.json()
@@ -48,7 +48,7 @@ def test_catalog_is_public_and_lists_everything(client):
 
     # Each integration carries exactly the projected fields, nothing else.
     for entry in body["integrations"]:
-        assert set(entry.keys()) == {"key", "display_name", "byo_required"}
+        assert set(entry.keys()) == {"key", "display_name", "byo_required", "requestable"}
     for entry in body["channels"]:
         assert set(entry.keys()) == {"key", "display_name"}
 
@@ -56,14 +56,37 @@ def test_catalog_is_public_and_lists_everything(client):
 def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
     """Appending a provider to the registry surfaces it in the catalog — the
     whole point of the live read (no image rebuild, no skill edit)."""
-    fake = SimpleNamespace(key="acme", display_name="Acme", byo_required=True)
+    fake = SimpleNamespace(key="acme", display_name="Acme", byo_required=True, environments=None)
     real = dict(registry.all_providers())
     real["acme"] = fake
     monkeypatch.setattr(platform_info.registry, "all_providers", lambda: real)
 
     body = client.get(PREFIX).json()
     entry = next(i for i in body["integrations"] if i["key"] == "acme")
-    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True}
+    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True, "requestable": False}
+
+
+def test_env_gated_provider_is_hidden_unless_it_opts_in(client, monkeypatch):
+    """A gate still means HIDDEN on this unauthenticated route. Advertising a
+    gated provider as requestable is an explicit per-provider opt-in
+    (``offer_request_access``) — otherwise adding a half-wired dev-only provider
+    would have agents pitching it to every prod owner, with no knob to stop it.
+    """
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "dev")
+    dev = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert dev["instagram"]["requestable"] is False
+
+    monkeypatch.setattr(registry.settings, "ENVIRONMENT", "prod")
+    prod = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert registry.get_provider("instagram").offer_request_access is False
+    assert "instagram" not in prod
+
+    # Opted in → advertised, flagged requestable, so the agent tells the owner to
+    # request it rather than claiming it is one click away.
+    opted_in = registry.get_provider("instagram").model_copy(update={"offer_request_access": True})
+    monkeypatch.setattr(platform_info.registry, "all_providers", lambda: {"instagram": opted_in})
+    body = {i["key"]: i for i in client.get(PREFIX).json()["integrations"]}
+    assert body["instagram"]["requestable"] is True
 
 
 def test_new_channel_surfaces_with_no_name_map(client, monkeypatch):

@@ -1,32 +1,34 @@
-"""Single outbound-email seam over the Resend SDK.
+"""App-generated mail (welcome email, support-ticket delivery).
 
-Everything that sends app-generated mail (welcome email; Plan 2 support
-ticket delivery) goes through send_email. It is:
+This is the seam for mail the *platform* sends about itself, as opposed to
+mail an *agent* sends on a user's behalf (``ses_email.send_ses_reply``).
+Both ride the same SES transport — this module adds only the concerns that
+are specific to app mail:
 
-- **Gated** — no-ops unless a real Resend key (re_…) is configured, so an env
-  still holding the CDK-generated placeholder secret never 403s. Presence of a
-  real key is the only switch.
-- **Off the event loop** — the Resend SDK is synchronous; we run it in a
-  worker thread with a hard timeout so a slow send can't wedge the caller
-  (e.g. the Clerk webhook).
-- **Best-effort** — it never raises. On failure it logs, emits a metric, and
-  returns None. Callers that care can branch on the return value.
+- **[ENV] subject tagging** so a dev/staging test send is obvious in the
+  inbox ("[DEV] Welcome to Isol8"). Prod sends are unprefixed. Agent replies
+  deliberately do NOT get this — they go to real customers.
+- **Reply-To routing** to the support mailbox.
+
+Everything else is inherited from ``ses_email.send_ses_email``: the
+AGENT_EMAIL_DOMAIN gate, running off the event loop, never raising, and the
+``email.send`` metric — including the ``result=skipped_unconfigured``
+outcome, so an env that cannot send is never silent. That last one matters
+for support tickets specifically: the email IS the only capture path, so a
+silent skip loses the request outright.
+
+Previously this sent via Resend. It moved to SES because ``isol8.co`` was
+already a verified SES domain identity that the backend task role could
+already send as, making Resend a second vendor, a second secret, and a
+second domain verification for no capability we used.
 """
 
 import logging
 
-import anyio
-import resend
-
 from core.config import settings
-from core.observability.metrics import put_metric
+from core.services import ses_email
 
 logger = logging.getLogger(__name__)
-
-# Hard ceiling so a hung Resend request cannot block the calling coroutine
-# (e.g. the webhook handler). The worker thread may keep running after this
-# fires — acceptable for best-effort mail.
-_SEND_TIMEOUT_S = 10
 
 
 async def send_email(
@@ -37,62 +39,29 @@ async def send_email(
     from_addr: str,
     reply_to: str | list[str] | None = None,
     text: str | None = None,
-    idempotency_key: str | None = None,
-    tags: list[dict[str, str]] | None = None,
-    headers: dict[str, str] | None = None,
     kind: str = "generic",
 ) -> str | None:
-    """Send one email via Resend. Returns the Resend email id, or None when
-    no real Resend key is configured / on failure. Never raises.
+    """Send one app email. Returns the SES MessageId, or None when sending is
+    not configured / on failure. Never raises.
 
     kind is a short label ("welcome", "support_ticket") used only for metric
     dimensions and log context.
     """
-    # Real Resend keys are re_-prefixed; this also skips the random placeholder
-    # the CDK secret holds until an operator sets the real key, so we never 403
-    # against it. Presence of a real key is the only switch — no enable flag.
-    if not settings.RESEND_API_KEY.startswith("re_"):
-        logger.debug("no real Resend key configured; skipping %s send to %s", kind, to)
-        return None
-
-    # Tag non-prod mail so dev/staging test sends are obvious in the inbox
-    # (e.g. "[DEV] Welcome to Isol8"). Prod sends are unprefixed.
+    # Tag non-prod mail so dev/staging test sends are obvious in the inbox.
     env = settings.ENVIRONMENT.strip()
     if env and env.lower() not in ("prod", "production"):
         subject = f"[{env.upper()}] {subject}"
 
-    resend.api_key = settings.RESEND_API_KEY
-
-    params: resend.Emails.SendParams = {
-        "from": from_addr,
-        "to": to,
-        "subject": subject,
-        "html": html,
-    }
-    if text is not None:
-        params["text"] = text
+    headers = {}
     if reply_to is not None:
-        params["reply_to"] = reply_to
-    if tags is not None:
-        params["tags"] = tags
-    if headers is not None:
-        params["headers"] = headers
+        headers["Reply-To"] = ", ".join(reply_to) if isinstance(reply_to, list) else reply_to
 
-    options = {"idempotency_key": idempotency_key} if idempotency_key else None
-
-    try:
-        with anyio.fail_after(_SEND_TIMEOUT_S):
-            # abandon_on_cancel=True so fail_after can actually return at the
-            # deadline. anyio shields a default run_sync from cancellation and
-            # would otherwise wait for the stalled thread, blocking the caller
-            # (the Clerk webhook) past the timeout. The orphaned thread
-            # finishing late is fine for best-effort mail.
-            resp = await anyio.to_thread.run_sync(lambda: resend.Emails.send(params, options), abandon_on_cancel=True)
-        email_id = resp.get("id") if isinstance(resp, dict) else getattr(resp, "id", None)
-        put_metric("email.send", dimensions={"result": "ok", "kind": kind})
-        logger.info("sent %s email to %s id=%s", kind, to, email_id)
-        return email_id
-    except Exception:
-        put_metric("email.send", dimensions={"result": "error", "kind": kind})
-        logger.exception("send_email failed for %s to %s", kind, to)
-        return None
+    return await ses_email.send_ses_email(
+        from_addr=from_addr,
+        to=to,
+        subject=subject,
+        body_text=text,
+        body_html=html,
+        headers=headers or None,
+        kind=kind,
+    )

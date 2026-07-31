@@ -1265,7 +1265,19 @@ class TestActiveRunTracking:
         assert session_key not in connection._active_runs
 
     @pytest.mark.asyncio
-    async def test_chat_error_clears_active_run(self, connection):
+    async def test_chat_error_clears_active_run(self, connection, monkeypatch):
+        """`errorKind: "rate_limit"` drives this through
+        `_budget_error_code`'s mid-run reclassification, which reads
+        `billing_repo`. Stubbed to return None (no billing row) so this test
+        stays deterministic and never touches DynamoDB — this assertion only
+        cares about `_active_runs` bookkeeping, not the reclassification
+        outcome."""
+
+        async def fake_no_billing_row(owner_id):
+            return None
+
+        monkeypatch.setattr("core.repositories.billing_repo.get_by_owner_id", fake_no_billing_row)
+
         session_key = "agent:main:user-active-run"
         connection.mark_run_active(session_key, agent_id="main")
 

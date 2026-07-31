@@ -13,7 +13,7 @@ from typing import Annotated
 
 import boto3
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
 from core.auth import (
@@ -27,11 +27,12 @@ from core.auth import (
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import ULTRA_CPU, ULTRA_MEMORY_MIB
-from core.repositories import billing_repo, marketplace_repo
+from core.repositories import billing_repo, container_repo, marketplace_repo
 from core.services import (
     agent_export,
     company_deploy_service,
     curator,
+    marketplace_hire,
     marketplace_search,
     marketplace_service,
     seller_display,
@@ -39,7 +40,12 @@ from core.services import (
 )
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.agent_routine_provisioning import create_agent_routines
-from core.services.catalog_service import MissingCredentialsError, get_catalog_service, warn_rows
+from core.services.catalog_service import (
+    CatalogService,
+    MissingCredentialsError,
+    get_catalog_service,
+    warn_rows,
+)
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
@@ -136,6 +142,191 @@ async def _recreate_routines_for_buyer(
         await http.aclose()
 
 
+_COMPACT_SUMMARY_MAX = 200
+
+
+def _summary_of(listing: dict) -> str:
+    """First prose line of ``description_md`` — skips headings and blanks.
+
+    One line is enough for an agent to judge fit; the full body is a
+    listing-detail fetch away for anyone who wants it.
+    """
+    for line in (listing.get("description_md") or "").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped[:_COMPACT_SUMMARY_MAX]
+    return ""
+
+
+def _compact_items(items: list[dict]) -> list[dict]:
+    """Agent-shaped projection: enough to judge fit, nothing else.
+
+    Deliberately excludes ``manifest_json``, ``s3_prefix``, ``manifest_sha256``,
+    safety flags and seller fields. ``manifest_json`` alone is the bulk of the
+    ~50KB the default view returns for 8 listings — far more than an agent
+    deciding "who could do content work?" can afford to read.
+
+    Carries ``listing_id`` as well as ``slug``. The UUID is the canonical
+    identity — **slugs are NOT unique** (see
+    ``marketplace_service.get_published_by_id``) — so every downstream action
+    (deploy, checkout) must address the listing by ``listing_id``. ``slug``
+    stays because it is what an agent names in prose and what a human
+    recognizes.
+
+    Coerces null/absent ``tags`` and ``price_cents``: DynamoDB rows carry
+    explicit nulls, and older listings predate several of these fields.
+    """
+    return [
+        {
+            "listing_id": item.get("listing_id", ""),
+            "slug": item.get("slug", ""),
+            "name": item.get("name", ""),
+            "summary": _summary_of(item),
+            "tags": item.get("tags") or [],
+            "price_cents": item.get("price_cents") or 0,
+        }
+        for item in items
+    ]
+
+
+def _fetch_agent_artifact(listing: dict) -> tuple[bytes, dict]:
+    """Fetch a published agent listing's tarball + openclaw slice from S3.
+
+    Extracted from ``deploy_listing`` so the approval-driven install
+    (``marketplace_hire.deploy_for_approval``) runs the identical fetch —
+    including the legacy-listing tolerance below — instead of a second copy
+    that can drift.
+
+    Returns ``(tar_bytes, slice_)``. The manifest is NOT fetched here: the one
+    on the listing row is authoritative for slug/name/version.
+    """
+    # Fetch the artifact tarball + slice from S3. The listing's ``s3_prefix``
+    # is written by ``marketplace_service._upload_artifact_to_s3`` and looks
+    # like ``listings/{listing_id}/v{version}/``. We deliberately skip
+    # reading manifest.json (the manifest stored on the listing row is
+    # authoritative for slug/name/version).
+    s3_prefix = listing.get("s3_prefix")
+    if not s3_prefix:
+        raise HTTPException(status_code=500, detail="listing has no artifact prefix")
+
+    s3 = boto3.client("s3")
+    try:
+        obj = s3.get_object(
+            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            Key=f"{s3_prefix}workspace.tar.gz",
+        )
+        tar_bytes = obj["Body"].read()
+    except ClientError as exc:
+        # Sanitize boto error text out of the user-facing response — raw
+        # ClientError messages can leak bucket names / role ARNs / etc.
+        error_code = exc.response.get("Error", {}).get("Code", "")
+        logger.exception(
+            "Marketplace deploy: S3 fetch failed for listing %s (code=%s)",
+            listing.get("listing_id"),
+            error_code,
+        )
+        if error_code == "NoSuchKey":
+            raise HTTPException(
+                status_code=500,
+                detail="artifact missing for published listing",
+            ) from exc
+        raise HTTPException(
+            status_code=500,
+            detail="failed to fetch listing artifact",
+        ) from exc
+
+    # Fetch the slice. NoSuchKey is tolerated for legacy listings published
+    # before slice-synthesis shipped — those deploys land workspace files
+    # without registering the agent in openclaw.json (legacy behavior).
+    try:
+        slice_obj = s3.get_object(
+            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
+            Key=f"{s3_prefix}openclaw-slice.json",
+        )
+        slice_ = json.loads(slice_obj["Body"].read())
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+            logger.info(
+                "Marketplace deploy: legacy listing %s has no openclaw-slice; deploying without config registration",
+                listing.get("listing_id"),
+            )
+            slice_ = {}
+        else:
+            logger.exception(
+                "Marketplace deploy: slice fetch failed for listing %s",
+                listing.get("listing_id"),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="failed to fetch listing slice",
+            ) from exc
+    return tar_bytes, slice_
+
+
+def _resolve_recommended(slugs: list[str], published: list[dict]) -> list[dict]:
+    """Compact rows for ``slugs``, in the order asked, unknown ones dropped.
+
+    Dropping rather than raising is deliberate: a model naming a listing that
+    does not exist should produce no card, never a failed tool call that costs
+    another model turn to recover from. Non-published rows are dropped for the
+    same reason — the deploy route would 404 on them anyway.
+
+    Deduplicates, so naming the same agent twice does not render two cards.
+    """
+    by_slug = {row.get("slug"): row for row in published if row.get("status") == "published"}
+    seen: set[str] = set()
+    ordered: list[dict] = []
+    for slug in slugs:
+        if slug in by_slug and slug not in seen:
+            seen.add(slug)
+            ordered.append(by_slug[slug])
+    return _compact_items(ordered)
+
+
+@router.get("/u/{owner_id}/recommend")
+async def recommend(
+    owner_id: str,
+    request: Request,
+    slugs: str = Query(description="Comma-separated listing slugs from marketplace_search."),
+    issue_id: str | None = Query(
+        default=None,
+        description="Paperclip issue id — set only on headless runs, where nobody is watching chat.",
+    ),
+):
+    """Resolve slugs for a hire recommendation. Container-authenticated.
+
+    Read-only with respect to the roster. When ``issue_id`` is present this
+    additionally files a PENDING Paperclip ``hire_agent`` approval on that
+    issue, which still changes nothing until a human approves it in Teams.
+
+    Owner is in the PATH and authorized by the per-container ``hook_token``,
+    matching ``hooks_proxy`` and ``agent_builder``. Naming another owner does
+    not grant access to them: the token compare is against THAT owner's row.
+    """
+    from routers.agent_builder import _require_hook_token
+
+    await _require_hook_token(owner_id, request)
+
+    wanted = [s.strip() for s in slugs.split(",") if s.strip()]
+    published = await marketplace_search.search(query=None, limit=100)
+    listings = _resolve_recommended(wanted, published)
+
+    # Headless: file a hire_agent approval on the issue so the ask reaches the
+    # owner in Teams rather than a chat nobody is watching. Best-effort — losing
+    # the approval must not cost the caller the listings it already resolved,
+    # since Friday naming them in her reply beats an errored tool call.
+    approval_id = None
+    if issue_id and listings:
+        try:
+            approval_id = await marketplace_hire.create_hire_approval(
+                owner_id=owner_id, issue_id=issue_id, listing=listings[0]
+            )
+        except Exception:
+            logger.exception("recommend: hire approval failed for owner=%s issue=%s", owner_id, issue_id)
+
+    return {"listings": listings, "approval_id": approval_id}
+
+
 @router.get("/listings/search")
 async def search_listings(
     response: Response,
@@ -153,6 +344,14 @@ async def search_listings(
         description=(
             "Comma-separated statuses (draft,review,published,retired,taken_down)."
             " Honored only when seller_id matches the calling user."
+        ),
+    ),
+    view: str | None = Query(
+        default=None,
+        pattern="^compact$",
+        description=(
+            "compact = agent-shaped projection (slug, name, summary, tags, price_cents)."
+            " Omit for the full row the web surfaces consume."
         ),
     ),
 ):
@@ -192,6 +391,10 @@ async def search_listings(
         include_unpublished=include_unpublished,
         status_in=status_list,
     )
+    if view == "compact":
+        # Agent-facing: skip the seller-name hydration entirely — it is an
+        # extra round trip whose output the compact projection drops anyway.
+        return {"items": _compact_items(items)}
     await seller_display.attach_seller_names(items)
     return {"items": items}
 
@@ -358,6 +561,41 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
         raise HTTPException(status_code=500, detail="failed to fetch listing artifact") from exc
 
 
+def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None) -> dict | None:
+    """The owner's still-live install of ``slug``, or None.
+
+    A ``.template`` sidecar on its own isn't proof the agent exists: the Teams
+    REST delete (``routers/teams/agents.py``) removes only the Paperclip row,
+    so a deleted agent can leave its ``workspace-{id}/`` dir — and the sidecar
+    inside it — behind. Cross-check openclaw.json's ``agents.list``, which the
+    deploy file-merges the agent entry into, so a stale sidecar can't hand back
+    a dead agent id and permanently block a re-hire.
+
+    SEQUENTIAL retries only — this is a read, not a lock. The sidecar is written
+    near the END of ``deploy_from_artifact``, so two deploys that OVERLAP both
+    see "not installed" here. That is exactly how prod grew "Pulse 2": deploy #2
+    started 35s before deploy #1 wrote its sidecar (a page reload cleared the
+    drawer's ``isHiring``, which is the only thing stopping a second submit).
+    Overlap is fenced separately, by
+    ``container_repo.try_claim_listing_deploy`` below — this read only has to
+    catch the retry that arrives AFTER the first deploy finished, which is the
+    case the claim has already released.
+
+    Keyed on ``slug`` while the claim is keyed on ``listing_id``, deliberately:
+    a republish mints a new listing_id for the same slug, so this read still
+    recognises "already installed" across versions. The flip side is that two
+    OVERLAPPING deploys of different listing_ids for the same slug (one tab
+    holding a pre-republish listing page) are not fenced — a live
+    republish-during-hire race, left uncovered.
+    """
+    sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
+    if not sidecars:
+        return None
+    config = get_workspace().read_openclaw_config(owner_id) or {}
+    registered = {a.get("id") for a in ((config.get("agents") or {}).get("list") or []) if isinstance(a, dict)}
+    return next((d for d in sidecars if d.get("agent_id") in registered), None)
+
+
 @router.post("/listings/{listing_id}/deploy")
 async def deploy_listing(
     listing_id: str,
@@ -407,7 +645,7 @@ async def deploy_listing(
             # Size reconcile BEFORE dispatch. The Ultra upgrade webhook's
             # up-resize (standard -> 2 vCPU / 8 GB) is best-effort/swallowed;
             # if it failed transiently the owner is plan=ultra_pro but their
-            # container is still the standard 0.5 vCPU / 2 GB box. Seeding a
+            # container is still the standard 1 vCPU / 4 GB box. Seeding a
             # >10-agent company onto that box OOMs. A resize restarts the
             # container, so we CANNOT resize mid-deploy — instead we compare
             # the running box's ACTUAL size against Ultra and, on a mismatch,
@@ -468,235 +706,237 @@ async def deploy_listing(
             detail="purchase required to deploy this listing",
         )
 
-    # Fetch the artifact tarball + slice from S3. The listing's ``s3_prefix``
-    # is written by ``marketplace_service._upload_artifact_to_s3`` and looks
-    # like ``listings/{listing_id}/v{version}/``. We deliberately skip
-    # reading manifest.json (the manifest stored on the listing row is
-    # authoritative for slug/name/version).
-    s3_prefix = listing.get("s3_prefix")
-    if not s3_prefix:
-        raise HTTPException(status_code=500, detail="listing has no artifact prefix")
-
-    s3 = boto3.client("s3")
-    try:
-        obj = s3.get_object(
-            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
-            Key=f"{s3_prefix}workspace.tar.gz",
-        )
-        tar_bytes = obj["Body"].read()
-    except ClientError as exc:
-        # Sanitize boto error text out of the user-facing response — raw
-        # ClientError messages can leak bucket names / role ARNs / etc.
-        error_code = exc.response.get("Error", {}).get("Code", "")
-        logger.exception(
-            "Marketplace deploy: S3 fetch failed for listing %s (code=%s)",
-            listing.get("listing_id"),
-            error_code,
-        )
-        if error_code == "NoSuchKey":
-            raise HTTPException(
-                status_code=500,
-                detail="artifact missing for published listing",
-            ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail="failed to fetch listing artifact",
-        ) from exc
-
-    # Fetch the slice. NoSuchKey is tolerated for legacy listings published
-    # before slice-synthesis shipped — those deploys land workspace files
-    # without registering the agent in openclaw.json (legacy behavior).
-    try:
-        slice_obj = s3.get_object(
-            Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
-            Key=f"{s3_prefix}openclaw-slice.json",
-        )
-        slice_ = json.loads(slice_obj["Body"].read())
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
-            logger.info(
-                "Marketplace deploy: legacy listing %s has no openclaw-slice; deploying without config registration",
-                listing.get("listing_id"),
-            )
-            slice_ = {}
-        else:
-            logger.exception(
-                "Marketplace deploy: slice fetch failed for listing %s",
-                listing.get("listing_id"),
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="failed to fetch listing slice",
-            ) from exc
-
-    # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
-    # listing's manifest_json column). The marketplace manifest doesn't
-    # follow the admin catalog's schema — it uses {name, description,
-    # format, exported_at, agent_id, file_count} — but
-    # deploy_from_artifact only reads ``version`` and ``name`` for the
-    # response payload, so passing through what we have is fine.
-    manifest = listing.get("manifest_json") or {}
-    manifest = dict(manifest)
-    manifest.setdefault("version", listing.get("version", 1))
-    manifest.setdefault("name", listing.get("name", listing.get("slug")))
-
     catalog = get_catalog_service()
     owner_id = resolve_owner_id(auth)
 
-    # Paperclip-first agent mint. Paperclip's create_agent returns an
-    # agent UUID that we thread through to catalog_service as
-    # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
-    # of the /chat agents.create interception in websocket_chat.py and
-    # the /teams create_agent route.
-    #
-    # Build PaperclipMeta from the slice. If the slice's agent entry has
-    # ``params.paperclip``, use those values (seller explicitly tagged
-    # the agent at publish time). Otherwise — typical for listings
-    # published before the meta-roundtrip feature shipped — derive
-    # title + capabilities from the listing fields so the buyer's
-    # Paperclip profile is at least non-empty.
-    slice_agent = slice_.get("agent") or {}
-    has_paperclip_block = isinstance(slice_agent.get("params"), dict) and isinstance(
-        slice_agent["params"].get("paperclip"), dict
-    )
-    if has_paperclip_block:
-        meta = read_from_agent_entry(slice_agent)
-    else:
-        meta = derive_from_listing(
-            name=listing.get("name"),
-            description_md=listing.get("description_md"),
-        )
-
-    agent_name = slice_agent.get("name") or listing.get("name") or listing.get("slug")
-    # Org placement: the buyer optionally picks who the new hire reports to
-    # (its manager in the Paperclip org chart) at Hire time. None leaves it
-    # unparented — one-click deploys with no body land here unchanged.
-    reports_to = payload.reports_to if payload else None
-    try:
-        paperclip_agent = await create_paperclip_for_marketplace(
-            buyer_user_id=auth.user_id,
-            owner_id=owner_id,
-            name=agent_name,
-            # meta.role drives — keeps the precedence rule consistent
-            # with the chat path (see resolve_create_agent_fields).
-            role=None,
-            meta=meta,
-            reports_to=reports_to,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",
+    # Idempotency. A deploy can take a minute-plus when the buyer's container
+    # is busy (pair_with_openclaw eats a 30s gateway-RPC timeout, then the
+    # retry succeeds) — long enough that the browser can lose the response and
+    # report "Couldn't hire". The buyer then clicks Hire again and mints a
+    # SECOND agent from the same listing: prod grew a "Pulse" and a "Pulse 2"
+    # this way. Resolve the existing install instead of duplicating it, so a
+    # retry after a lost response heals into success. The drawer offers Hire
+    # once per listing (installed cards render "Hired ✓"), so a repeat deploy of
+    # a slug the owner already has is always an accidental retry, never intent.
+    already = _live_install_of(catalog, owner_id=owner_id, slug=listing.get("slug"))
+    if already:
+        logger.info(
+            "Marketplace deploy: owner=%s already has listing %s as agent %s — returning existing install",
             owner_id,
             listing.get("listing_id"),
+            already.get("agent_id"),
         )
-        raise HTTPException(
-            status_code=503,
-            detail="paperclip unavailable — retry the install in a moment",
-        ) from exc
+        # A ``reports_to`` on the retry is intentionally dropped: the agent
+        # already exists with the placement the first deploy gave it, and a
+        # retry is an accidental duplicate of the same intent, not a request to
+        # move it. Re-parenting lives in Teams.
+        return {
+            "slug": listing.get("slug"),
+            "version": already.get("template_version") or listing.get("version", 1),
+            "agent_id": already.get("agent_id"),
+            "agent_uuid": already.get("agent_id"),
+            "name": listing.get("name") or listing.get("slug"),
+            "skills_added": [],
+            "plugins_enabled": [],
+            # Nothing was installed this call, so there is nothing new to warn
+            # about — the warnings belong to the deploy that actually ran.
+            "warnings": [],
+            "already_installed": True,
+        }
 
-    new_agent_id = paperclip_agent["id"]
-
-    # Everything after the Paperclip mint must be wrapped so any
-    # exception triggers the orphan-Paperclip rollback. That includes
-    # container resolution (DDB/ECS can throw transient errors), the
-    # 503-on-unreachable-container short-circuit, and the catalog deploy
-    # itself. Without this envelope a transient DDB outage on
-    # ``resolve_running_container`` leaves a phantom Paperclip agent on
-    # every failed deploy.
-    try:
-        ecs = get_ecs_manager()
-        container, container_ip = await ecs.resolve_running_container(owner_id)
-        if container is None or container_ip is None:
+    # Exclusive claim for the whole deploy. The sidecar read above is a READ:
+    # the sidecar lands near the END of deploy_from_artifact, so two OVERLAPPING
+    # deploys both see "not installed" and both mint an agent — exactly how prod
+    # grew "Pulse 2" (deploy #2 started 35s before deploy #1 wrote its sidecar).
+    # Taken BEFORE the S3 artifact fetch (a loser shouldn't pay for the GET) and
+    # held across the Paperclip mint, so a mint failure can't leak the claim.
+    claim_token = await container_repo.try_claim_listing_deploy(owner_id, listing_id=listing["listing_id"])
+    if not claim_token:
+        # Two ways to lose the claim, and they are different errors. The claim
+        # is conditioned on ``attribute_exists(owner_id)`` — it never conjures a
+        # container row — so an owner whose container hasn't been provisioned
+        # yet is refused too. Reporting that as "a deploy is already running"
+        # would send anyone reading the logs hunting a phantom concurrent
+        # deploy. Only runs on the refusal path, so it costs nothing normally.
+        if await container_repo.get_by_owner_id(owner_id) is None:
             raise HTTPException(
                 status_code=503,
                 detail="container starting — retry in a moment",
             )
-        container_token = container["gateway_token"]
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "deploy_in_progress"},
+        )
+    try:
+        tar_bytes, slice_ = _fetch_agent_artifact(listing)
 
-        result = await catalog.deploy_from_artifact(
-            owner_id=owner_id,
-            slug=listing.get("slug"),
-            manifest=manifest,
-            slice_=slice_,
-            tar_bytes=tar_bytes,
-            new_agent_id=new_agent_id,
-            container_ip=container_ip,
-            container_token=container_token,
-        )
+        # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
+        # listing's manifest_json column). The marketplace manifest doesn't
+        # follow the admin catalog's schema — it uses {name, description,
+        # format, exported_at, agent_id, file_count} — but
+        # deploy_from_artifact only reads ``version`` and ``name`` for the
+        # response payload, so passing through what we have is fine.
+        manifest = listing.get("manifest_json") or {}
+        manifest = dict(manifest)
+        manifest.setdefault("version", listing.get("version", 1))
+        manifest.setdefault("name", listing.get("name", listing.get("slug")))
 
-        # Register the deployed agent's operator device into the running
-        # container's paired.json + bind its authToken to the gateway token, so
-        # its first relayed connect isn't rejected NOT_PAIRED. catalog deploy
-        # only RPC-registers the agent (agents.create/update); without this a
-        # marketplace agent — which Paperclip wakes on events and runs through
-        # the operator relay — can't pass the device-auth handshake until the
-        # next reprovision. Mirrors the /teams and /chat create paths.
-        # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
-        await ensure_operator_device_paired(
-            owner_id=owner_id,
-            paperclip_agent=paperclip_agent,
-            gateway_token=container_token,
+        # Paperclip-first agent mint. Paperclip's create_agent returns an
+        # agent UUID that we thread through to catalog_service as
+        # new_agent_id, so OpenClaw and Paperclip share the same id. Mirror
+        # of the /chat agents.create interception in websocket_chat.py and
+        # the /teams create_agent route.
+        #
+        # Build PaperclipMeta from the slice. If the slice's agent entry has
+        # ``params.paperclip``, use those values (seller explicitly tagged
+        # the agent at publish time). Otherwise — typical for listings
+        # published before the meta-roundtrip feature shipped — derive
+        # title + capabilities from the listing fields so the buyer's
+        # Paperclip profile is at least non-empty.
+        slice_agent = slice_.get("agent") or {}
+        has_paperclip_block = isinstance(slice_agent.get("params"), dict) and isinstance(
+            slice_agent["params"].get("paperclip"), dict
         )
+        if has_paperclip_block:
+            meta = read_from_agent_entry(slice_agent)
+        else:
+            meta = derive_from_listing(
+                name=listing.get("name"),
+                description_md=listing.get("description_md"),
+            )
 
-        # Recreate the listing's captured routines (schedules) on the buyer,
-        # remapped to the freshly-minted agent and DORMANT (enabled:false). A
-        # failure here propagates into the rollback below — keeping the deploy
-        # all-or-nothing — so it sits inside this same try.
-        await _recreate_routines_for_buyer(
-            owner_id=owner_id,
-            new_agent_id=new_agent_id,
-            manifest_routines=manifest.get("routines") or [],
-        )
-    except Exception as exc:
-        # Catalog or container-resolution failed after Paperclip create
-        # succeeded — roll back the orphan Paperclip agent. Idempotent
-        # + 404-tolerant on the Paperclip side, so a retry doesn't
-        # accumulate phantom records.
-        logger.exception(
-            "Marketplace deploy: post-Paperclip step failed for owner=%s listing=%s — rolling back paperclip agent %s",
-            owner_id,
-            listing.get("listing_id"),
-            new_agent_id,
-        )
-        # Unwind the container/EFS side effects (openclaw.json agent entry +
-        # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
-        # leaves no orphan in the buyer's container — the half-installed
-        # ``name=<uuid>`` ghost the incomplete rollback used to strand.
-        # Self-contained best-effort; never raises.
-        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
+        agent_name = slice_agent.get("name") or listing.get("name") or listing.get("slug")
+        # Org placement: the buyer optionally picks who the new hire reports to
+        # (its manager in the Paperclip org chart) at Hire time. None leaves it
+        # unparented — one-click deploys with no body land here unchanged.
+        reports_to = payload.reports_to if payload else None
         try:
-            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-        except Exception:
-            # Roll-back is best-effort; the original exception is what
-            # the caller needs to see.
+            paperclip_agent = await create_paperclip_for_marketplace(
+                buyer_user_id=auth.user_id,
+                owner_id=owner_id,
+                name=agent_name,
+                # meta.role drives — keeps the precedence rule consistent
+                # with the chat path (see resolve_create_agent_fields).
+                role=None,
+                meta=meta,
+                reports_to=reports_to,
+            )
+        except Exception as exc:
             logger.exception(
-                "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",
+                owner_id,
+                listing.get("listing_id"),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="paperclip unavailable — retry the install in a moment",
+            ) from exc
+
+        new_agent_id = paperclip_agent["id"]
+
+        # Everything after the Paperclip mint must be wrapped so any
+        # exception triggers the orphan-Paperclip rollback. That includes
+        # container resolution (DDB/ECS can throw transient errors), the
+        # 503-on-unreachable-container short-circuit, and the catalog deploy
+        # itself. Without this envelope a transient DDB outage on
+        # ``resolve_running_container`` leaves a phantom Paperclip agent on
+        # every failed deploy.
+        try:
+            ecs = get_ecs_manager()
+            container, container_ip = await ecs.resolve_running_container(owner_id)
+            if container is None or container_ip is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="container starting — retry in a moment",
+                )
+            container_token = container["gateway_token"]
+
+            result = await catalog.deploy_from_artifact(
+                owner_id=owner_id,
+                slug=listing.get("slug"),
+                manifest=manifest,
+                slice_=slice_,
+                tar_bytes=tar_bytes,
+                new_agent_id=new_agent_id,
+                container_ip=container_ip,
+                container_token=container_token,
+            )
+
+            # Register the deployed agent's operator device into the running
+            # container's paired.json + bind its authToken to the gateway token, so
+            # its first relayed connect isn't rejected NOT_PAIRED. catalog deploy
+            # only RPC-registers the agent (agents.create/update); without this a
+            # marketplace agent — which Paperclip wakes on events and runs through
+            # the operator relay — can't pass the device-auth handshake until the
+            # next reprovision. Mirrors the /teams and /chat create paths.
+            # ``paperclip_agent`` (not the slice) carries adapterConfig.devicePrivateKeyPem.
+            await ensure_operator_device_paired(
+                owner_id=owner_id,
+                paperclip_agent=paperclip_agent,
+                gateway_token=container_token,
+            )
+
+            # Recreate the listing's captured routines (schedules) on the buyer,
+            # remapped to the freshly-minted agent and DORMANT (enabled:false). A
+            # failure here propagates into the rollback below — keeping the deploy
+            # all-or-nothing — so it sits inside this same try.
+            await _recreate_routines_for_buyer(
+                owner_id=owner_id,
+                new_agent_id=new_agent_id,
+                manifest_routines=manifest.get("routines") or [],
+            )
+        except Exception as exc:
+            # Catalog or container-resolution failed after Paperclip create
+            # succeeded — roll back the orphan Paperclip agent. Idempotent
+            # + 404-tolerant on the Paperclip side, so a retry doesn't
+            # accumulate phantom records.
+            logger.exception(
+                "Marketplace deploy: post-Paperclip step failed for owner=%s listing=%s — rolling back paperclip agent %s",
+                owner_id,
+                listing.get("listing_id"),
                 new_agent_id,
             )
-        # Preserve the original HTTP status — the 503 short-circuit
-        # already carries the right code; only unexpected errors get
-        # mapped to 500.
-        if isinstance(exc, HTTPException):
-            raise
-        # Buyer hasn't connected a provider the agent hard-depends on. The
-        # gate runs first inside deploy_from_artifact, so the orphan
-        # Paperclip agent was already rolled back above. Surface the
-        # provider list so the UI can route to the integrations panel.
-        if isinstance(exc, MissingCredentialsError):
+            # Unwind the container/EFS side effects (openclaw.json agent entry +
+            # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
+            # leaves no orphan in the buyer's container — the half-installed
+            # ``name=<uuid>`` ghost the incomplete rollback used to strand.
+            # Self-contained best-effort; never raises.
+            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
+            try:
+                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+            except Exception:
+                # Roll-back is best-effort; the original exception is what
+                # the caller needs to see.
+                logger.exception(
+                    "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                    new_agent_id,
+                )
+            # Preserve the original HTTP status — the 503 short-circuit
+            # already carries the right code; only unexpected errors get
+            # mapped to 500.
+            if isinstance(exc, HTTPException):
+                raise
+            # Buyer hasn't connected a provider the agent hard-depends on. The
+            # gate runs first inside deploy_from_artifact, so the orphan
+            # Paperclip agent was already rolled back above. Surface the
+            # provider list so the UI can route to the integrations panel.
+            if isinstance(exc, MissingCredentialsError):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "missing_credentials", "missing": exc.missing},
+                ) from exc
             raise HTTPException(
-                status_code=409,
-                detail={"error": "missing_credentials", "missing": exc.missing},
+                status_code=500,
+                detail="deploy failed",
             ) from exc
-        raise HTTPException(
-            status_code=500,
-            detail="deploy failed",
-        ) from exc
 
-    # Surface the honest "these steps will skip" warnings at hire time: byo /
-    # unavailable requirements the platform can't inject or verify. These never
-    # block the deploy (the hard gate already ran inside deploy_from_artifact);
-    # they let the buyer-facing UI tell the truth about what won't run.
-    return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
+        # Surface the honest "these steps will skip" warnings at hire time: byo /
+        # unavailable requirements the platform can't inject or verify. These never
+        # block the deploy (the hard gate already ran inside deploy_from_artifact);
+        # they let the buyer-facing UI tell the truth about what won't run.
+        return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
+    finally:
+        await container_repo.release_listing_deploy_claim(owner_id, listing_id=listing["listing_id"], token=claim_token)
 
 
 @router.post("/listings")

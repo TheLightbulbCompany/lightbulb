@@ -97,6 +97,7 @@ function build(environment: "dev" | "prod"): {
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
+      clerkWebhookSecret: `isol8/${environment}/clerk_webhook_secret`,
       stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
       stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
       encryptionKey: `isol8/${environment}/encryption_key`,
@@ -106,7 +107,6 @@ function build(environment: "dev" | "prod"): {
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
-      resendApiKey: `isol8/${environment}/resend_api_key`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
     },

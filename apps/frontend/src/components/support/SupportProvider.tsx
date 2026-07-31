@@ -13,6 +13,8 @@ export interface SupportError {
 export interface OpenSupportOptions {
   /** Pre-select the topic (defaults to "Bug report" for error-originated opens). */
   category?: string;
+  /** Pre-fill the message body (e.g. an integration access request). */
+  message?: string;
   /** Error details to attach (from an error toast / boundary / catch block). */
   error?: SupportError;
   /** Backend X-Request-ID for the failing request, pinned to the ticket. */
@@ -60,6 +62,7 @@ export function SupportProvider({ children }: { children: ReactNode }) {
         open={open}
         onClose={closeSupport}
         presetCategory={preset?.category}
+        presetMessage={preset?.message}
         presetError={preset?.error}
         presetRequestId={preset?.requestId}
       />

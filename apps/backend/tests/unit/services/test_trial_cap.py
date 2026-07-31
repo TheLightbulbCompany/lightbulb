@@ -49,17 +49,73 @@ async def test_trial_block_reason_true_for_trial_local_over_cap(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_trial_block_reason_false_for_trial_local_under_cap(monkeypatch):
+async def test_trial_block_reason_false_well_under_admission_threshold(monkeypatch):
+    """Spend below CAP - RESERVE is admissible: the gate would take the next
+    request, so no door may pretend otherwise."""
+
     async def fake_get_by_owner_id(owner_id):
         return {"owner_id": owner_id, "subscription_status": "trial_local"}
 
     async def fake_get_trial_daily_spend(owner_id, date):
-        return CAP_MICROCENTS - 1
+        return trial_cap.CAP_MICROCENTS - trial_cap.RESERVE_ESTIMATE_MICROCENTS - 1
 
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
     monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
 
     assert await trial_cap.trial_block_reason("owner1") is None
+
+
+@pytest.mark.asyncio
+async def test_trial_block_reason_admits_exactly_at_threshold(monkeypatch):
+    """The gate denies on `spent + reserved + estimate > cap` — strictly
+    greater — so spend of exactly CAP - RESERVE is still ADMITTED. Blocking
+    here would re-open the dead zone in the other direction."""
+
+    async def fake_get_by_owner_id(owner_id):
+        return {"owner_id": owner_id, "subscription_status": "trial_local"}
+
+    async def fake_get_trial_daily_spend(owner_id, date):
+        return trial_cap.CAP_MICROCENTS - trial_cap.RESERVE_ESTIMATE_MICROCENTS
+
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
+
+    assert await trial_cap.trial_block_reason("owner1") is None
+
+
+@pytest.mark.asyncio
+async def test_trial_block_reason_blocks_one_microcent_past_threshold(monkeypatch):
+    """One microcent past the threshold the gate refuses admission. This is the
+    prod bug: spend froze at $2.7585 inside this band, generated no tokens, so
+    it could never reach CAP and the backend never blocked."""
+
+    async def fake_get_by_owner_id(owner_id):
+        return {"owner_id": owner_id, "subscription_status": "trial_local"}
+
+    async def fake_get_trial_daily_spend(owner_id, date):
+        return trial_cap.CAP_MICROCENTS - trial_cap.RESERVE_ESTIMATE_MICROCENTS + 1
+
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
+
+    assert await trial_cap.trial_block_reason("owner1") == trial_cap.DAILY_CAP
+
+
+@pytest.mark.asyncio
+async def test_trial_block_reason_blocks_at_the_observed_prod_spend(monkeypatch):
+    """Regression pin for the 2026-07-26 prod incident: $2.7585 spent, which the
+    old `spent >= CAP` predicate reported as fine."""
+
+    async def fake_get_by_owner_id(owner_id):
+        return {"owner_id": owner_id, "subscription_status": "trial_local"}
+
+    async def fake_get_trial_daily_spend(owner_id, date):
+        return 2_758_514
+
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_by_owner_id", fake_get_by_owner_id)
+    monkeypatch.setattr("core.services.trial_cap.billing_repo.get_trial_daily_spend", fake_get_trial_daily_spend)
+
+    assert await trial_cap.trial_block_reason("owner1") == trial_cap.DAILY_CAP
 
 
 @pytest.mark.asyncio

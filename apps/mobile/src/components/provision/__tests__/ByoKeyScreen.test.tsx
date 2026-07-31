@@ -36,6 +36,20 @@ describe("ByoKeyScreen", () => {
     mockPost.mockReset();
   });
 
+  // The secure keyboard can cover the Save button on smaller devices (the
+  // card is vertically centered), so the whole surface must sit inside a
+  // KeyboardAvoidingView — the OTA-safe, core-RN fix.
+  it("wraps the form in a KeyboardAvoidingView so the keyboard can't cover Save", async () => {
+    await act(async () => {
+      render(<ByoKeyScreen onConnected={jest.fn()} />);
+    });
+
+    // The KeyboardAvoidingView carries this testID; getByTestId throws if it's
+    // absent, so its presence is the assertion (a plain View wrapper wouldn't
+    // lift the centered card above the secure keyboard).
+    expect(screen.getByTestId("byo-keyboard-avoider")).toBeTruthy();
+  });
+
   it("saves the key, commits the provider choice, and calls onConnected", async () => {
     mockPut.mockResolvedValue({});
     mockPost.mockResolvedValue({});

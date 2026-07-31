@@ -566,15 +566,16 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             result = await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="bedrock_claude")
 
         assert result.url == "https://checkout/flat"
-        assert seen["price_id"] == "price_flat_test"
-        assert seen["quantity"] == 1
+        assert seen["line_items"] == [{"price": "price_flat_test", "quantity": 1}]
         assert seen["metadata"]["owner_id"] == "u_1"
         assert seen["metadata"]["provider_choice"] == "bedrock_claude"
         assert seen["idempotency_key"].startswith("flat_checkout:u_1:")
 
     @pytest.mark.asyncio
     async def test_team_checkout_uses_seat_price_and_quantity(self, monkeypatch):
+        """Team checkout emits [base x1, seat xN] — a solo admin is $50 + 1x$20."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -585,8 +586,10 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         result = await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
 
         assert result.url == "https://checkout/team"
-        assert seen["price_id"] == "price_seat_test"
-        assert seen["quantity"] == 4
+        assert seen["line_items"] == [
+            {"price": "price_base_test", "quantity": 1},
+            {"price": "price_seat_test", "quantity": 4},
+        ]
         # provider_choice threaded in so the webhook backup persists teams as
         # Bedrock-managed (there is no provider picker in the team flow).
         assert seen["metadata"] == {
@@ -603,8 +606,18 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
 
     @pytest.mark.asyncio
+    async def test_team_checkout_raises_without_base_price_id(self, monkeypatch):
+        """An unconfigured base price fails loudly rather than silently
+        under-billing an org $20 instead of $70."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "")
+        with pytest.raises(BillingServiceError, match="STRIPE_TEAM_BASE_PRICE_ID not configured"):
+            await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=4)
+
+    @pytest.mark.asyncio
     async def test_team_checkout_floors_quantity_at_one(self, monkeypatch):
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")
+        monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_BASE_PRICE_ID", "price_base_test")
         seen = {}
 
         async def _fake_builder(**kwargs):
@@ -613,7 +626,41 @@ class TestBuildSubscriptionCheckoutSharedSpine:
 
         monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
         await billing_service.create_team_seat_checkout(owner_id="org_1", member_count=0)
-        assert seen["quantity"] == 1
+        assert seen["line_items"] == [
+            {"price": "price_base_test", "quantity": 1},
+            {"price": "price_seat_test", "quantity": 1},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_build_subscription_checkout_passes_line_items_verbatim(monkeypatch):
+    """The builder forwards its line_items list to Stripe untouched — this is
+    what lets the team path add a base-price item alongside the seat item in
+    a later task without the builder itself changing."""
+    captured: dict = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return MagicMock(id="cs_test_1", url="https://checkout.stripe.com/x")
+
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", fake_create)
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "org_1", "stripe_customer_id": "cus_1"}),
+    )
+
+    items = [{"price": "price_base", "quantity": 1}, {"price": "price_seat", "quantity": 3}]
+    await billing_service._build_subscription_checkout(
+        owner_id="org_1",
+        line_items=items,
+        metadata={"owner_id": "org_1"},
+        success_url="https://x/ok",
+        cancel_url="https://x/no",
+        idempotency_key="k1",
+    )
+
+    assert captured["line_items"] == items
 
 
 @pytest.mark.asyncio
@@ -637,14 +684,13 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
     # Guards must fire before either of these does any work.
     set_choice = AsyncMock()
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", set_choice)
-    bg = AsyncMock()
-    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
-    created: list = []
-    monkeypatch.setattr(
-        billing_service.asyncio,
-        "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
-    )
+    fake_manager = MagicMock()
+    fake_manager.stop_user_service = AsyncMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
 
     with pytest.raises(billing_service.ChangeProviderError) as exc:
         await billing_service.change_provider(
@@ -656,17 +702,17 @@ async def test_change_provider_trial_local_refuses_use_trial_checkout(monkeypatc
 
     assert exc.value.code == "use_trial_checkout"
     assert exc.value.status_code == 409
-    # No provider write, no reprovision dispatch.
+    # No provider write, no stop, no reprovision dispatch.
     set_choice.assert_not_awaited()
-    bg.assert_not_called()
-    assert created == []
+    fake_manager.stop_user_service.assert_not_awaited()
+    fake_manager.drain_then_dispatch_provision.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     """A switch INTO bedrock_claude must NOT take the hot path (which would
     call build_provider_block(bedrock, aip_arns=None) and raise), and must
-    NOT raise — it dispatches background_provision (cold path)."""
+    NOT raise — it stop-first reprovisions (cold path, F1 fix)."""
     # No prior provider_choice -> none of the OLD-provider side-effect cleanup
     # blocks (oauth, byo) fire, keeping the test free of oauth/key I/O while
     # still exercising the bedrock hot-vs-cold selector.
@@ -686,9 +732,19 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
     hot = AsyncMock()
     monkeypatch.setattr(billing_service, "_hot_swap_provider", hot)
-    bg = AsyncMock()
-    monkeypatch.setattr("core.services.container_provision.background_provision", bg)
-    created = []
+    # change_provider's cold path lazily imports get_ecs_manager from
+    # core.containers, awaits .stop_user_service, and dispatches
+    # .drain_then_dispatch_provision(owner_id) as a background task (F1
+    # fix) — patch at the source module, and capture the dispatched task
+    # instead of scheduling it so nothing outlives the test loop.
+    fake_manager = MagicMock()
+    fake_manager.stop_user_service = AsyncMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
+    created: list = []
     monkeypatch.setattr(
         billing_service.asyncio,
         "create_task",
@@ -704,10 +760,14 @@ async def test_change_provider_into_bedrock_takes_cold_path(monkeypatch):
 
     hot.assert_not_awaited()  # hot path skipped for bedrock target
     assert result["restart"] is True
-    # background_provision (cold path) was scheduled.
-    assert created, "expected background_provision to be dispatched"
-    for coro in created:
-        coro.close()
+    # No container row: there is nothing to stop, and issuing the stop anyway
+    # would open a TOCTOU (a poll creating the row between the fence read and
+    # the stop would get an unfenced "stopped" stamp). So the stop is SKIPPED
+    # and the cold path falls straight through to the drain-only dispatch,
+    # whose create-from-scratch claim provisions the owner.
+    fake_manager.stop_user_service.assert_not_awaited()
+    fake_manager.drain_then_dispatch_provision.assert_called_once_with("user_x")
+    assert len(created) == 1
 
 
 @pytest.mark.asyncio
@@ -761,12 +821,17 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
     monkeypatch.setattr(billing_service.billing_repo, "set_provider_choice", AsyncMock())
     facts_mock = AsyncMock()
     monkeypatch.setattr("core.services.owner_facts.write_owner_facts", facts_mock)
-    monkeypatch.setattr("core.services.container_provision.background_provision", AsyncMock())
-    created = []
+    fake_manager = MagicMock()
+    fake_manager.stop_user_service = AsyncMock()
+    fake_manager.drain_then_dispatch_provision = MagicMock()
+    monkeypatch.setattr("core.containers.get_ecs_manager", lambda: fake_manager)
+    # The cold path's takeover fence reads the container row lazily from the
+    # real repo module - no row here, so the fence is skipped.
+    monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(
         billing_service.asyncio,
         "create_task",
-        lambda coro: created.append(coro) or MagicMock(),
+        lambda coro: MagicMock(),
     )
 
     await billing_service.change_provider(
@@ -780,14 +845,18 @@ async def test_change_provider_refreshes_owner_facts(monkeypatch):
         "user_x",
         account_overrides={"provider_choice": "bedrock_claude", "byo_provider": None},
     )
-    for coro in created:
-        coro.close()
 
 
 @pytest.mark.asyncio
 async def test_sync_team_seat_quantity_refreshes_owner_facts(monkeypatch):
     """The membership-change path is the seat-count writer — it must refresh
     the facts file with the new count as an override."""
+    # Pin the key OFF: this test stubs get_organization_member_count only, but
+    # the seat count now also reads pending invitations. Without this the
+    # unstubbed read escapes to api.clerk.com on any machine that exports
+    # CLERK_SECRET_KEY — which CLAUDE.md's LocalStack setup tells developers
+    # to do. CI happens not to set it; a laptop does.
+    monkeypatch.setattr("core.config.settings.CLERK_SECRET_KEY", None)
     monkeypatch.setattr(
         billing_service.billing_repo,
         "get_by_owner_id",

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
+import { mutate } from "swr";
 import {
   useGatewayConnection,
   type GatewayConnectionValue,
@@ -17,7 +18,6 @@ import {
 import { WS_URL } from "@/lib/api";
 import { readDesktopPermissionGrant } from "@/lib/desktopPermissions";
 import { subscribeDesktopPermissions } from "@/lib/desktopPermissionsSubscribe";
-import { mutate } from "swr";
 
 import { lastInputAgeMs } from "@/lib/presence";
 import { useContainerWake } from "@/hooks/useContainerWake";
@@ -87,6 +87,24 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     };
   }, [onEvent, onChatMessage]);
 
+  // ---- Realtime status invalidation (spec PR-7) ----
+  //
+  // core/services/status_events.py's publish_status_changed pushes this
+  // content-free event to every open tab right after a durable write
+  // compute_status composes (containers / billing / paperclip-companies).
+  // The ONLY reaction is a revalidate of the shared /container/status SWR
+  // key — INV-1 keeps compute_status the sole composer, so this never
+  // carries or reconstructs state itself. (CLIENT-HOOK's useOnboardingStatus
+  // is expected to replace "/container/status" with its own shared key; see
+  // that session's coordination note if this hasn't landed yet.)
+  useEffect(() => {
+    return onEvent((event) => {
+      if (event === "onboarding_status_changed") {
+        void mutate("/container/status");
+      }
+    });
+  }, [onEvent]);
+
   useEffect(() => {
     const HIDDEN_PARK_MS = 2 * 60_000;
     const VISIBLE_IDLE_PARK_MS = 10 * 60_000;
@@ -109,10 +127,11 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     const onReturn = () => {
       unpark();
       void requestWake("interaction");
-      // requestWake revalidates /container/status itself, but it can be a
-      // cooldown no-op — revalidate here too so the stepper always re-syncs
-      // on return (the reachedReady latch zeroes its own poll interval).
-      void mutate("/container/status");
+      // No manual /container/status revalidation here anymore (spec PR-9,
+      // CLIENT-HOOK deleted the wake/unpark/container_waking manual-mutate
+      // trio) — the shared `useOnboardingStatus` bounded loop re-polls
+      // within its declared <=15s ceiling regardless of requestWake's
+      // outcome (including a cooldown no-op).
     };
     // `click`, NOT `pointerdown`: a touch-scroll fires pointerdown on first
     // contact, which would unpark + wake a box the mobile user only meant to

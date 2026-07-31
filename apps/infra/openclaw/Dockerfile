@@ -78,12 +78,12 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Fat (non-slim) variant: bundles plugin runtime deps so first-use of
 # browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
-FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.1
+FROM ghcr.io/isol8ai/agent:2026.7.2-isol8.2
 # PLUGIN-PIN POLICY (read before bumping the @openclaw/* pins below): the baked
 # plugins pin to the latest PUBLISHED plugin dist of the FROM tag's release
 # line on npm. The FROM tag is on the 2026.7.2 line, which is BETA-only upstream
 # — its latest published dist is 2026.7.2-beta.3 (npm `beta` dist-tag; no stable
-# 2026.7.2 dist exists yet), so all seven baked plugins pin to 2026.7.2-beta.3 to
+# 2026.7.2 dist exists yet), so all eight baked plugins pin to 2026.7.2-beta.3 to
 # stay in lockstep with the 7.2 host (this base rolls to DEV only). Keep these
 # pins in lockstep with the FROM tag on every base bump: the 7.1 line moved the
 # channel inbound-dispatch contract (turn-adoption ack), so a stale channel
@@ -183,9 +183,13 @@ RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
       @anthropic-ai/claude-code @google/gemini-cli \
-      @xdevplatform/xurl \
       mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
+
+# xurl downloads its native Go binary in npm postinstall. Keep it outside the
+# --ignore-scripts global install above; otherwise the JS wrapper is present but
+# every `xurl` invocation fails with "xurl binary not found".
+RUN npm i -g @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
 # Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
 # real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral
@@ -333,6 +337,63 @@ RUN set -eux; \
     rm -rf /app/dist/extensions/parallel/node_modules/@openclaw/parallel-plugin; \
     rm -rf /opt/stage-parallel; \
     chown -R root:root /app/dist/extensions/parallel
+
+# ---- Layer 12c: externalized web-fetch fallback provider (firecrawl) ----
+# OpenClaw's keyless Firecrawl fetch provider is the Readability-failure
+# fallback that tools.web.fetch selects: core/containers/config.py sets
+# tools.web.fetch.provider="firecrawl" + plugins.entries.firecrawl.enabled on
+# every container. Like the parallel provider above, firecrawl is externalized
+# out of the base image — but it also ships ONLY on the npm `beta` dist-tag (no
+# stable release-line dist), which is the spec OpenClaw's doctor resolves for
+# this plugin id. With firecrawl configured but absent from every discovery
+# root, OpenClaw 7.2's doctor-on-boot npm-installs
+# `@openclaw/firecrawl-plugin@beta` into the per-user EFS plugin root on EVERY
+# cold start — measured +2-4 min of dead boot time (dev log gap: `Installed
+# missing configured plugin "firecrawl" from @openclaw/firecrawl-plugin@beta`).
+# Baking it root-owned into the stock plugin root makes the doctor find the
+# plugin id already present and skip the install fleet-wide (the loader rejects
+# any plugin dir not owned by uid 0; it auto-activates from
+# plugins.entries.firecrawl.enabled). The npm package is
+# `@openclaw/firecrawl-plugin`; its plugin id + discovery dir are `firecrawl`.
+# `@beta` resolves to 2026.7.2-beta.3 today — the same dist every other baked
+# plugin pins to on this 7.2 base — so it stays in lockstep with the FROM tag;
+# re-resolve `npm view @openclaw/firecrawl-plugin@beta version` on each base
+# bump. Bake it root-owned, same as the layers above.
+RUN set -eux; \
+    mkdir -p /opt/stage-firecrawl; \
+    npm install --prefix /opt/stage-firecrawl "@openclaw/firecrawl-plugin@2026.7.2-beta.3"; \
+    mkdir -p /app/dist/extensions/firecrawl; \
+    cp -R /opt/stage-firecrawl/node_modules/@openclaw/firecrawl-plugin/. /app/dist/extensions/firecrawl/; \
+    mkdir -p /app/dist/extensions/firecrawl/node_modules; \
+    cp -R /opt/stage-firecrawl/node_modules/. /app/dist/extensions/firecrawl/node_modules/; \
+    rm -rf /app/dist/extensions/firecrawl/node_modules/@openclaw/firecrawl-plugin; \
+    rm -rf /opt/stage-firecrawl; \
+    chown -R root:root /app/dist/extensions/firecrawl
+
+# ---- Layer 12d: first-party Isol8 marketplace tool plugin ----
+# Read-only agent tools (marketplace_search, recommend_agents) so an agent can
+# name real marketplace listings instead of waving at a URL. Enabled fleet-wide
+# via plugins.entries["isol8-marketplace"] in core/containers/config.py.
+#
+# Second first-party plugin in-repo, same shape as plugins/aws-exec-profile
+# (Layer 14): the committed dist/ IS the baked artifact, so this is a plain
+# COPY — no npm install and no build step in the image. Rebuilding dist/ is a
+# local `npm run build`, and the plugin's own .gitignore overrides the repo-root
+# dist/ ignore so it stays tracked.
+#
+# It ships NO node_modules of its own. Its two imports resolve from the host by
+# self-referencing the `openclaw` package from /app — `openclaw/plugin-sdk/
+# tool-plugin` exactly as aws-exec-profile does, and `typebox` from
+# /app/node_modules (openclaw depends on typebox 1.3.3, which the plugin pins
+# in lockstep). The `openclaw` devDependency exists only to typecheck the build
+# locally and is ~460MB; it must never reach the image, which this COPY-only
+# layer guarantees structurally.
+#
+# Root-owned like every other baked plugin — the loader rejects any plugin dir
+# not owned by uid 0. Enabled fleet-wide via
+# plugins.entries["isol8-marketplace"] in core/containers/config.py.
+COPY plugins/isol8-marketplace /app/dist/extensions/isol8-marketplace
+RUN chown -R root:root /app/dist/extensions/isol8-marketplace
 
 # ---- Layer 13: externalized ACP runtime backend (acpx) ----
 # acpx is the official ACP runtime plugin that lets a native OpenClaw agent

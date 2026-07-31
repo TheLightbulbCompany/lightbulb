@@ -1,26 +1,41 @@
 import * as Notifications from "expo-notifications";
 
+import { sessionIdFromKey } from "./sessionKey";
+
 /**
  * Suppress the in-app banner only when the app is foregrounded on the exact
- * agent chat the notification is about (the reply already streamed live).
+ * agent chat AND session the notification is about (the reply already streamed
+ * live). A reply on a different session of the same agent is nowhere on
+ * screen, so it still banners. Payloads without a sessionKey (legacy) fall
+ * back to agent-scoped suppression.
  */
 export function shouldSuppressBanner(
   currentAgentId: string | null,
+  currentSessionId: string | null,
   notifAgentId: string | undefined,
+  notifSessionKey: string | undefined,
 ): boolean {
-  return !!notifAgentId && currentAgentId === notifAgentId;
+  if (!notifAgentId || currentAgentId !== notifAgentId) return false;
+  if (notifSessionKey === undefined) return true;
+  return sessionIdFromKey(notifSessionKey) === currentSessionId;
 }
 
 /**
- * Install the notification handler. `getCurrentAgentId` returns the agentId of
- * the chat currently on screen (or null), so the handler can suppress the
- * banner for the active session while showing it everywhere else.
+ * Install the notification handler. `getCurrentChat` returns the agent+session
+ * of the chat currently on screen (agentId null when none), so the handler can
+ * suppress the banner for the active conversation while showing it everywhere
+ * else.
  */
-export function configureNotificationHandler(getCurrentAgentId: () => string | null): void {
+export function configureNotificationHandler(
+  getCurrentChat: () => { agentId: string | null; sessionId: string | null },
+): void {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
-      const notifAgentId = notification.request.content.data?.agentId as string | undefined;
-      const suppress = shouldSuppressBanner(getCurrentAgentId(), notifAgentId);
+      const data = notification.request.content.data as
+        | { agentId?: string; sessionKey?: string }
+        | undefined;
+      const { agentId, sessionId } = getCurrentChat();
+      const suppress = shouldSuppressBanner(agentId, sessionId, data?.agentId, data?.sessionKey);
       return {
         shouldShowBanner: !suppress,
         shouldShowList: true,

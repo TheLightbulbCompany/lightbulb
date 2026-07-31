@@ -110,3 +110,32 @@ async def test_apply_mcp_server_writes_full_block(monkeypatch):
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_apply_x_provider_invokes_xurl_materializer(monkeypatch):
+    from core.services.credentials import apply_connection as ac
+
+    calls = []
+
+    def fake_materializer(owner_id, provider_key, credential):
+        calls.append((owner_id, provider_key, credential))
+        return "isol8"
+
+    async def fake_run_in_thread(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setitem(ac.MATERIALIZERS, "xurl_cli", fake_materializer)
+    monkeypatch.setattr(ac, "run_in_thread", fake_run_in_thread)
+
+    credential = {
+        "access_token": "at",
+        "refresh_token": "rt",
+        "client_id": "cid",
+        "client_secret": "secret",
+        "expires_in": 3600,
+    }
+    identity = await ac.apply_connection("org_1", "x", credential)
+
+    assert identity == "isol8"
+    assert calls == [("org_1", "x", credential)]

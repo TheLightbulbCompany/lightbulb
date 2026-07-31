@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { useSWRConfig } from "swr";
-import { useUser } from "@clerk/nextjs";
 import { useGateway } from "@/hooks/useGateway";
-import { capture } from "@/lib/analytics";
-import { readFirstRun } from "@/lib/firstRun";
 import {
   acquireTeamsEvents,
   releaseTeamsEvents,
@@ -95,6 +92,11 @@ const ALL_KEYS = [
     ...Object.values(ACTIVITY_ENTITY_PREFIXES).flat(),
   ]),
 ];
+
+// Cadence of the board keeper (see the keeper effect for the full rationale).
+// 20s trades a small, deduped BFF cost for a hard ceiling on how long a
+// throttle-killed board can sit stale with data already present.
+const BOARD_KEEPER_INTERVAL_MS = 20_000;
 
 /**
  * Event-driven revalidation is throttled per cache key, mirroring the gateway
@@ -188,7 +190,6 @@ export function activityTargets(data: unknown): {
 export function TeamsEventsProvider({ children }: { children: React.ReactNode }) {
   const { isConnected, send, onEvent } = useGateway();
   const { mutate } = useSWRConfig();
-  const { user } = useUser();
   // null = never observed; false = observed disconnected; true = observed connected.
   // Full invalidation fires on any transition INTO connected — both the first
   // subscribe (null→true) and a reconnect (false→true) — but never on a
@@ -313,13 +314,6 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
         return;
       }
       if (event === "teams.activity.logged") {
-        // Prod telemetry proxy for "a board pulse reached this client"
-        // during an active first-run show (spec §4.G gate 1). True e2e
-        // latency needs a BFF-side emit timestamp, which activity.logged
-        // payloads don't carry — a follow-up if pulse counts look wrong.
-        const { started, completed } = readFirstRun(user);
-        if (started && !completed) capture("first_run_board_pulse");
-
         // Keep the OPEN detail panel live. Without this the unconditional
         // list keys below refresh but the row's own key never does, so an
         // agent changing a task/routine/project/goal (or another user editing
@@ -343,7 +337,44 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate, user]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate]);
+
+  // ── Board keeper ──────────────────────────────────────────────────────────
+  // A raw setInterval backstop that revalidates the board keys every 20s while
+  // the tab is visible. It exists because the two mechanisms that are supposed
+  // to keep a board fresh both have a hole a merely-occluded tab falls through:
+  //
+  //   • The panels' own SWR `refreshInterval` (IssuesPanel = 30s, etc.) is a
+  //     SELF-RESCHEDULING setTimeout chain — each revalidation schedules the
+  //     next only after it resolves. Chrome's occlusion throttling (a visible
+  //     tab fully covered by another window) can drop a tick, and because the
+  //     chain only schedules forward, ONE dropped tick ends it PERMANENTLY: the
+  //     poll never fires again, even after the tab is uncovered.
+  //   • `revalidateOnFocus` can't heal that tab either — it needs a focus
+  //     TRANSITION (blur→focus) to fire on, and an occluded-but-never-blurred
+  //     tab never gets one. (It's off globally in SwrProvider anyway; the panels
+  //     that opt back in still depend on the transition that never comes.)
+  //
+  // Verified live on dev, twice today: 3 issues in the DB, GET /issues returning
+  // them, the Tasks board stuck on "No tasks yet" for 60s+ — through a real
+  // click into the page — because the panel's 30s chain was throttle-killed and
+  // no focus transition ever came. A raw setInterval is NOT a self-rescheduling
+  // chain (a dropped/delayed tick does not cancel the next one), so it survives
+  // the throttle — the same reason ProvisioningStepper's poll watchdog uses one.
+  //
+  // Cost: reuses ALL_KEYS (the very reconcile set the resubscribe / stream-
+  // resume paths already use), and `mutate(predicate)` only refetches keys
+  // already in cache — so on a board view this is ~3 cheap BFF list calls per
+  // 20s while visible: the insurance premium. useTeamsApi's 15s
+  // `dedupingInterval` still collapses any overlap with a panel poll that IS
+  // firing. Skipped entirely while hidden so backgrounded tabs don't spin.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      for (const key of ALL_KEYS) mutateKeyPrefix(key);
+    }, BOARD_KEEPER_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [mutateKeyPrefix]);
 
   return <>{children}</>;
 }

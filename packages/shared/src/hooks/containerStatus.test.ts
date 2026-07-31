@@ -16,14 +16,14 @@ describe("classifyContainerStatus", () => {
     it("passes the normal container row through RAW, untouched", () => {
       const body: ContainerStatusBody = {
         service_name: "openclaw-user123-abcd",
-        status: "running",
-        substatus: "gateway_healthy",
+        container_status: "running",
+        container_substatus: "gateway_healthy",
         created_at: "2026-07-01T00:00:00Z",
         updated_at: "2026-07-20T00:00:00Z",
         region: "us-east-1",
         last_error: null,
         last_error_at: null,
-        phase: "ready",
+        runtime_phase: "ready",
         onboarded: true,
       };
       const result = classifyContainerStatus({ status: 200, body });
@@ -42,14 +42,14 @@ describe("classifyContainerStatus", () => {
       // onboarded explicitly false.
       const body: ContainerStatusBody = {
         service_name: null,
-        status: "provisioning",
-        substatus: "ensure_user_ready",
+        container_status: "provisioning",
+        container_substatus: "ensure_user_ready",
         created_at: null,
         updated_at: null,
         region: "us-east-1",
         last_error: null,
         last_error_at: null,
-        phase: "provisioning",
+        runtime_phase: "provisioning",
         onboarded: false,
       };
       const result = classifyContainerStatus({ status: 200, body });
@@ -62,15 +62,15 @@ describe("classifyContainerStatus", () => {
       // That's a binding decision; the classifier must not collapse it.
       const body: ContainerStatusBody = {
         service_name: "x",
-        status: "stopped",
-        substatus: null,
-        phase: "parked",
+        container_status: "stopped",
+        container_substatus: null,
+        lifecycle: "parked",
         parked: true,
       };
       const result = classifyContainerStatus({ status: 200, body });
       expect(result).toEqual({ kind: "container", body });
       if (result.kind === "container") {
-        expect(result.body.phase).toBe("parked");
+        expect(result.body.lifecycle).toBe("parked");
       }
     });
 
@@ -80,8 +80,8 @@ describe("classifyContainerStatus", () => {
       // here — the classifier's job is only to hand the raw body over.
       const body: ContainerStatusBody = {
         service_name: "x",
-        status: "error",
-        substatus: null,
+        container_status: "error",
+        container_substatus: null,
         last_error: "ECS task failed to start",
       };
       const result = classifyContainerStatus({ status: 200, body });

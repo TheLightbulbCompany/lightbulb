@@ -1,10 +1,10 @@
 """Build, enrich, and deliver a support ticket.
 
 Identity + account/container state are derived server-side from the JWT +
-repos — the client is never trusted for them. Delivered via the Plan-1
-email_service to the support@ inbox, From a dedicated tickets@ identity so the
-agent (Plan 3) can filter app tickets from direct customer mail. Best-effort:
-returns the email id or None.
+repos — the client is never trusted for them. Delivered via email_service to
+the support@ inbox, From a dedicated tickets@ identity so the agent can
+filter app tickets from direct customer mail. Best-effort: returns the email
+id or None.
 """
 
 import html
@@ -129,11 +129,11 @@ def _render(req: SupportTicketRequest, meta: dict) -> str:
 
 
 async def submit_ticket(auth: AuthContext, req: SupportTicketRequest) -> str | None:
-    """Enrich + deliver a support ticket. Returns the Resend id or None."""
+    """Enrich + deliver a support ticket. Returns the SES MessageId or None."""
     meta = await _build_metadata(auth, req)
     subject = f"[Support] {req.category}: {req.message[:60]}"
     reply_to = auth.email or settings.EMAIL_SUPPORT_ADDRESS
-    return await email_service.send_email(
+    email_id = await email_service.send_email(
         to=settings.EMAIL_SUPPORT_ADDRESS,
         subject=subject,
         html=_render(req, meta),
@@ -141,3 +141,17 @@ async def submit_ticket(auth: AuthContext, req: SupportTicketRequest) -> str | N
         reply_to=reply_to,
         kind="support_ticket",
     )
+    if email_id is None:
+        # The email is the ONLY capture path — there is no ticket table by
+        # design — so a failed send would otherwise discard what the owner
+        # asked for, leaving support a user id and a timestamp. Log enough to
+        # act on: who, what category, and the message. Bounded to 2000 chars
+        # (of the schema's 8000) so a pasted stack trace can't flood the group,
+        # and the reply-to address so support can answer without the email.
+        logger.warning(
+            "support ticket UNDELIVERED — reply_to=%s category=%s message=%r",
+            reply_to,
+            req.category,
+            req.message[:2000],
+        )
+    return email_id

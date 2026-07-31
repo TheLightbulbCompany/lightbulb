@@ -108,6 +108,40 @@ describe("useCredits", () => {
     expect(bodies[1].request_id).not.toBe(bodies[0].request_id);
   });
 
+  it("rotates the request_id for a fresh top-up intent after rotateRequestId()", async () => {
+    // The collect-timeout backstop concludes the prior attempt is dead, so the
+    // next top-up must be a NEW intent — a fresh idempotency token, not a replay
+    // of the accepted-but-uncollected commit. (Contrast the error-retry test
+    // above, which reuses the token so a lost response replays, not double-charges.)
+    const fetchMock = vi.fn().mockImplementation((url: RequestInfo | URL) => {
+      if (String(url).includes("/billing/credits/top_up")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ status: "requested", amount_cents: 2000 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    });
+    global.fetch = fetchMock;
+
+    const { result } = renderHook(() => useCredits(), { wrapper });
+    await result.current.startTopUp(2000);
+    result.current.rotateRequestId();
+    await result.current.startTopUp(2000);
+
+    const bodies = topUpCalls(fetchMock);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].request_id).not.toBe(bodies[0].request_id);
+    expect(bodies[1].request_id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
   it("routes checkout top-ups with the opt-in flag and returns the URL", async () => {
     // The default purchase path: explicit Stripe Checkout. The opt-in flag
     // rides the request so the backend captures off-session card consent

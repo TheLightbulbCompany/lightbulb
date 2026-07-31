@@ -165,7 +165,7 @@ async def get_dashboard(
     """
     # #802 — container-readiness gate. The Paperclip row goes ``active`` ~2-3s
     # into provisioning (``_ctx`` resolves past it), but the owner's container
-    # is created in the BACKGROUND (``asyncio.create_task(background_provision)``
+    # is created in the BACKGROUND (``asyncio.create_task(dispatch_provision)``
     # in ``ensure_user_ready``) and may still be starting — or its single
     # dispatch may have failed silently, leaving no container at all. Since the
     # frontend uses THIS endpoint as its workspace-status probe

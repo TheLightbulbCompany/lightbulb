@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { capture } from "@/lib/analytics";
 import { Logo } from "@/components/Logo";
 import { useSupport } from "@/components/support/SupportProvider";
+import { SUPPORT_CATEGORIES } from "@/components/support/SupportTicketDialog";
 
 export default function SupportPage() {
   const router = useRouter();
@@ -66,12 +67,11 @@ export default function SupportPage() {
               <label htmlFor="subject">Subject</label>
               <select id="subject" name="subject" required defaultValue="">
                 <option value="" disabled>Select a topic</option>
-                <option value="Bug report">Bug report</option>
-                <option value="Feature request">Feature request</option>
-                <option value="Billing question">Billing question</option>
-                <option value="Account issue">Account issue</option>
-                <option value="GooseTown">GooseTown</option>
-                <option value="Other">Other</option>
+                {SUPPORT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -89,6 +89,29 @@ export default function SupportPage() {
             href="mailto:support@isol8.co"
             onClick={() => capture("support_contact_clicked", { source: "support_page_direct" })}
           >support@isol8.co</a></p>
+        </div>
+
+        {/* Declared as the data deletion instructions URL for the Meta app
+            (App settings -> Basic). Reviewers open this section directly. */}
+        <div className="support-direct" id="data-deletion">
+          <h2>Deleting your data</h2>
+          <p>
+            To delete your Isol8 account and everything we hold for it &mdash; your workspace,
+            your agents, their history, and the credentials for any service you connected
+            &mdash; email <a
+              href="mailto:support@isol8.co?subject=Delete%20my%20account"
+              onClick={() => capture("support_contact_clicked", { source: "support_page_data_deletion" })}
+            >support@isol8.co</a> from your account email address and we&rsquo;ll action it.
+          </p>
+          <p>
+            On a personal account you can also delete it yourself in the Isol8 iOS app, under
+            Settings. Team accounts are deleted on request.
+          </p>
+          <p>
+            To remove just one connected service, disconnect it in the Integrations tab of the
+            Control Panel &mdash; that revokes our access and deletes the credentials we stored
+            for it, leaving the rest of your account intact. Account deletion is irreversible.
+          </p>
         </div>
       </main>
 

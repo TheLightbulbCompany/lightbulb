@@ -6,16 +6,16 @@ const FEATURES = [
         Plugs into <em>your</em> stack
       </>
     ),
-    desc: "Gmail, Slack, Salesforce, Notion — your agents connect natively to the tools your team relies on. No new apps to learn, no workflows to rebuild.",
+    desc: "Gmail, Slack, Salesforce, Notion, Stripe — your agents work inside the tools your business already runs on. Nothing new to learn, nothing to migrate.",
   },
   {
     num: "F.02",
     title: (
       <>
-        Always <em>in the loop</em>
+        Runs <em>while you&rsquo;re gone</em>
       </>
     ),
-    desc: "Message your agents on Slack, WhatsApp, or Discord — just like texting a teammate. Your container is always running, so your agents never stop working, even when you log off.",
+    desc: "Your pod is always on. Agents keep sourcing leads, answering customers, and reconciling books overnight — then brief you in the morning. Message them on Slack or WhatsApp like any teammate.",
   },
   {
     num: "F.03",
@@ -24,7 +24,7 @@ const FEATURES = [
         Acts <em>autonomously</em>
       </>
     ),
-    desc: "Your pod doesn't just answer — it acts. Schedule tasks, run workflows, send messages, and complete multi-step jobs in the background while you focus on what matters.",
+    desc: "They don't just answer — they do. Agents plan multi-step work, hand off to each other, and carry a job end to end so it finishes without you in the middle.",
   },
 ];
 
@@ -87,10 +87,10 @@ export function Features() {
     <section className="ld-features" id="features">
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
-          your pod
+          how it runs
         </div>
         <h2 className="ld-h2" data-ld-reveal>
-          Agents that fit into <em>your</em> tools.
+          A company that runs <em>in the background.</em>
         </h2>
 
         <div className="ld-feat-list" data-ld-reveal-group>

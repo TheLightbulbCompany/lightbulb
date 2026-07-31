@@ -4,7 +4,7 @@ def by the owner's billing plan.
 The upgrade webhook resizes a running Ultra Pro container to 2 vCPU / 8 GB, but
 the provision path re-registers the task def from the CDK base on every
 image-roll, provider switch, restart, and admin reprovision. If that path
-hardcoded the standard 0.5 vCPU / 2 GB, any of those events would silently undo
+hardcoded the standard 1 vCPU / 4 GB, any of those events would silently undo
 the resize. These tests pin that the provision path re-derives the size from the
 plan instead — so the Ultra box is durable.
 
@@ -119,7 +119,6 @@ def mock_settings():
         s.CLOUD_MAP_NAMESPACE_NAME = "isol8-dev.local"
         s.CLOUD_MAP_SERVICE_NAME = "openclaw-containers"
         s.EFS_FILE_SYSTEM_ID = "fs-test123"
-        s.ACP_ENABLED = False
         yield s
 
 
@@ -220,7 +219,7 @@ class TestFreshProvisionSizing:
 
 
 class TestReprovisionRestartSizing:
-    """A full reprovision (stop -> background_provision) lands on the
+    """A full reprovision (stop -> dispatch_provision) lands on the
     service-exists-with-0-desired restart branch, which re-registers the task
     def. Sizing that branch by plan is what keeps an Ultra reprovision from
     reverting to standard."""

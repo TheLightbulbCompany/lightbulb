@@ -14,23 +14,11 @@
   --font-lora: var(--font-lora-serif);
   --font-press: var(--font-press-start);
   --font-epilogue: var(--font-epilogue);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -41,7 +29,6 @@
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -84,48 +71,69 @@
   --gold: #c2a378;
   --ink: #1a1a1a;
   --ink-soft: #3d3d3d;
-  --mute: #8a8578;
+  /* #767061, not the older #8a8578: --mute is secondary BODY text, and
+   * #8a8578 measured 3.44:1 on --cream — under the 4.5:1 WCAG AA floor.
+   * #767061 keeps the same warm-grey hue at 4.61:1. Verified in-browser,
+   * not computed from the hex alone. */
+  --mute: #767061;
   --mute-soft: #b5af9f;
   --warn: #c47a1d;
   --danger: #b32424;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  /*
+   * shadcn/ui surface contract, repointed at the editorial palette above.
+   * These were stock `npx shadcn init` grayscale, so every Button/Input/
+   * Popover/Dialog rendered neutral-gray inside cream+forest pages. Mapping
+   * them here rebrands all 15 primitives across the ~83 files that import
+   * them, with no component edits.
+   *
+   * Conventions borrowed from components/teams/, which is the surface where
+   * the editorial system is fully applied:
+   *   - cards/panels are delineated by --edge borders, NOT a surface shift,
+   *     so --card and --popover are plain --cream (every `bg-card` call site
+   *     already pairs with `border-border`).
+   *   - --cream-deeper is the hover/selected wash (see IssueRow, GoalHeader).
+   */
+  --background: var(--cream);
+  --foreground: var(--ink);
+  --card: var(--cream);
+  --popover: var(--cream);
+  --popover-foreground: var(--ink);
+  --primary: var(--forest);
+  --primary-foreground: var(--cream);
+  --secondary: var(--cream-deeper);
+  --secondary-foreground: var(--ink);
+  --muted: var(--cream-deeper);
+  --muted-foreground: var(--mute);
+  --accent: var(--cream-deeper);
+  --accent-foreground: var(--ink);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--cream);
+  --border: var(--edge);
+  --input: var(--edge);
+  --ring: var(--forest);
 }
 
+/*
+ * Dark override — scoped to /admin, which is the ONLY surface that applies
+ * the `dark` class: app/admin/layout.tsx:45,52 wrap the whole admin tree in
+ * `dark min-h-screen bg-background text-foreground`. Its header is hardcoded
+ * zinc-800/900, so this block is what keeps the body matching it; without it
+ * the admin body renders cream under a near-black header, and the `dark:`
+ * variants baked into components/ui/{button,select,tabs}.tsx (which still
+ * fire here, since `.dark` is their ancestor) composite against the wrong
+ * surface.
+ *
+ * Deliberately still the stock shadcn dark values rather than an editorial
+ * dark palette: /admin has never used cream/forest, and retheming it is a
+ * separate decision from the :root pass above. Only the tokens with real
+ * call sites are kept — --card-foreground, --chart-* and --sidebar-* are
+ * dropped here for the same zero-usage reason they were dropped from :root.
+ */
 .dark {
   --background: oklch(0 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);
-  --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.145 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.985 0 0);
@@ -137,22 +145,10 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.985 0 0);
-  --sidebar-primary-foreground: oklch(0 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
 }
 
 @layer base {
@@ -258,6 +254,22 @@
 .editorial-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* FILLED variants need a real disabled treatment, not the blanket alpha
+ * above. At 50% opacity a --forest fill composites to a washed-out sage
+ * (#809b8e) and drags its own --cream label down with it — the label ends up
+ * near the page colour, so it reads as a ghostly blob at ~2.5:1 rather than
+ * as a disabled control. Flattening to a muted surface + --mute label keeps
+ * the shape legible as a STATE (~2.9:1, and it's the design system's own
+ * secondary-text token). Disabled controls are exempt from WCAG 1.4.3, but
+ * this is still an improvement on what it replaces, not a regression. */
+.editorial-btn--primary:disabled,
+.editorial-btn--destructive:disabled {
+  opacity: 1;
+  background: var(--cream-deepest);
+  color: var(--mute);
+  border-color: var(--edge);
 }
 
 .agent-monogram {
@@ -822,7 +834,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .shelf-frame-label {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: #8a8578;
+  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--mute);
 }
 .shelf-grid {
   display: grid;
@@ -865,7 +877,7 @@ button:focus-visible { border-radius: 999px; }
   flex-shrink: 0;
 }
 .price.free {
-  color: #8a8578; background: #f3efe6; border: 1px solid #e0dbd0;
+  color: var(--mute); background: #f3efe6; border: 1px solid #e0dbd0;
 }
 
 /* "Browse all" tile */
@@ -882,7 +894,7 @@ button:focus-visible { border-radius: 999px; }
 .listing.more .more-lbl {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
-  color: #8a8578;
+  color: var(--mute);
 }
 .listing.more .more-cta {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -1455,13 +1467,13 @@ button:focus-visible { border-radius: 999px; }
 .orch-frame-label {
   position: absolute; top: 16px; left: 22px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: #8a8578;
+  font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--mute);
 }
 .orch-frame-meta {
   position: absolute; top: 16px; right: 22px;
   display: inline-flex; align-items: center; gap: 8px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px; letter-spacing: .14em; color: #8a8578;
+  font-size: 10px; letter-spacing: .14em; color: var(--mute);
 }
 
 .puck {
@@ -1481,7 +1493,7 @@ button:focus-visible { border-radius: 999px; }
 .puck-status {
   position: absolute; top: calc(100% + 26px); left: 50%; transform: translateX(-50%);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9.5px; color: #8a8578; letter-spacing: .04em; white-space: nowrap;
+  font-size: 9.5px; color: var(--mute); letter-spacing: .04em; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 5px;
 }
 
@@ -1558,7 +1570,7 @@ button:focus-visible { border-radius: 999px; }
 }
 .skill-chip-mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px; color: #8a8578;
+  font-size: 11px; color: var(--mute);
 }
 
 @media (max-width: 980px) {

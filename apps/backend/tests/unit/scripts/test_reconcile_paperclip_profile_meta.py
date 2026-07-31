@@ -1,6 +1,5 @@
 """Unit tests for the Paperclip profile-meta drift reconciler script.
 
-Mirrors the structure of test_migrate_paperclip_session_strategy.py.
 
 The reconciler's source of truth is openclaw.json (decoded to a
 ``PaperclipMeta``). ``diff_profile_meta`` produces the minimal

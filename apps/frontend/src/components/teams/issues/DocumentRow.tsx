@@ -271,7 +271,7 @@ export function DocumentRow({
             </div>
           ) : null}
 
-          <div className="flex flex-col gap-3 lg:flex-row">
+          <div className="flex flex-col gap-3 @3xl:flex-row">
             <div className="relative min-w-0 flex-1 max-w-none text-[var(--ink)]">
               {/* `bodyRef` wraps ONLY the rendered markdown so the annotation
                   layer's text-node walk + selection offsets aren't polluted by

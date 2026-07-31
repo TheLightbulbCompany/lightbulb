@@ -1,10 +1,14 @@
 ---
 name: isol8
 description: >
-  Authoritative guide to the Isol8 platform you run on — its web and desktop
-  surfaces, the Integrations tab, the agent marketplace, plans and billing,
-  and how your company (Paperclip) is structured. Use whenever a question
-  involves Isol8 itself — connecting services, hiring or publishing agents,
+  Authoritative guide to the Isol8 platform you run on, AND the only way to
+  send email. Read this whenever you need to EMAIL YOUR OWNER or reply to an
+  email — you have your own address and a helper script here; Isol8 does not
+  use Gmail, himalaya, or an OpenClaw email channel, so looking for those
+  will find nothing. Also covers the web and desktop surfaces, the
+  Integrations tab, the agent marketplace, plans and billing, and how your
+  company (Paperclip) is structured. Use whenever a question involves Isol8
+  itself — emailing, connecting services, hiring or publishing agents,
   plans/providers/models, where a UI surface lives, what you can and cannot
   do on the platform — rather than the user's own domain work. Do not guess
   platform mechanics; read this first.
@@ -28,7 +32,9 @@ description: >
                               core/containers/ecs_manager.py (ISOL8_API_URL env the container reads)
   - Paperclip org model ..... Isol8AI/paperclip fork: server/src/services/agent-permissions.ts,
                               services/agents.ts (getChainOfCommand), adapters/registry.ts (openclaw_gateway)
-  - Email reply ............. scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
+  - Email reply ............. /app/skills/isol8/scripts/isol8-mail.sh + backend routers/agent_mail_relay.py + core/services/agent_mail_reply.py
+  - Email to owner .......... /app/skills/isol8/scripts/isol8-owner-email.sh + backend routers/agent_mail_send.py + core/services/agent_mail_owner_send.py
+                              (the facts tri-state it branches on is built in core/services/owner_facts.py)
 -->
 
 # The Isol8 Platform
@@ -75,11 +81,40 @@ Read the current catalog live:
   integrations surface directly as tools; if a service's tools are present,
   it's connected.
 
+**How to talk about an integration.** Check your own toolset first: if a
+service's tools are already there, it's connected — use them. Otherwise read the
+two flags each **integration** entry carries — `requestable` and `byo_required`
+— and send the owner to the Integrations tab (Control Panel, isol8.co/chat) with
+an accurate description of what they'll find there.
+
+**The catalog is public and OWNERLESS**, so it cannot see per-owner access. Its
+`requestable` is therefore a hint about the *environment*, not a fact about
+*your owner* — describe the tab, never assert which button is on the row, and
+ask them what they see if it matters:
+
+- **`requestable: true`** — generally not available yet, so the row most likely
+  offers **Request access**, which emails a human who sets it up. Do NOT promise
+  a timeline, and do NOT imply it will work immediately. But your owner may be
+  individually enabled, in which case they'll see a normal **Connect** button —
+  if they report one, treat it as connectable and carry on. This flag wins over
+  `byo_required`: they cannot supply an app for something they can't reach.
+- **`requestable: false`, `byo_required: false`** — one-click. They press
+  **Connect** and authorize in the browser.
+- **`requestable: false`, `byo_required: true`** — connectable, but only with
+  the owner's OWN OAuth app: the row walks them through creating it in the
+  provider's console and pasting the client ID/secret before the Connect step.
+  Say that up front — presenting it as one-click sets them up to bounce off a
+  form they didn't expect.
+
+On your FIRST run, if the owner's stated goal or brief needs a capability that is
+`requestable`, raise it once, unprompted — they cannot request what they don't
+know exists. Do not raise it again on later turns.
+
 **Operator mindset — connect and DO, don't just draft.** When a task needs an
 external capability, first check the platform-info catalog: if the integration
-is offered but its tools aren't in your toolset yet, tell the owner exactly
-what to connect and where ("connect <service> in the Integrations tab, Control
-Panel at isol8.co/chat"), then do the real work once its tools appear. Do NOT
+is connectable (`requestable: false`) but its tools aren't in your toolset yet,
+send the owner to the Integrations tab and describe what that row asks of them
+per the flags above, then do the real work once its tools appear. Do NOT
 silently produce copy (e.g. "here's your Instagram bio") as a substitute for
 connecting the integration and performing the task.
 
@@ -96,29 +131,74 @@ the platform can't do.
   connected (or was disconnected).
 - **What you cannot do:** you cannot connect, authorize, or disconnect a
   service yourself — connecting requires the owner to authenticate in the
-  browser. When a task needs an unconnected service, say exactly what's
-  needed: *"To do X, connect <service> in the Integrations tab
-  (Control Panel at isol8.co/chat)."*
+  browser. When a task needs an unconnected service, name the service and send
+  them to the Integrations tab (Control Panel at isol8.co/chat), describing the
+  row per its catalog flags above — never assert it's one click without
+  checking.
 - Some capabilities ship as **click-to-connect skills** that sit disabled in
   the container config until the owner connects the backing service — same
   redirect applies.
 
-## Replying by email
+## Your email address
 
-Some agents have their own email address, provisioned per-owner. Check
-`~/.openclaw/isol8-facts.json` for a non-empty `email_address` value — the
-key is always present, but its value is `null` until provisioned. If it is
-absent, `null`, or empty, email is not provisioned for this owner: don't
-claim to have an email address or offer to reply by email.
+`~/.openclaw/isol8-facts.json` carries two keys that answer this together.
+Read BOTH — `email_address` alone cannot tell the last two rows apart:
 
-When you have one, and a message you receive begins with an email header
-block that includes a `Reply-Token:` line, that message reached you as an
-inbound email. You can reply to the sender by running
-`scripts/isol8-mail.sh <reply-token>` (a relative path — resolved against
-this skill's directory) with the reply body piped on stdin:
+| `email_enabled` | `email_address` | What it means |
+|---|---|---|
+| `false` | `null` | Email is not available here. Don't claim an address, don't offer to email anyone. |
+| `true` | `null` | **You can send. You don't have an address yet — your first send creates it.** Don't advertise an address you can't name. |
+| `true` | `"friday@…"` | That is your address. You may share it. |
+
+## Emailing your owner
+
+When `email_enabled` is true, you can email your owner directly:
 
 ```
-printf '%s' "Thanks -- I've booked that for Tuesday." | scripts/isol8-mail.sh "<the-reply-token>"
+printf '%s' "<your message>" | /app/skills/isol8/scripts/isol8-owner-email.sh --subject "<subject>"
+```
+
+Absolute path — the skill is baked at `/app/skills/isol8`, and your working
+directory is the agent workspace, not the skill directory.
+
+Rules:
+
+- **It goes only to your owner.** There is no recipient argument; the server
+  resolves who that is. You cannot email anyone else with this.
+- **Your first send creates your address**, minted from your company's name
+  at that moment. That name becomes the subdomain of an address other people
+  will see (`friday@acme-robotics.isol8.co`), and it **cannot be changed
+  afterwards**. So name the company BEFORE your first send.
+
+  Check the current name, and set it if it is still a placeholder (an email
+  local part, or anything that isn't a real business name):
+
+  ```
+  # what is it now?
+  /app/skills/paperclip/scripts/paperclip-api.sh raw GET "/api/companies/$PAPERCLIP_COMPANY_ID"
+
+  # name it
+  jq -n --arg n "Acme Robotics" '{name:$n}' | \
+    /app/skills/paperclip/scripts/paperclip-api.sh raw PATCH "/api/companies/$PAPERCLIP_COMPANY_ID"
+  ```
+
+  `PAPERCLIP_COMPANY_ID` is already in your environment. Pick something you'd
+  put on a business card — short, real, no punctuation beyond hyphens.
+- **Send it when you have something worth reading**, not to acknowledge that
+  you started.
+
+## Replying by email
+
+When a message you receive begins with an email header
+block that includes a `Reply-Token:` line, that message reached you as an
+inbound email. You can reply to the sender by running
+`/app/skills/isol8/scripts/isol8-mail.sh <reply-token>` (absolute path — the
+skill is baked at /app/skills/isol8; relative invocations fail because your
+working directory is the agent workspace, not the skill directory) with the
+reply body piped on stdin:
+
+```
+printf '%s' "Thanks -- I've booked that for Tuesday." | /app/skills/isol8/scripts/isol8-mail.sh "<the-reply-token>"
 ```
 
 Rules:
@@ -147,6 +227,23 @@ Rules:
   auto-capture.
 
 ## The Marketplace (hiring and publishing agents)
+
+**Never recite listings from memory — the catalog changes.** Read it live with
+the `marketplace_search` tool, exactly as you read platform-info for
+integrations. When you find a fit, call `recommend_agents` with its slug: the
+owner gets a one-click hire card. Name the agent in your reply too, so the
+recommendation still reads on Telegram and email, where no card renders.
+
+**Cost — this is why you check here first.** Deploying a published marketplace
+agent costs NOTHING in inference; it is a file extract plus a config merge, and
+the agent is ready immediately. Asking Atlas to build one costs a full
+agent-building run against the owner's budget, and takes minutes.
+
+**You cannot hire on your own.** Both tools are read-only. The roster changes
+only when the owner clicks Deploy on the card, or approves the hire in Teams.
+When you are working a Paperclip task with nobody watching, pass your
+`PAPERCLIP_TASK_ID` as `issue_id` — the request lands on that issue in the
+owner's Teams inbox instead of vanishing into a chat nobody is reading.
 
 **Hiring (buyer side):** the owner browses isol8.co/marketplace and deploys
 an agent into this container. A deployed hire gets its own workspace and a
@@ -209,10 +306,14 @@ Every Isol8 company starts with two seeded agents:
 ## Plans, providers, and this owner's current state
 
 Isol8's paid plans: **Starter, $50/month flat fee** (always-on container)
-for personal and flat-fee org workspaces, and a **per-seat Teams
-subscription** for seat-billed team workspaces. There is also a **free
-tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap, container
-sleeps when idle). Inference runs on one of
+for personal and flat-fee org workspaces, and a **Teams subscription for
+team workspaces: a $50/month base plus $20/month per seat** — so a solo
+admin pays $70/month and a four-person team pays $130/month. A seat is
+anyone who is a member OR has been invited: an invitation is billed from
+the moment it is sent, not when it is accepted (accepting moves a person
+from pending to member, so the total does not change). There is also a
+**free tier** (no card: Bedrock Claude Sonnet only, $3/day usage cap,
+container sleeps when idle). Inference runs on one of
 three provider paths chosen by the owner: **Bedrock managed** (Isol8-billed
 credits), **ChatGPT OAuth** (the owner's own OpenAI account — available to
 personal owners and to org workspaces, where the workspace owner/admin who
@@ -242,7 +343,7 @@ change them.
 
 | You cannot | Instead say |
 |---|---|
-| Connect/disconnect an integration | "Connect <service> in the Integrations tab (Control Panel, isol8.co/chat)" |
+| Connect/disconnect an integration | "Open the Integrations tab (Control Panel, isol8.co/chat) and find <service>" — check its catalog flags before claiming it's one click |
 | Deploy a marketplace listing | "Open isol8.co/marketplace and deploy <listing> — I can take it from there" |
 | Publish an agent to the marketplace | "Use the seller wizard at isol8.co/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in isol8.co/settings (billing) or the Model & Credits tab" |
@@ -253,9 +354,10 @@ change them.
 ## Quick answers
 
 - **"How do I connect <service>?"** → Check the platform-info catalog for the
-  current connectable services; if offered, connect it in the Integrations tab
-  (or Channels tab), Control Panel, isol8.co/chat. Its tools appear to you
-  automatically once connected.
+  current connectable services, then send them to the Integrations tab (or
+  Channels tab), Control Panel, isol8.co/chat, describing that row per its
+  `requestable` / `byo_required` flags. Its tools appear to you automatically
+  once connected.
 - **"Can you build me an agent for X?"** → Yes: Friday routes a role spec
   to Atlas, or the owner deploys a pre-built one from isol8.co/marketplace.
 - **"How do I sell my agent?"** → Seller wizard on isol8.co/marketplace;

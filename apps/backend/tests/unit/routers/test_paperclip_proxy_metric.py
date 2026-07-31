@@ -56,7 +56,13 @@ class _RaisingClient:
 @pytest.mark.asyncio
 async def test_proxy_upstream_unreachable_emits_metric():
     auth = AuthContext(user_id="user_x", org_id=None, email="u@isol8.co")
-    company = SimpleNamespace(status="active", paperclip_password_encrypted="enc")
+    # org_id is a required field on PaperclipCompany (paperclip_repo.py) and the
+    # proxy reads it to gate the established-session forward path
+    # (``company.org_id != resolve_owner_id(auth)``). For this org-less personal
+    # session resolve_owner_id(auth) == auth.user_id == "user_x", so pin org_id
+    # to "user_x" — otherwise the proxy takes the provisioning-stub / re-handshake
+    # branch instead of forwarding to the (raising) upstream client.
+    company = SimpleNamespace(status="active", org_id="user_x", paperclip_password_encrypted="enc")
 
     with (
         patch("routers.paperclip_proxy.put_metric") as mock_put,

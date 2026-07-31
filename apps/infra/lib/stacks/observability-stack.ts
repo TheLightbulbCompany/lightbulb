@@ -75,14 +75,19 @@ export interface ObservabilityStackProps extends cdk.StackProps {
 interface AlarmDef {
   id: string;
   name: string;
-  metricName: string;
+  /** Pre-built metric: a MathExpression, an AWS-native namespace with its own
+   * dimension scheme, or a metric built from a construct reference.
+   * Mutually exclusive with metricName. */
+  metric?: cloudwatch.IMetric;
+  /** Custom Isol8-namespace metric; env + service dimensions auto-injected. */
+  metricName?: string;
   namespace?: string; // default "Isol8"
   statistic?: string; // default "Sum"
   threshold: number;
-  evaluationPeriods: number;
-  periodMinutes: number;
-  comparisonOperator: cloudwatch.ComparisonOperator;
-  treatMissingData?: cloudwatch.TreatMissingData;
+  evaluationPeriods?: number; // default 1
+  periodMinutes?: number; // required with metricName
+  comparisonOperator?: cloudwatch.ComparisonOperator; // default GREATER_THAN_THRESHOLD
+  treatMissingData?: cloudwatch.TreatMissingData; // default NOT_BREACHING
   dimensions?: Record<string, string>;
   severity: "page" | "warn";
   description: string;
@@ -194,10 +199,15 @@ export class ObservabilityStack extends cdk.Stack {
   /**
    * Creates a single CloudWatch alarm from a definition object.
    *
-   * For custom Isol8 namespace metrics, auto-injects `env` and `service`
-   * dimensions to match the EMF emitter output. AWS-native namespace metrics
-   * (AWS/ApplicationELB, AWS/ApiGateway, etc.) should NOT use this helper --
-   * they have their own dimension schemes.
+   * Wires the alarm to its severity's SNS topic and, for the page tier,
+   * registers it as a FIS stop-condition source. EVERY alarm in this stack
+   * goes through here.
+   *
+   * Pass `metricName` for a custom Isol8-namespace metric -- `env` and
+   * `service` dimensions are auto-injected to match the EMF emitter output.
+   * Pass `metric` instead for anything else: a MathExpression, an AWS-native
+   * namespace (AWS/ApplicationELB, AWS/ApiGateway, ...) with its own
+   * dimension scheme, or a metric built from a construct reference.
    */
   private createAlarm(def: AlarmDef): cloudwatch.Alarm {
     // Auto-inject env and service dimensions for custom Isol8 namespace
@@ -210,21 +220,25 @@ export class ObservabilityStack extends cdk.Stack {
         }
       : (def.dimensions ?? {});
 
-    const metric = new cloudwatch.Metric({
-      namespace: def.namespace ?? "Isol8",
-      metricName: def.metricName,
-      statistic: def.statistic ?? "Sum",
-      period: cdk.Duration.minutes(def.periodMinutes),
-      dimensionsMap: dimensions,
-    });
+    const metric =
+      def.metric ??
+      new cloudwatch.Metric({
+        namespace: def.namespace ?? "Isol8",
+        metricName: def.metricName!,
+        statistic: def.statistic ?? "Sum",
+        period: cdk.Duration.minutes(def.periodMinutes!),
+        dimensionsMap: dimensions,
+      });
 
     const alarm = new cloudwatch.Alarm(this, def.id, {
       alarmName: `isol8-${this.envName}-${def.id}-${def.name}`,
       alarmDescription: def.description,
       metric,
       threshold: def.threshold,
-      evaluationPeriods: def.evaluationPeriods,
-      comparisonOperator: def.comparisonOperator,
+      evaluationPeriods: def.evaluationPeriods ?? 1,
+      comparisonOperator:
+        def.comparisonOperator ??
+        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData:
         def.treatMissingData ?? cloudwatch.TreatMissingData.NOT_BREACHING,
     });
@@ -407,19 +421,15 @@ export class ObservabilityStack extends cdk.Stack {
       usingMetrics: ddbThrottlePerTable,
       period: cdk.Duration.minutes(1),
     });
-    const p8 = new cloudwatch.Alarm(this, "P8", {
-      alarmName: `isol8-${this.envName}-P8-dynamodb-throttle-sustained`,
-      alarmDescription:
-        "DynamoDB throttling sustained for 2 consecutive minutes",
+    this.createAlarm({
+      id: "P8",
+      name: "dynamodb-throttle-sustained",
+      description: "DynamoDB throttling sustained for 2 consecutive minutes",
       metric: ddbThrottleTotal,
       threshold: 0,
       evaluationPeriods: 2,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
     });
-    p8.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-    this.pageAlarmArns.push(p8.alarmArn);
 
     // P9: alb-5xx-rate (AWS-native metric math)
     const albFullName = props.alb.loadBalancerFullName;
@@ -573,17 +583,14 @@ export class ObservabilityStack extends cdk.Stack {
       usingMetrics: { errors: provisionErrors, ok: provisionOk },
       period: cdk.Duration.minutes(10),
     });
-    const w1 = new cloudwatch.Alarm(this, "W1", {
-      alarmName: `isol8-${this.envName}-W1-container-provision-error-rate`,
-      alarmDescription: "Container provision error rate exceeds 5%",
+    this.createAlarm({
+      id: "W1",
+      name: "container-provision-error-rate",
+      description: "Container provision error rate exceeds 5%",
       metric: provisionRate,
       threshold: 5,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w1.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W2: container-lifecycle-latency-p99
     this.createAlarm({
@@ -643,17 +650,15 @@ export class ObservabilityStack extends cdk.Stack {
       period: cdk.Duration.minutes(5),
       dimensionsMap: dims,
     });
-    const w5 = new cloudwatch.Alarm(this, "W5", {
-      alarmName: `isol8-${this.envName}-W5-gateway-connection-drop`,
-      alarmDescription: "Gateway open connections dropped sharply",
+    this.createAlarm({
+      id: "W5",
+      name: "gateway-connection-drop",
+      description: "Gateway open connections dropped sharply",
       metric: gwOpenMetric,
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
     });
-    w5.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W6: gateway-health-check-timeout
     this.createAlarm({
@@ -697,17 +702,14 @@ export class ObservabilityStack extends cdk.Stack {
       period: cdk.Duration.minutes(5),
       dimensionsMap: dims,
     });
-    const w8 = new cloudwatch.Alarm(this, "W8", {
-      alarmName: `isol8-${this.envName}-W8-gateway-rpc-error-count`,
-      alarmDescription: "Gateway RPC errors exceed 10 in 5 min",
+    this.createAlarm({
+      id: "W8",
+      name: "gateway-rpc-error-count",
+      description: "Gateway RPC errors exceed 10 in 5 min",
       metric: rpcErrors,
       threshold: 10,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w8.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- Chat (W9-W12) --
 
@@ -1070,9 +1072,10 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Load balancer (W28-W29) --
 
     // W28: ALB UnHealthyHostCount
-    const w28 = new cloudwatch.Alarm(this, "W28", {
-      alarmName: `isol8-${this.envName}-W28-alb-unhealthy-hosts`,
-      alarmDescription: "ALB unhealthy host count > 0 for 5 min",
+    this.createAlarm({
+      id: "W28",
+      name: "alb-unhealthy-hosts",
+      description: "ALB unhealthy host count > 0 for 5 min",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ApplicationELB",
         metricName: "UnHealthyHostCount",
@@ -1082,16 +1085,14 @@ export class ObservabilityStack extends cdk.Stack {
       }),
       threshold: 0,
       evaluationPeriods: 5,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w28.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W29: ALB TargetResponseTime p99
-    const w29 = new cloudwatch.Alarm(this, "W29", {
-      alarmName: `isol8-${this.envName}-W29-alb-response-time-p99`,
-      alarmDescription: "ALB target response time p99 exceeds 5s",
+    this.createAlarm({
+      id: "W29",
+      name: "alb-response-time-p99",
+      description: "ALB target response time p99 exceeds 5s",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ApplicationELB",
         metricName: "TargetResponseTime",
@@ -1100,12 +1101,8 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: { LoadBalancer: albFullName },
       }),
       threshold: 5,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w29.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- API Gateway WebSocket (W30-W32) --
 
@@ -1129,24 +1126,20 @@ export class ObservabilityStack extends cdk.Stack {
       usingMetrics: { errors: apiGw4xx, total: apiGwTotal },
       period: cdk.Duration.minutes(5),
     });
-    const w30 = new cloudwatch.Alarm(this, "W30", {
-      alarmName: `isol8-${this.envName}-W30-apigw-ws-4xx-rate`,
-      alarmDescription:
-        "API Gateway WebSocket 4xx error rate exceeds 5%",
+    this.createAlarm({
+      id: "W30",
+      name: "apigw-ws-4xx-rate",
+      description: "API Gateway WebSocket 4xx error rate exceeds 5%",
       metric: apiGw4xxRate,
       threshold: 5,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w30.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W31: API GW WS IntegrationLatency p99
-    const w31 = new cloudwatch.Alarm(this, "W31", {
-      alarmName: `isol8-${this.envName}-W31-apigw-ws-integration-latency`,
-      alarmDescription:
-        "API Gateway WebSocket integration latency p99 exceeds 2s",
+    this.createAlarm({
+      id: "W31",
+      name: "apigw-ws-integration-latency",
+      description: "API Gateway WebSocket integration latency p99 exceeds 2s",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ApiGateway",
         metricName: "IntegrationLatency",
@@ -1155,21 +1148,17 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: { ApiId: props.wsApiId },
       }),
       threshold: 2000,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w31.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W32: API GW WS ConnectCount drop (static threshold — zero connections)
     // NOT_BREACHING: only catches a real non-zero → zero transition, not the
     // simple absence of connections on idle dev (the old BREACHING config
     // false-fired constantly when nobody was connected).
-    const w32 = new cloudwatch.Alarm(this, "W32", {
-      alarmName: `isol8-${this.envName}-W32-apigw-ws-connect-drop`,
-      alarmDescription:
-        "API Gateway WebSocket connect count dropped to zero",
+    this.createAlarm({
+      id: "W32",
+      name: "apigw-ws-connect-drop",
+      description: "API Gateway WebSocket connect count dropped to zero",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ApiGateway",
         metricName: "ConnectCount",
@@ -1178,12 +1167,9 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: { ApiId: props.wsApiId },
       }),
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
     });
-    w32.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- Lambda authorizer (W33-W35) --
     const lambdaDims = {
@@ -1191,9 +1177,10 @@ export class ObservabilityStack extends cdk.Stack {
     };
 
     // W33: Lambda Errors
-    const w33 = new cloudwatch.Alarm(this, "W33", {
-      alarmName: `isol8-${this.envName}-W33-lambda-auth-errors`,
-      alarmDescription: "Lambda authorizer errors > 0",
+    this.createAlarm({
+      id: "W33",
+      name: "lambda-auth-errors",
+      description: "Lambda authorizer errors > 0",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Lambda",
         metricName: "Errors",
@@ -1202,17 +1189,14 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: lambdaDims,
       }),
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w33.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W34: Lambda Throttles
-    const w34 = new cloudwatch.Alarm(this, "W34", {
-      alarmName: `isol8-${this.envName}-W34-lambda-auth-throttles`,
-      alarmDescription: "Lambda authorizer throttles > 0",
+    this.createAlarm({
+      id: "W34",
+      name: "lambda-auth-throttles",
+      description: "Lambda authorizer throttles > 0",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Lambda",
         metricName: "Throttles",
@@ -1221,17 +1205,14 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: lambdaDims,
       }),
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w34.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W35: Lambda Duration p99
-    const w35 = new cloudwatch.Alarm(this, "W35", {
-      alarmName: `isol8-${this.envName}-W35-lambda-auth-duration-p99`,
-      alarmDescription: "Lambda authorizer p99 duration exceeds 1s",
+    this.createAlarm({
+      id: "W35",
+      name: "lambda-auth-duration-p99",
+      description: "Lambda authorizer p99 duration exceeds 1s",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Lambda",
         metricName: "Duration",
@@ -1240,12 +1221,8 @@ export class ObservabilityStack extends cdk.Stack {
         dimensionsMap: lambdaDims,
       }),
       threshold: 1000,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w35.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- ECS (W36-W39) --
 
@@ -1269,18 +1246,15 @@ export class ObservabilityStack extends cdk.Stack {
         ServiceName: backendServiceName,
       },
     });
-    const w36 = new cloudwatch.Alarm(this, "W36", {
-      alarmName: `isol8-${this.envName}-W36-ecs-backend-cpu`,
-      alarmDescription:
-        "Backend service CPU utilization exceeds 80% for 15 min",
+    this.createAlarm({
+      id: "W36",
+      name: "ecs-backend-cpu",
+      description: "Backend service CPU utilization exceeds 80% for 15 min",
       metric: cpuPct,
       threshold: 80,
       evaluationPeriods: 3,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w36.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W37: Backend service Memory utilization (AWS/ECS standard metric)
     const memPct = new cloudwatch.Metric({
@@ -1293,18 +1267,15 @@ export class ObservabilityStack extends cdk.Stack {
         ServiceName: backendServiceName,
       },
     });
-    const w37 = new cloudwatch.Alarm(this, "W37", {
-      alarmName: `isol8-${this.envName}-W37-ecs-backend-memory`,
-      alarmDescription:
-        "Backend service memory utilization exceeds 80% for 15 min",
+    this.createAlarm({
+      id: "W37",
+      name: "ecs-backend-memory",
+      description: "Backend service memory utilization exceeds 80% for 15 min",
       metric: memPct,
       threshold: 80,
       evaluationPeriods: 3,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w37.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W39: Fargate TaskStopped non-essential reason
     // EventBridge rule captures ECS task state changes with STOPPED status,
@@ -1412,17 +1383,14 @@ def handler(event, context):
       new events_targets.LambdaFunction(taskStoppedFn),
     );
 
-    const w39 = new cloudwatch.Alarm(this, "W39", {
-      alarmName: `isol8-${this.envName}-W39-fargate-task-stopped`,
-      alarmDescription: "Fargate task stopped unexpectedly",
+    this.createAlarm({
+      id: "W39",
+      name: "fargate-task-stopped",
+      description: "Fargate task stopped unexpectedly",
       metric: taskStoppedMetric,
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w39.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W58: per-user container crash-loop. W39 fires on ANY single unexpected
     // stop; a crash-LOOP (CPU-starve → healthcheck SIGKILL → restart → repeat)
@@ -1437,18 +1405,15 @@ def handler(event, context):
       period: cdk.Duration.minutes(5),
       dimensionsMap: { ClusterName: clusterName },
     });
-    const w58 = new cloudwatch.Alarm(this, "W58", {
-      alarmName: `isol8-${this.envName}-W58-per-user-crash-loop`,
-      alarmDescription:
-        "≥3 unexpected container stops in 5 min — a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
+    this.createAlarm({
+      id: "W58",
+      name: "per-user-crash-loop",
+      description: "≥3 unexpected container stops in 5 min — a per-user container is in a crash/restart loop (likely CPU-starve healthcheck SIGKILL). Provisional threshold.",
       metric: crashLoopMetric,
       threshold: 3,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
     });
-    w58.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W59: EFS >1-task-per-access-point detector. Two RUNNING tasks on one
     // per-user service write the same EFS access point → OpenClaw WAL-SQLite
@@ -1529,17 +1494,14 @@ def handler(event, _ctx):
       period: cdk.Duration.minutes(1),
       dimensionsMap: { ClusterName: clusterName },
     });
-    const w59 = new cloudwatch.Alarm(this, "W59", {
-      alarmName: `isol8-${this.envName}-W59-efs-multi-task-per-ap`,
-      alarmDescription:
-        "A per-user service has >1 RUNNING task — two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
+    this.createAlarm({
+      id: "W59",
+      name: "efs-multi-task-per-ap",
+      description: "A per-user service has >1 RUNNING task — two writers on one EFS access point, the OpenClaw WAL-SQLite corruption precondition. Single-writer deploy (maxPercent=100) should prevent this; firing = regression.",
       metric: multiTaskMetric,
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w59.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- DynamoDB (W40-W42) --
     // Create alarms for each table
@@ -1641,9 +1603,10 @@ def handler(event, _ctx):
     const efsId = props.efsFileSystem.fileSystemId;
 
     // W43: EFS PercentIOLimit
-    const w43 = new cloudwatch.Alarm(this, "W43", {
-      alarmName: `isol8-${this.envName}-W43-efs-io-limit`,
-      alarmDescription: "EFS PercentIOLimit exceeds 80%",
+    this.createAlarm({
+      id: "W43",
+      name: "efs-io-limit",
+      description: "EFS PercentIOLimit exceeds 80%",
       metric: new cloudwatch.Metric({
         namespace: "AWS/EFS",
         metricName: "PercentIOLimit",
@@ -1653,11 +1616,8 @@ def handler(event, _ctx):
       }),
       threshold: 80,
       evaluationPeriods: 3,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w43.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W44: EFS BurstCreditBalance low
     const w44 = new cloudwatch.Alarm(this, "W44", {
@@ -1683,9 +1643,10 @@ def handler(event, _ctx):
     // NOT_BREACHING: only catches a real non-zero → zero transition, not the
     // simple absence of the metric on idle dev (the old BREACHING config
     // false-fired when no clients were mounted).
-    const w45 = new cloudwatch.Alarm(this, "W45", {
-      alarmName: `isol8-${this.envName}-W45-efs-client-connections`,
-      alarmDescription: "EFS client connections dropped to zero",
+    this.createAlarm({
+      id: "W45",
+      name: "efs-client-connections",
+      description: "EFS client connections dropped to zero",
       metric: new cloudwatch.Metric({
         namespace: "AWS/EFS",
         metricName: "ClientConnections",
@@ -1694,19 +1655,17 @@ def handler(event, _ctx):
         dimensionsMap: { FileSystemId: efsId },
       }),
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+      severity: "warn",
     });
-    w45.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- Bedrock (W46-W47) --
 
     // W46: Bedrock ModelInvocationThrottles
-    const w46 = new cloudwatch.Alarm(this, "W46", {
-      alarmName: `isol8-${this.envName}-W46-bedrock-throttles`,
-      alarmDescription: "Bedrock model invocation throttles > 0",
+    this.createAlarm({
+      id: "W46",
+      name: "bedrock-throttles",
+      description: "Bedrock model invocation throttles > 0",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Bedrock",
         metricName: "InvocationThrottles",
@@ -1714,18 +1673,14 @@ def handler(event, _ctx):
         period: cdk.Duration.minutes(1),
       }),
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w46.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W47: Bedrock InvocationClientErrors
-    const w47 = new cloudwatch.Alarm(this, "W47", {
-      alarmName: `isol8-${this.envName}-W47-bedrock-client-errors`,
-      alarmDescription:
-        "Bedrock invocation client errors exceed 5 per min",
+    this.createAlarm({
+      id: "W47",
+      name: "bedrock-client-errors",
+      description: "Bedrock invocation client errors exceed 5 per min",
       metric: new cloudwatch.Metric({
         namespace: "AWS/Bedrock",
         metricName: "InvocationClientErrors",
@@ -1733,20 +1688,17 @@ def handler(event, _ctx):
         period: cdk.Duration.minutes(1),
       }),
       threshold: 5,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w47.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // -- Network (W48) --
 
     // W48: NLB / Cloud Map healthy host count drop
     // Monitor ALB healthy host count as proxy for backend availability
-    const w48 = new cloudwatch.Alarm(this, "W48", {
-      alarmName: `isol8-${this.envName}-W48-alb-healthy-hosts-drop`,
-      alarmDescription: "ALB healthy host count dropped to zero",
+    this.createAlarm({
+      id: "W48",
+      name: "alb-healthy-hosts-drop",
+      description: "ALB healthy host count dropped to zero",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ApplicationELB",
         metricName: "HealthyHostCount",
@@ -1755,12 +1707,10 @@ def handler(event, _ctx):
         dimensionsMap: { LoadBalancer: albFullName, TargetGroup: tgFullName },
       }),
       threshold: 0,
-      evaluationPeriods: 1,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      severity: "warn",
     });
-    w48.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
   }
 
   // =========================================================================
@@ -1770,9 +1720,10 @@ def handler(event, _ctx):
   private createPaperclipTierAlarms(props: ObservabilityStackProps): void {
     const dbId = props.paperclipDbCluster.clusterIdentifier;
     // W60: Aurora CPU
-    const w60 = new cloudwatch.Alarm(this, "W60", {
-      alarmName: `isol8-${this.envName}-W60-aurora-cpu`,
-      alarmDescription: "Paperclip Aurora CPU >80% for 15 min",
+    this.createAlarm({
+      id: "W60",
+      name: "aurora-cpu",
+      description: "Paperclip Aurora CPU >80% for 15 min",
       metric: new cloudwatch.Metric({
         namespace: "AWS/RDS",
         metricName: "CPUUtilization",
@@ -1782,16 +1733,14 @@ def handler(event, _ctx):
       }),
       threshold: 80,
       evaluationPeriods: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w60.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W61: Aurora connections — SATURATION only (high watermark). Provisional.
-    const w61 = new cloudwatch.Alarm(this, "W61", {
-      alarmName: `isol8-${this.envName}-W61-aurora-connections`,
-      alarmDescription:
-        "Paperclip Aurora DatabaseConnections >100 for 15 min — connection saturation. Provisional threshold.",
+    this.createAlarm({
+      id: "W61",
+      name: "aurora-connections",
+      description: "Paperclip Aurora DatabaseConnections >100 for 15 min — connection saturation. Provisional threshold.",
       metric: new cloudwatch.Metric({
         namespace: "AWS/RDS",
         metricName: "DatabaseConnections",
@@ -1801,10 +1750,8 @@ def handler(event, _ctx):
       }),
       threshold: 100,
       evaluationPeriods: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w61.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // W61b: Aurora OUTAGE / FAILOVER — distinct from saturation. W60/W61 (CPU,
     // high-connections, NOT_BREACHING) do NOT fire when a failover/outage drops
@@ -1834,9 +1781,10 @@ def handler(event, _ctx):
       2,
       cdk.Fn.split("/", props.paperclipService.serviceArn),
     );
-    const w62 = new cloudwatch.Alarm(this, "W62", {
-      alarmName: `isol8-${this.envName}-W62-paperclip-service-cpu`,
-      alarmDescription: "Paperclip Fargate service CPU >80% for 15 min",
+    this.createAlarm({
+      id: "W62",
+      name: "paperclip-service-cpu",
+      description: "Paperclip Fargate service CPU >80% for 15 min",
       metric: new cloudwatch.Metric({
         namespace: "AWS/ECS",
         metricName: "CPUUtilization",
@@ -1846,10 +1794,8 @@ def handler(event, _ctx):
       }),
       threshold: 80,
       evaluationPeriods: 3,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "warn",
     });
-    w62.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
     // NO W63 here. The "Paperclip down" signal does NOT come from an ALB
     // HealthyHostCount alarm — VERIFIED: PaperclipStack has no ALB target group

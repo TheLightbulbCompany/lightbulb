@@ -32,7 +32,7 @@ vi.mock("@/hooks/useGateway", () => ({
 
 vi.mock("@/hooks/useProvisioningState", () => ({
   useProvisioningState: () => ({
-    container: { status: "running", phase: "ready" },
+    container: { container_status: "running", lifecycle: "ready", runtime_phase: "ready" },
     phase: "normal",
     blocked: null,
     refresh: vi.fn(),

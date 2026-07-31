@@ -106,9 +106,33 @@ jobs:
           # intermediate tool results with "is_error":true (a recovered tool
           # call). Greping the whole file matched those and red-failed clean
           # reviews; scope to the flat `{"type":"result",...}` object instead.
-          result_is_error="$(printf '%s' "$compact" | grep -oE '"type":"result"[^}]*' | grep -oE '"is_error":(true|false)' | head -1)"
+          # `|| true` is LOAD-BEARING. This step runs under `bash -e` (GitHub's
+          # default `shell: bash -e {0}`) and the script sets `pipefail`, so a
+          # grep that matches NOTHING returns 1 and aborts the whole step —
+          # emitting a bare "Process completed with exit code 1" with no
+          # ::error:: line and no success line, which is undiagnosable from the
+          # log. That false-reds clean reviews: observed on PR #1459, where the
+          # result object itself said is_error:false, subtype:success, 37 turns,
+          # $1.95 — a complete review that posted real findings — yet the check
+          # went red. Reproduced locally: an execution file the pattern can't
+          # match reproduces the exact signature.
+          result_is_error="$(printf '%s' "$compact" \
+            | grep -oE '"type":"result"[^}]*' \
+            | grep -oE '"is_error":(true|false)' \
+            | head -1 || true)"
           if [ "$result_is_error" = '"is_error":true' ]; then
             echo "::error::Claude review's result reported is_error=true — it crashed before completing the review (the action still reports the step 'success'). Most likely an expired CLAUDE_CODE_OAUTH_TOKEN secret or a Claude usage cap. Rotate the token (claude setup-token → gh secret set CLAUDE_CODE_OAUTH_TOKEN) and re-run."
             exit 1
+          fi
+          # Couldn't find the marker at all. Warn, don't red — same posture as
+          # the missing-execution-file branch above. A red here means "the guard
+          # could not parse", not "the review failed", and blocking merges on
+          # that is strictly worse than a warning: the review comment is still
+          # on the PR to read. Print a fingerprint so a real regression in the
+          # action's output shape is still diagnosable.
+          if [ -z "$result_is_error" ]; then
+            echo "::warning::Could not extract is_error from a '\"type\":\"result\"' object in the execution file — not failing the check on a parse miss. Read the review comment on the PR directly. If reviews look genuinely dead, check run duration (a real review takes minutes) and the CLAUDE_CODE_OAUTH_TOKEN secret."
+            echo "Execution file size: $(wc -c < "${EXECUTION_FILE}") bytes; contains '\"type\":\"result\"': $(grep -c '"type":"result"' <<< "$compact" || true)"
+            exit 0
           fi
           echo "Claude review completed without error."

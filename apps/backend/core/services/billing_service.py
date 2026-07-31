@@ -249,8 +249,7 @@ async def create_flat_fee_checkout(
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            price_id=settings.STRIPE_FLAT_PRICE_ID,
-            quantity=1,
+            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
                 f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
@@ -289,6 +288,21 @@ async def create_flat_fee_checkout(
     return session
 
 
+def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
+    """The subscription line item carrying ``price_id``, or ``{}`` if none does.
+
+    THE single way to answer "which item is priced X?". A Teams subscription
+    carries two items (flat base + per-seat) and Stripe does not guarantee
+    their order, so any positional read is a latent billing bug — picking the
+    base item as the seat item makes sync_team_seat_quantity drive the base
+    quantity. Empty ``price_id`` yields ``{}`` so an unconfigured price can
+    never match an item by accident.
+    """
+    if not price_id:
+        return {}
+    return next((item for item in items if (item.get("price") or {}).get("id") == price_id), {})
+
+
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:
     """The single idempotency-key shape for subscription Checkout sessions.
 
@@ -306,8 +320,7 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
 async def _build_subscription_checkout(
     *,
     owner_id: str,
-    price_id: str,
-    quantity: int,
+    line_items: list[dict],
     metadata: dict,
     success_url: str,
     cancel_url: str,
@@ -317,8 +330,10 @@ async def _build_subscription_checkout(
 
     Owns the session kwargs, the automatic_tax / customer_update block, and
     the subscription_data metadata assembly so neither the flat (personal)
-    nor the team path copies them. The price-id existence guard stays in
-    each caller because the config key differs.
+    nor the team path copies them. Callers pass a list so the team path can
+    charge a flat base alongside the per-seat item. Single-element lists are
+    the norm; price-id existence guards stay in each caller because the
+    config key differs.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):
@@ -329,7 +344,7 @@ async def _build_subscription_checkout(
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],
         mode="subscription",
-        line_items=[{"price": price_id, "quantity": quantity}],
+        line_items=line_items,
         success_url=success_url,
         cancel_url=cancel_url,
         allow_promotion_codes=True,
@@ -348,21 +363,34 @@ async def _build_subscription_checkout(
 
 
 async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:
-    """Per-seat Teams Checkout: quantity = org member count.
+    """Teams Checkout: flat base at quantity 1 plus per-seat at the seat count.
 
     Threads ``purpose="team_seat"`` into subscription metadata so the
     customer.subscription.* webhook records the subscription item id + seat
-    count via set_team_subscription. Quantity is floored at 1 so a transient
-    member-count read of 0 never creates a zero-quantity subscription.
+    count via set_team_subscription. The BASE quantity is always 1; the SEAT
+    quantity is floored at 1 so a transient member-count read of 0 never
+    creates a zero-quantity subscription.
     """
     if not settings.STRIPE_TEAM_SEAT_PRICE_ID:
         raise BillingServiceError("STRIPE_TEAM_SEAT_PRICE_ID not configured")
+    if not settings.STRIPE_TEAM_BASE_PRICE_ID:
+        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID not configured")
+    if settings.STRIPE_TEAM_BASE_PRICE_ID == settings.STRIPE_TEAM_SEAT_PRICE_ID:
+        # Identical ids would make subscription_item_on_price return the same
+        # item for both lookups — reintroducing, through config, exactly the
+        # positional ambiguity this whole flow exists to eliminate.
+        raise BillingServiceError("STRIPE_TEAM_BASE_PRICE_ID and STRIPE_TEAM_SEAT_PRICE_ID must differ")
 
     quantity = max(1, member_count)
     return await _build_subscription_checkout(
         owner_id=owner_id,
-        price_id=settings.STRIPE_TEAM_SEAT_PRICE_ID,
-        quantity=quantity,
+        # Flat base + per-seat, in that order. NOTHING may select these by
+        # position — the webhook picks the seat item by price id precisely
+        # because Stripe does not guarantee line-item order.
+        line_items=[
+            {"price": settings.STRIPE_TEAM_BASE_PRICE_ID, "quantity": 1},
+            {"price": settings.STRIPE_TEAM_SEAT_PRICE_ID, "quantity": quantity},
+        ],
         # Teams are Bedrock-managed automatically — there is no provider picker
         # in the team flow. Thread provider_choice into the subscription
         # metadata so the customer.subscription.* webhook persists it as the
@@ -375,12 +403,19 @@ async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stri
         metadata={"owner_id": owner_id, "purpose": "team_seat", "provider_choice": "bedrock_claude"},
         success_url=f"{FRONTEND_URL}/chat?checkout=success",
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
-        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id),
+        # Seat count rides in the key. Seats now move on INVITE — seconds
+        # before the admin clicks Subscribe — so invite, open checkout,
+        # abandon, invite again, Subscribe can all land inside one 5-minute
+        # bucket. Without the quantity, that resends the same key with
+        # different line items and Stripe either errors or replays the stale
+        # session at the old seat count.
+        idempotency_key=_checkout_idempotency_key("team_checkout", owner_id, str(quantity)),
     )
 
 
 async def sync_team_seat_quantity(owner_id: str) -> int:
-    """Set the team subscription's seat quantity to the live org member count.
+    """Set the team subscription's seat quantity to the live billable seat
+    count (accepted members PLUS pending invitations — "no free members").
 
     The SINGLE writer of seat quantity — called from the membership webhooks,
     the reconcile safety-net, and post-checkout. Absolute set (no delta math),
@@ -408,7 +443,10 @@ async def sync_team_seat_quantity(owner_id: str) -> int:
         return int(account.get("seat_count") or 0)
 
     current = int(account.get("seat_count") or 0)
-    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    # Returns 0 when the count isn't known for certain, which the guard below
+    # treats as "don't act" — an uncertain count must never move the Stripe
+    # quantity. See get_organization_seat_count.
+    member_count = await clerk_admin.get_organization_seat_count(owner_id)
     if member_count <= 0 or member_count == current:
         # 0 = Clerk read failed/stubbed; don't zero a real subscription.
         return current
@@ -448,42 +486,47 @@ async def create_ultra_upgrade(
     owner_id: str,
     clerk_user_id: str | None = None,
 ) -> dict | stripe.checkout.Session:
-    """Upgrade an owner to the Ultra Pro tier ($150/mo).
+    """Upgrade an owner to the Ultra Pro tier.
 
-    Two paths, picked by whether the owner already holds a LIVE
-    subscription:
+    Ultra is *only* a container size ($150 base instead of $50) — it swaps a
+    price, never the shape of the subscription. Two paths, picked by whether
+    the owner already holds a LIVE subscription:
 
-    - **In-place item swap** — an owner already on the $50 flat sub
+    - **In-place item swap** — an owner already on a live subscription
       (``stripe_subscription_id`` present + a LIVE ``subscription_status`` —
       any of ``LIVE_SUBSCRIPTION_STATUSES``, i.e. active/trialing but also
-      past_due/unpaid/paused/incomplete) is upgraded by swapping the
-      subscription item's price to ``STRIPE_ULTRA_PRICE_ID`` on the SAME
-      Stripe subscription, prorated. Keeps ONE subscription (no cancel +
-      re-subscribe), so the owner is charged only the prorated difference and
-      a still-billable (e.g. past_due) owner never gets a SECOND parallel
-      subscription. The flat sub's item id is not persisted on the billing
-      row, so it is read LIVE off the retrieved subscription
-      (``sub["items"]["data"][0]["id"]``). Returns ``{"upgraded": True}``.
+      past_due/unpaid/paused/incomplete) is upgraded by swapping ONE item's
+      price to ``STRIPE_ULTRA_PRICE_ID`` on the SAME Stripe subscription,
+      prorated. Keeps ONE subscription (no cancel + re-subscribe), so the
+      owner is charged only the prorated difference and a still-billable
+      (e.g. past_due) owner never gets a SECOND parallel subscription.
+
+      A **personal** sub has a single item — that item is swapped. A
+      **team** sub carries two items (flat base + per-seat, price ids
+      ``STRIPE_TEAM_BASE_PRICE_ID`` / ``STRIPE_TEAM_SEAT_PRICE_ID``); only the
+      BASE item is swapped to the Ultra price — the seat item's id and
+      quantity are never touched, so a 4-seat Ultra team pays
+      $150 + 4×$20/mo. Item selection is always by price id
+      (``subscription_item_on_price``), never position — Stripe does not
+      guarantee line-item order. A subscription whose shape isn't exactly one
+      of those two (an unrecognised multi-item sub, a seat-only sub with no
+      base item, etc.) is refused rather than repriced blind. Returns
+      ``{"upgraded": True}``.
 
     - **Fresh checkout** — an owner with no live subscription (``trial_local``
       / canceled / never subscribed — no item to swap) gets a
       subscription-mode Checkout session on the Ultra price via the shared
       builder. Returns the Session; the caller redirects to ``session.url``.
+      This branch always mints a single-item, seat-less Ultra subscription, so
+      an **org** with no live subscription is refused up front — it must buy
+      its team plan (base + seat) first, or it would end up paying $150/mo for
+      zero seats with no seat item for ``sync_team_seat_quantity`` to drive.
 
     ``trial_local`` counts as "active" for platform use but carries no
     ``stripe_subscription_id``, so it correctly takes the fresh-checkout
     branch. A terminal status (``canceled``/``incomplete_expired``) never
     swaps in place even if a stale ``stripe_subscription_id`` lingers — it
     falls through to a fresh checkout rather than modifying a dead sub.
-
-    **Per-seat team subscriptions are rejected**, not swapped: a row with a
-    ``subscription_item_id`` (the ``is_seat_subscription`` discriminator) is a
-    per-seat Teams sub whose item price is $/seat — swapping it to the Ultra
-    flat price would corrupt per-seat billing. Ultra + Teams is out of scope,
-    so raise rather than proceed. The local-row guard is defense in depth: the
-    LIVE retrieved subscription is ALSO inspected before the swap (>1 line item,
-    or an item on the seat price) so a lagging team-seat webhook can't let a
-    per-seat sub reach ``Subscription.modify``.
 
     The fresh-checkout branch serializes behind the same per-owner claim as
     ``create_flat_fee_checkout`` (no duplicate concurrent sessions) and threads
@@ -503,37 +546,48 @@ async def create_ultra_upgrade(
 
     account = await billing_repo.get_by_owner_id(owner_id)
 
-    # Team per-seat subscriptions are out of scope for Ultra. A set
-    # subscription_item_id (same discriminator is_seat_subscription keys on in
-    # routers/billing.py) means a live per-seat Teams sub — swapping that
-    # item's $/seat price to the Ultra flat price would corrupt per-seat
-    # billing. Reject BEFORE the live-status swap below; the endpoint maps this
-    # BillingServiceError to a 400.
-    if account and account.get("subscription_item_id"):
-        raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
-
     sub_id = account.get("stripe_subscription_id") if account else None
     status = account.get("subscription_status") if account else None
+
+    # An org with no live subscription must buy its team plan first. The
+    # fresh-checkout branch below emits a single-item Ultra subscription with
+    # NO seat item — correct for a personal owner, but it would leave an org
+    # paying $150/mo for zero seats and with no item for
+    # sync_team_seat_quantity to drive.
+    from core.auth import is_org_owner_id
+
+    if is_org_owner_id(owner_id) and not (sub_id and status in LIVE_SUBSCRIPTION_STATUSES):
+        raise BillingServiceError("Subscribe your team before upgrading to Ultra Pro")
 
     if sub_id and status in LIVE_SUBSCRIPTION_STATUSES:
         with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
             sub = stripe.Subscription.retrieve(sub_id)
         items_data = sub["items"]["data"]
-        first_item = items_data[0]
-        # Reject a LIVE per-seat Teams sub before repricing it. The local-row
-        # subscription_item_id guard above is defense in depth, but the team-seat
-        # webhook may not have persisted that field yet — so inspect the retrieved
-        # subscription directly: more than one line item, or an item on the seat
-        # price, is a Teams sub whose $/seat item must never be swapped to the
-        # Ultra flat price. Endpoint maps this to a 400, same as the local guard.
-        first_price_id = (first_item.get("price") or {}).get("id")
-        if len(items_data) > 1 or (
-            bool(settings.STRIPE_TEAM_SEAT_PRICE_ID) and first_price_id == settings.STRIPE_TEAM_SEAT_PRICE_ID
-        ):
-            raise BillingServiceError("Ultra Pro isn't available for per-seat team plans yet")
-        # The flat sub has a single item whose id is not stored on the billing
-        # row — read it LIVE off the retrieved subscription and swap its price.
-        item_id = first_item["id"]
+
+        seat_item = subscription_item_on_price(items_data, settings.STRIPE_TEAM_SEAT_PRICE_ID)
+        base_item = subscription_item_on_price(items_data, settings.STRIPE_TEAM_BASE_PRICE_ID)
+        ultra_item = subscription_item_on_price(items_data, settings.STRIPE_ULTRA_PRICE_ID)
+        is_team_sub = bool(seat_item)
+
+        # Which item carries the tier? A team's tier lives on its BASE item
+        # (either the standard base, or the ultra price once upgraded); a
+        # personal sub's tier is its only item. Never by position — Stripe does
+        # not guarantee line-item order.
+        if is_team_sub:
+            target_item = base_item or ultra_item
+            recognised = len(items_data) == 2 and bool(target_item)
+        else:
+            target_item = items_data[0] if len(items_data) == 1 else {}
+            recognised = len(items_data) == 1
+
+        # Defence in depth: never reprice an item on a subscription whose shape
+        # we cannot fully explain (an unknown add-on, a coupon item, a
+        # hand-edited sub). Recognised shapes are exactly: one item (personal),
+        # or base+seat (team).
+        if not recognised or not target_item:
+            raise BillingServiceError("This subscription's plan can't be changed automatically")
+
+        item_id = target_item["id"]
         with timing("stripe.api.latency", {"op": "subscription.modify"}):
             stripe.Subscription.modify(
                 sub_id,
@@ -579,8 +633,7 @@ async def create_ultra_upgrade(
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            price_id=settings.STRIPE_ULTRA_PRICE_ID,
-            quantity=1,
+            line_items=[{"price": settings.STRIPE_ULTRA_PRICE_ID, "quantity": 1}],
             metadata=metadata,
             success_url=(
                 f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
@@ -1184,9 +1237,167 @@ async def change_provider(
         },
     )
 
-    from core.services.container_provision import background_provision
+    # Stop-first (F1). A bare dispatch_provision call's FIRST act is
+    # the single-flight provision claim, whose ConditionExpression admits
+    # only no-row/error/stopped/stale-provisioning — a "running" row is NOT
+    # claimable, so the dispatch loses the claim and stands down silently:
+    # provision_user_container (the only branch that re-registers the task
+    # def + rewrites openclaw.json) is never reached, yet we'd still tell
+    # the caller ``restart: True``. reprovision_for_user fixes this by
+    # scaling the service to 0 and waiting for it to drain BEFORE
+    # dispatching dispatch_provision, so the dispatch lands on the
+    # scale-from-zero branch instead of racing (and losing to) the still-
+    # running row. Mirrors the admin container-reprovision action
+    # (routers/admin.py) — see EcsManager.reprovision_for_user's docstring.
+    #
+    # Split across the request boundary: the stop is awaited (one fast ECS
+    # call — fail-loud, and it guarantees the old-provider container is
+    # already draining by the time we answer ``restart: True``), but the
+    # drain-wait + provision dispatch run as a background task —
+    # ``_wait_for_service_drained`` polls for up to 90s, which would hang
+    # the ``/billing/provider`` request past ALB/client timeouts and, if
+    # the handler were cancelled mid-drain, strand the owner stopped with
+    # no provision dispatched. Once the row is "stopped", the sequence is
+    # self-healing: even if this task dies, the next /container/status
+    # poll's wake path wins the claim and applies the committed provider.
+    # (stop_user_service treats a missing ECS service as idempotent
+    # success, so a subscribed-but-never-provisioned owner falls through
+    # to dispatch_provision's create-from-scratch path.)
+    #
+    # Accepted race — a status-poll wake DURING the drain window: the
+    # poll's retryable-state dispatch can claim the stopped row before
+    # the drain-only task's delayed dispatch does. Benign by design: the
+    # single-flight lease admits exactly one executor (the loser stands
+    # down), both executors would apply the SAME committed provider, and
+    # task overlap on EFS is fenced one layer down —
+    # SINGLE_WRITER_DEPLOYMENT_CONFIG (maximumPercent=100) keeps ECS from
+    # starting the new task until the draining one has fully stopped, so
+    # the drain-wait is defense-in-depth, not the single-writer fence.
+    # The same window has always existed on the admin reprovision path.
+    # Load-bearing detail: the task below must NOT re-stop (see
+    # drain_then_dispatch_provision) or it would clobber the poll's claim
+    # and break exactly this guarantee.
+    from core.containers import get_ecs_manager
 
-    asyncio.create_task(background_provision(owner_id, clerk_user_id))
+    manager = get_ecs_manager()
+    stop_issued = False
+    try:
+        # Fence FIRST, stop SECOND — the order is load-bearing. A
+        # status-poll wake that claimed BEFORE the provider commit
+        # resolved the OLD provider and would keep passing its leased
+        # checkpoints, finish with the old config, and leave our delayed
+        # dispatch standing down — restart: True with the switch silently
+        # unapplied. takeover_provision supersedes that lease so the
+        # stale run stops at its next checkpoint (the same deliberate-
+        # door fencing conversion, /recover, and admin reprovision use —
+        # the cold provider change is the same class of door). Taking
+        # over BEFORE the stop also closes the ordering race the other
+        # way around: with stop-then-takeover, a poll could claim the
+        # freshly-exposed stopped row in the await gap, the takeover
+        # would preserve its "provisioning" status, and our dispatch
+        # couldn't claim — wedging the row until the stale-lease timeout.
+        # Takeover-first leaves no such gap: a poll can't claim a
+        # still-running row, and once the stop lands our dispatch always
+        # claims the stopped row (stopped is claimable regardless of the
+        # takeover's fresh lease). Guarded on row existence: with NO row
+        # there is no in-flight run to fence, and takeover on an absent
+        # row would CREATE it as provisioning with a fresh lease — which
+        # the dispatch's own claim then refuses, breaking the
+        # create-from-scratch path for never-provisioned owners.
+        from core.repositories import container_repo as _container_repo
+
+        # Stop ONLY when a row exists (whose lease we just took over). With no
+        # row there is nothing to stop, and issuing the stop anyway opens a
+        # TOCTOU: a concurrent /container/status poll can win a first-time
+        # provision (creating the row) between this check and the stop, and
+        # stop_user_service's unconditional update_status get→put would then
+        # stamp that freshly-claimed row "stopped" with no lease fence —
+        # resurrecting the double-provision class this path exists to prevent.
+        # The no-row case falls straight through to the drain-only dispatch,
+        # whose try_claim_provision creates-from-scratch (or stands down behind
+        # the poll's claim) under the single-flight lease.
+        if await _container_repo.get_by_owner_id(owner_id) is not None:
+            await _container_repo.takeover_provision(owner_id)
+            stop_issued = True
+            await manager.stop_user_service(owner_id, reason="reprovision")
+    except Exception as e:
+        # Any stop-path failure, not just the wrapped ECS call
+        # (EcsManagerError): stop_user_service's row writes after the ECS
+        # call (update_status / stamp_stop_reason) propagate raw DDB
+        # exceptions, and skipping the revert for those would leave the
+        # provider row committed with no dispatch and no convergence path
+        # — the exact poisoned-no-op state the revert exists to prevent.
+        # A genuine ECS failure (throttle, cluster outage — not-found is
+        # already idempotent success inside stop_user_service). The new
+        # provider is committed but the container was NOT stopped, so
+        # nothing will converge it: a running row is neither poll-retryable
+        # nor claimable, and a retry of this call would hit the no-op
+        # fast-path above (row already matches the request) and dispatch
+        # nothing. REVERT the commit so the retry re-runs the full switch
+        # instead of silently no-oping. The old provider's credentials may
+        # already be gone (the cleanup block above is fire-and-forget by
+        # design); that fork is user-recoverable — the provision gate /
+        # prerequisite checks drive re-auth — whereas a poisoned no-op is
+        # not. A legacy row with no prior provider_choice can't be written
+        # back (the repo validates the value); its retry-noop exposure
+        # requires that compound (never-chosen provider AND ECS failing)
+        # so it is accepted.
+        #
+        # Partial-stop shape: a raw (non-EcsManagerError) exception means
+        # the ECS call SUCCEEDED and only the row write after it failed —
+        # the service is scaling to 0 while the row still says "running",
+        # which neither the poll nor a claim can heal. Best-effort
+        # re-stamp "stopped" so the wake path restores the (reverted) old
+        # provider. An EcsManagerError means the stop was NOT applied, so
+        # no stamp (stamping a genuinely-running container would trigger
+        # a pointless restart cycle on a transient ECS throttle). If the
+        # re-stamp also fails (the same DDB that just failed),
+        # convergence still exists via /recover's no-IP branch; a fuller
+        # partial-stop state machine is not worth its weight for a
+        # compound transient.
+        from core.containers.ecs_manager import EcsManagerError
+        from core.repositories import container_repo
+
+        # stop_issued gates the stamp: a failure BEFORE the stop call (the
+        # takeover fence's row read/write) must not mark a genuinely-
+        # running container "stopped" — that would trigger a pointless
+        # poll-wake restart cycle on a transient DDB blip.
+        if stop_issued and not isinstance(e, EcsManagerError):
+            try:
+                await container_repo.update_status(owner_id, "stopped")
+            except Exception:  # noqa: BLE001 — best-effort by design
+                logger.warning("change_provider: best-effort stopped re-stamp failed for %s", owner_id)
+        # Restore the pre-commit provider so a retry re-runs the full switch
+        # instead of hitting the no-op fast path. A LEGACY row carried no
+        # provider_choice (current_choice is None) and the repo rejects a None
+        # write, so restore the resolved legacy default "bedrock_claude" -- the
+        # exact value resolve_provider_choice (container_provision.py) derives
+        # for a None row, i.e. the provider the container was actually running.
+        # This both preserves the effective state AND un-no-ops a
+        # switch-to-non-bedrock retry (row now explicitly bedrock_claude, which
+        # differs from the requested provider). current_byo stays None for a
+        # legacy row.
+        restore_choice = current_choice or "bedrock_claude"
+        await billing_repo.set_provider_choice(
+            owner_id,
+            provider_choice=restore_choice,
+            byo_provider=current_byo,
+            connector_user_id=recorded_connector if restore_choice == "chatgpt_oauth" else None,
+        )
+        await write_owner_facts(
+            owner_id,
+            account_overrides={"provider_choice": restore_choice, "byo_provider": current_byo},
+        )
+        raise ChangeProviderError(
+            "reprovision_stop_failed",
+            "Could not restart the container to apply the new provider. No changes were made — try again.",
+            status_code=502,
+        ) from e
+    # Drain-only continuation — deliberately NOT reprovision_for_user,
+    # whose leading re-stop would clobber a poll-claimed "provisioning"
+    # row back to "stopped" and let a second executor claim it (see
+    # drain_then_dispatch_provision's docstring).
+    asyncio.create_task(manager.drain_then_dispatch_provision(owner_id))
 
     return {
         "status": "ok",

@@ -181,9 +181,9 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
 
   const renderCopyableField = (id: string, label: string, value: string) => (
     <div className="flex flex-col gap-1">
-      <span className="text-xs text-[#8a8578]">{label}</span>
+      <span className="text-xs text-[var(--mute)]">{label}</span>
       <div className="flex items-center gap-1">
-        <code className="flex-1 break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[#e0dbd0]">
+        <code className="flex-1 break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[var(--edge)]">
           {value}
         </code>
         <Button
@@ -200,15 +200,15 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
   );
 
   return (
-    <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[#e0dbd0] bg-[#faf8f3] p-3">
+    <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-[#faf8f3] p-3">
       <p className="text-sm font-medium text-[#1c1917]">Connect {display_name} (read-only)</p>
-      <p className="text-xs text-[#8a8578]">
+      <p className="text-xs text-[var(--mute)]">
         Isol8 will assume a role you create in your AWS account — no keys to paste.
       </p>
 
       {/* Step 1 — scope choice (ViewOnly default). */}
       <div className="flex flex-col gap-1">
-        <span className="text-xs text-[#8a8578]">Access scope</span>
+        <span className="text-xs text-[var(--mute)]">Access scope</span>
         <div className="flex gap-2">
           <Button
             size="sm"
@@ -239,10 +239,10 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
           </Button>
         </div>
         {scope === "read_only" && (
-          <span className="text-[11px] text-[#8a8578]">broader — includes data-plane reads</span>
+          <span className="text-[11px] text-[var(--mute)]">broader — includes data-plane reads</span>
         )}
         {scope === "power_user" && (
-          <span className="text-[11px] text-[#8a8578]">read + write; excludes IAM / Organizations</span>
+          <span className="text-[11px] text-[var(--mute)]">read + write; excludes IAM / Organizations</span>
         )}
       </div>
 
@@ -252,7 +252,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
       {setup && scopeOption && quickCreateUrl === null &&
         renderCopyableField("policy_arn", "Managed policy to attach", scopeOption.policy_arn)}
 
-      {loadingSetup && <p className="text-xs text-[#8a8578]">Loading setup…</p>}
+      {loadingSetup && <p className="text-xs text-[var(--mute)]">Loading setup…</p>}
 
       {setup && (
         <>
@@ -262,11 +262,11 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
               surfaced. They're only relevant for manual (e.g. Terraform) role
               creation. */}
           <details className="group">
-            <summary className="cursor-pointer text-xs text-[#8a8578] hover:text-[#1c1917]">
+            <summary className="cursor-pointer text-xs text-[var(--mute)] hover:text-[#1c1917]">
               Advanced / manual setup
             </summary>
             <div className="mt-2 flex flex-col gap-2">
-              <span className="text-[11px] text-[#8a8578]">
+              <span className="text-[11px] text-[var(--mute)]">
                 Only needed if you deploy the role manually (e.g. via Terraform) instead of the
                 one-click button below.
               </span>
@@ -295,14 +295,14 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
                 <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                 Create role in AWS
               </Button>
-              <span className="text-[11px] text-[#8a8578]">
+              <span className="text-[11px] text-[var(--mute)]">
                 AWS role template coming soon — paste an existing read-only role ARN below.
               </span>
             </div>
           )}
 
           {/* Step 3 — paste the created role's ARN and connect. */}
-          <label htmlFor={`aws-role-arn-${provider}`} className="text-xs text-[#8a8578]">
+          <label htmlFor={`aws-role-arn-${provider}`} className="text-xs text-[var(--mute)]">
             Role ARN
           </label>
           <Input

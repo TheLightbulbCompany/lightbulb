@@ -2,9 +2,6 @@
 
 import json
 import os
-from unittest.mock import AsyncMock
-
-import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 os.environ.setdefault("ENCRYPTION_KEY", "0" * 44)  # Fernet: 32 url-safe-base64 bytes
@@ -90,98 +87,36 @@ def test_decode_valid_round_trip_still_returns_full_context():
     }
 
 
-# --- mint_first_contact_token -------------------------------------------------
+def test_token_without_references_still_decodes():
+    """`references` was added after tokens were already in flight inside
+    container conversations. It must stay OUT of the required-key set: making
+    it required would decode every pre-existing token as None and silently
+    break replies to any thread already in progress."""
+    from core.services.agent_mail_token import decode_reply_token, encode_reply_token
+
+    legacy = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<m@x>",
+        "subject": "Need help",
+    }
+    decoded = decode_reply_token(encode_reply_token(legacy))
+    assert decoded is not None
+    assert decoded.get("references", "") == ""
 
 
-@pytest.mark.asyncio
-async def test_mint_first_contact_token_active_row_present(monkeypatch):
-    monkeypatch.setattr(agent_mail_token.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_token.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "friday@agents.isol8.co", "agent_id": "friday-uuid", "status": "active"},
-            ]
-        ),
-    )
+def test_token_roundtrips_references_when_present():
+    from core.services.agent_mail_token import decode_reply_token, encode_reply_token
 
-    token = await agent_mail_token.mint_first_contact_token(
-        owner_id="org_1",
-        owner_email="owner@acme.com",
-        subject="Getting started with Acme",
-    )
-
-    assert isinstance(token, str) and token
-    ctx = agent_mail_token.decode_reply_token(token)
-    assert ctx["reply_to"] == "owner@acme.com"
-    assert ctx["in_reply_to"] == ""
-    assert ctx["subject"] == "Getting started with Acme"
-    assert ctx["owner_id"] == "org_1"
-    assert ctx["agent_id"] == "friday-uuid"
-
-
-@pytest.mark.asyncio
-async def test_mint_first_contact_token_domain_unset_returns_none(monkeypatch):
-    monkeypatch.setattr(agent_mail_token.settings, "AGENT_EMAIL_DOMAIN", "")
-    query_mock = AsyncMock()
-    monkeypatch.setattr(agent_mail_token.agent_email_repo, "query_by_owner", query_mock)
-
-    token = await agent_mail_token.mint_first_contact_token(
-        owner_id="org_1", owner_email="owner@acme.com", subject="Hello"
-    )
-
-    assert token is None
-    query_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_mint_first_contact_token_no_active_row_returns_none(monkeypatch):
-    monkeypatch.setattr(agent_mail_token.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_token.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(
-            return_value=[
-                {"address": "old@agents.isol8.co", "agent_id": "friday-uuid", "status": "alias"},
-            ]
-        ),
-    )
-
-    token = await agent_mail_token.mint_first_contact_token(
-        owner_id="org_1", owner_email="owner@acme.com", subject="Hello"
-    )
-
-    assert token is None
-
-
-@pytest.mark.asyncio
-async def test_mint_first_contact_token_no_rows_at_all_returns_none(monkeypatch):
-    monkeypatch.setattr(agent_mail_token.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_token.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(return_value=[]),
-    )
-
-    token = await agent_mail_token.mint_first_contact_token(
-        owner_id="org_1", owner_email="owner@acme.com", subject="Hello"
-    )
-
-    assert token is None
-
-
-@pytest.mark.asyncio
-async def test_mint_first_contact_token_never_raises_on_repo_error(monkeypatch):
-    monkeypatch.setattr(agent_mail_token.settings, "AGENT_EMAIL_DOMAIN", "agents.isol8.co")
-    monkeypatch.setattr(
-        agent_mail_token.agent_email_repo,
-        "query_by_owner",
-        AsyncMock(side_effect=RuntimeError("dynamodb throttled")),
-    )
-
-    token = await agent_mail_token.mint_first_contact_token(
-        owner_id="org_1", owner_email="owner@acme.com", subject="Hello"
-    )
-
-    assert token is None
+    ctx = {
+        "owner_id": "o",
+        "agent_id": "a1",
+        "reply_to": "alice@x.com",
+        "in_reply_to": "<b@x>",
+        "references": "<a@x>",
+        "subject": "Need help",
+    }
+    decoded = decode_reply_token(encode_reply_token(ctx))
+    assert decoded is not None
+    assert decoded["references"] == "<a@x>"

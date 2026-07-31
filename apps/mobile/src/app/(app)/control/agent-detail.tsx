@@ -19,10 +19,10 @@ import {
 import {
   agentDisplayName,
   getAgentModelString,
+  useAgents,
   useGatewayRpc,
   useGatewayRpcMutation,
   type Agent,
-  type AgentsListResponse,
 } from "@isol8/shared";
 
 import { AgentMonogram } from "../../../components/control/AgentMonogram";
@@ -263,18 +263,16 @@ export default function AgentDetail() {
   const gateway = useGateway();
   const callRpc = useGatewayRpcMutation(gateway);
 
-  const { data: agentsData, mutate: mutateAgents } =
-    useGatewayRpc<AgentsListResponse>(gateway, "agents.list");
+  const { agents: roster, defaultId, refresh: mutateAgents } = useAgents(gateway);
   const { data: configSnapshot, mutate: mutateConfig } = useGatewayRpc<unknown>(
     gateway,
     "config.get",
   );
 
   const agent: Agent | undefined = useMemo(
-    () => agentsData?.agents?.find((a) => a.id === agentId),
-    [agentsData, agentId],
+    () => roster.find((a) => a.id === agentId),
+    [roster, agentId],
   );
-  const defaultId = agentsData?.defaultId;
   const isDefault = agentId != null && agentId === defaultId;
 
   const config = useMemo(() => extractConfig(configSnapshot), [configSnapshot]);

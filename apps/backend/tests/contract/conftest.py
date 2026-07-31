@@ -14,6 +14,119 @@ from moto import mock_aws
 
 from core.auth import AuthContext
 
+# Every table the app's request paths can reach, mirroring apps/infra/lib/stacks/
+# database-stack.ts (the source of truth — keep in sync when a table is added).
+#
+# WHY THE WHOLE SET and not just the tables today's routes touch: this suite boots
+# the real ASGI app and fuzzes EVERY route in the OpenAPI schema, so any route may
+# reach any table, and a table that is merely ABSENT surfaces as
+# ResourceNotFoundException -> 500 -> `not_a_server_error` fails. Provisioning them
+# one-at-a-time as failures appear is whack-a-mole that re-breaks every time a route
+# starts reading a new table. Over-provisioning in moto is free.
+#
+# Format: short name -> (primary key, {gsi name: gsi key}). Keys are
+# [(attribute, HASH|RANGE, S|N)]; AttributeDefinitions are derived from their union.
+_CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tuple[str, str, str]]]]] = {
+    "users": ([("user_id", "HASH", "S")], {}),
+    "containers": (
+        [("owner_id", "HASH", "S")],
+        {
+            "gateway-token-index": [("gateway_token", "HASH", "S")],
+            "status-index": [("status", "HASH", "S")],
+            "owner-type-index": [("owner_type", "HASH", "S")],
+        },
+    ),
+    "billing-accounts": (
+        [("owner_id", "HASH", "S")],
+        {"stripe-customer-index": [("stripe_customer_id", "HASH", "S")]},
+    ),
+    "usage-counters": ([("owner_id", "HASH", "S"), ("period", "RANGE", "S")], {}),
+    "pending-updates": (
+        [("owner_id", "HASH", "S"), ("update_id", "RANGE", "S")],
+        {"status-index": [("status", "HASH", "S"), ("scheduled_at", "RANGE", "S")]},
+    ),
+    "ops-cache": ([("cache_key", "HASH", "S")], {}),
+    "channel-links": (
+        [("owner_id", "HASH", "S"), ("sk", "RANGE", "S")],
+        {"by-member": [("member_id", "HASH", "S"), ("owner_provider_agent", "RANGE", "S")]},
+    ),
+    "company-slugs": ([("slug", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
+    "agent-email-addresses": ([("address", "HASH", "S")], {"by-owner": [("owner_id", "HASH", "S")]}),
+    "webhook-event-dedup": ([("event_id", "HASH", "S")], {}),
+    "admin-actions": (
+        [("admin_user_id", "HASH", "S"), ("timestamp_action_id", "RANGE", "S")],
+        {
+            "target-timestamp-index": [
+                ("target_user_id", "HASH", "S"),
+                ("timestamp_action_id", "RANGE", "S"),
+            ]
+        },
+    ),
+    "metronome-fast-gate": ([("owner_id", "HASH", "S")], {}),
+    "bedrock-aip-owners": ([("aip_arn", "HASH", "S")], {}),
+    "oauth-tokens": ([("user_id", "HASH", "S")], {}),
+    "oauth-state": ([("state", "HASH", "S")], {}),
+    "integrations": ([("owner_id", "HASH", "S"), ("provider", "RANGE", "S")], {}),
+    "paperclip-companies": (
+        [("user_id", "HASH", "S")],
+        {
+            "by-status-purge-at": [("status", "HASH", "S"), ("scheduled_purge_at", "RANGE", "S")],
+            "by-org-id": [("org_id", "HASH", "S")],
+        },
+    ),
+    "marketplace-listings": (
+        [("listing_id", "HASH", "S"), ("version", "RANGE", "N")],
+        {
+            "slug-version-index": [("slug", "HASH", "S"), ("version", "RANGE", "N")],
+            "seller-created-index": [("seller_id", "HASH", "S"), ("created_at", "RANGE", "S")],
+            "status-published-index": [("status", "HASH", "S"), ("published_at", "RANGE", "S")],
+            "tag-published-index": [("tag", "HASH", "S"), ("published_at", "RANGE", "S")],
+        },
+    ),
+    "marketplace-purchases": (
+        [("buyer_id", "HASH", "S"), ("purchase_id", "RANGE", "S")],
+        {
+            "listing-created-index": [("listing_id", "HASH", "S"), ("created_at", "RANGE", "S")],
+            "license-key-index": [("license_key", "HASH", "S")],
+        },
+    ),
+    "marketplace-payout-accounts": ([("seller_id", "HASH", "S")], {}),
+    "marketplace-takedowns": ([("listing_id", "HASH", "S"), ("takedown_id", "RANGE", "S")], {}),
+    "marketplace-sellers": ([("seller_id", "HASH", "S")], {"handle-index": [("handle", "HASH", "S")]}),
+    "hook-events": ([("owner_id", "HASH", "S"), ("event_id", "RANGE", "S")], {}),
+}
+
+
+def _create_contract_tables(client, table_name) -> None:
+    """Create every _CONTRACT_TABLES entry in moto under its prefixed name.
+
+    ``table_name`` is ``core.dynamodb.table_name``, which prepends
+    DYNAMODB_TABLE_PREFIX — repos resolve through it, so moto must create the
+    fully-prefixed name or the lookup still misses.
+    """
+    for short_name, (pk, gsis) in _CONTRACT_TABLES.items():
+        attrs = {(a, t) for a, _, t in pk}
+        for gsi_key in gsis.values():
+            attrs.update((a, t) for a, _, t in gsi_key)
+        kwargs = {
+            "TableName": table_name(short_name),
+            "KeySchema": [{"AttributeName": a, "KeyType": k} for a, k, _ in pk],
+            "AttributeDefinitions": [{"AttributeName": a, "AttributeType": t} for a, t in sorted(attrs)],
+            "BillingMode": "PAY_PER_REQUEST",
+        }
+        # Omit the key entirely when there are no GSIs — DynamoDB rejects an
+        # empty list with "List of GlobalSecondaryIndexes is empty".
+        if gsis:
+            kwargs["GlobalSecondaryIndexes"] = [
+                {
+                    "IndexName": name,
+                    "KeySchema": [{"AttributeName": a, "KeyType": k} for a, k, _ in key],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+                for name, key in gsis.items()
+            ]
+        client.create_table(**kwargs)
+
 
 @pytest.fixture(autouse=True)
 def _mock_oauth_external_deps(monkeypatch):
@@ -46,29 +159,25 @@ def _mock_oauth_external_deps(monkeypatch):
         )
         monkeypatch.setenv("OAUTH_TOKENS_TABLE", "contract-test-oauth-tokens")
         monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+        # The device-revoke path force-closes the live WS session, which builds a
+        # ManagementApiClient — and its constructor RAISES when
+        # WS_MANAGEMENT_API_URL is unset rather than degrading. Neither the CI
+        # workflow nor tests/conftest.py sets it, so give it a syntactically
+        # valid endpoint; moto intercepts the apigatewaymanagementapi calls, so
+        # nothing leaves the process.
+        monkeypatch.setenv(
+            "WS_MANAGEMENT_API_URL",
+            "https://contract-test.execute-api.us-east-1.amazonaws.com/test",
+        )
 
-        # The /google/* endpoints read+write the shared ``integrations`` table
-        # (owner_id HASH + provider RANGE) via google_accounts_repo, the same
-        # table integrations_repo uses. Unlike the oauth table — which is
-        # looked up by the OAUTH_TOKENS_TABLE env var verbatim — this table is
-        # resolved through core.dynamodb.get_table("integrations"), which
-        # prepends DYNAMODB_TABLE_PREFIX (default "isol8-dev-"). So moto must
-        # create the table under that fully-prefixed name, not the short one,
-        # or the repo's Query hits a nonexistent table and the endpoint 5xxes.
+        # Repos resolve tables through core.dynamodb.get_table, which prepends
+        # DYNAMODB_TABLE_PREFIX (default "isol8-dev-"), so moto must create them
+        # under the fully-prefixed name — not the short one — or every lookup
+        # misses and the endpoint 5xxes. (The oauth table above is the exception:
+        # it is read from the OAUTH_TOKENS_TABLE env var verbatim.)
         from core.dynamodb import table_name as _table_name
 
-        client.create_table(
-            TableName=_table_name("integrations"),
-            KeySchema=[
-                {"AttributeName": "owner_id", "KeyType": "HASH"},
-                {"AttributeName": "provider", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "owner_id", "AttributeType": "S"},
-                {"AttributeName": "provider", "AttributeType": "S"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        _create_contract_tables(client, _table_name)
 
         # Pre-seed a pending device-code session for the contract test user
         # so /poll has a row to look up. /start would normally create this

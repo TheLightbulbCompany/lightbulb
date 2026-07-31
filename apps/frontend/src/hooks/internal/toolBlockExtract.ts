@@ -1,56 +1,25 @@
 // apps/frontend/src/hooks/internal/toolBlockExtract.ts
 //
-// Content-block predicates and tool_use ↔ tool_result pairing.
-// Ported from upstream OpenClaw's `~/Desktop/openclaw/src/chat/
-// tool-content.ts` and `~/Desktop/openclaw/ui/src/ui/chat/tool-cards.ts`.
+// The block predicates and id/args resolvers moved to @isol8/shared
+// (packages/shared/src/chat/history.ts) — mobile had its own copy, and the two
+// had drifted (web's resolveToolUseId was missing the `toolCallId` spelling).
+// Re-exported here so existing imports and tests are unaffected.
+//
+// `pairToolBlocks` stays web-side: it is web's within-message pairing model,
+// and mobile pairs across messages with its own map. Nothing else uses it.
 
-import type { ContentBlock } from "./types";
+import type { ContentBlock } from "@isol8/shared";
+import { isToolResultBlock, isToolUseBlock, resolveToolUseId } from "@isol8/shared";
 
-const TEXT_TYPES = new Set(["text", "output_text", "input_text"]);
-const TOOL_USE_TYPES = new Set(["toolcall", "tool_call", "tooluse", "tool_use"]);
-const TOOL_RESULT_TYPES = new Set(["toolresult", "tool_result"]);
-
-function lowerType(b: unknown): string {
-  if (!b || typeof b !== "object") return "";
-  const t = (b as { type?: unknown }).type;
-  return typeof t === "string" ? t.toLowerCase() : "";
-}
-
-export function isTextBlock(b: unknown): boolean {
-  return TEXT_TYPES.has(lowerType(b));
-}
-
-export function isThinkingBlock(b: unknown): boolean {
-  return lowerType(b) === "thinking";
-}
-
-export function isToolUseBlock(b: unknown): boolean {
-  return TOOL_USE_TYPES.has(lowerType(b));
-}
-
-export function isToolResultBlock(b: unknown): boolean {
-  return TOOL_RESULT_TYPES.has(lowerType(b));
-}
-
-/** Resolve the block-level tool_use id, accepting all three naming variants. */
-export function resolveToolUseId(b: unknown): string | undefined {
-  if (!b || typeof b !== "object") return undefined;
-  const r = b as { id?: unknown; tool_use_id?: unknown; toolUseId?: unknown };
-  if (typeof r.id === "string" && r.id.length > 0) return r.id;
-  if (typeof r.tool_use_id === "string" && r.tool_use_id.length > 0) return r.tool_use_id;
-  if (typeof r.toolUseId === "string" && r.toolUseId.length > 0) return r.toolUseId;
-  return undefined;
-}
-
-/** Resolve tool args, accepting all three naming variants (Anthropic uses `input`). */
-export function resolveToolArgs(b: unknown): unknown {
-  if (!b || typeof b !== "object") return undefined;
-  const r = b as { args?: unknown; arguments?: unknown; input?: unknown };
-  if (r.args !== undefined) return r.args;
-  if (r.arguments !== undefined) return r.arguments;
-  if (r.input !== undefined) return r.input;
-  return undefined;
-}
+export {
+  isTextBlock,
+  isThinkingBlock,
+  isToolResultBlock,
+  isToolUseBlock,
+  resolveMessageBlocks,
+  resolveToolArgs,
+  resolveToolUseId,
+} from "@isol8/shared";
 
 export interface ToolBlockPair {
   toolUseId: string;

@@ -67,7 +67,7 @@ def test_synthesize_returns_canonical_shape(monkeypatch):
     # authToken retained for adapter compatibility (header is ignored by API GW).
     assert cfg["authToken"] == "JWT_TOKEN_HERE"
     assert cfg["sessionKeyStrategy"] == "issue"
-    assert cfg["sessionKey"] == "user_123"
+    assert cfg["sessionKey"] == "paperclip:user_123"
     assert cfg["devicePrivateKeyPem"].startswith("-----BEGIN PRIVATE KEY-----")
     # The adapter's 120s default is too short for our agents' substantive runs;
     # we pin 10 min (the API Gateway WS idle ceiling) so a still-working run isn't
@@ -140,7 +140,7 @@ def test_strategy_is_issue_for_per_issue_session_isolation():
         user_id="user_abc",
     )
     assert cfg["sessionKeyStrategy"] == "issue"
-    assert cfg["sessionKey"] == "user_abc"
+    assert cfg["sessionKey"] == "paperclip:user_abc"
     assert cfg["url"] == "wss://ws.isol8.co?token=" + "t" * 100 + "&clientId=paperclip-operator"
     assert cfg["authToken"] == "t" * 100
 
@@ -195,6 +195,7 @@ def test_synthesize_omits_claimed_path_when_no_agent_id():
         user_id="u",
     )
     assert "claimedApiKeyPath" not in cfg
+    assert "agentId" not in cfg
 
 
 def test_synthesize_sets_per_agent_claimed_path_when_agent_id_given():
@@ -205,3 +206,50 @@ def test_synthesize_sets_per_agent_claimed_path_when_agent_id_given():
         agent_id="agent-xyz",
     )
     assert cfg["claimedApiKeyPath"] == "~/.openclaw/workspace-agent-xyz/paperclip-claimed-api-key.json"
+
+
+def test_synthesize_sets_agent_id_so_runs_route_to_that_agent():
+    """The adapter reads the target agent from config, not from the run's agent
+    record (openclaw-gateway execute.ts:1207/1228). Omit it and chat.send carries
+    no agent, so OpenClaw falls back to the default (ceo) agent — every agent's
+    run then executes as Friday. It also drives the agent:<id>: sessionKey prefix
+    that per-agent session isolation and usage attribution depend on.
+    """
+    cfg = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t",
+        user_id="u",
+        agent_id="agent-xyz",
+    )
+    assert cfg["agentId"] == "agent-xyz"
+
+
+def test_fallback_session_key_cannot_collide_with_the_owners_chat_session():
+    """REGRESSION: the no-issue fallback key must not equal the /chat General key.
+
+    Once ``agentId`` is set the adapter prefixes the fallback sessionKey with
+    ``agent:<agentId>:`` (openclaw-gateway execute.ts:137-139). A bare
+    ``user_id`` fallback therefore resolves to ``agent:<agentId>:<user_id>`` —
+    exactly ``build_chat_session_key(agent_id, user_id, None)``. Every heartbeat
+    and manual wake would then be appended to the owner's real /chat transcript,
+    load its history as context, and stream into their open chat window.
+    """
+    from core.gateway.connection_pool import _parse_session_key
+    from routers.websocket_chat import build_chat_session_key
+
+    agent_id, user_id = "agent-xyz", "user_2abc"
+    cfg = synthesize_openclaw_adapter(
+        gateway_url="wss://ws.isol8.co",
+        service_token="t",
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    # What the adapter will actually put on the wire for a no-issue wake.
+    resolved = f"agent:{agent_id}:{cfg['sessionKey']}"
+
+    assert resolved != build_chat_session_key(agent_id, user_id, None)
+    # And it must classify as a Paperclip session, so _handle_message treats it
+    # as isolated and never fans it out to the member's /chat socket.
+    parsed = _parse_session_key(resolved)
+    assert parsed["source"] == "paperclip"
+    assert parsed["agent_id"] == agent_id

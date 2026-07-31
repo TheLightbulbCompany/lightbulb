@@ -3,138 +3,334 @@
 /**
  * Two-path onboarding funnel shown to a first-time owner or org member
  * (trial_local free-tier signup or organization) while their company's
- * workspace provisions (spec §3). Submitting stages BRIEF.md server-side;
- * the firstRun metadata write flips ProvisioningStepper's branch off,
- * falling through to the cold-start card. It is the committed onboarding
- * front door — there is no skip, so submitting the brief is the only way
- * past it.
+ * workspace provisions (spec §3). Submitting RECORDS the answer server-side
+ * and returns; the seeding it drives (goal, project, BRIEF.md, Friday's
+ * kickoff) is server-owned and server-retried once the workspace is up — see
+ * core/services/onboarding_brief.py. So this posts once against a current
+ * backend; the only retries left here are the deploy-skew shim below. It is
+ * the committed onboarding front door — there is no skip, so submitting the
+ * brief is the only way past it.
  */
 import * as React from "react";
-import { useUser } from "@clerk/nextjs";
+import { useOrganization, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
-import { capture } from "@/lib/analytics";
 import { writeFirstRun } from "@/lib/firstRun";
 
 type Path = "new" | "grow";
 /** "noIdea" = they clicked "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
-const RETRY_MS = 3000;
-const MAX_RETRIES = 5;
+// DEPLOY-SKEW SHIM. The endpoint is durable intake now — it records the answer
+// and returns, so there is nothing to wait out and no retry loop. But Vercel
+// ships this file independently of (and usually ahead of) the ECS backend, and
+// the OLD backend still 409s "not_ready" for roughly the first ~30s of every
+// first-run signup while Paperclip seeds Friday. Without these two retries,
+// every user who signs up inside that deploy window gets a red error on a
+// signup that is working — the exact bug this whole change exists to kill.
+// DELETE both constants and the loop once the durable-intake backend is
+// deployed everywhere.
+const SKEW_RETRY_MS = 3000;
+const SKEW_RETRIES = 2;
+// After this many CONSECUTIVE failed submits carrying the same upstream
+// error, the generic "Couldn't save that just yet. Retry" line — which
+// implies a transient problem — gives way to a persistent error state that
+// shows the upstream detail and points at support. A different error (or a
+// success) resets the streak.
+const PERSISTENT_FAILURE_THRESHOLD = 3;
+
+// The funnel does NOT control its own lifetime. ProvisioningStepper renders
+// it as one branch of a machine driven by /container/status, so anything that
+// makes a single poll momentarily unreadable swaps it for a loader — which
+// unmounts this component and discards its useState. That used to throw away
+// whatever the user had typed and drop them back on the two path buttons.
+//
+// The poll-blip case is fixed at its root in `useOnboardingStatus` (a failed
+// poll no longer clobbers the last good status), but the funnel is the front
+// door of the product and must not depend on that being the only way it can
+// ever be remounted. So the in-progress draft is persisted.
+//
+// sessionStorage, not localStorage: a draft is worth surviving a remount or a
+// reload, NOT worth resurrecting in a brand-new tab days later. Owner-scoped
+// on the same reasoning as ProvisioningStepper's activation markers — a
+// shared browser must not hand one account's draft to the next.
+const DRAFT_STORAGE_KEY = "isol8_first_run_draft_v1";
+
+interface Draft {
+  path: Path | null;
+  input: string;
+  detail: string;
+}
+
+const EMPTY_DRAFT: Draft = { path: null, input: "", detail: "" };
+
+/** Best-effort draft read. Every field is re-validated rather than trusted:
+ * this is user-writable storage, and a malformed entry must degrade to a
+ * clean funnel, never to a crashed one. */
+function readDraft(key: string): Draft {
+  // This one runs inside a lazy `useState` initializer, which DOES execute
+  // during SSR — unlike the persist effect below, which is client-only by
+  // construction. Safe today only because ProvisioningStepper gates the
+  // funnel behind a completed client-side fetch; guarded here so that
+  // safety doesn't depend on a caller three files away.
+  if (typeof window === "undefined") return EMPTY_DRAFT;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return EMPTY_DRAFT;
+    const parsed = JSON.parse(raw) as Partial<Draft>;
+    return {
+      path: parsed.path === "new" || parsed.path === "grow" ? parsed.path : null,
+      input: typeof parsed.input === "string" ? parsed.input : "",
+      detail: typeof parsed.detail === "string" ? parsed.detail : "",
+    };
+  } catch {
+    return EMPTY_DRAFT;
+  }
+}
+
+/** Best-effort upstream detail for a failed submit: FastAPI's body.detail,
+ * else the error message, else the HTTP status. */
+function extractErrorDetail(err: unknown): string {
+  if (err && typeof err === "object") {
+    const body = (err as { body?: unknown }).body;
+    if (body && typeof body === "object") {
+      const detail = (body as { detail?: unknown }).detail;
+      if (typeof detail === "string" && detail.length > 0) return detail;
+      if (detail !== undefined && detail !== null) {
+        try {
+          return JSON.stringify(detail);
+        } catch {
+          /* fall through */
+        }
+      }
+    }
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+    const status = (err as { status?: unknown }).status;
+    if (typeof status === "number") return `HTTP ${status}`;
+  }
+  return "Unknown error";
+}
 
 // Brand-primary recipe used across the app (see ProviderPicker / landing
 // .ld-btn): forest fill (#06402B), cream text, pill, hover #0a5138.
 const CHOICE_BTN =
-  "w-full rounded-full bg-[#06402B] hover:bg-[#0a5138] text-[#faf7f2] py-4 text-sm font-semibold tracking-wide transition-colors";
+  "w-full rounded-full bg-[var(--forest)] hover:bg-[#0a5138] text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
 const INPUT =
-  "w-full rounded-xl border border-[#e0dbd0] bg-white p-3 text-sm text-[#1a1a1a] placeholder:text-[#b5af9f] focus:outline-none focus:border-[#06402B]";
+  "w-full rounded-xl border border-[var(--edge)] bg-white p-3 text-sm text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:outline-none focus:border-[var(--forest)]";
 // Outline, not filled: this is the escape hatch for the undecided, and it
 // should not compete with Continue for the user who already has an idea.
 const SECONDARY_BTN =
-  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[#1a1a1a] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
+  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[var(--ink)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
 
 export function FirstRunFunnel() {
   const { user } = useUser();
+  // `isLoaded` is load-bearing, not decoration: Clerk resolves the org
+  // context independently of the user, so there is a window where `user` is
+  // present and `organization` is still undefined. Reading that as "personal"
+  // would render — and let the user submit — a personal-workspace draft
+  // inside what turns out to be an org. Until it resolves, the owner is
+  // UNKNOWN and no draft is touched.
+  const { organization, isLoaded: orgLoaded } = useOrganization();
   const api = useApi();
-  const [path, setPath] = React.useState<Path | null>(null);
-  const [input, setInput] = React.useState("");
-  const [detail, setDetail] = React.useState("");
-  const [state, setState] = React.useState<"idle" | "submitting" | "waiting" | "error">("idle");
+  // Keyed to the OWNER, not the signed-in user — the same owner identity
+  // ProvisioningStepper uses for its activation markers. Onboarding is a
+  // per-CONTAINER fact and an org shares one container, so the draft belongs
+  // to the workspace. Keying it on `user.id` alone would hand one workspace's
+  // in-progress brief to another: someone who starts a brief in org A and
+  // then activates an un-onboarded org B in the same tab would have A's text
+  // restored and submitted under B's API context.
+  //
+  // NULL while the owner is unknown (org context still loading). Every draft
+  // read and write below is gated on it, so an unknown owner means "no
+  // draft", never "assume personal". A workspace switch produces a DIFFERENT
+  // key, which is exactly the isolation this provides.
+  const draftKey = orgLoaded
+    ? `${DRAFT_STORAGE_KEY}:${organization?.id ?? user?.id ?? "anon"}`
+    : null;
+  // Lazy initial state, so a restored draft is present on the FIRST render —
+  // hydrating it in an effect would paint the empty path-picker for a frame.
+  const [restored] = React.useState(() => (draftKey ? readDraft(draftKey) : EMPTY_DRAFT));
+  const [path, setPath] = React.useState<Path | null>(restored.path);
+  const [input, setInput] = React.useState(restored.input);
+  const [detail, setDetail] = React.useState(restored.detail);
+
+  const [state, setState] = React.useState<"idle" | "submitting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one. Passed
   // explicitly into submit() rather than read from here — this state only
   // exists to survive the round trip to the Retry button.
   const [mode, setMode] = React.useState<Mode>("idea");
+  // Consecutive-failure tracking for the persistent-error switch. One
+  // completed submit() that lands in state "error" == one failure; the
+  // streak only grows while the upstream detail stays the same.
+  const [failure, setFailure] = React.useState<{ detail: string; streak: number } | null>(null);
+  // A workspace switch can change the owner WITHOUT unmounting this component
+  // — Clerk's `setActive` re-renders in place. The lazy initializer above only
+  // runs at mount, so without this the previous owner's text would stay on
+  // screen AND the persist effect below would write it under the NEW owner's
+  // key: the same cross-workspace leak the owner-scoped key exists to prevent,
+  // by another route. Re-read for the new owner during render — React's
+  // "adjust state when a prop changes" pattern, the same render-time-derivation
+  // idiom ProvisioningStepper uses — so the switch lands on the new
+  // workspace's own draft with no frame showing the old one.
+  //
+  // The SUBMISSION state resets with it, and that half is not cosmetic:
+  // `submit()` deliberately never returns to "idle" on success (it expects the
+  // status poll to unmount the funnel), so a partial reset would leave the new
+  // workspace's funnel inheriting `state: "submitting"` — Continue disabled,
+  // permanently, on the committed onboarding front door. `ownerRef` is the
+  // matching half: a submit already in flight for the OLD owner checks it when
+  // its POST resolves and abandons, so a late response can't write the new
+  // workspace's metadata or clear its draft.
+  const ownerRef = React.useRef(draftKey);
+  const [draftOwner, setDraftOwner] = React.useState(draftKey);
+  if (draftOwner !== draftKey) {
+    const next = draftKey ? readDraft(draftKey) : EMPTY_DRAFT;
+    // Written HERE, in render, not in an effect: an in-flight submit resolving
+    // between this render and a post-commit effect would still read the OLD
+    // owner and write the new workspace's metadata — the exact race this
+    // guards. Same derived-state-from-transition pattern (and same rule
+    // suppression) as ProvisioningStepper's `previousBackendPhaseRef`.
+    ownerRef.current = draftKey;
+    setDraftOwner(draftKey);
+    setPath(next.path);
+    setInput(next.input);
+    setDetail(next.detail);
+    setState("idle");
+    setFailure(null);
+  }
+
+  // Mirror the in-progress draft to storage on every edit. Cheap (three
+  // short strings, only while the funnel is on screen) and it means the
+  // draft is already durable at the instant of an unexpected unmount —
+  // there is no unmount hook that could be skipped.
+  React.useEffect(() => {
+    // Owner not yet known — writing now would file this text under a guessed
+    // key and defeat the isolation above.
+    if (!draftKey) return;
+    try {
+      if (path === null && !input && !detail) {
+        window.sessionStorage.removeItem(draftKey);
+        return;
+      }
+      window.sessionStorage.setItem(draftKey, JSON.stringify({ path, input, detail }));
+    } catch {
+      // Storage-disabled / quota-exceeded browser: the draft is a
+      // best-effort convenience, never a correctness requirement.
+    }
+  }, [draftKey, path, input, detail]);
+
+  const recordFailure = React.useCallback((detail: string) => {
+    setFailure((prev) =>
+      prev && prev.detail === detail
+        ? { detail, streak: prev.streak + 1 }
+        : { detail, streak: 1 },
+    );
+  }, []);
 
   const submit = React.useCallback(
     async (submitMode: Mode) => {
       const noIdea = submitMode === "noIdea";
       setMode(submitMode);
       if (!user) return;
+      // The owner this submission belongs to, re-checked against `ownerRef`
+      // once the POST resolves: a workspace switch mid-flight (Clerk's
+      // `setActive` re-renders in place) must not let this response write the
+      // NEW workspace's metadata or clear its draft.
+      const submitOwner = ownerRef.current;
+      const ownerChanged = () => ownerRef.current !== submitOwner;
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          // No input at all on the "you pick" button: the absent idea IS the
-          // signal, and BRIEF.md tells Friday to choose one from what she can
-          // find out about them. Sending "" instead would be a brief quoting an
-          // empty string back at her.
-          const resp = await api.post("/onboarding/brief", {
-            path,
-            input: noIdea ? undefined : input.trim(),
-            detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-          });
-          // The backend `_ctx` dependency can 202 while Paperclip is still
-          // provisioning — the api client treats any 2xx as success, so we
-          // check the body to tell "staged" apart from "not really". Anything
-          // else (including that 202 shape) is retried via the same loop.
-          const status = (resp as { status?: string } | null)?.status;
-          if (status === "staged" || status === "already_submitted") {
-            // "staged" and "already_submitted" both dismiss the funnel for
-            // THIS user, but they are not the same event and must not be
-            // collapsed into identical writes:
-            //   - "staged": this submission created the company's goal +
-            //     project. `started` stays unset so useFirstRunKickoff (which
-            //     fires when briefSubmitted && !started) sends the visible
-            //     kickoff prompt and Friday runs the first-run runbook.
-            //   - "already_submitted": the per-company DynamoDB claim was
-            //     already taken by someone else in this org — there is no
-            //     new goal/project to react to. Writing `started: true` here
-            //     too pre-arms the kickoff guard so this user's own
-            //     useFirstRunKickoff treats it as already fired instead of
-            //     replaying the whole runbook (rename company, rewrite goal,
-            //     recreate the three tasks) against an already-onboarded
-            //     company. Do not "simplify" these two branches back
-            //     together.
-            await writeFirstRun(user, {
-              briefSubmitted: true,
-              path: path ?? undefined,
-              ...(status === "already_submitted" ? { started: true } : {}),
+      try {
+        let resp: unknown;
+        let status: string | undefined;
+        // Single POST against a current backend. The loop is the deploy-skew
+        // shim only: an old backend signals "not ready" two ways — a thrown
+        // 409, and a 2xx (202) whose body carries no recognised status — and
+        // both are retried a couple of times before we call it an error.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            // No input at all on the "you pick" button: the absent idea IS the
+            // signal, and BRIEF.md tells Friday to choose one from what she can
+            // find out about them. Sending "" instead would be a brief quoting
+            // an empty string back at her.
+            resp = await api.post("/onboarding/brief", {
+              path,
+              input: noIdea ? undefined : input.trim(),
+              detail: !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
             });
-            // Analytics only on a real seed: the backend emits this same
-            // event name exclusively on "staged" (the actual goal/project
-            // creation). Firing it here for "already_submitted" too would
-            // inflate the count with non-seeding submitters who only ever
-            // hit the pre-existing company claim.
-            if (status === "staged") {
-              // snake_case to match both the repo's property convention and
-              // the backend's emission of this same event name.
-              capture("first_run_brief_submitted", { path, no_idea: noIdea });
+          } catch (err) {
+            if (ownerChanged()) return;
+            if ((err as { status?: number }).status === 409 && attempt < SKEW_RETRIES) {
+              await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+              if (ownerChanged()) return;
+              continue;
             }
-            return;
+            throw err;
           }
-          if (attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
+          if (ownerChanged()) return;
+          status = (resp as { status?: string } | null)?.status;
+          if (status === "staged" || status === "already_submitted") break;
+          if (attempt < SKEW_RETRIES) {
+            await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
+            if (ownerChanged()) return;
             continue;
           }
-          setState("error");
-          return;
-        } catch (err) {
-          const httpStatus = (err as { status?: number }).status;
-          if (httpStatus === 409 && attempt < MAX_RETRIES) {
-            setState("waiting");
-            await new Promise((r) => setTimeout(r, RETRY_MS));
-            continue;
-          }
+          // Never dismiss the funnel over a brief that was never saved — the
+          // one thing worse than showing the error is losing what they typed.
+          recordFailure(
+            typeof (resp as { detail?: unknown } | null)?.detail === "string"
+              ? (resp as { detail: string }).detail
+              : `Unexpected response: ${JSON.stringify(resp) ?? "empty"}`,
+          );
           setState("error");
           return;
         }
+        setFailure(null);
+        // The brief is in. Drop the draft so a LATER funnel cycle — a
+        // wiped / reprovisioned container legitimately re-shows it —
+        // opens clean instead of resurrecting this answer.
+        try {
+          if (submitOwner) window.sessionStorage.removeItem(submitOwner);
+        } catch {
+          /* best-effort */
+        }
+        // The kickoff is server-owned (spec PR-6, BOOTSTRAP): the backend
+        // seeds the goal/project and dispatches Friday's first-run kickoff
+        // (observing its own chat.final) once the workspace is up — see
+        // core/services/onboarding_brief.reconcile_pending_brief. This
+        // metadata write is purely an optimistic pre-poll paint (dismisses
+        // the funnel THIS session without waiting for the next
+        // /container/status poll); it is never read as authority for
+        // whether the kickoff ran.
+        await writeFirstRun(user, {
+          briefSubmitted: true,
+          path: path ?? undefined,
+        });
+        // NO `first_run_brief_submitted` here. The backend emits it, and only
+        // once the goal and project actually exist
+        // (core/services/onboarding_brief.py). Emitting it from the client at
+        // submit time would report a 100% onboarding funnel straight through a
+        // fleet-wide fulfilment outage, and double-count every submit besides.
+      } catch (err) {
+        if (ownerChanged()) return;
+        recordFailure(extractErrorDetail(err));
+        setState("error");
       }
     },
-    [api, user, path, input, detail],
+    [api, user, path, input, detail, recordFailure],
   );
 
-  const busy = state === "submitting" || state === "waiting";
+  const busy = state === "submitting";
 
   return (
-    <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+    <div className="flex-1 flex items-center justify-center p-6 bg-[var(--cream)]">
       <div className="w-full max-w-md space-y-8">
         {path === null ? (
           <div className="space-y-8 text-center">
             <div className="space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
+              <h1 className="text-3xl font-semibold tracking-tight text-[var(--ink)] font-lora">
                 Let&apos;s get started.
               </h1>
-              <p className="text-sm text-[#8a8578]">
+              <p className="text-sm text-[var(--mute)]">
                 Tell your CEO about your business — she&apos;ll research it and lay out your next moves.
               </p>
             </div>
@@ -143,25 +339,25 @@ export function FirstRunFunnel() {
                 <button className={CHOICE_BTN} onClick={() => setPath("new")}>
                   Start something new
                 </button>
-                <p className="text-xs italic text-[#8a8578]">Start from scratch</p>
+                <p className="text-xs italic text-[var(--mute)]">Start from scratch</p>
               </div>
               <div className="space-y-1.5">
                 <button className={CHOICE_BTN} onClick={() => setPath("grow")}>
                   Grow my business
                 </button>
-                <p className="text-xs italic text-[#8a8578]">Already have a business</p>
+                <p className="text-xs italic text-[var(--mute)]">Already have a business</p>
               </div>
             </div>
           </div>
         ) : (
           <div className="space-y-6">
             <button
-              className="text-xs text-[#8a8578] hover:text-[#1a1a1a] transition-colors"
+              className="text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors"
               onClick={() => setPath(null)}
             >
               ← Back
             </button>
-            <h1 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
+            <h1 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
               {path === "new" ? "What's your idea?" : "What's your company's website?"}
             </h1>
             {path === "new" ? (
@@ -193,7 +389,7 @@ export function FirstRunFunnel() {
                 disabled={busy || input.trim().length < 3}
                 onClick={() => submit("idea")}
               >
-                {state === "waiting" && mode === "idea" ? "Setting things up…" : "Continue →"}
+                {busy && mode === "idea" ? "Setting things up…" : "Continue →"}
               </button>
               {path === "new" && (
                 <div className="space-y-1.5 pt-1">
@@ -206,20 +402,36 @@ export function FirstRunFunnel() {
                       ? "Setting things up…"
                       : "I don’t know yet — you pick"}
                   </button>
-                  <p className="text-xs italic text-center text-[#8a8578]">
+                  <p className="text-xs italic text-center text-[var(--mute)]">
                     Friday will look you up and choose something
                   </p>
                 </div>
               )}
             </div>
-            {state === "error" && (
-              <p className="text-sm text-[#b32424]">
-                Couldn&apos;t save that just yet.{" "}
-                <button className="underline" onClick={() => submit(mode)}>
-                  Retry
-                </button>
-              </p>
-            )}
+            {state === "error" &&
+              (failure && failure.streak >= PERSISTENT_FAILURE_THRESHOLD ? (
+                // Persistent failure: the same upstream error N times in a
+                // row is not transient — stop implying a retry will fix it.
+                // Show the upstream detail and route to support instead.
+                <div className="space-y-1.5 text-sm text-[var(--danger)]">
+                  <p>We couldn&apos;t save your brief.</p>
+                  <p className="break-words text-xs text-[var(--mute)]">{failure.detail}</p>
+                  <p>
+                    Please{" "}
+                    <a className="underline" href="mailto:support@isol8.co">
+                      contact support
+                    </a>{" "}
+                    and we&apos;ll get it sorted.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-[var(--danger)]">
+                  Couldn&apos;t save that just yet.{" "}
+                  <button className="underline" onClick={() => submit(mode)}>
+                    Retry
+                  </button>
+                </p>
+              ))}
           </div>
         )}
       </div>

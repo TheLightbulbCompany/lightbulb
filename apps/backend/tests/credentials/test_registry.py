@@ -70,11 +70,31 @@ def test_google_is_byo_required():
     assert not hasattr(g, "allow_byo_app")
 
 
-def test_no_provider_is_byo_required_except_google():
+def test_no_provider_is_byo_required_except_google_and_x():
     from core.services.credentials import registry
 
     byo = [k for k, v in registry.all_providers().items() if v.byo_required]
-    assert byo == ["google"]
+    assert byo == ["google", "x"]
+
+
+def test_x_is_byo_direct_oauth_cli_provider():
+    p = registry.get_provider("x")
+    assert p.display_name == "X"
+    assert p.acquisition == "direct_oauth"
+    assert p.actor == "cli"
+    assert p.refresh_owner == "actor"
+    assert p.byo_required is True
+    assert p.byo_setup_url == "https://developer.x.com/en/portal/dashboard"
+    assert p.requires.bins == ["xurl"]
+    assert p.oauth.authorization_url == "https://x.com/i/oauth2/authorize"
+    assert p.oauth.token_url == "https://api.x.com/2/oauth2/token"
+    assert p.oauth.pkce is True
+    assert p.oauth.scope_separator == " "
+    assert {"tweet.read", "tweet.write", "users.read", "offline.access", "dm.read", "dm.write", "media.write"}.issubset(
+        set(p.oauth.scopes)
+    )
+    assert p.wiring.materializer == "xurl_cli"
+    assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
 
 
 def test_unknown_provider_raises():
@@ -432,3 +452,50 @@ def test_pending_materializers_are_genuinely_unimplemented():
 
     for mat in _PENDING_MATERIALIZERS:
         assert mat not in MATERIALIZERS, f"{mat!r} is now implemented; drop it from _PENDING_MATERIALIZERS"
+
+
+def test_meta_ads_rides_platform_app_not_dcr():
+    """Meta's hosted ads MCP authenticates with OUR Meta app id as the OAuth client.
+
+    Its discovery document advertises a `registration_endpoint`, which makes the
+    Notion/Sentry/Linear DCR shape look right — but that endpoint answers
+    400 invalid_client_metadata for every caller Meta hasn't allowlisted, so a
+    `registration_url` here would ship a Connect button that cannot complete.
+    Pin the platform_app shape (and the absence of registration_url) so the
+    tempting-but-broken variant can't come back.
+    """
+    p = registry.get_provider("meta_ads")
+    assert p.acquisition == "direct_oauth"
+    assert p.actor == "mcp"
+    # The MCP SDK's OAuthClientProvider self-refreshes from the token file.
+    assert p.refresh_owner == "actor"
+    assert p.oauth.platform_app == "meta-ads"
+    assert p.oauth.registration_url is None
+    # NOT meta-instagram: that secret holds the Instagram app id, a different app
+    # from the Meta app the ads MCP authenticates against.
+    assert p.oauth.platform_app != "meta-instagram"
+
+
+def test_meta_ads_requests_every_documented_scope():
+    """ads_mcp_management is what gates the MCP endpoint itself — dropping it (or
+    any of the seven Meta's Get Started lists) yields a token the server refuses."""
+    p = registry.get_provider("meta_ads")
+    assert set(p.oauth.scopes) == {
+        "ads_mcp_management",
+        "ads_read",
+        "ads_management",
+        "business_management",
+        "catalog_management",
+        "pages_show_list",
+        "instagram_basic",
+    }
+    assert p.oauth.scope_separator == " "
+
+
+def test_meta_ads_publishes_the_remote_mcp_block():
+    p = registry.get_provider("meta_ads")
+    assert p.wiring.materializer == "mcp_oauth"
+    assert p.wiring.mcp_server is None
+    assert p.mcp_remote.key == "meta_ads"
+    assert p.mcp_remote.url == "https://mcp.facebook.com/ads"
+    assert p.mcp_remote.transport == "streamable-http"

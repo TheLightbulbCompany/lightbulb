@@ -6,6 +6,7 @@
 // ExecApprovalsProvider (Task 13); mobile keeps ChatLayout.
 import "dockview-react/dist/styles/dockview.css";
 import "./workspace.css";
+import { constrainGroupHeight } from "./groupConstraints";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth, useOrganization } from "@clerk/nextjs";
@@ -201,6 +202,14 @@ export function WorkspaceShell(): React.ReactElement {
         buildMissionControlLayout(api);
       }
 
+      // Floor every group's height so none can be crushed to its tab bar —
+      // both the ones we just restored/built and any added later. See
+      // groupConstraints.ts for why this is two operations, not one.
+      api.groups.forEach((group) => constrainGroupHeight(group));
+      disposablesRef.current.push(
+        api.onDidAddGroup((group) => constrainGroupHeight(group)),
+      );
+
       // URL wins focus (spec §6 rule 4): execute the current URL command on
       // top of the restore. Reset the latch first — commands latched while
       // the dock was unmounted (initial gate render, recovery regression)
@@ -369,7 +378,10 @@ export function WorkspaceShell(): React.ReactElement {
         <CommandPaletteProvider>
           <DesktopPermissionsGate />
           <div className="workspace-shell">
-            <WorkspaceSidebar onRecoveryReprovision={() => setRecoveryTriggered(true)} />
+            <WorkspaceSidebar
+              chatReady={chatReady}
+              onRecoveryReprovision={() => setRecoveryTriggered(true)}
+            />
             <div className="workspace-main">
               <WorkspaceHeader onResetLayout={handleResetLayout} />
               <div className="workspace-content">

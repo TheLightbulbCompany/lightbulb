@@ -6,14 +6,24 @@ secret, duplicate message_id (deduped up front — unlike the Resend path,
 every gate here is a deterministic function of an already-SES-scanned
 payload, so there's no transient-failure window to protect), an empty
 message_id that skips dedup but still proceeds to delivery, unknown
-recipient, unverified sender (+ the public-address bypass), over cap, the
+recipient, unverified sender (+ the public-address bypass), over cap
+(answered via an auto-reply rather than dropped silently -- see the
+`capped_owner` fixture and its tests, plus the unknown-recipient/
+unverified-sender tests proving those two stay silent), the
 SES-verdict gate (virus/spam explicit FAIL, DMARC-authoritative
 sender-auth FAIL, the SPF+DKIM fallback when DMARC is absent, and a
 missing/GRAY verdict set that must still deliver), the auto-submitted loop
 guard, the happy path, and the transient-vs-terminal outcome split: an
-unexpected exception or a "error" delivery result return 503 (retry), while
-"container_not_running" (scaled-to-zero, intentionally silent) and every
-deterministic drop stay 200.
+unexpected exception, a "error" delivery result, or a "woken" result (an
+asleep container was just cold-started -- 503 so SES's own retry lands after
+it finishes booting) return 503, while "container_not_running" (now: the
+owner was over cap) and every deterministic drop stay 200.
+
+The 503 branches also ROLL BACK the dedup row they recorded at the top of the
+request, and that is covered here with a real in-memory dedup store across
+both seams (``_real_dedup``) driving TWO requests with the same message_id --
+every other test in this file stubs one seam or the other, which is exactly
+why a surviving dedup row silently swallowing the retry went unnoticed.
 
 Seams (``get_by_address``, ``trial_block_reason``, ``deliver_to_agent``,
 ``record_event_or_skip``, …) are imported BY NAME into
@@ -28,6 +38,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from core.services import trial_cap
 from core.services.webhook_dedup import WebhookDedupResult
 from routers import ses_inbound
 
@@ -61,10 +72,11 @@ def _dedup_recorded(monkeypatch):
     )
 
 
-def _row(*, public: bool = False, verified_senders=None):
+def _row(*, public: bool = False, verified_senders=None, address: str = RECIPIENT):
     return {
         "owner_id": OWNER_ID,
         "agent_id": AGENT_ID,
+        "address": address,
         "public": public,
         "verified_senders": verified_senders if verified_senders is not None else [SENDER],
     }
@@ -228,19 +240,212 @@ def test_public_address_bypasses_unverified_sender_and_delivers(client, monkeypa
     deliver_mock.assert_awaited_once()
 
 
-def test_over_cap_is_dropped(client, monkeypatch):
+def test_over_cap_reports_capped_notified_when_autoreply_succeeds(client, monkeypatch):
+    """Over cap is ANSWERED, not dropped in silence -- the sender allowlist
+    above already proved this is the owner, so replying is safe here."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
-    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value="trial_daily_cap"))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", AsyncMock(return_value=True))
     deliver_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
     resp = _post(client, _body())
 
     assert resp.status_code == 200
-    assert resp.json()["status"] == "dropped_over_cap"
+    assert resp.json()["status"] == "capped_notified"
     deliver_mock.assert_not_called()
+
+
+@pytest.fixture
+def capped_owner(monkeypatch):
+    """A verified sender emailing an over-cap owner -- eligible for an autoreply."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    row = {
+        "owner_id": OWNER_ID,
+        "agent_id": AGENT_ID,
+        "address": "friday@acme.isol8.co",
+        "public": False,
+        "verified_senders": ["owner@example.com"],
+    }
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=row))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+    return row
+
+
+def _capped_body(**overrides):
+    overrides.setdefault("from", "Owner <owner@example.com>")
+    return _body(**overrides)
+
+
+def test_over_cap_sends_an_autoreply_and_reports_capped_notified(client, monkeypatch, capped_owner):
+    calls = []
+
+    async def _autoreply(*, owner_id, reason, from_addr, to, in_reply_to, subject):
+        calls.append({"owner_id": owner_id, "reason": reason, "from": from_addr, "to": to})
+        return True
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _capped_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "capped_notified"
+    assert len(calls) == 1
+    # Sent FROM the agent's own address, TO the owner who wrote in.
+    assert calls[0]["from"] == "friday@acme.isol8.co"
+    assert calls[0]["to"] == "owner@example.com"
+
+
+def test_over_cap_autoreply_threads_on_message_id_header_not_ses_id(client, monkeypatch, capped_owner):
+    """`in_reply_to` must be the RFC-5322 `Message-ID` header the sender's own
+    mail client threads on -- NOT SES's internal `message_id`, which matches
+    nothing in any mail client. SES's id and the mail header are set to
+    different values here so this test fails if someone reverts to the SES id."""
+    calls = []
+
+    async def _autoreply(*, owner_id, reason, from_addr, to, in_reply_to, subject):
+        calls.append(in_reply_to)
+        return True
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(
+        client,
+        _capped_body(
+            message_id="ses-internal-id-999",
+            headers={"Auto-Submitted": "no", "Message-ID": "<real-thread@owner-mailbox>"},
+        ),
+    )
+
+    assert resp.json()["status"] == "capped_notified"
+    assert calls == ["<real-thread@owner-mailbox>"]
+
+
+def test_over_cap_still_reports_dropped_when_the_autoreply_fails(client, monkeypatch, capped_owner):
+    async def _autoreply(**kwargs):
+        return False
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _capped_body())
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_over_cap"
+
+
+def test_over_cap_never_delivers_to_the_agent(client, monkeypatch, capped_owner):
+    deliver_mock = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    async def _autoreply(**kwargs):
+        return True
+
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    _post(client, _capped_body())
+
+    deliver_mock.assert_not_called()
+
+
+def test_over_cap_and_dmarc_fail_drops_before_the_autoreply_can_send(client, monkeypatch, capped_owner):
+    """Pins ordering: the cap check must run AFTER the anti-spoof gate. `From`
+    is a bare header parse with no DKIM/SPF binding, so the sender allowlist
+    alone doesn't prove this wasn't spoofed -- if the cap check ran first, a
+    spoofed sender for an over-cap owner would still trigger a real outbound
+    email. Fails if the cap-check block is moved back above this gate."""
+    autoreply_mock = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
+
+    resp = _post(
+        client,
+        _capped_body(verdicts={"spf": "PASS", "dkim": "PASS", "dmarc": "FAIL", "spam": "PASS", "virus": "PASS"}),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_failed_authentication"
+    autoreply_mock.assert_not_called()
+
+
+def test_over_cap_and_auto_submitted_drops_before_the_autoreply_can_send(client, monkeypatch, capped_owner):
+    """Pins ordering: the cap check must run AFTER the auto-submitted loop
+    guard, or an out-of-office autoresponder from the owner's own mail
+    infrastructure would trigger a real outbound reply -- a mail loop. Fails
+    if the cap-check block is moved back above this guard."""
+    autoreply_mock = AsyncMock()
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
+
+    resp = _post(
+        client,
+        _capped_body(headers={"Auto-Submitted": "auto-replied", "Message-ID": "<orig@x>"}),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_auto_submitted"
+    autoreply_mock.assert_not_called()
+
+
+def test_public_address_over_cap_gets_NO_autoreply(client, monkeypatch):
+    """A public row SKIPS the sender allowlist, so `sender` is nothing but an
+    attacker-chosen `From` header -- exactly the proof the auto-reply's safety
+    argument rests on, and it is absent here. Silent drop, no outbound mail."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(
+        ses_inbound,
+        "get_by_address",
+        AsyncMock(return_value=_row(public=True, verified_senders=[])),
+    )
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=trial_cap.DAILY_CAP))
+    autoreply_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", autoreply_mock)
+
+    resp = _post(client, _body(**{"from": "Stranger <stranger@example.com>"}))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_over_cap"
+    autoreply_mock.assert_not_called()
+
+
+def test_unverified_sender_gets_NO_autoreply(client, monkeypatch):
+    """Replying would confirm the address exists and make this a reflector."""
+    calls = []
+
+    async def _autoreply(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _body(**{"from": "Stranger <stranger@example.com>"}))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_unverified_sender"
+    assert calls == []
+
+
+def test_unknown_recipient_gets_NO_autoreply(client, monkeypatch):
+    calls = []
+
+    async def _autoreply(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "send_cap_autoreply", _autoreply)
+
+    resp = _post(client, _body(to=["nobody@nowhere.isol8.co"]))
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "dropped_unknown_recipient"
+    assert calls == []
 
 
 def test_virus_fail_verdict_is_dropped(client, monkeypatch):
@@ -406,10 +611,9 @@ def test_deliver_error_returns_503_for_retry(client, monkeypatch):
 
 
 def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
-    """`deliver_to_agent` returning "container_not_running" means a
-    scaled-to-zero free-tier box — intentionally silent, so this stays 200
-    rather than retrying (we do not wake the container or hammer it with
-    SES retries just because mail arrived)."""
+    """`deliver_to_agent` returning "container_not_running" now means the
+    owner was over cap when it tried to wake -- retrying would hit the same
+    cap, so this stays 200 rather than retrying."""
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
@@ -420,3 +624,93 @@ def test_deliver_container_not_running_stays_200_silent(client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "container_not_running"
+
+
+def test_deliver_woken_returns_503_so_ses_retries_after_cold_start(client, monkeypatch):
+    """`deliver_to_agent` returning "woken" means it just cold-started an
+    asleep, under-cap owner's container -- 503 so the ingest Lambda re-raises
+    and SES's own async retry lands after the Fargate cold start finishes."""
+    _enable(monkeypatch)
+    _dedup_recorded(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", AsyncMock(return_value="woken"))
+
+    resp = _post(client, _body())
+
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "woken"
+
+
+def _real_dedup(monkeypatch):
+    """A real (in-memory) dedup store across BOTH seams, so a test can send two
+    requests with the same message_id and observe what the second one actually
+    does. Every other test stubs one seam or the other, which is precisely why
+    the rollback defect below was invisible."""
+    seen: set[str] = set()
+
+    async def _record(event_id, *, source):
+        if event_id in seen:
+            return WebhookDedupResult.ALREADY_SEEN
+        seen.add(event_id)
+        return WebhookDedupResult.RECORDED
+
+    async def _delete(event_id):
+        seen.discard(event_id)
+
+    monkeypatch.setattr(ses_inbound, "record_event_or_skip", _record)
+    monkeypatch.setattr(ses_inbound, "delete_event", _delete)
+    return seen
+
+
+def test_woken_rolls_back_dedup_so_the_ses_retry_is_not_swallowed(client, monkeypatch):
+    """THE point of the 503 on "woken": SES re-invokes with the SAME
+    message_id once the container is up. If the dedup row recorded at the top
+    of the first request survives, that retry short-circuits as a `duplicate`,
+    `deliver_to_agent` is never reached, and the mail is dropped for good --
+    with a real Fargate cold start paid for nothing."""
+    _enable(monkeypatch)
+    _real_dedup(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver_mock = AsyncMock(side_effect=["woken", "delivered"])
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    first = _post(client, _body())
+    assert first.status_code == 503
+    assert first.json()["status"] == "woken"
+
+    # SES's retry: same message_id, container now up.
+    second = _post(client, _body())
+
+    assert second.status_code == 200
+    assert second.json()["status"] == "delivered"
+    assert deliver_mock.await_count == 2
+
+
+def test_deliver_error_rolls_back_dedup_so_the_ses_retry_is_not_swallowed(client, monkeypatch):
+    """Same defect, same fix, on the pre-existing transient-error branch."""
+    _enable(monkeypatch)
+    _real_dedup(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
+    monkeypatch.setattr(ses_inbound, "trial_block_reason", AsyncMock(return_value=None))
+    deliver_mock = AsyncMock(side_effect=["error", "delivered"])
+    monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
+
+    assert _post(client, _body()).status_code == 503
+    second = _post(client, _body())
+
+    assert second.json()["status"] == "delivered"
+    assert deliver_mock.await_count == 2
+
+
+def test_a_terminal_drop_keeps_its_dedup_row(client, monkeypatch):
+    """The rollback is scoped to the 503s. A deterministic drop must stay
+    deduped -- re-running it would produce the identical drop."""
+    _enable(monkeypatch)
+    seen = _real_dedup(monkeypatch)
+    monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=None))
+
+    assert _post(client, _body()).json()["status"] == "dropped_unknown_recipient"
+    assert seen == {MESSAGE_ID}
+    assert _post(client, _body()).json()["status"] == "duplicate"

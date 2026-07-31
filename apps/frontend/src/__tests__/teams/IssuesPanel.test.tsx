@@ -113,4 +113,23 @@ describe("IssuesPanel", () => {
     rerender(<IssuesPanel newTask />);
     expect(screen.getByTestId("new-issue-dialog-stub")).toBeInTheDocument();
   });
+
+  // Regression guard for the live-update bug: the board once stayed "No tasks
+  // yet" for minutes while GET /issues already returned the rows, because the
+  // event-driven invalidation (TeamsEventsProvider → activity.logged) rides a
+  // replay-less bridge that can miss agent-created issues, and nothing else
+  // revalidated this key (revalidateOnFocus is off globally; dock panels are
+  // hidden, not unmounted, on switch). The `/issues` read must carry a polling
+  // + focus-revalidation backstop so it self-heals.
+  it("reads /issues with a 30s poll + focus-revalidation backstop", () => {
+    mockRead.mockClear();
+    render(<IssuesPanel />);
+    expect(mockRead).toHaveBeenCalledWith(
+      "/issues",
+      expect.objectContaining({
+        refreshInterval: 30_000,
+        revalidateOnFocus: true,
+      }),
+    );
+  });
 });

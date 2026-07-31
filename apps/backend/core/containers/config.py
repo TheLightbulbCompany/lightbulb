@@ -432,9 +432,16 @@ def build_provider_block(
         # `openai` plugin subsumes it. Emitting it produces "Unknown model:
         # openai-codex/…" at first chat (nothing migrates it at runtime; only
         # `openclaw doctor --fix` would). The canonical ref is `openai/*`.
+        #
+        # The fallback must be a DIFFERENT model: upstream's fallback runner
+        # dedupes candidates by provider/model key, so a self-fallback leaves
+        # zero failover candidates and a single provider 5xx kills the run
+        # (FailoverError, next=none). gpt-5.4 is the closest tier in the
+        # Codex-routable OAuth allowlist; fallbacks are error-only, and the
+        # plan is flat-rate, so it engages only when gpt-5.5 itself errors.
         return (
             {},
-            {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+            {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
             {},
         )
     if provider_choice == "byo_key":
@@ -1563,10 +1570,26 @@ def build_openclaw_config_dict(
             # refuse to start. DO NOT REMOVE. "isol8-" is for our own
             # session-key conventions used by internal callers.
             "allowedSessionKeyPrefixes": ["isol8-", "hook:"],
-            # Lock the request to server-derived session keys only;
-            # untrusted callers don't get to claim arbitrary session
-            # ownership via a header.
-            "allowRequestSessionKey": False,
+            # Inbound agent email needs a STABLE per-thread session key so a
+            # reply continues the same conversation instead of cold-starting a
+            # throwaway `hook:<uuid>` every time (see agent_mail_thread). Both
+            # a request-supplied key AND a mapping-TEMPLATED one are gated by
+            # this single flag upstream (resolveHookSessionKey), so there is no
+            # way to get per-thread sessions with it false.
+            #
+            # What still bounds a leaked/replayed hook token, now that it can
+            # name a session rather than only create one:
+            #   * allowedSessionKeyPrefixes below — it can only reach
+            #     `isol8-*` / `hook:*` keys, and `isol8-email:<sha256>` is the
+            #     only isol8- OpenClaw session key we mint (the `isol8-` in
+            #     routers/connections.py is an STS RoleSessionName, not this).
+            #   * allowedAgentIds below — it cannot aim at an arbitrary agent.
+            # The delta accepted deliberately: previously such a token could
+            # only start fresh sessions; it can now target an existing one and
+            # read its prior context. Tightening the prefix to
+            # `isol8-email:` would shrink that further and is the obvious next
+            # step if anything else ever mints an isol8- session key.
+            "allowRequestSessionKey": True,
             # Bound which agents a hook call may target: the seeded roster at
             # write time ("main" for the legacy fallback shape). Nothing in
             # the backend drives /hooks today, so this is pure hardening of
@@ -1600,6 +1623,16 @@ def build_openclaw_config_dict(
                 # Enables the keyless parallel-free provider that
                 # tools.web.search.provider selects above.
                 "parallel": {"enabled": True},
+                # First-party Isol8 marketplace tools (marketplace_search,
+                # recommend_agents), baked root-owned at
+                # /app/dist/extensions/isol8-marketplace. READ-ONLY: neither
+                # tool mutates the roster — hiring always ends at a human
+                # click (the hire card in chat, or a Paperclip hire_agent
+                # approval in Teams). Enabled on EVERY provider path: an
+                # agent that cannot see the catalog recommends nothing, which
+                # is the behaviour this replaced. The tools are non-optional,
+                # so the explicit tools.allow ["*"] above surfaces them.
+                "isol8-marketplace": {"enabled": True},
             },
         },
         # Channels: ship EMPTY until the user configures one. A provider block
@@ -1663,8 +1696,8 @@ def build_openclaw_config_dict(
             # gated Bedrock margins).
             "snapshotDefaults": {"mode": "efficient"},
             # Upstream tab defaults (8 tabs / 120m idle) are desktop-sized;
-            # on a 0.5 vCPU / 2 GB Fargate task live Chromium tabs are the
-            # OOM budget, so close idle ones aggressively.
+            # on a 1 vCPU / 4 GB Fargate task live Chromium tabs are still
+            # a resource constraint, so close idle ones aggressively.
             "tabCleanup": {"idleMinutes": 30, "maxTabsPerSession": 4},
             # Required because the gateway runs as root inside the
             # per-user ECS container (for oom-score-adj and EFS perms),
@@ -1809,10 +1842,9 @@ def build_openclaw_config_dict(
                     bindings.append(binding)
 
     # ACP coding-harness runtime (Jarvis-style delegation: a native agent can
-    # ``sessions_spawn({runtime:"acp"})`` Claude Code / Codex / Gemini). Gated
-    # behind ``acp_enabled`` (a backend feature flag the I/O caller resolves
-    # from ``settings.ACP_ENABLED``) so it stays dark until the acpx-baked image
-    # (Dockerfile Layer 12) is promoted and we choose to roll it out. Harnesses
+    # ``sessions_spawn({runtime:"acp"})`` Claude Code / Codex / Gemini). On
+    # fleet-wide; ``acp_enabled=False`` is still passed by the marketplace
+    # deploy path when a listing does not declare ``requires_acp``. Harnesses
     # are DERIVED from the provider choice — no stored per-owner state. Emitting
     # ``acp.enabled`` is what teaches a native agent it can spawn (upstream
     # ``isAcpRuntimeSpawnAvailable`` -> ``acpEnabled: true`` in the system
@@ -1840,7 +1872,7 @@ async def write_openclaw_config(
     integration_mcp_servers: dict | None = None,
     aip_arns: dict[str, str] | None = None,
     channel_accounts: dict[str, dict[str, dict]] | None = None,
-    acp_enabled: bool | None = None,
+    acp_enabled: bool = True,
 ) -> None:
     """Write the user's openclaw.json with the full container config.
 
@@ -1880,12 +1912,6 @@ async def write_openclaw_config(
         ValueError: when ``provider_choice`` is unknown or
             ``byo_provider`` is missing/invalid for ``byo_key``.
     """
-    # ACP rollout is a backend-level feature flag, not per-owner state. When the
-    # caller doesn't pin it explicitly, resolve from settings so the whole fleet
-    # flips with one env var (dark by default).
-    if acp_enabled is None:
-        acp_enabled = settings.ACP_ENABLED
-
     config = build_openclaw_config_dict(
         user_id=user_id,
         gateway_token=gateway_token,

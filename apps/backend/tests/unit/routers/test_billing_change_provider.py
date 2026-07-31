@@ -18,25 +18,72 @@ def active_personal_account():
 
 
 @pytest.fixture
-def patch_background_provision():
+def patch_dispatch_provision():
     """Stub the asyncio.create_task path so we don't fire real ECS calls.
 
     change_provider does a local ``from core.services.container_provision
-    import background_provision`` inside the function body, so patching the
+    import dispatch_provision`` inside the function body, so patching the
     source module (not the importing module) is what intercepts. The
     AsyncMock returns a coroutine so ``asyncio.create_task`` happily wraps
     it without RuntimeWarning.
     """
     bg = AsyncMock()
-    with patch("core.services.container_provision.background_provision", bg):
+    with patch("core.services.provision_dispatch.dispatch_provision", bg):
         yield bg
+
+
+@pytest.fixture
+def cold_reprovision():
+    """Stub the F1 stop-first cold-reprovision seam (PR #1412).
+
+    The cold path no longer dispatches ``dispatch_provision`` directly.
+    It now:
+        manager = get_ecs_manager()
+        if await container_repo.get_by_owner_id(owner) is not None:
+            await container_repo.takeover_provision(owner)
+            await manager.stop_user_service(owner, reason="reprovision")
+        asyncio.create_task(manager.drain_then_dispatch_provision(owner))
+    (``drain_then_dispatch_provision`` is what funnels to dispatch_provision
+    one layer down, after the drain-wait.)
+
+    Without these stubs ``container_repo.get_by_owner_id`` hits real DynamoDB
+    (ResourceNotFoundException), the except-block reverts the just-committed
+    provider, and the endpoint 502s ``reprovision_stop_failed``. This fixture
+    is the current cold-path contract; assert on the yielded manager's
+    ``drain_then_dispatch_provision`` (called via create_task) to prove a
+    re-provision was scheduled.
+
+    ``revoke_provider_auth_in_container`` (best-effort live-token logout on the
+    chatgpt-leaving branch) is stubbed too so it doesn't reach for a real
+    running container.
+    """
+    manager = MagicMock()
+    manager.stop_user_service = AsyncMock(return_value=None)
+    manager.drain_then_dispatch_provision = AsyncMock(return_value={"status": "reprovisioning"})
+    manager.resolve_running_container = AsyncMock(return_value=(None, None))
+    with (
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "owner", "status": "running"}),
+        ),
+        patch(
+            "core.repositories.container_repo.takeover_provision",
+            new=AsyncMock(return_value="lease-token"),
+        ),
+        patch(
+            "core.services.container_auth.revoke_provider_auth_in_container",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        yield manager
 
 
 @pytest.mark.asyncio
 async def test_change_provider_bedrock_to_byo_key_happy_path(
     async_client,
     active_personal_account,
-    patch_background_provision,
+    cold_reprovision,
 ):
     """Bedrock → BYO Anthropic: validates key exists, flips choice, no OAuth
     cleanup (we weren't on chatgpt_oauth), schedules a re-provision."""
@@ -81,7 +128,7 @@ async def test_change_provider_bedrock_to_byo_key_happy_path(
 async def test_change_provider_byo_key_without_saved_key_returns_409(
     async_client,
     active_personal_account,
-    patch_background_provision,
+    patch_dispatch_provision,
 ):
     """The endpoint must refuse to flip provider_choice when the new BYO
     key isn't on file — otherwise the next chat would fail at ECS with no
@@ -114,7 +161,7 @@ async def test_change_provider_byo_key_without_saved_key_returns_409(
 async def test_change_provider_chatgpt_without_oauth_tokens_returns_409(
     async_client,
     active_personal_account,
-    patch_background_provision,
+    patch_dispatch_provision,
 ):
     """Switching to ChatGPT OAuth without a completed device-code flow
     must 409 with a code the UI recognises, not silently flip provider_choice."""
@@ -261,7 +308,7 @@ async def test_non_owner_admin_cannot_switch_org_to_chatgpt(
 @pytest.mark.asyncio
 async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
     async_client_org_admin,
-    patch_background_provision,
+    cold_reprovision,
 ):
     """Leaving chatgpt_oauth on an org revokes the RECORDED OWNER's token row
     (user_a — the human who connected, not necessarily the switcher) and
@@ -313,7 +360,7 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
 @pytest.mark.asyncio
 async def test_org_byo_key_prereq_is_owner_scoped_not_clerk_user_scoped(
     async_client_org_admin,
-    patch_background_provision,
+    cold_reprovision,
 ):
     """An org's BYOK secret is stored under the ORG id, so the prerequisite
     check must look it up there too.
@@ -365,7 +412,7 @@ async def test_org_byo_key_prereq_is_owner_scoped_not_clerk_user_scoped(
 @pytest.mark.asyncio
 async def test_personal_switch_away_still_revokes(
     async_client,
-    patch_background_provision,
+    cold_reprovision,
 ):
     """Personal owners are unchanged: owner_id == user, so revoke + delete
     both key on the same id. With no recorded connector, the cleanup falls
@@ -410,7 +457,7 @@ async def test_personal_switch_away_still_revokes(
 @pytest.mark.asyncio
 async def test_change_provider_inactive_subscription_returns_409(
     async_client,
-    patch_background_provision,
+    patch_dispatch_provision,
 ):
     """change_provider is for existing subscribers only — a row with no
     active subscription must be routed back through /onboarding's signup
@@ -438,7 +485,7 @@ async def test_change_provider_inactive_subscription_returns_409(
 @pytest.mark.asyncio
 async def test_change_provider_no_billing_account_returns_404(
     async_client,
-    patch_background_provision,
+    patch_dispatch_provision,
 ):
     with patch(
         "core.repositories.billing_repo.get_by_owner_id",
@@ -457,7 +504,7 @@ async def test_change_provider_no_billing_account_returns_404(
 async def test_change_provider_same_choice_is_noop(
     async_client,
     active_personal_account,
-    patch_background_provision,
+    patch_dispatch_provision,
 ):
     """No work + no container restart for an idle re-click."""
     with (
@@ -479,13 +526,13 @@ async def test_change_provider_same_choice_is_noop(
     body = resp.json()
     assert body["status"] == "noop"
     mock_set_pc.assert_not_awaited()
-    patch_background_provision.assert_not_awaited()
+    patch_dispatch_provision.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_change_provider_clears_oauth_when_leaving_chatgpt(
     async_client,
-    patch_background_provision,
+    cold_reprovision,
 ):
     """Leaving chatgpt_oauth must revoke the tokens row + delete the EFS
     auth-profiles.json so a re-switch back to chatgpt_oauth re-runs the
@@ -529,7 +576,7 @@ async def test_change_provider_clears_oauth_when_leaving_chatgpt(
 @pytest.mark.asyncio
 async def test_change_provider_clears_byo_key_when_leaving_byo(
     async_client,
-    patch_background_provision,
+    cold_reprovision,
 ):
     """Leaving byo_key must delete the matching api_keys row + Secrets
     Manager secret. KeyService.delete_key handles both."""
@@ -593,7 +640,7 @@ async def test_change_provider_org_member_blocked(async_client_org_member):
 #
 # These tests pin the *core promise* of the hot path:
 #   1. config_patcher.replace_provider_block is called with the right shape.
-#   2. background_provision is NOT called (no ECS restart).
+#   2. dispatch_provision is NOT called (no ECS restart).
 #   3. For a ChatGPT-bound switch, auth-profiles.json is staged BEFORE the
 #      openclaw.json patch (chokidar's reload would otherwise read a stale
 #      or missing auth file and the openai provider would 401 once).
@@ -645,7 +692,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         assert providers == {}
         assert default_model == {
             "primary": "openai/gpt-5.5",
-            "fallbacks": ["openai/gpt-5.5"],
+            "fallbacks": ["openai/gpt-5.4"],
         }
         assert plugin_entries == {}
         # chatgpt_oauth is flat-rate — no premium tier, so the CEO's stale
@@ -702,7 +749,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
             new=AsyncMock(side_effect=_replace),
         ),
         patch(
-            "core.services.container_provision.background_provision",
+            "core.services.provision_dispatch.dispatch_provision",
             new=AsyncMock(),
         ) as mock_bg,
     ):
@@ -726,7 +773,7 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
 
 
 @pytest.mark.asyncio
-async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client):
+async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client, cold_reprovision):
     """ChatGPT OAuth → Bedrock: a switch INTO bedrock_claude must take the
     COLD path, NOT the hot path (Plan 2 Task 6). The per-owner scoped task
     role is attached only by a task-def re-register in provision_user_container,
@@ -765,10 +812,6 @@ async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client):
             "core.services.config_patcher.replace_provider_block",
             new=AsyncMock(),
         ) as mock_replace,
-        patch(
-            "core.services.container_provision.background_provision",
-            new=AsyncMock(),
-        ) as mock_bg,
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
@@ -778,9 +821,10 @@ async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     # Cold path: container restarts (task-def re-register attaches the scoped
-    # per-owner role), background_provision dispatched, hot helper NOT called.
+    # per-owner role), the drain-then-reprovision is dispatched (which funnels
+    # to dispatch_provision one layer down), hot helper NOT called.
     assert body["restart"] is True
-    mock_bg.assert_awaited_once()
+    cold_reprovision.drain_then_dispatch_provision.assert_called_once()
     mock_replace.assert_not_awaited()
     # Side-effect cleanup for leaving chatgpt_oauth must still run.
     mock_revoke.assert_awaited_once()
@@ -788,7 +832,7 @@ async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client):
 
 
 @pytest.mark.asyncio
-async def test_change_provider_hot_path_falls_back_to_cold_on_missing_config(async_client):
+async def test_change_provider_hot_path_falls_back_to_cold_on_missing_config(async_client, cold_reprovision):
     """If openclaw.json doesn't exist yet (e.g. owner never provisioned a
     container), replace_provider_block raises ConfigPatchError. The endpoint
     must NOT 500 — it falls back to a full re-provision so the file gets
@@ -823,10 +867,6 @@ async def test_change_provider_hot_path_falls_back_to_cold_on_missing_config(asy
             "core.services.config_patcher.replace_provider_block",
             new=AsyncMock(side_effect=ConfigPatchError("Config not found")),
         ),
-        patch(
-            "core.services.container_provision.background_provision",
-            new=AsyncMock(),
-        ) as mock_bg,
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",
@@ -836,11 +876,11 @@ async def test_change_provider_hot_path_falls_back_to_cold_on_missing_config(asy
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["restart"] is True, "cold-path fallback must report restart=True"
-    mock_bg.assert_awaited_once()
+    cold_reprovision.drain_then_dispatch_provision.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, patch_background_provision):
+async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, cold_reprovision):
     """BYO transitions can't avoid the restart — ECS env vars are bake-time.
     Even if openclaw.json patch would work, we MUST re-register the task
     definition with the new Secrets Manager secret ARN. restart=True."""
@@ -879,4 +919,4 @@ async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, pat
     # BYO path must not touch the hot helper — the cold path writes a fresh
     # openclaw.json end-to-end.
     mock_replace.assert_not_awaited()
-    patch_background_provision.assert_awaited_once()
+    cold_reprovision.drain_then_dispatch_provision.assert_called_once()

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { GatewayRpcError } from "./error";
 import type { ChatIncomingMessage } from "./types";
 
 // =============================================================================
@@ -183,26 +184,10 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
         if (data.ok) {
           pending.resolve(data.payload);
         } else {
-          const errObj = data.error as Record<string, unknown> | undefined;
-          const errMsg = errObj?.message || "RPC call failed";
-          // Surface additional detail (issues, details, code) if present
-          const parts: string[] = [String(errMsg)];
-          if (errObj?.code) parts.push(`[${errObj.code}]`);
-          if (errObj?.details !== undefined && errObj.details !== null) {
-            const d = errObj.details;
-            if (typeof d === "string") {
-              parts.push(d);
-            } else {
-              try { parts.push(JSON.stringify(d)); } catch { parts.push(String(d)); }
-            }
-          }
-          if (errObj && Array.isArray(errObj.issues)) {
-            const issueTexts = (errObj.issues as { path?: string; message?: string }[])
-              .map(i => i.path ? `${i.path}: ${i.message}` : i.message)
-              .filter(Boolean);
-            if (issueTexts.length) parts.push(issueTexts.join("; "));
-          }
-          pending.reject(new Error(parts.join(" — ")));
+          // Preserve the gateway's own error shape (code / retryable /
+          // retryAfterMs / details) instead of flattening it into the
+          // message — see GatewayRpcError.
+          pending.reject(new GatewayRpcError(data.error));
         }
       }
       return;

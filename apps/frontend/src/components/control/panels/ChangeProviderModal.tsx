@@ -2,8 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { ApiError, useApi } from "@/lib/api";
+import { useApi } from "@/lib/api";
 import { useChatGPTOAuth } from "@/hooks/useChatGPTOAuth";
+import {
+  commitProviderChoice,
+  providerCommitErrorMessage,
+  readableProvider,
+  type ByoProvider,
+} from "@/lib/providerCommit";
 import {
   Dialog,
   DialogContent,
@@ -33,14 +39,22 @@ import { Button } from "@/components/ui/button";
  *   4. If Bedrock → POST /billing/provider directly (credits gate is
  *      enforced at provisioning time by provision_gate).
  *
+ * `initialChoice` skips step 1: LLMPanel's empty state renders the same three
+ * choices inline, so a user arriving from there has already picked and the
+ * modal opens straight on the credential stage. It only ever names a
+ * credential-collecting path — Bedrock needs no stage, so the panel commits
+ * it inline without opening the modal at all.
+ *
  * Errors from /billing/provider carry a `{code, message}` payload from
  * the backend (ChangeProviderError). We surface message verbatim — the
  * codes (`byo_key_missing`, `oauth_required`, etc.) are stable so a
  * future per-code UI affordance can be wired up if useful.
  */
 
-import type { ProviderChoiceId as ProviderChoice } from "@/lib/providerCards";
-type ByoProvider = "openai" | "anthropic";
+import {
+  PROVIDER_SWITCH_CARDS,
+  type ProviderChoiceId as ProviderChoice,
+} from "@/lib/providerCards";
 
 type Stage =
   | { kind: "picker" }
@@ -49,10 +63,15 @@ type Stage =
   | { kind: "submitting"; choice: ProviderChoice; byo?: ByoProvider }
   | { kind: "error"; message: string };
 
+/** Paths that need a credential stage — the only valid `initialChoice` values. */
+export type CredentialProviderChoice = Exclude<ProviderChoice, "bedrock_claude">;
+
 interface ChangeProviderModalProps {
   open: boolean;
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  /** Open past the picker, on this choice's credential stage. */
+  initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
   onCommitted: () => void;
 }
@@ -61,6 +80,7 @@ export function ChangeProviderModal({
   open,
   currentProvider,
   currentByoProvider,
+  initialChoice = null,
   onClose,
   onCommitted,
 }: ChangeProviderModalProps) {
@@ -83,6 +103,7 @@ export function ChangeProviderModal({
           <ChangeProviderBody
             currentProvider={currentProvider}
             currentByoProvider={currentByoProvider}
+            initialChoice={initialChoice}
             onClose={onClose}
             onCommitted={onCommitted}
           />
@@ -95,6 +116,7 @@ export function ChangeProviderModal({
 interface BodyProps {
   currentProvider?: ProviderChoice | null;
   currentByoProvider?: ByoProvider | null;
+  initialChoice?: CredentialProviderChoice | null;
   onClose: () => void;
   onCommitted: () => void;
 }
@@ -102,36 +124,31 @@ interface BodyProps {
 function ChangeProviderBody({
   currentProvider,
   currentByoProvider,
+  initialChoice = null,
   onClose,
   onCommitted,
 }: BodyProps) {
   const api = useApi();
-  const [stage, setStage] = useState<Stage>({ kind: "picker" });
+  // The body remounts on every open (parent renders it behind `open &&`), so a
+  // plain initializer is enough to honor `initialChoice` — no effect needed,
+  // which keeps react-hooks/set-state-in-effect happy.
+  const [stage, setStage] = useState<Stage>(() =>
+    initialChoice === "chatgpt_oauth"
+      ? { kind: "chatgpt-oauth" }
+      : initialChoice === "byo_key"
+        ? { kind: "byo-key" }
+        : { kind: "picker" },
+  );
 
   const commit = useCallback(
     async (choice: ProviderChoice, byo?: ByoProvider) => {
       setStage({ kind: "submitting", choice, byo });
       try {
-        await api.post("/billing/provider", {
-          provider_choice: choice,
-          ...(byo ? { byo_provider: byo } : {}),
-        });
+        await commitProviderChoice(api.post, choice, byo);
         onCommitted();
         onClose();
       } catch (e: unknown) {
-        // Backend ChangeProviderError surfaces as {code, message}. Render
-        // the human message; the code stays in the network response for
-        // ops debugging.
-        let message = "Couldn't change provider.";
-        if (e instanceof ApiError) {
-          // FastAPI wraps the dict detail under `detail` — try both shapes.
-          const data = e.body as { detail?: { message?: string } } | undefined;
-          if (data?.detail?.message) message = data.detail.message;
-          else if (e.message) message = e.message;
-        } else if (e instanceof Error) {
-          message = e.message;
-        }
-        setStage({ kind: "error", message });
+        setStage({ kind: "error", message: providerCommitErrorMessage(e) });
       }
     },
     [api, onClose, onCommitted],
@@ -195,7 +212,7 @@ function ChangeProviderBody({
       )}
 
       {stage.kind === "submitting" && (
-        <div className="flex items-center justify-center gap-3 py-12 text-sm text-white/60">
+        <div className="flex items-center justify-center gap-3 py-12 text-sm text-[var(--mute)]">
           <Loader2 className="h-4 w-4 animate-spin" />
           Switching to {readableProvider(stage.choice, stage.byo)}…
         </div>
@@ -203,11 +220,11 @@ function ChangeProviderBody({
 
       {stage.kind === "error" && (
         <div className="space-y-4 py-6">
-          <p className="text-sm text-red-400">{stage.message}</p>
+          <p className="text-sm text-[var(--danger)]">{stage.message}</p>
           <DialogFooter>
             <Button
               variant="outline"
-              className="border-white/15 bg-transparent text-white/80 hover:bg-white/10 hover:text-white"
+              className="border-[var(--edge)] bg-transparent text-[var(--ink)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
               onClick={() => setStage({ kind: "picker" })}
             >
               Back
@@ -217,13 +234,6 @@ function ChangeProviderBody({
       )}
     </>
   );
-}
-
-function readableProvider(choice: ProviderChoice, byo?: ByoProvider): string {
-  if (choice === "bedrock_claude") return "Bedrock-managed Claude";
-  if (choice === "chatgpt_oauth") return "ChatGPT OAuth";
-  if (choice === "byo_key" && byo) return `${byo === "openai" ? "OpenAI" : "Anthropic"} (BYO key)`;
-  return "BYO key";
 }
 
 // ---------------------------------------------------------------------------
@@ -237,29 +247,6 @@ interface PickerStageProps {
 }
 
 function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStageProps) {
-  type Card = {
-    id: ProviderChoice;
-    title: string;
-    subtitle: string;
-  };
-  const cards: Card[] = [
-    {
-      id: "bedrock_claude",
-      title: "Powered by Claude",
-      subtitle: "Bedrock-managed Claude credits",
-    },
-    {
-      id: "chatgpt_oauth",
-      title: "Sign in with ChatGPT",
-      subtitle: "Inference via your ChatGPT subscription",
-    },
-    {
-      id: "byo_key",
-      title: "Bring your own API key",
-      subtitle: "OpenAI or Anthropic — your key, your billing",
-    },
-  ];
-
   const isCurrent = (id: ProviderChoice) => {
     if (id !== currentProvider) return false;
     // BYO is "current" only if the user is on byo_key today; sub-provider
@@ -270,7 +257,7 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
 
   return (
     <div className="grid grid-cols-1 gap-3 py-2 md:grid-cols-3">
-      {cards.map((card) => {
+      {PROVIDER_SWITCH_CARDS.map((card) => {
         const current = isCurrent(card.id);
         return (
           <button
@@ -281,22 +268,22 @@ function PickerStage({ currentProvider, currentByoProvider, onPick }: PickerStag
               "rounded-xl border p-4 text-left transition-colors " +
               (current
                 ? "border-[#7cc6a3]/60 bg-[#7cc6a3]/10"
-                : "border-white/10 bg-white/[0.04] hover:bg-white/[0.08]")
+                : "border-[var(--edge)] bg-white hover:bg-[var(--cream-deeper)]")
             }
           >
             <div className="flex items-start justify-between gap-2">
               <div>
-                <h3 className="font-medium text-white/90">{card.title}</h3>
-                <p className="mt-1 text-xs text-white/50">{card.subtitle}</p>
+                <h3 className="font-medium text-[var(--ink)]">{card.title}</h3>
+                <p className="mt-1 text-xs text-[var(--mute)]">{card.subtitle}</p>
               </div>
               {current && (
-                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[#06402B]">
+                <span className="rounded-full bg-[#7cc6a3] px-2 py-0.5 text-[10px] font-medium text-[var(--forest)]">
                   Current
                 </span>
               )}
             </div>
             {card.id === "byo_key" && current && currentByoProvider && (
-              <p className="mt-2 text-[11px] text-white/50">
+              <p className="mt-2 text-[11px] text-[var(--mute)]">
                 Active sub-provider: {currentByoProvider === "openai" ? "OpenAI" : "Anthropic"}
               </p>
             )}
@@ -326,21 +313,21 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
   return (
     <div className="space-y-4 py-4">
       {state.status === "idle" && (
-        <div className="flex flex-col items-center gap-3 py-6 text-sm text-white/60">
+        <div className="flex flex-col items-center gap-3 py-6 text-sm text-[var(--mute)]">
           <Loader2 className="h-5 w-5 animate-spin" />
           Starting ChatGPT sign-in…
         </div>
       )}
 
       {state.status === "pending" && (
-        <ol className="list-decimal space-y-3 pl-5 text-sm text-white/85 marker:text-white/40">
+        <ol className="list-decimal space-y-3 pl-5 text-sm text-[var(--ink)] marker:text-[var(--mute)]">
           <li>
             Open{" "}
             <a
               href={state.verificationUri}
               target="_blank"
               rel="noreferrer"
-              className="text-[#7cc6a3] underline underline-offset-2 hover:text-[#9fd9bd]"
+              className="text-[var(--forest)] underline underline-offset-2 hover:text-[var(--ink)]"
             >
               {state.verificationUri}
             </a>{" "}
@@ -349,12 +336,12 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
           <li>
             Enter this code:
             <div className="mt-2">
-              <code className="rounded bg-[#f3efe6] px-3 py-2 font-mono text-lg tracking-widest text-[#1a1a1a]">
+              <code className="rounded bg-[var(--cream-deeper)] px-3 py-2 font-mono text-lg tracking-widest text-[var(--ink)]">
                 {state.userCode}
               </code>
             </div>
           </li>
-          <li className="text-xs text-white/50">
+          <li className="text-xs text-[var(--mute)]">
             We&apos;ll switch you over automatically once you finish sign-in.
           </li>
         </ol>
@@ -362,10 +349,10 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
 
       {state.status === "error" && (
         <div className="space-y-3 py-4">
-          <p className="text-sm text-red-400">Connection failed: {state.message}</p>
+          <p className="text-sm text-[var(--danger)]">Connection failed: {state.message}</p>
           <Button
             variant="outline"
-            className="border-white/15 bg-transparent text-white/80 hover:bg-white/10 hover:text-white"
+            className="border-[var(--edge)] bg-transparent text-[var(--ink)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
             onClick={start}
           >
             Try again
@@ -374,7 +361,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
       )}
 
       {state.status === "completed" && (
-        <div className="flex items-center justify-center py-6 text-sm text-[#7cc6a3]">
+        <div className="flex items-center justify-center py-6 text-sm text-[var(--forest)]">
           ✓ Connected — committing switch…
         </div>
       )}
@@ -386,7 +373,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
         <DialogFooter>
           <Button
             variant="ghost"
-            className="text-white/70 hover:bg-white/10 hover:text-white"
+            className="text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
             onClick={onCancel}
           >
             Back
@@ -435,7 +422,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
   return (
     <form onSubmit={submit} className="space-y-4 py-4">
       <fieldset className="flex gap-4">
-        <label className="flex items-center gap-2 text-sm text-white/80">
+        <label className="flex items-center gap-2 text-sm text-[var(--ink)]">
           <input
             type="radio"
             value="openai"
@@ -445,7 +432,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
           />
           OpenAI
         </label>
-        <label className="flex items-center gap-2 text-sm text-white/80">
+        <label className="flex items-center gap-2 text-sm text-[var(--ink)]">
           <input
             type="radio"
             value="anthropic"
@@ -465,21 +452,21 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         required
         autoComplete="off"
         spellCheck={false}
-        className="w-full rounded-md border border-white/15 bg-white/5 px-3 py-2 font-mono text-sm text-white placeholder:text-white/30 focus:border-[#7cc6a3]/60 focus:outline-none"
+        className="w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 font-mono text-sm text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:border-[#7cc6a3]/60 focus:outline-none"
       />
 
-      <p className="text-xs text-white/50">
+      <p className="text-xs text-[var(--mute)]">
         Stored encrypted in AWS Secrets Manager. We validate the key against the
         provider before saving — invalid keys are rejected here, not at chat time.
       </p>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
 
       <DialogFooter>
         <Button
           type="button"
           variant="ghost"
-          className="text-white/70 hover:bg-white/10 hover:text-white"
+          className="text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
           onClick={onCancel}
           disabled={submitting}
         >

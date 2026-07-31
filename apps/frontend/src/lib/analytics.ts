@@ -89,6 +89,7 @@ export type AnalyticsEvent =
   // Container / control panel
   | "control_panel_opened"
   | "file_browser_opened"
+  | "teams_degraded_notice_shown"
   | "update_applied"
   | "update_scheduled"
   // Desktop app
@@ -103,10 +104,7 @@ export type AnalyticsEvent =
   | "cron_job_toggled"
   | "cron_job_triggered"
   // First-run funnel
-  | "first_run_board_pulse"
   | "first_run_brief_submitted"
-  | "first_run_kickoff_sent"
-  | "first_run_show_completed"
   // Get started guide
   | "get_started_article_opened"
   | "get_started_completed"
@@ -118,6 +116,8 @@ export type AnalyticsEvent =
   | "landing_download_clicked"
   | "landing_pricing_card_clicked"
   | "landing_viewed"
+  // Integrations
+  | "integration_access_requested"
   // MCP
   | "mcp_server_added"
   | "mcp_server_removed"

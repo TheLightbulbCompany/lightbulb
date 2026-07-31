@@ -43,41 +43,100 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal, Optional
+from uuid import uuid4
 
 from boto3.dynamodb.conditions import Key
 
+from core.auth import is_org_owner_id
 from core.dynamodb import get_table, run_in_thread
+from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
 
 
-class OnboardingClaimResult(str, Enum):
-    """What ``claim_onboarding`` decided, for the caller to act on.
+def _broadcast_owner_key(*, user_id: str, org_id: str | None) -> str:
+    """The id an owner's frontend WS tabs register under -- the value
+    ``publish_status_changed`` / ``broadcast_to_owner`` must key on.
 
-    A bare bool conflates two very different "False" cases: "the company is
-    genuinely done" (a durable, terminal fact worth returning to the client
-    as success) and "another request holds a fresh in-flight claim" (a
-    transient state that should be retried, not treated as done). Callers
-    that can't tell those apart risk marking a caller's own submission
-    ``already_submitted`` on a company that in fact has no goal or project
-    yet, because the peer whose claim they collided with later failed.
+    For an org that is the Clerk ``org_id`` (``websocket_chat`` registers org
+    members under ``owner_id = x_org_id or x_user_id``); for a personal owner
+    it is the ``user_id``. This is NOT the paperclip-companies row PK: that PK
+    is the row's ``user_id``, which for an org is the CREATOR's personal Clerk
+    id (see ``resolve_owner_row``) -- an id no org tab is registered under, so
+    a nudge keyed on it silently misses every org tab. Guarded by
+    ``is_org_owner_id`` so a personal row whose ``org_id`` is empty/echoes the
+    user_id still resolves to the user_id.
+    """
+    return org_id if (org_id and is_org_owner_id(org_id)) else user_id
+
+
+class FunnelClaimResult(str, Enum):
+    """What ``claim_funnel_submission`` decided, for the caller to act on.
+
+    Replaces the old ``OnboardingClaimResult`` (the ``__onboarded__``
+    sentinel's claim/steal vocabulary — see
+    ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``
+    §2). The funnel claim is now a real, generation-fenced attribute
+    transition on the owner row (``funnel_state: not_started -> submitted``)
+    instead of a separate synthetic-key claim item, so there is no
+    stale-steal timing to reason about: DynamoDB's own conditional write
+    serializes concurrent submitters, and a losing caller is deterministic —
+    it split into exactly the two cases below by re-reading the row.
     """
 
     WON = "won"
-    """This caller now holds the claim (fresh or stolen) and should
-    proceed to seed."""
+    """This caller's write landed: funnel_state flipped not_started ->
+    submitted under the caller's ``onboarding_generation``. Proceed to
+    seed."""
 
-    SEEDED = "seeded"
-    """The existing claim already completed (``seeded_at`` is set). This is
-    the ONLY case that means genuinely, durably done."""
+    ALREADY_SUBMITTED = "already_submitted"
+    """The row is still on the SAME ``onboarding_generation`` the caller
+    read, but ``funnel_state`` was no longer ``not_started`` -- someone
+    else's submission already won (or completed). Durable, not transient:
+    report ``already_submitted`` to the caller."""
 
-    IN_FLIGHT = "in_flight"
-    """A non-stale claim exists with no ``seeded_at`` yet -- someone else is
-    legitimately working on it right now. Retry later; do not treat as
-    done."""
+    STALE_GENERATION = "stale_generation"
+    """The row's ``onboarding_generation`` no longer matches what the caller
+    fenced on (or the row vanished) -- per INV-4 this is a silent no-op from
+    the caller's point of view. The caller was operating on a superseded
+    view of the company (e.g. a reprovision minted a new generation
+    underneath it); it should re-resolve the owner row and retry, not treat
+    this as a duplicate submit."""
 
 
-PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
+class BootstrapClaimResult(str, Enum):
+    """What ``claim_bootstrap_dispatch`` decided, for the caller to act on.
+
+    Mirrors ``FunnelClaimResult``'s vocabulary, but the losing side has only
+    two outcomes: a bootstrap dispatch has no revert/retry-on-same-generation
+    escape hatch in THIS PR (see ``claim_bootstrap_dispatch``'s docstring —
+    that's the generalized ``reconciliation_worker``'s job, a later PR), so
+    "not my turn" (peer already dispatched/delivered/failed it, or the
+    funnel isn't submitted) collapses into one ``NOT_READY`` case; only a
+    superseded generation gets its own value, since that means the caller
+    is holding a stale view of the company and should re-resolve.
+    """
+
+    WON = "won"
+    """This caller's write landed: bootstrap_state flipped not_started ->
+    dispatched under the caller's onboarding_generation. Send chat.send."""
+
+    NOT_READY = "not_ready"
+    """The row is on the SAME onboarding_generation the caller fenced on,
+    but the conditional write didn't land -- either bootstrap_state was
+    already something other than not_started (a peer already claimed this
+    dispatch), or funnel_state was no longer submitted. Not an error: this
+    caller simply has nothing to do."""
+
+    STALE_GENERATION = "stale_generation"
+    """The row's onboarding_generation no longer matches what the caller
+    fenced on (or the row vanished) -- per INV-4 a silent no-op from the
+    caller's point of view."""
+
+
+PaperclipCompanyStatus = Literal["seeding", "provisioning", "active", "failed", "disabled"]
+FunnelState = Literal["not_started", "submitted", "complete"]
+BootstrapState = Literal["not_started", "dispatched", "delivered", "failed"]
 
 
 # Reserved user_id namespace for per-org "company create" claim sentinels.
@@ -94,17 +153,22 @@ def _org_create_claim_key(org_id: str) -> str:
     return f"{_ORG_CREATE_CLAIM_PREFIX}{org_id}"
 
 
-# Reserved user_id namespace for the per-company "onboarding seed" sentinel.
-# Same rationale as the org-create claim above: the table is keyed per-user,
-# so a field on the submitting user's row would leave every other member of
-# the same org unmarked. This synthetic PK is reached only by direct
-# get/put/update, never via a GSI, and a PK conditional write is strongly
-# consistent and cross-instance-safe.
-_ONBOARDING_CLAIM_PREFIX = "__onboarded__:"
+# Reserved user_id namespace for per-OWNER "the user answered the funnel, but
+# their workspace wasn't ready to receive it yet" items. Same synthetic-PK
+# construction as the org-create claim above, and for the same two reasons:
+# reached only by direct get/put (strongly consistent, unlike the by-org-id
+# GSI), and carrying none of the GSI key attributes so it never surfaces in a
+# by-org-id or by-status-purge-at query as if it were a company row.
+#
+# Keyed by OWNER id (org_id for an org, user_id for a personal owner) rather
+# than by the submitting member: onboarding is company-scoped (see the module
+# docstring on routers/onboarding.py), and the owner row this eventually drains
+# into may not exist yet -- so there is no row PK to key it by.
+_PENDING_BRIEF_PREFIX = "__pending_brief__:"
 
 
-def _onboarding_claim_key(company_id: str) -> str:
-    return f"{_ONBOARDING_CLAIM_PREFIX}{company_id}"
+def _pending_brief_key(owner_id: str) -> str:
+    return f"{_PENDING_BRIEF_PREFIX}{owner_id}"
 
 
 @dataclass
@@ -155,6 +219,95 @@ class PaperclipCompany:
     name ``Atlas`` is never mistaken for a seeded one, and renaming a
     seeded agent never drops its protection."""
 
+    # ------------------------------------------------------------------
+    # Onboarding (co-located per the 2026-07-24 architecture decision —
+    # NO dedicated table; these fields ride on the SAME owner row as the
+    # fields above). Only the OWNER row (the row ``provision_org`` writes
+    # for the org creator / personal owner — see ``resolve_owner_row``)
+    # carries meaningful values here; member rows (``provision_member``)
+    # never set them and are never read for them.
+    # ------------------------------------------------------------------
+
+    onboarding_generation: Optional[str] = None
+    """ULID fence for onboarding facts (the company-incarnation fence, G2).
+    Minted exactly once, in ``provision_org``'s fresh-create branch, AFTER a
+    genuinely-new Paperclip company is confirmed — never on reconcile-adopt
+    of an existing ``company_id``, never on ``provision_member`` (INV-3). A
+    write against a superseded generation is a silent no-op (INV-4)."""
+
+    funnel_state: Optional[FunnelState] = None
+    """``not_started`` (set at G2) -> ``submitted`` (``POST
+    /onboarding/brief`` claims this, fenced on ``onboarding_generation``) ->
+    ``complete`` (set once the bootstrap dispatcher observes Friday's
+    kickoff ``chat.final`` — a later PR; NOT set by this one)."""
+
+    funnel_submitted_at: Optional[datetime] = None
+    funnel_completed_at: Optional[datetime] = None
+    onboarding_goal_id: Optional[str] = None
+    onboarding_project_id: Optional[str] = None
+
+    onboarding_brief_text: Optional[str] = None
+    """The user's own words for what they want built — the natural-language
+    brief phrase (idea + optional "who's it for" audience for the ``new`` path,
+    or "work on {domain}" for the ``grow`` path) that ``build_first_run_message``
+    weaves into Friday's first-run kickoff chat.send, so the visible first
+    message is the USER'S ask rather than a canned prompt. Written by
+    ``claim_funnel_submission`` on the SAME CAS write as the claim (see
+    ``build_onboarding_brief_text`` in ``core.services.onboarding_brief``).
+    Absent on the "I don't know yet — you pick" path (``user_input`` blank) and
+    on legacy rows that predate this field — both of which fall back to
+    ``FIRST_RUN_NO_BRIEF_MESSAGE``. Additive/backward-compatible: an absent
+    field reads back as ``None`` and is simply not carried into the
+    StatusContract (``compute_status`` selects onboarding keys explicitly, so a
+    new key is inert there). Cleared by ``revert_funnel_submission`` alongside
+    the other claim-scoped fields."""
+
+    onboarding_submitted_by: Optional[str] = None
+    """The Clerk MEMBER ID of whoever actually POSTed ``/onboarding/brief``
+    -- written by ``claim_funnel_submission`` on the SAME write as the
+    claim, alongside ``funnel_submitted_at``. Distinct from ``user_id``
+    (this row's PK, the ORG CREATOR for an org owner — see
+    ``resolve_owner_row``): ``/onboarding/brief`` is open to any org
+    member, so a non-creator can win the claim. The bootstrap dispatcher
+    (``core.services.bootstrap_dispatcher``) addresses Friday's kickoff
+    session at THIS id, not ``user_id``, so the actual submitter — not the
+    creator — sees the live kickoff and its ``chat.history``. For a
+    personal owner this always equals ``user_id`` (there is only one
+    member). Cleared by ``revert_funnel_submission`` alongside the other
+    claim-scoped fields."""
+
+    bootstrap_state: Optional[BootstrapState] = None
+    """``not_started`` (set at G2) -> ``dispatched`` -> ``delivered`` |
+    ``failed``. Written by the bootstrap dispatcher; this declaration
+    establishes the attribute and its G2-time initial value."""
+
+    bootstrap_dispatch_id: Optional[str] = None
+    bootstrap_dispatched_at: Optional[datetime] = None
+    bootstrap_delivered_at: Optional[datetime] = None
+    bootstrap_attempts: Optional[int] = None
+    bootstrap_last_error: Optional[str] = None
+
+    first_contact_state: Optional[str] = None
+    """``not_started`` -> ``sending`` -> ``sent`` | ``failed``.
+
+    THE once-only guard for the agent-initiated first email. Policy is read
+    from HERE, never from the ``purpose`` label a container supplies, so an
+    agent cannot skip the guard by mislabelling its send — and does not have
+    to make a judgment call it might get wrong.
+
+    ``failed`` is deliberately RE-CLAIMABLE: a failed mint or a failed SES
+    send must not make the first failure terminal. ``sending`` and ``sent``
+    are not — reclaiming either risks a double-send."""
+
+    first_contact_attempts: Optional[int] = None
+    """Bounds the nudge loop, and is the ONLY thing that does. Nudge runs
+    re-register the run-completion callback (otherwise attempts 2 and 3 would
+    have no trigger — the bootstrap run terminates exactly once), so a nudge
+    dispatched without incrementing this first is an infinite chain of agent
+    runs."""
+
+    first_contact_reason: Optional[str] = None
+
 
 class PaperclipRepo:
     """Async repository for the paperclip-companies DynamoDB table.
@@ -176,6 +329,21 @@ class PaperclipRepo:
         return get_table(self._table_name)
 
     async def put(self, company: PaperclipCompany) -> None:
+        """Whole-item put — replaces the row entirely.
+
+        ⚠️ WRITER-SAFETY (see the architecture spec's "load-bearing safety
+        requirement", §2): this is a raw ``PutItem`` — any onboarding field
+        NOT set on ``company`` is simply ABSENT from the new item, which
+        silently WIPES a previously-written value (``onboarding_generation``,
+        ``funnel_state``, ``bootstrap_state``, ...). Every caller of ``put``
+        MUST carry forward the row's existing onboarding fields (read-merge)
+        unless it is deliberately establishing them fresh (the G2 mint site
+        in ``paperclip_provisioning.provision_org``). Prefer the
+        generation-conditioned ``UpdateItem`` methods below
+        (``claim_funnel_submission`` / ``record_onboarding_ids`` /
+        ``revert_funnel_submission``) for any onboarding-only write — they
+        cannot clobber unrelated fields by construction.
+        """
         item = {
             "user_id": company.user_id,
             "org_id": company.org_id,
@@ -193,7 +361,42 @@ class PaperclipRepo:
             item["scheduled_purge_at"] = company.scheduled_purge_at.isoformat()
         if company.seeded_agent_ids:
             item["seeded_agent_ids"] = company.seeded_agent_ids
+        if company.onboarding_generation is not None:
+            item["onboarding_generation"] = company.onboarding_generation
+        if company.funnel_state is not None:
+            item["funnel_state"] = company.funnel_state
+        if company.funnel_submitted_at is not None:
+            item["funnel_submitted_at"] = company.funnel_submitted_at.isoformat()
+        if company.funnel_completed_at is not None:
+            item["funnel_completed_at"] = company.funnel_completed_at.isoformat()
+        if company.onboarding_goal_id is not None:
+            item["onboarding_goal_id"] = company.onboarding_goal_id
+        if company.onboarding_project_id is not None:
+            item["onboarding_project_id"] = company.onboarding_project_id
+        if company.onboarding_brief_text is not None:
+            item["onboarding_brief_text"] = company.onboarding_brief_text
+        if company.onboarding_submitted_by is not None:
+            item["onboarding_submitted_by"] = company.onboarding_submitted_by
+        if company.bootstrap_state is not None:
+            item["bootstrap_state"] = company.bootstrap_state
+        if company.bootstrap_dispatch_id is not None:
+            item["bootstrap_dispatch_id"] = company.bootstrap_dispatch_id
+        if company.bootstrap_dispatched_at is not None:
+            item["bootstrap_dispatched_at"] = company.bootstrap_dispatched_at.isoformat()
+        if company.bootstrap_delivered_at is not None:
+            item["bootstrap_delivered_at"] = company.bootstrap_delivered_at.isoformat()
+        if company.bootstrap_attempts is not None:
+            item["bootstrap_attempts"] = company.bootstrap_attempts
+        if company.bootstrap_last_error is not None:
+            item["bootstrap_last_error"] = company.bootstrap_last_error
+        if company.first_contact_state is not None:
+            item["first_contact_state"] = company.first_contact_state
+        if company.first_contact_attempts is not None:
+            item["first_contact_attempts"] = company.first_contact_attempts
+        if company.first_contact_reason is not None:
+            item["first_contact_reason"] = company.first_contact_reason
         await run_in_thread(self._table().put_item, Item=item)
+        publish_status_changed(_broadcast_owner_key(user_id=company.user_id, org_id=company.org_id))
 
     async def get(self, user_id: str, *, consistent_read: bool = False) -> Optional[PaperclipCompany]:
         resp = await run_in_thread(
@@ -203,14 +406,31 @@ class PaperclipRepo:
         )
         if "Item" not in resp:
             return None
-        item = resp["Item"]
+        return self._item_to_company(resp["Item"])
+
+    @staticmethod
+    def _item_to_company(item: dict) -> PaperclipCompany:
+        """Raw DDB item -> ``PaperclipCompany``. Factored out of ``get`` so
+        ``get_onboarding_state``'s org-owner fallback (which resolves the
+        provisioner's row via the ``by-org-id`` GSI's ``ProjectionType=ALL``
+        query results, not a base-table ``get_item``) can build the same
+        dataclass from a GSI-projected item without a second base-table
+        read.
+
+        The credential trio defaults to "" rather than strict-indexing: a
+        durable ``failed`` marker (put_failed_marker_if_absent) deliberately
+        carries NO credentials — its only job is to make a net-new seed
+        failure visible (so /teams returns an honest 503) — and this must
+        still read it back as a status="failed" row rather than KeyError.
+        Real provisioned rows always carry all three (put() writes them).
+        """
         return PaperclipCompany(
             user_id=item["user_id"],
             org_id=item["org_id"],
             company_id=item["company_id"],
-            paperclip_user_id=item["paperclip_user_id"],
-            paperclip_password_encrypted=item["paperclip_password_encrypted"],
-            service_token_encrypted=item["service_token_encrypted"],
+            paperclip_user_id=item.get("paperclip_user_id", ""),
+            paperclip_password_encrypted=item.get("paperclip_password_encrypted", ""),
+            service_token_encrypted=item.get("service_token_encrypted", ""),
             status=item["status"],
             created_at=datetime.fromisoformat(item["created_at"]),
             updated_at=datetime.fromisoformat(item["updated_at"]),
@@ -219,7 +439,182 @@ class PaperclipRepo:
                 datetime.fromisoformat(item["scheduled_purge_at"]) if item.get("scheduled_purge_at") else None
             ),
             seeded_agent_ids=(list(item["seeded_agent_ids"]) if item.get("seeded_agent_ids") else None),
+            onboarding_generation=item.get("onboarding_generation"),
+            funnel_state=item.get("funnel_state"),
+            funnel_submitted_at=(
+                datetime.fromisoformat(item["funnel_submitted_at"]) if item.get("funnel_submitted_at") else None
+            ),
+            funnel_completed_at=(
+                datetime.fromisoformat(item["funnel_completed_at"]) if item.get("funnel_completed_at") else None
+            ),
+            onboarding_goal_id=item.get("onboarding_goal_id"),
+            onboarding_project_id=item.get("onboarding_project_id"),
+            onboarding_brief_text=item.get("onboarding_brief_text"),
+            onboarding_submitted_by=item.get("onboarding_submitted_by"),
+            bootstrap_state=item.get("bootstrap_state"),
+            bootstrap_dispatch_id=item.get("bootstrap_dispatch_id"),
+            bootstrap_dispatched_at=(
+                datetime.fromisoformat(item["bootstrap_dispatched_at"]) if item.get("bootstrap_dispatched_at") else None
+            ),
+            bootstrap_delivered_at=(
+                datetime.fromisoformat(item["bootstrap_delivered_at"]) if item.get("bootstrap_delivered_at") else None
+            ),
+            bootstrap_attempts=(
+                int(item["bootstrap_attempts"]) if item.get("bootstrap_attempts") is not None else None
+            ),
+            bootstrap_last_error=item.get("bootstrap_last_error"),
+            first_contact_state=item.get("first_contact_state"),
+            first_contact_attempts=(
+                int(item["first_contact_attempts"]) if item.get("first_contact_attempts") is not None else None
+            ),
+            first_contact_reason=item.get("first_contact_reason"),
         )
+
+    async def get_onboarding_state(self, owner_id: str) -> dict:
+        """RECONCILE-WITH-ONBOARD: read-only accessor for the
+        COMPOSER/ONBOARD interface contract.
+
+        Returns the spec-fixed onboarding keys (see the dataclass note
+        above, including ``onboarding_submitted_by`` and
+        ``onboarding_brief_text`` -- the latter read by
+        ``core.services.bootstrap_dispatcher`` to build Friday's kickoff
+        message) PLUS four additive keys -- ``teams_state`` (this row's raw
+        ``status``), ``company_id``, ``paperclip_user_id``, and ``user_id``
+        (this ROW's PK -- the org
+        CREATOR for an org owner, NOT necessarily ``owner_id``; callers that
+        need to address a write at this specific row, e.g. the bootstrap
+        dispatcher's ``claim_bootstrap_dispatch``, need this since
+        ``owner_id`` alone is the wrong key for an org) -- so
+        ``core.services.readiness_state.compute_status`` (and, by threading
+        this same dict through, ``core.services.bootstrap_dispatcher``) gets
+        everything needed from the paperclip-companies row in exactly ONE
+        physical read rather than a second `get_item` just for onboarding
+        fields. See
+        docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md
+        §2 ("one read, not two").
+
+        ``owner_id`` is the CONTAINER owner (org_id for an org, else the
+        user_id) -- NOT necessarily a row key. This table's PK is a Clerk
+        user_id (see module docstring): for a personal owner
+        (user_id == owner_id) ``self.get(owner_id)`` already resolves the
+        right row directly (the common case, ONE physical read). For an
+        ORG owner (``owner_id`` is an ``org_`` id) there is no row keyed by
+        org_id itself, so this falls back to the ``by-org-id`` GSI (also
+        ONE physical read -- ``ProjectionType=ALL``, no base-table chain
+        read needed) and returns the PROVISIONER's row -- the one row
+        ``seeded_agent_ids`` was stamped on at provision time -- since
+        onboarding facts (funnel/bootstrap) are company-wide, not
+        per-member. Falls back to the first row if none carries
+        ``seeded_agent_ids`` (defensive; shouldn't happen for an
+        actively-provisioned org).
+
+        Owner-row resolution is delegated to ``resolve_owner_row`` -- the
+        single canonical "which row is THE owner row" path shared with
+        ``routers/onboarding.py`` and ``routers/container.py`` -- so org vs.
+        personal resolution has exactly one implementation.
+
+        A row that doesn't exist yet, or that predates ONBOARD's writers,
+        returns every onboarding field at its "genuinely not started"
+        default -- never raises (read failures are the caller's
+        responsibility to guard, matching every other method here).
+        """
+        # include_inactive=True: a status reader must still resolve a
+        # FAILED org seed row so teams_state="failed" surfaces (the sign-in
+        # resolver's active-only filter would hide it). Personal owners already
+        # resolve via a status-agnostic get.
+        company = await self.resolve_owner_row(owner_id, include_inactive=True)
+        if company is None:
+            return {
+                "onboarding_generation": None,
+                "funnel_state": "not_started",
+                "pending_brief": await self._has_pending_brief(owner_id),
+                "funnel_submitted_at": None,
+                "funnel_completed_at": None,
+                "onboarding_goal_id": None,
+                "onboarding_project_id": None,
+                "onboarding_brief_text": None,
+                "onboarding_submitted_by": None,
+                "bootstrap_state": "not_started",
+                "bootstrap_dispatch_id": None,
+                "bootstrap_dispatched_at": None,
+                "bootstrap_delivered_at": None,
+                "bootstrap_attempts": 0,
+                "bootstrap_last_error": None,
+                "first_contact_state": "not_started",
+                "first_contact_attempts": 0,
+                "first_contact_reason": None,
+                "friday_agent_id": None,
+                "teams_state": None,
+                "company_id": None,
+                "paperclip_user_id": None,
+                "user_id": None,
+            }
+
+        # getattr(..., default) rather than direct attribute access: real
+        # PaperclipCompany instances always have every field (defaulted by
+        # the dataclass), but a handful of existing test doubles construct
+        # a bare SimpleNamespace(status=...) standing in for `repo.get`'s
+        # return value -- getattr keeps this method correct against both
+        # without forcing every such test double to be rewritten into a
+        # full PaperclipCompany just to add a status field.
+        # ONBOARD's dataclass carries funnel/bootstrap timestamps as
+        # ``datetime`` and defaults the state literals to ``None`` (not the
+        # "not_started" string). This accessor is the COMPOSER/ONBOARD bridge:
+        # it normalizes those to the contract's string-typed shape -- ISO
+        # strings for timestamps, "not_started" for an unset state -- so
+        # ``compute_status`` and the StatusContract never see a bare datetime
+        # or a null state.
+        def _iso(value):
+            return value.isoformat() if hasattr(value, "isoformat") else value
+
+        funnel_state = getattr(company, "funnel_state", None) or "not_started"
+
+        return {
+            "onboarding_generation": getattr(company, "onboarding_generation", None),
+            "funnel_state": funnel_state,
+            # Gated on "not yet COMPLETE", not on "still not_started". The
+            # tighter gate looked cheaper and was wrong: a claim that landed
+            # and then died mid-seed (a rolling deploy, a cancelled task)
+            # leaves the row at "submitted" forever, and gating on
+            # "not_started" made the still-undrained brief invisible to the
+            # drain from that moment on -- permanently, with no recovery
+            # path, while maybe_dispatch_bootstrap (which guards on
+            # "submitted") happily woke Friday into a company with no goal.
+            # "complete" is the one state that proves fulfilment finished
+            # (mark_bootstrap_delivered sets it once Friday's kickoff is
+            # OBSERVED to deliver), so it is the only safe place to stop
+            # looking.
+            #
+            # Cost: one small GetItem per poll for owners below "complete" --
+            # the pre-onboarding window, plus legacy rows that onboarded via
+            # the old containers.onboarded_at stamp and so sit below it
+            # forever. The steady-state fleet skips it entirely.
+            "pending_brief": (await self._has_pending_brief(owner_id) if funnel_state != "complete" else False),
+            "funnel_submitted_at": _iso(getattr(company, "funnel_submitted_at", None)),
+            "funnel_completed_at": _iso(getattr(company, "funnel_completed_at", None)),
+            "onboarding_goal_id": getattr(company, "onboarding_goal_id", None),
+            "onboarding_project_id": getattr(company, "onboarding_project_id", None),
+            "onboarding_brief_text": getattr(company, "onboarding_brief_text", None),
+            "onboarding_submitted_by": getattr(company, "onboarding_submitted_by", None),
+            "bootstrap_state": getattr(company, "bootstrap_state", None) or "not_started",
+            "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
+            "bootstrap_dispatched_at": _iso(getattr(company, "bootstrap_dispatched_at", None)),
+            "bootstrap_delivered_at": _iso(getattr(company, "bootstrap_delivered_at", None)),
+            "bootstrap_attempts": getattr(company, "bootstrap_attempts", None) or 0,
+            "bootstrap_last_error": getattr(company, "bootstrap_last_error", None),
+            "first_contact_state": getattr(company, "first_contact_state", None) or "not_started",
+            "first_contact_attempts": getattr(company, "first_contact_attempts", None) or 0,
+            "first_contact_reason": getattr(company, "first_contact_reason", None),
+            # Friday is appended FIRST in provision_org's seed order, before
+            # Atlas, so index 0 is her. Projected here so the owner-send path
+            # resolves her from the SAME single read compute_status already
+            # does, rather than adding a second query.
+            "friday_agent_id": (getattr(company, "seeded_agent_ids", None) or [None])[0],
+            "teams_state": getattr(company, "status", None),
+            "company_id": getattr(company, "company_id", None),
+            "paperclip_user_id": getattr(company, "paperclip_user_id", None),
+            "user_id": getattr(company, "user_id", None),
+        }
 
     async def get_org_company_id(self, org_id: str) -> Optional[str]:
         """Return the shared ``company_id`` for any one user in this org.
@@ -331,6 +726,7 @@ class PaperclipRepo:
         last_error: Optional[str] = None,
         scheduled_purge_at: Optional[datetime] = None,
         not_if_status: Optional[PaperclipCompanyStatus] = None,
+        owner_id: Optional[str] = None,
     ) -> bool:
         """Update a row's status. Returns True iff the write landed.
 
@@ -340,6 +736,13 @@ class PaperclipRepo:
         an already-``active`` row to ``failed``: two overlapping ``provision_member``
         attempts for one member can race (e.g. /teams + /chat both reconciling),
         and the loser's failure path must not clobber the winner's active row.
+
+        ``owner_id`` is the realtime-nudge broadcast key (org_id for orgs, else
+        the personal user_id) -- the value frontend tabs register under. It is
+        NOT the row PK (``user_id``), which for an org is the creator's personal
+        id where no org tab is registered. Callers holding org context pass the
+        row's ``org_id``; when omitted the nudge falls back to ``user_id``
+        (always correct for personal owners).
         """
         update_expr = "SET #s = :s, updated_at = :u"
         expr_names = {"#s": "status"}
@@ -369,6 +772,57 @@ class PaperclipRepo:
         table = self._table()
         try:
             await run_in_thread(table.update_item, **kwargs)
+            publish_status_changed(owner_id or user_id)
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def put_failed_marker_if_absent(
+        self,
+        *,
+        user_id: str,
+        org_id: str,
+        reason: str,
+        company_id: str = "",
+    ) -> bool:
+        """Durably record "a seed failed here" when NO row exists yet, via a
+        CONDITIONAL put-if-absent (``attribute_not_exists(user_id)``).
+
+        Returns True iff the marker landed (the key was free); False when a real
+        row already exists — a concurrent provision wrote it in the gap after the
+        caller's ``get()`` returned None, and the conditional REFUSES to clobber
+        it. That refusal is the whole point: the old unconditional empty-id put
+        overwrote a just-written provisioning row's real ``paperclip_user_id``
+        with "" on an eventually-consistent stale read, wedging adoption. A
+        put-if-absent can only ever create, never overwrite.
+
+        Deliberately carries NO credential fields — ``paperclip_user_id`` /
+        ``paperclip_password_encrypted`` / ``service_token_encrypted`` are ABSENT,
+        not "". The marker's only job is durable visibility of the failure so
+        ``/teams`` returns an honest 503 (and ``/container/status`` surfaces
+        ``teams_status="failed"``) instead of the 202 spinner a MISSING row
+        produces. It is NOT adoptable: the net-new / orphan-422 failures that
+        reach the no-row branch (Better Auth user may already exist with an
+        unknown id) cannot self-heal a retry, and a truthful failed row is the
+        honest terminal outcome. ``get()`` tolerates the absent credentials.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        item = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "company_id": company_id,
+            "status": "failed",
+            "last_error": reason,
+            "created_at": now,
+            "updated_at": now,
+        }
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id)",
+            )
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
@@ -492,226 +946,998 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def claim_onboarding(
-        self, company_id: str, *, holder: str, stale_after_seconds: int = 60
-    ) -> OnboardingClaimResult:
-        """Claim the one-shot onboarding seed for a COMPANY.
+    async def try_acquire_seed_claim(
+        self,
+        user_id: str,
+        *,
+        org_id: str,
+        claim_id: str,
+        stale_after_seconds: int = 300,
+    ) -> bool:
+        """Strongly-consistent "I am seeding this owner's company" claim on
+        the REAL row PK — the fresh-create fence for ``provision_org``.
 
-        The table is keyed per-user, so a field on the submitting user's
-        row would leave every other member of the same org unmarked. This
-        sentinel is keyed on company_id instead, following the same shape
-        as the org-create claim above.
+        Returns True iff THIS caller now holds the claim — by winning a fresh
+        put-if-absent, or by stealing a bare ``status="seeding"`` claim whose
+        holder went silent for longer than ``stale_after_seconds``. Returns
+        False when the row exists in any other state (a peer's seed is in
+        flight, already landed, or already failed — the caller decides what
+        to do by re-reading).
 
-        PK conditional write: strongly consistent and cross-instance-safe,
-        so two tabs submitting the brief at once cannot both seed. Exactly
-        one gets ``WON`` on a fresh claim.
+        Why this exists: ``provision_org``'s idempotency used to be
+        check-then-act on this row — two concurrent calls on DIFFERENT
+        backend instances could both read "no row" and both run the full
+        Paperclip seed (Better-Auth sign-up, company create, Friday+Atlas),
+        minting duplicate same-email users + duplicate companies (observed
+        live on dev 2026-07-24, twice, 102ms and 358ms apart). Like
+        ``try_acquire_org_create_claim`` this is a PK conditional write, so
+        it is strongly consistent and cross-instance-safe — but it fences
+        the PERSONAL-owner path too (the org-create claim only covers orgs),
+        and it lives on the real row so the loser can simply poll it.
 
-        On a collision (a sentinel already exists) this reads it via
-        ``get_onboarding`` and decides:
+        Claim-row shape: ``status="seeding"`` + ``seeding_claim_id`` +
+        ``seeding_claimed_at``, with ``company_id=""`` and deliberately NO
+        credential fields (``get()`` tolerates that, same as the failed
+        marker). A ``status="seeding"`` row is BY CONSTRUCTION always this
+        bare claim: the winner's very next durable write (the post-sign-up
+        credential put) replaces it wholesale with ``status="provisioning"``,
+        and every failure path downgrades it to ``failed`` — nothing else
+        ever writes ``seeding``. That is what makes the stale-steal below a
+        safe whole-item put: it can only ever replace a bare claim.
 
-        * ``seeded_at`` present -> the seed genuinely completed ->
-          ``SEEDED``. A finished seed is never stealable, no matter how
-          old. This is the ONLY result that means the company is durably
-          done — callers must treat it, and only it, as
-          ``already_submitted``.
-        * no ``seeded_at`` and ``claimed_at`` is older than
-          ``stale_after_seconds`` -> stranded (the holder died between
-          claiming and recording -- e.g. an ECS task kill or a deploy
-          landing in that ~3s window, which ``release_onboarding_claim``
-          never runs for) -> take it over (becoming the new holder) and
-          return ``WON``.
-        * otherwise -> a claim is legitimately in flight -> ``IN_FLIGHT``.
-          This is transient, not done: the holder may itself still fail
-          and release, at which point a retry should be allowed to claim.
-
-        Returning a bare bool here would conflate ``SEEDED`` and
-        ``IN_FLIGHT`` into a single "False" — exactly the defect this
-        result type exists to prevent (see ``OnboardingClaimResult``'s
-        docstring): a caller that treats a losing collision as
-        ``already_submitted`` regardless of WHY can mark itself done on a
-        company that in fact has no goal or project, if the peer it
-        collided with later fails.
-
-        Without the stale-steal takeover, a stranded sentinel locks the
-        company out of onboarding forever: every later submit sees
-        ``SEEDED`` (or, before this fix, an undifferentiated
-        ``already_submitted``) and the user is waved into a company with
-        no goal, no project, and no first-run instructions staged, with no
-        self-service recovery.
-
-        Mirrors ``try_acquire_org_create_claim``'s structure: a fresh
-        conditional put, then a strongly-consistent read, then a guarded
-        steal keyed on the unchanged ``claimed_at`` (plus
-        ``attribute_not_exists(seeded_at)``, so a seed that lands mid-steal
-        can't be clobbered) -- so two simultaneous stealers can't both win.
-
-        ``holder`` identifies THIS caller and is written onto the sentinel
-        on both the fresh claim and a successful steal, exactly like the
-        org-create claim's ``holder``. This closes a race the stale-steal
-        takeover would otherwise reopen: without it, an original holder (A)
-        that stalls past the stale window, gets stolen from by B, and only
-        THEN fails and calls ``release_onboarding_claim`` would delete B's
-        live claim out from under it -- letting a third request (C) win a
-        fresh claim and seed a SECOND goal/project pair while B is still
-        working. Generate a fresh ``holder`` per request (a retry by the
-        same user must be distinguishable from their own prior attempt);
-        pass the SAME value to the matching ``release_onboarding_claim``.
-
-        Callers MUST ``release_onboarding_claim`` on failure so a retry (or
-        a steal) can re-enter without waiting out the stale window.
+        Steal threshold rationale (mirrors ``try_acquire_org_create_claim``):
+        a live ``provision_org`` chain is ~9 awaited Paperclip HTTP calls,
+        each bounded by the provisioning client's 15s timeout, and any
+        timeout RAISES — which downgrades the row via ``_mark_failed``. So a
+        row still ``seeding`` past ~300s can only be a holder that crashed
+        hard (SIGKILL) between the claim and its first durable write; the
+        steal is fenced on ``seeding_claimed_at`` being unchanged since our
+        read so two concurrent stealers can't both win.
         """
-        key = _onboarding_claim_key(company_id)
         now = datetime.now(timezone.utc)
         item = {
-            "user_id": key,
-            "kind": "onboarding_claim",
-            "company_id": company_id,
-            "holder": holder,
-            "claimed_at": now.isoformat(),
+            "user_id": user_id,
+            "org_id": org_id,
+            "company_id": "",
+            "status": "seeding",
+            "seeding_claim_id": claim_id,
+            "seeding_claimed_at": now.isoformat(),
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
         }
         table = self._table()
 
-        # 1. Fresh claim — wins iff no sentinel exists yet.
+        # 1. Fresh claim — wins iff no row exists yet.
         try:
             await run_in_thread(
                 table.put_item,
                 Item=item,
                 ConditionExpression="attribute_not_exists(user_id)",
             )
-            return OnboardingClaimResult.WON
+            return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-        # 2. A sentinel exists — strongly-consistent read, then decide.
-        existing = await self.get_onboarding(company_id)
+        # 2. A row exists — strongly-consistent read, then steal only a BARE
+        #    seeding claim whose holder has gone stale. Any other status
+        #    (provisioning/active/failed/disabled) is a real row the caller
+        #    must handle by re-reading, never by overwriting here.
+        resp = await run_in_thread(table.get_item, Key={"user_id": user_id}, ConsistentRead=True)
+        existing = resp.get("Item")
         if existing is None:
-            # Released (deleted) between our put and get — try one fresh claim.
+            # Deleted between our put and get — try one fresh claim.
             try:
                 await run_in_thread(
                     table.put_item,
                     Item=item,
                     ConditionExpression="attribute_not_exists(user_id)",
                 )
-                return OnboardingClaimResult.WON
+                return True
             except table.meta.client.exceptions.ConditionalCheckFailedException:
-                # Someone else claimed it in the gap between our read and
-                # write. We don't know their state without re-reading, and
-                # a false SEEDED would wrongly tell our caller "done" — so
-                # report the conservative option: retry. If it really is
-                # SEEDED, the retry's own read will see that.
-                return OnboardingClaimResult.IN_FLIGHT
+                return False
 
-        if existing.get("seeded_at"):
-            # Genuinely done — never steal a completed seed.
-            return OnboardingClaimResult.SEEDED
+        if existing.get("status") != "seeding":
+            return False
 
-        prev_claimed_at = existing.get("claimed_at", "")
+        prev_claimed_at = existing.get("seeding_claimed_at", "")
         try:
             age = (now - datetime.fromisoformat(prev_claimed_at)).total_seconds()
         except (ValueError, TypeError):
             age = float("inf")  # unparseable timestamp → treat as stale
         if age < stale_after_seconds:
-            # A claim is legitimately in flight.
-            return OnboardingClaimResult.IN_FLIGHT
+            return False
 
-        # Steal — overwrite (becoming the new holder) only if claimed_at is
-        # unchanged since our read AND no seed has landed since, so two
-        # concurrent stealers can't both win and a just-completed seed can't
-        # be clobbered.
+        # Steal — fenced on BOTH the status (still a bare claim) and the
+        # claimed_at we read, so a concurrent winner's progress or a rival
+        # stealer's win makes this a clean loss.
         try:
             await run_in_thread(
                 table.put_item,
                 Item=item,
-                ConditionExpression="claimed_at = :prev AND attribute_not_exists(seeded_at)",
-                ExpressionAttributeValues={":prev": prev_claimed_at},
+                ConditionExpression="#s = :seeding AND seeding_claimed_at = :prev",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":seeding": "seeding", ":prev": prev_claimed_at},
             )
-            return OnboardingClaimResult.WON
+            return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            # Another stealer won the race, or a seed landed underneath us.
-            # Same reasoning as above: report the conservative IN_FLIGHT
-            # rather than guessing which.
-            return OnboardingClaimResult.IN_FLIGHT
+            return False
 
-    async def release_onboarding_claim(self, company_id: str, *, holder: str) -> None:
-        """Drop the claim so a failed seed can be retried -- iff we still
-        hold it.
+    async def find_owner_row(self, org_id: str, *, include_inactive: bool = False) -> Optional[PaperclipCompany]:
+        """Find the ORG owner row (oldest ACTIVE ``created_at`` for this org_id).
 
-        Guarded on ``holder`` so we never delete a claim another caller has
-        since stolen (mirrors ``release_org_create_claim``). Without this
-        guard, an original holder that stalled past the stale window, got
-        stolen from, and only then failed would delete the new holder's
-        live claim out from under it -- reopening the duplicate-pair race
-        the claim mechanism exists to prevent. A lost guard is a no-op, not
-        an error: the claim is either already released, already re-claimed
-        by someone else, or already completed -- none of which this caller
-        should touch.
+        Deliberately a separate, repo-level implementation of the same
+        query ``PaperclipProvisioning.find_org_owner`` runs (rather than a
+        refactor of that tested, load-bearing method) -- see
+        ``resolve_owner_row`` for why the repo needs this independently of
+        provisioning: onboarding reads/writes (``routers/onboarding.py``,
+        ``routers/container.py``) need to resolve an ``owner_id`` to the row
+        that carries onboarding truth WITHOUT going through the
+        provisioning orchestrator.
+
+        Filters to ``status="active"`` before picking the oldest, mirroring
+        ``find_org_owner``: a disabled/provisioning/failed row is not
+        sign-in-able and must never be selected over a genuinely active one.
+
+        ``include_inactive`` (default False) relaxes that for onboarding/teams
+        STATUS readers (``get_onboarding_state``): an org whose Paperclip seed
+        FAILED has only a ``status="failed"`` owner row, and the caller needs
+        it to surface ``teams_state="failed"`` (the Teams-degraded affordance).
+        When no active row exists and ``include_inactive`` is set, the
+        provisioner's row (the one carrying ``seeded_agent_ids``, else the
+        oldest) is returned regardless of status. The sign-in path leaves this
+        False so a non-active row is never selected over an active one.
+
+        Returns None if the org has no rows (or no active row when
+        ``include_inactive`` is False).
+        """
+        items: list[dict] = []
+        last_evaluated_key: Optional[dict] = None
+        table = self._table()
+        while True:
+            kwargs: dict = {
+                "IndexName": "by-org-id",
+                "KeyConditionExpression": Key("org_id").eq(org_id),
+            }
+            if last_evaluated_key is not None:
+                kwargs["ExclusiveStartKey"] = last_evaluated_key
+            resp = await run_in_thread(table.query, **kwargs)
+            items.extend(resp.get("Items", []))
+            last_evaluated_key = resp.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                break
+
+        def _sort_key(it: dict) -> str:
+            return it.get("created_at", "")
+
+        active_items = [it for it in items if it.get("status") == "active"]
+        if active_items:
+            chosen = min(active_items, key=_sort_key)
+        elif include_inactive and items:
+            # No active row -- return the provisioner's row (carries
+            # seeded_agent_ids) if present, else the oldest, so a failed-seed
+            # org still resolves to a row carrying its onboarding/teams truth.
+            chosen = next((it for it in items if it.get("seeded_agent_ids")), None) or min(items, key=_sort_key)
+        else:
+            return None
+        # Hydrate straight from the GSI query item -- the by-org-id index is
+        # ProjectionType.ALL, so `chosen` already carries every attribute
+        # _item_to_company needs (that helper was factored out of get() for
+        # exactly this). Avoids a second base-table read on the hot
+        # /container/status org poll (get_onboarding_state calls this on every
+        # ~3s poll). Same eventual-consistency tier the base get() had on the
+        # org path (the GSI can't be a consistent read anyway -- see
+        # resolve_owner_row); the brief-flow CAS write fences on generation, so
+        # a briefly-stale read can't corrupt the claim.
+        return self._item_to_company(chosen)
+
+    async def resolve_owner_row(
+        self, owner_id: str, *, consistent_read: bool = False, include_inactive: bool = False
+    ) -> Optional[PaperclipCompany]:
+        """Resolve an ``owner_id`` (Clerk org_id for orgs, Clerk user_id for
+        personal owners) to the paperclip-companies OWNER row that carries
+        onboarding truth.
+
+        The table is keyed by ``user_id``, not ``owner_id``. For a personal
+        owner the two are the same value, so the row IS keyed by
+        ``owner_id`` directly. For an org, the row ``provision_org`` wrote
+        is keyed by the org CREATOR's ``user_id`` (``owner_user_id`` in that
+        method) -- a different value from ``owner_id`` (the Clerk org_id) --
+        so it must be found via ``find_owner_row``'s by-org-id GSI lookup.
+
+        This is the single resolution path every onboarding reader/writer
+        (``routers/onboarding.py``, ``routers/container.py``'s ``onboarded``
+        computation) should use, so "which row is THE owner row" has one
+        answer.
+
+        ``consistent_read`` defaults to False (eventually-consistent). The
+        HOT caller is ``get_onboarding_state`` on every ``/container/status``
+        poll (~3s/owner), where ``onboarded`` is best-effort and a briefly
+        stale ``False`` is harmless -- a strong read there would double the
+        ``paperclip-companies`` RCU cost fleet-wide for a field that flips
+        once. The one caller that needs strong consistency is
+        ``POST /onboarding/brief`` (the funnel claim reads then writes the
+        SAME row); it passes ``consistent_read=True``. NOTE: the org path
+        goes through the ``by-org-id`` GSI, which is eventually consistent by
+        construction -- ``consistent_read`` only strengthens the personal
+        (base-table ``get``) path.
+        """
+        if is_org_owner_id(owner_id):
+            return await self.find_owner_row(owner_id, include_inactive=include_inactive)
+        return await self.get(owner_id, consistent_read=consistent_read)
+
+    async def claim_first_contact(self, user_id: str, *, onboarding_generation: str) -> bool:
+        """Conditional ``first_contact_state -> sending``, generation-fenced.
+
+        THE once-only guard for the agent-initiated first email. Only the
+        caller whose write lands sends; a loser reports ``already_sent``
+        without touching SES, so an owner can never receive two.
+
+        Claimable from ``not_started`` (never sent) and from ``failed`` (a
+        failed mint or SES send must be retryable, or the FIRST failure is
+        terminal and the bounded nudge retry never fires). NOT claimable from
+        ``sending`` (a claim is in flight) or ``sent`` (terminal) — either
+        would risk a double-send.
+
+        A stuck ``sending`` — the process died between claim and settle — is
+        deliberately NOT recovered here, matching ``claim_bootstrap_dispatch``'s
+        posture on a stuck ``dispatched``: that is the generalized
+        reconciliation worker's job, not a second recovery path invented here.
+
+        Never raises.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET first_contact_state = :sending, first_contact_claimed_at = :t, updated_at = :t"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND "
+                    "(attribute_not_exists(first_contact_state) "
+                    "OR first_contact_state = :not_started "
+                    "OR first_contact_state = :failed)"
+                ),
+                ExpressionAttributeValues={
+                    ":sending": "sending",
+                    ":not_started": "not_started",
+                    ":failed": "failed",
+                    ":gen": onboarding_generation,
+                    ":t": now,
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Lost the race, wrong generation, or already sending/sent.
+            return False
+        except Exception as e:  # noqa: BLE001 — must not 500 the send path
+            logger.warning("claim_first_contact failed for %s: %s", user_id, e)
+            return False
+
+    async def settle_first_contact(
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        state: str,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Terminal write: ``sent`` or ``failed``.
+
+        Generation-fenced so a straggler from a superseded onboarding attempt
+        can never resolve a later one. Never raises — the send already
+        happened (or didn't), and a bookkeeping failure must not turn a
+        delivered email into a 500.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET first_contact_state = :s, first_contact_reason = :r, updated_at = :t"),
+                ConditionExpression="onboarding_generation = :gen",
+                ExpressionAttributeValues={
+                    ":s": state,
+                    ":r": reason or "",
+                    ":gen": onboarding_generation,
+                    ":t": now,
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Superseded generation — a straggler must not resolve a later attempt.
+            pass
+        except Exception as e:  # noqa: BLE001 — bookkeeping must not undo a send
+            logger.warning("settle_first_contact failed for %s: %s", user_id, e)
+
+    async def bump_first_contact_attempts(self, user_id: str, *, onboarding_generation: str, limit: int) -> bool:
+        """Increment-and-check, called BEFORE a nudge is dispatched.
+
+        Nudge runs re-register the run-completion callback — otherwise
+        attempts 2 and 3 would have no trigger, since the bootstrap run
+        terminates exactly once — so this counter is the SOLE bound on that
+        loop. Incrementing after dispatch, or not at all, is an unbounded
+        chain of agent runs.
+
+        Returns True when a nudge may be dispatched.
         """
         table = self._table()
         try:
             await run_in_thread(
-                table.delete_item,
-                Key={"user_id": _onboarding_claim_key(company_id)},
-                ConditionExpression="holder = :h",
-                ExpressionAttributeValues={":h": holder},
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET first_contact_attempts = if_not_exists(first_contact_attempts, :zero) + :one"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND "
+                    "(attribute_not_exists(first_contact_attempts) OR first_contact_attempts < :limit)"
+                ),
+                ExpressionAttributeValues={
+                    ":zero": 0,
+                    ":one": 1,
+                    ":limit": limit,
+                    ":gen": onboarding_generation,
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # Budget exhausted — the loop bound doing its job.
+            return False
+        except Exception as e:  # noqa: BLE001 — an observer must never raise
+            logger.warning("bump_first_contact_attempts failed for %s: %s", user_id, e)
+            return False
+
+    async def claim_bootstrap_dispatch(
+        self, user_id: str, *, onboarding_generation: str
+    ) -> tuple[BootstrapClaimResult, Optional[str]]:
+        """Conditional ``bootstrap_state: not_started -> dispatched``, fenced
+        on ``onboarding_generation`` AND ``funnel_state == "submitted"``
+        (INV-5: the bootstrap kickoff is dispatched at most once per
+        generation, server-side, no browser tab required). Mints a fresh
+        ``bootstrap_dispatch_id`` -- the fencing token
+        ``mark_bootstrap_delivered``/``mark_bootstrap_failed`` condition
+        their writes on, so a stale completion observer from a superseded
+        attempt can never resolve a later one -- and increments
+        ``bootstrap_attempts`` on the same write.
+
+        Only the caller whose conditional write lands ever calls chat.send.
+        A caller that loses the race (concurrent ``/status`` poll and
+        ``/brief`` submit, two backend instances, two overlapping polls)
+        gets ``NOT_READY`` and does nothing further.
+
+        Unlike ``claim_funnel_submission`` this has NO retry loop: the
+        funnel claim can be reverted and re-claimed on the SAME generation
+        by a caller whose downstream seed failed, but a bootstrap dispatch
+        has no such same-request rollback -- a stuck ``dispatched`` (chat.send
+        issued but no terminal observed) or a recorded ``failed`` is retried
+        by resetting ``bootstrap_state`` back to ``not_started``, which is
+        the generalized ``reconciliation_worker``'s job (spec PR-8), not
+        this method's.
+
+        Returns ``(BootstrapClaimResult.WON, dispatch_id)`` on success, else
+        ``(<NOT_READY|STALE_GENERATION>, None)``.
+        """
+        dispatch_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET bootstrap_state = :dispatched, bootstrap_dispatch_id = :did, "
+                    "bootstrap_dispatched_at = :t, "
+                    "bootstrap_attempts = if_not_exists(bootstrap_attempts, :zero) + :one, "
+                    "updated_at = :u"
+                ),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND funnel_state = :submitted AND bootstrap_state = :not_started"
+                ),
+                ExpressionAttributeValues={
+                    ":dispatched": "dispatched",
+                    ":did": dispatch_id,
+                    ":t": now,
+                    ":u": now,
+                    ":zero": 0,
+                    ":one": 1,
+                    ":gen": onboarding_generation,
+                    ":submitted": "submitted",
+                    ":not_started": "not_started",
+                },
+            )
+            return BootstrapClaimResult.WON, dispatch_id
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        current = await self.get(user_id, consistent_read=True)
+        if current is None or current.onboarding_generation != onboarding_generation:
+            # Superseded generation (or the row vanished) -- per INV-4 a
+            # silent no-op; the caller was holding a stale view of the
+            # company.
+            return BootstrapClaimResult.STALE_GENERATION, None
+        return BootstrapClaimResult.NOT_READY, None
+
+    async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
+        """Conditional ``bootstrap_state: dispatched -> delivered``, fenced
+        on ``onboarding_generation`` AND ``bootstrap_dispatch_id`` (so a
+        stale completion observer from a superseded dispatch attempt can
+        never mark a LATER attempt delivered). Also flips
+        ``funnel_state -> complete`` and stamps ``funnel_completed_at`` on
+        the SAME write -- OBSERVING Friday's ``chat.final`` is the single
+        event the architecture spec calls "the funnel's completion signal"
+        (§2, ``FunnelState`` docstring), replacing the older
+        thread-emptiness inference.
+
+        A lost guard (``ConditionalCheckFailedException`` -- the generation
+        moved on, or a duplicate/re-delivered terminal for a dispatch that
+        already resolved) is swallowed: the completion observer that calls
+        this is fire-and-forget by contract (see the ``bootstrap_dispatcher``
+        module docstring), and a caller racing a superseded write has
+        nothing further to do.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET bootstrap_state = :delivered, bootstrap_delivered_at = :t, "
+                    "funnel_state = :complete, funnel_completed_at = :t, updated_at = :t"
+                ),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":delivered": "delivered",
+                    ":complete": "complete",
+                    ":t": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def record_onboarding_ids(self, company_id: str, *, goal_id: str, project_id: str, holder: str) -> None:
-        """Record the seeded rows on the claim. Written LAST, so a claim
-        carrying ids always means both Paperclip rows exist and are linked.
+    async def mark_bootstrap_failed(
+        self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str
+    ) -> None:
+        """Conditional ``bootstrap_state: dispatched -> failed``, fenced the
+        same way as ``mark_bootstrap_delivered`` (generation + dispatch_id +
+        still-``dispatched``). Records *reason* on ``bootstrap_last_error``
+        for observability.
 
-        Guarded with ``attribute_exists(user_id) AND holder = :h`` — TWO
-        conditions, both load-bearing:
+        Deliberately does NOT touch ``funnel_state`` -- a failed kickoff
+        leaves the funnel ``submitted`` (not ``complete``), so the
+        generalized ``reconciliation_worker`` (spec PR-8) can find and retry
+        it later by resetting ``bootstrap_state`` back to ``not_started``.
+        Guard-fail is swallowed for the same reason as
+        ``mark_bootstrap_delivered``.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET bootstrap_state = :failed, bootstrap_last_error = :err, updated_at = :u"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":failed": "failed",
+                    ":err": reason,
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
 
-        * ``attribute_exists(user_id)`` — this can only ever update a row
-          that ``claim_onboarding``'s PK-conditional ``put_item`` already
-          created. Without it, ``update_item`` on a non-existent key
-          silently CREATES it from scratch — a caller bug (e.g. calling
-          this without ever claiming) would fabricate the sentinel out of
-          thin air instead of failing loudly, permanently locking the
-          company out of onboarding with no exception and no signal.
-        * ``holder = :h`` — existence alone is not enough once
-          ``claim_onboarding`` can steal: if THIS caller (A) stalls past
-          the stale window, gets stolen from by B, then recovers and
-          finishes seeding, the row still exists (it's B's now) -- so an
-          existence-only guard would let A's ``update_item`` land and
-          stamp A's ids over B's in-flight claim. Both seeded pairs would
-          then exist with only one linked from the sentinel, orphaning the
-          other on the user's first screen. The holder guard makes that
-          write fail instead, routing A into its own cleanup (delete its
-          own goal/project, then a holder-guarded release that no-ops
-          against B's claim) while B proceeds untouched.
+    async def rearm_bootstrap_dispatch(
+        self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str
+    ) -> None:
+        """Conditional ``bootstrap_state: dispatched -> not_started``, fenced
+        the same way as ``mark_bootstrap_delivered``/``mark_bootstrap_failed``
+        (generation + dispatch_id + still-``dispatched``).
 
-        Raises ``ConditionalCheckFailedException`` if no claim was ever
-        taken under this key, OR if a different holder now owns it (having
-        stolen it after this caller stalled). Callers release the claim on
-        any failure here, but do NOT translate it into a 409 — the
-        exception (e.g. botocore's ``ClientError``) propagates through a
-        generic handler with no registered mapping for it and surfaces to
-        the client as a raw 500.
+        The TRANSIENT counterpart to ``mark_bootstrap_failed``: a dispatch
+        that died on a connection-level failure (OpenClaw's gateway not
+        listening yet during boot, a connect timeout) is RE-ARMED so the next
+        ``/container/status`` poll re-dispatches it — ``mark_bootstrap_failed``
+        alone made ``failed`` terminal (``claim_bootstrap_dispatch`` admits
+        only ``not_started``), which turned a boot-window blip into a dead
+        onboarding. ``bootstrap_attempts`` (already incremented by this
+        dispatch's claim) is deliberately KEPT, and *reason* is recorded on
+        ``bootstrap_last_error``, so the dispatcher's pre-claim attempts cap
+        still bounds the total number of dispatches and the last failure
+        stays observable. ``bootstrap_dispatch_id``/``bootstrap_dispatched_at``
+        also stay (the record of the last attempt; the next claim overwrites
+        them). Does NOT touch ``funnel_state`` — the standing ``submitted``
+        funnel is what makes the row re-dispatchable at all.
+
+        Guard-fail is swallowed for the same reason as the two marks above:
+        a stale caller from a superseded generation/dispatch has nothing
+        further to do.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=("SET bootstrap_state = :not_started, bootstrap_last_error = :err, updated_at = :u"),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":not_started": "not_started",
+                    ":err": reason,
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+    async def reset_bootstrap_for_retry(self, user_id: str, *, onboarding_generation: str) -> bool:
+        """Admin lever: conditional ``bootstrap_state: failed -> not_started``.
+
+        ``mark_bootstrap_failed`` deliberately leaves the funnel ``submitted``
+        so a later reset can re-arm the kickoff (its own docstring names the
+        not-yet-built reconciliation_worker as that "later"). This is the
+        manual stand-in: fenced on the SAME onboarding_generation the operator
+        read, and only from a genuinely failed bootstrap on a still-submitted
+        funnel -- a superseded or already-recovered row is a no-op (False).
+        Distinct from ``rearm_bootstrap_dispatch``, the automatic transient
+        re-arm for a still-``dispatched`` row: this lever recovers a row the
+        pipeline has already declared terminally ``failed``.
+        ``bootstrap_last_error`` is kept as history; ``bootstrap_attempts``
+        resets so MAX_BOOTSTRAP_ATTEMPTS re-arms. The next owner
+        ``/container/status`` poll re-dispatches.
+
+        Returns True if the write landed.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET bootstrap_state = :ns, bootstrap_attempts = :zero, updated_at = :u "
+                    "REMOVE bootstrap_dispatch_id"
+                ),
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND funnel_state = :submitted AND bootstrap_state = :failed"
+                ),
+                ExpressionAttributeValues={
+                    ":ns": "not_started",
+                    ":zero": 0,
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":gen": onboarding_generation,
+                    ":submitted": "submitted",
+                    ":failed": "failed",
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def claim_funnel_submission(
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        submitted_by: str,
+        owner_id: Optional[str] = None,
+        brief_text: Optional[str] = None,
+    ) -> FunnelClaimResult:
+        """Conditional ``funnel_state: not_started -> submitted``, fenced on
+        ``onboarding_generation`` (INV-4). Replaces the ``__onboarded__``
+        sentinel's ``claim_onboarding`` -- see ``FunnelClaimResult`` for why
+        this is now a single atomic UpdateItem on the row itself instead of
+        a separate claim item with its own stale-steal timing: DynamoDB's
+        conditional write already serializes concurrent submitters, and the
+        two ways to lose (superseded generation vs. already submitted) are
+        distinguished by one strongly-consistent re-read on failure.
+
+        ``submitted_by`` is the CLERK MEMBER ID of whoever is actually
+        POSTing ``/onboarding/brief`` -- NOT necessarily ``user_id`` (this
+        row's PK, which for an org is the ORG CREATOR who provisioned it —
+        see ``resolve_owner_row``). ``/onboarding/brief`` is open to any org
+        member, so a non-creator member can win this claim. Stamped onto
+        ``onboarding_submitted_by`` on the SAME write so the bootstrap
+        dispatcher (``core.services.bootstrap_dispatcher``) can address
+        Friday's kickoff session at the ACTUAL submitter, not the creator —
+        otherwise a non-creator submitter's live kickoff (and its
+        `chat.history`) lands in the creator's session instead of the
+        submitter's, who never sees the "I'm watching" prompt answered. For
+        a personal owner ``submitted_by == user_id`` always (there is only
+        one member), so this is a no-op change in that case.
+
+        ``brief_text`` is the user's own words for what they want built
+        (``build_onboarding_brief_text``), stamped onto
+        ``onboarding_brief_text`` on the SAME CAS write so the bootstrap
+        dispatcher can lead Friday's visible first message with the user's
+        ask rather than a canned prompt. ``None`` (the "you pick" path, or a
+        caller that supplies no brief) simply leaves the attribute unset — the
+        SET clause omits it entirely; the ConditionExpression fence
+        (generation + ``not_started``) is UNCHANGED either way, so the added
+        field can never weaken the claim's atomicity.
+
+        Callers MUST ``revert_funnel_submission`` on a later failure (before
+        ``record_onboarding_ids`` lands) so a retry isn't permanently locked
+        out -- mirrors the old ``release_onboarding_claim`` contract.
+        """
+        table = self._table()
+        # Bounded retry loop: the CAS itself is the serialization point, but a
+        # peer can WIN the claim and then ``revert_funnel_submission`` it back
+        # to ``not_started`` on the SAME generation if its downstream seed
+        # fails. A single re-read that only distinguished generation-mismatch
+        # from "not not_started" would then report ALREADY_SUBMITTED to a
+        # racing caller even though the row is claimable again -- leaving the
+        # client believing onboarding is done while the company has no
+        # goal/project and no recovery path. So on a CAS failure we re-read
+        # and, if the row is back at ``not_started`` on our generation, RETRY
+        # the claim instead of mislabeling it. Bounded so a pathologically
+        # flapping peer can't spin here forever.
+        # The brief-text write is folded into the SAME SET clause as the claim
+        # so it lands atomically with (and only with) a winning claim -- never a
+        # separate write that could persist a brief for a claim that lost. When
+        # absent ("you pick" path), the attribute is simply not set; the
+        # ConditionExpression fence below is byte-for-byte unchanged in both
+        # cases, so the added field cannot weaken the claim's atomicity.
+        brief = (brief_text or "").strip()
+        brief_set = ", onboarding_brief_text = :brief" if brief else ""
+        for _attempt in range(3):
+            now = datetime.now(timezone.utc).isoformat()
+            values: dict = {
+                ":submitted": "submitted",
+                ":not_started": "not_started",
+                ":gen": onboarding_generation,
+                ":sub": submitted_by,
+                ":t": now,
+                ":u": now,
+            }
+            if brief:
+                values[":brief"] = brief
+            try:
+                await run_in_thread(
+                    table.update_item,
+                    Key={"user_id": user_id},
+                    UpdateExpression=(
+                        "SET funnel_state = :submitted, funnel_submitted_at = :t, "
+                        "onboarding_submitted_by = :sub, updated_at = :u" + brief_set
+                    ),
+                    ConditionExpression="onboarding_generation = :gen AND funnel_state = :not_started",
+                    ExpressionAttributeValues=values,
+                )
+                publish_status_changed(owner_id or user_id)
+                return FunnelClaimResult.WON
+            except table.meta.client.exceptions.ConditionalCheckFailedException:
+                pass
+
+            current = await self.get(user_id, consistent_read=True)
+            if current is None or current.onboarding_generation != onboarding_generation:
+                # Superseded generation (or the row vanished) -- per INV-4 a
+                # silent no-op from the caller's point of view; the caller was
+                # holding a stale view of the company, not colliding with a
+                # duplicate submit.
+                return FunnelClaimResult.STALE_GENERATION
+            if current.funnel_state == "not_started":
+                # A peer won then reverted (failed seed): the row is claimable
+                # again on this same generation. Retry rather than reporting a
+                # false ALREADY_SUBMITTED.
+                continue
+            # funnel_state is submitted/complete on our generation -- a peer's
+            # submission genuinely won and is still standing.
+            return FunnelClaimResult.ALREADY_SUBMITTED
+
+        # Exhausted retries -- a peer is actively claim/revert-thrashing (its
+        # seed keeps failing). Report STALE_GENERATION so the caller retries
+        # (409 -> re-poll) rather than a false ALREADY_SUBMITTED that would
+        # strand the client on an empty company.
+        return FunnelClaimResult.STALE_GENERATION
+
+    async def record_onboarding_ids(
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        goal_id: str,
+        project_id: str,
+        owner_id: Optional[str] = None,
+    ) -> None:
+        """Record the seeded goal/project ids on the row. Written LAST (same
+        ordering rationale as the old sentinel's ``record_onboarding_ids``):
+        the server-dispatched kickoff (``core.services.bootstrap_dispatcher``)
+        tells Friday to go to work, so both Paperclip rows must exist and be
+        linked here before it dispatches, or she wakes into a company with
+        no project.
+
+        Guarded on ``onboarding_generation = :gen AND funnel_state =
+        :submitted`` -- this can only ever land against the SAME claim this
+        caller just won via ``claim_funnel_submission``; a company that has
+        since been reprovisioned (new generation) or whose funnel somehow
+        moved on cannot be clobbered by a stale caller. Raises
+        ``ConditionalCheckFailedException`` on a guard failure, propagating
+        through a generic handler to a raw 500 -- same contract as the old
+        sentinel's ``record_onboarding_ids``, so the router's except block
+        is unchanged.
         """
         await run_in_thread(
             self._table().update_item,
-            Key={"user_id": _onboarding_claim_key(company_id)},
-            UpdateExpression="SET onboarding_goal_id = :g, onboarding_project_id = :p, seeded_at = :t",
+            Key={"user_id": user_id},
+            UpdateExpression="SET onboarding_goal_id = :g, onboarding_project_id = :p, updated_at = :u",
+            ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
             ExpressionAttributeValues={
                 ":g": goal_id,
                 ":p": project_id,
-                ":t": datetime.now(timezone.utc).isoformat(),
-                ":h": holder,
+                ":u": datetime.now(timezone.utc).isoformat(),
+                ":gen": onboarding_generation,
+                ":submitted": "submitted",
             },
-            ConditionExpression="attribute_exists(user_id) AND holder = :h",
         )
+        # These ids are the LAST onboarding fields to land, and compute_status
+        # returns them. claim_funnel_submission already nudged on funnel_state ->
+        # submitted, but a tab that revalidated off that early event read a
+        # contract missing goal/project; without this second nudge nothing
+        # repairs it promptly (ready-state polling is no longer frequent). See
+        # publish_status_changed's module docstring (INV-1: nudge only).
+        publish_status_changed(owner_id or user_id)
 
-    async def get_onboarding(self, company_id: str) -> Optional[dict]:
-        """Read the sentinel. Strongly consistent — callers branch on it."""
+    async def revert_funnel_submission(
+        self, user_id: str, *, onboarding_generation: str, owner_id: Optional[str] = None
+    ) -> None:
+        """Best-effort rollback: ``funnel_state: submitted -> not_started``,
+        so a caller that won the claim but then failed mid-seed doesn't
+        permanently lock the company out of onboarding (mirrors the old
+        sentinel's ``release_onboarding_claim``).
+
+        Guarded on the SAME (generation, submitted) pair
+        ``claim_funnel_submission`` fenced on, so this can only ever undo
+        THIS caller's own still-standing claim -- never a since-reprovisioned
+        company's fresh generation, and never a funnel a concurrent process
+        has already advanced to ``complete``. A lost guard
+        (``ConditionalCheckFailedException``) is swallowed, not raised: the
+        claim is either already reverted, already advanced past
+        ``submitted``, or the company was reprovisioned out from under it --
+        none of which this caller should touch.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression=(
+                    "SET funnel_state = :not_started, updated_at = :u "
+                    "REMOVE funnel_submitted_at, onboarding_goal_id, onboarding_project_id, "
+                    "onboarding_submitted_by, onboarding_brief_text"
+                ),
+                ConditionExpression="onboarding_generation = :gen AND funnel_state = :submitted",
+                ExpressionAttributeValues={
+                    ":not_started": "not_started",
+                    ":gen": onboarding_generation,
+                    ":submitted": "submitted",
+                    ":u": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
+        # The revert moved funnel_state back to not_started and dropped the
+        # goal/project ids -- all facts compute_status composes. Nudge so a tab
+        # that saw the optimistic "submitted" doesn't sit on a stale contract
+        # after the seed failed and rolled back. Only reached when the write
+        # actually landed (the swallowed guard-failure returns above).
+        publish_status_changed(owner_id or user_id)
+
+    # --- Pending brief (funnel intake before the workspace can receive it) ---
+    #
+    # ``POST /onboarding/brief`` is INTAKE ONLY: it records what the user said
+    # and returns. Everything that needs Paperclip to be up (the funnel claim,
+    # the goal/project seed, staging BRIEF.md) happens later, in
+    # ``onboarding_brief.reconcile_pending_brief``. These methods are that
+    # hand-off's storage.
+    #
+    # Why this exists at all: the funnel renders DURING provisioning (it fills
+    # the dead time on purpose), so the answer routinely arrives ~30s before
+    # there is an owner row to claim against. It used to be the browser's job
+    # to keep retrying until there was -- which meant a closed tab, or a user
+    # who ran out of patience, silently lost their brief.
+    #
+    # ``brief_state`` is the item's own lifecycle, deliberately separate from
+    # the row's ``funnel_state``:
+    #
+    #   pending -> (drained)   item deleted by the drain that WON the claim
+    #           -> failed      fulfilment failed too many times; the funnel is
+    #                          re-shown so the user can submit again, and that
+    #                          resubmit OVERWRITES this item (the conditional
+    #                          on ``put_pending_brief`` admits a failed item).
+    #
+    # A ``failed`` item is deliberately kept rather than deleted: it carries
+    # ``last_error`` for the next operator who asks why an owner never got
+    # Friday, and its presence is what stops ``_has_pending_brief`` from
+    # dismissing the funnel.
+    #
+    # LIFETIME: a pending item SURVIVES provisioning by design -- and, for the
+    # same reason, survives a reprovision. An item can only still be here if
+    # the brief was never fulfilled, and an owner who answered the funnel and
+    # got nothing for it should have that answer carried into the company that
+    # finally works. Teardown paths that delete an owner's company row must
+    # delete this item too (see routers/debug.py) -- otherwise a wiped account
+    # inherits the previous run's answer.
+
+    async def put_pending_brief(
+        self,
+        owner_id: str,
+        *,
+        path: str,
+        user_input: Optional[str],
+        detail: Optional[str],
+        brief_text: Optional[str],
+        submitted_by: str,
+    ) -> bool:
+        """Record a funnel answer that can't be fulfilled yet.
+
+        Returns True iff this caller's answer landed; False when one is
+        already pending -- a second org member submitting concurrently, or the
+        same user double-clicking. That conditional is what makes intake
+        one-shot per company WITHOUT needing the owner row to exist yet: the
+        funnel claim (``claim_funnel_submission``) is still the authority once
+        there IS a row, and this is the same guarantee projected back onto the
+        window before it.
+
+        A ``failed`` item is NOT protected by that conditional: fulfilment
+        gave up, the funnel has been re-shown, and this submit is the user
+        answering it again. Refusing here would leave them submitting into a
+        void forever -- the funnel is a committed front door with no skip.
+
+        ``brief_text`` is precomputed at intake (rather than at drain time) so
+        the phrasing the user submitted is what Friday eventually opens with,
+        even if the brief-building code changes between the two.
+        """
+        item = {
+            "user_id": _pending_brief_key(owner_id),
+            "kind": "pending_brief",
+            "brief_state": "pending",
+            "attempts": 0,
+            "owner_id": owner_id,
+            "path": path,
+            "submitted_by": submitted_by,
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # Absent, not "": "no idea supplied" is a real signal on the "you pick"
+        # path, and it must survive the round trip as None rather than as a
+        # blank string a later reader would quote back at Friday.
+        if user_input:
+            item["input"] = user_input
+        if detail:
+            item["detail"] = detail
+        if brief_text:
+            item["brief_text"] = brief_text
+
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.put_item,
+                Item=item,
+                ConditionExpression="attribute_not_exists(user_id) OR brief_state = :failed",
+                ExpressionAttributeValues={":failed": "failed"},
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def _has_pending_brief(self, owner_id: str) -> bool:
+        """Cheap existence check for ``get_onboarding_state``'s additive
+        ``pending_brief`` key. True only for an item still worth draining.
+
+        DELIBERATELY additive rather than folded into ``funnel_state``. The
+        same dict is consumed by ``compute_status`` (which SHOULD treat a
+        pending answer as "funnel submitted" -- the user answered, so stop
+        showing them the funnel) and by ``bootstrap_dispatcher`` (which MUST
+        NOT -- dispatching Friday's kickoff off an undrained brief would wake
+        her before the goal and project she is being told to work on exist).
+        Reporting a synthetic ``funnel_state: "submitted"`` here would serve
+        the first and break the second; the composer is where the two facts
+        get combined into a verdict, so that is where the mapping lives.
+
+        A ``failed`` item reports False on purpose: fulfilment gave up, so the
+        funnel must come BACK and let the user submit again. Suppressing it
+        would leave them in an empty chat with an agent that never starts and
+        no way to retry.
+
+        A read failure degrades to False rather than raising, matching this
+        accessor's contract (its caller is the ``/container/status`` poll):
+        the cost is one more poll showing the funnel, and the next drain
+        still fulfils the brief.
+        """
+        try:
+            item = await self.get_pending_brief(owner_id)
+        except Exception:  # noqa: BLE001 — a degraded read must not break /status
+            logger.info("paperclip_repo: pending-brief read failed for owner %s", owner_id, exc_info=True)
+            return False
+        return item is not None and item.get("brief_state") != "failed"
+
+    async def get_pending_brief(self, owner_id: str) -> Optional[dict]:
+        """The pending funnel answer for this owner, or None.
+
+        Strongly consistent: the drain reads this and then conditionally
+        writes the owner row off what it finds, and a status poll that missed
+        a just-written item would re-show the funnel to someone who already
+        answered it.
+        """
         resp = await run_in_thread(
             self._table().get_item,
-            Key={"user_id": _onboarding_claim_key(company_id)},
+            Key={"user_id": _pending_brief_key(owner_id)},
             ConsistentRead=True,
         )
         return resp.get("Item")
+
+    async def record_pending_brief_failure(self, owner_id: str, *, reason: str) -> int:
+        """Count one FAILED fulfilment attempt; return the new total.
+
+        Only real failures are counted -- "the workspace isn't ready yet" is
+        the normal first-run state and must never burn an attempt, or a slow
+        provision would exhaust the budget before it could possibly succeed.
+
+        The counter is on the item rather than in memory because the process
+        that fails is often not the process that retries (a rolling deploy, a
+        different ECS task picking up the next poll).
+        """
+        resp = await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+            UpdateExpression="ADD attempts :one SET last_error = :e, last_attempt_at = :t",
+            ExpressionAttributeValues={
+                ":one": 1,
+                ":e": reason[:500],
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+            ReturnValues="UPDATED_NEW",
+        )
+        return int(resp.get("Attributes", {}).get("attempts", 0))
+
+    async def fail_pending_brief(self, owner_id: str, *, reason: str, owner_broadcast_id: Optional[str] = None) -> None:
+        """Give up on fulfilling this brief: ``brief_state -> failed``.
+
+        This is what ENDS the retry loop, and it is deliberately visible to
+        the user rather than silent: ``_has_pending_brief`` stops reporting a
+        failed item, so ``compute_status`` stops synthesising
+        ``funnel_state: "submitted"`` and the funnel comes back. The user can
+        then submit again (``put_pending_brief`` overwrites a failed item).
+        Without this a deterministic fulfilment failure left them in an empty
+        chat, with an agent that never starts and no way to retry.
+        """
+        await run_in_thread(
+            self._table().update_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+            UpdateExpression="SET brief_state = :failed, last_error = :e, failed_at = :t",
+            ExpressionAttributeValues={
+                ":failed": "failed",
+                ":e": reason[:500],
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        # The funnel is about to re-render for every tab on this company.
+        publish_status_changed(owner_broadcast_id or owner_id)
+
+    async def delete_pending_brief(self, owner_id: str) -> None:
+        """Retire a pending answer once it has demonstrably been fulfilled.
+
+        Callers must be sure fulfilment actually happened -- see
+        ``reconcile_pending_brief``, where only the drain that WON the claim
+        deletes on its own success, and a drain that lost deletes only on the
+        one unambiguous end-state (``funnel_state == "complete"``, i.e.
+        Friday's kickoff was observed to deliver). Deleting on weaker evidence
+        loses the brief in exactly the case this mechanism exists to survive:
+        the winner can still fail and roll everything back.
+        """
+        await run_in_thread(
+            self._table().delete_item,
+            Key={"user_id": _pending_brief_key(owner_id)},
+        )
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

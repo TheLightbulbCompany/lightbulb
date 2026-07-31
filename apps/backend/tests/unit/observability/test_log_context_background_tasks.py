@@ -157,9 +157,10 @@ async def test_chat_background_task_binds_user_id_and_run_id_into_logs():
 
 @pytest.mark.asyncio
 async def test_provision_background_task_binds_owner_id_into_logs():
-    """background_provision binds owner_id as user_id so its log lines (incl.
-    the failure-path exception log) are queryable by the owner."""
-    from core.services import container_provision
+    """dispatch_provision (the SFN executor) does the bind_log_context and
+    logs its own failure path. Assert the bound owner_id reaches its
+    logger's records."""
+    from core.services import provision_dispatch
 
     formatter = JsonFormatter()
     captured: list[str] = []
@@ -169,37 +170,28 @@ async def test_provision_background_task_binds_owner_id_into_logs():
             captured.append(formatter.format(record))
 
     handler = _CaptureHandler()
-    prov_logger = logging.getLogger(container_provision.__name__)
+    prov_logger = logging.getLogger(provision_dispatch.__name__)
     prov_logger.addHandler(handler)
     prev_level = prov_logger.level
     prov_logger.setLevel(logging.INFO)
 
     try:
         with (
+            # Force dispatch_provision's outer except branch so the
+            # exception log line is emitted from inside the task body
+            # (after the bind_log_context call).
             patch.object(
-                container_provision, "resolve_provider_choice", new=AsyncMock(return_value=("bedrock_claude", None))
+                provision_dispatch.container_repo,
+                "get_by_owner_id",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
             ),
-            # background_provision's FIRST act is the single-flight lease claim
-            # (a real DynamoDB conditional write) and its failure path releases
-            # the lease — stub both so this stays a pure log-context test.
-            patch.object(
-                container_provision.container_repo, "try_claim_provision", new=AsyncMock(return_value="claim-1")
-            ),
-            patch.object(container_provision.container_repo, "release_provision_to_error", new=AsyncMock()),
-            patch.object(container_provision, "get_ecs_manager") as mock_ecs_getter,
         ):
-            ecs = MagicMock()
-            # Force the except branch so the exception log line is emitted from
-            # inside the task body (after the bind).
-            ecs.provision_user_container = AsyncMock(side_effect=RuntimeError("boom"))
-            mock_ecs_getter.return_value = ecs
-
             # Never raises (catches + logs).
-            await container_provision.background_provision("org_corr_owner", "user_clerk_1")
+            await provision_dispatch.dispatch_provision("org_corr_owner")
     finally:
         prov_logger.removeHandler(handler)
         prov_logger.setLevel(prev_level)
 
-    assert captured, "expected the failure-path log record from background_provision"
+    assert captured, "expected the failure-path log record from dispatch_provision"
     records = [json.loads(line) for line in captured]
     assert all(r["user_id"] == "org_corr_owner" for r in records)

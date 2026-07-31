@@ -1,24 +1,40 @@
-"""Outbound-email seam over AWS SES (sesv2) for agent replies.
+"""The single outbound-email transport: AWS SES (sesv2), raw MIME.
 
-An agent's reply must be sent FROM its own subdomain address
-(``friday@{slug}.isol8.co``). Resend cannot originate mail from an
-arbitrary per-owner subdomain, so agent replies go out via SES while the
-app's own welcome/support mail stays on ``email_service`` (Resend) — see
-that module's docstring for the seam it owns.
+Everything the platform sends leaves through ``send_ses_email``:
 
-This mirrors ``email_service.send_email``'s shape:
+- agent replies, FROM a per-owner subdomain address
+  (``friday@{slug}.isol8.co``) — via the ``send_ses_reply`` wrapper
+- the app's own welcome / support-ticket mail, FROM ``hello@isol8.co`` /
+  ``tickets@isol8.co`` — via ``email_service.send_email``, which adds the
+  app-mail concerns (``[ENV]`` subject tagging) on top of this transport
 
-- **Gated** — no-ops unless ``AGENT_EMAIL_DOMAIN`` is configured, so an env
-  that hasn't turned on agent email never attempts a send.
+Both work because the SES identity is the **apex domain** ``isol8.co``
+(``ses-inbound-stack.ts`` — "verified for BOTH receiving and sending"), and
+a domain identity authorizes every address beneath it. The backend task
+role's grant is scoped to exactly that identity (``service-stack.ts``,
+``AgentMailSesSend``).
+
+Properties every send inherits:
+
+- **Gated** — no-ops unless ``AGENT_EMAIL_DOMAIN`` is set. That setting
+  holds the *verified SES domain itself* (CDK: ``env === "prod" ?
+  "isol8.co" : ""``), so it is a direct proxy for "is the SES identity
+  deployed" — the identity only exists where the prod-only
+  ``SesInboundStack`` ran. Non-prod envs therefore send no mail at all.
+  Clearing it in prod also silences welcome/support mail, not just agent
+  replies; that coupling is deliberate (one verified domain, one switch)
+  but is the thing to check first if app mail goes quiet.
 - **Off the event loop** — boto3 is synchronous; the send runs in a worker
-  thread with a hard timeout so a slow/hung SES call can't wedge the caller.
+  thread with a hard timeout so a slow/hung SES call can't wedge the caller
+  (an agent run, or the Clerk webhook).
 - **Best-effort** — never raises. On failure it logs, emits a metric, and
   returns None. Callers (``agent_mail_reply.send_reply``) map None to
   "not_sent" and that must never be reported as "sent".
 
-IAM note: the backend ECS task role needs ``ses:SendEmail`` /
-``ses:SendRawEmail`` granted in service-stack (CDK) — a separate infra
-chunk, not done here.
+There is no send-level idempotency key (SES has no equivalent). The one
+caller that needs it — the welcome email — is already protected upstream by
+the Clerk webhook's svix-id dedupe, which short-circuits a retry *before*
+reaching the send. See ``routers/webhooks.py``.
 """
 
 import logging
@@ -52,6 +68,77 @@ def _client():
     return _ses_client
 
 
+async def send_ses_email(
+    *,
+    from_addr: str,
+    to: str | list[str],
+    subject: str,
+    body_text: str | None = None,
+    body_html: str | None = None,
+    headers: dict[str, str] | None = None,
+    kind: str = "generic",
+) -> str | None:
+    """Send one email via AWS SES (sesv2 send_email, raw MIME).
+
+    Builds an RFC-5322 message with stdlib email.message.EmailMessage so
+    arbitrary headers (`In-Reply-To`/`References` threading, `Reply-To`) can
+    be set, then sends the raw bytes. Returns the SES MessageId on success,
+    or None on any failure (never raises — callers map None → "not_sent").
+    boto3 is synchronous, so the send runs off the event loop with a timeout.
+
+    Pass ``body_html`` alone for an HTML-only message, ``body_text`` alone for
+    plain text, or both for a multipart/alternative. ``kind`` is a short label
+    ("welcome", "support_ticket", "agent_reply_ses") used only for metric
+    dimensions and log context.
+    """
+    if not settings.AGENT_EMAIL_DOMAIN.strip():
+        # Emit a metric, not just a log line. The other two outcomes are
+        # observable (result=ok / result=error) but this one used to be
+        # silent, so an unconfigured env dropped every send with nothing in
+        # CloudWatch to see it — and for support tickets the email IS the
+        # only capture path, so a silent skip loses the request outright.
+        put_metric("email.send", dimensions={"result": "skipped_unconfigured", "kind": kind})
+        logger.warning("AGENT_EMAIL_DOMAIN not configured; skipping %s SES send to %s", kind, to)
+        return None
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = from_addr
+        msg["To"] = ", ".join(to) if isinstance(to, list) else to
+        msg["Subject"] = subject
+        for key, val in (headers or {}).items():
+            msg[key] = val
+
+        # EmailMessage has no "unset body" state, so the first part written
+        # decides the top-level content type. HTML-only mail must therefore
+        # go through set_content(subtype="html") — calling add_alternative on
+        # an empty message would leave a stray empty text/plain part.
+        if body_text is not None:
+            msg.set_content(body_text)
+            if body_html is not None:
+                msg.add_alternative(body_html, subtype="html")
+        elif body_html is not None:
+            msg.set_content(body_html, subtype="html")
+
+        raw = bytes(msg)
+
+        with anyio.fail_after(_SEND_TIMEOUT_S):
+            # abandon_on_cancel=True so fail_after can actually return at the
+            # deadline instead of waiting for a stalled worker thread.
+            resp = await anyio.to_thread.run_sync(
+                lambda: _client().send_email(Content={"Raw": {"Data": raw}}),
+                abandon_on_cancel=True,
+            )
+        message_id = resp.get("MessageId") if isinstance(resp, dict) else None
+        put_metric("email.send", dimensions={"result": "ok", "kind": kind})
+        logger.info("sent %s email to %s id=%s", kind, to, message_id)
+        return message_id
+    except Exception:
+        put_metric("email.send", dimensions={"result": "error", "kind": kind})
+        logger.exception("send_ses_email failed for %s to %s", kind, to)
+        return None
+
+
 async def send_ses_reply(
     *,
     from_addr: str,
@@ -61,44 +148,15 @@ async def send_ses_reply(
     body_html: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> str | None:
-    """Send an agent reply via AWS SES (sesv2 send_email, raw MIME).
-
-    Builds an RFC-5322 message with stdlib email.message.EmailMessage so
-    `In-Reply-To`/`References` threading headers can be set, then sends the
-    raw bytes. Returns the SES MessageId on success, or None on any failure
-    (never raises — the caller maps None → "not_sent"). boto3 is synchronous,
-    so the send runs off the event loop with a timeout, mirroring email_service.
-    """
-    if not settings.AGENT_EMAIL_DOMAIN.strip():
-        logger.debug("AGENT_EMAIL_DOMAIN not configured; skipping SES send to %s", to)
-        return None
-
-    try:
-        msg = EmailMessage()
-        msg["From"] = from_addr
-        msg["To"] = to
-        msg["Subject"] = subject
-        for key, val in (headers or {}).items():
-            msg[key] = val
-        msg.set_content(body_text)
-        if body_html:
-            msg.add_alternative(body_html, subtype="html")
-
-        raw = bytes(msg)
-
-        with anyio.fail_after(_SEND_TIMEOUT_S):
-            # abandon_on_cancel=True so fail_after can actually return at the
-            # deadline instead of waiting for a stalled worker thread — same
-            # reasoning as email_service.send_email.
-            resp = await anyio.to_thread.run_sync(
-                lambda: _client().send_email(Content={"Raw": {"Data": raw}}),
-                abandon_on_cancel=True,
-            )
-        message_id = resp.get("MessageId") if isinstance(resp, dict) else None
-        put_metric("email.send", dimensions={"result": "ok", "kind": "agent_reply_ses"})
-        logger.info("sent agent_reply_ses email to %s id=%s", to, message_id)
-        return message_id
-    except Exception:
-        put_metric("email.send", dimensions={"result": "error", "kind": "agent_reply_ses"})
-        logger.exception("send_ses_reply failed to %s", to)
-        return None
+    """Send an agent reply. Thin wrapper over send_ses_email that pins the
+    metric kind — kept as its own name because ``agent_mail_reply`` treats a
+    None return as the load-bearing "not_sent" signal."""
+    return await send_ses_email(
+        from_addr=from_addr,
+        to=to,
+        subject=subject,
+        body_text=body_text,
+        body_html=body_html,
+        headers=headers,
+        kind="agent_reply_ses",
+    )

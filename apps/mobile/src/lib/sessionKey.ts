@@ -23,3 +23,15 @@ export function buildChatSessionKey(
   }
   return `agent:${agentId}:${userId}:${sessionId}`;
 }
+
+/**
+ * Extract the session id from a 4-part key (`agent:{agentId}:{member}:{id}`).
+ * 3-part/General keys — and non-session trailing segments like cron ids or
+ * member ids — return null. Push payloads carry the key OpenClaw echoed
+ * (lowercased), which is exactly the form SESSION_ID_RE accepts.
+ */
+export function sessionIdFromKey(sessionKey: string | null | undefined): string | null {
+  if (!sessionKey) return null;
+  const last = sessionKey.split(":").pop() ?? "";
+  return SESSION_ID_RE.test(last) ? last : null;
+}

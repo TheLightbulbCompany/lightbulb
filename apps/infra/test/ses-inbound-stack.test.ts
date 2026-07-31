@@ -58,15 +58,50 @@ describe("SesInboundStack", () => {
     template = synthSesInboundStack();
   });
 
-  test("creates the receipt rule set + a catch-all rule matching the mail domain", () => {
+  test("catch-all rule matches the apex AND every subdomain mailbox", () => {
+    // The leading-dot entry is the load-bearing one: agent mailboxes are
+    // ALWAYS `friday@{slug}.isol8.co`, and in SES a bare domain matches only
+    // the exact domain. With `["isol8.co"]` alone, every agent reply hit SES
+    // and was dropped — no S3 object, no Lambda invocation — so inbound had
+    // never been delivered once in prod. This test previously asserted that
+    // broken value, which is why nothing caught it.
     template.resourceCountIs("AWS::SES::ReceiptRuleSet", 1);
     template.hasResourceProperties("AWS::SES::ReceiptRule", {
       Rule: Match.objectLike({
-        Recipients: ["isol8.co"],
+        Recipients: ["isol8.co", ".isol8.co"],
         ScanEnabled: true,
         Enabled: true,
       }),
     });
+  });
+
+  test("apex SPF authorizes Google AND SES, and preserves the site-verification token", () => {
+    // The apex had no SPF at all, so Workspace mail from admin@isol8.co
+    // evaluated spf=none; with Google's default gappssmtp DKIM being
+    // unaligned to isol8.co, DMARC failed outright and the inbound
+    // anti-spoof gate dropped the owner's own replies to their agent.
+    //
+    // Both values are asserted because a Route53 TXT record is a SET, and
+    // the `deleteExisting` below removes the pre-existing set before creating
+    // this one — so a value dropped from this array is GONE from the zone.
+    // Losing the verification token can unverify the domain in Workspace.
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "isol8.co.",
+      Type: "TXT",
+      ResourceRecords: [
+        '"v=spf1 include:_spf.google.com include:amazonses.com ~all"',
+        '"google-site-verification=4m6AkWYnaePsQsIyDL4eJlPEddQg2RF1_Hxl7EFDHr8"',
+      ],
+    });
+  });
+
+  test("apex SPF deletes the pre-existing unmanaged TXT set before creating", () => {
+    // Without this, the deploy FAILS and rolls the stack back:
+    //   Tried to create resource record set [name='isol8.co.', type='TXT']
+    //   but it already exists
+    // CloudFormation's Route53 CREATE does not upsert, and a TXT set already
+    // existed at the apex outside CFN. This cost one failed prod deploy.
+    template.resourceCountIs("Custom::DeleteExistingRecordSet", 1);
   });
 
   test("catch-all rule wires both the S3 action and the Lambda action", () => {
@@ -122,13 +157,39 @@ describe("SesInboundStack", () => {
     });
   });
 
+  test("publishes an EXPLICIT _dmarc record so the wildcard SPF cannot answer for it", () => {
+    // The wildcard TXT above matches `_dmarc.isol8.co`, which would serve an
+    // SPF string where a DMARC record belongs and leave the domain with no
+    // policy. Only an explicit record outranks the wildcard.
+    template.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "_dmarc.isol8.co.",
+      Type: "TXT",
+      ResourceRecords: ['"v=DMARC1; p=none; rua=mailto:admin@isol8.co; fo=1"'],
+    });
+  });
+
+  test("DMARC policy is monitor-only — it governs Google Workspace/Resend/Clerk mail too", () => {
+    // p=quarantine or p=reject here would put every unverified sender on the
+    // domain at risk, not just SES. Tightening is a deliberate later step.
+    const dmarc = Object.values(
+      template.findResources("AWS::Route53::RecordSet"),
+    ).find((r: any) => r.Properties?.Name === "_dmarc.isol8.co.") as any;
+    expect(dmarc).toBeDefined();
+    const value = dmarc.Properties.ResourceRecords[0] as string;
+    expect(value).toContain("v=DMARC1");
+    expect(value).toContain("p=none");
+    expect(value).not.toContain("p=reject");
+    expect(value).not.toContain("p=quarantine");
+  });
+
   test("verifies the domain identity (DKIM via the hosted zone)", () => {
     template.resourceCountIs("AWS::SES::EmailIdentity", 1);
     template.hasResourceProperties("AWS::SES::EmailIdentity", {
       EmailIdentity: "isol8.co",
     });
-    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT.
-    template.resourceCountIs("AWS::Route53::RecordSet", 5);
+    // 3 DKIM CNAMEs + wildcard MX + wildcard SPF TXT + explicit _dmarc TXT
+    // + apex SPF TXT.
+    template.resourceCountIs("AWS::Route53::RecordSet", 7);
   });
 
   test("creates the raw-mail and attachments S3 buckets, both private", () => {
@@ -259,7 +320,12 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
     });
   });
 
-  test("dev: the service stack's AGENT_EMAIL_DOMAIN + attachments-bucket env vars are empty (inert)", () => {
+  test("dev: agent email is LIVE on its own subdomain, without a stack of its own", () => {
+    // Dev cannot own an SES receipt rule set (SetActiveReceiptRuleSet is
+    // account+region scoped and prod owns it), but it does not need one: SES
+    // matches a recipient condition against the domain AND its subdomains, so
+    // the single prod-owned catch-all rule already receives
+    // `{slug}.dev.isol8.co`. Only the domain and the Lambda's routing differ.
     const stacks = stageStacks("dev");
     const serviceStack = stacks.find((s) => s.node.id === "isol8-dev-service");
     expect(serviceStack).toBeDefined();
@@ -268,11 +334,58 @@ describe("SesInboundStack gating (Isol8Stage)", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            { Name: "AGENT_EMAIL_DOMAIN", Value: "" },
-            { Name: "AGENT_EMAIL_ATTACHMENTS_BUCKET", Value: "" },
+            { Name: "AGENT_EMAIL_DOMAIN", Value: "dev.isol8.co" },
           ]),
         }),
       ]),
     });
+  });
+
+  test("prod publishes the DEV wildcard MX + SPF (a single-label wildcard does not nest)", () => {
+    // `*.isol8.co` matches `acme.isol8.co` but NOT `acme.dev.isol8.co`, so the
+    // dev pair is required and lives in the prod stack, which owns mail DNS.
+    const stacks = stageStacks("prod");
+    const ses = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    expect(ses).toBeDefined();
+    const t = Template.fromStack(ses!);
+    t.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "*.dev.isol8.co.",
+      Type: "MX",
+      ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"],
+    });
+    t.hasResourceProperties("AWS::Route53::RecordSet", {
+      Name: "*.dev.isol8.co.",
+      Type: "TXT",
+      ResourceRecords: ['"v=spf1 include:amazonses.com ~all"'],
+    });
+  });
+
+  test("the ingest Lambda carries the dev routing env so both backends are reachable", () => {
+    const stacks = stageStacks("prod");
+    const ses = stacks.find((s) => s.node.id === "isol8-prod-ses-inbound");
+    const t = Template.fromStack(ses!);
+    const fns = Object.values(t.findResources("AWS::Lambda::Function")).filter(
+      (fn: any) => fn.Properties?.Environment?.Variables?.RAW_MAIL_PREFIX != null,
+    );
+    expect(fns.length).toBe(1);
+    const env = (fns[0] as any).Properties.Environment.Variables;
+    expect(env.DEV_MAIL_SUFFIX).toBe("dev.isol8.co");
+    expect(env.DEV_BACKEND_INGEST_URL).toBe(
+      "https://api-dev.isol8.co/api/v1/webhooks/ses-inbound",
+    );
+    // Each backend verifies the shared secret against its OWN copy, so the
+    // Lambda must be able to present dev's rather than prod's.
+    expect(env.DEV_SES_INBOUND_SECRET_ARN).toBeDefined();
+  });
+
+  test("synth FAILS if a dev mail domain is set without the dev secret name", () => {
+    // Routing dev mail while presenting prod's secret would 401 every message,
+    // and the only symptom would be silently undelivered mail. Fail at synth.
+    expect(() =>
+      synthSesInboundStack({
+        devMailDomain: "dev.isol8.co",
+        devSesIngestSecretName: undefined,
+      }),
+    ).toThrow(/devSesIngestSecretName is required/);
   });
 });

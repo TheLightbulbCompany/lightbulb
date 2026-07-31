@@ -9,6 +9,8 @@ import { useApi, BACKEND_URL } from "@/lib/api";
 import { ApiError, type Connection } from "@/hooks/useConnections";
 import { AwsConnectCard } from "@/components/settings/AwsConnectCard";
 import { notifyApiError } from "@/lib/notify";
+import { useSupport } from "@/components/support/SupportProvider";
+import { capture } from "@/lib/analytics";
 
 interface ConnectButtonProps {
   connection: Connection;
@@ -68,6 +70,7 @@ export function ConnectButton({
 }: ConnectButtonProps) {
   const { provider, display_name, acquisition, status } = connection;
   const api = useApi();
+  const { openSupport } = useSupport();
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -170,7 +173,7 @@ export function ConnectButton({
     }
 
     return (
-      <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[#e0dbd0] bg-[#faf8f3] p-3">
+      <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-[#faf8f3] p-3">
         <p className="text-sm font-medium text-[#1c1917]">{setupLabel}</p>
         {connection.byo_setup_url && (
           <Link
@@ -182,7 +185,7 @@ export function ConnectButton({
             Register an OAuth app →
           </Link>
         )}
-        <ol className="list-decimal pl-4 text-xs text-[#8a8578] space-y-0.5">
+        <ol className="list-decimal pl-4 text-xs text-[var(--mute)] space-y-0.5">
           <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
           {provider === "google" && (
             <li>
@@ -190,17 +193,28 @@ export function ConnectButton({
               <strong>Google Drive</strong> APIs for the project.
             </li>
           )}
+          {provider === "x" && (
+            <li>
+              In the X developer portal, enable <strong>OAuth 2.0 user context</strong>{" "}
+              with read, write, DM, follow, like, media and offline access scopes.
+            </li>
+          )}
           <li>Add the authorized redirect URI shown below.</li>
-          <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          {provider === "google" && (
+            <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
+          )}
+          {provider === "x" && (
+            <li>X API package/app permissions may limit posting, reads, DMs or media until enabled by X.</li>
+          )}
           <li>Paste the Client ID and secret here.</li>
         </ol>
         <div className="flex flex-col gap-1">
-          <span className="text-xs text-[#8a8578]">Authorized redirect URI to register:</span>
-          <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[#e0dbd0]">
+          <span className="text-xs text-[var(--mute)]">Authorized redirect URI to register:</span>
+          <code className="break-all rounded bg-white px-2 py-1 text-[11px] text-[#1c1917] border border-[var(--edge)]">
             {byoRedirectUri(provider)}
           </code>
         </div>
-        <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[#8a8578]">
+        <label htmlFor={`byo-client-id-${provider}`} className="text-xs text-[var(--mute)]">
           Client ID
         </label>
         <Input
@@ -214,7 +228,7 @@ export function ConnectButton({
           onChange={(e) => setClientId(e.target.value)}
           className="h-9 bg-white"
         />
-        <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[#8a8578]">
+        <label htmlFor={`byo-client-secret-${provider}`} className="text-xs text-[var(--mute)]">
           Client secret
         </label>
         <Input
@@ -244,6 +258,37 @@ export function ConnectButton({
       </div>
     );
   };
+
+  // Gated off this owner: the authorize leg would 404, so never offer Connect.
+  // Request access emails support with the owner's account already enriched
+  // server-side — which is exactly what an operator needs to add them as a
+  // provider tester and to owner_allowlist. Checked before every
+  // acquisition-specific branch (paste_token / direct_oauth / aws_sts) so it
+  // wins for every acquisition type.
+  if (connection.requestable) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        // Same admin gate as every other action in this row. Without it a
+        // non-admin member could file a request against an org whose admin never
+        // asked for it — and since no request record is stored, the admin would
+        // have no way to see it happened.
+        disabled={!canManage}
+        title={canManage ? undefined : NON_ADMIN_MSG}
+        onClick={() => {
+          capture("integration_access_requested", { provider: connection.provider });
+          openSupport({
+            category: "Integration request",
+            message: `I'd like to use ${connection.display_name}.`,
+          });
+        }}
+        aria-label={`Request access to ${connection.display_name}`}
+      >
+        Request access
+      </Button>
+    );
+  }
 
   // Connected → Disconnect, plus the BYO setup affordance when this owner still
   // needs to store their own app (non-destructive migration off the old

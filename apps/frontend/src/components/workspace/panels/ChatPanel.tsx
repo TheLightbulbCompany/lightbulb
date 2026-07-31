@@ -41,8 +41,15 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   const title = useMemo(() => {
     const agent = agents.find((a) => a.id === resolvedId);
-    return agent ? agentDisplayName(agent) : raw === DEFAULT_AGENT_SENTINEL ? "Chat" : raw;
-  }, [agents, resolvedId, raw]);
+    if (agent) return agentDisplayName(agent);
+    if (raw === DEFAULT_AGENT_SENTINEL) return "Chat";
+    // Roster not settled yet (e.g. onboarding, gateway still connecting):
+    // a raw agent UUID as the tab title reads as a bug — hold the neutral
+    // "Chat" and let the memo re-resolve to the agent name once the roster
+    // arrives (this memo is reactive to `agents`). Once settled, an unknown
+    // id falls through to the agent-gone state below anyway.
+    return isSettled ? raw : "Chat";
+  }, [agents, resolvedId, raw, isSettled]);
 
   // Stable identity: MessageList's memoized bubble tree compares onOpenFile
   // by reference — an inline arrow here would defeat the bail-outs whenever
@@ -69,10 +76,10 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   if (agentGone) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[#8a8578]">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[var(--mute)]">
         <p>This agent no longer exists.</p>
         <button
-          className="rounded border border-[#e0dbd0] px-3 py-1 hover:bg-[#f3efe6]"
+          className="rounded border border-[var(--edge)] px-3 py-1 hover:bg-[var(--cream-deeper)]"
           onClick={() => props.api.close()}
         >
           <X size={14} className="mr-1 inline" /> Close panel
@@ -94,7 +101,7 @@ export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.Re
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[#e0dbd0] bg-[#faf7f2] px-2">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-[var(--edge)] bg-[var(--cream)] px-2">
         <span className="truncate text-sm font-medium">{title}</span>
         <div className="flex-1" />
         {resolvedId && (

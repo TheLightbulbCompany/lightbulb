@@ -13,7 +13,7 @@ export function GetStartedLauncher({ done, total, pulse, onClick }: {
           <circle cx="15" cy="15" r="12" stroke="rgba(255,255,255,.25)" strokeWidth="3" fill="none" />
           {/* SVG presentation attributes don't reliably accept var(), so the
               brand gold (--gold) stays a literal hex here. */}
-          <circle cx="15" cy="15" r="12" stroke="#c2a378" strokeWidth="3" fill="none" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={offset} />
+          <circle cx="15" cy="15" r="12" stroke="var(--gold)" strokeWidth="3" fill="none" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={offset} />
         </svg>
         <span className="absolute inset-0 grid place-items-center text-[9px] font-bold">{done}/{total}</span>
       </span>

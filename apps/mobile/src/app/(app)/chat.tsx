@@ -10,17 +10,15 @@ import {
   Text,
   View,
 } from "react-native";
-import {
-  agentDisplayName,
-  useGatewayRpc,
-  type AgentsListResponse,
-} from "@isol8/shared";
+import { agentDisplayName, useAgents } from "@isol8/shared";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { AgentPickerSheet } from "../../components/chat/AgentPickerSheet";
 import { SessionsSheet } from "../../components/chat/SessionsSheet";
 import { usePulse } from "../../components/chat/usePulse";
 import { readFirstRun } from "../../lib/firstRun";
+import { useContainerStatusContext } from "../../lib/containerStatusContext";
+import { isContainerComingUp } from "../../lib/rosterPresentation";
 import { useGateway } from "../../providers/gateway";
 
 // Slim connection-state row above the roster (web HealthIndicator, spec §5).
@@ -87,32 +85,73 @@ function Monogram({
 }
 
 // Four pulsing placeholder tiles (2×2) while agents.list is in flight (§7).
-function SkeletonGrid() {
+// `warming` adds a line naming what we're waiting on, for the one case where
+// the wait is long enough to look like a hang: a container waking from zero.
+function SkeletonGrid({ warming }: { warming?: boolean }) {
   const pulse = usePulse(true, 0.55);
   return (
-    <View style={styles.skeletonGrid}>
-      {[0, 1, 2, 3].map((i) => (
-        <Animated.View
-          key={i}
-          style={[styles.skeletonTile, { opacity: pulse }]}
-        />
-      ))}
+    <View>
+      {warming ? (
+        <Text style={styles.warmingLabel}>Waking your agents…</Text>
+      ) : null}
+      <View style={styles.skeletonGrid}>
+        {[0, 1, 2, 3].map((i) => (
+          <Animated.View
+            key={i}
+            style={[styles.skeletonTile, { opacity: pulse }]}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// Always carries a Retry: a card with no way out is only marginally better
+// than the spinner it replaced, and this is the surface a first-time user
+// lands on.
+function ErrorCard({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <View style={styles.errorCard}>
+      <Text style={styles.errorText}>Couldn’t load agents: {message}</Text>
+      <Pressable
+        onPress={onRetry}
+        accessibilityRole="button"
+        accessibilityLabel="Retry loading agents"
+      >
+        <Text style={styles.retryText}>Retry</Text>
+      </Pressable>
     </View>
   );
 }
 
 // Agent roster — a 2-column grid of agent tiles, plus a "New task" entry that
-// starts a fresh session with a picked agent. Streams over the same
-// agents.list RPC the web sidebar uses.
+// starts a fresh session with a picked agent. Reads the roster through the
+// SHARED useAgents hook (the same one the web sidebar uses), which carries the
+// onboarding empty-roster latch fix and revalidation on container-reachable —
+// neither of which the raw agents.list call this replaced had.
 export default function Chat() {
   const gateway = useGateway();
-  const { data, error, isLoading } = useGatewayRpc<AgentsListResponse>(
-    gateway,
-    "agents.list",
-  );
-  const agents = data?.agents ?? [];
+  const { agents, defaultId, error, isLoading, isSettled, refresh } =
+    useAgents(gateway);
+  const containerStatus = useContainerStatusContext();
   const connectionDown = !gateway.isConnected && gateway.error != null;
-  const showEmpty = agents.length === 0 && !isLoading && data != null;
+  // Is a missing/failed roster a wake or a failure? Ask the server, don't
+  // infer it from the RPC error (see isContainerComingUp). `warming` also
+  // covers the NO-error case: a first-run owner's agents.list resolves to
+  // undefined-as-success, so there is nothing to classify and the screen
+  // would otherwise skeleton silently forever.
+  const warming = isContainerComingUp(containerStatus);
+  const hardError = error && !warming ? error : null;
+
+  // `hardError` suppresses it: the error card is the answer, and rendering
+  // "No agents yet." beside it tells the user two contradictory things.
+  const showEmpty = agents.length === 0 && !isLoading && isSettled && !hardError;
   const [pickerOpen, setPickerOpen] = useState(false);
   // Long-pressing a tile opens that agent's session switcher right from the
   // roster. `sessionsAgent` stays set after close so the sheet can animate out
@@ -124,36 +163,40 @@ export default function Chat() {
   } | null>(null);
   const [sessionsOpen, setSessionsOpen] = useState(false);
 
-  // First-run aha: right after the funnel brief is submitted (and until the
-  // kickoff fires — `started` stays false), walk the user straight into the
-  // default agent's (Friday's) chat, where useFirstRunKickoff sends the
-  // visible kickoff prompt. Web needs no redirect (its main surface IS the
+  // First-run aha: right after the funnel brief is submitted, walk the user
+  // straight into the default agent's (Friday's) chat so they land on the
+  // live kickoff the backend server-dispatches (spec PR-6, BOOTSTRAP) rather
+  // than the roster. Web needs no redirect (its main surface IS the
   // default-agent chat); the roster is the mobile equivalent's front door.
+  //
+  // Gated on the DURABLE server-owned `onboarded` fact (funnel_state ==
+  // "complete", surfaced on every ready status body), NOT on `briefSubmitted`
+  // alone. `briefSubmitted` is a permanently-sticky Clerk flag that is never
+  // reset, and `redirectedRef` only survives a single mount -- so gating on
+  // those two would re-yank a user who onboarded weeks ago into Friday on
+  // every roster mount (cold start, relaunch, any remount). Once the backend
+  // reports `onboarded`, the first-run window is over and we stand down.
   const { user } = useUser();
+  const onboarded =
+    containerStatus?.kind === "ready" && containerStatus.onboarded === true;
   const redirectedRef = useRef(false);
   useEffect(() => {
-    if (redirectedRef.current || !user || !data?.defaultId) return;
+    if (redirectedRef.current || !user || !defaultId) return;
     const fr = readFirstRun(user);
-    if (!fr.briefSubmitted || fr.started) return;
-    const agent = data.agents?.find((a) => a.id === data.defaultId);
+    if (!fr.briefSubmitted || onboarded) return;
+    const agent = agents.find((a) => a.id === defaultId);
     if (!agent) return;
     redirectedRef.current = true;
     router.push({
       pathname: "/(app)/agent/[agentId]",
       params: { agentId: agent.id, name: agentDisplayName(agent) },
     });
-  }, [user, data]);
+  }, [user, agents, defaultId, onboarded]);
 
   let body: ReactElement;
-  if (error) {
-    body = (
-      <View style={styles.errorCard}>
-        <Text style={styles.errorText}>
-          Couldn’t load agents: {error.message}
-        </Text>
-      </View>
-    );
-  } else if (!data && connectionDown) {
+  if (hardError && !isSettled) {
+    body = <ErrorCard message={hardError.message} onRetry={() => void refresh()} />;
+  } else if (!isSettled && connectionDown) {
     // No cached roster and the socket is down — the health row carries the
     // detail; keep the body quiet rather than pulsing skeletons forever.
     body = (
@@ -174,16 +217,27 @@ export default function Chat() {
           showEmpty && styles.centerGrow,
         ]}
         ListHeaderComponent={
-          agents.length > 0 ? (
-            <Text style={styles.sectionLabel}>
-              AGENTS
-              <Text style={styles.sectionCount}> · {agents.length}</Text>
-            </Text>
-          ) : null
+          <>
+            {/* A hard failure over a cached roster reports itself above the
+                tiles rather than replacing them — the agents we already
+                fetched are still the truest thing we can show. */}
+            {hardError ? (
+              <ErrorCard
+                message={hardError.message}
+                onRetry={() => void refresh()}
+              />
+            ) : null}
+            {agents.length > 0 ? (
+              <Text style={styles.sectionLabel}>
+                AGENTS
+                <Text style={styles.sectionCount}> · {agents.length}</Text>
+              </Text>
+            ) : null}
+          </>
         }
         ListEmptyComponent={
-          isLoading || !data ? (
-            <SkeletonGrid />
+          hardError ? null : isLoading || !isSettled ? (
+            <SkeletonGrid warming={warming} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyGlyph}>8</Text>
@@ -215,10 +269,6 @@ export default function Chat() {
             <Text style={styles.tileName} numberOfLines={2}>
               {agentDisplayName(item)}
             </Text>
-            <View style={styles.tileStatus}>
-              <View style={styles.statusDot} />
-              <Text style={styles.statusLabel}>Active</Text>
-            </View>
           </Pressable>
         )}
       />
@@ -400,24 +450,6 @@ const styles = StyleSheet.create({
     color: colors.ink,
     textAlign: "center",
   },
-  tileStatus: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-  },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.forestSoft,
-  },
-  statusLabel: {
-    fontFamily: fonts.dmSans,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.mute,
-  },
-
   // Empty state (spec §7).
   emptyWrap: { alignItems: "center", gap: spacing.sm },
   emptyGlyph: {
@@ -428,6 +460,12 @@ const styles = StyleSheet.create({
   },
 
   // Loading skeletons — 2×2 tile grid (spec §7).
+  warmingLabel: {
+    ...type.body,
+    color: colors.mute,
+    textAlign: "center",
+    marginBottom: spacing.md,
+  },
   skeletonGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -449,6 +487,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.errorBorder,
     borderRadius: radii.md,
+  },
+  retryText: {
+    fontFamily: fonts.dmSansMedium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.forest,
+    marginTop: spacing.sm,
   },
   errorText: {
     fontFamily: fonts.dmSans,

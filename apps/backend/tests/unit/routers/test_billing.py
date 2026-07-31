@@ -61,6 +61,38 @@ class TestGetBillingAccount:
     @pytest.mark.asyncio
     @patch("routers.billing.get_usage_summary")
     @patch("routers.billing.billing_repo")
+    async def test_get_billing_account_trial_local_is_not_subscribed(self, mock_repo, mock_get_summary, async_client):
+        """The no-card free tier grants platform use but is NOT a paid
+        subscription — ``is_subscribed`` keys off ``is_paid_subscription``,
+        so a trial_local row must report False (the billing UI renders the
+        free-tier card with a Subscribe CTA, never "Active subscription")."""
+        mock_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "subscription_status": "trial_local",
+                "trial_end": None,
+            }
+        )
+        mock_get_summary.return_value = {
+            "period": "2026-07",
+            "total_spend": 0.25,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_cache_read_tokens": 0,
+            "total_cache_write_tokens": 0,
+            "request_count": 3,
+            "lifetime_spend": 0.25,
+        }
+
+        response = await async_client.get("/api/v1/billing/account")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["is_subscribed"] is False
+        assert data["subscription_status"] == "trial_local"
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.get_usage_summary")
+    @patch("routers.billing.billing_repo")
     @patch("core.services.billing_service.stripe")
     @patch("core.services.billing_service.billing_repo")
     async def test_get_billing_account_no_row_returns_pre_signup_defaults(

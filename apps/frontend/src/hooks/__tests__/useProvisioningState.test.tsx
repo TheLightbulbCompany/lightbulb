@@ -1,13 +1,23 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { useProvisioningState } from "../useProvisioningState";
+import { SIGNUP_INTENT_COOKIE } from "@/lib/signupIntent";
+
+// Per-test Clerk auth state. `orgId` is the JWT's org claim — the signal the
+// team-intent poll gate reads (see the hook's `teamIntentPending` comment).
+const auth = vi.hoisted(() => ({
+  isSignedIn: true as boolean,
+  orgId: undefined as string | undefined,
+}));
 
 // Clerk's useAuth — return a stub.
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
-    isSignedIn: true,
+    isSignedIn: auth.isSignedIn,
+    orgId: auth.orgId,
   }),
 }));
 
@@ -16,9 +26,22 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
   <SWRConfig value={{ provider: () => new Map() }}>{children}</SWRConfig>
 );
 
+/**
+ * `useProvisioningState` is now a PURE READER over the single shared
+ * `useOnboardingStatus` hook (spec PR-9, CLIENT-HOOK) — its own SWR
+ * instance, two-phase pending-cadence state machine, and consumer-supplied
+ * `refreshInterval`/`revalidateOnFocus` knobs are gone. These tests cover
+ * only the classification -> `ProvisioningPhase` mapping this hook still
+ * owns; the shared cadence/backstop-loop behavior itself is covered by
+ * `packages/shared/src/hooks/useOnboardingStatus.test.ts`.
+ */
 describe("useProvisioningState", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    auth.isSignedIn = true;
+    auth.orgId = undefined;
+    // jsdom persists document.cookie across tests in a file.
+    document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
   });
 
   afterEach(() => {
@@ -29,16 +52,19 @@ describe("useProvisioningState", () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          status: "running",
-          substatus: "gateway_healthy",
+          container_status: "running",
+          container_substatus: "gateway_healthy",
           service_name: "x",
+          runtime_phase: "ready",
+          lifecycle: "ready",
+          chat_available: true,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
     const { result } = renderHook(() => useProvisioningState(), { wrapper });
     await waitFor(() => expect(result.current.phase).toBe("normal"));
-    expect(result.current.container?.status).toBe("running");
+    expect(result.current.container?.container_status).toBe("running");
     expect(result.current.blocked).toBeNull();
   });
 
@@ -71,12 +97,9 @@ describe("useProvisioningState", () => {
     await waitFor(() => expect(result.current.phase).toBe("blocked"));
     expect(result.current.blocked?.code).toBe("credits_required");
     expect(result.current.blocked?.action.href).toBe("/settings/billing#credits");
-    expect(result.current.refreshInterval).toBe(5000);
   });
 
   it("also accepts a top-level blocked payload (defensive fallback)", async () => {
-    // Older mocks / non-FastAPI proxies may put blocked at the top
-    // level; the parser should still accept it for resilience.
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -97,11 +120,6 @@ describe("useProvisioningState", () => {
   });
 
   it("returns phase=needs-signup when /status returns 404 (admin owner has never started signup)", async () => {
-    // Backend signal for "owner has never started signup": gate would
-    // fire `signup_required` for an admin, but /status converts that
-    // to 404 so the chat surface renders the ProviderPicker (the only
-    // checkout entry point) instead of trapping the admin in a
-    // Subscribe-loop UI. Inactive-row admins still get 402.
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({ detail: "No container found" }),
@@ -112,18 +130,9 @@ describe("useProvisioningState", () => {
     await waitFor(() => expect(result.current.phase).toBe("needs-signup"));
     expect(result.current.container).toBeNull();
     expect(result.current.blocked).toBeNull();
-    // Polls on same cadence as blocked/team-pending so a user
-    // returning from Stripe before the subscription webhook lands
-    // doesn't get stuck on a stale picker.
-    expect(result.current.refreshInterval).toBe(5_000);
   });
 
   it("returns phase=team-pending when /status returns 202 (org member, admin-owned workspace not yet provisioned)", async () => {
-    // Backend Task 8: org members whose admin-owned workspace is missing
-    // get 202 Accepted with {"detail": "..."}. The hook surfaces this as
-    // `phase === "team-pending"` so the stepper can render an
-    // admin-waiting empty state and keep polling (5s) for transition to
-    // `normal` once the admin's container appears.
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({ detail: "team workspace pending" }),
@@ -134,156 +143,6 @@ describe("useProvisioningState", () => {
     await waitFor(() => expect(result.current.phase).toBe("team-pending"));
     expect(result.current.container).toBeNull();
     expect(result.current.blocked).toBeNull();
-    // Members poll fast so the UI flips to `normal` shortly after their
-    // admin's container becomes ready.
-    expect(result.current.refreshInterval).toBe(5_000);
-  });
-
-  it("drops team-pending polling cadence to 30s after the first minute", async () => {
-    // Without a slow phase, a member whose admin never provisions would
-    // hammer /container/status indefinitely (720 req/hour). The cadence
-    // should match `blocked`: 5s for the first minute, then 30s.
-    vi.useFakeTimers();
-    try {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({ detail: "team workspace pending" }),
-          { status: 202, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-      const { result } = renderHook(() => useProvisioningState(), { wrapper });
-      await vi.waitFor(() => expect(result.current.phase).toBe("team-pending"));
-      expect(result.current.refreshInterval).toBe(5_000);
-
-      // Advance past the first 60s window — cadence should drop to 30s.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(61_000);
-      });
-      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("polls every 5s for the first minute while blocked", async () => {
-    global.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          detail: {
-            blocked: {
-              code: "credits_required",
-              title: "",
-              message: "",
-              action: { kind: "link", label: "", href: "", admin_only: false },
-              owner_role: "admin",
-            },
-          },
-        }),
-        { status: 402, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    const { result } = renderHook(() => useProvisioningState(), { wrapper });
-    await waitFor(() => expect(result.current.phase).toBe("blocked"));
-    expect(result.current.refreshInterval).toBe(5000);
-  });
-
-  it("refresh() while blocked restarts the 60s fast-poll window", async () => {
-    // Clicking "Check again" must restart the 60s 5s-poll window. An
-    // `[isBlocked]`-only timer effect would not re-fire on subsequent
-    // generations, leaving the cadence stuck at 5s indefinitely after a
-    // refresh past the first minute. Here we verify that immediately
-    // after `refresh()`, the cadence is still 5s (within the new
-    // generation's 60s window).
-    vi.useFakeTimers();
-    try {
-      global.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            detail: {
-              blocked: {
-                code: "credits_required",
-                title: "",
-                message: "",
-                action: { kind: "link", label: "", href: "", admin_only: false },
-                owner_role: "admin",
-              },
-            },
-          }),
-          { status: 402, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-      const { result } = renderHook(() => useProvisioningState(), { wrapper });
-      await vi.waitFor(() => expect(result.current.phase).toBe("blocked"));
-      expect(result.current.refreshInterval).toBe(5000);
-
-      // Advance past the first 60s window — cadence should drop to 30s.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(61_000);
-      });
-      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
-
-      // Manual refresh should bring us back to 5s for another 60s.
-      await act(async () => {
-        result.current.refresh();
-      });
-      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(5_000));
-
-      // And after another 60s, cadence drops back to 30s — confirming
-      // the timer effect actually re-fired for the new generation.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(61_000);
-      });
-      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("uses consumer-supplied refreshInterval when not in a pending state", async () => {
-    // 200 = normal state. The hook's gate-driven cadence is 0 here, so
-    // the consumer's refreshInterval should determine polling.
-    global.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          status: "running",
-          substatus: "gateway_healthy",
-          service_name: "x",
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    const { result } = renderHook(
-      () => useProvisioningState({ refreshInterval: 10_000 }),
-      { wrapper },
-    );
-    await waitFor(() => expect(result.current.phase).toBe("normal"));
-    expect(result.current.refreshInterval).toBe(10_000);
-  });
-
-  it("gate-driven cadence wins over consumer refreshInterval when blocked", async () => {
-    global.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          detail: {
-            blocked: {
-              code: "oauth_required",
-              title: "Sign in with ChatGPT",
-              message: "x",
-              action: { kind: "link", label: "x", href: "x", admin_only: false },
-              owner_role: "admin",
-            },
-          },
-        }),
-        { status: 402, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    const { result } = renderHook(
-      () => useProvisioningState({ refreshInterval: 60_000 }),
-      { wrapper },
-    );
-    await waitFor(() => expect(result.current.phase).toBe("blocked"));
-    // 5s (pending fast-poll) wins over the consumer's 60s.
-    expect(result.current.refreshInterval).toBe(5_000);
   });
 
   it("enabled: false halts the fetch", async () => {
@@ -295,7 +154,7 @@ describe("useProvisioningState", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("exposes the SWR error on non-2xx, non-handled statuses", async () => {
+  it("exposes a real error on an unrecognized (e.g. 500) status instead of a silently stuck UI", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: "boom" }), {
         status: 500,
@@ -305,5 +164,107 @@ describe("useProvisioningState", () => {
     const { result } = renderHook(() => useProvisioningState(), { wrapper });
     await waitFor(() => expect(result.current.error).toBeDefined());
     expect(result.current.phase).toBe("loading");
+  });
+
+  it("refresh() triggers an immediate revalidation", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ container_status: "running", runtime_phase: "ready", lifecycle: "ready" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    global.fetch = fetchSpy;
+    const { result } = renderHook(() => useProvisioningState(), { wrapper });
+    await waitFor(() => expect(result.current.phase).toBe("normal"));
+    const before = fetchSpy.mock.calls.length;
+    result.current.refresh();
+    await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  /**
+   * Team-signup poll gate.
+   *
+   * `GET /container/status` dispatches `ensure_user_ready` server-side, so
+   * this poll IS the provisioning trigger — not a read. Both chat shells call
+   * this hook (transitively, via `useGetStartedDerived`) ABOVE their
+   * `onboardingPhase !== "ready"` early return, and React runs hooks before
+   * early returns, so a team signup that lands on /chat fires the poll during
+   * the renders before `useOnboardingGate`'s redirect to /onboarding lands —
+   * provisioning a throwaway PERSONAL container, trial_local row and
+   * Paperclip company for a user who is about to create an org.
+   *
+   * Suppressing the poll (rather than steering the post-signup URL) is what
+   * makes the fix whole: it holds no matter which URL Clerk chooses.
+   */
+  describe("team-signup intent gate", () => {
+    function stubOkFetch() {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            container_status: "running",
+            runtime_phase: "ready",
+            lifecycle: "ready",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      global.fetch = fetchMock;
+      return fetchMock;
+    }
+
+    it("does not poll while team intent is pending (cookie set, no org yet)", async () => {
+      const fetchMock = stubOkFetch();
+      document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      // Same shape as the `enabled: false` case above — give SWR a tick to
+      // potentially fire, then assert it never did.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.current.phase).toBe("loading");
+    });
+
+    it("polls once the org exists even with the cookie still set — a stale cookie must never dead-poll an org owner", async () => {
+      const fetchMock = stubOkFetch();
+      document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+      auth.orgId = "org_123";
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      await waitFor(() => expect(result.current.phase).toBe("normal"));
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it("polls immediately when there is no intent cookie — personal signups are unchanged", async () => {
+      const fetchMock = stubOkFetch();
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      await waitFor(() => expect(result.current.phase).toBe("normal"));
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it("resumes polling on the next render once the cookie is cleared", async () => {
+      const fetchMock = stubOkFetch();
+      document.cookie = `${SIGNUP_INTENT_COOKIE}=team; path=/`;
+      const { result, rerender } = renderHook(() => useProvisioningState(), { wrapper });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // /onboarding clears the cookie once it takes over rendering the
+      // team-creation UI (`mode === "org"`). The cookie read is not
+      // reactive, so this pins the self-heal: the very next render picks
+      // the change up.
+      document.cookie = `${SIGNUP_INTENT_COOKIE}=; max-age=0; path=/`;
+      rerender();
+      await waitFor(() => expect(result.current.phase).toBe("normal"));
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it("fails OPEN: an undecodable cookie value polls rather than stranding the user", async () => {
+      const fetchMock = stubOkFetch();
+      // A bare "%" is what `decodeURIComponent` throws a URIError on — the
+      // read happens during render, so an unguarded throw here would take the
+      // whole chat shell down AND leave the user unable to provision.
+      document.cookie = `${SIGNUP_INTENT_COOKIE}=%; path=/`;
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      await waitFor(() => expect(result.current.phase).toBe("normal"));
+      expect(fetchMock).toHaveBeenCalled();
+    });
   });
 });

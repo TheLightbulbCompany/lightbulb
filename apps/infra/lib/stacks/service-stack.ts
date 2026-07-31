@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -13,6 +14,8 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as sfn from "aws-cdk-lib/aws-stepfunctions";
+import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
 
 // openclaw-version.json is the single source of truth for the pinned OpenClaw
@@ -43,6 +46,11 @@ const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
 export interface SecretNames {
   clerkIssuer: string;
   clerkSecretKey: string;
+  /**
+   * Svix signing secret for the Clerk webhook endpoint. This IS the auth on
+   * /webhooks/clerk — the backend rejects deliveries it cannot verify.
+   */
+  clerkWebhookSecret: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   encryptionKey: string;
@@ -74,12 +82,6 @@ export interface SecretNames {
   metronomeApiKey: string;
   /** HMAC key verifying inbound Metronome webhook signatures. */
   metronomeWebhookSecret: string;
-  /**
-   * Resend API key secret name. Same isol8/{env}/* CMK + wildcard read as the
-   * other auth secrets, so no extra IAM. The placeholder is a no-op until a
-   * real re_… key is set (email_service gates on the key prefix).
-   */
-  resendApiKey: string;
   /**
    * Shared secret the WebSocket Lambdas attach to authenticate themselves to
    * the backend /api/v1/ws/* endpoints. Same secret AuthStack creates and the
@@ -1110,6 +1112,688 @@ export class ServiceStack extends cdk.Stack {
       .selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS })
       .subnetIds.join(",");
 
+    // Backend container environment + secrets, declared as consts (rather
+    // than inline literals) so the provisioning-executor task definition can
+    // attach the exact same objects. core.config.Settings reads env vars only,
+    // so identical env/secrets => identical runtime config for both processes,
+    // and the two container definitions can never drift.
+    const backendContainerEnvironment: Record<string, string> = {
+      ENVIRONMENT: env,
+      AWS_REGION: "us-east-1",
+      // OpenClaw image versions — injected from openclaw-version.json (the
+      // single source of truth) so the backend never hand-mirrors them.
+      // Read at runtime by core/openclaw_version.py.
+      OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
+      OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
+      OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
+      WS_MANAGEMENT_API_URL: props.managementApiUrl,
+      WS_GATEWAY_URL: props.webSocketUrl,
+      WS_CONNECTIONS_TABLE: props.connectionsTableName,
+      // WS caller-attestation gate, enforced in every env. The
+      // x-isol8-ws-internal header is verified flowing from the WS Lambdas on
+      // both dev and prod (zero secret-fetch failures across real connects),
+      // so the backend rejects /ws/* callers that lack it — closing the
+      // unauthenticated WebSocket-impersonation hole on the public HTTP
+      // API Gateway $default path.
+      WS_ENFORCE_INTERNAL_SECRET: "true",
+      WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
+      CORS_ORIGINS:
+        env === "local"
+          ? "http://localhost:3000"
+          : env === "prod"
+            ? "https://isol8.co"
+            : "https://dev.isol8.co",
+      // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
+      // encrypt operator device seeds + gateway tokens at rest. Reuses the
+      // same CMK as the BYOK Fernet layer since the blast radius is the same
+      // (any principal with kms:Decrypt on this key can read any of them).
+      CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
+      // Stripe flat-fee Price ID is environment-specific: prod is created in
+      // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
+      // (a test-mode Price would silently create test subscriptions in prod).
+      // Read per-env from the runner's secrets at synth time.
+      STRIPE_FLAT_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_FLAT_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_FLAT_PRICE_ID_DEV ?? ""),
+      // Stripe per-seat Teams Price ID — same env-specific live/test split
+      // as STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently
+      // create test subscriptions in prod). Read per-env from the runner's
+      // secrets at synth time. Consumed by billing_service.create_team_seat_checkout.
+      STRIPE_TEAM_SEAT_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_TEAM_SEAT_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_TEAM_SEAT_PRICE_ID_DEV ?? ""),
+      // Stripe Teams BASE Price ID — the $50/mo flat component charged
+      // alongside the per-seat item. Same env-specific live/test split as
+      // STRIPE_FLAT_PRICE_ID above. Read per-env from the runner's secrets at
+      // synth time.
+      STRIPE_TEAM_BASE_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_TEAM_BASE_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_TEAM_BASE_PRICE_ID_DEV ?? ""),
+      // Stripe Ultra Pro Price ID — same env-specific live/test split as
+      // STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently create
+      // test subscriptions in prod). Read per-env from the runner's secrets
+      // at synth time. Consumed by the Ultra-tier checkout call site.
+      STRIPE_ULTRA_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
+      FRONTEND_URL:
+        env === "local"
+          ? "http://localhost:3000"
+          : env === "prod"
+            ? "https://isol8.co"
+            : "https://dev.isol8.co",
+      // Public-facing base URL of THIS API. Used by /hooks/credentials
+      // (and any future endpoint that surfaces an absolute URL back to
+      // the browser) to build the webhook URL the Settings panel
+      // displays to the user. Per-env API hostname, matches the DNS
+      // records provisioned by dns-stack.ts.
+      PUBLIC_API_BASE:
+        env === "local"
+          ? "http://localhost:8000"
+          : env === "prod"
+            ? "https://api.isol8.co"
+            : `https://api-${env}.isol8.co`,
+      // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
+      // (apps/backend/main.py) builds an empty dispatch host set, so requests
+      // to `company-{env}.isol8.co` fall through to the default Isol8 API
+      // instead of being rewritten to the paperclip_proxy router. Mirrors
+      // the env-derivation in paperclip-stack.ts so the two stay in lockstep
+      // (keeps ServiceStack independent of PaperclipStack synth order).
+      // The `Origin` header the Teams BFF sends on Paperclip /api/auth/* +
+      // board-mutation calls. MUST match PaperclipStack's PAPERCLIP_PUBLIC_URL
+      // (Better Auth's trustedOrigins / origin guard), so keep the two in lockstep
+      // at the same https origin. NOT a live link and NOT the agent's API URL —
+      // see the PAPERCLIP_PUBLIC_URL comment in paperclip-stack.ts. Switching this
+      // to the http in-VPC host (PR #1073) broke Better Auth sign-in (403).
+      PAPERCLIP_PUBLIC_URL:
+        env === "prod"
+          ? "https://company.isol8.co"
+          : `https://${env}.company.isol8.co`,
+      // Cloud Map A record published by PaperclipStack at:
+      //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
+      // Namespace name is `isol8-${env}.local` (ContainerStack). Reading
+      // it off the namespace handle keeps this string in lockstep with
+      // ContainerStack rather than hard-coding the env suffix here.
+      PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
+      // Clerk publishable key for the paperclip-proxy bootstrap HTML.
+      // The bootstrap loads the Clerk SDK in the browser, fetches a JWT,
+      // and POSTs it to /__handshake__ to get a host-scoped session
+      // cookie on company.isol8.co. Same value the frontend uses as
+      // NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — publishable by design (Clerk
+      // serves it in HTML), so plain env var is appropriate (not a
+      // Secrets Manager secret). Same per-env runner-secret pattern as
+      // STRIPE_FLAT_PRICE_ID. Dev fallback hardcoded so local synths
+      // and developer cdk-synth-from-laptop work out of the box.
+      CLERK_PUBLISHABLE_KEY:
+        env === "prod"
+          ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
+          : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
+              "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
+      // LocalStack needs this to redirect boto3 calls inside the ECS container
+      ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
+      EFS_MOUNT_PATH: "/mnt/efs/users",
+      EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
+      ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
+      // ECS_TASK_DEFINITION is intentionally not set. Backend reads the
+      // latest CDK base revision live via describe_task_definition(family)
+      // — the base family is uncontaminated because per-user clones go to
+      // a separate `<base>-user` family.
+      ECS_SUBNETS: privateSubnetIds,
+      ECS_SECURITY_GROUP_ID:
+        props.container.containerSecurityGroup.securityGroupId,
+      CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
+      CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
+      CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
+      DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
+      OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
+      // Metronome lifecycle + gating settings. Metronome is the ONLY
+      // billing ledger: the backend provisions Metronome customers, funds
+      // payment-gated top-up commits, handles the low-balance webhook,
+      // lazily refreshes the gate, and displays balances — it never
+      // ingests usage (the meter Lambda does). Base URL is the same for
+      // sandbox + prod (token decides env). Fast-gate table backs the
+      // synchronous chat gate's balance projection.
+      METRONOME_BASE_URL: "https://api.metronome.com/v1",
+      // Literal name (not a cross-stack tableName Ref) — same posture as
+      // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
+      // DynamoDbIntegrations statement, so no cross-stack export is created.
+      METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
+      // Master switch for the Metronome customer lifecycle (provisioning,
+      // funding, balance display). Dev went live 2026-06-10 (sandbox
+      // runbook); prod went live 2026-06-12 (prod token in Secrets
+      // Manager, prod rate card + credits product created via API,
+      // Stripe live product wired into the stripe_product_id custom
+      // field, webhook secret set). Any future env starts "false" until
+      // its console runbook completes — flipping earlier would spam
+      // doomed calls against placeholder secrets on every status poll.
+      METRONOME_LIFECYCLE_ENABLED:
+        env === "dev" || env === "prod" ? "true" : "false",
+      // Per-env rate card the per-customer contract references at
+      // provision. Dev = sandbox rate card (2026-06-10); prod =
+      // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03
+      // in cents per token (margin decision 2026-06-11).
+      METRONOME_RATE_CARD_ID:
+        env === "dev"
+          ? "99576f5a-37d2-4983-ba64-fea9bad96e08"
+          : env === "prod"
+            ? "fdac2edd-f207-4f11-b65b-01fad6fbbdbc"
+            : "",
+      // The FIXED-type product top-up commits land on. Payment-gated
+      // invoicing additionally requires a stripe_product_id custom field
+      // on it (set: dev -> test-mode product, prod -> live-mode
+      // prod_UgkNkatoEaWFnb); without it, top-ups 400 loudly rather
+      // than silently no-op.
+      METRONOME_CREDITS_PRODUCT_ID:
+        env === "dev"
+          ? "6dab1634-020d-4288-b5e6-99568a30404c"
+          : env === "prod"
+            ? "876e1694-9d76-4c37-9814-c957dbd9370f"
+            : "",
+      // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
+      // table is granted BY NAME above, so the env var is the literal name
+      // (not a cross-stack tableName ref). The boundary + base-policy ARNs
+      // come from the container stack's live members.
+      BEDROCK_AIP_OWNERS_TABLE: `isol8-${env}-bedrock-aip-owners`,
+      BEDROCK_OWNER_BOUNDARY_ARN:
+        props.container.ownerBedrockBoundary.managedPolicyArn,
+      BEDROCK_OWNER_BASE_POLICY_ARN:
+        props.container.ownerBedrockBasePolicy.managedPolicyArn,
+      // Wake-on-intent gating for parked (stop_reason=trial_idle) trial
+      // containers. ON in every environment — the code is fail-open (any
+      // uncertainty falls back to wake-on-read, never worse than the old
+      // behavior) and heavily reviewed, and the urgent cost driver (the 30m
+      // heartbeat) is already fixed fleet-wide. This env var is retained as
+      // the KILL SWITCH: set it to "false" + deploy to disable wake gating
+      // wholesale without a code revert if prod ever misbehaves. The
+      // stop_reason stamping and chat-send server wake are live regardless.
+      TRIAL_WAKE_GATE_ENABLED: "true",
+      // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
+      // env vars via core.config.settings; empty defaults keep the app
+      // booting in non-marketplace contexts (unit tests, smoke tests).
+      MARKETPLACE_LISTINGS_TABLE:
+        props.database.marketplaceListingsTable.tableName,
+      MARKETPLACE_PURCHASES_TABLE:
+        props.database.marketplacePurchasesTable.tableName,
+      MARKETPLACE_PAYOUT_ACCOUNTS_TABLE:
+        props.database.marketplacePayoutAccountsTable.tableName,
+      MARKETPLACE_TAKEDOWNS_TABLE:
+        props.database.marketplaceTakedownsTable.tableName,
+      MARKETPLACE_SELLERS_TABLE:
+        props.database.marketplaceSellersTable.tableName,
+      // Per-env owner the platform_ops agent token binds to (the founder's
+      // own owner_id). Read from the runner's secrets at synth time like the
+      // Stripe/Clerk per-env values above; the dev and prod Clerk instances
+      // mint different owner_ids for the same admin email. Empty ⇒ ops-token
+      // surface stays off in that env (fail-closed).
+      PLATFORM_OPS_OWNER_ID:
+        env === "prod"
+          ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
+          : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? ""),
+      MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
+      // Deterministic public S3 URL of the hosted AWS connector
+      // CloudFormation template. The connections aws-setup endpoint feeds this
+      // as the quick-create TemplateURL (CloudFormation must fetch it
+      // anonymously). Bucket name + key are fixed, so this is a literal string
+      // — no cross-stack output ref needed (the bucket lives in this stack).
+      CFN_TEMPLATE_URL: `https://isol8-${env}-cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
+      // Stripe Connect onboarding redirects — environment-specific so
+      // dev/prod hit the correct marketplace host. Stripe-hosted onboarding
+      // bounces sellers back here on refresh + completion.
+      STRIPE_CONNECT_REFRESH_URL:
+        env === "prod"
+          ? "https://isol8.co/marketplace/payouts/refresh"
+          : "https://dev.isol8.co/marketplace/payouts/refresh",
+      STRIPE_CONNECT_RETURN_URL:
+        env === "prod"
+          ? "https://isol8.co/marketplace/payouts/return"
+          : "https://dev.isol8.co/marketplace/payouts/return",
+      // PostHog server-side reads for the admin Activity tab.
+      // us.posthog.com is the API host for US Cloud (our project lives
+      // there). Project ID is public — visible in the PostHog dashboard
+      // URL for the Default project. Personal API key comes in via the
+      // backendContainerSecrets const below.
+      POSTHOG_HOST: "https://us.posthog.com",
+      POSTHOG_PROJECT_ID: "380894",
+      // PostHog project (phc_) INGESTION key for the server-side billing
+      // bridge (core/observability/product_analytics.py -> trial_started /
+      // trial_converted / subscription_cancelled, keyed on the Clerk user).
+      // Write-only / public — the same key the frontend ships as
+      // NEXT_PUBLIC_POSTHOG_KEY (PostHog: "Safe to use in public apps"), so
+      // it lives in the plain env block, NOT secrets. Distinct from the
+      // POSTHOG_PROJECT_API_KEY personal read key in backendContainerSecrets.
+      POSTHOG_PROJECT_WRITE_KEY: "phc_nzqnGGPwHfrKycptH3TViSAo3uaxT8CHAXovvHnBGEma",
+      // Observability: page topic ARN for backend-initiated SNS alerts.
+      // Populated after first deploy via Fn.importValue from ObservabilityStack.
+      ...(props.alertPageTopicArn
+        ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
+        : {}),
+      // Agent-email base domain — "isol8.co" in prod (where the SES stack
+      // and verified domain exist), empty in every other env. The backend's
+      // AGENT_EMAIL_DOMAIN guards treat empty as "agent email off", so
+      // dev/local/CI stay inert.
+      AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
+      // Agent-email inbound attachments bucket, from the prod-stage
+      // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
+      // Empty string in every env where that stack isn't deployed; the
+      // backend only reads this once AGENT_EMAIL_DOMAIN is also set, so an
+      // empty value is a harmless no-op, matching the MARKETPLACE_* tables'
+      // "empty defaults keep the app booting" posture above.
+      AGENT_EMAIL_ATTACHMENTS_BUCKET: props.agentEmailAttachmentsBucket ?? "",
+    };
+
+    const backendContainerSecrets: Record<string, ecs.Secret> = {
+      // Import secrets by name (NOT cross-stack ISecret) to avoid CDK
+      // auto-granting KMS decrypt on AuthStack's key, which causes a
+      // circular dependency: auth -> service -> container -> auth.
+      //
+      CLERK_ISSUER: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkIssuer", props.secretNames.clerkIssuer),
+      ),
+      CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkSecretKey", props.secretNames.clerkSecretKey),
+      ),
+      CLERK_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkWebhookSecret", props.secretNames.clerkWebhookSecret),
+      ),
+      STRIPE_SECRET_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeSecretKey", props.secretNames.stripeSecretKey),
+      ),
+      STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
+      ),
+      // Marketplace's Stripe Connect webhook signing secret (separate
+      // from the regular Stripe webhook above — Connect events come
+      // through a different webhook endpoint with its own signing key).
+      // marketplace_purchases.stripe_webhook reads this via
+      // settings.STRIPE_CONNECT_WEBHOOK_SECRET to verify event signatures;
+      // an empty value means stripe.Webhook.construct_event will reject
+      // every event and paid checkouts silently never produce purchase
+      // rows. Operator provisions the secret via
+      // `aws secretsmanager update-secret` with the value from the
+      // Stripe dashboard's Connect webhook (per the Plan 1 runbook).
+      STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportStripeConnectWebhookSecret",
+          `isol8/${env}/stripe_connect_webhook_secret`,
+        ),
+      ),
+      ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
+      ),
+      // PostHog personal API key for the admin Activity tab. Empty value
+      // → posthog_admin.py returns {stubbed: true}; populated value →
+      // real Persons API calls. Rotate via `aws secretsmanager update-secret`.
+      POSTHOG_PROJECT_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportPosthogProjectApiKey",
+          props.secretNames.posthogProjectApiKey,
+        ),
+      ),
+      // Symmetric secret used by the paperclip_proxy router to sign
+      // service-token JWTs Paperclip's Better Auth verifies. KMS decrypt
+      // for this secret is covered by the existing `KmsDecryptForSecrets`
+      // policy below — same CMK as the other auth secrets.
+      PAPERCLIP_SERVICE_TOKEN_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportPaperclipServiceTokenKey",
+          props.secretNames.paperclipServiceTokenKey,
+        ),
+      ),
+      // Dedicated symmetric secret used to sign/verify platform_ops tokens.
+      // KMS decrypt for this secret is covered by the existing
+      // `KmsDecryptForSecrets` policy below — same CMK as the other auth
+      // secrets.
+      PLATFORM_OPS_TOKEN_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportPlatformOpsTokenKey",
+          props.secretNames.platformOpsTokenKey,
+        ),
+      ),
+      // Shared password for the gog CLI file keyring. The backend's gog_cli
+      // materializer runs gog against the owner's EFS workspace to write the
+      // Google OAuth keyring, which the file-keyring backend encrypts with
+      // this password — the identical value every per-user OpenClaw container
+      // also receives. KMS decrypt is covered by `KmsDecryptForSecrets` below
+      // (same CMK as the other auth secrets).
+      GOG_KEYRING_PASSWORD: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportGogKeyringPassword",
+          props.secretNames.gogKeyringPassword,
+        ),
+      ),
+      // Read via settings.METRONOME_API_KEY by the Metronome lifecycle
+      // modules (customer provisioning, top-up funding, balance display)
+      // unconditionally — Metronome shadows even while the DDB ledger
+      // still bills, so the key is live in every environment.
+      // KMS decrypt covered by the wildcard SecretsAccess + same CMK.
+      METRONOME_API_KEY: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(this, "ImportMetronomeApiKey", props.secretNames.metronomeApiKey),
+      ),
+      METRONOME_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportMetronomeWebhookSecret",
+          props.secretNames.metronomeWebhookSecret,
+        ),
+      ),
+      // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
+      // backend compares it (require_ws_internal_caller) only when
+      // WS_ENFORCE_INTERNAL_SECRET is "true". Same CMK as the other auth
+      // secrets, so KmsDecryptForSecrets below already covers decrypt.
+      WS_INTERNAL_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportWsInternalSecret",
+          props.secretNames.wsInternalSecret,
+        ),
+      ),
+      // Shared secret the SES-ingest Lambda attaches as X-Isol8-SES-Secret.
+      // The backend compares it in constant time (routers/ses_inbound.py)
+      // only when AGENT_EMAIL_DOMAIN is also set. KMS decrypt covered by
+      // the wildcard SecretsAccess + KmsDecryptForSecrets below (same CMK
+      // as the other auth secrets).
+      SES_INBOUND_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportSesIngestSecret",
+          props.secretNames.sesIngestSecret,
+        ),
+      ),
+    };
+
+    // ---------------------------------------------------------------------
+    // Provisioning executor: one-shot provisioner task + state machine.
+    // Same image / roles / env / SG as the backend so provision_user_container
+    // runs with identical capability, but OUTSIDE the deployable web process.
+    // serviceSg is mandatory: the per-user container 18789 ingress rule
+    // (ContainerFromServiceIngress above) is keyed to it.
+    // ---------------------------------------------------------------------
+    const provisionerTaskDef = new ecs.FargateTaskDefinition(this, "ProvisionerTaskDef", {
+      family: `isol8-${env}-provisioner`,
+      cpu: 1024,
+      memoryLimitMiB: 2048,
+      taskRole: this.taskRole,
+      executionRole: taskExecutionRole,
+    });
+    provisionerTaskDef.addVolume({
+      name: "efs-users",
+      efsVolumeConfiguration: {
+        fileSystemId: props.container.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
+    const provisionerContainer = provisionerTaskDef.addContainer("provisioner", {
+      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+      // Run as root, exactly like the backend container: provisioning writes
+      // EFS user directories and chowns them to UID 1000 (workspace.py), and
+      // the image's default USER appuser cannot. Dropping this silently
+      // breaks every EFS write the runner performs.
+      user: "0:0",
+      environment: backendContainerEnvironment,
+      secrets: backendContainerSecrets,
+      // No healthCheck and no port mappings: a batch job must not be killed
+      // for not serving HTTP. Command is overridden per-execution by the
+      // state machine ($.command).
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "provisioner", logGroup }),
+    });
+    provisionerContainer.addMountPoints({
+      containerPath: "/mnt/efs",
+      sourceVolume: "efs-users",
+      readOnly: false,
+    });
+
+    const runProvisioner = new tasks.EcsRunTask(this, "RunProvisioner", {
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      cluster: props.container.cluster,
+      taskDefinition: provisionerTaskDef,
+      launchTarget: new tasks.EcsFargateLaunchTarget({
+        platformVersion: ecs.FargatePlatformVersion.VERSION1_4, // EFS requires >= 1.4
+      }),
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [serviceSg],
+      assignPublicIp: false,
+      containerOverrides: [
+        {
+          containerDefinition: provisionerContainer,
+          command: sfn.JsonPath.listAt("$.command"),
+          // PROVISION_ATTEMPT_TOKEN is THIS attempt's fencing token — fresh
+          // every retry via BumpAttempt's States.UUID() below, while
+          // $.command (owner/claim args) stays static across the whole
+          // execution. An env override (not a $.command element) because
+          // CDK/SFN can splice ONE dynamic field per override cleanly; see
+          // scripts/provision_runner.py module docstring for the full
+          // hazard this closes and why it is NOT in the StartExecution
+          // input (that must stay byte-identical for Branch-A idempotency —
+          // core/services/provision_dispatch.py).
+          environment: [
+            {
+              name: "PROVISION_ATTEMPT_TOKEN",
+              value: sfn.JsonPath.stringAt("$.attempt_token"),
+            },
+          ],
+        },
+      ],
+      resultPath: sfn.JsonPath.DISCARD,
+      taskTimeout: sfn.Timeout.duration(cdk.Duration.minutes(30)),
+    });
+
+    const succeedProvisioned = new sfn.Succeed(this, "Provisioned");
+    const succeedSuperseded = new sfn.Succeed(this, "Superseded");
+    const failProvision = new sfn.Fail(this, "ProvisionFailed", {
+      error: "ProvisionFailed",
+      cause: "provisioner exhausted retries or failed deterministically",
+    });
+
+    // Claim-conditioned row writes — the SIGKILL backstop. On a clean runner
+    // exit the runner already wrote these values; these writes are idempotent
+    // re-assertions that also cover the case where the runner died mid-write.
+    // Condition accepts BOTH "provisioning" (runner died before its own
+    // release) AND "error" (runner released cleanly, this re-asserts) — a
+    // clean transient failure leaves the row at "error", and conditioning on
+    // "provisioning" alone would fail every write after attempt 1 and kill
+    // the retry loop. Rows at "running"/"stopped", or under a different
+    // claim, are never touched (routes to Superseded via the catch below).
+    const ddbWrite = (id: string, updateExpr: string, values: Record<string, tasks.DynamoAttributeValue>) => {
+      const write = new tasks.DynamoUpdateItem(this, id, {
+        table: props.database.containersTable,
+        key: {
+          owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
+        },
+        updateExpression: updateExpr,
+        conditionExpression: "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
+        expressionAttributeNames: { "#s": "status" },
+        expressionAttributeValues: {
+          ...values,
+          ":cid": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.claim_id")),
+          ":prov": tasks.DynamoAttributeValue.fromString("provisioning"),
+          ":ts": tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$$.State.EnteredTime")),
+        },
+        resultPath: sfn.JsonPath.DISCARD,
+      });
+      // These writes are the SIGKILL backstop — without a Retry policy a
+      // single DDB throttle fails the whole execution and the row wedges at
+      // "provisioning". Retriers evaluate IN ORDER, so the fencing signal
+      // (ConditionalCheckFailed = the row was taken over) is excluded FIRST
+      // with maxAttempts 0 — it must fall through to the Superseded catch,
+      // never be retried; every other error is transient and retried.
+      write.addRetry({
+        errors: ["DynamoDB.ConditionalCheckFailedException"],
+        maxAttempts: 0,
+      });
+      write.addRetry({
+        errors: ["States.ALL"],
+        interval: cdk.Duration.seconds(2),
+        backoffRate: 2,
+        maxAttempts: 3,
+      });
+      return write;
+    };
+
+    const markFailedDeterministic = ddbWrite(
+      "MarkFailedDeterministic",
+      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
+      {
+        ":err": tasks.DynamoAttributeValue.fromString("error"),
+        ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
+        ":r": tasks.DynamoAttributeValue.fromBoolean(false),
+      },
+    );
+    const markFailedExhausted = ddbWrite(
+      "MarkFailedExhausted",
+      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
+      {
+        ":err": tasks.DynamoAttributeValue.fromString("error"),
+        ":sub": tasks.DynamoAttributeValue.fromString("provision_failed"),
+        ":r": tasks.DynamoAttributeValue.fromBoolean(true),
+      },
+    );
+    const markRetrying = ddbWrite(
+      "MarkRetrying",
+      "SET #s = :err, substatus = :sub, retryable = :r, updated_at = :ts",
+      {
+        ":err": tasks.DynamoAttributeValue.fromString("error"),
+        ":sub": tasks.DynamoAttributeValue.fromString("error_retrying"),
+        ":r": tasks.DynamoAttributeValue.fromBoolean(true),
+      },
+    );
+    // ConditionalCheckFailed on any write means a deliberate reprovision took
+    // the row over — stop quietly, exactly the runner's superseded rule.
+    // (Optimized-integration exception prefix is "DynamoDB", uppercase DB.)
+    for (const write of [markFailedDeterministic, markFailedExhausted, markRetrying]) {
+      write.addCatch(succeedSuperseded, {
+        errors: ["DynamoDB.ConditionalCheckFailedException"],
+        resultPath: sfn.JsonPath.DISCARD,
+      });
+    }
+    markFailedDeterministic.next(failProvision);
+    markFailedExhausted.next(failProvision);
+
+    const bumpAttempt = new sfn.Pass(this, "BumpAttempt", {
+      parameters: {
+        "attempt.$": "States.MathAdd($.attempt, 1)",
+        // Fresh per-retry fencing token (spec §7 hazard 1): the state
+        // machine's task timeout does not guarantee the previous attempt's
+        // ECS task is dead, so a straggler must be fenced out by something
+        // OTHER than the (stable, reused) claim_id/execution name. The
+        // runner re-stamps container_repo's provision_attempt_token to this
+        // value as its first action every attempt
+        // (container_repo.claim_attempt) — a still-running previous attempt
+        // then fails its NEXT checkpoint with a stale token. claim_id and
+        // the execution name stay untouched, preserving Branch-A idempotency
+        // (core/services/provision_dispatch.py).
+        "attempt_token.$": "States.UUID()",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+      },
+    });
+    const wait60 = new sfn.Wait(this, "WaitBeforeRetry", {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
+    });
+    markRetrying.next(wait60);
+    wait60.next(bumpAttempt);
+    bumpAttempt.next(runProvisioner);
+
+    const transientGate = new sfn.Choice(this, "AttemptsRemain")
+      .when(sfn.Condition.numberLessThan("$.attempt", 2), markRetrying)
+      .otherwise(markFailedExhausted);
+
+    // Non-TaskFailed catches (timeout, launch failure): the Cause is not the
+    // ECS task JSON, so skip parsing and treat as transient.
+    const shapeForRetry = new sfn.Pass(this, "ShapeForRetry", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+      },
+    });
+    shapeForRetry.next(transientGate);
+
+    // TaskFailed: Cause is the stringified ECS task object — parse it and
+    // classify on the container exit code (design doc §11: a non-zero
+    // essential-container exit fails the .sync state with States.TaskFailed).
+    const parseCause = new sfn.Pass(this, "ParseFailureCause", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "cause.$": "States.StringToJson($.error.Cause)",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+      },
+    });
+    const classify = new sfn.Choice(this, "ClassifyFailure")
+      // MUST be the FIRST rule: a task that never started (EFS mount /
+      // image-pull ResourceInitializationError) stops with NO exitCode in the
+      // Cause, and a Choice rule referencing a missing path throws
+      // States.Runtime — which Choice states cannot Catch, killing the
+      // execution with no DDB write (row stuck at "provisioning"). That is
+      // exactly the transient case the retry loop exists for.
+      .when(
+        sfn.Condition.not(sfn.Condition.isPresent("$.cause.Containers[0].ExitCode")),
+        transientGate, // task never started (EFS mount / image pull) — no exit code, retry
+      )
+      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 20), succeedSuperseded)
+      .when(sfn.Condition.numberEquals("$.cause.Containers[0].ExitCode", 10), markFailedDeterministic)
+      .otherwise(transientGate); // 11, SIGKILL-after-start (137), Spot reclaim
+    parseCause.next(classify);
+
+    runProvisioner.addCatch(shapeForRetry, {
+      errors: ["States.Timeout"],
+      resultPath: "$.error",
+    });
+    runProvisioner.addCatch(parseCause, {
+      errors: ["States.TaskFailed"],
+      resultPath: "$.error",
+    });
+    runProvisioner.addCatch(shapeForRetry, {
+      errors: ["States.ALL"], // AmazonECS.Unknown launch failures etc.
+      resultPath: "$.error",
+    });
+
+    const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
+      stateMachineName: `isol8-${env}-provision`,
+      definitionBody: sfn.DefinitionBody.fromChainable(runProvisioner.next(succeedProvisioned)),
+      timeout: cdk.Duration.hours(2), // hard ceiling across all attempts
+    });
+
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "ProvisionStateMachineDispatch",
+        actions: ["states:StartExecution", "states:DescribeExecution", "states:StopExecution"],
+        resources: [
+          provisionStateMachine.stateMachineArn,
+          // DescribeExecution/StopExecution operate on execution ARNs.
+          `arn:aws:states:${this.region}:${this.account}:execution:isol8-${env}-provision:*`,
+        ],
+      }),
+    );
+
+    new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
+      alarmName: `isol8-${env}-provision-executions-failed`,
+      metric: provisionStateMachine.metricFailed({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
+      alarmName: `isol8-${env}-provision-executions-timedout`,
+      metric: provisionStateMachine.metricTimedOut({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `isol8-${env}-backend`,
       cpu: env === "prod" ? 2048 : 1024,
@@ -1135,400 +1819,14 @@ export class ServiceStack extends cdk.Stack {
       user: "0:0",
       portMappings: [{ containerPort: 8000 }],
       environment: {
-        ENVIRONMENT: env,
-        AWS_REGION: "us-east-1",
-        // OpenClaw image versions — injected from openclaw-version.json (the
-        // single source of truth) so the backend never hand-mirrors them.
-        // Read at runtime by core/openclaw_version.py.
-        OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
-        OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
-        OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
-        WS_MANAGEMENT_API_URL: props.managementApiUrl,
-        WS_GATEWAY_URL: props.webSocketUrl,
-        WS_CONNECTIONS_TABLE: props.connectionsTableName,
-        // WS caller-attestation gate, enforced in every env. The
-        // x-isol8-ws-internal header is verified flowing from the WS Lambdas on
-        // both dev and prod (zero secret-fetch failures across real connects),
-        // so the backend rejects /ws/* callers that lack it — closing the
-        // unauthenticated WebSocket-impersonation hole on the public HTTP
-        // API Gateway $default path.
-        WS_ENFORCE_INTERNAL_SECRET: "true",
-        WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
-        CORS_ORIGINS:
-          env === "local"
-            ? "http://localhost:3000"
-            : env === "prod"
-              ? "https://isol8.co"
-              : "https://dev.isol8.co",
-        // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
-        // encrypt operator device seeds + gateway tokens at rest. Reuses the
-        // same CMK as the BYOK Fernet layer since the blast radius is the same
-        // (any principal with kms:Decrypt on this key can read any of them).
-        CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
-        // Stripe flat-fee Price ID is environment-specific: prod is created in
-        // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
-        // (a test-mode Price would silently create test subscriptions in prod).
-        // Read per-env from the runner's secrets at synth time.
-        STRIPE_FLAT_PRICE_ID:
-          env === "prod"
-            ? (process.env.STRIPE_FLAT_PRICE_ID_PROD ?? "")
-            : (process.env.STRIPE_FLAT_PRICE_ID_DEV ?? ""),
-        // Stripe per-seat Teams Price ID — same env-specific live/test split
-        // as STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently
-        // create test subscriptions in prod). Read per-env from the runner's
-        // secrets at synth time. Consumed by billing_service.create_team_seat_checkout.
-        STRIPE_TEAM_SEAT_PRICE_ID:
-          env === "prod"
-            ? (process.env.STRIPE_TEAM_SEAT_PRICE_ID_PROD ?? "")
-            : (process.env.STRIPE_TEAM_SEAT_PRICE_ID_DEV ?? ""),
-        // Stripe Ultra Pro Price ID — same env-specific live/test split as
-        // STRIPE_FLAT_PRICE_ID above (a test-mode Price would silently create
-        // test subscriptions in prod). Read per-env from the runner's secrets
-        // at synth time. Consumed by the Ultra-tier checkout call site.
-        STRIPE_ULTRA_PRICE_ID:
-          env === "prod"
-            ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
-            : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-        FRONTEND_URL:
-          env === "local"
-            ? "http://localhost:3000"
-            : env === "prod"
-              ? "https://isol8.co"
-              : "https://dev.isol8.co",
-        // Public-facing base URL of THIS API. Used by /hooks/credentials
-        // (and any future endpoint that surfaces an absolute URL back to
-        // the browser) to build the webhook URL the Settings panel
-        // displays to the user. Per-env API hostname, matches the DNS
-        // records provisioned by dns-stack.ts.
-        PUBLIC_API_BASE:
-          env === "local"
-            ? "http://localhost:8000"
-            : env === "prod"
-              ? "https://api.isol8.co"
-              : `https://api-${env}.isol8.co`,
-        // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
-        // (apps/backend/main.py) builds an empty dispatch host set, so requests
-        // to `company-{env}.isol8.co` fall through to the default Isol8 API
-        // instead of being rewritten to the paperclip_proxy router. Mirrors
-        // the env-derivation in paperclip-stack.ts so the two stay in lockstep
-        // (keeps ServiceStack independent of PaperclipStack synth order).
-        // The `Origin` header the Teams BFF sends on Paperclip /api/auth/* +
-        // board-mutation calls. MUST match PaperclipStack's PAPERCLIP_PUBLIC_URL
-        // (Better Auth's trustedOrigins / origin guard), so keep the two in lockstep
-        // at the same https origin. NOT a live link and NOT the agent's API URL —
-        // see the PAPERCLIP_PUBLIC_URL comment in paperclip-stack.ts. Switching this
-        // to the http in-VPC host (PR #1073) broke Better Auth sign-in (403).
-        PAPERCLIP_PUBLIC_URL:
-          env === "prod"
-            ? "https://company.isol8.co"
-            : `https://${env}.company.isol8.co`,
-        // Cloud Map A record published by PaperclipStack at:
-        //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
-        // Namespace name is `isol8-${env}.local` (ContainerStack). Reading
-        // it off the namespace handle keeps this string in lockstep with
-        // ContainerStack rather than hard-coding the env suffix here.
-        PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
-        // Clerk publishable key for the paperclip-proxy bootstrap HTML.
-        // The bootstrap loads the Clerk SDK in the browser, fetches a JWT,
-        // and POSTs it to /__handshake__ to get a host-scoped session
-        // cookie on company.isol8.co. Same value the frontend uses as
-        // NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — publishable by design (Clerk
-        // serves it in HTML), so plain env var is appropriate (not a
-        // Secrets Manager secret). Same per-env runner-secret pattern as
-        // STRIPE_FLAT_PRICE_ID. Dev fallback hardcoded so local synths
-        // and developer cdk-synth-from-laptop work out of the box.
-        CLERK_PUBLISHABLE_KEY:
-          env === "prod"
-            ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
-            : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
-                "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
-        // LocalStack needs this to redirect boto3 calls inside the ECS container
-        ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
-        EFS_MOUNT_PATH: "/mnt/efs/users",
-        EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
-        ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-        // ECS_TASK_DEFINITION is intentionally not set. Backend reads the
-        // latest CDK base revision live via describe_task_definition(family)
-        // — the base family is uncontaminated because per-user clones go to
-        // a separate `<base>-user` family.
-        ECS_SUBNETS: privateSubnetIds,
-        ECS_SECURITY_GROUP_ID:
-          props.container.containerSecurityGroup.securityGroupId,
-        CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
-        CLOUD_MAP_NAMESPACE_NAME: props.container.cloudMapNamespace.namespaceName,
-        CLOUD_MAP_SERVICE_NAME: props.container.cloudMapService.serviceName,
-        DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
-        OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
-        // Metronome lifecycle + gating settings. Metronome is the ONLY
-        // billing ledger: the backend provisions Metronome customers, funds
-        // payment-gated top-up commits, handles the low-balance webhook,
-        // lazily refreshes the gate, and displays balances — it never
-        // ingests usage (the meter Lambda does). Base URL is the same for
-        // sandbox + prod (token decides env). Fast-gate table backs the
-        // synchronous chat gate's balance projection.
-        METRONOME_BASE_URL: "https://api.metronome.com/v1",
-        // Literal name (not a cross-stack tableName Ref) — same posture as
-        // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
-        // DynamoDbIntegrations statement, so no cross-stack export is created.
-        METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
-        // Master switch for the Metronome customer lifecycle (provisioning,
-        // funding, balance display). Dev went live 2026-06-10 (sandbox
-        // runbook); prod went live 2026-06-12 (prod token in Secrets
-        // Manager, prod rate card + credits product created via API,
-        // Stripe live product wired into the stripe_product_id custom
-        // field, webhook secret set). Any future env starts "false" until
-        // its console runbook completes — flipping earlier would spam
-        // doomed calls against placeholder secrets on every status poll.
-        METRONOME_LIFECYCLE_ENABLED:
-          env === "dev" || env === "prod" ? "true" : "false",
-        // Per-env rate card the per-customer contract references at
-        // provision. Dev = sandbox rate card (2026-06-10); prod =
-        // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03
-        // in cents per token (margin decision 2026-06-11).
-        METRONOME_RATE_CARD_ID:
-          env === "dev"
-            ? "99576f5a-37d2-4983-ba64-fea9bad96e08"
-            : env === "prod"
-              ? "fdac2edd-f207-4f11-b65b-01fad6fbbdbc"
-              : "",
-        // The FIXED-type product top-up commits land on. Payment-gated
-        // invoicing additionally requires a stripe_product_id custom field
-        // on it (set: dev -> test-mode product, prod -> live-mode
-        // prod_UgkNkatoEaWFnb); without it, top-ups 400 loudly rather
-        // than silently no-op.
-        METRONOME_CREDITS_PRODUCT_ID:
-          env === "dev"
-            ? "6dab1634-020d-4288-b5e6-99568a30404c"
-            : env === "prod"
-              ? "876e1694-9d76-4c37-9814-c957dbd9370f"
-              : "",
-        // Per-owner Bedrock AIP + scoped-role enforcement (Plan 2). The reverse
-        // table is granted BY NAME above, so the env var is the literal name
-        // (not a cross-stack tableName ref). The boundary + base-policy ARNs
-        // come from the container stack's live members.
-        BEDROCK_AIP_OWNERS_TABLE: `isol8-${env}-bedrock-aip-owners`,
-        BEDROCK_OWNER_BOUNDARY_ARN:
-          props.container.ownerBedrockBoundary.managedPolicyArn,
-        BEDROCK_OWNER_BASE_POLICY_ARN:
-          props.container.ownerBedrockBasePolicy.managedPolicyArn,
-        // ACP coding-harness runtime (acpx). Master switch read by
-        // core.config.settings.ACP_ENABLED — when true, write_openclaw_config
-        // emits the acp block + plugins.entries.acpx and provision wires the
-        // per-owner Bedrock harness env, letting a native agent (Jarvis)
-        // sessions_spawn Claude Code / Codex. The harness set is DERIVED
-        // per-owner from provider_choice (bedrock/byo-anthropic -> claude;
-        // chatgpt-oauth/byo-openai -> codex), so no owner is handed a harness
-        // it cannot authenticate. Enabled fleet-wide now that the acpx-baked
-        // extended image (2026.6.10-isol8.2, Dockerfile Layer 13) is promoted
-        // in openclaw-version.json for both dev and prod; existing containers
-        // pick up the acp block on their next reprovision / config patch.
-        ACP_ENABLED: "true",
-        // Wake-on-intent gating for parked (stop_reason=trial_idle) trial
-        // containers. ON in every environment — the code is fail-open (any
-        // uncertainty falls back to wake-on-read, never worse than the old
-        // behavior) and heavily reviewed, and the urgent cost driver (the 30m
-        // heartbeat) is already fixed fleet-wide. This env var is retained as
-        // the KILL SWITCH: set it to "false" + deploy to disable wake gating
-        // wholesale without a code revert if prod ever misbehaves. The
-        // stop_reason stamping and chat-send server wake are live regardless.
-        TRIAL_WAKE_GATE_ENABLED: "true",
-        // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
-        // env vars via core.config.settings; empty defaults keep the app
-        // booting in non-marketplace contexts (unit tests, smoke tests).
-        MARKETPLACE_LISTINGS_TABLE:
-          props.database.marketplaceListingsTable.tableName,
-        MARKETPLACE_PURCHASES_TABLE:
-          props.database.marketplacePurchasesTable.tableName,
-        MARKETPLACE_PAYOUT_ACCOUNTS_TABLE:
-          props.database.marketplacePayoutAccountsTable.tableName,
-        MARKETPLACE_TAKEDOWNS_TABLE:
-          props.database.marketplaceTakedownsTable.tableName,
-        MARKETPLACE_SELLERS_TABLE:
-          props.database.marketplaceSellersTable.tableName,
-        // Per-env owner the platform_ops agent token binds to (the founder's
-        // own owner_id). Read from the runner's secrets at synth time like the
-        // Stripe/Clerk per-env values above; the dev and prod Clerk instances
-        // mint different owner_ids for the same admin email. Empty ⇒ ops-token
-        // surface stays off in that env (fail-closed).
-        PLATFORM_OPS_OWNER_ID:
-          env === "prod"
-            ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
-            : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? ""),
-        MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
-        // Deterministic public S3 URL of the hosted AWS connector
-        // CloudFormation template. The connections aws-setup endpoint feeds this
-        // as the quick-create TemplateURL (CloudFormation must fetch it
-        // anonymously). Bucket name + key are fixed, so this is a literal string
-        // — no cross-stack output ref needed (the bucket lives in this stack).
-        CFN_TEMPLATE_URL: `https://isol8-${env}-cfn-templates.s3.us-east-1.amazonaws.com/${CFN_TEMPLATE_KEY}`,
-        // Stripe Connect onboarding redirects — environment-specific so
-        // dev/prod hit the correct marketplace host. Stripe-hosted onboarding
-        // bounces sellers back here on refresh + completion.
-        STRIPE_CONNECT_REFRESH_URL:
-          env === "prod"
-            ? "https://isol8.co/marketplace/payouts/refresh"
-            : "https://dev.isol8.co/marketplace/payouts/refresh",
-        STRIPE_CONNECT_RETURN_URL:
-          env === "prod"
-            ? "https://isol8.co/marketplace/payouts/return"
-            : "https://dev.isol8.co/marketplace/payouts/return",
-        // PostHog server-side reads for the admin Activity tab.
-        // us.posthog.com is the API host for US Cloud (our project lives
-        // there). Project ID is public — visible in the PostHog dashboard
-        // URL for the Default project. Personal API key comes in via the
-        // secrets: block below.
-        POSTHOG_HOST: "https://us.posthog.com",
-        POSTHOG_PROJECT_ID: "380894",
-        // PostHog project (phc_) INGESTION key for the server-side billing
-        // bridge (core/observability/product_analytics.py -> trial_started /
-        // trial_converted / subscription_cancelled, keyed on the Clerk user).
-        // Write-only / public — the same key the frontend ships as
-        // NEXT_PUBLIC_POSTHOG_KEY (PostHog: "Safe to use in public apps"), so
-        // it lives in the plain env block, NOT secrets. Distinct from the
-        // POSTHOG_PROJECT_API_KEY personal read key in the secrets: block.
-        POSTHOG_PROJECT_WRITE_KEY: "phc_nzqnGGPwHfrKycptH3TViSAo3uaxT8CHAXovvHnBGEma",
-        // Observability: page topic ARN for backend-initiated SNS alerts.
-        // Populated after first deploy via Fn.importValue from ObservabilityStack.
-        ...(props.alertPageTopicArn
-          ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
-          : {}),
-        // Agent-email base domain — "isol8.co" in prod (where the SES stack
-        // and verified domain exist), empty in every other env. The backend's
-        // AGENT_EMAIL_DOMAIN guards treat empty as "agent email off", so
-        // dev/local/CI stay inert.
-        AGENT_EMAIL_DOMAIN: props.agentEmailDomain ?? "",
-        // Agent-email inbound attachments bucket, from the prod-stage
-        // SesInboundStack when it exists (prod-only — see isol8-stage.ts).
-        // Empty string in every env where that stack isn't deployed; the
-        // backend only reads this once AGENT_EMAIL_DOMAIN is also set, so an
-        // empty value is a harmless no-op, matching the MARKETPLACE_* tables'
-        // "empty defaults keep the app booting" posture above.
-        AGENT_EMAIL_ATTACHMENTS_BUCKET: props.agentEmailAttachmentsBucket ?? "",
+        ...backendContainerEnvironment,
+        // THE provisioning executor, active on merge — no flag (spec §7 /
+        // onboarding-architecture-design.md PR-10). The state machine below
+        // is dispatched by every dispatch_provision call via
+        // core.services.provision_dispatch.
+        PROVISION_STATE_MACHINE_ARN: provisionStateMachine.stateMachineArn,
       },
-      secrets: {
-        // Import secrets by name (NOT cross-stack ISecret) to avoid CDK
-        // auto-granting KMS decrypt on AuthStack's key, which causes a
-        // circular dependency: auth -> service -> container -> auth.
-        //
-        CLERK_ISSUER: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkIssuer", props.secretNames.clerkIssuer),
-        ),
-        CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkSecretKey", props.secretNames.clerkSecretKey),
-        ),
-        STRIPE_SECRET_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeSecretKey", props.secretNames.stripeSecretKey),
-        ),
-        STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
-        ),
-        // Marketplace's Stripe Connect webhook signing secret (separate
-        // from the regular Stripe webhook above — Connect events come
-        // through a different webhook endpoint with its own signing key).
-        // marketplace_purchases.stripe_webhook reads this via
-        // settings.STRIPE_CONNECT_WEBHOOK_SECRET to verify event signatures;
-        // an empty value means stripe.Webhook.construct_event will reject
-        // every event and paid checkouts silently never produce purchase
-        // rows. Operator provisions the secret via
-        // `aws secretsmanager update-secret` with the value from the
-        // Stripe dashboard's Connect webhook (per the Plan 1 runbook).
-        STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportStripeConnectWebhookSecret",
-            `isol8/${env}/stripe_connect_webhook_secret`,
-          ),
-        ),
-        ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
-        ),
-        // PostHog personal API key for the admin Activity tab. Empty value
-        // → posthog_admin.py returns {stubbed: true}; populated value →
-        // real Persons API calls. Rotate via `aws secretsmanager update-secret`.
-        POSTHOG_PROJECT_API_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportPosthogProjectApiKey",
-            props.secretNames.posthogProjectApiKey,
-          ),
-        ),
-        // Symmetric secret used by the paperclip_proxy router to sign
-        // service-token JWTs Paperclip's Better Auth verifies. KMS decrypt
-        // for this secret is covered by the existing `KmsDecryptForSecrets`
-        // policy below — same CMK as the other auth secrets.
-        PAPERCLIP_SERVICE_TOKEN_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportPaperclipServiceTokenKey",
-            props.secretNames.paperclipServiceTokenKey,
-          ),
-        ),
-        // Dedicated symmetric secret used to sign/verify platform_ops tokens.
-        // KMS decrypt for this secret is covered by the existing
-        // `KmsDecryptForSecrets` policy below — same CMK as the other auth
-        // secrets.
-        PLATFORM_OPS_TOKEN_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportPlatformOpsTokenKey",
-            props.secretNames.platformOpsTokenKey,
-          ),
-        ),
-        // Shared password for the gog CLI file keyring. The backend's gog_cli
-        // materializer runs gog against the owner's EFS workspace to write the
-        // Google OAuth keyring, which the file-keyring backend encrypts with
-        // this password — the identical value every per-user OpenClaw container
-        // also receives. KMS decrypt is covered by `KmsDecryptForSecrets` below
-        // (same CMK as the other auth secrets).
-        GOG_KEYRING_PASSWORD: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportGogKeyringPassword",
-            props.secretNames.gogKeyringPassword,
-          ),
-        ),
-        // Read via settings.METRONOME_API_KEY by the Metronome lifecycle
-        // modules (customer provisioning, top-up funding, balance display)
-        // unconditionally — Metronome shadows even while the DDB ledger
-        // still bills, so the key is live in every environment.
-        // KMS decrypt covered by the wildcard SecretsAccess + same CMK.
-        METRONOME_API_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportMetronomeApiKey", props.secretNames.metronomeApiKey),
-        ),
-        METRONOME_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportMetronomeWebhookSecret",
-            props.secretNames.metronomeWebhookSecret,
-          ),
-        ),
-        RESEND_API_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportResendApiKey", props.secretNames.resendApiKey),
-        ),
-        // Shared secret the WS Lambdas attach as x-isol8-ws-internal. The
-        // backend compares it (require_ws_internal_caller) only when
-        // WS_ENFORCE_INTERNAL_SECRET is "true". Same CMK as the other auth
-        // secrets, so KmsDecryptForSecrets below already covers decrypt.
-        WS_INTERNAL_SECRET: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportWsInternalSecret",
-            props.secretNames.wsInternalSecret,
-          ),
-        ),
-        // Shared secret the SES-ingest Lambda attaches as X-Isol8-SES-Secret.
-        // The backend compares it in constant time (routers/ses_inbound.py)
-        // only when AGENT_EMAIL_DOMAIN is also set. KMS decrypt covered by
-        // the wildcard SecretsAccess + KmsDecryptForSecrets below (same CMK
-        // as the other auth secrets).
-        SES_INBOUND_SECRET: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportSesIngestSecret",
-            props.secretNames.sesIngestSecret,
-          ),
-        ),
-      },
+      secrets: backendContainerSecrets,
       healthCheck: {
         command: [
           "CMD-SHELL",

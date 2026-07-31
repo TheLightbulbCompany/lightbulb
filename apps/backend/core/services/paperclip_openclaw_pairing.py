@@ -58,15 +58,42 @@ def _is_org_owner_id(owner_id: str) -> bool:
 async def resolve_company_id_for_owner(*, owner_id: str, repo: PaperclipRepo) -> str | None:
     """Look up the Paperclip company_id for this owner.
 
-    For personal users (owner_id = user_id): repo.get(user_id).company_id
-    For orgs (owner_id = org_id): repo.get_org_company_id(org_id)
+    For personal users (owner_id = user_id): the row's company_id, unless the
+    row is a ``failed`` marker.
+    For orgs (owner_id = org_id): the company_id of an ``active`` row, located
+    by scanning the org's rows (``list_by_org_id``).
 
-    Returns None if no company exists yet (provisioning hasn't run).
+    Returns None when no company exists yet (provisioning hasn't run) OR the
+    only row(s) are ``failed``. Every caller here guards with
+    ``if company_id is None`` (paperclip_agent_lifecycle, marketplace_listings,
+    company_deploy_service, agent_export), so returning None routes them into
+    their clean no-company branch instead of a doomed Paperclip call. Two
+    distinct failed shapes must both resolve to None:
+
+      * personal / net-new: a ``failed`` marker carries ``company_id=""`` (the
+        company was never created); the ``status == "failed"`` check below
+        catches it (as does the empty-id check).
+      * org reconcile: a ``failed`` row can now carry a REAL adopted
+        ``company_id`` (the Friday-partial case), and ``get_org_company_id``
+        returns the first row's id regardless of status — so org resolution
+        deliberately does NOT use ``get_org_company_id`` here. It requires an
+        ACTIVE row, so a failed org row (even one with a real company_id)
+        resolves to None, mirroring the personal ``status == "failed"`` filter.
     """
     if _is_org_owner_id(owner_id):
-        return await repo.get_org_company_id(owner_id)
+        # Require an ACTIVE row: a reconcile can persist a ``failed`` org row
+        # carrying a real adopted company_id, which get_org_company_id would
+        # hand back regardless of status. Scan the org's rows (all active rows
+        # share one company_id by the provisioner's invariant) and return the
+        # first active, non-empty company_id; if none is active, return None.
+        for row in await repo.list_by_org_id(owner_id):
+            if row.get("status") == "active" and row.get("company_id"):
+                return row["company_id"]
+        return None
     row = await repo.get(owner_id)
-    return row.company_id if row else None
+    if row is None or row.status == "failed" or not row.company_id:
+        return None
+    return row.company_id
 
 
 async def fetch_paperclip_agents_for_owner(
@@ -228,7 +255,7 @@ async def register_paperclip_agent_devices(
     )
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
-        claimed_api_key_path,
+        desired_agent_adapter_fields,
     )
 
     agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
@@ -273,22 +300,17 @@ async def register_paperclip_agent_devices(
             )
         )
 
-        # Bind the agent's connect token to the container gateway token AND
-        # point claimedApiKeyPath at the agent's own per-agent identity file
-        # (the singular default collides across agents). Idempotent: skip the
-        # round-trip when both are already current.
-        desired_claimed_path = claimed_api_key_path(agent["id"])
-        if cfg.get("authToken") != gateway_token or cfg.get("claimedApiKeyPath") != desired_claimed_path:
+        # Bring the agent's per-agent adapterConfig fields current — see
+        # `desired_agent_adapter_fields` for what each one does and why.
+        # Idempotent: skip the round-trip when all of them already match.
+        desired = desired_agent_adapter_fields(agent_id=agent["id"], gateway_token=gateway_token)
+        if any(cfg.get(k) != v for k, v in desired.items()):
             try:
                 await admin_client.patch_agent(
                     session_cookie=cookie,
                     agent_id=agent["id"],
                     body={
-                        "adapterConfig": {
-                            **cfg,
-                            "authToken": gateway_token,
-                            "claimedApiKeyPath": desired_claimed_path,
-                        },
+                        "adapterConfig": {**cfg, **desired},
                         "replaceAdapterConfig": True,
                     },
                 )
@@ -340,7 +362,7 @@ async def ensure_operator_device_paired(
     from core.services.friday_identity import stage_paperclip_identity_for_agent
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
-        claimed_api_key_path,
+        desired_agent_adapter_fields,
     )
     from core.services.paperclip_api_key import ensure_paperclip_api_key
 
@@ -395,13 +417,11 @@ async def ensure_operator_device_paired(
             e,
         )
 
-    # 2. Bind the agent's connect token to the container gateway token so the
-    #    device's signed auth.token authenticates against the token-mode gateway,
-    #    AND point claimedApiKeyPath at the agent's own per-agent identity file
-    #    (the singular default collides across agents). Idempotent: skip the
-    #    round-trip when both are already current.
-    desired_claimed_path = claimed_api_key_path(agent_id)
-    if cfg.get("authToken") != gateway_token or cfg.get("claimedApiKeyPath") != desired_claimed_path:
+    # 2. Bring the agent's per-agent adapterConfig fields current — see
+    #    `desired_agent_adapter_fields` for what each one does and why.
+    #    Idempotent: skip the round-trip when all of them already match.
+    desired = desired_agent_adapter_fields(agent_id=agent_id, gateway_token=gateway_token)
+    if any(cfg.get(k) != v for k, v in desired.items()):
         try:
             async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
                 admin = PaperclipAdminClient(http_client=http)
@@ -410,11 +430,7 @@ async def ensure_operator_device_paired(
                     session_cookie=cookie,
                     agent_id=agent_id,
                     body={
-                        "adapterConfig": {
-                            **cfg,
-                            "authToken": gateway_token,
-                            "claimedApiKeyPath": desired_claimed_path,
-                        },
+                        "adapterConfig": {**cfg, **desired},
                         "replaceAdapterConfig": True,
                     },
                 )

@@ -269,3 +269,42 @@ async def test_write_owner_facts_survives_email_lookup_failure(monkeypatch):
     facts = json.loads(written["content"])
     assert facts["email_address"] is None
     assert facts["plan"]  # the rest of the facts still wrote
+
+
+# --- Facts tri-state -------------------------------------------------------
+#
+# `email_address` alone cannot distinguish "email is off for this owner" from
+# "you can send; your address is created by your first send". SKILL.md's
+# null-means-unprovisioned rule would otherwise deadlock first contact,
+# because the address is minted BY the send.
+
+
+def test_facts_carry_owner_id_and_email_enabled_when_domain_set(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    facts = owner_facts.build_owner_facts("user_abc", {}, email_address=None)
+
+    assert facts["owner_id"] == "user_abc"
+    assert facts["email_enabled"] is True
+    assert facts["email_address"] is None
+
+
+def test_email_disabled_when_domain_unset(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "")
+    facts = owner_facts.build_owner_facts("user_abc", {}, email_address=None)
+
+    assert facts["email_enabled"] is False
+    assert facts["email_address"] is None
+
+
+def test_email_enabled_and_minted(monkeypatch):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
+    facts = owner_facts.build_owner_facts("user_abc", {}, email_address="friday@acme.isol8.co")
+
+    assert facts["email_enabled"] is True
+    assert facts["email_address"] == "friday@acme.isol8.co"

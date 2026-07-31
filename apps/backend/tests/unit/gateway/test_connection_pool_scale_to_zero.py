@@ -345,6 +345,11 @@ async def test_grace_close_arms_trial_stop_after_mixed_case_session_key_run_comp
     conn._side_run_ids = {}
     conn._push_tasks = set()
     conn._parked = False
+    # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
+    # exercised by this test, but _handle_message's TRUE-terminal branch
+    # always pops from it now.
+    conn._run_completion_callbacks = {}
+    conn._run_completion_tasks = set()
     conn.close = AsyncMock()
 
     async def fake_forward(message, target_member_id=None):

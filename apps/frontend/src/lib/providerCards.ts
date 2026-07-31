@@ -30,6 +30,39 @@ export interface ProviderCard {
   highlighted?: boolean;
 }
 
+/**
+ * In-app (post-signup) provider choices. Same three paths as
+ * `PROVIDER_CARDS`, minus the pricing/marketing copy — an owner picking here
+ * already has a subscription, so the sales framing would be noise.
+ *
+ * Used by:
+ *   - `ChangeProviderModal#PickerStage` — the deliberate switch flow.
+ *   - `LLMPanel`'s empty state — the inline first-pick.
+ */
+export interface ProviderSwitchCard {
+  id: ProviderChoiceId;
+  title: string;
+  subtitle: string;
+}
+
+export const PROVIDER_SWITCH_CARDS: ProviderSwitchCard[] = [
+  {
+    id: "bedrock_claude",
+    title: "Powered by Claude",
+    subtitle: "Bedrock-managed Claude credits",
+  },
+  {
+    id: "chatgpt_oauth",
+    title: "Sign in with ChatGPT",
+    subtitle: "Inference via your ChatGPT subscription",
+  },
+  {
+    id: "byo_key",
+    title: "Bring your own API key",
+    subtitle: "OpenAI or Anthropic — your key, your billing",
+  },
+];
+
 export const PROVIDER_CARDS: ProviderCard[] = [
   {
     id: "chatgpt_oauth",

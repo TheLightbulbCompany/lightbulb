@@ -9,6 +9,7 @@ import { AgentChannelsSection } from "./AgentChannelsSection";
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
 import { useBilling } from "@/hooks/useBilling";
+import { useAgents } from "@/hooks/useAgents";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
@@ -63,9 +64,9 @@ export function AgentInspectorPanel({
 
   // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
   // inspector only has an id from the URL, not the agent object).
-  const { data } = useGatewayRpc<AgentsListResponse>("agents.list");
-  const agent: AgentEntry | undefined = (data?.agents ?? []).find(
-    (a) => a.id === agentId,
+  const { agents: gatewayAgents } = useAgents();
+  const agent: AgentEntry | undefined = (gatewayAgents as AgentEntry[]).find(
+    (a: AgentEntry) => a.id === agentId,
   );
 
   // Org controls (reports-to + lifecycle) need the Teams roster shape, which
@@ -105,7 +106,7 @@ export function AgentInspectorPanel({
 
   if (!agentId) {
     return (
-      <div className="flex items-center justify-center py-12 text-sm text-[#8a8578]">
+      <div className="flex items-center justify-center py-12 text-sm text-[var(--mute)]">
         Select an agent to inspect.
       </div>
     );
@@ -119,13 +120,13 @@ export function AgentInspectorPanel({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-[#e0dbd0]">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--edge)]">
         {emoji ? <span className="text-base leading-none">{emoji}</span> : null}
         <h2 className="text-sm font-semibold truncate">{displayName}</h2>
       </div>
 
       <div
-        className="flex items-center gap-1 border-b border-[#e0dbd0] px-4 py-2"
+        className="flex items-center gap-1 border-b border-[var(--edge)] px-4 py-2"
         role="tablist"
         aria-label="Agent inspector sections"
       >
@@ -141,7 +142,7 @@ export function AgentInspectorPanel({
               "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
               activeTab === tab.id
                 ? "bg-[var(--cream)] text-[var(--forest)]"
-                : "text-[#8a8578] hover:text-[#1a1a1a]",
+                : "text-[var(--mute)] hover:text-[var(--ink)]",
             )}
             onClick={() => setActiveTab(tab.id)}
           >
@@ -162,12 +163,12 @@ export function AgentInspectorPanel({
             <AgentOverviewTab agentId={agentId} agent={agent} />
             {orgAgent ? (
               <section
-                className="mt-6 border-t border-[#e0dbd0] pt-6"
+                className="mt-6 border-t border-[var(--edge)] pt-6"
                 aria-labelledby="inspector-org-heading"
               >
                 <h3
                   id="inspector-org-heading"
-                  className="text-[10px] uppercase tracking-wider text-[#8a8578] mb-3"
+                  className="text-[10px] uppercase tracking-wider text-[var(--mute)] mb-3"
                 >
                   Organization
                 </h3>

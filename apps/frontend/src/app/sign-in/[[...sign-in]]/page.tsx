@@ -53,7 +53,7 @@ export default function Page() {
 
         /* ── LEFT PANEL: branding ── */
         .auth-brand {
-          background: #06402B;
+          background: var(--forest);
           display: flex;
           flex-direction: column;
           justify-content: space-between;
@@ -155,7 +155,7 @@ export default function Page() {
 
         /* ── RIGHT PANEL: sign-in form ── */
         .auth-form-panel {
-          background: #faf7f2;
+          background: var(--cream);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -189,7 +189,7 @@ export default function Page() {
           font-family: var(--font-lora-serif), serif;
           font-size: 28px;
           font-weight: 400;
-          color: #1a1a1a;
+          color: var(--ink);
           margin: 0 0 8px 0;
         }
         .auth-subtitle {
@@ -209,7 +209,7 @@ export default function Page() {
           margin-top: 24px;
         }
         .auth-footer a {
-          color: #06402B;
+          color: var(--forest);
           font-weight: 600;
           padding: 4px 2px;
           text-decoration: none;
@@ -219,7 +219,7 @@ export default function Page() {
           color: #0a5c3e;
         }
         .auth-footer a:focus-visible {
-          outline: 2px solid #06402B;
+          outline: 2px solid var(--forest);
           outline-offset: 2px;
           border-radius: 4px;
         }

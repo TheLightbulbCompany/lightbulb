@@ -134,6 +134,17 @@ schema = (
     .exclude(
         path_regex="^/api/v1/agent-builder/",
     )
+    # Agent-initiated owner email is hook-token authed and reads the DDB
+    # ``containers`` table to resolve the owner's hook_token, on every
+    # request — same 5xx-without-a-real-DDB shape as ``hooks_proxy`` and
+    # ``agent-builder``. Note the sibling reply relay (/agent-mail/reply) is
+    # deliberately NOT excluded: it decodes its reply_token first and 400s
+    # before it ever reaches DynamoDB, so it stays covered here. Coverage for
+    # this route lives in tests/unit/routers/test_agent_mail_send.py, which
+    # mocks container_repo and asserts the 401/400/429 paths end-to-end.
+    .exclude(
+        path_regex="^/api/v1/agent-mail/send-to-owner/",
+    )
     .exclude(
         path_regex="^/health$",
     )

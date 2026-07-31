@@ -11,6 +11,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from core.config import settings
+
 _YAML = Path(__file__).parent / "providers.yaml"
 
 Acquisition = Literal["paste_token", "direct_oauth", "nango", "agentcore", "aws_sts", "secrets_manager"]
@@ -233,6 +235,26 @@ class Provider(BaseModel):
     # dark (no dead "Connect" button they can't complete pre-review). Owner ids
     # are Clerk org_/user_ ids. None/empty = no extra owners.
     owner_allowlist: list[str] | None = None
+    # What a gate MEANS for this provider when it excludes an owner.
+    #
+    # False (default) — HIDDEN. The provider is absent from the owner's
+    #   connections list and from the public platform-info catalog, exactly as
+    #   before `requestable` existed. This is what keeps a half-wired provider
+    #   gated `environments: [local, dev]` off prod entirely: dropping this
+    #   default would publish it on an unauthenticated route and have agents
+    #   pitch it, with no knob left to suppress it short of deleting the entry.
+    #
+    # True — REQUESTABLE. The provider is listed with `requestable: true` so the
+    #   Integrations tab can offer "Request access" (emails support) instead of a
+    #   Connect button whose authorize leg would 404. Opt in ONLY for providers
+    #   we can actually grant by hand — i.e. a Meta integration where an operator
+    #   adds the owner as a provider tester and to `owner_allowlist`.
+    #
+    # Flip this AFTER the extended image carrying the matching isol8 SKILL.md is
+    # promoted for the env (openclaw-version.json). Containers bake the skill, so
+    # a backend-first flip leaves live agents on copy that has never heard of
+    # `requestable` and still says "connect it in the Integrations tab".
+    offer_request_access: bool = False
     # Bundled skill delivered by a paste-token CLI integration (see SkillSpec).
     skill: SkillSpec | None = None
     # AWS STS rail config. Only set for the `aws` provider (acquisition
@@ -279,3 +301,43 @@ def get_provider(key: str) -> Provider:
     if key not in providers:
         raise KeyError(f"unknown integration provider: {key!r}")
     return providers[key]
+
+
+def current_env() -> str:
+    # Empty ENVIRONMENT (local dev) is treated as "dev", matching the
+    # integration_secret_store / provider-secret naming convention.
+    return settings.ENVIRONMENT or "dev"
+
+
+def visible_in_env(p: Provider) -> bool:
+    """Env half of the availability gate.
+
+    This is the only half an *ownerless* caller can evaluate — notably the
+    public platform-info catalog, which has no auth and so cannot check
+    `owner_allowlist`. Keep it here rather than in a router so every surface
+    that advertises providers agrees on what this environment offers.
+    """
+    return p.environments is None or current_env() in p.environments
+
+
+def is_listable(p: Provider, owner_id: str | None) -> bool:
+    """Whether this provider appears in the owner's connections list at all.
+
+    Connectable providers always list. A gated one lists only if it opts into
+    `offer_request_access` — otherwise a gate still means HIDDEN, which is what
+    keeps a provider that is merely half-built out of prod.
+    """
+    return available_for(p, owner_id) or p.offer_request_access
+
+
+def available_for(p: Provider, owner_id: str | None) -> bool:
+    """Whether this provider is exposed to this owner in the running environment.
+
+    Available when it's not env-gated, OR the current env is in its
+    `environments`, OR this owner is on its `owner_allowlist` (the prod-dogfood
+    escape hatch — a dev-gated provider still reachable by a named founder
+    container on prod).
+    """
+    if visible_in_env(p):
+        return True
+    return bool(owner_id and p.owner_allowlist and owner_id in p.owner_allowlist)

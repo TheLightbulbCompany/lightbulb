@@ -268,6 +268,221 @@ async def test_upsert_preserves_the_lease_mid_provision(dynamodb_table):
     assert row["service_name"] == "svc-1"
 
 
+# ---------------------------------------------------------------------------
+# SFN reshape: claim_id/execution_name stamping (dispatch Branch B) +
+# provision_attempt_token (claim_attempt, hazard 1 fencing) + generation/
+# attempt_token conditioning on the fenced write helpers.
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_stamps_execution_name_and_attempt_token(dynamodb_table):
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_abc", claim_id="fixed-claim-uuid", execution_name="provision-user_abc-fixedcla"
+    )
+    assert claim == "fixed-claim-uuid"
+    row = _row(dynamodb_table, "user_abc")
+    assert row["provision_execution_name"] == "provision-user_abc-fixedcla"
+    assert row["provision_claim_id"] == "fixed-claim-uuid"
+    # Attempt 0's fencing token is the claim_id itself — deterministic, so
+    # dispatch_provision's execution_input() (which embeds it) stays
+    # byte-identical across a Branch-A re-issue for the same claim.
+    assert row["provision_attempt_token"] == "fixed-claim-uuid"
+    assert row["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_release_lease_removes_all_lease_fields_on_success_write(dynamodb_table):
+    """The terminal SUCCESS write (status="running", release_lease=True)
+    atomically removes every lease field — so a "provisioning row carrying a
+    claim" stays a reliable active-SFN-work signal for the boot reconcile,
+    and a later interrupted wake/resize (which never touches lease fields)
+    is not misclassified as SFN-owned."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision(
+        "user_rel", claim_id="claim-rel", execution_name="provision-user_rel-claimrel"
+    )
+    assert claim == "claim-rel"
+
+    await container_repo.update_container_leased(
+        "user_rel",
+        "claim-rel",
+        {"status": "running", "substatus": "gateway_healthy"},
+        release_lease=True,
+    )
+
+    row = _row(dynamodb_table, "user_rel")
+    assert row["status"] == "running"
+    for lease_field in (
+        "provision_claim_id",
+        "provision_claimed_at",
+        "provision_attempt_token",
+        "provision_execution_name",
+    ):
+        assert lease_field not in row
+
+    # The lease is genuinely gone: a fresh claim on the running row must
+    # REFUSE (running is not claimable) rather than see a stale lease.
+    assert await container_repo.try_claim_provision("user_rel") is None
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_losing_claim_leaves_stamp_unchanged(dynamodb_table):
+    # A losing claim (fresh provisioning lease held by another claim) is one
+    # atomic conditional write: the loser's claim_id AND execution_name must
+    # both be rejected together — a half-applied stamp would point the winner's
+    # row at an execution that will never run.
+    from core.repositories import container_repo
+
+    won = await container_repo.try_claim_provision(
+        "user_ghi", claim_id="winner-claim", execution_name="provision-user_ghi-winnercl"
+    )
+    assert won == "winner-claim"
+    lost = await container_repo.try_claim_provision(
+        "user_ghi", claim_id="loser-claim", execution_name="provision-user_ghi-losercla"
+    )
+    assert lost is None
+    row = _row(dynamodb_table, "user_ghi")
+    assert row["provision_claim_id"] == "winner-claim"
+    assert row["provision_execution_name"] == "provision-user_ghi-winnercl"
+
+
+@pytest.mark.asyncio
+async def test_try_claim_provision_without_name_leaves_field_absent(dynamodb_table):
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_def")
+    assert claim is not None
+    row = _row(dynamodb_table, "user_def")
+    assert "provision_execution_name" not in row
+    # Still stamps the attempt token (claim_id itself) even without a name —
+    # every claim, however dispatched, is fencible from attempt 0.
+    assert row["provision_attempt_token"] == claim
+
+
+@pytest.mark.asyncio
+async def test_takeover_stamps_attempt_token_too(dynamodb_table):
+    """A deliberate takeover door (conversion/admin/debug) also stamps
+    provision_attempt_token, so a direct provision_user_container(claim_id=...)
+    call from one of those doors is fenceable exactly like the SFN path."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.takeover_provision("user_deliberate")
+    row = _row(dynamodb_table, "user_deliberate")
+    assert row["provision_attempt_token"] == claim
+
+
+# ---------------------------------------------------------------------------
+# claim_attempt — per-SFN-retry fencing (spec §7 hazard 1)
+
+
+@pytest.mark.asyncio
+async def test_claim_attempt_restamps_token_and_fences_the_straggler(dynamodb_table):
+    """THE HAZARD: an SFN retry mints a fresh attempt_token while claim_id and
+    the execution name stay stable. A straggler from the SUPERSEDED attempt
+    (still holding the OLD token in memory) must be rejected at its next
+    checkpoint, even though its claim_id still matches."""
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    await container_repo.try_claim_provision("user_retry", claim_id="claim-1", execution_name="exec-1")
+    old_token = _row(dynamodb_table, "user_retry")["provision_attempt_token"]
+    assert old_token == "claim-1"
+
+    # SFN's BumpAttempt mints a fresh token for the new attempt; the new
+    # runner task re-stamps it as its FIRST action.
+    await container_repo.claim_attempt("user_retry", "claim-1", "fresh-attempt-token")
+    row = _row(dynamodb_table, "user_retry")
+    assert row["provision_attempt_token"] == "fresh-attempt-token"
+    assert row["provision_claim_id"] == "claim-1"  # unchanged — execution name still matches
+
+    # The straggler (still holding old_token) is fenced out at its NEXT
+    # checkpoint, even though claim_id alone would still pass.
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased(
+            "user_retry", "claim-1", {"substatus": "poison"}, attempt_token=old_token
+        )
+    assert _row(dynamodb_table, "user_retry")["substatus"] != "poison"
+
+    # The NEW attempt's own checkpoints, carrying the fresh token, succeed.
+    await container_repo.update_container_leased(
+        "user_retry", "claim-1", {"substatus": "legit"}, attempt_token="fresh-attempt-token"
+    )
+    assert _row(dynamodb_table, "user_retry")["substatus"] == "legit"
+
+
+@pytest.mark.asyncio
+async def test_claim_attempt_raises_superseded_when_claim_itself_was_taken_over(dynamodb_table):
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    await container_repo.try_claim_provision("user_taken", claim_id="claim-old", execution_name="exec-old")
+    await container_repo.takeover_provision("user_taken")  # a deliberate door takes over
+
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.claim_attempt("user_taken", "claim-old", "new-attempt-token")
+
+
+# ---------------------------------------------------------------------------
+# generation / attempt_token conditioning on the fenced write helpers
+
+
+@pytest.mark.asyncio
+async def test_update_container_leased_generation_mismatch_raises_superseded(dynamodb_table):
+    from core.repositories import container_repo
+    from core.repositories.container_repo import ProvisionSuperseded
+
+    claim = await container_repo.try_claim_provision("user_gen")
+    await container_repo.update_fields("user_gen", {"provision_generation": "gen-old"})
+
+    with pytest.raises(ProvisionSuperseded):
+        await container_repo.update_container_leased("user_gen", claim, {"substatus": "poison"}, generation="gen-new")
+    assert _row(dynamodb_table, "user_gen")["substatus"] != "poison"
+
+    # Matching generation succeeds.
+    await container_repo.update_container_leased("user_gen", claim, {"substatus": "ok"}, generation="gen-old")
+    assert _row(dynamodb_table, "user_gen")["substatus"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_update_container_leased_generation_absent_on_row_is_permissive(dynamodb_table):
+    """A brand-new claim (fresh full-provision, generation not minted yet)
+    must not be blocked by a generation condition that has nothing to compare
+    against — attribute_not_exists(...) OR match, not AND."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_nogen")
+    await container_repo.update_container_leased("user_nogen", claim, {"substatus": "ok"}, generation="anything")
+    assert _row(dynamodb_table, "user_nogen")["substatus"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_release_provision_to_error_attempt_token_mismatch_is_a_noop(dynamodb_table):
+    """Mirrors update_container_leased's attempt_token fence on the error
+    transition: a straggler's release must not clobber the current attempt's
+    error state."""
+    from core.repositories import container_repo
+
+    await container_repo.try_claim_provision("user_relgen", claim_id="claim-r", execution_name="exec-r")
+    await container_repo.claim_attempt("user_relgen", "claim-r", "current-token")
+
+    # Straggler holding the OLD (attempt-0) token tries to release -- no-op.
+    await container_repo.release_provision_to_error(
+        "user_relgen", "claim-r", last_error="stale attempt", attempt_token="claim-r"
+    )
+    assert _row(dynamodb_table, "user_relgen")["status"] == "provisioning"
+
+    # The CURRENT attempt's own release lands normally.
+    await container_repo.release_provision_to_error(
+        "user_relgen", "claim-r", last_error="real failure", attempt_token="current-token"
+    )
+    row = _row(dynamodb_table, "user_relgen")
+    assert row["status"] == "error"
+    assert row["last_error"] == "real failure"
+
+
 def test_is_provision_claim_stale_matrix():
     from core.repositories import container_repo
 
@@ -279,3 +494,137 @@ def test_is_provision_claim_stale_matrix():
     assert container_repo.is_provision_claim_stale({"status": "provisioning", "provision_claimed_at": stale}) is True
     # Legacy wedged row: provisioning with no lease at all -> stale (recoverable).
     assert container_repo.is_provision_claim_stale({"status": "provisioning"}) is True
+
+
+# ---------------------------------------------------------------------------
+# update_conversion_fields — the SCOPED conversion-marker writer (#1428)
+#
+# The marker used to ride the get→put update_fields; racing the conversion's
+# own freshly dispatched claim, the stale full-item put resurrected
+# status="stopped" over "provisioning" and ERASED the lease — superseding the
+# conversion's own SFN execution with no successor. The scoped writer must be
+# physically incapable of that.
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_cannot_clobber_a_fresh_claim(dynamodb_table):
+    """The incident interleaving: claim lands first, marker write second. The
+    marker write must leave status AND every lease field intact."""
+    from core.repositories import container_repo
+
+    claim = await container_repo.try_claim_provision("user_conv", execution_name="provision-user_conv-abcd1234")
+    await container_repo.update_conversion_fields(
+        "user_conv",
+        {"conversion_pending": False, "substatus": None},
+    )
+
+    row = _row(dynamodb_table, "user_conv")
+    assert row["status"] == "provisioning", "marker write must never touch status"
+    assert row["provision_claim_id"] == claim
+    assert row["provision_attempt_token"] == claim
+    assert row["provision_execution_name"] == "provision-user_conv-abcd1234"
+    assert row["conversion_pending"] is False
+    assert row.get("substatus") is None  # written as NULL, same read shape as before
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_writes_the_stamp_fields(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_stamp", "status": "running"})
+    await container_repo.update_conversion_fields(
+        "user_stamp",
+        {"conversion_pending": True, "substatus": "converting", "conversion_started_at": "2026-07-24T00:00:00+00:00"},
+    )
+
+    row = _row(dynamodb_table, "user_stamp")
+    assert row["conversion_pending"] is True
+    assert row["substatus"] == "converting"
+    assert row["conversion_started_at"] == "2026-07-24T00:00:00+00:00"
+    assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_rejects_non_marker_fields(dynamodb_table):
+    """The allowlist is the guarantee: this helper must never grow into a
+    general row writer (that is exactly the clobber class it replaces)."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_allow", "status": "running"})
+    with pytest.raises(ValueError, match="disallowed fields"):
+        await container_repo.update_conversion_fields("user_allow", {"status": "stopped"})
+    with pytest.raises(ValueError, match="disallowed fields"):
+        await container_repo.update_conversion_fields("user_allow", {"provision_claim_id": "x"})
+    assert _row(dynamodb_table, "user_allow")["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_update_conversion_fields_noops_on_an_absent_row(dynamodb_table):
+    """A concurrently deleted row must not be resurrected as a marker-only
+    ghost (mirrors stamp_stop_reason's condition)."""
+    from core.repositories import container_repo
+
+    await container_repo.update_conversion_fields("user_ghost", {"conversion_pending": True})
+    assert _row(dynamodb_table, "user_ghost") is None
+
+
+# ---------------------------------------------------------------------------
+# release_stranded_stop_to_error — recovery CAS for the superseded-without-
+# successor strand (#1428)
+
+
+@pytest.mark.asyncio
+async def test_stranded_release_flips_a_claimless_stopped_row(dynamodb_table):
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_strand", "status": "stopped", "stop_reason": "reprovision"})
+
+    released = await container_repo.release_stranded_stop_to_error("user_strand", last_error="no successor")
+
+    assert released is True
+    row = _row(dynamodb_table, "user_strand")
+    assert row["status"] == "error"
+    assert row["substatus"] == "provision_failed"
+    assert row["retryable"] is True
+    assert row["last_error"] == "no successor"
+    # ...and the error row is immediately re-claimable — the whole point.
+    assert await container_repo.try_claim_provision("user_strand") is not None
+
+
+@pytest.mark.asyncio
+async def test_stranded_release_refuses_when_a_claim_exists(dynamodb_table):
+    """A present claim == a successor exists; its liveness belongs to Branch A
+    / the stale-lease heuristic, never to this flip. All clauses evaluate
+    atomically, so a claim landing before the write wins."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_claimed", "status": "stopped", "provision_claim_id": "claim-live"})
+
+    assert await container_repo.release_stranded_stop_to_error("user_claimed", last_error="x") is False
+    row = _row(dynamodb_table, "user_claimed")
+    assert row["status"] == "stopped"
+    assert "last_error" not in row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["running", "provisioning", "error"])
+async def test_stranded_release_only_targets_stopped_rows(dynamodb_table, status):
+    """running = healthy; unclaimed provisioning = a wake/resize transition's
+    row; error = already in the self-healing state. None may be flipped."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_other", "status": status})
+    assert await container_repo.release_stranded_stop_to_error("user_other", last_error="x") is False
+    assert _row(dynamodb_table, "user_other")["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_stranded_release_refuses_a_parked_trial_box(dynamodb_table):
+    """stop_reason="trial_idle" is the deliberately parked trial box — it keeps
+    its wake-gated semantics and must never be error-flipped into an
+    unconditional poll retry."""
+    from core.repositories import container_repo
+
+    dynamodb_table.put_item(Item={"owner_id": "user_parked", "status": "stopped", "stop_reason": "trial_idle"})
+    assert await container_repo.release_stranded_stop_to_error("user_parked", last_error="x") is False
+    assert _row(dynamodb_table, "user_parked")["status"] == "stopped"

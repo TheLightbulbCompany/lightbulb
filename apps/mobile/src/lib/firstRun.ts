@@ -9,9 +9,16 @@
  * here — it is BRIEF.md in Friday's workspace (backend POST
  * /onboarding/brief).
  *
- * FIRST_RUN_PROMPT is the visible kickoff message auto-sent to Friday. Its
- * runbook counterpart is the BOOTSTRAP.md first-run variant in
- * apps/backend/core/services/onboarding_brief.py — keep the two in sync.
+ * Per the 2026-07-24 architecture decision (spec PR-6, BOOTSTRAP), Clerk
+ * `unsafeMetadata` is a WRITE-ONLY presentation cache — it may be written
+ * for an optimistic pre-first-poll paint, but no backend code and no client
+ * gating logic may read it as authority. `briefSubmitted` is the one
+ * surviving field, written on submit so the funnel dismisses THIS session
+ * without waiting for the next poll. `started`/`completed` (the client-side
+ * first-run-kickoff latch) were deleted in the same PR: the kickoff itself
+ * is server-dispatched now (`core/services/bootstrap_dispatcher.py`), and
+ * its completion is the backend's own observed `chat.final`, not a client
+ * write.
  */
 import type { useUser } from "@clerk/clerk-expo";
 
@@ -24,8 +31,6 @@ type UserResource = NonNullable<ReturnType<typeof useUser>["user"]>;
 
 export interface FirstRunMeta {
   briefSubmitted?: boolean;
-  started?: boolean;
-  completed?: boolean;
   path?: "new" | "grow";
 }
 
@@ -45,10 +50,3 @@ export async function writeFirstRun(
     },
   });
 }
-
-export const FIRST_RUN_PROMPT = [
-  "Friday — I just set up my company. Read BRIEF.md, then really dig into my business and",
-  "market and write up what you learn (a market-research doc and a mission doc). Once you",
-  "get it, put my three best next moves on the board as tasks. Talk me through it as you go —",
-  "I'm watching.",
-].join(" ");

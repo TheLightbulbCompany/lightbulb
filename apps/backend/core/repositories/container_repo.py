@@ -1,5 +1,6 @@
 """Container repository -- DynamoDB operations for the containers table."""
 
+import logging
 import time
 import uuid
 
@@ -7,6 +8,9 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.services.status_events import publish_status_changed
+
+logger = logging.getLogger(__name__)
 
 # How long a provision lease (provision_claim_id + provision_claimed_at) stays
 # exclusive with no checkpoint refresh before it is considered abandoned. Every
@@ -78,7 +82,7 @@ async def get_by_status(status: str) -> list[dict]:
 async def scan_all() -> list[dict]:
     """Return every container row. Paginates via DDB LastEvaluatedKey.
 
-    Used by the one-shot hook-token backfill (scripts/backfill-hook-tokens.py).
+    Used by fleet-wide ops tools (ecs_ops, bedrock_gate_break_glass).
     Not for hot paths -- DDB Scan is expensive at scale.
     """
     table = _get_table()
@@ -99,11 +103,17 @@ async def scan_all() -> list[dict]:
 async def upsert(owner_id: str, fields: dict) -> dict:
     """Create or update a container record. Preserves id and created_at on existing items.
 
-    Also preserves the provision lease (``provision_claim_id`` +
-    ``provision_claimed_at``): this put_item REPLACES the whole item, and
+    Also preserves the FULL provision lease (``provision_claim_id`` +
+    ``provision_claimed_at`` + ``provision_attempt_token`` +
+    ``provision_execution_name``): this put_item REPLACES the whole item, and
     create_user_service upserts mid-provision — dropping the lease here would
     make the in-flight provision look stale/unowned and re-claimable while it
-    is still running. (PR 2 replaces this whole-item write with a scoped
+    is still running. The SFN fields matter just as much as the claim:
+    dropping ``provision_execution_name`` blinds Branch-A redispatch to the
+    live execution, and dropping ``provision_attempt_token`` makes every
+    attempt-token fence permissive (they all allow
+    ``attribute_not_exists``), letting a superseded straggler pass its next
+    checkpoint. (PR 2 replaces this whole-item write with a scoped
     UpdateItem, which removes the need to preserve anything.)
     """
     table = _get_table()
@@ -117,17 +127,28 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         "updated_at": now,
         **fields,
     }
-    for lease_field in ("provision_claim_id", "provision_claimed_at"):
+    for lease_field in (
+        "provision_claim_id",
+        "provision_claimed_at",
+        "provision_attempt_token",
+        "provision_execution_name",
+    ):
         if existing and lease_field in existing and lease_field not in fields:
             item[lease_field] = existing[lease_field]
     # Ensure owner_id is not overridden by fields
     item["owner_id"] = owner_id
 
     await run_in_thread(table.put_item, Item=item)
+    publish_status_changed(owner_id)
     return item
 
 
-async def try_claim_provision(owner_id: str) -> str | None:
+async def try_claim_provision(
+    owner_id: str,
+    *,
+    claim_id: str | None = None,
+    execution_name: str | None = None,
+) -> str | None:
     """Atomically claim the right to provision this owner's container. Returns
     the fencing token (``provision_claim_id``) iff THIS caller won; None when a
     provision is already in flight.
@@ -136,7 +157,7 @@ async def try_claim_provision(owner_id: str) -> str | None:
     every ~3s, and the container row historically wasn't written until deep
     inside the provision (create_user_service), AFTER the Bedrock AIP mint. So
     two polls (a page refresh mid-provision) both saw "no row", both dispatched
-    ``background_provision``, and the two full provisions interleaved — each
+    ``dispatch_provision``, and the two full provisions interleaved — each
     minted its own inference profile (Bedrock does not enforce name-uniqueness)
     and one's ARN landed in the container config while the other's landed in
     the IAM policy: AccessDenied on every model call. Seen live on prod.
@@ -161,41 +182,285 @@ async def try_claim_provision(owner_id: str) -> str | None:
     normal status transitions: failure paths flip the row to ``error``
     (immediately re-claimable, and the status poll's existing error auto-retry
     re-dispatches), success ends at ``running``.
+
+    The SFN dispatcher (``core.services.provision_dispatch``) passes
+    ``claim_id`` + ``execution_name`` so the execution name is stamped in the
+    same atomic write as the claim — a crash between claim and StartExecution
+    is healable by name (see ``provision_dispatch`` module docstring, Branch
+    A). It also stamps ``provision_attempt_token = claim_id`` -- attempt 0's
+    fencing token. A retried SFN attempt (``BumpAttempt`` in the state
+    machine) mints a FRESH attempt token via ``claim_attempt`` below; that is
+    what fences a straggler from a still-running previous attempt out at its
+    next checkpoint, while the claim/execution name stay stable across
+    retries (see ``claim_attempt`` docstring).
     """
     table = _get_table()
-    claim_id = str(uuid.uuid4())
+    claim_id = claim_id or str(uuid.uuid4())
     now_epoch = int(time.time())
     now_iso = utc_now_iso()
+    update_expr = (
+        "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
+        "provision_attempt_token = :cid, "
+        "provision_claimed_at = :now, updated_at = :iso, "
+        "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
+    )
+    values = {
+        ":prov": "provisioning",
+        ":sub": "claimed",
+        ":cid": claim_id,
+        ":now": now_epoch,
+        ":iso": now_iso,
+        ":newid": str(uuid.uuid4()),
+        ":error": "error",
+        ":stopped": "stopped",
+        ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
+    }
+    if execution_name is not None:
+        update_expr += ", provision_execution_name = :ename"
+        values[":ename"] = execution_name
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression=(
-                "SET #s = :prov, substatus = :sub, provision_claim_id = :cid, "
-                "provision_claimed_at = :now, updated_at = :iso, "
-                "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
-            ),
+            UpdateExpression=update_expr,
             ConditionExpression=(
                 "attribute_not_exists(owner_id) OR #s = :error OR #s = :stopped "
                 "OR (#s = :prov AND (attribute_not_exists(provision_claimed_at) OR provision_claimed_at < :stale))"
             ),
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":prov": "provisioning",
-                ":sub": "claimed",
-                ":cid": claim_id,
-                ":now": now_epoch,
-                ":iso": now_iso,
-                ":newid": str(uuid.uuid4()),
-                ":error": "error",
-                ":stopped": "stopped",
-                ":stale": now_epoch - PROVISION_CLAIM_STALE_S,
-            },
+            ExpressionAttributeValues=values,
         )
         return claim_id
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return None
+        raise
+
+
+async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> bool:
+    """Reserve one agent-initiated owner email for ``day`` (UTC ``YYYY-MM-DD``).
+
+    DURABLE on purpose. This is the only fence against an agent looping on the
+    owner-send endpoint, and the backend runs several ECS tasks behind an ALB —
+    an in-process bucket (the pattern ``agent_mail_relay`` uses for burst
+    smoothing) would give a real limit of ``cap * task_count`` and reset on
+    every deploy.
+
+    Two conditional writes, at most one extra round trip:
+
+    1. Roll over — set the counter to 1 when the stored day is absent or stale.
+    2. Same day — increment, conditional on the count still being under cap.
+
+    Returns True when the send is allowed.
+
+    **Fails OPEN.** A DynamoDB fault returns True rather than blocking. The
+    once-only first-contact guard and the per-minute burst limiter both still
+    apply, so the blast radius of failing open is bounded — whereas failing
+    closed would silently swallow a legitimate first-contact email, which is
+    the exact failure mode this whole feature exists to stop.
+    """
+    table = _get_table()
+
+    # 1. New day, or first send ever: reset the window to 1.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET email_send_day = :d, email_send_count = :one",
+            ConditionExpression=(
+                "attribute_exists(owner_id) AND (attribute_not_exists(email_send_day) OR email_send_day <> :d)"
+            ),
+            ExpressionAttributeValues={":d": day, ":one": 1},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            return True  # fail open — see docstring
+
+    # 2. Same day: increment only while under cap.
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET email_send_count = email_send_count + :one",
+            ConditionExpression="email_send_day = :d AND email_send_count < :cap",
+            ExpressionAttributeValues={":d": day, ":one": 1, ":cap": cap},
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        return True  # fail open — see docstring
+
+
+# How long a marketplace-deploy claim stays exclusive before another deploy may
+# take it over. A deploy runs ~85s on a busy container (pair_with_openclaw burns
+# a 30s gateway-RPC timeout, then its retry succeeds), so this is deliberately
+# far above the slow case: the only thing it needs to survive is an ECS task
+# dying mid-deploy, which would otherwise wedge that listing forever.
+DEPLOY_CLAIM_STALE_S = 900
+
+
+async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | None:
+    """Take an exclusive lease on "this owner is deploying this listing".
+
+    Returns a FENCING TOKEN when the caller owns the deploy, None when another
+    one is already in flight for the same listing. Pass the token back to
+    ``release_listing_deploy_claim`` — an unconditional release would let a
+    caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was therefore taken
+    over) delete the live claim of whoever succeeded it, reopening the exact
+    overlap window this exists to close. Same fencing discipline as
+    ``try_claim_provision``'s ``provision_claim_id``.
+
+    Why durable, and why here: the ``.template``-sidecar check in
+    ``routers/marketplace_listings`` is a read, and the sidecar is written near
+    the END of the deploy — so two OVERLAPPING deploys both see "not installed"
+    and both mint an agent. That is how prod grew "Pulse 2": the second deploy
+    started 35s before the first wrote its sidecar. The backend runs several ECS
+    tasks behind an ALB (the two prod deploys landed on different ones), so the
+    in-memory ``services/idempotency`` cache cannot fence this — it has to be a
+    conditional write. It rides the existing per-owner ``containers`` row rather
+    than a new table, matching ``try_claim_provision`` /
+    ``try_consume_daily_email_send`` on the same row.
+
+    Two writes: the first materializes the ``deploy_claims`` map (DynamoDB
+    rejects a nested SET when the parent path is absent) and is unconditional +
+    idempotent; the second is the actual claim, admitted only when no live claim
+    exists for this listing. Each claim is stored as
+    ``{"claimed_at": epoch, "tok": …}`` — ``claimed_at`` drives takeover of an
+    abandoned claim, ``tok`` fences the release. NOT ``at``: that is a reserved
+    DynamoDB keyword, and an unaliased ``deploy_claims.#lid.at`` in the
+    condition is a ValidationException, which the fail-open below would have
+    quietly turned into "no fence at all".
+
+    **Fails OPEN.** A DynamoDB fault admits the deploy (returning a token that
+    fences nothing, since no claim was stored). Losing dedupe costs a duplicate
+    agent the owner can delete; failing closed would block a legitimate hire —
+    including a paid one — on a transient fault. Same reasoning as
+    ``try_consume_daily_email_send``.
+    """
+    table = _get_table()
+    now = int(time.time())
+    token = uuid.uuid4().hex
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET deploy_claims = if_not_exists(deploy_claims, :empty)",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":empty": {}},
+        )
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET deploy_claims.#lid = :claim",
+            ConditionExpression=("attribute_not_exists(deploy_claims.#lid) OR deploy_claims.#lid.claimed_at < :cutoff"),
+            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeValues={
+                ":claim": {"claimed_at": now, "tok": token},
+                ":cutoff": now - DEPLOY_CLAIM_STALE_S,
+            },
+        )
+        return token
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None
+        # ERROR, with the code: fail-open makes a MALFORMED expression look
+        # exactly like a transient fault, and a ValidationException here means
+        # the fence is off for every deploy until someone notices.
+        logger.error(
+            "try_claim_listing_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            e.response["Error"].get("Code"),
+            e.response["Error"].get("Message"),
+            owner_id,
+            listing_id,
+        )
+        return token  # fail open — see docstring
+
+
+async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:
+    """Drop the deploy claim, but only if ``token`` still holds it.
+
+    The condition is the point: a deploy that hung past
+    ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here
+    would delete its successor's live claim — letting a third caller in and
+    reopening the overlap window. A ConditionalCheckFailed means "not ours
+    anymore", which is a no-op, not an error.
+
+    Best-effort otherwise: a lost release self-expires after
+    ``DEPLOY_CLAIM_STALE_S``, so a fault delays a retry rather than wedging the
+    listing. Never raises — it runs in the deploy's ``finally``, where an
+    exception would mask the real deploy error.
+    """
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE deploy_claims.#lid",
+            ConditionExpression="deploy_claims.#lid.tok = :tok",
+            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeValues={":tok": token},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.info(
+                "release_listing_deploy_claim: claim for owner=%s listing=%s is no longer ours — leaving it",
+                owner_id,
+                listing_id,
+            )
+            return
+        logger.warning(
+            "release_listing_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
+            owner_id,
+            listing_id,
+            DEPLOY_CLAIM_STALE_S,
+        )
+
+
+async def claim_attempt(owner_id: str, claim_id: str, attempt_token: str) -> None:
+    """Stamp a fresh per-SFN-retry ``provision_attempt_token`` onto an
+    already-claimed lease. Called by ``scripts/provision_runner`` as its
+    FIRST action, every attempt (including attempt 0, where it is a
+    same-value no-op re-assertion).
+
+    THE HAZARD THIS CLOSES: the state machine's per-attempt task timeout does
+    NOT guarantee the previous attempt's ECS task is dead (a network
+    partition can leave SFN's wait timing out while the task keeps running).
+    A naive retry that reused the SAME fencing value for both the straggler
+    and the new attempt would let both concurrently pass
+    ``update_container_leased``'s checkpoint and interleave their writes --
+    exactly the double-provision class this whole lease design exists to
+    prevent. Re-stamping here, conditioned ONLY on ``provision_claim_id``
+    (not on the previous attempt token), immediately invalidates the
+    straggler's in-memory token: its NEXT checkpoint call now carries a stale
+    ``attempt_token`` that no longer matches the row, so
+    ``update_container_leased`` raises ``ProvisionSuperseded`` and the
+    straggler stops before its next side effect.
+
+    Deliberately conditioned on claim_id ONLY, not on attempt_token: this is
+    the write that ESTABLISHES the new attempt as current, so it cannot
+    itself require the new attempt's own (not-yet-written) token to match.
+    Raises ``ProvisionSuperseded`` iff the CLAIM itself was taken over
+    (a deliberate reprovision door) -- the runner must stop entirely in that
+    case, same as any other checkpoint.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET provision_attempt_token = :tok, provision_claimed_at = :now, updated_at = :iso",
+            ConditionExpression="provision_claim_id = :cid",
+            ExpressionAttributeValues={
+                ":tok": attempt_token,
+                ":cid": claim_id,
+                ":now": int(time.time()),
+                ":iso": utc_now_iso(),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ProvisionSuperseded(f"provision lease for {owner_id} no longer held") from e
         raise
 
 
@@ -218,7 +483,7 @@ async def takeover_provision(owner_id: str) -> str:
         table.update_item,
         Key={"owner_id": owner_id},
         UpdateExpression=(
-            "SET provision_claim_id = :cid, provision_claimed_at = :now, "
+            "SET provision_claim_id = :cid, provision_attempt_token = :cid, provision_claimed_at = :now, "
             "updated_at = :iso, #s = if_not_exists(#s, :prov), "
             "id = if_not_exists(id, :newid), created_at = if_not_exists(created_at, :iso)"
         ),
@@ -234,14 +499,52 @@ async def takeover_provision(owner_id: str) -> str:
     return claim_id
 
 
-async def update_container_leased(owner_id: str, claim_id: str, fields: dict | None = None) -> None:
+async def update_container_leased(
+    owner_id: str,
+    claim_id: str,
+    fields: dict | None = None,
+    *,
+    generation: str | None = None,
+    attempt_token: str | None = None,
+    release_lease: bool = False,
+) -> None:
     """Scoped, fenced row write: applies ``fields`` (may be empty — a pure
     lease-refresh checkpoint) and refreshes the lease stamp, conditioned on
     this run still holding the lease. Raises ``ProvisionSuperseded`` when it
     does not — the caller must stop before its next side effect. These are the
     CHECKPOINTS that make the fencing token real: a zombie provision is stopped
     here, before it can write config or IAM content over the superseding
-    run's."""
+    run's.
+
+    ``generation`` and ``attempt_token`` are OPTIONAL additional fences, both
+    off by default (preserving every existing non-SFN caller's behavior
+    unchanged):
+
+    - ``generation`` -- when given, additionally requires the row's
+      ``provision_generation`` (the container-incarnation fence, minted once
+      at G1 in ``EcsManager.create_user_service``) to match or be absent.
+      Belt-and-suspenders against a very late straggler from a PRIOR
+      container incarnation (a full delete+recreate, not merely a lease
+      retake) writing onto a newer incarnation's row; ``claim_id`` alone
+      already fences this in practice since a new incarnation always mints a
+      fresh claim, so this is defense-in-depth, not the primary fence.
+    - ``attempt_token`` -- when given, additionally requires the row's
+      ``provision_attempt_token`` to match. THIS is the primary fence for the
+      SFN per-retry-attempt hazard (see ``claim_attempt`` docstring): a
+      straggler from a superseded attempt carries a stale token and is
+      rejected here.
+
+    ``release_lease``: set on the TERMINAL SUCCESS write (the fenced
+    status="running" transition) to atomically REMOVE the lease fields with
+    it. This makes "provisioning row carries a claim" a reliable
+    active-SFN-work signal — the boot reconcile in main.py keys on exactly
+    that to decide which stuck-provisioning rows are its to resume, and
+    residual claims from a COMPLETED provision would otherwise misclassify
+    a later interrupted wake/resize as SFN-owned forever. NOT used on error
+    releases: in-machine retries legitimately sit at status="error" with
+    the stamped claim/execution-name, which dispatch Branch A needs intact
+    to re-issue the same execution.
+    """
     table = _get_table()
     names: dict[str, str] = {}
     set_parts: list[str] = []
@@ -251,16 +554,29 @@ async def update_container_leased(owner_id: str, claim_id: str, fields: dict | N
         names[alias] = key
         set_parts.append(f"{alias} = :v{i}")
         values[f":v{i}"] = value
-    set_parts.append("provision_claimed_at = :now")
+    if not release_lease:
+        set_parts.append("provision_claimed_at = :now")
     set_parts.append("updated_at = :iso")
+    condition = "provision_claim_id = :cid"
+    values[":cid"] = claim_id
+    if generation is not None:
+        condition += " AND (attribute_not_exists(provision_generation) OR provision_generation = :gen)"
+        values[":gen"] = generation
+    if attempt_token is not None:
+        condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
+        values[":atok"] = attempt_token
+    update_expr = "SET " + ", ".join(set_parts)
+    if release_lease:
+        update_expr += (
+            " REMOVE provision_claim_id, provision_claimed_at, provision_attempt_token, provision_execution_name"
+        )
     kwargs: dict = {
         "Key": {"owner_id": owner_id},
-        "UpdateExpression": "SET " + ", ".join(set_parts),
-        "ConditionExpression": "provision_claim_id = :cid",
+        "UpdateExpression": update_expr,
+        "ConditionExpression": condition,
         "ExpressionAttributeValues": {
             **values,
-            ":cid": claim_id,
-            ":now": int(time.time()),
+            **({} if release_lease else {":now": int(time.time())}),
             ":iso": utc_now_iso(),
         },
     }
@@ -274,12 +590,45 @@ async def update_container_leased(owner_id: str, claim_id: str, fields: dict | N
         raise
 
 
-async def release_provision_to_error(owner_id: str, claim_id: str) -> None:
+async def release_provision_to_error(
+    owner_id: str,
+    claim_id: str,
+    *,
+    last_error: str | None = None,
+    retryable: bool = True,
+    generation: str | None = None,
+    attempt_token: str | None = None,
+) -> None:
     """Release a held lease by flipping the row to ``error`` — immediately
     re-claimable, and the status poll's existing error auto-retry re-dispatches,
     so a failed provision self-heals on the next ~3s poll.
 
-    Doubly conditioned, silent no-op on either miss:
+    SINGLE OWNER of the provision-path ``status="error"`` transition. Every
+    synchronous provision failure funnels here (``provision_user_container``'s
+    except); the scattered pre-emptive ``status="error"`` writes inside
+    ``ecs_manager`` that used to fire first — and no-op this release's
+    ``status = provisioning`` condition, dropping the cause — were removed, and
+    ``_update_container`` now rejects a ``status="error"`` field to keep it that
+    way. ``_await_running_transition``'s rolloutState=FAILED write now ALSO
+    routes through here (when called with a ``claim_id``, i.e. the runner's
+    foreground ``wait_for_running`` call) rather than writing ``status="error"``
+    directly — closing the historical single-owner-rule exception.
+
+    Records the failure CAUSE on the same atomic transition so the status
+    endpoint can tell a transient failure (silently retried) from a
+    deterministic one (surfaced to the owner instead of looped):
+    - ``last_error`` — a short human-readable cause (truncated). Omitted from
+      the write when None, so a bare release still lands a clean error row.
+    - ``retryable`` — transient (True: retry) vs deterministic (False: surface).
+      Always written; defaults to True so a cause-less caller leaves the row in
+      the safe self-healing state (the pre-existing behaviour).
+    - ``generation`` / ``attempt_token`` — optional additional fences, same
+      semantics as ``update_container_leased`` (see its docstring). Off by
+      default so every existing non-SFN caller is unchanged.
+
+    Both fields are ADDITIVE — the write stays conditioned on the fencing token
+    AND ``status = "provisioning"`` exactly as before, a silent no-op on either
+    miss:
     - on the fencing token — if the lease was taken over, the row belongs to
       the superseding run and must not be clobbered with error;
     - on ``status = "provisioning"`` — a failed DELIBERATE reprovision of a
@@ -288,24 +637,212 @@ async def release_provision_to_error(owner_id: str, claim_id: str) -> None:
       error write would send the status poll into a needless reprovision loop.
     """
     table = _get_table()
+    # `retryable` and `last_error` are aliased (ExpressionAttributeNames) purely
+    # for reserved-word safety, matching the `#s`=status precedent above.
+    set_parts = ["#s = :err", "substatus = :sub", "updated_at = :iso", "#rt = :retryable"]
+    names = {"#s": "status", "#rt": "retryable"}
+    values: dict = {
+        ":err": "error",
+        ":sub": "provision_failed",
+        ":cid": claim_id,
+        ":prov": "provisioning",
+        ":iso": utc_now_iso(),
+        ":retryable": retryable,
+    }
+    if last_error is not None:
+        set_parts.append("#le = :lasterr")
+        names["#le"] = "last_error"
+        values[":lasterr"] = str(last_error)[:500]
+    condition = "provision_claim_id = :cid AND #s = :prov"
+    if generation is not None:
+        condition += " AND (attribute_not_exists(provision_generation) OR provision_generation = :gen)"
+        values[":gen"] = generation
+    if attempt_token is not None:
+        condition += " AND (attribute_not_exists(provision_attempt_token) OR provision_attempt_token = :atok)"
+        values[":atok"] = attempt_token
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET #s = :err, substatus = :sub, updated_at = :iso",
-            ConditionExpression="provision_claim_id = :cid AND #s = :prov",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":err": "error",
-                ":sub": "provision_failed",
-                ":cid": claim_id,
-                ":prov": "provisioning",
-                ":iso": utc_now_iso(),
-            },
+            UpdateExpression="SET " + ", ".join(set_parts),
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+
+
+# The only row fields the trial->paid conversion marker is allowed to touch.
+# ``update_conversion_fields`` enforces this allowlist so no future caller can
+# quietly grow it into a status/lease writer (the clobber class it exists to
+# close).
+_CONVERSION_MARKER_FIELDS = frozenset({"conversion_pending", "substatus", "conversion_started_at"})
+
+
+async def update_conversion_fields(owner_id: str, fields: dict) -> None:
+    """Scoped, lease-safe write of the trial->paid conversion marker fields
+    onto an EXISTING containers row.
+
+    NEVER the get→put ``update_fields`` — that was a live incident: the
+    conversion's release write (``run_conversion_reprovision``) read the row
+    BEFORE its own freshly dispatched provision won ``try_claim_provision``,
+    then put the whole stale item back — resurrecting ``status="stopped"``
+    over the just-claimed "provisioning" AND erasing every lease field
+    (``provision_claim_id`` / ``provision_attempt_token`` /
+    ``provision_execution_name``). The already-started SFN runner then hit
+    ``ProvisionSuperseded`` at its first checkpoint and stood down, leaving a
+    PAYING owner stopped with nothing running and nothing scheduled. A scoped
+    ``update_item`` on exactly the marker fields cannot touch ``status`` or
+    the lease, so the race collapses to a cosmetic substatus overwrite at
+    worst (the claim's "claimed" label may be nulled for one poll; the next
+    checkpoint/status write refreshes it).
+
+    ``fields`` may only contain conversion marker keys (allowlist above);
+    anything else raises ``ValueError`` — this helper must never become a
+    general row writer. ``None`` values are written as DynamoDB NULL,
+    matching what the old put-based path stored (readers ``.get(...)`` both
+    shapes identically).
+
+    Conditioned on the row existing; a concurrently deleted row makes this a
+    silent no-op (nothing left to mark), mirroring ``stamp_stop_reason``.
+    """
+    unknown = set(fields) - _CONVERSION_MARKER_FIELDS
+    if unknown:
+        raise ValueError(f"update_conversion_fields: disallowed fields {sorted(unknown)}")
+    table = _get_table()
+    names: dict[str, str] = {}
+    set_parts: list[str] = []
+    values: dict = {":iso": utc_now_iso()}
+    for i, (key, value) in enumerate(fields.items()):
+        alias = f"#f{i}"
+        names[alias] = key
+        set_parts.append(f"{alias} = :v{i}")
+        values[f":v{i}"] = value
+    set_parts.append("updated_at = :iso")
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET " + ", ".join(set_parts),
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return
+    publish_status_changed(owner_id)
+
+
+async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> bool:
+    """CAS: flip a claim-less ``stopped`` row to ``error`` (retryable) so the
+    status poll's ordinary error auto-retry re-dispatches it.
+
+    The shape this targets is the superseded-without-successor strand: an SFN
+    runner detects supersession (its claim no longer on the row) and stands
+    down, but a re-read shows NO successor claim either — nobody is running
+    and nothing is scheduled. ``release_provision_to_error`` cannot land here
+    (it is conditioned on the CALLER's claim still matching AND
+    ``status="provisioning"``; the stranded row has neither), so this sibling
+    conditions on exactly the illegal steady-state instead:
+
+    - ``status = "stopped"``      — the observed strand. "error" rows already
+      self-heal via the poll (retryable defaults True there), and an
+      UNCLAIMED "provisioning" row belongs to a wake/resize transition
+      (those paths never claim — see main.py's boot resume) and must not be
+      clobbered under its in-process poller.
+    - ``attribute_not_exists(provision_claim_id)`` — a present claim means a
+      successor exists; its liveness is Branch A / stale-lease territory,
+      not ours.
+    - ``stop_reason <> "trial_idle"`` (or absent) — a deliberately parked
+      trial box keeps its wake-gated semantics; it must never be error-flipped
+      into an unconditional poll retry. (The payment/trial gates on the poll's
+      retry branch make this belt-and-suspenders, but the condition keeps the
+      flip honest at the source.)
+
+    All three clauses evaluate atomically at write time — no read-then-write
+    gap for a racing claim to slip through. Returns True iff the flip landed;
+    False when the row moved on (claimed, deleted, restarted) — which is
+    exactly the "a successor showed up after all" answer the caller wants.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #s = :err, substatus = :sub, #rt = :true, #le = :lasterr, updated_at = :iso",
+            ConditionExpression=(
+                "#s = :stopped AND attribute_not_exists(provision_claim_id) "
+                "AND (attribute_not_exists(stop_reason) OR stop_reason <> :trial_idle)"
+            ),
+            ExpressionAttributeNames={"#s": "status", "#rt": "retryable", "#le": "last_error"},
+            ExpressionAttributeValues={
+                ":err": "error",
+                ":sub": "provision_failed",
+                ":stopped": "stopped",
+                ":trial_idle": "trial_idle",
+                ":true": True,
+                ":lasterr": str(last_error)[:500],
+                ":iso": utc_now_iso(),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    publish_status_changed(owner_id)
+    return True
+
+
+def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
+    """Map a caught provision failure to ``(last_error, retryable)`` for
+    ``release_provision_to_error``.
+
+    Lives here (not in a service) because it is shared by both callers of that
+    release — ``services.provision_dispatch.dispatch_provision`` (the
+    poll-driven path) and ``containers.ecs_manager.provision_user_container``
+    (the deliberate-reprovision doors) — and this repository already owns the
+    error transition + fields, so both can import it without an import cycle.
+
+    ``retryable`` answers whether re-running the identical provision could
+    plausibly succeed: a transient infra failure (ECS Spot-reclamation,
+    throttling, 5xx, ENI-attach) self-heals on the poll's next ~3s auto-retry,
+    while a deterministic one (a 4xx Paperclip / config / validation error)
+    fails identically forever and must be surfaced instead of looped.
+
+    - An exception's own ``retryable`` self-classification takes precedence
+      over everything below — ``PaperclipApiError`` sets it off its status
+      code (5xx/429 transient, 4xx deterministic) and is reused verbatim.
+    - ``ValueError`` / ``TypeError`` / ``KeyError`` are deterministic
+      config/shape bugs — a retry can't fix a malformed value.
+    - A small set of known-deterministic message markers (provider-config
+      failures that raise as plain ``Exception``) are matched case-insensitively
+      after the attr/type checks, so they still classify deterministic.
+    - Everything else — notably ``EcsManagerError``, which wraps AWS
+      Spot/throttle/capacity ``ClientError``s as a string, plus any unrecognised
+      failure — defaults to retryable: a needless retry is cheaper than a
+      wrongly-surfaced permanent error.
+    """
+    # Lazy import: keep this repository module free of the paperclip client's
+    # import graph at load time (matches the function-local import style used
+    # for cross-layer references elsewhere in the provision path).
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    cause = f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, PaperclipApiError):
+        return f"Paperclip {exc.status_code}: {exc}", exc.retryable
+    retryable_attr = getattr(exc, "retryable", None)
+    if retryable_attr is not None:
+        return cause, bool(retryable_attr)
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return cause, False
+    message = str(exc).lower()
+    if "byo_provider is required" in message or "unknown provider_choice" in message:
+        return cause, False
+    return cause, True
 
 
 def is_provision_claim_stale(container: dict | None) -> bool:
@@ -313,7 +850,23 @@ def is_provision_claim_stale(container: dict | None) -> bool:
     for PROVISION_CLAIM_STALE_S — the process running it is dead. Used by the
     status poll's stale-recovery branch (which additionally checks ECS for a
     live service before re-dispatching, so a slow-but-healthy post-start boot
-    is never re-provisioned on top of)."""
+    is never re-provisioned on top of).
+
+    INTERIM BRIDGE, not deleted by the SFN cutover (PR-10): dispatching
+    through ``core.services.provision_dispatch.dispatch_provision`` when this
+    fires is now SAFE unconditionally (StartExecution is idempotent by
+    execution name, Branch A of the dispatcher), but it only catches a wedge
+    when SOMETHING re-polls a stale-lease row. The design's real fix for the
+    "SFN execution closed without a terminal row write" case is the
+    ``reconciliation_worker`` (SWEEP, not yet built — see
+    ``core.services.provision_dispatch`` module docstring) actively
+    disambiguating via ``DescribeExecution``. Until SWEEP lands, deleting this
+    wall-clock heuristic would leave that wedge with NO automatic recovery
+    path at all (only a manual ``/retry`` or ``/recover``) — a net regression
+    with no replacement — so it stays, on a wall-clock timer, doing the same
+    job it did for the inline executor. Superseded (not merely duplicated) by
+    SWEEP once that lands; remove this heuristic then.
+    """
     if not container or container.get("status") != "provisioning":
         return False
     claimed_at = container.get("provision_claimed_at")
@@ -337,6 +890,7 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
 
     table = _get_table()
     await run_in_thread(table.put_item, Item=existing)
+    publish_status_changed(owner_id)
     return existing
 
 
@@ -528,20 +1082,6 @@ async def set_hook_token(owner_id: str, token: str) -> dict | None:
     )
 
 
-async def mark_hook_token_provisioned(owner_id: str) -> dict | None:
-    """Stamp ``hook_token_provisioned_at`` after the full backfill sequence
-    (set_hook_token → refresh_task_definition → wait → patch_openclaw_config)
-    has succeeded for this user.
-
-    The backfill orchestrator's idempotency guard tests this field, not
-    ``hook_token``, so a crash mid-sequence leaves the user retryable.
-    """
-    return await update_fields(
-        owner_id,
-        {"hook_token_provisioned_at": utc_now_iso()},
-    )
-
-
 async def update_error(owner_id: str, error: str) -> dict | None:
     """Record the last error for a container."""
     return await update_fields(
@@ -556,3 +1096,57 @@ async def update_error(owner_id: str, error: str) -> dict | None:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def stamp_email_cold_wake(owner_id: str) -> None:
+    """Record that an inbound email cold-woke this container.
+
+    Read once by ``agent_mail_reply.send_reply`` to decide whether the agent's
+    outgoing reply should carry the free-tier "I was asleep" footer. The wake
+    and the reply happen in DIFFERENT requests, which is why this has to be
+    persisted rather than passed. Never raises.
+    """
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET email_cold_wake_at = :t",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":t": int(time.time())},
+        )
+    except ClientError as e:
+        logger.warning("stamp_email_cold_wake failed for %s: %s", owner_id, e)
+
+
+async def consume_email_cold_wake(owner_id: str, *, max_age_seconds: int = 3600) -> bool:
+    """True when a RECENT cold-wake stamp existed. Clears it either way.
+
+    ONE conditional write, not read-then-remove: two concurrent callers for
+    the same owner could otherwise both read the stamp as fresh before either
+    cleared it, attaching the "I was asleep" footer to two separate replies.
+    The condition (``attribute_exists(email_cold_wake_at)``) means only one
+    concurrent caller can ever satisfy it; the loser gets
+    ConditionalCheckFailedException and correctly reports False. Clearing
+    unconditionally on both the fresh AND stale path is a side effect of this
+    being the same write that reads the value — a stale stamp must not attach
+    to an unrelated reply days later. Never raises.
+    """
+    table = _get_table()
+    try:
+        resp = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE email_cold_wake_at",
+            ConditionExpression="attribute_exists(owner_id) AND attribute_exists(email_cold_wake_at)",
+            ReturnValues="UPDATED_OLD",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("consume_email_cold_wake failed for %s: %s", owner_id, e)
+        return False
+
+    stamped = (resp.get("Attributes") or {}).get("email_cold_wake_at")
+    if stamped is None:
+        return False
+    return (int(time.time()) - int(stamped)) < max_age_seconds

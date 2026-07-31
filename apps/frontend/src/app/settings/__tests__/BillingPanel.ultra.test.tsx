@@ -6,8 +6,9 @@ import React from "react";
 // a subscribed owner on the standard plan sees an "Upgrade to Ultra Pro —
 // $150/mo" button that calls useBilling().upgradeToUltra on click; an owner
 // already on ultra_pro sees an "Ultra Pro" active badge and no upgrade button;
-// the per-seat team card never shows the upgrade button (Ultra rejects team
-// subs). Harness mirrors ./BillingPanel.billing.test.tsx.
+// the per-seat team card never shows the upgrade button (the Ultra CTA isn't
+// surfaced for orgs yet, even though Ultra now supports team subs at the
+// billing layer). Harness mirrors ./BillingPanel.billing.test.tsx.
 
 const nav = vi.hoisted(() => ({ panel: "billing" as string | null }));
 vi.mock("next/navigation", () => ({
@@ -118,7 +119,7 @@ describe("BillingPanel — Ultra Pro upgrade CTA", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("per-seat team card does not show the upgrade button (Ultra rejects team subs)", () => {
+  it("per-seat team card does not show the upgrade button (Ultra CTA not yet surfaced for orgs)", () => {
     clerk.membership = { role: "org:admin" };
     billing.isSubscribed = true;
     billing.account = {

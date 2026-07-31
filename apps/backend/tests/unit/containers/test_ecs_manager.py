@@ -443,7 +443,10 @@ class TestCreateUserService:
     @pytest.mark.asyncio
     async def test_creates_service_and_repo_record(self, manager, mock_ecs_client, mock_efs_client):
         """create_user_service upserts repo record early, then creates access point, task def, service."""
-        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.ULID", return_value="01ARZ3TESTGENERATION0"),
+        ):
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
 
@@ -451,7 +454,8 @@ class TestCreateUserService:
 
             assert service_name == "openclaw-user_test_123-f4ae64abb2db"
 
-            # Verify repo upsert called early
+            # Verify repo upsert called early, minting provision_generation
+            # (INV-2 single mint point) atomically with the row.
             mock_repo.upsert.assert_called_once_with(
                 "user_test_123",
                 {
@@ -460,6 +464,7 @@ class TestCreateUserService:
                     "status": "provisioning",
                     "substatus": None,
                     "owner_type": "personal",
+                    "provision_generation": "01ARZ3TESTGENERATION0",
                 },
             )
 
@@ -528,7 +533,8 @@ class TestCreateUserService:
 
     @pytest.mark.asyncio
     async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client):
-        """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
+        """ECS API failure raises EcsManagerError and rolls back AWS resources —
+        WITHOUT pre-empting the outer release with a status='error' write."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -541,9 +547,11 @@ class TestCreateUserService:
             with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
                 await manager.create_user_service("user_test_123", "token")
 
-            # Error status set via update_fields
+            # NO status='error' write: create_user_service no longer pre-empts
+            # the claim-fenced release (single-owner rule). It rolls back + raises;
+            # release_provision_to_error owns the transition (+ retryable/last_error).
             error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
-            assert len(error_calls) >= 1
+            assert error_calls == [], "create_user_service must not write status='error' (outer release owns it)"
 
             # Rollback: task def deregistered and access point deleted
             mock_ecs_client.deregister_task_definition.assert_called_once()
@@ -551,7 +559,8 @@ class TestCreateUserService:
 
     @pytest.mark.asyncio
     async def test_access_point_failure_raises(self, manager, mock_efs_client, mock_ecs_client):
-        """EFS access point creation failure raises EcsManagerError and sets error status."""
+        """EFS access point creation failure raises EcsManagerError WITHOUT
+        pre-empting the outer release with a status='error' write."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -564,9 +573,9 @@ class TestCreateUserService:
             with pytest.raises(EcsManagerError, match="Failed to create EFS access point"):
                 await manager.create_user_service("user_test_123", "token")
 
-            # Error status set
+            # NO status='error' write (single-owner rule) — the outer release owns it.
             error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
-            assert len(error_calls) >= 1
+            assert error_calls == [], "create_user_service must not write status='error' (outer release owns it)"
 
             # No AWS rollback needed -- nothing was created yet
             mock_ecs_client.create_service.assert_not_called()
@@ -574,7 +583,8 @@ class TestCreateUserService:
 
     @pytest.mark.asyncio
     async def test_task_def_failure_rolls_back_access_point(self, manager, mock_ecs_client, mock_efs_client):
-        """Task definition failure rolls back the access point and sets error status."""
+        """Task definition failure rolls back the access point WITHOUT pre-empting
+        the outer release with a status='error' write."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
@@ -587,9 +597,9 @@ class TestCreateUserService:
             with pytest.raises(EcsManagerError, match="Failed to register per-user task definition"):
                 await manager.create_user_service("user_test_123", "token")
 
-            # Error status set
+            # NO status='error' write (single-owner rule) — the outer release owns it.
             error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
-            assert len(error_calls) >= 1
+            assert error_calls == [], "create_user_service must not write status='error' (outer release owns it)"
 
             # Access point should be cleaned up
             mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
@@ -665,6 +675,41 @@ class TestCreateUserService:
 
         assert mock_ecs_client.create_service.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_mints_provision_generation_ulid(self, manager, mock_ecs_client, mock_efs_client):
+        """create_user_service's row-creating upsert (event G1) mints a real
+        ULID provision_generation -- the single mint point (INV-2)."""
+        from ulid import ULID
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+            fields = mock_repo.upsert.call_args.args[1]
+            assert "provision_generation" in fields
+            # Round-trips through the real ULID parser -- proves it's a real
+            # ULID, not a placeholder string.
+            ULID.from_str(fields["provision_generation"])
+
+    @pytest.mark.asyncio
+    async def test_each_fresh_service_create_mints_a_new_generation(self, manager, mock_ecs_client, mock_efs_client):
+        """Two separate create_user_service calls (e.g. a wipe-and-reprovision)
+        each mint their OWN provision_generation -- a fresh service create
+        changes it, unlike a restart/redeploy (see the redeploy/scale-from-zero
+        tests below)."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+            await manager.create_user_service("user_test_123", "token-def")
+
+            first_gen = mock_repo.upsert.call_args_list[0].args[1]["provision_generation"]
+            second_gen = mock_repo.upsert.call_args_list[1].args[1]["provision_generation"]
+            assert first_gen != second_gen
+
 
 # ---------------------------------------------------------------------------
 # stop_user_service
@@ -706,14 +751,38 @@ class TestStopUserService:
 
     @pytest.mark.asyncio
     async def test_stop_ecs_failure_raises(self, manager, mock_ecs_client):
-        """ECS API failure raises EcsManagerError."""
+        """A genuine ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
-            {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
+            {"Error": {"Code": "ClusterNotFoundException", "Message": "no cluster"}},
             "UpdateService",
         )
 
         with pytest.raises(EcsManagerError, match="Failed to stop ECS service"):
             await manager.stop_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", ["ServiceNotFoundException", "ServiceNotActiveException"])
+    async def test_stop_missing_service_is_idempotent_success(self, manager, mock_ecs_client, code):
+        """A service that doesn't exist (or is already INACTIVE) is idempotent
+        success — "stopped" is already true. The row (if any) is still marked
+        stopped, so a drifted "running" row regains claim/wake eligibility.
+        This is what lets a cold provider change on a
+        subscribed-but-never-provisioned owner fall through to
+        dispatch_provision's create-from-scratch path instead of 500ing."""
+        mock_ecs_client.update_service.side_effect = ClientError(
+            {"Error": {"Code": code, "Message": "gone"}},
+            "UpdateService",
+        )
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.stamp_stop_reason = AsyncMock()
+
+            await manager.stop_user_service("user_test_123")
+
+            mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
+            mock_repo.stamp_stop_reason.assert_awaited_once_with("user_test_123", "manual")
 
 
 # ---------------------------------------------------------------------------
@@ -906,9 +975,16 @@ class TestStartUserServiceGuards:
     @pytest.mark.asyncio
     async def test_under_cap_trial_owner_starts(self, manager, mock_ecs_client, monkeypatch):
         """A trial owner UNDER the cap is a normal user: their container starts."""
-        from core.services.trial_cap import CAP_MICROCENTS
+        from core.services.trial_cap import CAP_MICROCENTS, RESERVE_ESTIMATE_MICROCENTS
 
-        self._billing(monkeypatch, subscription_status="trial_local", spent_microcents=CAP_MICROCENTS - 1)
+        # Below CAP - RESERVE (the gate's actual admission threshold), not just
+        # below CAP -- `CAP_MICROCENTS - 1` now sits inside the gate's refusal
+        # band and would make this "under cap" fixture spuriously blocked.
+        self._billing(
+            monkeypatch,
+            subscription_status="trial_local",
+            spent_microcents=CAP_MICROCENTS - RESERVE_ESTIMATE_MICROCENTS - 1,
+        )
         self._container(monkeypatch, _make_container_dict(status="stopped"))
 
         with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
@@ -925,6 +1001,41 @@ class TestStartUserServiceGuards:
 
         self._billing(monkeypatch, subscription_status="active", spent_microcents=CAP_MICROCENTS * 100)
         self._container(monkeypatch, _make_container_dict(status="stopped"))
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            await manager.start_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_reprovision_stopped_row_refuses_direct_start(self, manager, mock_ecs_client, monkeypatch):
+        """A row stopped by a provider-change reprovision
+        (stop_reason="reprovision") refuses a DIRECT start: waking the STALE
+        task def inside the drain window would make the later provision claim
+        see a desired/running service and take the branch that rewrites
+        nothing — silently dropping the provider switch. The status poll's
+        wake path (dispatch_provision → force=True start) bypasses this
+        guard and converges the row properly."""
+        from core.containers.ecs_manager import START_REFUSED_REPROVISIONING
+
+        self._billing(monkeypatch, subscription_status="active", spent_microcents=0)
+        row = _make_container_dict(status="stopped")
+        row["stop_reason"] = "reprovision"
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(ContainerStartRefused) as exc:
+                await manager.start_user_service("user_test_123")
+
+        assert exc.value.reason == START_REFUSED_REPROVISIONING
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_manually_stopped_row_still_starts(self, manager, mock_ecs_client, monkeypatch):
+        """Control: an admin/manual stop (stop_reason="manual") keeps the
+        direct-restart door open — only the reprovision window is fenced."""
+        self._billing(monkeypatch, subscription_status="active", spent_microcents=0)
+        row = _make_container_dict(status="stopped")
+        row["stop_reason"] = "manual"
+        self._container(monkeypatch, row)
 
         with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
             await manager.start_user_service("user_test_123")
@@ -1014,7 +1125,7 @@ class TestStartUserServiceGuards:
     async def test_provision_user_container_start_is_not_guarded(self, manager, mock_ecs_client, monkeypatch):
         """provision_user_container's own start MUST bypass the guards, or the
         trial->paid conversion deadlocks itself: the conversion stamps the row,
-        THEN dispatches background_provision -> provision_user_container, which
+        THEN dispatches dispatch_provision -> provision_user_container, which
         would find its own stamp and refuse to start the container it just
         reprovisioned."""
         from core.services.trial_cap import CAP_MICROCENTS
@@ -1037,7 +1148,9 @@ class TestStartUserServiceGuards:
             repo.get_by_owner_id = AsyncMock(return_value=None)
             await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
-        started.assert_awaited_once_with("user_test_123", force=True)
+        started.assert_awaited_once_with(
+            "user_test_123", force=True, claim_id=None, generation=None, attempt_token=None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1276,6 +1389,30 @@ class TestResolveRunningContainer:
             assert ip == "10.0.1.42"
 
     @pytest.mark.asyncio
+    async def test_provisioning_row_without_service_name_does_not_raise(self, manager):
+        """A `provisioning` row EXISTS BEFORE its ECS service does.
+
+        claim_provisioning's first act creates the row as
+        status="provisioning"; `service_name` is stamped only once the service
+        exists. Subscripting it raised KeyError('service_name') for that whole
+        window, which surfaced on prod 2026-07-29 as
+        `RPC agents.list failed ... error_class=KeyError` every ~3s plus a 500
+        on `GET /container/status?wake=1` during a fresh provision.
+        """
+        row = _make_container_dict(status="provisioning")
+        row.pop("service_name", None)
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            manager.discover_ip = MagicMock(side_effect=AssertionError("must not probe without a service"))
+
+            container, ip = await manager.resolve_running_container("user_test_123")
+
+            # Same shape as the "service exists but no task yet" branch: the
+            # row is still reported, just not reachable.
+            assert container == row
+            assert ip is None
+
+    @pytest.mark.asyncio
     async def test_returns_none_for_missing_container(self, manager):
         """Returns (None, None) when no container exists."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
@@ -1298,20 +1435,24 @@ class TestResolveRunningContainer:
             assert ip is None
 
     @pytest.mark.asyncio
-    async def test_auto_transitions_provisioning_to_running(self, manager):
-        """Provisioning container transitions to running when healthy."""
+    async def test_reachable_provisioning_container_does_not_write(self, manager):
+        """L2 fix (spec §7): resolve_running_container is READ-ONLY now — SFN
+        (via wait_for_running, foreground-awaited by scripts.provision_runner)
+        is the SOLE writer of the provisioning -> running transition. A
+        healthy-but-not-yet-flipped row still reports its DDB status verbatim
+        (one poll tick of latency, not a correctness gap) and this method
+        must never call container_repo.update_fields."""
         container_dict = _make_container_dict(status="provisioning", service_name="openclaw-user_test_123-f4ae64abb2db")
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
-            mock_repo.update_fields = AsyncMock(return_value=container_dict)
             manager.discover_ip = MagicMock(return_value="10.0.1.42")
             manager.is_healthy = MagicMock(return_value=True)
 
             container, ip = await manager.resolve_running_container("user_test_123")
 
-            assert container["status"] == "running"
+            assert container["status"] == "provisioning"  # untouched
             assert ip == "10.0.1.42"
-            mock_repo.update_fields.assert_called_once()
+            mock_repo.update_fields.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1910,6 +2051,189 @@ class TestAwaitRunningTransition:
 
 
 # ---------------------------------------------------------------------------
+# wait_for_running / _await_running_transition's FENCED write mode (L2 fix,
+# spec §7): claim_id present -> SFN's fenced helpers own the running/error
+# transition instead of a bare update_fields.
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForRunningFencedWrites:
+    @pytest.mark.asyncio
+    async def test_claim_id_none_uses_unfenced_update_fields_unchanged(self, manager, mock_ecs_client):
+        """Every non-SFN caller (wake, resize) passes no claim_id -- must be
+        byte-for-byte the original unconditioned write."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+            mock_repo.update_container_leased = AsyncMock()
+
+            await manager.wait_for_running("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            mock_repo.update_container_leased.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_claim_id_present_writes_through_update_container_leased(self, manager, mock_ecs_client):
+        """The runner's foreground call (claim_id set) must write the
+        running transition through the FENCED helper, threading
+        generation/attempt_token."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+            mock_repo.update_container_leased = AsyncMock()
+
+            await manager.wait_for_running(
+                "user_test_123", claim_id="claim-1", generation="gen-1", attempt_token="tok-1"
+            )
+
+            mock_repo.update_fields.assert_not_called()
+            mock_repo.update_container_leased.assert_called_once()
+            call = mock_repo.update_container_leased.call_args
+            assert call.args[0] == "user_test_123"
+            assert call.args[1] == "claim-1"
+            assert call.args[2]["status"] == "running"
+            assert call.kwargs["generation"] == "gen-1"
+            assert call.kwargs["attempt_token"] == "tok-1"
+            # Terminal success releases the lease with the same write, so
+            # residual claims can't misclassify later wake/resize rows as
+            # SFN-owned in the boot reconcile.
+            assert call.kwargs["release_lease"] is True
+
+    @pytest.mark.asyncio
+    async def test_claim_id_present_rollout_failed_writes_through_release_provision_to_error(
+        self, manager, mock_ecs_client
+    ):
+        """The rolloutState=FAILED write, when fenced, routes through
+        release_provision_to_error (retryable=False -- a tripped circuit
+        breaker will never self-heal) instead of a bare status="error" write,
+        closing the historical single-owner-rule exception."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "FAILED"}]}]
+        }
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+            mock_repo.release_provision_to_error = AsyncMock()
+
+            await manager.wait_for_running("user_test_123", claim_id="claim-1", generation="gen-1")
+
+            mock_repo.update_fields.assert_not_called()
+            mock_repo.release_provision_to_error.assert_called_once()
+            kwargs = mock_repo.release_provision_to_error.call_args.kwargs
+            assert kwargs["retryable"] is False
+            assert kwargs["generation"] == "gen-1"
+
+    @pytest.mark.asyncio
+    async def test_fenced_write_superseded_propagates(self, manager, mock_ecs_client):
+        """A straggler whose fenced write loses the race must propagate
+        ProvisionSuperseded -- the runner's caller maps that to EXIT_SUPERSEDED."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_container_leased = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.wait_for_running("user_test_123", claim_id="claim-1")
+
+
+# ---------------------------------------------------------------------------
+# _service_exists — L2 fix: a describe_services API failure must SURFACE
+# (EcsManagerError), never silently divert to the full-provision branch.
+# ---------------------------------------------------------------------------
+
+
+class TestServiceExists:
+    def test_no_service_returns_none(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        assert manager._service_exists("svc-name") is None
+
+    def test_inactive_service_returns_none(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {"services": [{"status": "INACTIVE"}]}
+        assert manager._service_exists("svc-name") is None
+
+    def test_active_service_returns_description(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {"services": [{"status": "ACTIVE", "desiredCount": 1}]}
+        result = manager._service_exists("svc-name")
+        assert result == {"status": "ACTIVE", "desiredCount": 1}
+
+    def test_describe_services_failure_raises_instead_of_returning_none(self, manager, mock_ecs_client):
+        """THE L2 fix: previously this swallowed the exception and returned
+        None, which the caller (_provision_user_container_inner) reads as
+        "no service exists" -- silently diverting into create_service and
+        risking a duplicate-create race against an actually-ACTIVE service.
+        Now it raises, so the caller's normal except-and-classify path
+        handles it (EcsManagerError defaults retryable=True -- a
+        describe_services blip IS transient)."""
+        from core.containers.ecs_manager import EcsManagerError
+
+        mock_ecs_client.describe_services.side_effect = RuntimeError("ThrottlingException")
+        with pytest.raises(EcsManagerError, match="describe_services failed"):
+            manager._service_exists("svc-name", "user_test_123")
+
+
+# ---------------------------------------------------------------------------
 # resize_user_container (per-user CPU/memory/image update path)
 # ---------------------------------------------------------------------------
 
@@ -2314,6 +2638,65 @@ class TestProvisionUserContainer:
             mock_await.assert_called_with("user_test_123")
 
     @pytest.mark.asyncio
+    async def test_full_provision_refreshes_generation_after_mint(self, manager, mock_ecs_client, mock_efs_client):
+        """An EXISTING row whose ECS service is missing takes the
+        full-provision path, where create_user_service's upsert MINTS a new
+        provision_generation. The caller-supplied generation fence (read off
+        the row pre-mint by the SFN runner) must be refreshed after the mint
+        — otherwise the Step-3/Step-4 fenced writes compare stale-vs-new and
+        this run raises ProvisionSuperseded against ITSELF, exiting
+        "superseded" with resources created and the row wedged."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        row_state = {"gen": "gen-OLD"}
+
+        async def _get(owner_id):
+            row = _make_container_dict(status="stopped")
+            row["provision_generation"] = row_state["gen"]
+            return row
+
+        async def _upsert(owner_id, fields):
+            row_state["gen"] = fields["provision_generation"]
+            row = _make_container_dict(status="provisioning")
+            row.update(fields)
+            return row
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=_get)
+            mock_repo.upsert = AsyncMock(side_effect=_upsert)
+            mock_repo.update_fields = AsyncMock()
+            mock_repo.update_status = AsyncMock()
+            mock_repo.update_container_leased = AsyncMock()
+
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="bedrock_claude",
+                claim_id="claim-1",
+                generation="gen-OLD",
+                attempt_token="tok-1",
+            )
+
+            minted = row_state["gen"]
+            assert minted != "gen-OLD", "create_user_service should have minted a fresh generation"
+
+            # Every fenced write AFTER the mint must fence on the MINTED
+            # generation — the last leased write (start_user_service's or
+            # the Step-3 checkpoint's) is necessarily post-mint. The lease
+            # writes go through the lazily-imported real module (stubbed by
+            # the autouse _provision_lease_stub), not the ecs_manager-bound
+            # container_repo name.
+            import core.repositories.container_repo as real_repo
+
+            leased = real_repo.update_container_leased
+            assert leased.call_count >= 1
+            last = leased.call_args_list[-1]
+            assert last.kwargs["generation"] == minted
+
+    @pytest.mark.asyncio
     async def test_redeploying_branch_enables_circuit_breaker(self, manager, mock_ecs_client):
         """The redeploying branch (desired=1, running>0) issues an
         update_service(forceNewDeployment=True). That call must carry the
@@ -2345,6 +2728,76 @@ class TestProvisionUserContainer:
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
             assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_redeploy_preserves_provision_generation(self, manager, mock_ecs_client):
+        """A force-redeploy (existing service, running>0) MUST NOT mint or
+        overwrite provision_generation (INV-2) -- it's the same container
+        incarnation, just a fresh task. The redeploying branch never calls
+        create_user_service/upsert (the single mint point), and its
+        update_fields writes don't carry the key -- so the row's existing
+        value survives untouched."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+            mock_repo.upsert.assert_not_called()
+            for call in mock_repo.update_fields.call_args_list:
+                assert "provision_generation" not in call.args[1]
+
+    @pytest.mark.asyncio
+    async def test_scale_from_zero_restart_preserves_provision_generation(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """A scale-from-zero restart (existing service, desired=0) MUST NOT
+        mint or overwrite provision_generation (INV-2) -- same container
+        incarnation waking up. This branch never calls
+        create_user_service/upsert (the single mint point)."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="stopped",
+                    access_point_id="fsap-user-restart",
+                )
+            )
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+            mock_repo.upsert.assert_not_called()
+            for call in mock_repo.update_fields.call_args_list:
+                assert "provision_generation" not in call.args[1]
 
     @pytest.mark.asyncio
     async def test_provision_ecs_starting_no_poller_when_status_already_provisioning(self, manager, mock_ecs_client):
@@ -2781,7 +3234,7 @@ class TestPerUserTaskSize:
     @pytest.mark.asyncio
     async def test_register_task_definition_uses_per_user_constants(self, manager, mock_ecs_client, mock_efs_client):
         """Per-user task definitions clone the CDK base but enforce the
-        canonical 0.5 vCPU / 1 GB shape — they don't inherit a stale base
+        canonical 1 vCPU / 4 GB shape — they don't inherit a stale base
         cpu/memory value."""
         from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
 
@@ -2971,7 +3424,7 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
     """The admin reprovision must run a FULL reprovision: scale to 0 first (so
     provision takes its scale-from-zero branch that re-registers the task def +
     rewrites the EFS config), wait for the old task to fully drain (single EFS
-    SQLite writer), then dispatch background_provision. The old stale-task-def
+    SQLite writer), then dispatch dispatch_provision. The old stale-task-def
     force-redeploy path (start_user_service) must NOT be used.
     """
     order = []
@@ -2984,15 +3437,15 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
         order.append("drain")
         return True
 
-    async def _fake_bg(owner_id, clerk_user_id):
+    async def _fake_bg(owner_id):
         order.append("provision")
-        dispatched.append((owner_id, clerk_user_id))
+        dispatched.append(owner_id)
 
     manager.stop_user_service = AsyncMock(side_effect=_fake_stop)
     manager._wait_for_service_drained = AsyncMock(side_effect=_fake_drain)
     manager.start_user_service = AsyncMock()
     with patch(
-        "core.services.container_provision.background_provision",
+        "core.services.provision_dispatch.dispatch_provision",
         side_effect=_fake_bg,
     ):
         result = await manager.reprovision_for_user("org_abc")
@@ -3010,7 +3463,7 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
     manager._wait_for_service_drained.assert_awaited_once_with("org_abc")
     assert order == ["stop", "drain", "provision"], order
     # Then the FULL provision is dispatched.
-    assert dispatched == [("org_abc", "org_abc")]
+    assert dispatched == ["org_abc"]
     # The old stale-task-def scale-up path must NOT be used.
     manager.start_user_service.assert_not_awaited()
 
@@ -3148,3 +3601,182 @@ class TestProvisionLeaseFencing:
         )
         manager._ecs.describe_services = MagicMock(side_effect=RuntimeError("ecs down"))
         assert await manager.has_live_service("u") is True
+
+
+class TestProvisionFailureClassification:
+    """provision_user_container's own except block records the failure CAUSE
+    (last_error + retryable) on the error transition. This is the release that
+    actually lands on the common inner-failure path (it fires before
+    dispatch_provision's, which then no-ops on the flipped status), and it is
+    the ONLY release for the deliberate doors (conversion / recover / admin)
+    that never pass through dispatch_provision — so classification must happen
+    here or a deterministic 4xx would loop forever as retryable."""
+
+    @pytest.mark.asyncio
+    async def test_deterministic_inner_failure_records_not_retryable(self, manager, monkeypatch):
+        """A 4xx PaperclipApiError from the inner provision is deterministic —
+        the row's error transition records retryable=False + a cause, and the
+        exception still propagates."""
+        from core.services.paperclip_admin_client import PaperclipApiError
+
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=PaperclipApiError("bad company slug", 400, {})),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(PaperclipApiError):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        assert release.await_args.args == ("user_1", "claim-x")
+        assert release.await_args.kwargs["retryable"] is False
+        assert release.await_args.kwargs["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_transient_inner_failure_records_retryable(self, manager, monkeypatch):
+        """An EcsManagerError (AWS Spot / throttle / capacity) is transient
+        infra — retryable=True so the poll silently re-dispatches."""
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=EcsManagerError("Failed to create ECS service: ThrottlingException", "user_1")),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(EcsManagerError):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        assert release.await_args.kwargs["retryable"] is True
+        assert release.await_args.kwargs["last_error"]
+
+    @pytest.mark.asyncio
+    async def test_superseded_inner_failure_does_not_release(self, manager, monkeypatch):
+        """A superseded run is caught by its own branch BEFORE the generic
+        handler — it must NOT release to error (the row belongs to the
+        superseding run). Guards that wiring the classifier into the generic
+        except didn't disturb the ProvisionSuperseded path."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        monkeypatch.setattr(
+            manager,
+            "_provision_user_container_inner",
+            AsyncMock(side_effect=ProvisionSuperseded("taken over")),
+        )
+        release = AsyncMock()
+        monkeypatch.setattr("core.repositories.container_repo.release_provision_to_error", release)
+
+        with pytest.raises(ProvisionSuperseded):
+            await manager.provision_user_container("user_1", provider_choice="bedrock_claude", claim_id="claim-x")
+
+        release.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_inner_ecs_failure_lands_error_with_cause(self, manager, mock_ecs_client, monkeypatch):
+        """END-TO-END through the REAL inner path (the false-green the sibling
+        tests above miss by mocking ``_provision_user_container_inner`` wholesale).
+
+        A deterministic AWS failure raised INSIDE ``create_user_service``
+        (create_service ClientError) must leave the row ``status="error"`` WITH
+        ``retryable`` AND ``last_error`` populated — proving the eight scattered
+        pre-emptive ``status="error"`` writes no longer pre-empt the outer
+        claim-fenced ``release_provision_to_error``. Fails against pre-consolidation
+        code: an inner site flips ``status="error"`` first, so the release's
+        ``status = provisioning`` condition no-ops and the cause never lands."""
+
+        class _FakeContainerStore:
+            """Stateful container_repo stand-in that models the ONE behaviour the
+            consolidation turns on: release_provision_to_error lands the error
+            transition (+ retryable + last_error) only while the row is still
+            ``provisioning`` under the held claim. A pre-emptive inner
+            ``status="error"`` flip makes it no-op — exactly the T3 Critical."""
+
+            def __init__(self):
+                self.row = {
+                    "owner_id": "user_1",
+                    "id": "id-1",
+                    "created_at": "t0",
+                    "status": "provisioning",
+                    "substatus": "claimed",
+                    "provision_claim_id": "claim-x",
+                }
+
+            async def get_by_owner_id(self, owner_id):
+                return dict(self.row) if self.row is not None else None
+
+            async def upsert(self, owner_id, fields):
+                self.row.update(fields)
+                self.row["owner_id"] = owner_id
+                return dict(self.row)
+
+            async def update_fields(self, owner_id, fields):
+                if self.row is None:
+                    return None
+                self.row.update(fields)
+                return dict(self.row)
+
+            async def update_status(self, owner_id, status, substatus=None):
+                return await self.update_fields(owner_id, {"status": status, "substatus": substatus})
+
+            async def update_container_leased(
+                self, owner_id, claim_id, fields=None, *, generation=None, attempt_token=None
+            ):
+                from core.repositories.container_repo import ProvisionSuperseded
+
+                if self.row is None or self.row.get("provision_claim_id") != claim_id:
+                    raise ProvisionSuperseded("lease lost")
+                if fields:
+                    self.row.update(fields)
+
+            async def release_provision_to_error(
+                self, owner_id, claim_id, *, last_error=None, retryable=True, generation=None, attempt_token=None
+            ):
+                # Faithful mirror of the real conditional write: fencing token
+                # AND status == "provisioning", else a silent no-op.
+                if self.row is None or self.row.get("provision_claim_id") != claim_id:
+                    return
+                if self.row.get("status") != "provisioning":
+                    return
+                self.row["status"] = "error"
+                self.row["substatus"] = "provision_failed"
+                self.row["retryable"] = retryable
+                if last_error is not None:
+                    self.row["last_error"] = str(last_error)[:500]
+
+        store = _FakeContainerStore()
+
+        # No pre-existing service -> full-provisioning path -> create_user_service.
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        # Deterministic AWS failure inside create_user_service's create_service.
+        mock_ecs_client.create_service.side_effect = ClientError(
+            {"Error": {"Code": "ClusterNotFoundException", "Message": "not found"}},
+            "CreateService",
+        )
+
+        # Wire the store into BOTH bindings the provision path uses, and let the
+        # REAL classifier run. Overrides the autouse _provision_lease_stub, which
+        # replaces release/leased with inert AsyncMocks.
+        monkeypatch.setattr("core.containers.ecs_manager.container_repo", store)
+        monkeypatch.setattr("core.repositories.container_repo.update_container_leased", store.update_container_leased)
+        monkeypatch.setattr(
+            "core.repositories.container_repo.release_provision_to_error", store.release_provision_to_error
+        )
+        # byo_key path: only key_service.get_secret_arn needs stubbing (no gate
+        # token machinery); the per-owner role shell mint is stubbed autouse.
+        monkeypatch.setattr(
+            "core.services.key_service.get_secret_arn",
+            AsyncMock(return_value="arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_1/openai-A"),
+        )
+
+        with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
+            await manager.provision_user_container(
+                "user_1", provider_choice="byo_key", byo_provider="openai", claim_id="claim-x"
+            )
+
+        # The fenced release genuinely landed the terminal transition AND the cause.
+        assert store.row["status"] == "error"
+        assert store.row.get("retryable") is True, "retryable must land on the row (release owns the transition)"
+        assert store.row.get("last_error"), "last_error cause must land on the row"
+        assert "Failed to create ECS service" in store.row["last_error"]

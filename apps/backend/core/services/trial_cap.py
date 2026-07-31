@@ -44,6 +44,17 @@ from core.repositories import billing_repo
 # number; moving one alone desynchronizes kill/restore/admission.
 CAP_MICROCENTS = 3_000_000
 
+# The bedrock-gate's per-request reservation hold (apps/infra/lambda/
+# bedrock-gate/ledger.mjs). Admission is `spent + reserved + estimate <= cap`,
+# so the LAST admissible spend is CAP - RESERVE — not CAP. Every predicate that
+# claims to answer "will the next request be admitted?" must subtract it, or it
+# opens a dead zone where the backend forwards a turn the gate then refuses.
+#
+# Lockstep with RESERVE_ESTIMATE_MICROCENTS in
+# apps/infra/lib/stacks/bedrock-gate-stack.ts — moving one alone desynchronizes
+# admission from every door that predicts it.
+RESERVE_ESTIMATE_MICROCENTS = 300_000
+
 # The two ways a free-tier owner runs out of runway. Returned by
 # ``trial_block_reason`` and mapped to the matching blocked-gate payload by
 # ``provision_gate`` — the codes the frontend already renders limit cards for.
@@ -103,6 +114,13 @@ async def reason_for_account(owner_id: str, account: dict | None) -> str | None:
     if _is_expired(account):
         return TRIAL_EXPIRED
     spent = await billing_repo.get_trial_daily_spend(owner_id, utc_today())
-    if spent >= CAP_MICROCENTS:
+    # `>` (not `>=`) mirrors the gate's own inequality exactly, so spend of
+    # precisely CAP - RESERVE still admits. `reserved` is deliberately NOT read
+    # here: holds are transient and released on settle, so folding them in would
+    # over-block an owner with two runs legitimately in flight. `spent` is the
+    # durable floor — and it is what makes the refusal band permanent, which is
+    # the bug this closes. A turn that crosses the line mid-run is caught by the
+    # gateway's reclassification instead.
+    if spent + RESERVE_ESTIMATE_MICROCENTS > CAP_MICROCENTS:
         return DAILY_CAP
     return None

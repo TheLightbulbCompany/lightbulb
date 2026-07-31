@@ -1,5 +1,6 @@
 """Organization management endpoints — invite creation gate (Gate A)."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -101,4 +102,20 @@ async def create_invitation(
         body.role,
         invite["id"],
     )
+
+    # Seats include pending invitations ("no free members"), so the bill must
+    # move now. There is no organizationInvitation.* webhook handler at all,
+    # and Clerk has no webhook endpoint configured anyway (#1465), so this is
+    # the only place in the system that observes an invite being sent.
+    #
+    # Fire-and-forget, matching the reconcile in routers/container.py: the
+    # invite already succeeded in Clerk, the response carries no seat data,
+    # and both /billing/account and team-checkout recompute the seat count
+    # LIVE from Clerk rather than reading the Stripe quantity this updates —
+    # so nothing downstream can observe a stale value. Awaiting it would only
+    # add two Clerk reads plus a Stripe write to the admin's invite latency.
+    from core.services.billing_service import sync_team_seat_quantity
+
+    asyncio.create_task(sync_team_seat_quantity(org_id))
+
     return CreateInvitationResponse(invitation_id=invite["id"])

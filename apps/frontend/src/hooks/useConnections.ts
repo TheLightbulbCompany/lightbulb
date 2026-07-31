@@ -22,7 +22,7 @@ export interface Connection {
   provider: string;
   display_name: string;
   acquisition: "paste_token" | "direct_oauth" | "aws_sts";
-  status: "connected" | "disconnected";
+  status: "connected" | "disconnected" | "unavailable";
   /**
    * BYO ("bring your own") OAuth app affordance:
    *   - `byo_required`   → this provider has no managed app; the owner MUST
@@ -33,6 +33,13 @@ export interface Connection {
   byo_required?: boolean;
   byo_configured?: boolean;
   byo_setup_url?: string | null;
+  /**
+   * This owner cannot connect the provider directly — it is gated off their
+   * environment and they are not on its owner_allowlist. The row offers
+   * Request access (emails support) instead of Connect. Set by the backend's
+   * inverse of registry.available_for.
+   */
+  requestable?: boolean;
 }
 
 interface ConnectionsResponse {

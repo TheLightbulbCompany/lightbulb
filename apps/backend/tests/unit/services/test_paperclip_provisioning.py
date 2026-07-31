@@ -1,5 +1,6 @@
 """Tests for org/member provisioning behaviors that don't fit the
-heavier moto-backed suite in ``tests/test_paperclip_provisioning.py``.
+heavier moto-backed suite in
+``tests/unit/services/test_paperclip_provisioning_moto.py``.
 
 Currently exercises:
 * The auto-seeded Main Agent name + role (``"Friday"`` / ``"ceo"``).
@@ -39,11 +40,26 @@ def _build_provision_org_doubles(monkeypatch):
     admin.create_invite = AsyncMock(return_value={"token": "invtok"})
     admin.accept_invite = AsyncMock(return_value={"id": "req_1"})
     admin.approve_join_request = AsyncMock()
-    admin.create_agent = AsyncMock()
+    # Default the seed calls to a successful dict-with-id (mirrors the moto
+    # suite's _make_admin_mock). Friday landing is what gates status="active",
+    # so tests that don't care about the seed still complete to an active row;
+    # tests exercising a seed FAILURE override create_agent with a side_effect.
+    admin.create_agent = AsyncMock(return_value={"id": "seed-agent-default"})
+    # Builtin-agent purge (step 7c) lists agents then attempts to delete every
+    # non-seeded one. Default to an empty roster so tests that don't exercise the
+    # purge see zero deletes; purge tests override list_agents. Paperclip's own
+    # built-in agents are undeletable (409 built_in_agent_undeletable) — the
+    # undeletable-vs-stray behavior is exercised in the dedicated purge tests.
+    admin.list_agents = AsyncMock(return_value=[])
+    admin.delete_agent = AsyncMock(return_value={})
 
     repo = MagicMock()
     repo.get = AsyncMock(return_value=None)
     repo.put = AsyncMock()
+    # Fresh-create fence (see PaperclipRepo.try_acquire_seed_claim): the
+    # doubles play the WINNER by default so the chain proceeds; fence-losing
+    # behavior is exercised end-to-end in the moto suite.
+    repo.try_acquire_seed_claim = AsyncMock(return_value=True)
 
     # Stub admin-session helper imported lazily inside provision_org.
     import core.services.paperclip_provisioning as mod
@@ -163,11 +179,11 @@ async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatc
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
 
-    # Friday succeeds; Atlas raises a 500 — mirrors a transient
-    # Paperclip outage on the second seed call.
+    # Friday succeeds (returns its id — required for status="active"); Atlas
+    # raises a 500 — mirrors a transient Paperclip outage on the second seed.
     admin.create_agent = AsyncMock(
         side_effect=[
-            None,
+            {"id": "agent-friday"},
             PaperclipApiError("atlas create failed", status_code=500, body="boom"),
         ]
     )
@@ -185,7 +201,8 @@ async def test_provision_org_atlas_failure_does_not_block_friday_seed(monkeypatc
     # short-circuit the Atlas attempt) ...
     assert admin.create_agent.await_count == 2
     # ... and the row was still persisted (provision_org completed):
-    # early adoptable credential row + final active row.
+    # early adoptable credential row + final active row. Friday landed, so
+    # the company is active despite the optional Atlas seed failing.
     assert repo.put.await_count == 2
     assert repo.put.await_args.args[0].status == "active"
 
@@ -358,8 +375,10 @@ async def test_provision_org_persists_seeded_agent_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provision_org_seeded_ids_none_when_seeds_fail(monkeypatch):
-    """If both seeds fail, no ids are captured and the field stays None
-    (best-effort — the company is still persisted and usable)."""
+    """If both seeds fail, no ids are captured and the field stays None. Because
+    the REQUIRED CEO seed (Friday) did not land, the company is persisted as
+    non-active (NEW-2) — a CEO-less company must not be marked active or
+    idempotency would freeze it."""
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
@@ -379,6 +398,310 @@ async def test_provision_org_seeded_ids_none_when_seeds_fail(monkeypatch):
 
     persisted = repo.put.await_args.args[0]
     assert persisted.seeded_agent_ids is None
+    assert persisted.status != "active"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_reconcile_does_not_reseed_atlas(monkeypatch):
+    """Reconcile must NOT re-create Atlas when a prior failed attempt already
+    seeded it.
+
+    Paperclip ignores our ``Idempotency-Key`` (see paperclip_admin_client.py:
+    no middleware/route reads it), so re-calling create_agent for Atlas on the
+    reconcile spawns a SECOND Atlas and ORPHANS the first — it drops out of
+    seeded_agent_ids, so it's no longer protected from deletion.
+
+    Failed-row invariant this fix leans on: seeded_agent_ids on a
+    status="failed" row can only ever contain Atlas. Friday's presence is
+    exactly what flips the row to "active" (seed_ok), so a failed row means
+    Friday was NOT seeded; Atlas is the only other agent provision_org seeds.
+    A non-empty seeded_agent_ids on the reconciled failed row therefore means
+    "Atlas already seeded" — skip its re-create while Friday (missing by
+    definition) is re-created.
+    """
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    # Attempt 1 left a non-active row: the company WAS created and Atlas landed
+    # (unparented, since Friday didn't exist yet), but the REQUIRED Friday seed
+    # failed — so the row is status="failed" carrying ONLY Atlas's id.
+    now = datetime.now(timezone.utc)
+    failed_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_first",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted="",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["atlas_id_1"],
+    )
+    repo.get = AsyncMock(return_value=failed_row)
+
+    # Adoption signs IN with the stored credential (never re-signs-up).
+    admin.sign_in_user = AsyncMock(
+        return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-adopt"}
+    )
+    # On reconcile Friday now succeeds; a SECOND element is supplied so the
+    # buggy path (which re-calls Atlas) is observable as atlas_id_2.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "friday_new_id"}, {"id": "atlas_id_2"}])
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Friday is (re-)created; Atlas is NOT — it already exists from attempt 1.
+    seeded_names = [c.kwargs.get("name") for c in admin.create_agent.await_args_list]
+    assert "Friday" in seeded_names
+    assert "Atlas" not in seeded_names  # FAILS on current code (dup Atlas)
+
+    # Adoption issues exactly one put (the final row; no early credential row is
+    # written when adopting an existing account).
+    assert repo.put.await_count == 1
+    persisted = repo.put.await_args.args[0]
+    assert persisted.status == "active"  # Friday landed on the reconcile
+    seeded = persisted.seeded_agent_ids or []
+    # The original Atlas is carried forward AND the new Friday is added — but
+    # there is never a SECOND Atlas id.
+    assert "atlas_id_1" in seeded
+    assert "friday_new_id" in seeded
+    assert "atlas_id_2" not in seeded
+
+
+@pytest.mark.asyncio
+async def test_provision_org_fresh_provision_still_seeds_atlas(monkeypatch):
+    """Regression guard for the reconcile-only Atlas skip: a fresh
+    (non-reconcile) provision — no prior row — must still seed BOTH Friday
+    and Atlas. The skip keys off ``reconciling_company``, so it must never
+    fire when there is no existing failed row to reconcile.
+    """
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # repo.get defaults to None here (fresh owner) → reconciling_company False.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "friday_id"}, {"id": "atlas_id"}])
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    seeded_names = [c.kwargs.get("name") for c in admin.create_agent.await_args_list]
+    assert seeded_names == ["Friday", "Atlas"]  # Atlas create IS called on a fresh provision
+
+
+@pytest.mark.asyncio
+async def test_provision_org_purge_leaves_undeletable_builtins_removes_strays(monkeypatch):
+    """The purge must survive Paperclip's UNDELETABLE built-in agents.
+
+    Paperclip's company-bootstrap seeds its OWN built-in managed agents
+    ("Reflection Coach", "Summarizer"). In the deployed BFF these carry a
+    built-in marker in their metadata, and ``DELETE /api/agents/{id}`` refuses
+    them with 409 ``built_in_agent_undeletable`` ("Built-in agents cannot be
+    deleted; pause them instead") BEFORE touching the DB — there is no override,
+    so no backend call can remove them (they are created already-paused, so they
+    never run). The purge attempts every non-seeded delete: it cleanly removes a
+    genuine stray, and treats the built-in 409 as the EXPECTED, non-error outcome
+    (logged, NOT metered as a purge error). Friday/Atlas (seeded) are never
+    touched.
+    """
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # Friday -> "fr", Atlas -> "at": the seeded ids that must never be deleted.
+    admin.create_agent = AsyncMock(side_effect=[{"id": "fr"}, {"id": "at"}])
+    # Roster after seeding: Paperclip's two undeletable builtins, a genuine stray
+    # ("x"), PLUS our seeds. list_agents returns a bare list (typed dict upstream).
+    admin.list_agents = AsyncMock(
+        return_value=[
+            {"id": "f", "name": "Reflection Coach"},
+            {"id": "s", "name": "Summarizer"},
+            {"id": "x", "name": "Some Stray"},
+            {"id": "fr", "name": "Friday"},
+            {"id": "at", "name": "Atlas"},
+        ]
+    )
+
+    # The two builtins answer the deployed BFF's built-in-undeletable 409; the
+    # genuine stray "x" deletes cleanly. Body mirrors the BFF error-handler shape
+    # ({"error": ..., "code": "built_in_agent_undeletable"}), surfaced as raw text.
+    def _delete(*, session_cookie, agent_id):
+        if agent_id in {"f", "s"}:
+            raise PaperclipApiError(
+                f"DELETE /api/agents/{agent_id} -> 409",
+                status_code=409,
+                body=(
+                    '{"error":"Built-in agents cannot be deleted; pause them instead",'
+                    '"code":"built_in_agent_undeletable"}'
+                ),
+            )
+        return {}
+
+    admin.delete_agent = AsyncMock(side_effect=_delete)
+
+    # Spy the error metric: the built-in 409 is EXPECTED and must NOT be metered.
+    metric_calls: list[str] = []
+    import core.services.paperclip_provisioning as mod
+
+    monkeypatch.setattr(mod, "put_metric", lambda name, *a, **k: metric_calls.append(name))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # The roster was listed for the freshly created company.
+    admin.list_agents.assert_awaited_once()
+    assert admin.list_agents.await_args.kwargs["company_id"] == "co_xyz"
+
+    # Delete was attempted for EVERY non-seeded agent — never for Friday/Atlas.
+    attempted = {c.kwargs["agent_id"] for c in admin.delete_agent.await_args_list}
+    assert attempted == {"f", "s", "x"}
+    assert "fr" not in attempted and "at" not in attempted
+
+    # The undeletable-builtin 409 is EXPECTED — it must NOT raise the purge-error
+    # metric (a genuine failure still would; see the 5xx test below).
+    assert "paperclip.provision.builtin_purge_error" not in metric_calls
+
+    # Provision still lands active: the purge is best-effort and Friday landed.
+    assert row.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_builtin_purge_failure_never_fails_provision(monkeypatch):
+    """A delete failure during the builtin-agent purge must NOT fail the
+    provision — the purge is cosmetic cleanup, best-effort per agent."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    admin.create_agent = AsyncMock(side_effect=[{"id": "fr"}, {"id": "at"}])
+    admin.list_agents = AsyncMock(
+        return_value=[
+            {"id": "f", "name": "Reflection Coach"},
+            {"id": "s", "name": "Summarizer"},
+            {"id": "fr", "name": "Friday"},
+            {"id": "at", "name": "Atlas"},
+        ]
+    )
+    # Every delete blows up (5xx) — the purge must swallow it and still complete.
+    admin.delete_agent = AsyncMock(side_effect=PaperclipApiError("delete boom", status_code=500, body="x"))
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Deletion was attempted for both starters, but the failure never propagated;
+    # the company still lands active because the REQUIRED Friday seed succeeded.
+    assert admin.delete_agent.await_count == 2
+    assert row.status == "active"
+    assert repo.put.await_args.args[0].status == "active"
+
+
+@pytest.mark.asyncio
+async def test_provision_org_failed_friday_skips_builtin_purge(monkeypatch):
+    """The purge is gated on the REQUIRED Friday seed landing. When Friday's
+    seed fails the company is left untouched — a later reconcile poll (which
+    re-seeds Friday) runs the purge instead. Purging a half-provisioned company
+    would race the reconcile that still needs to (re)seed into it."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+    # Friday raises; Atlas would land — but a CEO-less company is not purged.
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            PaperclipApiError("friday seed failed", status_code=500, body="boom"),
+            {"id": "at"},
+        ]
+    )
+    admin.list_agents = AsyncMock(return_value=[{"id": "f", "name": "Reflection Coach"}])
+    admin.delete_agent = AsyncMock(return_value={})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # No CEO landed -> non-active row, and the purge was skipped entirely.
+    assert row.status != "active"
+    admin.list_agents.assert_not_awaited()
+    admin.delete_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_org_reconcile_purge_is_idempotent(monkeypatch):
+    """On the reconcile path an already-purged company lists only Friday +
+    Atlas (both in seeded_agent_ids), so the purge finds nothing to delete."""
+    from datetime import datetime, timezone
+
+    from core.encryption import encrypt
+    from core.repositories.paperclip_repo import PaperclipCompany
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    admin, repo = _build_provision_org_doubles(monkeypatch)
+
+    # A prior attempt created the company + seeded Atlas ("at") but the required
+    # Friday seed failed, leaving a non-active row carrying ONLY Atlas.
+    now = datetime.now(timezone.utc)
+    failed_row = PaperclipCompany(
+        user_id="user_owner",
+        org_id="org_xyz",
+        company_id="co_first",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted="",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        seeded_agent_ids=["at"],
+    )
+    repo.get = AsyncMock(return_value=failed_row)
+    admin.sign_in_user = AsyncMock(
+        return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-adopt"}
+    )
+    # Reconcile: Friday now lands ("fr_new"); Atlas is NOT re-created (a second
+    # side_effect element would raise StopIteration, proving the single create).
+    admin.create_agent = AsyncMock(side_effect=[{"id": "fr_new"}])
+    # The company already contains only Friday + Atlas — both are seeded ids.
+    admin.list_agents = AsyncMock(
+        return_value=[
+            {"id": "fr_new", "name": "Friday"},
+            {"id": "at", "name": "Atlas"},
+        ]
+    )
+    admin.delete_agent = AsyncMock(return_value={})
+
+    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    row = await svc.provision_org(
+        owner_id="org_xyz",
+        owner_user_id="user_owner",
+        owner_email="owner@example.com",
+    )
+
+    # Purge ran (Friday landed) against the adopted company but deleted nothing —
+    # everything listed is Isol8-seeded.
+    assert row.status == "active"
+    admin.list_agents.assert_awaited_once()
+    assert admin.list_agents.await_args.kwargs["company_id"] == "co_first"
+    admin.delete_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -500,7 +823,7 @@ async def test_provision_member_does_not_short_circuit_on_other_org_row(monkeypa
 @pytest.mark.asyncio
 async def test_provision_member_adopts_existing_account_instead_of_resignup(monkeypatch):
     """A user who already has a Paperclip account (e.g. a personal row) must
-    be ADOPTED via sign-in — NOT re-signed-up (which would 409 and corrupt
+    be ADOPTED via sign-in — NOT re-signed-up (which would 422 and corrupt
     their row). The member row is then re-pointed at this org."""
     from core.encryption import encrypt
     from core.services import service_token
@@ -646,7 +969,7 @@ async def test_provision_org_partial_failure_after_signup_leaves_adoptable_row(m
     """A brand-new owner whose provision fails AFTER sign-up must leave a
     stored row carrying the freshly created paperclip_user_id + password,
     so the next attempt ADOPTS via sign-in instead of re-signing-up (which
-    would 409 against the now-existing Better Auth user and wedge every
+    would 422 against the now-existing Better Auth user and wedge every
     retry — the live 2026-06-11 failure mode: the failed row had an empty
     paperclip_user_id because provision_org persisted nothing until final
     success)."""
@@ -773,13 +1096,46 @@ class _StatefulRepo:
         self._rows: dict[str, object] = {}
         self._company_id = company_id
 
-    async def get(self, user_id: str):
+    async def get(self, user_id: str, *, consistent_read: bool = False):
         return self._rows.get(user_id)
 
     async def put(self, row):
         self._rows[row.user_id] = row
 
-    async def update_status(self, user_id: str, *, status: str, last_error: str = "", not_if_status: str | None = None):
+    async def try_acquire_seed_claim(self, user_id: str, *, org_id: str, claim_id: str, stale_after_seconds: int = 300):
+        # Fresh put-if-absent only — enough for the winner-path scenarios this
+        # double serves; loser/steal behavior is pinned by the moto suites.
+        # Mirrors the real claim's bare seeding row (no credentials), which the
+        # winner's later puts replace wholesale.
+        if user_id in self._rows:
+            return False
+        from datetime import datetime, timezone
+
+        from core.repositories.paperclip_repo import PaperclipCompany
+
+        now = datetime.now(timezone.utc)
+        self._rows[user_id] = PaperclipCompany(
+            user_id=user_id,
+            org_id=org_id,
+            company_id="",
+            paperclip_user_id="",
+            paperclip_password_encrypted="",
+            service_token_encrypted="",
+            status="seeding",
+            created_at=now,
+            updated_at=now,
+        )
+        return True
+
+    async def update_status(
+        self,
+        user_id: str,
+        *,
+        status: str,
+        last_error: str = "",
+        not_if_status: str | None = None,
+        owner_id: str | None = None,
+    ):
         row = self._rows[user_id]
         if not_if_status is not None and row.status == not_if_status:
             return False  # guarded — skip (e.g. don't downgrade an active row)
@@ -789,6 +1145,30 @@ class _StatefulRepo:
 
     async def get_org_company_id(self, _owner_id: str):
         return self._company_id
+
+    async def put_failed_marker_if_absent(self, *, user_id: str, org_id: str, reason: str, company_id: str = ""):
+        # Conditional put-if-absent: only creates when the key is free (never
+        # clobbers a real row). Marker carries NO credential fields.
+        if user_id in self._rows:
+            return False
+        from datetime import datetime, timezone
+
+        from core.repositories.paperclip_repo import PaperclipCompany
+
+        now = datetime.now(timezone.utc)
+        self._rows[user_id] = PaperclipCompany(
+            user_id=user_id,
+            org_id=org_id,
+            company_id=company_id,
+            paperclip_user_id="",  # absent at the DDB level; get() defaults to ""
+            paperclip_password_encrypted="",
+            service_token_encrypted="",
+            status="failed",
+            created_at=now,
+            updated_at=now,
+            last_error=reason,
+        )
+        return True
 
 
 @pytest.mark.asyncio
@@ -884,11 +1264,7 @@ async def test_provision_org_names_company_from_generated_name(monkeypatch):
     async def fake_generate(*, org_id, owner_email):
         return "Acme Robotics"
 
-    async def fake_allocate(*, owner_id, name):
-        return "acme-robotics"
-
     monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await svc.provision_org(
@@ -898,37 +1274,6 @@ async def test_provision_org_names_company_from_generated_name(monkeypatch):
     )
 
     assert admin.create_company.await_args.kwargs["name"] == "Acme Robotics"
-
-
-@pytest.mark.asyncio
-async def test_provision_org_allocates_slug_for_owner(monkeypatch):
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    allocated = []
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        allocated.append({"owner_id": owner_id, "name": name})
-        return "acme-robotics"
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    # Slug is keyed by owner_id (the container key), not owner_user_id.
-    assert allocated == [{"owner_id": "org_xyz", "name": "Acme Robotics"}]
 
 
 @pytest.mark.asyncio
@@ -944,7 +1289,6 @@ async def test_provision_org_survives_name_generation_failure(monkeypatch):
         raise RuntimeError("clerk down")
 
     monkeypatch.setattr(mod, "generate_company_name", boom)
-    monkeypatch.setattr(mod, "allocate_company_slug", boom)
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     row = await svc.provision_org(
@@ -959,81 +1303,105 @@ async def test_provision_org_survives_name_generation_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_provision_org_mints_agent_email_from_allocated_slug(monkeypatch):
-    """The address is built from the slug we just allocated, not a lookup."""
-    import core.services.paperclip_provisioning as mod
+async def test_mark_failed_no_existing_row_writes_conditional_marker(monkeypatch):
+    """With NO prior row, _mark_failed writes ONE durable ``failed`` marker via
+    the repo's CONDITIONAL put-if-absent — NOT a full row carrying a fabricated
+    ``paperclip_user_id`` (the old poison that blocked adoption and clobbered a
+    real id on a stale read), and NOT an unconditional put. The marker restores
+    the honest 503 on /teams (a MISSING row is an eternal 202 spinner) without
+    the clobber risk, because put-if-absent can only ever create."""
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=None)  # no prior row
+    repo.put = AsyncMock()
+    repo.update_status = AsyncMock(return_value=True)
+    repo.put_failed_marker_if_absent = AsyncMock(return_value=True)
+
+    svc = PaperclipProvisioning(admin_client=MagicMock(), repo=repo, env_name="dev")
+    await svc._mark_failed(user_id="user_orphan", owner_id="org_x", reason="signup 422 duplicate", company_id="co_x")
+
+    # The durable marker went through the conditional put-if-absent, keyed on the
+    # polling owner's own user_id, carrying org_id/company_id/reason.
+    repo.put_failed_marker_if_absent.assert_awaited_once()
+    kwargs = repo.put_failed_marker_if_absent.await_args.kwargs
+    assert kwargs["user_id"] == "user_orphan"
+    assert kwargs["org_id"] == "org_x"
+    assert kwargs["company_id"] == "co_x"
+    assert kwargs["reason"], "the failure cause must be recorded on the marker"
+    # No fabricated id: the marker method takes no paperclip_user_id at all, and
+    # no full-row put() is made (that path is what carried the empty-id poison).
+    assert "paperclip_user_id" not in kwargs
+    repo.put.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_org_required_ceo_seed_failure_not_marked_active(monkeypatch):
+    """NEW-2: when the required CEO seed (Friday) does not land, provision_org
+    must NOT persist ``status="active"``. An active company with no CEO is
+    frozen by the ``status=="active"`` idempotency short-circuit and can never
+    re-seed; it must instead record a non-active status a later poll can
+    reconcile (keeping the adoptable credential row so the retry signs IN rather
+    than re-signing-up)."""
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        return "acme-robotics"
-
-    minted = []
-
-    async def fake_mint(*, owner_id, agent_id, agent_name, owner_email, slug, is_primary=True):
-        minted.append(
-            {
-                "owner_id": owner_id,
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "owner_email": owner_email,
-                "slug": slug,
-                "is_primary": is_primary,
-            }
-        )
-        return f"{slug}@agents.isol8.co"
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-    monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
+    # Friday's seed raises; Atlas would land — but a company with no CEO must
+    # not be marked active on the strength of Atlas alone.
+    admin.create_agent = AsyncMock(
+        side_effect=[
+            PaperclipApiError("friday seed failed", status_code=500, body="boom"),
+            {"id": "agent-atlas"},
+        ]
+    )
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await svc.provision_org(
+    row = await svc.provision_org(
         owner_id="org_xyz",
         owner_user_id="user_owner",
         owner_email="owner@example.com",
     )
 
-    assert len(minted) == 1
-    assert minted[0] == {
-        "owner_id": "org_xyz",
-        "agent_id": "agent-friday",
-        "agent_name": "Friday",
-        "owner_email": "owner@example.com",
-        "slug": "acme-robotics",
-        "is_primary": True,
-    }
+    # Neither the returned row nor any persisted row may claim status="active".
+    assert row.status != "active"
+    for call in repo.put.await_args_list:
+        assert call.args[0].status != "active", "must not mark a CEO-less company active"
 
 
 @pytest.mark.asyncio
-async def test_provision_org_skips_mint_when_slug_allocation_failed(monkeypatch):
-    """No slug means no address — but the provision still succeeds."""
+async def test_provision_org_does_NOT_allocate_a_slug_or_mint_an_address(monkeypatch):
+    """Minting moved to the first owner-directed send.
+
+    The slug becomes the subdomain of an address other people are given, and
+    company_slug_repo has no delete path -- so reserving it during provisioning
+    would permanently freeze the auto-generated placeholder name (for a personal
+    owner, their own email local part). It must derive from the name the agent
+    chooses during its first run instead.
+    """
+    import core.services.agent_email as agent_email_mod
+    import core.services.company_identity as company_identity_mod
     import core.services.paperclip_provisioning as mod
     from core.services.paperclip_provisioning import PaperclipProvisioning
 
     admin, repo = _build_provision_org_doubles(monkeypatch)
     admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
 
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
+    calls = []
 
-    async def fake_allocate(*, owner_id, name):
-        return None  # allocation failed
+    async def spy_allocate(*, owner_id, name):
+        calls.append("allocate")
+        return "acme-robotics"
 
-    minted = []
+    async def spy_mint(**kwargs):
+        calls.append("mint")
+        return "friday@acme-robotics.isol8.co"
 
-    async def fake_mint(**kwargs):
-        minted.append(kwargs)
-        return None
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-    monkeypatch.setattr(mod, "mint_agent_email_address", fake_mint)
+    # Patch at the SOURCE modules: provision_org no longer imports either name,
+    # so patching `mod` would silently assert nothing.
+    monkeypatch.setattr(company_identity_mod, "allocate_company_slug", spy_allocate)
+    monkeypatch.setattr(agent_email_mod, "mint_agent_email_address", spy_mint)
+    assert not hasattr(mod, "allocate_company_slug")
+    assert not hasattr(mod, "mint_agent_email_address")
 
     svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     row = await svc.provision_org(
@@ -1043,37 +1411,4 @@ async def test_provision_org_skips_mint_when_slug_allocation_failed(monkeypatch)
     )
 
     assert row.status == "active"
-    assert minted == []
-
-
-@pytest.mark.asyncio
-async def test_provision_org_survives_agent_email_mint_failure(monkeypatch):
-    """A mail-side failure must NOT fail the provision."""
-    import core.services.paperclip_provisioning as mod
-    from core.services.paperclip_provisioning import PaperclipProvisioning
-
-    admin, repo = _build_provision_org_doubles(monkeypatch)
-    admin.create_agent = AsyncMock(side_effect=[{"id": "agent-friday"}, {"id": "agent-atlas"}])
-
-    async def fake_generate(*, org_id, owner_email):
-        return "Acme Robotics"
-
-    async def fake_allocate(*, owner_id, name):
-        return "acme-robotics"
-
-    async def boom(**kwargs):
-        raise RuntimeError("mail down")
-
-    monkeypatch.setattr(mod, "generate_company_name", fake_generate)
-    monkeypatch.setattr(mod, "allocate_company_slug", fake_allocate)
-    monkeypatch.setattr(mod, "mint_agent_email_address", boom)
-
-    svc = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    row = await svc.provision_org(
-        owner_id="org_xyz",
-        owner_user_id="user_owner",
-        owner_email="owner@example.com",
-    )
-
-    assert row.status == "active"
-    repo.put.assert_awaited()
+    assert calls == []

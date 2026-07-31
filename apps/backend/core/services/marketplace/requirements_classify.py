@@ -7,6 +7,7 @@ classified against the platform's integration rail:
   - registry provider (providers.yaml) connectable -> CONNECT
   - channel tool (slack/discord/...)               -> CONNECT (via Channels)
   - byo-required provider (Google)                 -> BYO (your own OAuth app)
+  - registry provider gated off this environment   -> UNAVAILABLE (request access)
   - referenced tool/skill with no implementation   -> UNAVAILABLE (phantom)
   - registry provider but wiring mismatch          -> BYO + reason
   - anything else needing a key                    -> BYO
@@ -41,11 +42,24 @@ _SUPPRESS_TOOLS = frozenset({"state", "llm-task", "lobster", "fast-io"})
 CHANNELS = frozenset(CHANNEL_PROVIDER_IDS)
 
 _BYO_APP_REASON = "requires your own Google OAuth app"
+_GATED_REASON = "not available on this environment yet — request access in the Integrations tab"
 
 
 def _provider_disposition(prov) -> tuple[Disposition, str | None]:
-    """How a registry provider is offered to a buyer: byo-required → BYO (bring
-    your own app), otherwise a normal connectable integration."""
+    """How a registry provider is offered to a buyer: gated off this environment
+    → UNAVAILABLE (they can only request it), byo-required → BYO (bring your own
+    app), otherwise a normal connectable integration.
+
+    The gate check is the ENV half only — this ledger is built once per listing
+    version with no buyer in hand, so it cannot consult owner_allowlist. That
+    errs toward disclosure: UNAVAILABLE rows are informational and never block a
+    hire, whereas a CONNECT row for something the buyer cannot reach sends them
+    to a tab with no Connect button on it.
+    """
+    from core.services.credentials import registry
+
+    if not registry.visible_in_env(prov):
+        return Disposition.UNAVAILABLE, _GATED_REASON
     if prov.byo_required:
         return Disposition.BYO, _BYO_APP_REASON
     return Disposition.CONNECT, None

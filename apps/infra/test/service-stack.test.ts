@@ -69,6 +69,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
+      clerkWebhookSecret: `isol8/${environment}/clerk_webhook_secret`,
       stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
       stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
       encryptionKey: `isol8/${environment}/encryption_key`,
@@ -78,7 +79,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
-      resendApiKey: `isol8/${environment}/resend_api_key`,
       wsInternalSecret: `isol8/${environment}/ws_internal_secret`,
       sesIngestSecret: `isol8/${environment}/ses_ingest_secret`,
     },
@@ -132,6 +132,18 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({ Name: "backend", StopTimeout: 30 }),
+      ]),
+    });
+  });
+
+  test("backend task definition carries STRIPE_TEAM_BASE_PRICE_ID", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_TEAM_BASE_PRICE_ID" }),
+          ]),
+        }),
       ]),
     });
   });
@@ -315,6 +327,149 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+});
+
+describe("ServiceStack — provisioning executor (state machine, live)", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("provision state machine and provisioner task-def exist", () => {
+    template.resourceCountIs("AWS::StepFunctions::StateMachine", 1);
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-provisioner",
+    });
+  });
+
+  test("backend task definition carries PROVISION_STATE_MACHINE_ARN and no PROVISION_EXECUTOR flag", () => {
+    // No flag, no dual-run window (spec §7 / PR-10) — the executor is active
+    // on merge. Regression guard: a re-introduced flag would silently
+    // reopen the inline/SFN split.
+    const backendTaskDefs = Object.values(
+      template.findResources("AWS::ECS::TaskDefinition", {
+        Properties: { Family: "isol8-dev-backend" },
+      }),
+    );
+    expect(backendTaskDefs).toHaveLength(1);
+    const containerDefs = (backendTaskDefs[0] as any).Properties
+      ?.ContainerDefinitions as any[];
+    const backendContainer = containerDefs.find((c) => c.Name === "backend");
+    const envNames = (backendContainer.Environment ?? []).map(
+      (e: any) => e.Name,
+    );
+    expect(envNames).toContain("PROVISION_STATE_MACHINE_ARN");
+    expect(envNames).not.toContain("PROVISION_EXECUTOR");
+  });
+
+  test("state machine definition pins the load-bearing ASL (claim condition, missing-exit-code guard, exit-code routing, per-attempt fencing token)", () => {
+    const stateMachines = Object.values(
+      template.findResources("AWS::StepFunctions::StateMachine"),
+    );
+    expect(stateMachines).toHaveLength(1);
+    const def = (stateMachines[0] as any).Properties?.DefinitionString;
+    // DefinitionString synthesizes as an Fn::Join of literal strings and Refs;
+    // flatten the literal parts to assert on the ASL content.
+    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
+      .map((part: any) => (typeof part === "string" ? part : ""))
+      .join("");
+    // (a) Claim-conditioned DDB writes — the superseded/SIGKILL backstop rule.
+    expect(flat).toContain(
+      "provision_claim_id = :cid AND (#s = :prov OR #s = :err)",
+    );
+    // (b) A task that never started (EFS mount / image-pull failure) stops
+    // with NO exit code in the Cause. A Choice rule referencing the missing
+    // path throws States.Runtime, Choice states cannot Catch, and the
+    // execution dies with the row stuck at "provisioning" — so ClassifyFailure
+    // MUST guard on IsPresent and route the no-exit-code case to the retry
+    // loop before any numeric comparison. ORDER is the load-bearing property
+    // (Choice rules evaluate in order), so assert ordinally: the IsPresent
+    // guard exists, precedes the numeric rules, and its Next targets the
+    // retry gate (AttemptsRemain) within the same Choices region.
+    expect(flat).toContain(
+      '"Variable":"$.cause.Containers[0].ExitCode","IsPresent":true',
+    );
+    const isPresentIdx = flat.indexOf('"IsPresent":true');
+    const exit20Idx = flat.indexOf('"NumericEquals":20');
+    expect(isPresentIdx).toBeGreaterThanOrEqual(0);
+    expect(exit20Idx).toBeGreaterThanOrEqual(0);
+    expect(isPresentIdx).toBeLessThan(exit20Idx);
+    const guardNextIdx = flat.indexOf('"Next":"AttemptsRemain"', isPresentIdx);
+    expect(guardNextIdx).toBeGreaterThan(isPresentIdx);
+    expect(guardNextIdx).toBeLessThan(exit20Idx);
+    // (c) Exit-code ABI routing: 20 superseded, 10 deterministic.
+    expect(flat).toContain(
+      '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":20',
+    );
+    expect(flat).toContain(
+      '"Variable":"$.cause.Containers[0].ExitCode","NumericEquals":10',
+    );
+    // (d) Terminal-write backstop resilience: the DDB writes retry transient
+    // failures, with the fencing signal (ConditionalCheckFailed) excluded
+    // FIRST so a taken-over row falls to the Superseded catch, never a retry.
+    expect(flat).toContain(
+      '"ErrorEquals":["DynamoDB.ConditionalCheckFailedException"],"MaxAttempts":0',
+    );
+    // (e) Per-retry attempt-token fencing (spec §7 hazard 1): BumpAttempt
+    // mints a FRESH token via the States.UUID() intrinsic on every retry,
+    // while claim_id (and so the execution name) stays untouched.
+    expect(flat).toContain('"attempt_token.$":"States.UUID()"');
+    expect(flat).toContain('"claim_id.$":"$.claim_id"');
+  });
+
+  test("RunProvisioner overrides PROVISION_ATTEMPT_TOKEN from $.attempt_token, not baked into the static command", () => {
+    const stateMachines = Object.values(
+      template.findResources("AWS::StepFunctions::StateMachine"),
+    );
+    const def = (stateMachines[0] as any).Properties?.DefinitionString;
+    const flat = (def?.["Fn::Join"]?.[1] ?? [def])
+      .map((part: any) => (typeof part === "string" ? part : ""))
+      .join("");
+    expect(flat).toContain("PROVISION_ATTEMPT_TOKEN");
+    expect(flat).toContain("$.attempt_token");
+  });
+
+  test("backend task role may start provision executions", () => {
+    // The task role's inline default policy is at CloudFormation's ~10 KB
+    // ceiling, so statements added late in the constructor spill into a
+    // TaskRoleOverflowPolicy ManagedPolicy attached to the same role (see the
+    // overflow-packing comment at the companySlugsTable grant in
+    // service-stack.ts). Functionally identical either way, so this assertion
+    // accepts the statement in EITHER the inline AWS::IAM::Policy or an
+    // AWS::IAM::ManagedPolicy — but if it's in a ManagedPolicy, that policy
+    // must be attached to the task role.
+    const wantedActions = [
+      "states:StartExecution",
+      "states:DescribeExecution",
+      "states:StopExecution",
+    ];
+    const hasDispatchStatement = (doc: any): boolean =>
+      (doc?.Statement ?? []).some(
+        (s: any) =>
+          s.Sid === "ProvisionStateMachineDispatch" &&
+          JSON.stringify(s.Action) === JSON.stringify(wantedActions) &&
+          // Pin the Resource scope: exactly the state machine ARN (a Ref to
+          // the SM resource) plus the execution-ARN pattern — a future
+          // widening to "*" must fail this test.
+          Array.isArray(s.Resource) &&
+          s.Resource.length === 2 &&
+          typeof s.Resource[0]?.Ref === "string" &&
+          s.Resource[0].Ref.startsWith("ProvisionStateMachine") &&
+          s.Resource[1] ===
+            "arn:aws:states:us-east-1:877352799272:execution:isol8-dev-provision:*",
+      );
+
+    const inline = Object.values(
+      template.findResources("AWS::IAM::Policy"),
+    ).some((r: any) => hasDispatchStatement(r.Properties?.PolicyDocument));
+    const managed = Object.values(
+      template.findResources("AWS::IAM::ManagedPolicy"),
+    ).some(
+      (r: any) =>
+        hasDispatchStatement(r.Properties?.PolicyDocument) &&
+        (r.Properties?.Roles ?? []).some(
+          (role: any) => typeof role?.Ref === "string" && role.Ref.startsWith("TaskRole"),
+        ),
+    );
+    expect(inline || managed).toBe(true);
+  });
 });
 
 describe("ServiceStack — Metronome lifecycle env split", () => {

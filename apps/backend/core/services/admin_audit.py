@@ -1,6 +1,6 @@
 """@audit_admin_action decorator — synchronous, fail-closed audit for /admin/* writes.
 
-Per CEO review S1 (issue #351):
+Per CEO review S1:
 - Audit row is written BEFORE the response is returned (synchronous).
 - If DDB write fails, the primary action's side effect has already
   executed (Stripe/ECS/etc. — can't be rolled back), so:

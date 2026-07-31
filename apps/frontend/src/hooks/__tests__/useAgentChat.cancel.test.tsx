@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
+import { resolveMessageBlocks } from "@/hooks/internal/toolBlockExtract";
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 
@@ -165,7 +166,7 @@ describe("useAgentChat — F-CANCEL targeted server-reconciled abort", () => {
     const notice = items.find(
       (i) =>
         i.kind === "message" &&
-        (i.message.content?.[0]?.text ?? i.message.text ?? "").includes(
+        (resolveMessageBlocks(i.message)[0]?.text ?? "").includes(
           "Agent run was cancelled",
         ),
     );

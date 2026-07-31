@@ -13,11 +13,31 @@ vi.mock("@/hooks/useConfigPatch", () => ({
     config: {}, configReady: true, patchConfig: patchConfigMock, refreshConfig: vi.fn(),
   }),
 }));
+// The roster now comes from the shared useAgents hook (which reaches for the
+// gateway context), so that is the seam to stub — not the RPC beneath it.
+vi.mock("@/hooks/useAgents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/useAgents")>();
+  return {
+    ...actual,
+    useAgents: () => ({
+      agents: agentsListData.agents ?? [],
+      defaultId: agentsListData.defaultId,
+      error: undefined,
+      isLoading: false,
+      isSettled: true,
+      refresh: vi.fn(),
+      createAgent: vi.fn(),
+      deleteAgent: vi.fn(),
+      updateAgent: vi.fn(),
+    }),
+  };
+});
+
 vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpc: (method: string | null) => {
-    if (method === "agents.list") {
-      return { data: agentsListData, error: undefined, isLoading: false, mutate: vi.fn() };
-    }
+    // NO "agents.list" branch on purpose: the roster must come from the
+    // useAgents mock above, so reverting the component to a raw agents.list
+    // call FAILS here instead of passing on this fixture.
     if (method === "doctor.memory.status") {
       return {
         data: { agentId: "main", embedding: { ok: true }, dreaming: { enabled: true, promotedToday: 2, totalSignalCount: 5, phases: { light: { enabled: true }, rem: { enabled: true }, deep: { enabled: false } } } },

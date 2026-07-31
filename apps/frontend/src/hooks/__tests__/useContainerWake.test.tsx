@@ -4,7 +4,6 @@ import { renderHook, act } from "@testing-library/react";
 
 const postSpy = vi.fn(async () => ({}));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: postSpy }) }));
-vi.mock("swr", () => ({ mutate: vi.fn() }));
 
 const presentSpy = vi.fn(() => true);
 vi.mock("@/lib/presence", () => ({ isPresent: () => presentSpy() }));
@@ -45,14 +44,18 @@ describe("useContainerWake", () => {
     expect(postSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("revalidates container status even when the wake POST rejects", async () => {
-    const { mutate } = await import("swr");
+  it("soft-fails (never throws) even when the wake POST rejects", async () => {
+    // No manual /container/status revalidation here anymore (spec PR-9,
+    // CLIENT-HOOK deleted the wake/unpark/container_waking manual-mutate
+    // trio) — the shared useOnboardingStatus bounded loop re-polls on its
+    // own within its declared ceiling regardless of this call's outcome.
     postSpy.mockRejectedValueOnce(Object.assign(new Error("gated"), { status: 402 }));
     const { useContainerWake } = await import("@/hooks/useContainerWake");
     const { result } = renderHook(() => useContainerWake());
-    await act(async () => {
-      await result.current.requestWake("interaction");
-    });
-    expect(vi.mocked(mutate)).toHaveBeenCalledWith("/container/status");
+    await expect(
+      act(async () => {
+        await result.current.requestWake("interaction");
+      }),
+    ).resolves.not.toThrow();
   });
 });

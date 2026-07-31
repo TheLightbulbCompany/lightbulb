@@ -1,23 +1,50 @@
-"""Pre-stage Friday's IDENTITY / SOUL / USER / BOOTSTRAP files on EFS.
+"""Pre-stage Friday's IDENTITY / SOUL / USER / AGENTS / MEMORY files on EFS.
 
 Friday is the seeded CEO agent in Paperclip (`role="ceo"`). When her
-container provisions, we write four customized markdown files to her
-EFS workspace dir BEFORE the container boots. OpenClaw's lazy
+container provisions, we write customized markdown files to her EFS
+workspace dir BEFORE the container boots. OpenClaw's lazy
 ``ensureAgentWorkspace`` runs on first chat as today, but
 ``writeFileIfMissing`` honors any file we wrote first — so OpenClaw
-fills only the gaps we don't seed (``TOOLS.md``, ``HEARTBEAT.md``). We
-seed ``MEMORY.md`` ourselves with a durable-memory scaffold so every
-Friday starts with structured long-term memory.
+fills only the gaps we don't seed (``TOOLS.md``, ``HEARTBEAT.md``,
+``BOOTSTRAP.md`` -- see below). We seed ``MEMORY.md`` ourselves with a
+durable-memory scaffold so every Friday starts with structured long-term
+memory.
 
-We also write ``.openclaw/workspace-state.json`` with
-``setupCompletedAt`` set. OpenClaw upstream (``src/agents/workspace.ts``
-``reconcileWorkspaceBootstrapCompletionState``) deletes BOOTSTRAP.md
-on boot when it sees customized IDENTITY/SOUL/USER files but no state
-marker — it interprets "already-customized profile" as evidence that
-the workspace bootstrap wizard has already completed and the file is
-stale. Pre-marking setup complete makes that reconcile early-return
-before reaching ``fs.rm(bootstrapPath)``, so BOOTSTRAP.md survives to
-be auto-loaded into Friday's first-chat context.
+There used to also be a customized ``BOOTSTRAP.md`` (opening-message
+guidance for a fresh conversation) seeded here. It was deleted (spec
+PR-6, BOOTSTRAP) once verified inert: OpenClaw's boot-time reconcile
+(``reconcileWorkspaceBootstrapCompletionState``, ``src/agents/
+workspace.ts``) never surfaces a seeded BOOTSTRAP.md into Friday's
+context once ``setupCompletedAt`` is set (see below) — the file was
+written but never read, on ANY turn, not just the first. Research §5 of
+``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
+companion has the full two-gate trace.
+
+We still seed workspace setup-state with ``setupCompletedAt`` set, so the
+boot-time reconcile does not treat our already-customized
+IDENTITY/SOUL/USER as evidence of a stale, uncompleted setup wizard and
+react to that (best-effort belt-and-suspenders — ``write_file_if_missing``
+already protects the files themselves from being overwritten).
+
+As of 2026-07-25 that seed is the NATIVE sentinel
+``.openclaw/isol8-setup-seed.json``, NOT the legacy
+``.openclaw/workspace-state.json``. The fork's boot hook converts it
+directly into OpenClaw's own SQLite setup-state via
+``mergeWorkspaceSetupState`` and deletes it, so no legacy file ever exists
+and the migration/receipt machinery below is never engaged. The legacy
+timestamp contract in ``js_iso_now`` is retained because the sentinel uses
+the same JS-canonical format.
+
+But it is seeded ONE-SHOT — only into a workspace this provision is
+CREATING, never re-written into one that already exists. See
+``seed_workspace_state`` for the verified upstream mechanism:
+first boot's doctor migrates the file into SQLite, records a sha256
+receipt, and DELETES the file; a reprovision that re-seeds it (fresh
+timestamp → different sha) makes every later doctor pass refuse cleanup
+("retired source now conflicts") while the presence-only runtime gate
+(``assertNoUnmigratedWorkspaceState``) throws ``Legacy workspace setup
+state requires migration`` on EVERY agent run — a permanent brick that
+even ``doctor --fix`` cannot clear.
 
 Best-effort throughout: failures log + emit metrics, never raise. The
 caller (``ecs_manager.write_user_configs``) wraps this in try/except
@@ -34,6 +61,127 @@ from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
+
+# The two seed formats (contract fixed in
+# docs/superpowers/specs/2026-07-25-native-workspace-seed-design.md):
+#   - NATIVE sentinel — what we WRITE. A non-legacy file the fork's boot hook
+#     feeds through its own idempotent ``mergeWorkspaceSetupState`` upsert, then
+#     deletes. Its name MUST NOT be a legacy source path
+#     (``resolveLegacyWorkspaceSourcePaths``) — the presence-only legacy gate
+#     ignores it, so the #1429 error class is structurally impossible.
+#   - LEGACY — RETIRED, never written any more. Kept only so the heal branch can
+#     still clear a stale copy from a workspace seeded before this change. It is
+#     the format OpenClaw's boot doctor migrates into SQLite (recording a
+#     sha256-of-bytes receipt) then deletes — fragile on re-seed, which is
+#     exactly the #1429 brick (see seed_workspace_state's docstring).
+_LEGACY_STATE_REL = ".openclaw/workspace-state.json"
+_NATIVE_SEED_REL = ".openclaw/isol8-setup-seed.json"
+
+
+def js_iso_now() -> str:
+    """JS-canonical ISO-8601 UTC timestamp (``2026-07-23T06:36:32.300Z``).
+
+    OpenClaw 7.2 migrates our seeded ``workspace-state.json`` into its SQLite
+    state store and validates every timestamp with JS
+    ``new Date(v).toISOString() === v`` — exactly 3 fractional digits and a
+    literal ``Z``. Python's ``.isoformat()`` (6-digit microseconds, ``+00:00``)
+    fails that round-trip, the boot doctor logs ``Failed reading legacy
+    workspace state: legacy workspace setup bootstrap timestamp is invalid``,
+    the migration aborts, and every agent run then throws ``Legacy workspace
+    setup state requires migration``. Keep this format byte-identical to
+    ``Date.prototype.toISOString``.
+
+    Shared by both workspace-state seed sites (here and ``atlas_seed``).
+    """
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def seed_workspace_state(workspace: Workspace, owner_id: str, agent_uuid: str) -> str:
+    """One-shot seed of the workspace-setup-state marker.
+
+    Shared by both seed sites (Friday here, ``atlas_seed``). Returns the
+    action taken: ``"seeded"`` (fresh workspace, file written),
+    ``"skipped"`` (existing workspace left alone), or ``"deleted_stale"``
+    (existing workspace healed of a re-seeded LEGACY copy — see below).
+
+    FORMAT — the NATIVE sentinel, unconditionally:
+    ``workspace-{agent_uuid}/.openclaw/isol8-setup-seed.json`` containing
+    ``{"bootstrapSeededAt", "setupCompletedAt"}``. The fork's boot hook
+    (``ensureAgentWorkspace``, v2026.7.2-isol8.2+) converts it via
+    ``mergeWorkspaceSetupState`` then deletes it, so the legacy presence gate
+    never sees a legacy file and the #1429 brick class is structurally
+    impossible. The legacy ``workspace-state.json`` is NO LONGER WRITTEN.
+
+    The heal branch below still targets the LEGACY file only: it clears a stale
+    legacy JSON on an already-migrated workspace (a container seeded before this
+    change), never the native sentinel — which the fork itself removes after
+    converting.
+
+    WHY ONE-SHOT (#1429, mechanism verified against the deployed fork tag
+    v2026.7.2-isol8.1) — this history applies to the LEGACY format we no longer
+    write; the native sentinel is a safe idempotent upsert, but the fresh-only
+    gate is kept so the write stays a genuine one-shot:
+
+    OpenClaw 7.2 treats this file as a RETIRED legacy source. The runtime
+    never parses it — ``assertNoUnmigratedWorkspaceState``
+    (``src/agents/workspace-legacy-state.ts``) is a PRESENCE-ONLY gate hit on
+    every agent run: if the file exists at all, every run throws ``Legacy
+    workspace setup state requires migration … run openclaw doctor --fix``.
+    The doctor-on-boot pass (``state-migrations.workspace-setup.ts``) is what
+    keeps a fresh seed working: on the FIRST boot it imports the file into the
+    shared SQLite state store (``~/.openclaw/state/openclaw.sqlite``), records
+    a receipt carrying the file's sha256, and REMOVES the file.
+
+    That removal is what used to re-arm the bug: the paid-conversion
+    reprovision re-ran this seeder, ``write_file_if_missing`` found the
+    migrated-and-removed path empty, and re-wrote the file with a fresh
+    timestamp. On the next boot doctor found receipt + file, compared sha256s,
+    got a mismatch, and REFUSED cleanup ("Workspace state is in SQLite, but
+    the retired source now conflicts." — ``cleanupReceiptSource``) — leaving
+    the file in place for the runtime gate to throw on, permanently. Even
+    ``doctor --fix`` cannot clear that state. Hence: seed ONLY when the
+    workspace directory does not exist yet (this provision is creating it);
+    an existing workspace is never re-seeded, under any flag.
+
+    HEALING ALREADY-BRICKED WORKSPACES: on an existing workspace, if the file
+    is present AND the shared state DB exists (the container has booted 7.2's
+    doctor at least once — Friday/Atlas workspaces always predate the first
+    boot, so a coexisting DB means this file post-dates a migration pass or a
+    mid-migration crash), DELETE it. Provably safe per the upstream header
+    ("Runtime state never parses these files"): canonical state lives in
+    SQLite, the file's only runtime effect is tripping the presence gate, and
+    removal is exactly what doctor's own cleanup would do if the sha matched.
+    In the crash-window case the cost is bounded to losing a best-effort
+    marker whose ABSENCE is the normal vanilla-workspace path. When the DB
+    does not exist (container never booted since seeding) the file is the
+    original un-migrated seed and is left for the first boot to migrate.
+    """
+    legacy_rel = f"workspace-{agent_uuid}/{_LEGACY_STATE_REL}"
+    workspace_dir = workspace.agent_workspace_path(owner_id, agent_uuid)
+    if not workspace_dir.is_dir():
+        now_iso = js_iso_now()
+        # Native seed, unconditionally: drop the non-legacy sentinel the fork
+        # converts + deletes at boot. Same field VALUES as the old legacy seed,
+        # minus the legacy-only ``version`` key. The legacy file is NEVER
+        # written any more, so the #1429 presence gate has nothing to trip on.
+        #
+        # Requires the isol8.2+ base image (v2026.7.2-isol8.2, the boot hook in
+        # ``ensureAgentWorkspace``) — deployed to dev AND prod as
+        # ``2026.7.2-isol8.2-5fecaee`` before this became unconditional. On an
+        # older image the sentinel is simply ignored and the workspace derives
+        # its setup state from filesystem evidence as it always did.
+        workspace.write_file_if_missing(
+            owner_id,
+            f"workspace-{agent_uuid}/{_NATIVE_SEED_REL}",
+            json.dumps({"bootstrapSeededAt": now_iso, "setupCompletedAt": now_iso}),
+        )
+        return "seeded"
+    shared_state_db = workspace.user_path(owner_id) / "state" / "openclaw.sqlite"
+    if (workspace_dir / ".openclaw" / "workspace-state.json").is_file() and shared_state_db.is_file():
+        workspace.delete_file(owner_id, legacy_rel)
+        return "deleted_stale"
+    return "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -202,72 +350,6 @@ ask.
 """
 
 
-_BOOTSTRAP_TEMPLATE = """\
-# BOOTSTRAP.md — How to open a fresh conversation
-
-This file is guidance for the **opening message** of a brand-new conversation
-with {owner_display}. It's not a task list, it's not a checklist, and it's
-**not telling you to do anything with tools or files**. It's about how to land
-the first reply.
-
-## On your very first reply: text only
-
-When the conversation has no prior messages from you, your reply must be a
-single, plain-text greeting. No `exec`, no `apply_patch`, no shell commands,
-no file edits, no `git`, no reads of other files — none. The IDENTITY.md,
-SOUL.md, and USER.md files are already loaded into your context; you don't
-need to fetch anything to know who you are or who you're talking to.
-
-Your opening should:
-
-1. Greet {first_name_or_fallback} by name. Warm, short, no corporate energy.
-2. Mention you're Friday and you just came online — one line.
-3. **Respond to what they actually said.** If they asked a question, answer
-   it after the brief intro. If they said "hi" or "hey", greet them back and
-   ask what they're working on. Never deliver a scripted intro on top of
-   their actual message.
-4. **When the moment fits, plant the seed that you orchestrate.** If
-   {first_name_or_fallback} is describing a project, a goal, or anything
-   with moving parts, mention you can break it up and line up the right
-   specialists. Don't pitch — just open the door. For casual "hey"
-   greetings, skip this; bring it up when they tell you what they're
-   working on.
-
-Example shape for a casual hello (your voice, not verbatim):
-
-> "Hey {first_name_or_fallback} — Friday here, just came online. What
-> are you working on?"
-
-Example shape when they describe a goal:
-
-> "Hey {first_name_or_fallback} — Friday here. If this has moving parts,
-> I can line up the right agents and brief you on the plan before anyone
-> starts. <answer or brief follow-up here>."
-
-## What NOT to do on the opening turn
-
-- **Do not run any tools.** Cleanup, organizing, or "let me set things up"
-  are stalling — they push your real reply behind tool approvals and confuse
-  the person waiting on you.
-- **Do not try to delete this file.** It is not a chore. Subsequent turns
-  ignore the directives above on their own — this file becomes background
-  information, not an action item.
-- **Do not narrate the bootstrap.** {first_name_or_fallback} doesn't need to
-  hear about IDENTITY.md, SOUL.md, or any internal scaffolding. Just be
-  Friday.
-
-## After the opening turn
-
-This file becomes descriptive, not prescriptive. It's just notes on how
-opening messages work. Use IDENTITY.md, SOUL.md, USER.md, and your MEMORY.md
-as your real working context.
-
----
-
-_You're the CEO. Lead with presence, not chores._
-"""
-
-
 _AGENTS_TEMPLATE = """\
 # AGENTS.md — Friday's Playbook
 
@@ -357,13 +439,21 @@ When {owner_display} hands you a task, follow this loop:
    assume an agent exists without checking. New agents — from the marketplace
    or scaffolded by Atlas — show up in the roster automatically.
 3. **Identify or hire.** For each piece, pick the right agent. If no agent
-   is qualified:
-   - Recommend **Atlas** (the agent recruiter) to scaffold a new
-     specialist. Hand Atlas a role spec — what the new hire must do —
-     never the work itself; Atlas builds agents, it does not do research
-     or prototypes.
-   - Or recommend the **marketplace** for a pre-built one.
-   - Present both options to {owner_display} and let them choose.
+   is qualified, **check the marketplace first**:
+   - Run `marketplace_search` with what the work actually needs
+     ("content marketing", "bookkeeping"). Deploying a published agent
+     costs NOTHING in inference and it is ready immediately.
+   - If something fits, call `recommend_agents` with its slug —
+     {owner_display} gets a one-click hire. Name the agent in your reply
+     too, so the recommendation still reads on Telegram and email where
+     no card renders.
+   - Only if nothing in the marketplace fits, hand **Atlas** (the agent
+     recruiter) a role spec — what the new hire must do, never the work
+     itself; Atlas builds agents, it does not do research or prototypes.
+     Building an agent is a full run against {owner_display}'s budget, so
+     it is the fallback, not the default.
+   - Present what you found to {owner_display} and let them choose. You
+     cannot hire on your own — the roster only changes when they say yes.
 4. **Confirm.** Before creating any issues, summarize the plan to
    {owner_display} in plain English. "I'm going to create N issues: (1) X →
    Agent A, (2) Y → Agent B. Sound right?" Wait for confirmation.
@@ -496,7 +586,7 @@ browser, web fetch, images, channels) — use these for your own work
 """
 
 
-# The nightly self-directed wake section (issue #1273). Kept as a standalone
+# The nightly self-directed wake section. Kept as a standalone
 # constant — with NO ``{...}`` format placeholders — so it can be (a) appended
 # to _AGENTS_TEMPLATE below via plain concatenation (safe through the later
 # ``.format`` call) AND (b) reused verbatim by the surgical migration that heals
@@ -660,7 +750,7 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
 
 def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Append the ``## Nightly self-directed wake`` section to an EXISTING
-    AGENTS.md that predates it (issue #1273).
+    AGENTS.md that predates it.
 
     AGENTS.md is seeded write-if-missing, so already-provisioned Fridays keep
     their old playbook forever and would never learn the nightly-wake branch.
@@ -689,20 +779,25 @@ def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid
 def _render_templates(profile: dict) -> dict[str, str]:
     """Render the seed files from a resolved profile dict.
 
-    Returns: {filename: rendered_content} for
-    IDENTITY/SOUL/USER/BOOTSTRAP/AGENTS/MEMORY. Profile shape varies by
-    `kind`: 'personal' uses USER_TEMPLATE_PERSONAL, 'org' uses
-    USER_TEMPLATE_ORG. SOUL/IDENTITY/BOOTSTRAP/AGENTS/MEMORY share fields
-    across both kinds.
+    Returns: {filename: rendered_content} for IDENTITY/SOUL/USER/AGENTS/
+    MEMORY. Profile shape varies by `kind`: 'personal' uses
+    USER_TEMPLATE_PERSONAL, 'org' uses USER_TEMPLATE_ORG. SOUL/IDENTITY/
+    AGENTS/MEMORY share fields across both kinds.
+
+    There used to also be a BOOTSTRAP.md here (opening-message guidance for
+    a fresh conversation). It was deleted (spec PR-6, BOOTSTRAP) once
+    verified inert: OpenClaw's boot-time reconcile
+    (``reconcileWorkspaceBootstrapCompletionState``) never surfaces a seeded
+    BOOTSTRAP.md into Friday's context once ``setupCompletedAt`` is
+    pre-marked (see this module's docstring, and research §5 of
+    ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md``'s
+    companion) — the file was written but never read on ANY turn, not just
+    the first.
     """
     identity = _IDENTITY_TEMPLATE.format(owner_display=profile["owner_display"])
     soul = _SOUL_TEMPLATE.format(owner_display=profile["owner_display"])
     agents = _AGENTS_TEMPLATE.format(owner_display=profile["owner_display"])
     memory = _MEMORY_TEMPLATE.format(owner_display=profile["owner_display"])
-    bootstrap = _BOOTSTRAP_TEMPLATE.format(
-        owner_display=profile["owner_display"],
-        first_name_or_fallback=profile["first_name_or_fallback"],
-    )
     if profile["kind"] == "org":
         user_md = _USER_TEMPLATE_ORG.format(
             org_name=profile["org_name"],
@@ -718,7 +813,6 @@ def _render_templates(profile: dict) -> dict[str, str]:
         "IDENTITY.md": identity,
         "SOUL.md": soul,
         "USER.md": user_md,
-        "BOOTSTRAP.md": bootstrap,
         "AGENTS.md": agents,
         "MEMORY.md": memory,
     }
@@ -808,10 +902,10 @@ async def pre_stage_friday_identity(
     paperclip_agents: list[dict],
     workspace: Workspace,
 ) -> None:
-    """Seed Friday's IDENTITY/SOUL/USER/BOOTSTRAP files on EFS.
+    """Seed Friday's IDENTITY/SOUL/USER/AGENTS/MEMORY files on EFS.
 
     Resolves Friday's UUID from `paperclip_agents` (the entry with
-    role == "ceo"). Writes four files using write-if-missing semantics
+    role == "ceo"). Writes five files using write-if-missing semantics
     so subsequent (re)provisions don't clobber Friday's evolved persona.
 
     Best-effort: emits metrics + logs on failure but never raises.
@@ -837,25 +931,30 @@ async def pre_stage_friday_identity(
     files = _render_templates(profile)
 
     # Pre-mark OpenClaw setup complete so its boot-time reconcile doesn't
-    # rm BOOTSTRAP.md when it sees our customized IDENTITY/SOUL/USER. Written
-    # FIRST (before the template loop) so a partial template-write failure
-    # still leaves OpenClaw in a "treat as completed" state — it'll fill any
-    # missing customized files with its own neutral templates rather than
-    # running the bootstrap wizard. Idempotent via write_file_if_missing.
-    now_iso = datetime.now(timezone.utc).isoformat()
-    state_rel_path = f"workspace-{friday_uuid}/.openclaw/workspace-state.json"
-    workspace_state = {
-        "version": 1,
-        "bootstrapSeededAt": now_iso,
-        "setupCompletedAt": now_iso,
-    }
+    # treat our customized IDENTITY/SOUL/USER as evidence of a stale,
+    # uncompleted setup wizard (see the module docstring's two REMAINING
+    # reasons -- BOOTSTRAP.md is no longer one of them, it isn't seeded).
+    # Attempted FIRST (before the template loop) so a partial template-write
+    # failure still leaves OpenClaw in a "treat as completed" state — it'll
+    # fill any missing customized files with its own neutral templates
+    # rather than running the bootstrap wizard. ONE-SHOT: written only when
+    # this provision is creating the workspace; on an existing workspace it
+    # is never re-written (a re-seed after the first boot's doctor migration
+    # bricks every agent run — see seed_workspace_state, #1429), and a stale
+    # re-seeded copy from before this fix is deleted.
     try:
-        workspace.write_file_if_missing(owner_id, state_rel_path, json.dumps(workspace_state))
+        state_action = seed_workspace_state(workspace, owner_id, friday_uuid)
+        if state_action == "deleted_stale":
+            put_metric("friday_identity.seed.state_stale_deleted")
+            logger.warning(
+                "friday_identity: deleted stale re-seeded workspace-state.json for owner=%s "
+                "(already-migrated workspace — the file only re-bricks agent runs)",
+                owner_id,
+            )
     except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
         put_metric("friday_identity.seed.state_error")
         logger.warning(
-            "friday_identity: workspace-state.json write failed for owner=%s: %s. "
-            "BOOTSTRAP.md may be deleted by OpenClaw on boot.",
+            "friday_identity: workspace-state.json seed failed for owner=%s: %s.",
             owner_id,
             exc,
         )
@@ -878,7 +977,7 @@ async def pre_stage_friday_identity(
             exc,
         )
 
-    # Heal pre-nightly-loop AGENTS.md (issue #1273): the seed loop below is
+    # Heal pre-nightly-loop AGENTS.md: the seed loop below is
     # write-if-missing and won't touch an existing AGENTS.md, so append the
     # nightly-wake section when it's absent. Best-effort.
     try:

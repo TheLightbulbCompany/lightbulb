@@ -295,6 +295,19 @@ _RUN_DISPATCH_ALTERNATIVE = {
     "agent": "agent_chat",
 }
 
+# Wake-admission gate scope. Deliberately the SAME set as above: that frozenset
+# is this codebase's single answer to "does this method start an agent run", and
+# the two doors must never disagree about it. The proxy REFUSES these outright
+# (they belong to the typed chat path); the operator relay ADMITS them subject
+# to budget — same question, different verdicts.
+#
+# In practice the Paperclip openclaw-gateway adapter only ever sends `agent`
+# (paperclip/packages/adapters/openclaw-gateway/src/server/execute.ts:1289).
+# `agent.wait` (:1319) is the separate call that AWAITS an already-started run
+# and is deliberately NOT gated — refusing it would strand a live run rather
+# than prevent one, and the spend it represents is already committed.
+_WAKE_GATED_METHODS = _RUN_DISPATCH_METHODS
+
 
 def _slim_sessions_list_previews(result):
     """Cap per-row lastMessage previews so sessions.list stays frame-sized."""
@@ -710,6 +723,121 @@ async def ws_disconnect(
     return Response(status_code=200)
 
 
+def _wake_refusal_payload(gate: dict, *, req_id: Any) -> dict:
+    """Build the frame that refuses a budget-blocked agent wake.
+
+    THE ONE PLACE this wire shape is constructed — every wake refusal goes
+    through here so retuning it is a single edit.
+
+    Shape CONFIRMED against the deployed fork (`isol8/2026.6-circuit-breaker`)
+    at both layers that could re-arm a retry:
+
+    1. **The adapter.** `GatewayWsClient.handleMessage` rejects the pending
+       request on `ok: false`, reading `error.message` / `error.code` /
+       `error.details` into a thrown `GatewayResponseError`. Its retry
+       classifier is a SUBSTRING match on that message — it retries only
+       `econnrefused` / `econnreset` / `socket hang up` / `timeout`. Our gate
+       messages contain none of those (pinned by a test), so the adapter does
+       not retry a refusal; it returns `exitCode: 1`.
+    2. **Paperclip's wake scheduler.** `scheduleBoundedRetryForRun` fires only
+       when `errorFamily == "transient_upstream"` (or the codex/claude
+       transient errorCodes, or max-turn exhaustion). The openclaw-gateway
+       adapter NEVER sets `errorFamily`/`retryNotBefore` — verified zero
+       occurrences in its `execute.ts` — so its failures are terminal by
+       construction. A refusal PARKS; nothing re-dispatches it.
+
+    Downstream consequence worth knowing: the routine circuit breaker counts
+    the parked run toward `consecutiveFailureCount`, so enough refusals pause
+    the whole routine (`autoPauseReason="consecutive_failures"`), which then
+    needs a manual resume even after the cap resets.
+
+    Keep the shape here regardless — one edit site is the point.
+    """
+    code = gate.get("code", "blocked")
+    return {
+        "type": "res",
+        "id": req_id,
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": gate.get("message", "Agent wake blocked"),
+            "details": {"reason": "wake_admission_gate", "code": code},
+        },
+    }
+
+
+async def _admit_operator_wake(
+    *,
+    connection_id: str,
+    user_id: str,
+    owner_id: str,
+    body: Dict[str, Any],
+) -> Optional[dict]:
+    """Budget-check a Paperclip-originated agent wake.
+
+    Paperclip's seed agents (Friday/Atlas) drive their runs through the operator
+    relay, which short-circuits ABOVE both the RPC proxy and the typed
+    `agent_chat` handler. That made the agent-wake door the one entrance to
+    inference that was never budget-checked: a capped-out free-trial owner got a
+    wall of instantly-dead runs (12 in ~3 minutes) instead of one clear
+    "out for today, upgrade" signal.
+
+    This calls the SAME ``pool.gate_chat`` the human ``agent_chat`` path calls, so
+    wakes and human sends obey one contract. Reusing it is load-bearing for
+    provider safety: gate_chat is already provider-aware, so ChatGPT-OAuth and
+    BYOK owners — who consume no Isol8 budget — can never be blocked on one,
+    while paid Bedrock owners are blocked only on genuinely exhausted credits.
+    A trial-only predicate here would have been the WRONG primitive.
+
+    Returns ``None`` to admit the wake, or the refusal frame to send instead of
+    relaying it upstream.
+    """
+    if body.get("method") not in _WAKE_GATED_METHODS:
+        return None
+
+    params = body.get("params")
+    session_key = params.get("sessionKey") if isinstance(params, dict) else None
+
+    try:
+        pool = get_gateway_pool()
+        gate = await pool.gate_chat(
+            user_id=user_id,
+            owner_id=owner_id,
+            session_key=session_key or "",
+        )
+    except Exception:
+        # FAIL OPEN — the deliberate inverse of the chat path, where gate_chat's
+        # raise propagates and the send is refused. The failure modes differ: a
+        # dropped chat send is a visible error the human retries, but a dropped
+        # wake is silently lost work for a paying customer. And spend is not
+        # actually fenced here — the bedrock-gate's synchronous pre-flight
+        # reservation is the real fence — so a transient DDB/network blip must
+        # not cost an owner their automation.
+        logger.warning(
+            "[%s] wake gate read failed owner=%s conn=%s — ADMITTING wake (fail-open)",
+            user_id,
+            owner_id,
+            connection_id[:12] if connection_id else "?",
+            exc_info=True,
+        )
+        put_metric("wake.admission", dimensions={"outcome": "gate_error"})
+        return None
+
+    if not gate.get("blocked"):
+        return None
+
+    code = gate.get("code", "blocked")
+    logger.info(
+        "[%s] agent wake BLOCKED owner=%s conn=%s code=%s",
+        user_id,
+        owner_id,
+        connection_id[:12] if connection_id else "?",
+        code,
+    )
+    put_metric("wake.admission", dimensions={"outcome": "blocked", "reason": code})
+    return _wake_refusal_payload(gate, req_id=body.get("id"))
+
+
 @router.post(
     "/message",
     status_code=200,
@@ -830,6 +958,25 @@ async def ws_message(
             if msg_type == "req" and body.get("method") == "connect":
                 submit_operator_signed_connect(x_connection_id, body)
             else:
+                # Wake-admission gate: a relay `req` that would START an
+                # agent run is budget-checked with the same predicate as a human
+                # chat send. Everything else — `agent.wait`, status reads,
+                # history fetches, non-`req` frames — relays untouched, so the
+                # Teams surface is undisturbed.
+                refusal = (
+                    await _admit_operator_wake(
+                        connection_id=x_connection_id,
+                        user_id=user_id,
+                        owner_id=owner_id,
+                        body=body,
+                    )
+                    if msg_type == "req"
+                    else None
+                )
+                if refusal is not None:
+                    management_api = await get_management_api_client()
+                    await management_api.send_message_async(x_connection_id, refusal)
+                    return Response(status_code=200)
                 await handle_operator_message(x_connection_id, body)
         else:
             # Relay upstream isn't on this task (cross-task / post-rollover).
@@ -1683,7 +1830,26 @@ async def _process_rpc_background(
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    "error": {"message": "Container is starting up. Try again in a moment."},
+                    # A task with no IP is USUALLY waking (still pulling the
+                    # image) but can also be one that died and is being
+                    # replaced — resolve_running_container cannot tell them
+                    # apart, so `retryable` here is a hint, not a liveness
+                    # proof. Clients must bound how long they present it as
+                    # loading (see useWarmingWindow); nothing downstream may
+                    # treat it as "wait forever".
+                    #
+                    # Deliberately NO `code`: shipped mobile builds string-join
+                    # an error's `code` into the message they display, so
+                    # adding one would regress the installed base to
+                    # "...try again in a moment. — [UNAVAILABLE]" — the exact
+                    # class of message this change exists to remove.
+                    # `retryable` and `retryAfterMs` are ignored by those
+                    # older clients.
+                    "error": {
+                        "message": "Container is starting up. Try again in a moment.",
+                        "retryable": True,
+                        "retryAfterMs": 3000,
+                    },
                 },
             )
             return
@@ -1854,6 +2020,17 @@ async def _process_rpc_background(
                 error_obj = json.loads(str(e))
             except (ValueError, TypeError):
                 error_obj = {"message": str(e)}
+            # Deliberately NOT classified as transient here. An earlier
+            # attempt substring-matched this error's text for "still coming
+            # up" markers and was wrong three ways: `str(e)` is the whole
+            # serialized OpenClaw error dict (so `details` text could flip a
+            # real rejection to retryable, and it kept its `code`); the
+            # dominant early cold-start failure is ConnectionRefusedError, an
+            # OSError that never reaches this handler at all; and two of the
+            # markers ("Gateway connection lost", "Connection closed") are
+            # raised immediately AFTER the pool emits GATEWAY_DOWN_DEAD — the
+            # death signal, labelled as birth. "Is the container coming up?"
+            # is answered by /container/status, which owns that question.
             await management_api.send_message_async(
                 connection_id,
                 {
@@ -2008,7 +2185,7 @@ async def _process_agent_chat_background(
                 # invariant intentionally FALSE for the stopped branch.
                 from core.services import container_wake as _cw
 
-                await _cw.request_wake_silent(owner_id, user_id=user_id)
+                await _cw.request_wake_silent(owner_id)
                 put_metric("chat.error", dimensions={"reason": "container_waking"})
                 logger.info(
                     "[%s] chat.send: container stopped (scaled to zero) for owner=%s — wake dispatched",

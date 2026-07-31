@@ -1,5 +1,7 @@
 """Tests for core.services.atlas_seed.pre_stage_atlas."""
 
+import re
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,10 +9,31 @@ import pytest
 from core.services import atlas_seed
 from core.services.atlas_seed import pre_stage_atlas
 
+# JS-canonical ISO-8601: exactly 3 fractional digits + literal ``Z`` — the only
+# shape OpenClaw 7.2's workspace-state migration accepts. Python's
+# ``.isoformat()`` (6-digit micros + ``+00:00``) is rejected and bricks agent runs.
+_JS_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _assert_js_canonical_roundtrip(ts: str) -> None:
+    assert _JS_ISO_RE.match(ts), f"{ts!r} is not JS-canonical (YYYY-MM-DDTHH:MM:SS.mmmZ)"
+    parsed = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+    reformatted = parsed.strftime("%Y-%m-%dT%H:%M:%S.") + f"{parsed.microsecond // 1000:03d}Z"
+    assert reformatted == ts
+
+
+def _mark_workspace_fresh(ws):
+    """seed_workspace_state's one-shot gate: a workspace dir that does not
+    exist yet means this provision creates it, so the state marker is seeded.
+    (An existing dir means reprovision — the marker is never re-written; see
+    friday_identity.seed_workspace_state, #1429.)"""
+    ws.agent_workspace_path.return_value.is_dir.return_value = False
+    return ws
+
 
 @pytest.fixture
 def workspace_stub():
-    ws = MagicMock()
+    ws = _mark_workspace_fresh(MagicMock())
     ws.calls = []
 
     def _write(user_id, path, content):
@@ -38,7 +61,7 @@ def captured_ws():
     ``write_file_if_missing`` skip-if-exists semantics — first write wins,
     later writes to the same path no-op. That's what makes the ACP pre-write
     of AGENTS.md beat the generic loop's vanilla write."""
-    ws = MagicMock()
+    ws = _mark_workspace_fresh(MagicMock())
     ws.written = {}
 
     def _write(user_id, path, content):
@@ -59,7 +82,7 @@ async def test_seeds_atlas_files_keyed_by_uuid(workspace_stub, fake_files_dir):
     ]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" in paths
+    assert "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json" in paths
     assert "workspace-uuid-atlas/IDENTITY.md" in paths
     assert "workspace-uuid-atlas/build.lobster" in paths
     assert "workspace-uuid-atlas/skills/fast-io/SKILL.md" in paths
@@ -124,7 +147,24 @@ async def test_state_file_written_first(workspace_stub, fake_files_dir):
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
     paths = [p for (_u, p) in workspace_stub.calls]
-    assert paths[0] == "workspace-uuid-atlas/.openclaw/workspace-state.json", f"state first, got: {paths}"
+    assert paths[0] == "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json", f"state first, got: {paths}"
+
+
+@pytest.mark.asyncio
+async def test_state_file_timestamps_are_js_canonical(captured_ws, fake_files_dir):
+    """Atlas's seeded setup-state sentinel timestamps must be JS-canonical
+    (``YYYY-MM-DDTHH:MM:SS.mmmZ``) so OpenClaw 7.2's boot migration accepts them.
+    Python's ``.isoformat()`` (6-digit micros + ``+00:00``) is rejected — the
+    migration aborts and every agent run throws ``Legacy workspace setup state
+    requires migration``."""
+    import json as _json
+
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
+
+    state = _json.loads(captured_ws.written["workspace-uuid-atlas/.openclaw/isol8-setup-seed.json"])
+    _assert_js_canonical_roundtrip(state["bootstrapSeededAt"])
+    _assert_js_canonical_roundtrip(state["setupCompletedAt"])
 
 
 @pytest.mark.asyncio
@@ -148,11 +188,10 @@ def _acp_files_dir(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_acp_section_appended_to_agents_when_flag_on(captured_ws, tmp_path, monkeypatch):
-    """With ACP_ENABLED on, Atlas's AGENTS.md ships the harness-delegation
-    section appended to the vendored base copy."""
+async def test_acp_section_appended_to_agents(captured_ws, tmp_path, monkeypatch):
+    """Atlas's AGENTS.md ships the harness-delegation section appended to the
+    vendored base copy."""
     _acp_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
 
     await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
@@ -161,21 +200,6 @@ async def test_acp_section_appended_to_agents_when_flag_on(captured_ws, tmp_path
     assert "base recruiter copy" in agents_md  # vendored base preserved
     assert "Coding-Harness Delegation (ACP)" in agents_md  # section appended
     assert 'sessions_spawn({ runtime: "acp" })' in agents_md
-
-
-@pytest.mark.asyncio
-async def test_acp_section_absent_when_flag_off(captured_ws, tmp_path, monkeypatch):
-    """Default (flag off): AGENTS.md is the vanilla vendored copy — no ACP
-    section leaks into the recruiter prompt before the feature is rolled out."""
-    _acp_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ACP_ENABLED", False)
-    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
-
-    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=captured_ws)
-
-    agents_md = captured_ws.written["workspace-uuid-atlas/AGENTS.md"]
-    assert "base recruiter copy" in agents_md
-    assert "Coding-Harness Delegation (ACP)" not in agents_md
 
 
 def _bridge_files_dir(tmp_path, monkeypatch):
@@ -233,8 +257,16 @@ def force_ws():
     from write_file_if_missing (skip-if-exists). write_file_if_missing always
     returns False (pretend every file already exists) so that the only way a
     file gets staged is via write_file — proving the force path overwrites
-    where the default path would skip."""
+    where the default path would skip.
+
+    Modeled as an EXISTING, already-migrated workspace (dir present, no stale
+    state file, shared DB present) — force restage only ever targets existing
+    containers, and the state marker is exempt from force (#1429)."""
     ws = MagicMock()
+    wsdir = ws.agent_workspace_path.return_value
+    wsdir.is_dir.return_value = True
+    # (workspace_dir / ".openclaw" / "workspace-state.json").is_file() → False
+    wsdir.__truediv__.return_value.__truediv__.return_value.is_file.return_value = False
     ws.overwrote = []  # paths written via write_file
     ws.if_missing_calls = []  # paths attempted via write_file_if_missing
 
@@ -253,21 +285,43 @@ def force_ws():
 
 @pytest.mark.asyncio
 async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
-    """force=True overwrites every staged file via write_file even when the file
-    already exists (where write_file_if_missing would skip) — so an existing
-    container picks up the rewritten bundle. write_file_if_missing is never used."""
+    """force=True overwrites every staged BUNDLE file via write_file even when
+    the file already exists (where write_file_if_missing would skip) — so an
+    existing container picks up the rewritten bundle. write_file_if_missing is
+    never used. The setup-state sentinel is EXEMPT: force targets an existing
+    (booted, migrated) workspace whose sentinel the fork already consumed, and
+    re-seeding setup state there is exactly the one-shot rule (#1429)."""
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
     # Force path NEVER touches the skip-if-exists writer.
     assert force_ws.if_missing_calls == []
     # IDENTITY.md exists (write_if_missing would return False) yet was overwritten.
     assert "workspace-uuid-atlas/IDENTITY.md" in force_ws.overwrote
-    # workspace-state.json + the 3 bundle files (IDENTITY.md, build.lobster,
-    # skills/fast-io/SKILL.md) all force-written.
-    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" in force_ws.overwrote
+    # The 3 bundle files (IDENTITY.md, build.lobster, skills/fast-io/SKILL.md)
+    # force-written; the one-shot state marker is NOT -- checked for BOTH the
+    # native sentinel we write today and the retired legacy name, so this stays
+    # meaningful rather than vacuously passing on a renamed file.
+    assert "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json" not in force_ws.overwrote
+    assert "workspace-uuid-atlas/.openclaw/workspace-state.json" not in force_ws.overwrote
     assert result["force"] is True
     assert result["reason"] is None
-    assert result["overwritten"] == len(force_ws.overwrote) == 4
+    assert result["overwritten"] == len(force_ws.overwrote) == 3
+
+
+@pytest.mark.asyncio
+async def test_force_never_rewrites_workspace_state(force_ws, fake_files_dir):
+    """The state marker is exempt from force in BOTH writers: no write_file, no
+    write_file_if_missing, and (with no stale copy on disk) no delete either."""
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=force_ws, force=True)
+
+    for state_rel in (
+        "workspace-uuid-atlas/.openclaw/isol8-setup-seed.json",
+        "workspace-uuid-atlas/.openclaw/workspace-state.json",
+    ):
+        assert state_rel not in force_ws.overwrote
+        assert state_rel not in force_ws.if_missing_calls
+    force_ws.delete_file.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -294,12 +348,11 @@ async def test_force_does_not_clobber_substituted_build_lobster(force_ws, monkey
 
 @pytest.mark.asyncio
 async def test_force_with_acp_overwrites_agents_with_acp_section(force_ws, monkeypatch, tmp_path):
-    """force=True AND ACP_ENABLED=True: AGENTS.md is force-overwritten WITH the
+    """force=True: AGENTS.md is force-overwritten WITH the
     ACP section appended (force must carry the augmentation, not the vanilla
     copy). Also asserts written stays 0 under force (overwrites count in
     overwritten only, so atlas_seed.success doesn't fire on overwrites)."""
     _acp_files_dir(tmp_path, monkeypatch)
-    monkeypatch.setattr("core.config.settings.ACP_ENABLED", True)
     written: dict[str, str] = {}
 
     def _wf(user_id, path, content):

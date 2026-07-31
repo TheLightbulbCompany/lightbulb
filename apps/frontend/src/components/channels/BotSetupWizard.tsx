@@ -103,8 +103,8 @@ function StepIndicator({ current, total }: { current: number; total: number }) {
             (i < current
               ? "w-4 bg-[#2d8a4e]"
               : i === current
-                ? "w-6 bg-[#1a1a1a]"
-                : "w-4 bg-[#e0dbd0]")
+                ? "w-6 bg-[var(--ink)]"
+                : "w-4 bg-[var(--edge)]")
           }
         />
       ))}
@@ -124,7 +124,7 @@ function ExternalLinkButton({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-1.5 rounded-md border border-[#e0dbd0] bg-white px-3 py-1.5 text-xs font-medium text-[#1a1a1a] hover:bg-[#f3efe6] transition-colors cursor-pointer"
+      className="inline-flex items-center gap-1.5 rounded-md border border-[var(--edge)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--ink)] hover:bg-[var(--cream-deeper)] transition-colors cursor-pointer"
     >
       {children}
       <ExternalLink className="h-3 w-3" />
@@ -138,7 +138,7 @@ function InlineLink({ href, children }: { href: string; children: React.ReactNod
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-semibold text-[#1a1a1a] underline decoration-[#e0dbd0] decoration-2 underline-offset-2 hover:decoration-[#1a1a1a] cursor-pointer"
+      className="font-semibold text-[var(--ink)] underline decoration-[var(--edge)] decoration-2 underline-offset-2 hover:decoration-[var(--ink)] cursor-pointer"
     >
       {children}
     </a>
@@ -150,7 +150,7 @@ function InstructionsList({ items }: { items: React.ReactNode[] }) {
     <ol className="space-y-2 text-sm text-[#3a3a3a]">
       {items.map((item, i) => (
         <li key={i} className="flex gap-2.5">
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#f3efe6] text-[10px] font-semibold text-[#8a8578]">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--cream-deeper)] text-[10px] font-semibold text-[var(--mute)]">
             {i + 1}
           </span>
           <span className="pt-0.5">{item}</span>
@@ -486,7 +486,7 @@ export function BotSetupWizard({
           <InlineLink href="https://t.me/BotFather">@BotFather</InlineLink>.
         </>,
         <>
-          Send <code className="px-1 py-0.5 rounded bg-[#f3efe6] font-mono text-[11px]">/newbot</code>{" "}
+          Send <code className="px-1 py-0.5 rounded bg-[var(--cream-deeper)] font-mono text-[11px]">/newbot</code>{" "}
           and follow BotFather&apos;s prompts — pick a display name, then a username
           (must end in <span className="font-mono">bot</span>).
         </>,
@@ -519,8 +519,8 @@ export function BotSetupWizard({
     return (
       <div className="space-y-4">
         <div>
-          <h4 className="text-sm font-semibold text-[#1a1a1a]">Create your {label} bot</h4>
-          <p className="mt-1 text-xs text-[#8a8578]">
+          <h4 className="text-sm font-semibold text-[var(--ink)]">Create your {label} bot</h4>
+          <p className="mt-1 text-xs text-[var(--mute)]">
             We&apos;ll walk you through {steps.length - 1} quick steps.
           </p>
         </div>
@@ -535,8 +535,8 @@ export function BotSetupWizard({
   const renderDiscordIntents = () => (
     <div className="space-y-4">
       <div>
-        <h4 className="text-sm font-semibold text-[#1a1a1a]">Finish configuring your Discord app</h4>
-        <p className="mt-1 text-xs text-[#8a8578]">
+        <h4 className="text-sm font-semibold text-[var(--ink)]">Finish configuring your Discord app</h4>
+        <p className="mt-1 text-xs text-[var(--mute)]">
           Two non-obvious steps that are easy to miss.
         </p>
       </div>
@@ -590,8 +590,8 @@ export function BotSetupWizard({
   const renderSlackManifest = () => (
     <div className="space-y-4">
       <div>
-        <h4 className="text-sm font-semibold text-[#1a1a1a]">Create your Slack app</h4>
-        <p className="mt-1 text-xs text-[#8a8578]">
+        <h4 className="text-sm font-semibold text-[var(--ink)]">Create your Slack app</h4>
+        <p className="mt-1 text-xs text-[var(--mute)]">
           We give Slack a manifest that pre-configures everything — scopes, events, socket mode.
         </p>
       </div>
@@ -629,13 +629,13 @@ export function BotSetupWizard({
           </>,
         ]}
       />
-      <div className="rounded-md border border-[#e0dbd0] bg-white">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-[#e0dbd0]">
-          <span className="text-xs font-semibold text-[#1a1a1a]">App manifest</span>
+      <div className="rounded-md border border-[var(--edge)] bg-white">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--edge)]">
+          <span className="text-xs font-semibold text-[var(--ink)]">App manifest</span>
           <button
             type="button"
             onClick={copyManifest}
-            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-[#8a8578] hover:bg-[#f3efe6] hover:text-[#1a1a1a] transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-[var(--mute)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)] transition-colors cursor-pointer"
             aria-label="Copy manifest"
           >
             {manifestCopied ? (
@@ -671,14 +671,14 @@ export function BotSetupWizard({
     return (
       <div className="space-y-4">
         <div>
-          <h4 className="text-sm font-semibold text-[#1a1a1a]">Paste your bot token</h4>
-          <p className="mt-1 text-xs text-[#8a8578]">
+          <h4 className="text-sm font-semibold text-[var(--ink)]">Paste your bot token</h4>
+          <p className="mt-1 text-xs text-[var(--mute)]">
             Tokens are stored encrypted in your container and never logged.
           </p>
         </div>
         {provider === "slack" && (
           <label className="block">
-            <span className="text-xs font-semibold text-[#1a1a1a]">
+            <span className="text-xs font-semibold text-[var(--ink)]">
               App-Level Token (xapp-...)
             </span>
             <input
@@ -689,7 +689,7 @@ export function BotSetupWizard({
                 clearError();
               }}
               placeholder="xapp-1-A..."
-              className="mt-1 w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 text-sm font-mono focus:border-[#1a1a1a] focus:outline-none"
+              className="mt-1 w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-sm font-mono focus:border-[var(--ink)] focus:outline-none"
               aria-label="App-Level Token"
               autoComplete="off"
               spellCheck={false}
@@ -697,7 +697,7 @@ export function BotSetupWizard({
           </label>
         )}
         <label className="block">
-          <span className="text-xs font-semibold text-[#1a1a1a]">{labelText}</span>
+          <span className="text-xs font-semibold text-[var(--ink)]">{labelText}</span>
           <input
             type="password"
             value={token}
@@ -706,7 +706,7 @@ export function BotSetupWizard({
               clearError();
             }}
             placeholder={placeholder}
-            className="mt-1 w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 text-sm font-mono focus:border-[#1a1a1a] focus:outline-none"
+            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-sm font-mono focus:border-[var(--ink)] focus:outline-none"
             aria-label={labelText}
             autoComplete="off"
             spellCheck={false}
@@ -719,10 +719,10 @@ export function BotSetupWizard({
 
   const renderConnecting = () => (
     <div className="py-8 flex flex-col items-center justify-center gap-3 text-center">
-      <Loader2 className="h-6 w-6 animate-spin text-[#8a8578]" />
+      <Loader2 className="h-6 w-6 animate-spin text-[var(--mute)]" />
       <div>
-        <p className="text-sm font-semibold text-[#1a1a1a]">Connecting to {label}…</p>
-        <p className="mt-1 text-xs text-[#8a8578]">
+        <p className="text-sm font-semibold text-[var(--ink)]">Connecting to {label}…</p>
+        <p className="mt-1 text-xs text-[var(--mute)]">
           {connectingNote ||
             "Your container is starting the bot. This can take a few minutes if your agent is busy."}
         </p>
@@ -732,7 +732,7 @@ export function BotSetupWizard({
         onClick={() => {
           cancelConnect.current = true;
         }}
-        className="text-xs text-[#8a8578] underline underline-offset-2 hover:text-[#1a1a1a]"
+        className="text-xs text-[var(--mute)] underline underline-offset-2 hover:text-[var(--ink)]"
       >
         Cancel
       </button>
@@ -749,7 +749,7 @@ export function BotSetupWizard({
       ? botUsername.startsWith("@") ? botUsername : `@${botUsername}`
       : null;
     const handleNode = handle ? (
-      <span className="font-mono font-semibold text-[#1a1a1a]">{handle}</span>
+      <span className="font-mono font-semibold text-[var(--ink)]">{handle}</span>
     ) : null;
 
     const dmInstructions: Record<Provider, React.ReactNode> = {
@@ -792,14 +792,14 @@ export function BotSetupWizard({
     return (
       <div className="space-y-4">
         <div>
-          <h4 className="text-sm font-semibold text-[#1a1a1a]">Link your account to the bot</h4>
-          <p className="mt-1 text-xs text-[#8a8578]">
+          <h4 className="text-sm font-semibold text-[var(--ink)]">Link your account to the bot</h4>
+          <p className="mt-1 text-xs text-[var(--mute)]">
             This lets the bot recognize you as an authorized user. Codes expire after 1 hour.
           </p>
         </div>
         <p className="text-sm text-[#3a3a3a]">{dmInstructions[provider]}</p>
         <label className="block">
-          <span className="text-xs font-semibold text-[#1a1a1a]">Pairing code</span>
+          <span className="text-xs font-semibold text-[var(--ink)]">Pairing code</span>
           <input
             type="text"
             value={code}
@@ -809,7 +809,7 @@ export function BotSetupWizard({
             }}
             placeholder="ABC12345"
             maxLength={8}
-            className="mt-1 w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 text-lg font-mono tracking-widest uppercase focus:border-[#1a1a1a] focus:outline-none"
+            className="mt-1 w-full rounded-md border border-[var(--edge)] bg-white px-3 py-2 text-lg font-mono tracking-widest uppercase focus:border-[var(--ink)] focus:outline-none"
             aria-label="Pairing code"
             autoComplete="off"
             spellCheck={false}
@@ -826,8 +826,8 @@ export function BotSetupWizard({
         <Check className="h-5 w-5 text-[#2d8a4e]" />
       </div>
       <div>
-        <p className="text-sm font-semibold text-[#1a1a1a]">Linked</p>
-        <p className="mt-1 text-xs text-[#8a8578]">You can now DM the bot and it will respond.</p>
+        <p className="text-sm font-semibold text-[var(--ink)]">Linked</p>
+        <p className="mt-1 text-xs text-[var(--mute)]">You can now DM the bot and it will respond.</p>
       </div>
     </div>
   );
@@ -868,13 +868,13 @@ export function BotSetupWizard({
     }
 
     return (
-      <div className="flex items-center justify-between pt-4 border-t border-[#e0dbd0]">
+      <div className="flex items-center justify-between pt-4 border-t border-[var(--edge)]">
         <Button
           variant="ghost"
           size="sm"
           onClick={canGoBack ? goBack : handleCancel}
           disabled={busy}
-          className="text-[#8a8578] cursor-pointer"
+          className="text-[var(--mute)] cursor-pointer"
         >
           {canGoBack ? (
             <>
@@ -900,7 +900,7 @@ export function BotSetupWizard({
   return (
     <div className="p-6 space-y-4 w-[28rem] max-w-[calc(100vw-2rem)]">
       <div className="flex items-center justify-between">
-        <h3 className="text-base font-semibold text-[#1a1a1a]">
+        <h3 className="text-base font-semibold text-[var(--ink)]">
           {mode === "create" ? `Set up ${label}` : `Link your ${label} account`}
         </h3>
         {progressSteps.length > 1 && (

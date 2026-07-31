@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import React from "react";
 
 // Covers the settings BillingPanel org-context branch (settings/page.tsx):
@@ -44,6 +44,7 @@ const billing = vi.hoisted(() => ({
   account: null as Record<string, unknown> | null,
   isLoading: false,
   isSubscribed: false,
+  startTrialCheckout: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/hooks/useBilling", () => ({
@@ -54,6 +55,8 @@ vi.mock("@/hooks/useBilling", () => ({
     isSubscribed: billing.isSubscribed,
     openPortal: vi.fn(),
     startTeamCheckout: vi.fn(),
+    startTrialCheckout: billing.startTrialCheckout,
+    upgradeToUltra: vi.fn(),
   }),
 }));
 
@@ -207,5 +210,144 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
 
     // The spend line was removed from the settings billing card.
     expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("BillingPanel — personal free tier (trial_local)", () => {
+  beforeEach(() => {
+    nav.panel = "billing";
+    clerk.membership = null; // personal context
+    billing.isLoading = false;
+    billing.startTrialCheckout = vi.fn().mockResolvedValue(undefined);
+  });
+
+  it("trial_local renders the Free tier card with a Subscribe CTA and no Manage Payment", async () => {
+    // is_subscribed is the PAID predicate — false for the no-card free
+    // tier even though the platform is usable.
+    billing.isSubscribed = false;
+    billing.account = {
+      is_subscribed: false,
+      current_spend: 0.5,
+      lifetime_spend: 0.5,
+      subscription_status: "trial_local",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: null,
+      team_seat_price_usd: null,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    // Free-tier framing: mapped title + chip, never the raw enum, and
+    // never the paid "Active subscription" copy.
+    expect(screen.getByText("Isol8 — Free tier")).toBeInTheDocument();
+    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
+    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
+
+    // No portal button — a trial_local row has no Stripe customer, so the
+    // portal would fail. A real Subscribe CTA renders instead, wired to
+    // the flat-fee checkout client path.
+    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
+    const subscribeBtn = screen.getByRole("button", { name: /subscribe — \$50\/mo/i });
+    await act(async () => {
+      fireEvent.click(subscribeBtn);
+    });
+    expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
+  });
+
+  it("non-expired trial_local with a future trial_end keeps the unchanged Free-tier copy", () => {
+    // A trial_local whose 3-day window is still open (trial_end in the
+    // future) must render exactly the same Free-tier framing as before —
+    // the expired-state swap must not trip early.
+    billing.isSubscribed = false;
+    billing.account = {
+      is_subscribed: false,
+      current_spend: 0.5,
+      lifetime_spend: 0.5,
+      subscription_status: "trial_local",
+      // ~1 day in the future (epoch seconds, matching the backend stamp).
+      trial_end: Math.floor(Date.now() / 1000) + 86_400,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: null,
+      team_seat_price_usd: null,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText("Isol8 — Free tier")).toBeInTheDocument();
+    expect(screen.getByText("Free tier")).toBeInTheDocument();
+    expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
+    // The expired framing must NOT appear while the window is open.
+    expect(screen.queryByText(/free tier ended/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe — \$50\/mo/i })).toBeInTheDocument();
+  });
+
+  it("EXPIRED trial_local swaps the $3/day promise for a paused state but keeps the Subscribe CTA", () => {
+    // trial_end is the OVERALL free-tier window expiry (created + 3 days).
+    // Once it's in the past, the backend blocks usage outright WITHOUT
+    // flipping subscription_status off trial_local — so the card must stop
+    // promising "$3/day of included usage" and show the paused state, while
+    // still offering Subscribe as the path forward.
+    billing.isSubscribed = false;
+    billing.account = {
+      is_subscribed: false,
+      current_spend: 3,
+      lifetime_spend: 3,
+      subscription_status: "trial_local",
+      // ~1 day in the past (epoch seconds).
+      trial_end: Math.floor(Date.now() / 1000) - 86_400,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: null,
+      team_seat_price_usd: null,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    // Expired framing: chip + description reflect that the free tier ended
+    // and usage is paused. The chip is the exact "Free tier ended" string.
+    expect(screen.getByText("Free tier ended")).toBeInTheDocument();
+    expect(screen.getByText(/free tier ended.*usage is paused/i)).toBeInTheDocument();
+
+    // The misleading "$3/day of included usage" promise is gone.
+    expect(screen.queryByText(/\$3\/day of included usage/)).not.toBeInTheDocument();
+    // Still not the paid "Active subscription" copy, and the raw enum never renders.
+    expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
+    expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
+
+    // The Subscribe CTA remains the path forward (no Manage Payment — no
+    // Stripe customer exists for a trial_local row).
+    expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /subscribe — \$50\/mo/i })).toBeInTheDocument();
+  });
+
+  it("active personal subscription keeps the unchanged paid card", () => {
+    billing.isSubscribed = true;
+    billing.account = {
+      is_subscribed: true,
+      current_spend: 12.5,
+      lifetime_spend: 40,
+      subscription_status: "active",
+      trial_end: null,
+      provider_choice: "bedrock_claude",
+      byo_provider: null,
+      seat_count: null,
+      team_seat_price_usd: null,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText("Isol8 — $50 / month")).toBeInTheDocument();
+    expect(screen.getByText("Active subscription")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /subscribe — \$50\/mo/i })).not.toBeInTheDocument();
   });
 });

@@ -113,7 +113,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
         "url": "wss://ws-dev.isol8.co?token=freshly-minted-token&clientId=paperclip-operator",
         "authToken": "freshly-minted-token",
         "sessionKeyStrategy": "issue",
-        "sessionKey": "u1",
+        "sessionKey": "paperclip:u1",
         # Gateway run-timeout bounds so a long agent run isn't soft-timed-out.
         "timeoutSec": 600,
         "waitTimeoutMs": 600_000,
@@ -144,7 +144,7 @@ def test_create_agent_response_redacts_device_private_key(client, monkeypatch):
                 "authToken": "SECRET-GATEWAY-TOKEN",
                 "devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\nLEAKME\n-----END PRIVATE KEY-----\n",
                 "sessionKeyStrategy": "issue",
-                "sessionKey": "u1",
+                "sessionKey": "paperclip:u1",
             },
         }
     )
@@ -201,7 +201,7 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
                 "url": "wss://ws-dev.isol8.co",
                 "authToken": "SENSITIVE_USER_TOKEN",
                 "sessionKeyStrategy": "issue",
-                "sessionKey": "u1",
+                "sessionKey": "paperclip:u1",
             },
         }
     )

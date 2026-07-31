@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
+import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
@@ -26,6 +27,7 @@ import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import { HireCard, parseHireSuggestion } from "@/components/chat/HireCard";
 import {
   pairToolBlocks,
   isToolUseBlock,
@@ -34,6 +36,7 @@ import {
   isTextBlock,
   resolveToolUseId,
   resolveToolArgs,
+  resolveMessageBlocks,
 } from "@/hooks/internal/toolBlockExtract";
 import type {
   ChatRenderItem,
@@ -116,7 +119,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   if (!match) {
     // Inline code
     return (
-      <code className="bg-[#e8e3d9] rounded px-1.5 py-0.5 text-sm text-[#1a1a1a]" {...props}>
+      <code className="bg-[#e8e3d9] rounded px-1.5 py-0.5 text-sm text-[var(--ink)]" {...props}>
         {children}
       </code>
     );
@@ -124,12 +127,12 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
 
   // Fenced code block
   return (
-    <div className="relative group/code my-4 rounded-lg overflow-hidden border border-[#e0dbd0]">
-      <div className="flex items-center justify-between px-4 py-2 bg-[#f3efe6] border-b border-[#e0dbd0]">
-        <span className="text-xs text-[#8a8578]">{match[1]}</span>
+    <div className="relative group/code my-4 rounded-lg overflow-hidden border border-[var(--edge)]">
+      <div className="flex items-center justify-between px-4 py-2 bg-[var(--cream-deeper)] border-b border-[var(--edge)]">
+        <span className="text-xs text-[var(--mute)]">{match[1]}</span>
         <button
           onClick={() => { navigator.clipboard.writeText(codeString).catch(() => {}); }}
-          className="text-xs text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex items-center gap-1"
+          className="text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors flex items-center gap-1"
         >
           <Copy className="h-3 w-3" />
           Copy
@@ -154,7 +157,13 @@ const MarkdownContent = React.memo(function MarkdownContent({
   content: string;
   onOpenFile?: (path: string) => void;
 }) {
-  const processedContent = React.useMemo(() => linkifyFilePaths(content), [content]);
+  // Sentinel strip BEFORE linkify: the injection-defense markers are
+  // internal plumbing wherever they surface (echoed into assistant prose,
+  // folded history text) — see externalContentMarkers.ts.
+  const processedContent = React.useMemo(
+    () => linkifyFilePaths(stripExternalContentMarkers(content)),
+    [content],
+  );
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -171,7 +180,7 @@ const MarkdownContent = React.memo(function MarkdownContent({
             return (
               <button
                 onClick={() => onOpenFile(filePath)}
-                className="text-[#06402B] hover:underline cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit inline"
+                className="text-[var(--forest)] hover:underline cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit inline"
               >
                 {children}
               </button>
@@ -179,7 +188,7 @@ const MarkdownContent = React.memo(function MarkdownContent({
           }
           const isSafe = !href?.match(/^(javascript|data|vbscript):/i);
           return (
-            <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[#06402B] hover:underline">
+            <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[var(--forest)] hover:underline">
               {children}
             </a>
           );
@@ -188,18 +197,18 @@ const MarkdownContent = React.memo(function MarkdownContent({
         ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
         li: ({ children }) => <li className="ml-2">{children}</li>,
         blockquote: ({ children }) => (
-          <blockquote className="border-l-2 border-[#e0dbd0] pl-4 text-[#8a8578] my-3">{children}</blockquote>
+          <blockquote className="border-l-2 border-[var(--edge)] pl-4 text-[var(--mute)] my-3">{children}</blockquote>
         ),
         table: ({ children }) => (
           <div className="overflow-x-auto my-4">
-            <table className="w-full border-collapse border border-[#e0dbd0] text-sm">{children}</table>
+            <table className="w-full border-collapse border border-[var(--edge)] text-sm">{children}</table>
           </div>
         ),
-        thead: ({ children }) => <thead className="bg-[#f3efe6]">{children}</thead>,
-        th: ({ children }) => <th className="border border-[#e0dbd0] px-3 py-2 text-left font-medium">{children}</th>,
-        td: ({ children }) => <td className="border border-[#e0dbd0] px-3 py-2">{children}</td>,
-        tr: ({ children }) => <tr className="even:bg-[#f3efe6]">{children}</tr>,
-        hr: () => <hr className="border-[#e0dbd0] my-4" />,
+        thead: ({ children }) => <thead className="bg-[var(--cream-deeper)]">{children}</thead>,
+        th: ({ children }) => <th className="border border-[var(--edge)] px-3 py-2 text-left font-medium">{children}</th>,
+        td: ({ children }) => <td className="border border-[var(--edge)] px-3 py-2">{children}</td>,
+        tr: ({ children }) => <tr className="even:bg-[var(--cream-deeper)]">{children}</tr>,
+        hr: () => <hr className="border-[var(--edge)] my-4" />,
         pre: ({ children }) => <>{children}</>,
       }}
     >
@@ -299,23 +308,23 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
   }, [streaming]);
 
   return (
-    <div className="mb-4 border border-[#e0dbd0] rounded-lg overflow-hidden">
+    <div className="mb-4 border border-[var(--edge)] rounded-lg overflow-hidden">
       <button
         onClick={() => {
           userToggledRef.current = true;
           setIsExpanded(!isExpanded);
         }}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-[#f3efe6] hover:bg-[#ece7dc] transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 bg-[var(--cream-deeper)] hover:bg-[#ece7dc] transition-colors text-left"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-[#8a8578]" />
+          <ChevronDown className="h-4 w-4 text-[var(--mute)]" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-[#8a8578]" />
+          <ChevronRight className="h-4 w-4 text-[var(--mute)]" />
         )}
-        <span className="text-sm text-[#8a8578] italic">Thinking...</span>
+        <span className="text-sm text-[var(--mute)] italic">Thinking...</span>
       </button>
       {isExpanded && (
-        <div className="px-3 py-2 text-sm text-[#8a8578] border-t border-[#e0dbd0]">
+        <div className="px-3 py-2 text-sm text-[var(--mute)] border-t border-[var(--edge)]">
           {streaming ? (
             <StreamingMarkdownContent content={content} />
           ) : (
@@ -333,7 +342,7 @@ const TOOL_STYLES = {
     dot: "bg-[#2d8a4e] animate-pulse",
   },
   done: {
-    pill: "bg-[#f3efe6] text-[#8a8578] border-[#e0dbd0]",
+    pill: "bg-[var(--cream-deeper)] text-[var(--mute)] border-[var(--edge)]",
     dot: "bg-[#cdc7ba]",
   },
   error: {
@@ -388,7 +397,10 @@ function ToolPill({ tool }: { tool: ToolPillState }) {
   // app-tool-stream's single entry.output: the result phase only overwrites the
   // streamed output when it's non-empty, so streamed output survives when no
   // real result lands (e.g. an aborted exec or a stream-only tool).
-  const output = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
+  // Untrusted-content sentinels are stripped even inside the pill expansion —
+  // they are model-facing plumbing on any surface.
+  const rawOutput = renderToolOutput(tool.result) ?? (tool.progressText ?? null);
+  const output = rawOutput === null ? null : stripExternalContentMarkers(rawOutput) || null;
   const hasArgs = !!(
     tool.args &&
     typeof tool.args === "object" &&
@@ -420,11 +432,11 @@ function ToolPill({ tool }: { tool: ToolPillState }) {
           ))}
       </button>
       {open && hasDetails && (
-        <div className="mt-1.5 max-w-xl rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-2 text-xs space-y-2">
+        <div className="mt-1.5 max-w-xl rounded-md border border-[var(--edge)] bg-[var(--cream)] p-2 text-xs space-y-2">
           {hasArgs && (
             <div>
               <div className="font-medium text-[#302d28] mb-0.5">input</div>
-              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[#f3efe6] rounded px-2 py-1 max-h-48 overflow-auto">
+              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[var(--cream-deeper)] rounded px-2 py-1 max-h-48 overflow-auto">
                 {JSON.stringify(tool.args, null, 2)}
               </pre>
             </div>
@@ -434,7 +446,7 @@ function ToolPill({ tool }: { tool: ToolPillState }) {
               <div className="font-medium text-[#302d28] mb-0.5">
                 {tool.status === "error" ? "error" : "output"}
               </div>
-              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[#f3efe6] rounded px-2 py-1 max-h-48 overflow-auto">
+              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[var(--cream-deeper)] rounded px-2 py-1 max-h-48 overflow-auto">
                 {output}
               </pre>
             </div>
@@ -508,13 +520,13 @@ function AgentHead({ name, state = "idle" }: { name: string; state?: "idle" | "t
             <span className="inline-flex items-center justify-center w-5 h-5">
                 <AgentGlyph state={state} size={18} />
             </span>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                 <Copy className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity">
                 <RefreshCw className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[var(--mute)] hover:text-[var(--ink)] hover:bg-[var(--cream-deeper)] opacity-0 group-hover:opacity-100 transition-opacity">
                 <Share2 className="h-3 w-3" />
             </Button>
         </div>
@@ -535,17 +547,11 @@ function MessageBlocks({
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
 }) {
-  // Some HistoryMessage payloads — older chat.history rows and cron
-  // run transcripts — carry their assistant text on the top-level
-  // `message.text` field instead of in `content[]`. Without a fallback
-  // those messages render as empty bubbles (UserMessageRow already has
-  // the analogous fallback). Synthesize a single text block from
-  // `message.text` when content is missing or empty.
-  const blocks: ContentBlock[] = Array.isArray(message.content) && message.content.length > 0
-    ? message.content
-    : typeof message.text === "string" && message.text.length > 0
-      ? [{ type: "text", text: message.text }]
-      : [];
+  // `content` may be a block array, a bare string, or absent with the body on
+  // the top-level `text` field (older chat.history rows, cron run transcripts).
+  // resolveMessageBlocks collapses all three — without it each non-array shape
+  // renders as an empty bubble.
+  const blocks: ContentBlock[] = resolveMessageBlocks(message);
   const pairs = pairToolBlocks(blocks);
   const renderedToolIds = new Set(pairs.map((p) => p.toolUseId));
   const rendered: React.ReactNode[] = [];
@@ -567,6 +573,18 @@ function MessageBlocks({
             ? "error"
             : "done"
           : "running";
+        // A completed recommend_agents call renders as a hire card instead of
+        // a tool pill. parseHireSuggestion returns null for every other tool
+        // result, so anything else falls through untouched.
+        const hireSuggestion =
+          status === "done"
+            ? parseHireSuggestion(resultBlock?.content ?? resultBlock?.result)
+            : null;
+        if (hireSuggestion) {
+          rendered.push(<HireCard key={`hire:${id}`} suggestion={hireSuggestion} />);
+          renderedToolIds.delete(id);
+          continue;
+        }
         rendered.push(
           <ToolUseIndicator
             key={`tool:${id}`}
@@ -622,16 +640,17 @@ function MessageBlocks({
 }
 
 function UserMessageRow({ message }: { message: HistoryMessage }) {
-  const text = Array.isArray(message.content)
-    ? message.content
-        .filter(isTextBlock)
-        .map((b) => (b.text ?? "") as string)
-        .join("")
-    : (message.text ?? "");
+  // Same three-shape normalization as MessageBlocks — a typed user message
+  // arrives from chat.history with `content` as a bare string, which the old
+  // `Array.isArray ? … : message.text ?? ""` ternary rendered as empty.
+  const text = resolveMessageBlocks(message)
+    .filter(isTextBlock)
+    .map((b) => (b.text ?? "") as string)
+    .join("");
   return (
     <div className="flex w-full justify-end" data-role="user">
       <div className="flex flex-col min-w-0 max-w-[85%]">
-        <div className="relative text-sm leading-7 bg-[#f0ebe2] text-[#1a1a1a] rounded-2xl rounded-br-md px-4 py-2.5">
+        <div className="relative text-sm leading-7 bg-[#f0ebe2] text-[var(--ink)] rounded-2xl rounded-br-md px-4 py-2.5">
           <div className="wrap-break-word whitespace-pre-wrap">{text}</div>
         </div>
       </div>
@@ -686,10 +705,10 @@ const ItemRenderer = React.memo(
   }) {
     if (item.kind === "divider") {
       return (
-        <div className="my-3 flex items-center gap-2 text-[11px] text-[#8a8578]">
-          <span className="flex-1 h-px bg-[#e0dbd0]" />
+        <div className="my-3 flex items-center gap-2 text-[11px] text-[var(--mute)]">
+          <span className="flex-1 h-px bg-[var(--edge)]" />
           <span className="uppercase tracking-wide">{item.label}</span>
-          <span className="flex-1 h-px bg-[#e0dbd0]" />
+          <span className="flex-1 h-px bg-[var(--edge)]" />
         </div>
       );
     }
@@ -730,21 +749,21 @@ function BtwSideCard({
       data-testid="btw-card"
       className={cn(
         "rounded-lg border px-3 py-2.5 text-sm",
-        isError ? "border-[#f8bbd0] bg-[#fce4ec]" : "border-[#e0dbd0] bg-[#f3efe6]",
+        isError ? "border-[#f8bbd0] bg-[#fce4ec]" : "border-[var(--edge)] bg-[var(--cream-deeper)]",
       )}
     >
       <div className="flex items-center gap-1.5 mb-1.5">
         <span
           className={cn(
             "text-[11px] font-semibold uppercase tracking-wide",
-            isError ? "text-[#a5311f]" : "text-[#06402B]",
+            isError ? "text-[#a5311f]" : "text-[var(--forest)]",
           )}
         >
           BTW
         </span>
         <span className="text-[11px] text-[#b5ae9e]">· not saved</span>
       </div>
-      {question && <div className="text-xs text-[#8a8578] mb-1.5">{question}</div>}
+      {question && <div className="text-xs text-[var(--mute)] mb-1.5">{question}</div>}
       <div className={cn("leading-7", isError ? "text-[#a5311f]" : "text-[#302d28]")}>
         <MarkdownContent content={text} onOpenFile={onOpenFile} />
       </div>
@@ -1028,7 +1047,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 type="button"
                 onClick={handleLoadOlder}
                 disabled={isLoadingOlder}
-                className="text-[11px] text-[#8a8578] hover:text-[#302d28] disabled:opacity-60 px-3 py-1 rounded-full border border-[#e0dbd0] bg-[#f3efe6]"
+                className="text-[11px] text-[var(--mute)] hover:text-[#302d28] disabled:opacity-60 px-3 py-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deeper)]"
               >
                 {isLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
               </button>

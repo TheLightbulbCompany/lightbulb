@@ -7,8 +7,12 @@ Paperclip mirror — in sync.
 Verification uses the svix HMAC-SHA256 signature scheme:
   https://docs.svix.com/receiving/verifying-payloads/how
 
-If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
-(safe for local dev; must be set in production).
+The signature is the ONLY authentication on this endpoint, so verification
+fails CLOSED in every deployed env: a missing or malformed
+CLERK_WEBHOOK_SECRET returns 503 rather than waving traffic through. The
+check is skipped only when ENVIRONMENT is unset (bare local dev), where no
+Clerk instance signs anything. Note the LocalStack stage sets ENVIRONMENT
+to "local", so that flow fails closed too.
 
 **Paperclip provisioning dispatch**:
 
@@ -51,20 +55,43 @@ from core.services.update_service import PAPERCLIP_RETRY_KIND
 
 logger = logging.getLogger(__name__)
 
+# How far a svix-timestamp may sit from now before the payload is treated as
+# a replay. svix's own recommendation; applied in both directions so ordinary
+# clock skew between Clerk and the task doesn't reject live traffic.
+_SVIX_TOLERANCE_S = 300
+
 router = APIRouter()
 
 
 def _verify_svix_signature(body: bytes, headers: dict) -> None:
-    """Raise HTTPException(400) if the svix signature is invalid.
+    """Raise HTTPException if the svix signature is missing or invalid.
 
     Svix signs the payload with HMAC-SHA256 using a timestamp + body
     combination.  The ``svix-signature`` header contains one or more
     ``v1,<base64>`` tokens; we accept the payload if ANY token matches.
 
-    Skipped when CLERK_WEBHOOK_SECRET is not configured (local dev).
+    **Fails CLOSED in any deployed env.** This endpoint is unauthenticated by
+    design (Clerk has no bearer token to present), so the signature IS the
+    authentication. A misconfigured secret previously fell through to
+    "accept everything", which let anyone who knew the URL forge events —
+    a forged ``user.deleted`` sweeps channel_link rows and disables
+    Paperclip for that user id. Unverifiable mail is now rejected instead.
+
+    The skip survives only for local dev (ENVIRONMENT unset), where there is
+    no Clerk instance to sign anything.
+
+    Misconfiguration returns **503, not 400**: svix retries 5xx with backoff,
+    so events queued during a bad-secret window are redelivered once the
+    secret is fixed rather than being silently dropped.
     """
     secret = settings.CLERK_WEBHOOK_SECRET
+    deployed = bool(settings.ENVIRONMENT.strip())
+
     if not secret:
+        if deployed:
+            put_metric("webhook.clerk.sig_unconfigured")
+            logger.error("CLERK_WEBHOOK_SECRET is not set in a deployed env; rejecting Clerk webhook")
+            raise HTTPException(status_code=503, detail="Webhook signature verification not configured")
         return
 
     # Strip the ``whsec_`` prefix that Clerk/svix adds to the secret.
@@ -72,6 +99,10 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     try:
         key = base64.b64decode(raw_secret)
     except Exception:
+        if deployed:
+            put_metric("webhook.clerk.sig_unconfigured")
+            logger.error("CLERK_WEBHOOK_SECRET is not valid base64; rejecting Clerk webhook")
+            raise HTTPException(status_code=503, detail="Webhook signature secret is malformed")
         logger.warning("CLERK_WEBHOOK_SECRET is not valid base64; skipping signature check")
         return
 
@@ -82,6 +113,21 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     if not msg_id or not msg_timestamp or not msg_signature:
         put_metric("webhook.clerk.sig_fail")
         raise HTTPException(status_code=400, detail="Missing svix signature headers")
+
+    # Reject payloads outside the replay window. The timestamp is part of the
+    # signed content, so it can't be edited without breaking the HMAC — but
+    # without a freshness check a captured valid (payload, signature) pair
+    # stays replayable forever, and replaying a `user.deleted` is exactly the
+    # destructive action the signature is here to prevent. svix recommends a
+    # ~5 minute tolerance; allow it in both directions to absorb clock skew.
+    try:
+        age = abs(time.time() - int(msg_timestamp))
+    except ValueError:
+        put_metric("webhook.clerk.sig_fail")
+        raise HTTPException(status_code=400, detail="Malformed svix timestamp")
+    if age > _SVIX_TOLERANCE_S:
+        put_metric("webhook.clerk.sig_stale")
+        raise HTTPException(status_code=400, detail="svix timestamp outside tolerance")
 
     signed_content = f"{msg_id}.{msg_timestamp}.".encode() + body
     expected = hmac.new(key, signed_content, hashlib.sha256).digest()
@@ -669,7 +715,6 @@ async def handle_clerk_webhook(request: Request):
 
                     await send_welcome_email(
                         to_email=email,
-                        user_id=user_id,
                         first_name=data.get("first_name"),
                     )
                 except Exception:

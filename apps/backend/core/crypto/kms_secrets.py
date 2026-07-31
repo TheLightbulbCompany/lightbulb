@@ -92,8 +92,3 @@ def decrypt_bytes(ciphertext_b64: str, *, encryption_context: Optional[dict[str,
 def encrypt_string(plaintext: str, *, encryption_context: Optional[dict[str, str]] = None) -> str:
     """Convenience wrapper for string payloads (e.g. gateway tokens)."""
     return encrypt_bytes(plaintext.encode("utf-8"), encryption_context=encryption_context)
-
-
-def decrypt_string(ciphertext_b64: str, *, encryption_context: Optional[dict[str, str]] = None) -> str:
-    """Convenience wrapper — inverse of `encrypt_string`."""
-    return decrypt_bytes(ciphertext_b64, encryption_context=encryption_context).decode("utf-8")

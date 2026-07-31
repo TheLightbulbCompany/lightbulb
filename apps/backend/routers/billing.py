@@ -28,7 +28,7 @@ from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
     LIVE_SUBSCRIPTION_STATUSES,
     TRIAL_BLOCKED_STATUSES,
-    is_subscription_active,
+    is_paid_subscription,
     is_trial_blocked,
 )
 from core.services.usage_service import get_usage_summary
@@ -113,21 +113,25 @@ async def get_billing_account(
     subscription_status = account.get("subscription_status") if account else None
     trial_end = account.get("trial_end") if account else None
 
-    # is_subscribed shares the same predicate every gate site (chat,
-    # provision, channel-binding) consults — see
-    # ``core.services.provision_gate.is_subscription_active``. Single
-    # source of truth so the response shape and the gates can never
-    # disagree about whether a billing row counts as subscribed.
-    is_subscribed = is_subscription_active(account)
+    # is_subscribed is the PAID predicate (``is_paid_subscription``), NOT
+    # the platform-use predicate the chat/provision gates consult
+    # (``is_subscription_active``). The two diverge exactly on trial_local:
+    # a free-tier owner may use the platform but has not subscribed, and
+    # rendering them as "Active subscription — $50/month" with no Subscribe
+    # CTA (the old wiring) left them no path to pay. Gate call sites keep
+    # platform-use semantics untouched.
+    is_subscribed = is_paid_subscription(account)
 
-    # Teams per-seat billing. seat_count echoes the LIVE Clerk member count
-    # for org owners — not the stored Stripe quantity — so the paywall can
-    # price "N × $20" correctly even before the first subscription exists.
-    # Falls back to the stored seat_count if Clerk is unavailable (returns
-    # 0). Post-subscribe, stored and live counts converge via
-    # sync_team_seat_quantity. Personal owners keep both fields None.
+    # Teams per-seat billing. seat_count echoes the LIVE billable seat count
+    # (members + pending invitations) for org owners — not the stored Stripe
+    # quantity — so the paywall can price "N × $20" correctly even before the
+    # first subscription exists. Falls back to the stored seat_count if Clerk
+    # is unavailable (returns 0). Post-subscribe, stored and live counts
+    # converge via sync_team_seat_quantity. Personal owners keep both fields
+    # None.
     seat_count: int | None = None
     team_seat_price_usd: int | None = None
+    team_base_price_usd: int | None = None
     # is_seat_subscription discriminates a REAL per-seat Stripe subscription
     # (subscription_item_id set by the webhook — see
     # stripe_webhook_handlers.py) from a flat/comped/grandfathered org sub
@@ -135,10 +139,11 @@ async def get_billing_account(
     # "N seats x $price" billing math on the frontend.
     is_seat_subscription = False
     if is_org_owner_id(owner_id):
-        live = await clerk_admin.get_organization_member_count(owner_id)
+        live = await clerk_admin.get_organization_seat_count(owner_id)
         stored = int(account.get("seat_count") or 0) if account else 0
         seat_count = live if live > 0 else (stored or None)
         team_seat_price_usd = settings.TEAM_SEAT_PRICE_USD
+        team_base_price_usd = settings.TEAM_BASE_PRICE_USD
         is_seat_subscription = bool(account and account.get("subscription_item_id"))
 
     return BillingAccountResponse(
@@ -152,6 +157,7 @@ async def get_billing_account(
         plan=(account.get("plan") or "standard") if account else "standard",
         seat_count=seat_count,
         team_seat_price_usd=team_seat_price_usd,
+        team_base_price_usd=team_base_price_usd,
         is_seat_subscription=is_seat_subscription,
     )
 
@@ -673,9 +679,9 @@ async def create_team_checkout(
         byo_provider=None,
     )
 
-    member_count = await clerk_admin.get_organization_member_count(owner_id)
+    member_count = await clerk_admin.get_organization_seat_count(owner_id)
     if member_count <= 0:
-        # get_organization_member_count returns 0 on any Clerk error/outage.
+        # get_organization_seat_count returns 0 on any Clerk error/outage.
         # create_team_seat_checkout floors quantity at max(1, member_count),
         # so proceeding here would silently subscribe the org at a single
         # seat instead of its real size. Fail loudly instead of under-billing.
@@ -694,11 +700,13 @@ async def create_team_checkout(
         "Upgrades the owner to the Ultra Pro tier ($150/mo). An owner already "
         "on the flat subscription is upgraded IN PLACE — the existing "
         "subscription item's price is swapped to the Ultra price (one "
-        'subscription, prorated) — and the endpoint returns {"upgraded": true}. '
-        "An owner with no live subscription (free tier / never subscribed) gets "
-        "a fresh Ultra Checkout session and the endpoint returns its "
-        '{"checkout_url"}. The durable tier write + container resize happen in '
-        "the subscription webhook, not here. Org-context callers must be admins."
+        'subscription, prorated) — and the endpoint returns {"upgraded": true}; '
+        "for a per-seat team subscription, only the base item is swapped and "
+        "the seat item is left untouched. An owner with no live subscription "
+        "(free tier / never subscribed) gets a fresh Ultra Checkout session and "
+        'the endpoint returns its {"checkout_url"}. The durable tier write + '
+        "container resize happen in the subscription webhook, not here. "
+        "Org-context callers must be admins."
     ),
     operation_id="create_ultra_checkout",
 )
@@ -871,6 +879,22 @@ class TopUpCheckoutRequest(BaseModel):
     )
 
 
+def _is_exhausted(balance_microcents: int | None) -> bool:
+    """Whether the owner's credits are unspendable at the bedrock-gate.
+
+    The gate admits paid traffic only while `remaining - reserved - estimate
+    > 0`, so a balance at or below one reservation buys nothing. Surfacing the
+    gate's own threshold keeps the frontend from needing a copy of the
+    constant. A null balance (Metronome outage / no customer) is INDETERMINATE
+    and never exhausted — a false banner is worse than a late one.
+    """
+    from core.services.trial_cap import RESERVE_ESTIMATE_MICROCENTS
+
+    if balance_microcents is None:
+        return False
+    return balance_microcents <= RESERVE_ESTIMATE_MICROCENTS
+
+
 async def _metronome_balance_microcents(owner_id: str) -> int | None:
     """The owner's Metronome prepaid balance, in microcents.
 
@@ -929,6 +953,7 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
         # Drives the frontend's top-up fork: opted-in owners get one-click
         # (card on file), everyone else routes through Stripe Checkout.
         "auto_charge_enabled": bool(account.get("credits_auto_charge")),
+        "is_exhausted": _is_exhausted(balance_uc),
     }
 
 

@@ -16,6 +16,12 @@ export {
   agentDisplayName,
   getAgentModelString,
 } from "./hooks/agents";
+export { useAgents } from "./hooks/useAgents";
+export type {
+  AgentsAnalyticsEvent,
+  AgentsGatewaySource,
+  UseAgentsOptions,
+} from "./hooks/useAgents";
 export type {
   Agent,
   AgentModelRef,
@@ -29,12 +35,28 @@ export type {
   ClassifiedStatus,
   ContainerStatusBody,
 } from "./hooks/containerStatus";
+export { deriveUIPhase } from "./hooks/statusContract";
+export type {
+  BootstrapState,
+  DerivedUIPhase,
+  FunnelState,
+  Lifecycle,
+  RuntimePhase,
+  StatusContract,
+  UIPhase,
+} from "./hooks/statusContract";
 export {
   PROVISION_IDEAS,
   PROVISION_IDEA_ROTATION_MS,
   PROVISION_TIMEOUT_MS,
   formatProvisionElapsed,
 } from "./hooks/provisioningCopy";
+export { useOnboardingStatus } from "./hooks/useOnboardingStatus";
+export type {
+  UseOnboardingStatusOptions,
+  UseOnboardingStatusResult,
+  VisibilityAdapter,
+} from "./hooks/useOnboardingStatus";
 
 export { ApiError } from "./api/error";
 export { deriveWebSocketUrl } from "./api/url";
@@ -54,6 +76,11 @@ export type {
 
 export { useGatewayConnection } from "./gateway/useGatewayConnection";
 export { accumulateStreamText } from "./gateway/streamText";
+export {
+  GatewayRpcError,
+  isRetryableRpcError,
+  rpcRetryDelayMs,
+} from "./gateway/error";
 export type {
   GatewayConnectionOptions,
   GatewayConnectionValue,
@@ -63,3 +90,22 @@ export type {
   GatewayEvent,
   ToolResultBlock,
 } from "./gateway/types";
+
+export {
+  extractResultText,
+  isAssistantHeartbeatAck,
+  isAssistantSilentReply,
+  isEmptyUserTextOnlyMessage,
+  isSyntheticExecWrapper,
+  isSyntheticTranscriptRepairToolResult,
+  isTextBlock,
+  isThinkingBlock,
+  isToolResultBlock,
+  isToolResultRole,
+  isToolUseBlock,
+  resolveMessageBlocks,
+  resolveToolArgs,
+  resolveToolUseId,
+  shouldHideHistoryMessage,
+} from "./chat/history";
+export type { ContentBlock, HistoryMessage } from "./chat/history";

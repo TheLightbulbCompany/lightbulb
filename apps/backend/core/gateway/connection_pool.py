@@ -14,7 +14,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
@@ -35,6 +35,16 @@ _RECIPIENTS_TTL_S = 5.0
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _RPC_DRAIN_TIMEOUT = 5.0  # graceful-shutdown: wait this long for in-flight RPCs to settle before closing the WS
+# Bound on the paid-owner `is_owner_blocked` read inside `_budget_error_code`.
+# That call is only a cheap fast-gate row read while the row is fresh; once it
+# goes stale (METRONOME_GATE_STALENESS_S, default 60s — true for any run over
+# a minute) it synchronously does a live Metronome round trip + a DDB write,
+# and possibly a second Metronome round trip + more writes. `_handle_message`
+# awaits `_budget_error_code` before forwarding the error frame and the
+# synthesized `run_ended` frame, and `_reader_loop` awaits `_handle_message`
+# serially — so without a bound here, a slow/degraded Metronome stalls
+# delivery of every subsequent event on this owner's gateway connection.
+_BUDGET_RECLASSIFY_TIMEOUT_S = 2.0  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 _PUSH_GRACE_CEILING_S = 300  # max extra hold while a run is active (bounded by parked watchdog)
 _ACTIVE_RUN_POLL_S = 5  # re-check cadence for the active-run hold
@@ -91,12 +101,47 @@ _RECONNECT_FLOOR_S = 5
 _AUTH_BACKOFF_BASE_S = 60
 _AUTH_BACKOFF_CAP_S = 300
 
+
+class GatewayReconnectThrottled(RuntimeError):
+    """Refused by the reconnect floor.
+
+    TRANSIENT by construction: the floor is ``_RECONNECT_FLOOR_S`` seconds and
+    nothing else has to change for the next attempt to succeed. Callers that
+    retry on a ladder should treat this as retryable.
+    """
+
+
+class GatewayAuthBackoff(RuntimeError):
+    """Suppressed by the auth-failure hold.
+
+    The semantic OPPOSITE of ``GatewayReconnectThrottled``, despite both
+    guarding ``ensure_connection``: retrying with the same credentials cannot
+    succeed, and each attempt counts toward the gateway's 10-in-60s lockout.
+    Callers must NOT treat this as retryable.
+
+    These are distinct types precisely so ``except RuntimeError`` can never
+    catch both — that conflation latched bootstrap dispatch at ``failed`` on a
+    5-second cooldown.
+    """
+
+
 # How stale `last_event_at` on an active run must be before the parked
 # connection counts as "agent appears stuck" for observability. Set by spec
-# §6 — we don't ESCALATE on this in this PR (deferred follow-up); we only
+# §6 — we don't ESCALATE on this (deferred follow-up); we only
 # emit `gateway.run.long_idle` metrics + structured logs so the deadlock-
 # vs-slow-turn signal is greppable in CloudWatch Insights.
 _RUN_LONG_IDLE_S = 300
+
+# Cadence at which a live GatewayConnection re-stamps its DDB gateway-liveness
+# lease (a serialized full ``mark_gateway_connected`` upsert via
+# ``_write_liveness``) so the row stays fresh -- and is recreated if the initial
+# connect put was lost -- for as long as the connection is alive: active,
+# idle-open, OR parked (a
+# parked connection keeps is_alive True while it presumes the container alive).
+# Must be well under connection_service._LIVENESS_STALE_SECONDS (180s) so the
+# read side never flaps a healthy connection to "not connected", and well under
+# the row's ttl window so DDB's TTL sweep never deletes a live marker.
+_LIVENESS_REFRESH_SECONDS = 60
 
 # TTL for the per-connection agents.list name cache backing push-notification
 # titles. Names change rarely; a short TTL keeps run-completion pushes off a
@@ -160,6 +205,20 @@ def _deliver_to_recipients(
     return enqueued, skipped
 
 
+# The user-facing text for each way an owner can run out of Isol8 budget.
+# ONE copy, shared by gate_chat's pre-send refusal and the gateway's mid-run
+# reclassification: a turn refused before it starts and a turn refused halfway
+# through are the same event to the user and must never drift into two wordings.
+# The web card renders from `code` alone (see ChatErrorCard); these strings are
+# what non-web surfaces — Paperclip run rows, logs, the wake refusal frame — show.
+BUDGET_BLOCK_MESSAGES = {
+    "trial_expired": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+    "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    "out_of_credits": "You're out of Claude credits. Top up to continue.",
+    "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
+}
+
+
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
 
@@ -212,6 +271,18 @@ class GatewayConnection:
         # Fire-and-forget run-completion push tasks (mirrors _billing_tasks):
         # tracked so close() can drain them instead of cancelling a send.
         self._push_tasks: Set[asyncio.Task] = set()
+        # One-shot completion observers keyed by runId (== chat.send's
+        # idempotencyKey, which OpenClaw echoes as `runId` on every event for
+        # the run — chat.ts:2450). Registered via
+        # ``register_run_completion_callback`` by a caller that needs to
+        # observe a SPECIFIC dispatched run's terminal (final/error/aborted)
+        # without being the browser tab that sent it — e.g. the server-owned
+        # bootstrap dispatcher (INV-5, spec PR-6). Consumed (popped) exactly
+        # once, from the same TRUE-terminal gate ``_dispatch_push_notification``
+        # uses, then dropped — never re-fires for a re-delivered/duplicate
+        # terminal.
+        self._run_completion_callbacks: Dict[str, Callable[[str, dict], Awaitable[None]]] = {}
+        self._run_completion_tasks: Set[asyncio.Task] = set()
         # agent_id -> display name, TTL-cached from agents.list for push titles.
         # None until first resolve; _agent_names_at is the monotonic stamp.
         self._agent_names: Optional[Dict[str, str]] = None
@@ -255,6 +326,134 @@ class GatewayConnection:
         # without any event, the watchdog escalates parked → dead so a
         # genuinely-deadlocked OpenClaw process can't leak state forever.
         self._parked_watchdog_task: Optional[asyncio.Task] = None
+        # Periodic lease-refresh for the DDB gateway-liveness row: runs while
+        # this connection is alive so the row's ttl never lapses under a
+        # long-lived connection (and the read side can tell fresh from
+        # expired-but-unswept). Started/cancelled in _note_gateway_liveness.
+        self._liveness_refresh_task: Optional[asyncio.Task] = None
+        # Serializes every gateway-liveness write for this connection so their
+        # ORDER matches the true is_alive transition order -- independent
+        # create_tasks don't preserve completion order, so a connect put racing
+        # a disconnect delete could otherwise land delete-first and then the
+        # put recreates a dead marker (false "ready" for the freshness window).
+        self._liveness_lock = asyncio.Lock()
+        # Terminal marker: once a disconnect is noted, no put (initial or a
+        # refresh tick already in flight) may recreate the liveness row. Cleared
+        # on (re)connect. Checked INSIDE the lock so there is no TOCTOU with a
+        # concurrently-enqueued delete.
+        self._liveness_dead = False
+        # Per-instance identity stamped on this connection's gateway-liveness
+        # row. Makes the terminal delete owner-safe ACROSS connections: a
+        # replacement connection (stale-conn swap, rolling-deploy overlap) writes
+        # its own token, so this connection's delete -- conditioned on the token
+        # -- can't remove the replacement's live marker. The per-connection
+        # _liveness_lock only orders writes WITHIN one connection; the token is
+        # what orders them across connection replacement (and across instances).
+        self._liveness_token = uuid.uuid4().hex
+
+    def _note_gateway_liveness(self, *, connected: bool) -> None:
+        """Record the durable (cross-instance) DDB liveness transition (readiness
+        store R4's replacement -- see ``core.services.connection_service.
+        mark_gateway_connected`` / ``mark_gateway_disconnected`` and
+        ``core.services.readiness_state``).
+
+        The actual DDB write is dispatched through ``_write_liveness`` (never
+        awaited inline: this must not add a round-trip to the connect/close/park
+        hot path) and SERIALIZED behind ``_liveness_lock`` so a connect put and
+        a disconnect delete can't complete out of order. The ``_liveness_dead``
+        terminal flag is flipped synchronously here (before the delete task is
+        even created) so any put still in flight no-ops instead of resurrecting
+        a dead marker.
+
+        Also owns the lifecycle of the periodic lease-refresh loop: connect
+        (and reopen, which re-enters connect) starts it; every disconnect /
+        park-escalation / close stops it -- so the lease is refreshed for
+        exactly as long as ``is_alive`` holds. NB: the refresh loop is NOT
+        cancelled here on disconnect. Cancelling a task caught inside
+        ``refresh_gateway_liveness`` raises ``CancelledError`` at the ``await``
+        but does NOT stop the boto3 write already running in the to_thread
+        pool; that write would then land AFTER the terminal delete and, via the
+        refresh's ``attribute_not_exists`` recovery path, resurrect a dead
+        marker (read as ``ready`` for the freshness window). Cancellation is
+        therefore deferred to ``_write_liveness``'s delete branch, which runs
+        only after the delete has serialized behind any in-flight refresh
+        under ``_liveness_lock`` -- catching the refresh loop in its sleep,
+        never mid-write. ``_liveness_dead`` (flipped synchronously here) stops
+        the loop from issuing any further write in the meantime.
+        """
+        if connected:
+            self._liveness_dead = False
+            self._start_liveness_refresh()
+        else:
+            self._liveness_dead = True
+        asyncio.create_task(self._write_liveness(connected=connected))
+
+    async def _write_liveness(self, *, connected: bool) -> None:
+        """Serialized DDB liveness write. Puts are gated on ``_liveness_dead``
+        (checked INSIDE the lock) so a put that lost the race to a disconnect
+        can't recreate the row; the delete always applies (it is the terminal
+        transition). Errors are swallowed inside the service methods."""
+        async with self._liveness_lock:
+            if connected:
+                if self._liveness_dead:
+                    return
+                await self._conn_svc.mark_gateway_connected(self.owner_id, conn_token=self._liveness_token)
+            else:
+                await self._conn_svc.mark_gateway_disconnected(self.owner_id, conn_token=self._liveness_token)
+        if not connected:
+            # Terminal delete has now landed on the server STRICTLY AFTER any
+            # in-flight refresh (the refresh holds _liveness_lock across its
+            # boto3 write, so acquiring the lock above waited for that write to
+            # finish). Only now is it safe to stop the refresh loop: it is
+            # sleeping between ticks, so cancellation can't interrupt a write.
+            # Deferring the cancel to here (instead of _note_gateway_liveness)
+            # is what closes the resurrect-after-delete race.
+            self._cancel_liveness_refresh()
+        # A liveness flip moves a fact compute_status composes (runtime_phase /
+        # chat_available read is_gateway_connected), yet the DDB write above is
+        # NOT one of the repo write sites publish_status_changed rides. Without
+        # this nudge a ready tab whose /container/status poller has backed off
+        # only learns of a gateway death/recovery on a slow backstop or focus
+        # revalidation. Fired OUTSIDE the lock (best-effort, never awaited into
+        # the write) so it can't extend the serialized hot path. INV-1: nudge
+        # only -- compute_status stays the sole composer.
+        from core.services.status_events import publish_status_changed
+
+        publish_status_changed(self.owner_id)
+
+    def _start_liveness_refresh(self) -> None:
+        """Start the periodic gateway-liveness lease refresh (idempotent)."""
+        if self._liveness_refresh_task is not None and not self._liveness_refresh_task.done():
+            return
+        self._liveness_refresh_task = asyncio.create_task(self._liveness_refresh_loop())
+
+    def _cancel_liveness_refresh(self) -> None:
+        if self._liveness_refresh_task is not None and not self._liveness_refresh_task.done():
+            self._liveness_refresh_task.cancel()
+        self._liveness_refresh_task = None
+
+    async def _liveness_refresh_loop(self) -> None:
+        """Re-stamp the DDB gateway-liveness lease every
+        ``_LIVENESS_REFRESH_SECONDS`` while this connection is alive.
+
+        Each tick calls ``refresh_gateway_liveness`` (a CONDITIONAL upsert:
+        absent OR still owned by this connection's token). Unlike the
+        unconditional ``mark_gateway_connected`` claim, it RECREATES a lost row
+        (missed-connect recovery) yet cannot steal ownership back from a
+        replacement connection that already claimed the row with a newer token
+        (rolling-deploy overlap). Serialized under ``_liveness_lock`` and gated
+        on ``_liveness_dead`` (both inside the lock) so a tick racing a
+        disconnect can neither resurrect nor re-own the row. Errors are
+        swallowed inside the service call; this loop only exits on cancellation.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_LIVENESS_REFRESH_SECONDS)
+                async with self._liveness_lock:
+                    if self.is_alive and not self._liveness_dead:
+                        await self._conn_svc.refresh_gateway_liveness(self.owner_id, conn_token=self._liveness_token)
+        except asyncio.CancelledError:
+            raise
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
@@ -581,6 +780,9 @@ class GatewayConnection:
         await self._subscribe_session_events()
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
+        # Durable liveness signal (R4 kill) -- covers both a fresh connect()
+        # and a reopen() (which calls connect() internally).
+        self._note_gateway_liveness(connected=True)
         total_ms = int((time.monotonic() - connect_started) * 1000)
         logger.info(
             "Gateway connection established user=%s ip=%s total_ms=%d ws_upgrade_ms=%d handshake_ms=%d verify_ms=%d",
@@ -716,6 +918,85 @@ class GatewayConnection:
             raise
         finally:
             self._pending_rpcs.pop(req_id, None)
+
+    async def _budget_error_code(self) -> tuple[str, str] | None:
+        """Is this owner's `rate_limit` actually an Isol8 budget refusal?
+
+        The bedrock-gate returns budget denials as `429 ThrottlingException`
+        so the container never learns it's behind a proxy. OpenClaw classifies
+        that as `errorKind: "rate_limit"` and — at two or more model attempts —
+        discards the gate's own message (`model-fallback.ts:741`). So by the
+        time the error reaches us the money reason is gone, and the only honest
+        way to recover it is to re-read the budget.
+
+        PROVIDER-AWARE BY CONSTRUCTION. Only owners whose inference Isol8 funds
+        (`trial_local`, or paid `bedrock_claude`) can be reclassified. A
+        ChatGPT-OAuth or BYO-key owner's 429 comes from THEIR provider on THEIR
+        account; relabelling it would route them to an Isol8 billing page to fix
+        someone else's quota. Same reasoning that made the wake-admission gate
+        reuse gate_chat rather than a trial-only predicate.
+
+        Returns `(code, message)` to substitute, or None to leave the upstream
+        error exactly as it arrived — which is also the answer for a genuine
+        Bedrock throttle against a funded owner.
+
+        NOT "one DDB read". On the paid `bedrock_claude` branch this calls
+        `metronome_gate.is_owner_blocked`, which is only a cheap fast-gate row
+        read while that row is fresh — but the row's staleness window
+        (`METRONOME_GATE_STALENESS_S`, default 60s) means any run longer than
+        a minute (the common case) hits the stale path instead: a live
+        Metronome `getNetBalance` over httpx (5s timeout), a `set_balance` DDB
+        write, and then either `_maybe_restore_bedrock` (container read + a
+        SECOND 5s `getNetBalance`) or `enforce_on_low_balance` (billing read +
+        IAM policy delete) — up to ~10-15s of synchronous work. `_handle_message`
+        awaits this before `_forward_to_frontends(error)` and the synthesized
+        `run_ended` frame, and `_reader_loop` awaits `_handle_message`
+        serially, so an unbounded call here stalls delivery of every
+        subsequent event on this owner's gateway connection (other agents'
+        streams included) behind it. Bounded below with `asyncio.wait_for` so
+        the worst case is the timeout, not the full Metronome round trip(s).
+
+        Never raises: this runs on the terminal error frame, and an exception
+        here would drop the frame and hang the run in the UI. The reader loop's
+        `except json.JSONDecodeError` around `_handle_message` catches nothing
+        broader — an import failure here would propagate to
+        `_on_reader_loop_exit` and tear down the owner's whole gateway
+        connection, not just this one frame. So the imports are INSIDE the
+        try too, not just the reads that follow them. The `asyncio.wait_for`
+        timeout raises `TimeoutError` (a plain `Exception` subclass), which
+        this same blanket `except Exception` below already swallows —
+        degrading to "forward the upstream error unchanged", the documented
+        fallback for any read failure on this path.
+        """
+        try:
+            from core.repositories import billing_repo
+            from core.services import trial_cap
+            from core.services.metronome_gate import is_owner_blocked
+
+            account = await billing_repo.get_by_owner_id(self.owner_id)
+            if not account:
+                return None
+
+            if account.get("subscription_status") == "trial_local":
+                reason = await trial_cap.reason_for_account(self.owner_id, account)
+                if reason in BUDGET_BLOCK_MESSAGES:
+                    return reason, BUDGET_BLOCK_MESSAGES[reason]
+                return None
+
+            if account.get("provider_choice") != "bedrock_claude":
+                return None
+
+            blocked = await asyncio.wait_for(is_owner_blocked(self.owner_id), timeout=_BUDGET_RECLASSIFY_TIMEOUT_S)
+            if blocked:
+                return "out_of_credits", BUDGET_BLOCK_MESSAGES["out_of_credits"]
+            return None
+        except Exception:
+            logger.warning(
+                "Budget reclassification read failed for owner %s — forwarding the upstream error unchanged",
+                self.owner_id,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def _transform_agent_event(payload: dict) -> dict | None:
@@ -1107,8 +1388,15 @@ class GatewayConnection:
             logger.warning("agents.list for push-name resolution failed", exc_info=True)
             return ""
 
-    def _dispatch_push_notification(self, payload: dict, carried_member: str | None, agent_id: str | None) -> None:
-        """Fire-and-forget push on a completed run (mirrors _record_usage_from_session).
+    def _dispatch_push_notification(
+        self, payload: dict, carried_member: str | None, agent_id: str | None, state: str = "final"
+    ) -> None:
+        """Fire-and-forget push on a terminal run (mirrors _record_usage_from_session).
+
+        *state* is ``"final"`` or ``"error"`` (aborted never pushes — the user
+        cancelled the run themselves). A final with no assistant text (tool-only
+        run) still pushes with a generic body: the run ending is the signal, not
+        the prose.
 
         Audience = *carried_member* (the CANONICAL Clerk id of the dispatching
         member, carried on the active-run entry by ``mark_run_active``), or the
@@ -1117,19 +1405,28 @@ class GatewayConnection:
         — OpenClaw lowercases that, and the users-table PK lookup in
         ``send_push_to_user`` is case-sensitive, so a lowercased id would miss.
         Only pushes to a Clerk user id; an unattributed org session (org_ owner,
-        no carried member) silently no-ops.
+        no carried member) drops with a metric so the gap is visible.
         """
         push_user_id = carried_member or self.owner_id
         if not push_user_id or not push_user_id.startswith("user_"):
+            put_metric("push.unattributed_drop")
             return
-        preview = self._extract_assistant_text(payload)
-        if not preview:
-            return
+        if state == "error":
+            err = payload.get("errorMessage") or payload.get("error")
+            if isinstance(err, dict):
+                err = err.get("message")
+            preview = str(err) if err else "Agent run failed"
+        else:
+            preview = self._extract_assistant_text(payload) or "Finished a run"
         session_key = payload.get("sessionKey")
 
         async def _send():
             try:
                 agent_name = await self._resolve_agent_name(agent_id)
+                if state == "error":
+                    title = f"{agent_name} run failed" if agent_name else "Agent run failed"
+                else:
+                    title = agent_name or "New reply"
                 body = preview if len(preview) <= 120 else preview[:119] + "…"
                 data: Dict[str, str] = {}
                 if agent_id:
@@ -1138,13 +1435,70 @@ class GatewayConnection:
                     data["sessionKey"] = session_key
                 from core.services.push_service import send_push_to_user
 
-                await send_push_to_user(push_user_id, agent_name or "New reply", body, data)
+                await send_push_to_user(push_user_id, title, body, data)
             except Exception:
                 logger.exception("Push dispatch failed for user %s", push_user_id)
 
         task = asyncio.create_task(_send())
         self._push_tasks.add(task)
         task.add_done_callback(self._push_tasks.discard)
+
+    def register_run_completion_callback(self, run_id: str, callback: Callable[[str, dict], Awaitable[None]]) -> None:
+        """One-shot observer for *run_id*'s TRUE terminal chat event.
+
+        *callback* is invoked ``await callback(state, payload)`` where
+        ``state`` is ``"final" | "error" | "aborted"`` and ``payload`` is the
+        raw terminal event body. Fired from ``_handle_message``'s TRUE-terminal
+        branch — the same gate ``_dispatch_push_notification`` uses, so an
+        interim `final` that only closes a tool-approval bracket (the run
+        continues as a separate follow-up) does NOT resolve this callback.
+        Overwrites any prior registration for the same *run_id* (callers mint
+        a fresh run_id per dispatch, so a collision would only happen on a
+        genuine retry, where "latest wins" is correct).
+        """
+        self._run_completion_callbacks[run_id] = callback
+
+    def unregister_run_completion_callback(self, run_id: str) -> None:
+        """Withdraw a registration made by ``register_run_completion_callback``
+        without waiting for a terminal event to arrive and consume it.
+
+        For a caller whose dispatch failed AFTER registering (e.g. chat.send
+        itself raised, so the run never reached OpenClaw and no terminal
+        event will EVER arrive for this *run_id*) — without this the entry
+        (and its closure, which can hold references back to a repo/pool)
+        leaks in ``_run_completion_callbacks`` until this ``GatewayConnection``
+        is torn down. Idempotent — popping a *run_id* with nothing
+        registered (already consumed, or never registered) is a silent
+        no-op.
+        """
+        self._run_completion_callbacks.pop(run_id, None)
+
+    def _dispatch_run_completion(self, run_id: str, state: str, payload: dict) -> None:
+        """Pop and fire *run_id*'s registered completion callback, if any.
+
+        Fire-and-forget (mirrors ``_dispatch_push_notification``): the
+        callback runs as a tracked background task so a slow/failing
+        observer (a DDB write) can never delay or break frame delivery to
+        the browser. No-op when nothing is registered for *run_id* (the
+        overwhelming common case — most runs have no observer).
+        """
+        callback = self._run_completion_callbacks.pop(run_id, None)
+        if callback is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await callback(state, payload)
+            except Exception:
+                logger.exception(
+                    "Run-completion callback failed for user %s run_id=%s",
+                    self.user_id,
+                    run_id,
+                )
+
+        task = asyncio.create_task(_run())
+        self._run_completion_tasks.add(task)
+        task.add_done_callback(self._run_completion_tasks.discard)
 
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
@@ -1605,13 +1959,37 @@ class GatewayConnection:
                             err_msg = str(legacy_err)
                     if not err_msg:
                         err_msg = "Agent run failed"
+
+                    # A budget refusal reaches us disguised as a provider
+                    # throttle (see _budget_error_code). Recover the real reason
+                    # so the user gets a limit card with an upgrade path instead
+                    # of "wait for your quota to reset", which for a capped
+                    # free-tier owner is advice they cannot act on.
+                    upstream_msg: Optional[str] = None
+                    if err_kind == "rate_limit":
+                        money = await self._budget_error_code()
+                        if money is not None:
+                            upstream_msg = err_msg
+                            err_kind, err_msg = money
+
                     put_metric(
                         "chat.error",
-                        dimensions={"reason": err_kind or "agent_error"},
+                        dimensions={
+                            "reason": err_kind or "agent_error",
+                            # Makes mislabelling VISIBLE. If we ever start
+                            # reclassifying real AWS throttles, this spikes
+                            # instead of failing silently.
+                            "reclassified": "true" if upstream_msg else "false",
+                        },
                     )
                     fwd = {"type": "error", "message": err_msg}
                     if err_kind:
                         fwd["code"] = err_kind
+                    if upstream_msg:
+                        # Keep the true upstream cause on the wire for logs and
+                        # support. The card renders from `code`, so this never
+                        # reaches the user as copy.
+                        fwd["upstream_message"] = upstream_msg
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
                     fwd["runId"] = run_id
@@ -1640,6 +2018,13 @@ class GatewayConnection:
                 # separate follow-up run), so a paused-on-approval session never
                 # drains early.
                 if is_true_terminal:
+                    # Server-side completion observers (INV-5) — independent of
+                    # frame forwarding below and of whether any browser tab is
+                    # even watching. Fires for every TRUE terminal state
+                    # (final/error/aborted), not just "final" (unlike the push
+                    # dispatch, which excludes aborted).
+                    self._dispatch_run_completion(run_id, state, payload)
+
                     run_ended: dict = {
                         "type": "run_ended",
                         "runId": run_id,
@@ -1651,17 +2036,19 @@ class GatewayConnection:
                         run_ended["session_id"] = session_id
                     await self._forward_to_frontends(run_ended, target_member)
 
-                    # Push a notification for a completed reply (fire-and-forget,
+                    # Push a notification for a terminal reply (fire-and-forget,
                     # off the reader-loop hot path — mirrors billing at the
-                    # agent-event lifecycle site). Only on a successful final;
-                    # error/aborted never push. Audience is the CANONICAL member
-                    # carried on the active-run entry, not the echoed/lowercased
+                    # agent-event lifecycle site). Final AND error push (a run
+                    # failing while the user is away deserves notice as much as
+                    # one finishing); aborted never pushes — the user cancelled
+                    # it themselves. Audience is the CANONICAL member carried on
+                    # the active-run entry, not the echoed/lowercased
                     # target_member (which would PK-miss the users table).
                     # Skip side (`/btw`) runs: they carry no member (carried_member
                     # is None → would fall back to the owner) and are not the
-                    # user-initiated primary reply v1 push is for.
-                    if state == "final" and not run_is_side:
-                        self._dispatch_push_notification(payload, carried_member, event_agent_id)
+                    # user-initiated primary reply the push is for.
+                    if state in ("final", "error") and not run_is_side:
+                        self._dispatch_push_notification(payload, carried_member, event_agent_id, state)
 
                     # Clear the non-side active-run window now — AFTER the push
                     # task has been created — so the teardown guard
@@ -1856,6 +2243,9 @@ class GatewayConnection:
             type(exc).__name__,
         )
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection lost")
+        # Durable liveness signal (R4 kill): the reader loop died with no
+        # active runs, so is_alive is now False.
+        self._note_gateway_liveness(connected=False)
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -1913,6 +2303,9 @@ class GatewayConnection:
                     "GATEWAY_DOWN_DEAD",
                     "Agent appears stuck — try restarting the gateway",
                 )
+                # Durable liveness signal (R4 kill): escalating past parked
+                # to dead is the other path is_alive can flip False.
+                self._note_gateway_liveness(connected=False)
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -1959,6 +2352,9 @@ class GatewayConnection:
     async def close(self) -> None:
         """Shut down: drain in-flight RPCs, cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN_DEAD", "Gateway connection closed")
+        # Durable liveness signal (R4 kill): an explicit close always ends
+        # in is_alive == False, whether or not runs were in flight.
+        self._note_gateway_liveness(connected=False)
         self._closed = True
         # Wait for in-flight billing-resolver tasks so teardown doesn't drop usage events.
         if self._billing_tasks:
@@ -1977,6 +2373,17 @@ class GatewayConnection:
             except Exception:
                 logger.exception(
                     "Error waiting for push tasks during close for user %s",
+                    self.user_id,
+                )
+        # Drain in-flight run-completion observer tasks (INV-5 bootstrap
+        # dispatcher) too, so teardown doesn't cancel a DDB completion write
+        # mid-flight -- mirrors the push-dispatch drain above.
+        if self._run_completion_tasks:
+            try:
+                await asyncio.wait(self._run_completion_tasks, timeout=5.0)
+            except Exception:
+                logger.exception(
+                    "Error waiting for run-completion tasks during close for user %s",
                     self.user_id,
                 )
         # Graceful RPC drain: the reader loop is still alive here, so in-flight
@@ -2147,6 +2554,35 @@ class GatewayConnectionPool:
             return
         conn.mark_side_run(run_id)
 
+    def register_run_completion_callback(
+        self, user_id: str, run_id: str, callback: Callable[[str, dict], Awaitable[None]]
+    ) -> bool:
+        """Public entry point for a caller that needs to observe a specific
+        dispatched run's TRUE terminal (final/error/aborted) without being
+        the browser tab that sent it — e.g. the server-owned bootstrap
+        dispatcher (INV-5, spec PR-6).
+
+        Returns False (registers nothing) when no connection exists for
+        *user_id*. Callers should call ``ensure_connection`` first (mirrors
+        ``mark_run_active``'s own contract) so this only returns False if the
+        connection vanished between the two calls.
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return False
+        conn.register_run_completion_callback(run_id, callback)
+        return True
+
+    def unregister_run_completion_callback(self, user_id: str, run_id: str) -> None:
+        """Public entry point mirroring ``register_run_completion_callback`` —
+        see ``GatewayConnection.unregister_run_completion_callback``. Silently
+        no-ops when no connection exists for *user_id* (nothing to withdraw).
+        """
+        conn = self._connections.get(user_id)
+        if conn is None:
+            return
+        conn.unregister_run_completion_callback(run_id)
+
     async def gate_chat(self, *, user_id: str, owner_id: str, session_key: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users and the
         free-tier ``trial_local`` daily cost cap.
@@ -2213,7 +2649,7 @@ class GatewayConnectionPool:
             return {
                 "blocked": True,
                 "code": "subscription_inactive",
-                "message": ("Your subscription is not active. Reactivate to continue chatting."),
+                "message": BUDGET_BLOCK_MESSAGES["subscription_inactive"],
             }
 
         # --- Layer 2: free-tier $3/day cost cap ----------------------
@@ -2241,7 +2677,7 @@ class GatewayConnectionPool:
                 return {
                     "blocked": True,
                     "code": "trial_expired",
-                    "message": "Your 3-day free trial has ended. Pick a plan to keep your agent.",
+                    "message": BUDGET_BLOCK_MESSAGES["trial_expired"],
                 }
             if reason == trial_cap.DAILY_CAP:
                 # Trial funnel telemetry: first block of the UTC day per
@@ -2252,7 +2688,7 @@ class GatewayConnectionPool:
                 return {
                     "blocked": True,
                     "code": "trial_daily_cap",
-                    "message": ("You've used today's free allowance — resets tomorrow. Upgrade to keep going."),
+                    "message": BUDGET_BLOCK_MESSAGES["trial_daily_cap"],
                 }
 
         # --- Layer 3: card-3 credit balance --------------------------
@@ -2268,7 +2704,7 @@ class GatewayConnectionPool:
             return {
                 "blocked": True,
                 "code": "out_of_credits",
-                "message": "You're out of Claude credits. Top up to continue.",
+                "message": BUDGET_BLOCK_MESSAGES["out_of_credits"],
             }
         return {"blocked": False}
 
@@ -2382,14 +2818,19 @@ class GatewayConnectionPool:
         Keeps a misbehaving container from burning the open-handshake
         budget at sub-second cadence when the frontend's exponential
         reconnect collides with multiple in-flight retries server-side.
-        Stamps the attempt time even when raising so the floor is
-        sticky across the caller-retry boundary.
+
+        The stamp is taken only on the pass-through path — a throttled
+        attempt does NOT extend the floor, so a caller waiting out
+        ``_RECONNECT_FLOOR_S`` always gets through on its next try. (An
+        earlier version of this docstring claimed the stamp was sticky
+        across raises; the code never did that, and designing a retry
+        policy around the claim would over-back-off.)
         """
         now = time.monotonic()
         last = self._last_reconnect_at.get(user_id, 0.0)
         if last and (now - last) < _RECONNECT_FLOOR_S:
             put_metric("gateway.connection", dimensions={"event": "reconnect_throttled"})
-            raise RuntimeError(
+            raise GatewayReconnectThrottled(
                 f"Gateway reconnect throttled for user {user_id} — "
                 f"last attempt {now - last:.1f}s ago, floor {_RECONNECT_FLOOR_S}s"
             )
@@ -2409,7 +2850,7 @@ class GatewayConnectionPool:
         remaining = until - time.monotonic()
         if remaining > 0:
             put_metric("gateway.connection", dimensions={"event": "auth_backoff"})
-            raise RuntimeError(
+            raise GatewayAuthBackoff(
                 f"Gateway reconnect suppressed for user {user_id} — auth backoff active for another {remaining:.1f}s"
             )
 
@@ -2582,6 +3023,34 @@ class GatewayConnectionPool:
             # gateway connection actually exists to tear down.
             if user_id in self._connections:
                 self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
+
+    def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
+        """Push a generic ``{type: "event"}`` frame to every frontend WS
+        registered for *owner_id*.
+
+        Pool-level (keyed off ``_frontend_connections`` only) rather than
+        routed through a ``GatewayConnection`` — deliberately independent of
+        whether an OpenClaw gateway connection exists yet, since a billing or
+        Paperclip write (e.g. ``needs_signup`` -> ``provisioning``) can land
+        before the container itself is up. Mirrors
+        ``GatewayConnection._emit_status_change``'s enqueue shape but fans out
+        to the whole owner rather than one connection's own frontend set.
+
+        Never raises: ``FrameSender.enqueue`` never raises, and a Gone
+        recipient is pruned via ``on_gone`` the same way every other
+        pool-level push handles it. See ``core.services.status_events.
+        publish_status_changed`` for the primary caller.
+        """
+        message = {"type": "event", "event": event, "payload": payload}
+
+        async def _on_gone(conn_id: str) -> None:
+            fcs = self._frontend_connections.get(owner_id)
+            if fcs:
+                fcs.discard(conn_id)
+            put_metric("gateway.frontend.prune")
+
+        for conn_id in list(self._frontend_connections.get(owner_id, ())):
+            self._sender.enqueue(conn_id, message, on_gone=_on_gone)
 
     async def _grace_close(self, user_id: str) -> None:
         """Wait the grace period, then close the gateway connection if still idle.

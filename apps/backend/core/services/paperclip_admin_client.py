@@ -838,8 +838,15 @@ class PaperclipAdminClient:
         capabilities: Optional[str] = None,
         icon: Optional[str] = None,
         metadata: Optional[dict] = None,
+        status: Optional[str] = None,
     ) -> dict:
         """Partial-update an agent.
+
+        ``status`` is on ``updateAgentSchema`` (but NOT ``createAgentSchema``),
+        so it is the only way to put a freshly-created agent into
+        ``pending_approval`` — the inert state used while a hire awaits the
+        owner's decision (it is in both Paperclip's ``NON_ASSIGNABLE`` and
+        ``NON_INVOKABLE`` sets, so it cannot be given work or woken).
 
         Maps to ``PATCH /api/agents/{agentId}`` (see
         ``paperclip/server/src/routes/agents.ts`` —
@@ -868,6 +875,8 @@ class PaperclipAdminClient:
             body["icon"] = icon
         if metadata is not None:
             body["metadata"] = metadata
+        if status is not None:
+            body["status"] = status
         return await self._patch(
             f"/api/agents/{agent_id}",
             json=body,
@@ -1093,6 +1102,31 @@ class PaperclipAdminClient:
         """
         return await self._get(
             f"/api/companies/{company_id}/approvals",
+            session_cookie=session_cookie,
+        )
+
+    async def create_approval(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a pending approval.
+
+        Maps to ``POST /api/companies/{companyId}/approvals``. ``body`` carries
+        ``type``, ``payload``, and optionally ``issueIds`` — upstream links
+        those to the approval via ``issueApprovalsSvc.linkManyForApproval``,
+        which is what makes a request show up ON the issue that prompted it
+        rather than only in a global list.
+
+        For ``type: "hire_agent"`` upstream additionally runs
+        ``normalizeHireApprovalPayloadForPersistence`` over the payload, and
+        returns the created row with its payload redacted.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/approvals",
+            json=body,
             session_cookie=session_cookie,
         )
 

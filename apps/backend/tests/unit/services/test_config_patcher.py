@@ -964,7 +964,7 @@ async def test_replace_provider_block_swaps_bedrock_for_chatgpt(tmp_efs_with_bed
     await replace_provider_block(
         "user_p",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
     )
@@ -989,7 +989,7 @@ async def test_replace_provider_block_preserves_workflow_plugins(tmp_efs_with_be
     await replace_provider_block(
         "user_p",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
     )
@@ -1008,7 +1008,7 @@ async def test_replace_provider_block_preserves_unrelated_subtrees(tmp_efs_with_
     await replace_provider_block(
         "user_p",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
     )
@@ -1036,7 +1036,7 @@ async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock
     await replace_provider_block(
         "user_p",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
     )
@@ -1073,7 +1073,7 @@ async def test_replace_provider_block_leaves_memory_search_enabled(tmp_efs_with_
     await replace_provider_block(
         "user_p",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
     )
@@ -1098,7 +1098,7 @@ async def test_replace_provider_block_swaps_chatgpt_for_bedrock():
         os.makedirs(user_dir)
         config = {
             "models": {"providers": {}},
-            "agents": {"defaults": {"model": {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]}}},
+            "agents": {"defaults": {"model": {"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]}}},
             "plugins": {"entries": {}},
             "tools": {"profile": "full"},
         }
@@ -1225,7 +1225,7 @@ async def test_replace_provider_block_strips_ceo_model_when_none(tmp_efs_with_ce
     await replace_provider_block(
         "user_ceo",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
     )
@@ -1287,7 +1287,7 @@ async def test_replace_provider_block_ceo_model_noop_when_no_agents_list(monkeyp
         await replace_provider_block(
             "user_no_list",
             providers={},
-            default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+            default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
             plugin_entries={},
             ceo_model=None,
         )
@@ -1357,7 +1357,7 @@ async def test_replace_provider_block_strips_aux_models_when_cheap_model_none(
     await replace_provider_block(
         "user_aux",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
         cheap_model=None,
@@ -1866,7 +1866,7 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     await replace_provider_block(
         "user_1",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
         cheap_model=None,
@@ -1928,7 +1928,7 @@ async def test_replace_provider_block_none_clears_utility_and_subagent_model(bed
     await replace_provider_block(
         "user_1",
         providers={},
-        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.5"]},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
         plugin_entries={},
         ceo_model=None,
         cheap_model=None,

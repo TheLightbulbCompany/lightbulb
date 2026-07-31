@@ -66,6 +66,11 @@ def _make_terminal_conn(owner_id="org_1"):
     conn._side_run_ids = {}
     conn._parked = False
     conn._parked_watchdog_task = None
+    # Run-completion observer registry (INV-5 bootstrap dispatcher). Not
+    # exercised by these push-dispatch tests, but _handle_message's
+    # TRUE-terminal branch always pops from it now.
+    conn._run_completion_callbacks = {}
+    conn._run_completion_tasks = set()
     return conn
 
 
@@ -107,25 +112,33 @@ async def test_personal_session_targets_owner():
 
 
 @pytest.mark.asyncio
-async def test_org_owner_without_member_does_not_push():
+async def test_org_owner_without_member_drops_with_metric():
     conn = _make_conn(owner_id="org_123")
     payload = {"sessionKey": "agent:a1:cron:c1", "message": {"content": []}}
     sent = AsyncMock()
-    with patch("core.services.push_service.send_push_to_user", sent):
+    metric = MagicMock()
+    with (
+        patch("core.services.push_service.send_push_to_user", sent),
+        patch("core.gateway.connection_pool.put_metric", metric),
+    ):
         conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
     sent.assert_not_called()
+    # The drop must be visible — it was previously a silent no-op.
+    metric.assert_called_once_with("push.unattributed_drop")
 
 
 @pytest.mark.asyncio
-async def test_no_preview_does_not_push():
+async def test_no_preview_pushes_generic_body():
+    """A tool-only/empty final still pushes — the run ending is the signal."""
     conn = _make_conn(owner_id="user_owner")
     payload = {"sessionKey": "agent:a1:main", "message": {"content": []}}
     sent = AsyncMock()
     with patch("core.services.push_service.send_push_to_user", sent):
         conn._dispatch_push_notification(payload, carried_member=None, agent_id="a1")
         await asyncio.gather(*list(conn._push_tasks))
-    sent.assert_not_called()
+    sent.assert_awaited_once()
+    assert sent.await_args.args[2] == "Finished a run"
 
 
 @pytest.mark.asyncio
@@ -272,8 +285,9 @@ async def test_push_dispatched_before_active_run_cleared():
 
 
 @pytest.mark.asyncio
-async def test_terminal_error_state_does_not_push():
-    """error/aborted terminals never push (only state == 'final')."""
+async def test_terminal_error_state_pushes_failure():
+    """An error terminal pushes a failure notice (a run failing while the user
+    is away deserves notice as much as one finishing)."""
     conn = _make_terminal_conn(owner_id="org_1")
     conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
     payload = {
@@ -282,6 +296,32 @@ async def test_terminal_error_state_does_not_push():
         "runId": "run-1",
         "errorMessage": "boom",
         "message": {"role": "assistant", "content": [{"type": "text", "text": "carry me"}]},
+    }
+    sent = AsyncMock()
+    with (
+        patch("core.services.push_service.send_push_to_user", sent),
+        patch("core.gateway.connection_pool.put_metric"),
+        patch.object(conn, "_forward_to_frontends", AsyncMock()),
+        patch.object(conn, "_resolve_agent_name", AsyncMock(return_value="Friday")),
+    ):
+        await conn._handle_message({"type": "event", "event": "chat", "payload": payload})
+        await asyncio.gather(*list(conn._push_tasks))
+    sent.assert_awaited_once()
+    assert sent.await_args.args[0] == "user_MixedCase"
+    assert sent.await_args.args[1] == "Friday run failed"
+    assert sent.await_args.args[2] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_terminal_aborted_does_not_push():
+    """Aborted never pushes — the user cancelled the run themselves."""
+    conn = _make_terminal_conn(owner_id="org_1")
+    conn.mark_run_active("agent:a1:user_MixedCase", agent_id="a1", member_id="user_MixedCase")
+    payload = {
+        "sessionKey": "agent:a1:user_mixedcase",
+        "state": "aborted",
+        "runId": "run-1",
+        "message": {"role": "assistant", "content": []},
     }
     sent = AsyncMock()
     with (

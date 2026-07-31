@@ -23,6 +23,8 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -145,7 +147,17 @@ export function ByoKeyScreen({ onConnected }: Props) {
   };
 
   return (
-    <View style={[styles.page, { paddingTop: insets.top }]}>
+    // The secure keyboard can otherwise cover the Save button on smaller
+    // devices (the card is vertically centered). Same core-RN avoidance
+    // FirstRunFunnel uses — lifts the centered card above the keyboard.
+    <KeyboardAvoidingView
+      testID="byo-keyboard-avoider"
+      style={[
+        styles.page,
+        { paddingTop: insets.top, paddingBottom: insets.bottom },
+      ]}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       <View style={styles.card}>
         <Wordmark />
         <Text style={styles.headline}>Bring your own API key</Text>
@@ -234,7 +246,7 @@ export function ByoKeyScreen({ onConnected }: Props) {
           <Text style={styles.signOutText}>Sign out</Text>
         </Pressable>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

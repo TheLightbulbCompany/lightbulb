@@ -2,10 +2,10 @@
 
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
-Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
+Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `/app/skills/paperclip/scripts/paperclip-upload-artifact.sh`:
 
 ```bash
-scripts/paperclip-upload-artifact.sh path/to/output.webm \
+/app/skills/paperclip/scripts/paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
   --summary "Rendered walkthrough for review"
 ```
@@ -50,7 +50,7 @@ revision. Create a `request_confirmation` issue-thread interaction whose
 Then move the source issue to `in_review` with a comment that names the pending
 decision. This is a deliberate waiting path — **wait for acceptance before
 creating implementation subtasks.** The bundled helper builds the common case:
-`scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"`
+`/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt "Accept this plan?"`
 (details markdown on stdin). See `SKILL.md` and `references/api-reference.md`
 for the full interaction payload and the stale-target/rebuild rules.
 

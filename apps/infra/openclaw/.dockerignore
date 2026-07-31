@@ -1,0 +1,11 @@
+# Build context hygiene for the extended OpenClaw image.
+#
+# plugins/isol8-marketplace is COPY'd wholesale into /app/dist/extensions/, and
+# it carries a local node_modules for building + testing (its `openclaw`
+# devDependency alone is ~460MB of plugin-SDK types). None of that belongs in
+# the image: the plugin ships only its committed dist/, resolving
+# openclaw/plugin-sdk and typebox from the host at /app.
+#
+# Scoped to plugins/ rather than a bare **/node_modules so this cannot quietly
+# change what any other COPY in the Dockerfile picks up.
+plugins/*/node_modules/

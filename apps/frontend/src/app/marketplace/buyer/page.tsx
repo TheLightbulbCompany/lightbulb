@@ -40,7 +40,7 @@ export default function Buyer() {
                   ${(p.price_paid_cents / 100).toFixed(2)}
                 </span>
               </div>
-              <p className="text-xs text-[var(--mute-soft)] mt-2">
+              <p className="text-xs text-[var(--mute)] mt-2">
                 Status: {p.status} · License: <code>{p.license_key}</code>
               </p>
             </div>

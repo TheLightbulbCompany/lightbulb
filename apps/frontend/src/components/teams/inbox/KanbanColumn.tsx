@@ -52,7 +52,7 @@ export function KanbanColumn({
         </span>
         <span
           className="text-xs ml-auto tabular-nums"
-          style={{ color: "var(--mute-soft)" }}
+          style={{ color: "var(--mute)" }}
         >
           {issues.length}
         </span>

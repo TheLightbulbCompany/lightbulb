@@ -53,7 +53,14 @@
  *   --ink             primary text.
  *   --ink-soft        body-on-cream text (slightly softer than --ink).
  *   --mute            secondary text, overline, tabular labels.
- *   --mute-soft       tertiary text (placeholders, helper).
+ *   --mute-soft       NON-TEXT ONLY — status dots, chart fills + legend
+ *                     swatches, diagram strokes, hairline hover borders.
+ *                     NOT for text: it is 3.44:1 on --cream, which clears
+ *                     the 3:1 bar for non-text (WCAG 1.4.11) but not the
+ *                     4.5:1 body-text bar. There is no lighter text tier
+ *                     available — --mute at 4.61:1 is already the lightest
+ *                     colour that passes AA on cream. Tertiary text uses
+ *                     --mute.
  *   --warn            warning text + low-priority danger.
  *   --danger          destructive button fill, error border + helper text.
  */
@@ -76,7 +83,12 @@
    * #767061 keeps the same warm-grey hue at 4.61:1. Verified in-browser,
    * not computed from the hex alone. */
   --mute: #767061;
-  --mute-soft: #b5af9f;
+  /* #8a8578, not the older #b5af9f: at #b5af9f this measured 2.05:1 on
+   * --cream, which failed even the 3:1 non-text bar — so the status dots and
+   * the get-started diagram it colours were themselves inaccessible, not just
+   * the text that used to reference it. #8a8578 is 3.44:1. (It is the value
+   * --mute held before that token was darkened to #767061 for AA.) */
+  --mute-soft: #8a8578;
   --warn: #c47a1d;
   --danger: #b32424;
 

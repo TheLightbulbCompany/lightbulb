@@ -193,7 +193,7 @@ export function HandlePicker({
             placeholder="your-handle"
             autoComplete="off"
             spellCheck={false}
-            className="flex-1 bg-transparent py-2 pr-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute-soft)] outline-none"
+            className="flex-1 bg-transparent py-2 pr-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute)] outline-none"
             maxLength={32}
           />
           <span className="pr-3 text-[11.5px] min-w-[80px] text-right">
@@ -219,7 +219,7 @@ export function HandlePicker({
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
           placeholder="What people call you"
-          className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:border-[var(--forest)] focus:outline-none focus:ring-1 focus:ring-[var(--forest)]/20"
+          className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute)] focus:border-[var(--forest)] focus:outline-none focus:ring-1 focus:ring-[var(--forest)]/20"
           maxLength={64}
         />
       </div>
@@ -238,7 +238,7 @@ export function HandlePicker({
             onChange={(e) => setBio(e.target.value)}
             placeholder="Builders should know..."
             rows={3}
-            className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute-soft)] focus:border-[var(--forest)] focus:outline-none focus:ring-1 focus:ring-[var(--forest)]/20 resize-none"
+            className="w-full rounded-lg border border-[#cfc7b8] bg-[var(--cream)] py-2 px-3 text-[14px] text-[var(--ink)] placeholder:text-[var(--mute)] focus:border-[var(--forest)] focus:outline-none focus:ring-1 focus:ring-[var(--forest)]/20 resize-none"
             maxLength={280}
           />
         </div>
@@ -275,7 +275,7 @@ export function HandlePicker({
 }
 
 function AvailabilityIndicator({ status }: { status: Status }) {
-  if (status.kind === "idle") return <span className="text-[var(--mute-soft)]">—</span>;
+  if (status.kind === "idle") return <span className="text-[var(--mute)]">—</span>;
   if (status.kind === "checking") return <span className="text-[#8a8478]">checking…</span>;
   if (status.kind === "available") return <span className="text-[var(--forest)]">available</span>;
   if (status.kind === "error") return <span className="text-[#8a3a2a]">offline</span>;

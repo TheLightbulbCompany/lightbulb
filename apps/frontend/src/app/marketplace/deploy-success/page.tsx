@@ -237,7 +237,7 @@ function DeploySuccessInner() {
             Open chat with {editorial.name} →
           </Link>
           {agentUuid && (
-            <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mute-soft)]">
+            <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mute)]">
               Agent ID · {agentUuid}
             </p>
           )}

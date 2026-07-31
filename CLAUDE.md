@@ -520,7 +520,19 @@ Two fixes:
 
 ### Plan model
 
-Post-2026-04-26 flat-fee cutover: a single $50/mo subscription per owner (personal user OR org). Every container is the same 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). There is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
+Post-2026-04-26 flat-fee cutover. Three paid shapes, each its own Stripe price — do NOT assume "one flat fee for everybody", which this section used to say and which is wrong for orgs:
+
+| shape | Stripe price | amount | who |
+|---|---|---|---|
+| **Flat** | `STRIPE_FLAT_PRICE_ID` | $50/mo | personal owners; `create_flat_checkout` |
+| **Teams per-seat** | `STRIPE_TEAM_SEAT_PRICE_ID` | `TEAM_SEAT_PRICE_USD` = $20/seat/mo | orgs; `create_team_seat_checkout`, quantity = live Clerk member count (floored at 1) |
+| **Ultra Pro** | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` = $150/mo | large marketplace companies over the flat tier's agent budget |
+
+**Teams has no base fee.** `create_team_seat_checkout` builds the subscription from the seat price ALONE, and `/billing/account` returns `seat_count` + `team_seat_price_usd` but no base — so an org's bill is exactly `seats × $20`. `TeamBillingCard`'s `basePriceUsd` prop exists for a future base tier and is passed by nobody today.
+
+Seat quantity is synced by `sync_team_seat_quantity` (the single writer), driven off Clerk membership webhooks. Pending invitations count as seats from the moment they're sent.
+
+Every container is the same 1 vCPU / 4 GB box launched on **Fargate Spot** (~70% cheaper than on-demand; `ecs_manager` falls back to on-demand when Spot capacity is unavailable — at service create and via a zero-placement timeout in the provisioning poller). There is no longer a tier-based size ladder. Paid containers stay always-on while the subscription is active. Checkout bills the first month immediately — the 14-day Stripe trial was removed 2026-07-17 (evaluation happens on the no-card free tier below; the `/billing/trial-checkout` route path and `is_trial_blocked` names were kept for compatibility). Legacy `trialing` rows created before the cutover remain valid until they convert; for those, trial-clock state is owned by Stripe (do not compute trial-days-left from `trial_end` locally).
 
 ### Free tier (no card) — `trial_local`
 
@@ -659,8 +671,9 @@ POST /marketplace/listings/{slug}/deploy
 | `BILLING_MARKUP` | Markup multiplier | `1.4` |
 | `ENCRYPTION_KEY` | Fernet key for BYOK | Required for key management |
 | `CORS_ORIGINS` | Comma-separated origins | `http://localhost:3000` |
-| `STRIPE_FLAT_PRICE_ID` | Stripe fixed price for the single $50/mo flat tier | Required for billing |
-| `STRIPE_METERED_PRICE_ID` | Stripe metered price for overage | Required for billing |
+| `STRIPE_FLAT_PRICE_ID` | Stripe price for the $50/mo flat tier (personal owners) | Required for billing |
+| `STRIPE_TEAM_SEAT_PRICE_ID` | Stripe per-seat price for org subscriptions; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20) | Set by CDK |
+| `STRIPE_ULTRA_PRICE_ID` | Stripe price for the Ultra Pro tier. Display dollars mirrored by `ULTRA_PRICE_USD` (150) | Set by CDK |
 | `MARKETPLACE_LISTINGS_TABLE` | DDB listings table (draft / review / published / retired / taken_down rows) | Set by CDK; empty disables marketplace |
 | `MARKETPLACE_PURCHASES_TABLE` | DDB purchases table (buyer entitlements + Stripe payment refs) | Set by CDK |
 | `MARKETPLACE_PAYOUT_ACCOUNTS_TABLE` | DDB seller payout-account table | Set by CDK |

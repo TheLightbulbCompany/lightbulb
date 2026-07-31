@@ -98,7 +98,14 @@ export function TeamBillingCard({
       <p className="mt-1 text-[13px] leading-[1.5] text-[var(--mute)]">
         {seatsKnown ? (
           <>
-            ${base} base + {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
+            {/* Teams checkout (create_team_seat_checkout) builds a subscription
+                from the seat price ALONE — there is no base line item, and the
+                backend never sends base_price_usd. So `base` is 0 in every real
+                render, and printing "$0 base + …" on the paywall is noise at
+                best. Kept conditional rather than deleted because the prop and
+                the arithmetic are what a future base tier would use. */}
+            {base > 0 ? <>${base} base + </> : null}
+            {seats} {seats === 1 ? "seat" : "seats"} × ${price} ={" "}
             <strong className="font-semibold text-[var(--ink)]">${total}/mo</strong>. Everyone
             you invite is a seat, from the moment you invite them.
           </>

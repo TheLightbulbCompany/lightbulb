@@ -316,7 +316,7 @@ class PaperclipRepo:
     real per-environment table (e.g. ``isol8-dev-paperclip-companies``)
     and for moto-backed unit tests. Internally we resolve the boto3
     Table via ``core.dynamodb.get_table`` so prefix-patching in tests
-    (and the LocalStack endpoint override) Just Work.
+    Just Works.
     """
 
     def __init__(self, table_name: str, region: str | None = None):  # noqa: ARG002 - region kept for back-compat

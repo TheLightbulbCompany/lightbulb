@@ -786,8 +786,8 @@ export class ServiceStack extends cdk.Stack {
     // (apps/backend/core/services/cloudwatch_logs.py). Scoped to the
     // backend's own log group ARN; never "*" — least privilege.
     //
-    // Log group name matches service-stack.ts + isol8-stage.ts +
-    // local-stage.ts — `/ecs/isol8-${env}` (no /aws prefix, no
+    // Log group name matches service-stack.ts + isol8-stage.ts —
+    // `/ecs/isol8-${env}` (no /aws prefix, no
     // -backend suffix). The cloudwatch_logs service must use this same
     // name when constructing FilterLogEvents calls.
     this.taskRole.addToPolicy(
@@ -1137,12 +1137,7 @@ export class ServiceStack extends cdk.Stack {
       // API Gateway $default path.
       WS_ENFORCE_INTERNAL_SECRET: "true",
       WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
-      CORS_ORIGINS:
-        env === "local"
-          ? "http://localhost:3000"
-          : env === "prod"
-            ? "https://isol8.co"
-            : "https://dev.isol8.co",
+      CORS_ORIGINS: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
       // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
       // encrypt operator device seeds + gateway tokens at rest. Reuses the
       // same CMK as the BYOK Fernet layer since the blast radius is the same
@@ -1180,23 +1175,13 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
-      FRONTEND_URL:
-        env === "local"
-          ? "http://localhost:3000"
-          : env === "prod"
-            ? "https://isol8.co"
-            : "https://dev.isol8.co",
+      FRONTEND_URL: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
       // Public-facing base URL of THIS API. Used by /hooks/credentials
       // (and any future endpoint that surfaces an absolute URL back to
       // the browser) to build the webhook URL the Settings panel
       // displays to the user. Per-env API hostname, matches the DNS
       // records provisioned by dns-stack.ts.
-      PUBLIC_API_BASE:
-        env === "local"
-          ? "http://localhost:8000"
-          : env === "prod"
-            ? "https://api.isol8.co"
-            : `https://api-${env}.isol8.co`,
+      PUBLIC_API_BASE: env === "prod" ? "https://api.isol8.co" : `https://api-${env}.isol8.co`,
       // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
       // (apps/backend/main.py) builds an empty dispatch host set, so requests
       // to `company-{env}.isol8.co` fall through to the default Isol8 API
@@ -1233,8 +1218,6 @@ export class ServiceStack extends cdk.Stack {
           ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
           : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
               "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
-      // LocalStack needs this to redirect boto3 calls inside the ECS container
-      ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
       EFS_MOUNT_PATH: "/mnt/efs/users",
       EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
       ECS_CLUSTER_ARN: props.container.cluster.clusterArn,

@@ -49,10 +49,6 @@ Thumbs.db
 .vercel
 .env*.local
 
-# LocalStack local dev
-localstack/generated.env
-localstack_data/
-.localstack/
 apps/frontend/package-lock.json
 
 # Worktrees

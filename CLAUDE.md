@@ -83,65 +83,6 @@ pnpm run build                 # Production build
 pnpm run lint                  # ESLint
 ```
 
-### Local Development with LocalStack
-
-Full-stack local development using LocalStack to emulate AWS services and Ollama for local LLM inference. Deploys the real CDK infrastructure (same as dev/prod) to LocalStack via `cdklocal`.
-
-**First-time setup:**
-```bash
-# 1. Install LocalStack CLI
-brew install localstack/tap/localstack-cli
-
-# 2. Install cdklocal (CDK wrapper for LocalStack)
-npm install -g aws-cdk-local aws-cdk
-
-# 3. Set your LocalStack auth token (from https://app.localstack.cloud)
-localstack auth set-token <your-token>
-export LOCALSTACK_AUTH_TOKEN=<your-token>
-
-# 4. Set Clerk dev keys
-export CLERK_ISSUER=https://up-moth-55.clerk.accounts.dev
-export CLERK_SECRET_KEY=sk_test_...
-export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
-
-# 5. Set AWS credentials for LocalStack
-export AWS_ACCESS_KEY_ID=test
-export AWS_SECRET_ACCESS_KEY=test
-export AWS_DEFAULT_REGION=us-east-1
-```
-
-**Running:**
-```bash
-# Start everything (LocalStack + CDK deploy + Ollama + Backend + Frontend)
-./scripts/local-dev.sh
-
-# Reset all data and start fresh
-./scripts/local-dev.sh --reset
-
-# Deploy infrastructure only (no app services)
-./scripts/local-dev.sh --seed-only
-
-# Stop everything
-./scripts/local-dev.sh --stop
-```
-
-**What the script does:**
-1. Starts LocalStack Pro + Ollama containers via Docker Compose
-2. Bootstraps CDK for LocalStack (`cdklocal bootstrap aws://000000000000/us-east-1`)
-3. Deploys all 6 CDK stacks (`cdklocal deploy "local/*"`) — auth, network, database, container, api, service
-4. Extracts stack outputs to `localstack/generated.env`
-5. Pulls Ollama model (qwen2.5:14b, first time only)
-6. Starts backend in Docker (on same network as LocalStack containers)
-7. Starts frontend on host
-
-**Prerequisites:** Docker Desktop, `LOCALSTACK_AUTH_TOKEN`, `CLERK_ISSUER`, `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `pnpm`, `uv`, `cdklocal`
-
-**Architecture:** Backend runs in Docker (not on host) for container IP reachability with LocalStack-launched OpenClaw containers. Source code is bind-mounted for hot-reload. Frontend runs on host. Ollama provides local LLM inference via native OpenClaw provider. CDK stacks are the single source of truth — same infrastructure as dev/prod.
-
-**Services emulated:** ECS, EFS, Cloud Map, DynamoDB, S3, Secrets Manager, KMS, API Gateway V2 (WebSocket), Lambda, VPC, ALB, IAM, CloudFormation
-
-**Not emulated:** Clerk (real dev keys), Stripe (test mode keys), Bedrock (replaced by Ollama)
-
 ### Running Tests
 
 ```bash

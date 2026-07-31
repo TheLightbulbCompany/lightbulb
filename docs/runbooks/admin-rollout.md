@@ -68,7 +68,7 @@ DNS alias and Vercel project remain. Once the incident is resolved, restore the 
 | `/admin/me` returns 403 | Your Clerk user_id missing from `PLATFORM_ADMIN_USER_IDS` | Add it; redeploy |
 | Admin page renders but Stripe panel shows error banner | Stripe API timeout or auth issue; `admin_service` returns partial responses on upstream failure | Check Stripe dashboard health; verify `STRIPE_SECRET_KEY` in Secrets Manager |
 | PostHog tab shows "No PostHog activity recorded — user may not have visited the frontend" | User legitimately has no PostHog identify yet; OR `POSTHOG_PROJECT_API_KEY` is unset | Confirm by visiting the frontend as that user; otherwise mint the PostHog project key |
-| CloudWatch Logs tab shows "no logs" | LocalStack (no real CWL); user hasn't generated logs in the time window; or IAM missing on the backend task role | Check task role has `logs:FilterLogEvents` on `arn:aws:logs:{region}:{account}:log-group:/ecs/isol8-{env}:*` (added in #355) |
+| CloudWatch Logs tab shows "no logs" | User hasn't generated logs in the time window; or IAM missing on the backend task role | Check task role has `logs:FilterLogEvents` on `arn:aws:logs:{region}:{account}:log-group:/ecs/isol8-{env}:*` (added in #355) |
 | Write action returns `audit_status: "panic"` | DDB write to `admin-actions` failed after the action executed | Check CloudWatch for `ADMIN_AUDIT_PANIC` log entries; investigate DDB connectivity / IAM. The action *did* run; the audit row is missing. |
 
 ## When to add an edge gate (Phase 2 trigger)

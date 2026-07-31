@@ -82,8 +82,8 @@ async def filter_user_logs(
     Returns: {events: list[dict], cursor: str | None, missing: bool}
     - cursor is the FilterLogEvents nextToken — opaque to callers, pass
       back as `cursor` to fetch the next page (CEO E4).
-    - missing=True when the log group does not exist (LocalStack /
-      fresh env). Callers should render "no logs configured" rather than
+    - missing=True when the log group does not exist (fresh env).
+      Callers should render "no logs configured" rather than
       treating it as an empty result.
     - On non-NotFound errors, returns {events: [], missing: False, error: str}
       so the admin page degrades gracefully instead of 500ing.

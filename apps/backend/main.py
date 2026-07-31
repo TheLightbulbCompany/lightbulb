@@ -114,8 +114,8 @@ def _paperclip_dispatch_hosts() -> set[str]:
 
     Built from ``settings.PAPERCLIP_PUBLIC_URL`` (set by CDK in deployed
     envs to ``https://company.isol8.co`` or ``https://company-{env}.isol8.co``)
-    plus a small allow-list of local-dev hostnames so ``./scripts/local-dev.sh``
-    works without extra config.
+    plus a small allow-list of local-dev hostnames so a backend running on
+    localhost dispatches company.* without extra config.
     """
     hosts: set[str] = {
         "company.localhost",

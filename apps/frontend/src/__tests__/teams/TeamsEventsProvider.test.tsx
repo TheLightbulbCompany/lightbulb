@@ -59,6 +59,8 @@ const FIXTURE_KEYS = [
   "/teams/issues/iss_1",
   "/teams/issues/iss_1/comments",
   "/teams/issues/iss_1/interactions",
+  "/teams/issues/iss_1/runs", // IssueRunsSection — must refresh on run status events
+
   "/teams/issues/ADM-481", // identifier-keyed variant (details.identifier)
   "/teams/issues/iss_other", // a DIFFERENT issue: must NOT be invalidated
   // Sibling detail panels. Every production opener for these routes passes the
@@ -341,6 +343,29 @@ describe("TeamsEventsProvider", () => {
     ]));
   });
 
+  it.each(["teams.heartbeat.run.queued", "teams.heartbeat.run.status"])(
+    "invalidates open per-issue runs lists on %s",
+    (event) => {
+      // Regression: a run that dies inside the gateway writes no issue
+      // activity, and `/teams/issues/{id}/runs` sits one segment deeper than
+      // the `?`-bounded prefixes in EVENT_KEY_MAP — so an open Task panel
+      // kept showing a terminated run as "Running" until remount. Run
+      // lifecycle events must refresh cached per-issue runs lists directly.
+      gatewayState.isConnected = true;
+      render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
+      mutateMock.mockClear(); // drop the first-subscribe reconcile
+      act(() => {
+        eventHandler!(event, {});
+      });
+      const keys = invalidatedKeys();
+      expect(keys).toContain("/teams/issues/iss_1/runs");
+      // Scoped to the `/runs` leaf under issues: the issue row itself and
+      // other entities' run lists are not this event's concern.
+      expect(keys).not.toContain("/teams/issues/iss_1");
+      expect(keys).not.toContain("/teams/routines/rt_1/runs");
+    },
+  );
+
   it("ignores teams.plugin.* events (no UI bound in v1)", () => {
     gatewayState.isConnected = true;
     render(<TeamsEventsProvider><div /></TeamsEventsProvider>);
@@ -367,6 +392,9 @@ describe("TeamsEventsProvider", () => {
       "/teams/dashboard", "/teams/activity", "/teams/inbox", "/teams/issues", "/teams/agents",
       "/teams/inbox?tab=mine", "/teams/inbox?tab=recent", "/teams/inbox?tab=all",
       "/teams/approvals", "/teams/inbox/runs",
+      // Per-issue runs lists are outside ALL_KEYS' prefix matching and must
+      // be reconciled explicitly (see mutateIssueRunLists).
+      "/teams/issues/iss_1/runs",
     ]));
   });
 
@@ -392,6 +420,8 @@ describe("TeamsEventsProvider", () => {
         // stale on Teams re-entry. Regression guard for the ALL_KEYS drift.
         "/teams/approvals",
         "/teams/inbox/runs",
+        // Per-issue runs lists reconcile via mutateIssueRunLists, not ALL_KEYS.
+        "/teams/issues/iss_1/runs",
       ]),
     );
   });

@@ -234,6 +234,23 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     [mutate],
   );
 
+  // The per-issue runs lists (`/teams/issues/{id}/runs`, IssueRunsSection).
+  // These sit one segment DEEPER than the `?`-bounded prefix matcher reaches,
+  // and a run that dies inside the gateway (e.g. a compaction timeout surfaced
+  // as openclaw_gateway_wait_error) writes no issue activity — so neither the
+  // run-status keys nor the activity subtree ever refreshed them, and an open
+  // Task panel kept showing "Running" after the run failed. Matched across all
+  // issues rather than by payload id: `mutate(predicate)` only refetches keys
+  // already in cache, so the fan-out is bounded by panels actually open.
+  const mutateIssueRunLists = useCallback(() => {
+    mutate(
+      (key) =>
+        typeof key === "string" &&
+        key.startsWith("/teams/issues/") &&
+        key.endsWith("/runs"),
+    );
+  }, [mutate]);
+
   // Per-key throttle state for the event path — see REVALIDATE_THROTTLE_MS.
   const throttleRef = useRef<ThrottleState>({
     lastAt: new Map(),
@@ -297,9 +314,10 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       // layout-scoped, not per-panel), so intra-Teams panel switches stay
       // deduped.
       for (const key of ALL_KEYS) mutateKeyPrefix(key);
+      mutateIssueRunLists();
     }
     wasConnectedRef.current = true;
-  }, [isConnected, send, mutateKeyPrefix]);
+  }, [isConnected, send, mutateKeyPrefix, mutateIssueRunLists]);
 
   // Wire event listener.
   useEffect(() => {
@@ -311,7 +329,13 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
       // reopen exactly the staleness window they exist to close.
       if (event === "teams.stream.resumed") {
         for (const key of ALL_KEYS) mutateKeyPrefix(key);
+        mutateIssueRunLists();
         return;
+      }
+      if (event === "teams.heartbeat.run.queued" || event === "teams.heartbeat.run.status") {
+        // Not expressible in EVENT_KEY_MAP: its values are `?`-bounded
+        // prefixes, and these are per-issue leaf keys.
+        throttledMutate("/teams/issues/*/runs", mutateIssueRunLists);
       }
       if (event === "teams.activity.logged") {
         // Keep the OPEN detail panel live. Without this the unconditional
@@ -337,7 +361,7 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     return () => {
       unsub();
     };
-  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, throttledMutate]);
+  }, [onEvent, mutateKeyPrefix, mutateEntitySubtree, mutateIssueRunLists, throttledMutate]);
 
   // ── Board keeper ──────────────────────────────────────────────────────────
   // A raw setInterval backstop that revalidates the board keys every 20s while
@@ -372,9 +396,10 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     const id = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       for (const key of ALL_KEYS) mutateKeyPrefix(key);
+      mutateIssueRunLists();
     }, BOARD_KEEPER_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [mutateKeyPrefix]);
+  }, [mutateKeyPrefix, mutateIssueRunLists]);
 
   return <>{children}</>;
 }

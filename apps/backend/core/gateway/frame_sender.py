@@ -217,7 +217,16 @@ class FrameSender:
                 self._stream_keys.pop(conn_id, None)
                 continue
             if not ok:
-                # GoneException — drop remaining frames and hand the prune to
+                # A lone GoneException can be a spurious API Gateway blip on a
+                # live connection — prune only once the client confirms Gone
+                # has persisted. Until then treat it like a transient failure:
+                # skip the frame, resync on the next one, keep the connection.
+                if not self._api.gone_confirmed(conn_id):
+                    logger.warning("Unconfirmed Gone for %s — skipping frame (not pruning)", conn_id)
+                    put_metric("gateway.frontend.gone_unconfirmed")
+                    self._stream_keys.pop(conn_id, None)
+                    continue
+                # Confirmed Gone — drop remaining frames and hand the prune to
                 # the most recent on_gone callback. No await between the pops
                 # below and the queue check in enqueue, so no frame can slip
                 # into the dict entry we discard.

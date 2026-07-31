@@ -52,6 +52,9 @@ def fake_components(monkeypatch):
     fake_clients: list[FakeClient] = []
     fake_mgmt = MagicMock()
     fake_mgmt.send_message = MagicMock(return_value=True)
+    # Confirmed by default so the stale-cleanup tests exercise the prune;
+    # the spurious-410 test flips this to False.
+    fake_mgmt.gone_confirmed = MagicMock(return_value=True)
     fake_conn_svc = MagicMock()
     fake_conn_svc.query_by_user_id = AsyncMock(return_value=[])
     fake_conn_svc.delete_connection = MagicMock()
@@ -200,6 +203,31 @@ async def test_stale_connection_cleaned_up_on_send_false(fake_components):
     )
 
     fake_components["conn_svc"].delete_connection.assert_called_once_with("conn_1")
+    await broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_gone_keeps_subscription_and_ddb_row(fake_components):
+    """A spurious API Gateway 410 on a live connection must not delete the
+    shared ws-connections row or drop the teams subscription — that
+    zombifies a healthy tab (chat fan-out and pings both key off the row)."""
+    broker = _build_broker(fake_components)
+    await broker.subscribe("user_a", "conn_1")
+    fake_components["mgmt"].send_message.return_value = False
+    fake_components["mgmt"].gone_confirmed.return_value = False
+
+    await fake_components["clients"][0].trigger(
+        {
+            "id": 1,
+            "companyId": "co_user_a",
+            "type": "agent.status",
+            "createdAt": "2026-05-04T01:00:00Z",
+            "payload": {},
+        }
+    )
+
+    fake_components["conn_svc"].delete_connection.assert_not_called()
+    assert "conn_1" in broker._subscribers["user_a"]
     await broker.shutdown()
 
 

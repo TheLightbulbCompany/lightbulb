@@ -22,10 +22,16 @@ def _chunk(delta: str, full: str, run="run-1"):
 class RecordingApi:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
+        # Mirrors ManagementApiClient.gone_confirmed. Defaults to confirmed so
+        # Gone-path tests exercise the prune; blip tests flip it to False.
+        self.gone_confirmed_result = True
 
     def send_message(self, conn_id, payload):
         self.calls.append((conn_id, payload))
         return True
+
+    def gone_confirmed(self, conn_id):
+        return self.gone_confirmed_result
 
 
 class BlockingApi(RecordingApi):
@@ -169,6 +175,64 @@ async def test_gone_drops_queue_and_calls_on_gone_once():
     # First send observes Gone: remaining frames dropped, one prune call.
     assert api.send_message.call_count == 1
     assert pruned == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_gone_skips_frame_without_pruning():
+    """A spurious API Gateway 410 on a live connection must not prune: the
+    frame is skipped (recovered by full-text resync on the next stream
+    frame) and later frames keep flowing."""
+    api = RecordingApi()
+    api.gone_confirmed_result = False
+    real = api.send_message
+    gone_next = {"on": False}
+
+    def flaky(conn_id, payload):
+        if gone_next["on"]:
+            gone_next["on"] = False
+            real(conn_id, payload)
+            return False
+        return real(conn_id, payload)
+
+    api.send_message = flaky
+    pruned: list[str] = []
+
+    async def on_gone(conn_id):
+        pruned.append(conn_id)
+
+    sender = FrameSender(api)
+    sender.enqueue("c1", _chunk("He", "He"), on_gone=on_gone)
+    await sender.flush()
+    gone_next["on"] = True
+    sender.enqueue("c1", _chunk("llo", "Hello"), on_gone=on_gone)  # 410 blip, frame lost
+    await sender.flush()
+    sender.enqueue("c1", _chunk("!", "Hello!"), on_gone=on_gone)
+    await sender.flush()
+
+    assert pruned == []
+    # The frame after the blip re-ships the FULL text so the lost delta is
+    # recovered, exactly like the transient-exception path.
+    assert api.calls[-1] == ("c1", {"type": "chunk", "content": "Hello!", "runId": "run-1"})
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_gone_keeps_draining_queued_frames():
+    api = RecordingApi()
+    api.gone_confirmed_result = False
+    api.send_message = MagicMock(return_value=False)
+    pruned: list[str] = []
+
+    async def on_gone(conn_id):
+        pruned.append(conn_id)
+
+    sender = FrameSender(api)
+    sender.enqueue("c1", {"type": "done", "runId": "r"}, on_gone=on_gone)
+    sender.enqueue("c1", {"type": "run_ended", "runId": "r"}, on_gone=on_gone)
+    await sender.flush()
+
+    # Unlike confirmed Gone, every queued frame is still attempted.
+    assert api.send_message.call_count == 2
+    assert pruned == []
 
 
 @pytest.mark.asyncio

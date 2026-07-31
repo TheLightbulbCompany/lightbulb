@@ -25,12 +25,27 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 
 import boto3
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
+
+# API Gateway occasionally returns a spurious GoneException for a connection
+# that is still alive (observed ~daily in prod: a single 410 sandwiched
+# between hundreds of successful posts to the same connection id). A Gone
+# is therefore only treated
+# as fatal once it has persisted this long with no successful send in
+# between; callers that prune connection state must gate on
+# ``gone_confirmed()`` rather than a single ``send_message() is False``.
+_GONE_CONFIRM_SECONDS = 2.0
+
+# Safety bound on the suspect map. Entries are normally removed on the next
+# successful send or on confirmation; this only catches connections whose
+# very last frame ever was a spurious Gone.
+_GONE_SUSPECTS_CAP = 4096
 
 
 class ManagementApiClientError(Exception):
@@ -76,6 +91,11 @@ class ManagementApiClient:
             endpoint_url=self.endpoint_url,
             region_name=region,
         )
+        # connection_id -> monotonic time of the first unresolved
+        # GoneException. Written from to_thread workers; individual dict ops
+        # are GIL-atomic and a race at worst shifts a prune by one frame, so
+        # no lock.
+        self._gone_first_seen: Dict[str, float] = {}
 
     def send_message(self, connection_id: str, payload: Dict[str, Any]) -> bool:
         """
@@ -109,6 +129,9 @@ class ManagementApiClient:
                 connection_id,
                 len(data),
             )
+            # A success proves the connection is alive — any earlier Gone
+            # was a spurious API Gateway blip, so restart its clock.
+            self._gone_first_seen.pop(connection_id, None)
             return True
 
         except ClientError as e:
@@ -116,6 +139,9 @@ class ManagementApiClient:
 
             if error_code == "GoneException":
                 # Connection is closed - this is expected when clients disconnect
+                if len(self._gone_first_seen) > _GONE_SUSPECTS_CAP:
+                    self._gone_first_seen.clear()
+                self._gone_first_seen.setdefault(connection_id, time.monotonic())
                 logger.warning(
                     "Connection %s is gone, message not delivered",
                     connection_id,
@@ -155,6 +181,25 @@ class ManagementApiClient:
         instead.
         """
         return await asyncio.to_thread(self.send_message, connection_id, payload)
+
+    def gone_confirmed(self, connection_id: str) -> bool:
+        """Whether Gone has persisted long enough on *connection_id* to treat
+        the connection as genuinely dead.
+
+        Callers that destroy connection state on ``send_message() is False``
+        (frame-sender prune, teams-broker unsubscribe) must gate on this:
+        a lone GoneException can be a spurious API Gateway response for a
+        live connection, and pruning on it orphans a healthy client — its
+        pings 401 forever while its socket stays open. Returns True only
+        when the first unresolved Gone is at least ``_GONE_CONFIRM_SECONDS``
+        old (no successful send since), and consumes the suspect mark so a
+        later isolated Gone starts a fresh window.
+        """
+        first = self._gone_first_seen.get(connection_id)
+        if first is None or (time.monotonic() - first) < _GONE_CONFIRM_SECONDS:
+            return False
+        self._gone_first_seen.pop(connection_id, None)
+        return True
 
     def close_connection(self, connection_id: str) -> None:
         """

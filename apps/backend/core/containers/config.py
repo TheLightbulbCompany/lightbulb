@@ -85,6 +85,17 @@ AGENT_RUN_TIMEOUT_SECONDS = 1800
 # re-arms the deadline above (so 160 × 30m is not a bound at all).
 AGENT_RUN_RETRIES_MAX = 8
 
+# agents.defaults.compaction.timeoutSeconds — upstream defaults to 180, tuned
+# for interactive sessions that compact while still small. Long-lived Paperclip
+# heartbeat sessions only hit the compaction threshold once the transcript is
+# already huge, and on the ChatGPT/Codex path the summarize call must run on
+# the primary model (no cheap-summarizer override — see cheap_model_ref), so
+# 180s is routinely not enough: the timeout kills the RUN, and a timed-out
+# compaction leaves the session unchanged, so every subsequent run hits the
+# same wall. 600s stays under both the adapter's 15-minute stall timeout and
+# AGENT_RUN_TIMEOUT_SECONDS. A slow compaction that succeeds beats a dead run.
+COMPACTION_TIMEOUT_SECONDS = 600
+
 # agents.defaults.subagents.maxConcurrent — upstream default 8. The subagent lane
 # does NOT count against the main agents.defaults.maxConcurrent semaphore, so it
 # needs its own bound. (maxConcurrent itself is deliberately left at its upstream
@@ -1250,16 +1261,17 @@ def build_openclaw_config_dict(
                 # never turns on a feature that wasn't already running upstream
                 # (memoryFlush has its own opt-in). On flat-rate paths with no
                 # cheaper tier (`cheap_model` is None) the model overrides are
-                # omitted so both inherit the default model. All three keys are
+                # omitted so both inherit the default model. All four keys are
                 # valid under upstream's strict AgentDefaultsSchema
-                # (compaction.midTurnPrecheck.enabled, compaction.model,
-                # compaction.memoryFlush.model).
+                # (compaction.midTurnPrecheck.enabled, compaction.timeoutSeconds,
+                # compaction.model, compaction.memoryFlush.model).
                 "compaction": {
                     # Pinned explicitly: upstream's default flipped to
                     # "safeguard" for NEW configs only, so an unset mode is
                     # version-dependent drift across image bumps.
                     "mode": "safeguard",
                     "midTurnPrecheck": {"enabled": True},
+                    "timeoutSeconds": COMPACTION_TIMEOUT_SECONDS,
                     **({"model": cheap_model, "memoryFlush": {"model": cheap_model}} if cheap_model else {}),
                 },
                 # contextPruning trims STALE TOOL RESULTS out of the live

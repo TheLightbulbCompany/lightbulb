@@ -81,6 +81,16 @@ class TestCompactionMode:
         oauth = _cfg("chatgpt_oauth")
         assert "model" not in oauth["agents"]["defaults"]["compaction"]
 
+    def test_compaction_timeout_raised_on_every_path(self):
+        """Upstream's 180s default assumes sessions that compact while still
+        small. Long-lived heartbeat sessions only hit the threshold once the
+        transcript is huge, and the Codex path must summarize on the primary
+        model — so 180s kills the run, and the unchanged session kills every
+        run after it. 600s stays under the adapter's 15-minute stall timeout."""
+        for kwargs in _ALL_PATHS:
+            config = _cfg(**kwargs)
+            assert config["agents"]["defaults"]["compaction"]["timeoutSeconds"] == 600, kwargs
+
 
 class TestContextPruningTtl:
     def test_pruning_ttl_aligned_with_cache_retention(self):

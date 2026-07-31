@@ -306,9 +306,11 @@ class Settings(BaseSettings):
     PAPERCLIP_SERVICE_TOKEN_KEY: str = os.getenv("PAPERCLIP_SERVICE_TOKEN_KEY", "")
     # Shared bearer token the isol8.notifications Paperclip plugin sends on
     # POST /webhooks/paperclip-events. Empty disables the receiver (404).
-    # Populated from Secrets Manager by the CDK service stack; the same value
-    # is pushed into the plugin's configJson by
-    # scripts/configure_paperclip_notify_plugin.py.
+    # Populated from Secrets Manager by the CDK service stack; the same secret
+    # is injected into the Paperclip task as PAPERCLIP_ISOL8_NOTIFY_TOKEN by
+    # paperclip-stack (the plugin worker reads it via an env passthrough —
+    # plugin configJson is per-company on the deployed fork line, so env is
+    # the only instance-wide channel).
     PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = os.getenv("PAPERCLIP_EVENTS_WEBHOOK_SECRET", "")
     # --- Platform Ops (operator console + owner-scoped ops API) ---
     # The founder's owner_id (user_* or org_*). The platform_ops token's

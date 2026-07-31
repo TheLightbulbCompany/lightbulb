@@ -210,6 +210,7 @@ export class Isol8Stage extends cdk.Stage {
       paperclipDbCluster: database.paperclipDbCluster,
       paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
       paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,
+      paperclipEventsWebhookSecretName: auth.paperclipEventsWebhookSecret.secretName,
       // Pass KMS key ARN (not Key object) so PaperclipStack can grant
       // kms:Decrypt on its task execution roles without triggering CDK's
       // cross-stack auto-grant cycle (same pattern as ApiStack).

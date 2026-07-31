@@ -220,7 +220,7 @@ function ChangeProviderBody({
 
       {stage.kind === "error" && (
         <div className="space-y-4 py-6">
-          <p className="text-sm text-red-400">{stage.message}</p>
+          <p className="text-sm text-[var(--danger)]">{stage.message}</p>
           <DialogFooter>
             <Button
               variant="outline"
@@ -327,7 +327,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
               href={state.verificationUri}
               target="_blank"
               rel="noreferrer"
-              className="text-[#7cc6a3] underline underline-offset-2 hover:text-[#9fd9bd]"
+              className="text-[var(--forest)] underline underline-offset-2 hover:text-[var(--ink)]"
             >
               {state.verificationUri}
             </a>{" "}
@@ -349,7 +349,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
 
       {state.status === "error" && (
         <div className="space-y-3 py-4">
-          <p className="text-sm text-red-400">Connection failed: {state.message}</p>
+          <p className="text-sm text-[var(--danger)]">Connection failed: {state.message}</p>
           <Button
             variant="outline"
             className="border-[var(--edge)] bg-transparent text-[var(--ink)] hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
@@ -361,7 +361,7 @@ function ChatGPTOAuthStage({ onComplete, onCancel }: ChatGPTOAuthStageProps) {
       )}
 
       {state.status === "completed" && (
-        <div className="flex items-center justify-center py-6 text-sm text-[#7cc6a3]">
+        <div className="flex items-center justify-center py-6 text-sm text-[var(--forest)]">
           ✓ Connected — committing switch…
         </div>
       )}
@@ -460,7 +460,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         provider before saving — invalid keys are rejected here, not at chat time.
       </p>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
 
       <DialogFooter>
         <Button

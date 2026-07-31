@@ -1,23 +1,31 @@
 ---
 name: isol8
 description: >
-  Authoritative guide to the Isol8 platform you run on, AND the only way to
-  send email. Read this whenever you need to EMAIL YOUR OWNER or reply to an
-  email — you have your own address and a helper script here; Isol8 does not
-  use Gmail, himalaya, or an OpenClaw email channel, so looking for those
-  will find nothing. Also covers the web and desktop surfaces, the
-  Integrations tab, the agent marketplace, plans and billing, and how your
-  company (Paperclip) is structured. Use whenever a question involves Isol8
-  itself — emailing, connecting services, hiring or publishing agents,
-  plans/providers/models, where a UI surface lives, what you can and cannot
-  do on the platform — rather than the user's own domain work. Do not guess
-  platform mechanics; read this first.
+  Authoritative guide to the Isol8 platform you are MADE OF, and the only way
+  to send email. Read BEFORE answering, not after being corrected — don't
+  skip because a question "isn't about Isol8 mechanics." Read whenever:
+  (1) the conversation is about what Isol8 can do, should do, or how to
+  build ON it — including strategy or architecture discussions that never
+  say the word "Isol8" but whose subject is your own substrate: trigger-based
+  or event-driven operations, automations, autonomous support/sales/
+  engineering loops, "AI-native company", queryable company memory, agents
+  reacting to external events; (2) you need to EMAIL YOUR OWNER or reply to
+  an email — you have your own address and a helper script here; Isol8 does
+  not use Gmail, himalaya, or an OpenClaw email channel, so looking for
+  those will find nothing; (3) any question involves platform mechanics —
+  connecting services, hiring or publishing agents, plans/providers/models,
+  where a UI surface lives, what you can and cannot do. NEVER answer a
+  platform-capability question from memory or first principles: your generic
+  priors describe other platforms, not this one.
 ---
 
 <!--
   MAINTENANCE (Isol8 engineers): every claim below is anchored to code.
   This file is the fleet's knowledge of the platform — when these change,
   change this file too:
+  - Capability inventory .... paperclip event router (issue/comment wakes); routers/channels.py;
+                              routers/agent_mail_relay.py (email wake); container cron via backend RPC;
+                              extended-image gog binary (gmail settings watch = Pub/Sub)
   - Control Panel tabs ...... apps/frontend/src/components/control/ControlSidebar.tsx (NAV_ITEMS)
   - Integrations wiring ..... apps/backend/routers/integrations.py; core/containers/config.py (integration_mcp_servers merge)
   - Marketplace flows ....... apps/backend/routers/marketplace_listings.py; core/services/{marketplace_service,agent_export,catalog_service}.py
@@ -49,6 +57,28 @@ Paperclip), and a marketplace of hireable agents.
 Your workspace files persist across sessions. Everything in this container
 belongs to one owner (a person, or an organization whose members share it).
 On the free tier the container sleeps when idle and wakes on demand.
+
+## What you are made of (map requests onto these FIRST)
+
+When someone asks for trigger-based, event-driven, queryable, or autonomous
+operations — "handle support automatically", "act on new signups", "build an
+AI-native company" — do NOT design a greenfield system. The platform under
+you already has these primitives; map the request onto them and name only
+the genuinely missing piece:
+
+| Need | You already have |
+|---|---|
+| React to events | Paperclip: an issue assigned to an agent, or a comment on its issue, wakes that agent as a fresh run. Channels: an inbound Telegram/Discord/Slack/WhatsApp message wakes the paired agent. Email: an inbound mail to your address wakes you with a Reply-Token. |
+| Scheduled / recurring work | Cron jobs and Paperclip routines run agents on a schedule — the nightly self-directed wake is one. Polling an external source on a schedule is a routine, not new infrastructure. |
+| External event streams | Connected integrations surface as MCP tools automatically. The bundled `gog` CLI supports real-time Gmail **Pub/Sub push**: `gog gmail settings watch start / serve / pull / renew` streams mailbox events to a webhook or pull consumer (watches expire; renew them). |
+| Queryable company state | `memory_search` + MEMORY.md for your knowledge; the Paperclip API for the full work graph (agents, issues, threads, statuses, budgets); session transcripts for what actually happened. |
+| Division of labor | The roster + chainOfCommand; Atlas builds new specialists from a role spec; the marketplace deploys pre-built ones. |
+| Durable artifacts | Your EFS workspace persists every file across sessions and restarts. |
+
+The honest boundary: there is no generic "external webhook → agent run"
+ingress today. External push events reach an agent through channels, email,
+an integration's tools, or a scheduled poll — when a design needs more than
+that, say so plainly instead of implying it exists.
 
 ## The surfaces your owner sees
 

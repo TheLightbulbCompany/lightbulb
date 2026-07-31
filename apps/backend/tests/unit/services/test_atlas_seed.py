@@ -305,7 +305,11 @@ async def test_force_overwrites_existing_files(force_ws, fake_files_dir):
     assert "workspace-uuid-atlas/.openclaw/workspace-state.json" not in force_ws.overwrote
     assert result["force"] is True
     assert result["reason"] is None
-    assert result["overwritten"] == len(force_ws.overwrote) == 3
+    # The fingerprint marker is stamped via write_file too, but it is
+    # bookkeeping, not a bundle file — it must not count in `overwritten`.
+    bundle_writes = [p for p in force_ws.overwrote if not p.endswith(".isol8-seed-fingerprint")]
+    assert "workspace-uuid-atlas/.isol8-seed-fingerprint" in force_ws.overwrote
+    assert result["overwritten"] == len(bundle_writes) == 3
 
 
 @pytest.mark.asyncio
@@ -369,4 +373,107 @@ async def test_force_with_acp_overwrites_agents_with_acp_section(force_ws, monke
     assert force_ws.if_missing_calls == []  # never the skip-writer
     assert result["force"] is True
     assert result["written"] == 0  # force → no "new write" accounting, all in overwritten
-    assert result["overwritten"] == len(force_ws.overwrote)
+    bundle_writes = [p for p in force_ws.overwrote if not p.endswith(".isol8-seed-fingerprint")]
+    assert result["overwritten"] == len(bundle_writes)
+
+
+# ── Bundle-fingerprint auto-refresh ──────────────────────────────────────────
+# write_file_if_missing means an existing workspace never picks up a rewritten
+# bundle on its own; the fingerprint marker turns every pass through
+# pre_stage_atlas into a staleness check that force-refreshes when the staged
+# bundle no longer matches the repo bundle.
+
+
+def _existing_ws(marker: str | None):
+    """Stub for an EXISTING workspace (dir present, migrated) whose fingerprint
+    marker reads ``marker`` — ``None`` models a pre-marker workspace where
+    read_file raises (the legacy-container case)."""
+    ws = MagicMock()
+    wsdir = ws.agent_workspace_path.return_value
+    wsdir.is_dir.return_value = True
+    wsdir.__truediv__.return_value.__truediv__.return_value.is_file.return_value = False
+    ws.overwrote = []
+    ws.if_missing_calls = []
+
+    def _write_file(user_id, path, content):
+        ws.overwrote.append(path)
+
+    def _write_if_missing(user_id, path, content):
+        ws.if_missing_calls.append(path)
+        return False  # every file already exists
+
+    ws.write_file.side_effect = _write_file
+    ws.write_file_if_missing.side_effect = _write_if_missing
+    if marker is None:
+        ws.read_file.side_effect = FileNotFoundError("no marker")
+    else:
+        ws.read_file.return_value = marker + "\n"
+    return ws
+
+
+_AGENTS = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+_MARKER_PATH = "workspace-uuid-atlas/.isol8-seed-fingerprint"
+
+
+@pytest.mark.asyncio
+async def test_stale_marker_auto_refreshes_existing_workspace(fake_files_dir):
+    """A marker from an older bundle flips the pass to force-overwrite and
+    restamps the marker with the current fingerprint."""
+    ws = _existing_ws("0" * 64)
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    assert result["auto_refreshed"] is True
+    assert "workspace-uuid-atlas/IDENTITY.md" in ws.overwrote
+    assert _MARKER_PATH in ws.overwrote
+    assert ws.if_missing_calls == []
+
+
+@pytest.mark.asyncio
+async def test_pre_marker_workspace_auto_refreshes(fake_files_dir):
+    """A workspace staged before the marker existed (read_file raises) is
+    treated as stale — this is the legacy-container case the refresh exists
+    for (an Atlas missing the bridge-URL bundle files entirely)."""
+    ws = _existing_ws(None)
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    assert result["auto_refreshed"] is True
+    assert "workspace-uuid-atlas/build.lobster" in ws.overwrote
+
+
+@pytest.mark.asyncio
+async def test_current_marker_skips_refresh(fake_files_dir):
+    """Marker matches the current bundle → plain missing-only pass, no bundle
+    overwrites (only the marker restamp goes through write_file)."""
+    from core.services.atlas_seed import _bundle_fingerprint
+
+    ws = _existing_ws(_bundle_fingerprint())
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    assert result["auto_refreshed"] is False
+    assert [p for p in ws.overwrote if not p.endswith(".isol8-seed-fingerprint")] == []
+    assert "workspace-uuid-atlas/IDENTITY.md" in ws.if_missing_calls
+
+
+@pytest.mark.asyncio
+async def test_marker_not_stamped_when_a_file_errors(fake_files_dir):
+    """A per-file write error must leave the marker unstamped so the next pass
+    through write_user_configs retries the refresh instead of believing the
+    workspace is current."""
+    ws = _existing_ws("0" * 64)
+
+    def _flaky(user_id, path, content):
+        if path.endswith("IDENTITY.md"):
+            raise OSError("EFS hiccup")
+        ws.overwrote.append(path)
+
+    ws.write_file.side_effect = _flaky
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=ws)
+    assert result["errored"] == 1
+    assert _MARKER_PATH not in ws.overwrote
+
+
+@pytest.mark.asyncio
+async def test_fresh_workspace_stays_missing_only_and_stamps_marker(workspace_stub, fake_files_dir):
+    """A fresh workspace (dir absent) never auto-refreshes — everything is new
+    anyway — and records the bundle it received so later passes can compare."""
+    result = await pre_stage_atlas(owner_id="user_x", paperclip_agents=_AGENTS, workspace=workspace_stub)
+    assert result["auto_refreshed"] is False
+    stamped = [c.args[1] for c in workspace_stub.write_file.call_args_list]
+    assert _MARKER_PATH in stamped

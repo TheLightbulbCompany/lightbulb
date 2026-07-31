@@ -10,6 +10,11 @@ This script calls ``pre_stage_atlas(..., force=True)``, which OVERWRITES every
 staged file via ``Workspace.write_file`` instead, bringing an existing
 container current with the repo bundle.
 
+Since the bundle-fingerprint auto-refresh shipped, any pass through
+``write_user_configs`` (fresh provision, reprovision, admin regenerate-config)
+detects a stale bundle and refreshes it automatically — this script remains as
+the explicit, immediate lever that doesn't wait for one of those passes.
+
 Scope — what this touches and what it does NOT:
 
 * Touches ONLY Atlas's workspace files on EFS

@@ -7,8 +7,12 @@ Paperclip mirror — in sync.
 Verification uses the svix HMAC-SHA256 signature scheme:
   https://docs.svix.com/receiving/verifying-payloads/how
 
-If CLERK_WEBHOOK_SECRET is not configured the signature check is skipped
-(safe for local dev; must be set in production).
+The signature is the ONLY authentication on this endpoint, so verification
+fails CLOSED in every deployed env: a missing or malformed
+CLERK_WEBHOOK_SECRET returns 503 rather than waving traffic through. The
+check is skipped only when ENVIRONMENT is unset (bare local dev), where no
+Clerk instance signs anything. Note the LocalStack stage sets ENVIRONMENT
+to "local", so that flow fails closed too.
 
 **Paperclip provisioning dispatch**:
 
@@ -50,6 +54,11 @@ from core.services.paperclip_provisioning import (
 from core.services.update_service import PAPERCLIP_RETRY_KIND
 
 logger = logging.getLogger(__name__)
+
+# How far a svix-timestamp may sit from now before the payload is treated as
+# a replay. svix's own recommendation; applied in both directions so ordinary
+# clock skew between Clerk and the task doesn't reject live traffic.
+_SVIX_TOLERANCE_S = 300
 
 router = APIRouter()
 
@@ -104,6 +113,21 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     if not msg_id or not msg_timestamp or not msg_signature:
         put_metric("webhook.clerk.sig_fail")
         raise HTTPException(status_code=400, detail="Missing svix signature headers")
+
+    # Reject payloads outside the replay window. The timestamp is part of the
+    # signed content, so it can't be edited without breaking the HMAC — but
+    # without a freshness check a captured valid (payload, signature) pair
+    # stays replayable forever, and replaying a `user.deleted` is exactly the
+    # destructive action the signature is here to prevent. svix recommends a
+    # ~5 minute tolerance; allow it in both directions to absorb clock skew.
+    try:
+        age = abs(time.time() - int(msg_timestamp))
+    except ValueError:
+        put_metric("webhook.clerk.sig_fail")
+        raise HTTPException(status_code=400, detail="Malformed svix timestamp")
+    if age > _SVIX_TOLERANCE_S:
+        put_metric("webhook.clerk.sig_stale")
+        raise HTTPException(status_code=400, detail="svix timestamp outside tolerance")
 
     signed_content = f"{msg_id}.{msg_timestamp}.".encode() + body
     expected = hmac.new(key, signed_content, hashlib.sha256).digest()

@@ -11,24 +11,27 @@ channel_link rows and disables Paperclip for an arbitrary user id.
 import base64
 import hashlib
 import hmac
+import time
 
 import pytest
 from fastapi import HTTPException
 
 from core.config import settings
-from routers.webhooks import _verify_svix_signature
+from routers.webhooks import _SVIX_TOLERANCE_S, _verify_svix_signature
 
 _KEY = b"0123456789abcdef0123456789abcdef"
 _SECRET = "whsec_" + base64.b64encode(_KEY).decode()
 _BODY = b'{"type":"user.created","data":{"id":"u_1"}}'
 _MSG_ID = "msg_1"
-_TS = "1700000000"
 
 
-def _signed_headers(key: bytes = _KEY, body: bytes = _BODY) -> dict:
-    signed = f"{_MSG_ID}.{_TS}.".encode() + body
+def _signed_headers(key: bytes = _KEY, body: bytes = _BODY, age_s: float = 0) -> dict:
+    """Sign like svix does. The timestamp must be generated relative to NOW —
+    a hardcoded one drifts out of the replay window and the tests rot."""
+    ts = str(int(time.time() - age_s))
+    signed = f"{_MSG_ID}.{ts}.".encode() + body
     sig = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
-    return {"svix-id": _MSG_ID, "svix-timestamp": _TS, "svix-signature": f"v1,{sig}"}
+    return {"svix-id": _MSG_ID, "svix-timestamp": ts, "svix-signature": f"v1,{sig}"}
 
 
 def test_deployed_env_with_no_secret_rejects(monkeypatch):
@@ -97,6 +100,51 @@ def test_missing_svix_headers_rejected(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         _verify_svix_signature(_BODY, {})
+
+    assert exc.value.status_code == 400
+
+
+def test_replayed_old_payload_is_rejected(monkeypatch):
+    """A captured (payload, signature) pair stays valid forever without a
+    freshness check — and replaying a user.deleted is the exact destructive
+    action the signature exists to prevent."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "CLERK_WEBHOOK_SECRET", _SECRET)
+
+    stale = _signed_headers(age_s=_SVIX_TOLERANCE_S + 60)
+    with pytest.raises(HTTPException) as exc:
+        _verify_svix_signature(_BODY, stale)
+
+    assert exc.value.status_code == 400
+
+
+def test_future_timestamp_beyond_tolerance_is_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "CLERK_WEBHOOK_SECRET", _SECRET)
+
+    with pytest.raises(HTTPException) as exc:
+        _verify_svix_signature(_BODY, _signed_headers(age_s=-(_SVIX_TOLERANCE_S + 60)))
+
+    assert exc.value.status_code == 400
+
+
+def test_clock_skew_within_tolerance_still_accepted(monkeypatch):
+    """Ordinary skew between Clerk and the task must NOT reject live traffic."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "CLERK_WEBHOOK_SECRET", _SECRET)
+
+    _verify_svix_signature(_BODY, _signed_headers(age_s=_SVIX_TOLERANCE_S - 30))
+    _verify_svix_signature(_BODY, _signed_headers(age_s=-(_SVIX_TOLERANCE_S - 30)))
+
+
+def test_non_numeric_timestamp_is_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+    monkeypatch.setattr(settings, "CLERK_WEBHOOK_SECRET", _SECRET)
+
+    headers = _signed_headers()
+    headers["svix-timestamp"] = "not-a-number"
+    with pytest.raises(HTTPException) as exc:
+        _verify_svix_signature(_BODY, headers)
 
     assert exc.value.status_code == 400
 

@@ -20,7 +20,11 @@ describe("LogRow", () => {
   it("renders collapsed by default with timestamp + level + message", () => {
     render(<LogRow entry={baseEntry} />);
 
-    expect(screen.getByText(baseEntry.timestamp)).toBeInTheDocument();
+    // Admin timestamps render relatively (#1140); >7d old falls back to the
+    // date, and the absolute ISO stays on the <time> element's attributes.
+    const when = screen.getByText("2026-04-18");
+    expect(when.tagName).toBe("TIME");
+    expect(when.getAttribute("dateTime")).toBe(new Date(baseEntry.timestamp).toISOString());
     expect(screen.getByText("ERROR")).toBeInTheDocument();
     expect(screen.getByText(baseEntry.message)).toBeInTheDocument();
     // Collapsed: raw json and correlation id are not visible.

@@ -5,8 +5,15 @@ import { HandlePicker } from "../HandlePicker";
 
 // Default to personal user — tests override via mockUseOrganization.
 const mockUseOrganization = vi.fn(() => ({ membership: null as null | { role: string } }));
+// `getToken` MUST keep a stable identity across renders, the way Clerk's real
+// hook does. HandlePicker's availability-check effect lists it in its deps, so
+// minting a fresh vi.fn() per render re-fires the effect -> setStatus -> render
+// -> forever. That spun the worker until it died with ERR_WORKER_OUT_OF_MEMORY,
+// and vitest reported this whole file as "pending" — three tests that silently
+// never ran.
+const mockGetToken = vi.fn().mockResolvedValue("test-token");
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ getToken: vi.fn().mockResolvedValue("test-token") }),
+  useAuth: () => ({ getToken: mockGetToken }),
   useOrganization: () => mockUseOrganization(),
 }));
 

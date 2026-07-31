@@ -53,8 +53,13 @@ describe("computeFit", () => {
 describe("panForZoomToward", () => {
   test("keeps the anchor visually fixed when zooming", () => {
     // Anchor at origin: pan is just scaled.
+    //   nextPan = a - (to/from) * (a - pan) = 0 - 2 * (0 - 100) = 200
+    // Sanity-check against the render transform (`translate(pan) scale(zoom)`
+    // with transform-origin 0 0, so viewport = pan + zoom * content): the
+    // content point under the anchor is (0 - 100) / 1 = -100 before and
+    // (0 - 200) / 2 = -100 after — i.e. the anchor is fixed.
     const next = panForZoomToward({ x: 100, y: 100 }, 1, 2, { x: 0, y: 0 });
-    expect(next).toEqual({ x: -100, y: -100 });
+    expect(next).toEqual({ x: 200, y: 200 });
   });
 
   test("anchor at a point leaves that point invariant under the transform", () => {

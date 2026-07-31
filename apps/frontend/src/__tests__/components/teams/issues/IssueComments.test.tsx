@@ -1,5 +1,15 @@
 import { describe, test, expect, vi } from "vitest";
 import { render, fireEvent, screen, waitFor } from "@testing-library/react";
+
+// A failed post surfaces as a sonner toast rather than an inline alert (#898),
+// and no <Toaster /> is mounted in jsdom — so spy on the notify call. Spread
+// the real module so the rest of the tree keeps its other notify helpers.
+const mockNotifyApiError = vi.fn();
+vi.mock("@/lib/notify", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/notify")>()),
+  notifyApiError: (err: unknown, fallback?: string) => mockNotifyApiError(err, fallback),
+}));
+
 import { IssueComments } from "@/components/teams/issues/IssueComments";
 import type { IssueComment } from "@/components/teams/shared/types";
 
@@ -71,14 +81,17 @@ describe("IssueComments", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  test("error from onSubmit is displayed", async () => {
-    const onSubmit = vi.fn().mockRejectedValue(new Error("server boom"));
+  test("error from onSubmit is surfaced", async () => {
+    mockNotifyApiError.mockClear();
+    const failure = new Error("server boom");
+    const onSubmit = vi.fn().mockRejectedValue(failure);
     render(<IssueComments comments={[]} agents={[]} onSubmit={onSubmit} />);
     const textarea = screen.getByPlaceholderText(/add a comment/i);
     fireEvent.change(textarea, { target: { value: "test" } });
     fireEvent.click(screen.getByRole("button", { name: /comment/i }));
-    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
-    expect(screen.getByRole("alert")).toHaveTextContent(/server boom/);
+    await waitFor(() =>
+      expect(mockNotifyApiError).toHaveBeenCalledWith(failure, "Failed to post comment"),
+    );
   });
 
   test("renders comment body as markdown", () => {

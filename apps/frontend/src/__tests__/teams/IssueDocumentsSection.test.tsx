@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 
 const read = vi.fn();
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({ read }) }));
 
 import { IssueDocumentsSection } from "@/components/teams/issues/IssueDocumentsSection";
+
+// Each document row carries more than one button since the plan-doc review
+// affordances landed (expand toggle + comments toggle + revision menu), so
+// scope every button query to its own <li> row instead of the whole section.
+function expandToggles(): HTMLElement[] {
+  return screen
+    .getAllByRole("listitem")
+    .map((row) => within(row).getAllByRole("button")[0]);
+}
 
 function doc(id: string, key: string, body: string, updatedAt: string, title: string | null = null) {
   return { id, key, body, title, updatedAt, createdAt: updatedAt };
@@ -29,7 +38,7 @@ describe("IssueDocumentsSection", () => {
     });
     render(<IssueDocumentsSection issueId="iss1" agents={[]} />);
     expect(screen.getByText(/Documents/)).toBeInTheDocument();
-    const toggles = screen.getAllByRole("button");
+    const toggles = expandToggles();
     expect(toggles[0]).toHaveTextContent(/plan/i);   // newest first
     expect(toggles[1]).toHaveTextContent(/report/i);
     expect(screen.getByText("Q2 Earnings")).toBeInTheDocument();   // title shown when present & != key
@@ -46,7 +55,7 @@ describe("IssueDocumentsSection", () => {
     // the redundant title "Report" (≈ key "report") is hidden…
     expect(screen.queryByText("Report")).toBeNull();
     // …but the key badge ("report") still renders
-    expect(screen.getByRole("button")).toHaveTextContent(/report/i);
+    expect(expandToggles()[0]).toHaveTextContent(/report/i);
   });
 
   it("expands a document to render its markdown body", () => {
@@ -56,7 +65,7 @@ describe("IssueDocumentsSection", () => {
     });
     render(<IssueDocumentsSection issueId="iss1" agents={[]} />);
     expect(screen.queryByText("Hello section")).toBeNull();
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(expandToggles()[0]);
     expect(screen.getByText("Hello section")).toBeInTheDocument();
   });
 });

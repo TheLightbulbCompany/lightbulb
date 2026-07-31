@@ -83,8 +83,13 @@ vi.mock("@/hooks/useAgents", () => ({
   agentDisplayName: (a: { name?: string; identity?: { name?: string } }) =>
     a.identity?.name || a.name || "?",
 }));
+// `getToken` MUST keep a stable identity across renders, the way Clerk's real
+// hook does. PublishWizard's seller-profile pre-flight effect lists it in its
+// deps, so minting a fresh vi.fn() per render re-fires the effect -> setState
+// -> render -> forever, until the worker dies with ERR_WORKER_OUT_OF_MEMORY.
+const mockGetToken = vi.fn().mockResolvedValue("tok_abc");
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok_abc") }),
+  useAuth: () => ({ getToken: mockGetToken }),
   // PublishWizard now reads useOrganization via useMarketplaceWriteGate.
   // null membership = personal user → wizard renders normally.
   useOrganization: () => ({ membership: null }),

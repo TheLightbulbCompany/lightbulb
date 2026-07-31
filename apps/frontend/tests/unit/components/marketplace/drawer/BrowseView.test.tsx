@@ -20,13 +20,20 @@ vi.mock("@/hooks/useAgents", () => ({
 
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({
-    state: { freshlyInstalledAgentId: null, toast: null },
+    // `installedSlugs` is the optimistic just-hired overlay BrowseView unions
+    // with the catalog's set — omit it and every ListingCard render throws on
+    // `state.installedSlugs.has(...)`.
+    state: { freshlyInstalledAgentId: null, installedSlugs: new Set<string>(), toast: null },
     open: vi.fn(),
     close: vi.fn(),
     setView: vi.fn(),
+    startEditListing: vi.fn(),
+    openListingDetail: vi.fn(),
     showInstallToast: vi.fn(),
+    showErrorToast: vi.fn(),
     dismissToast: vi.fn(),
     setFreshlyInstalled: vi.fn(),
+    markInstalled: vi.fn(),
   }),
 }));
 

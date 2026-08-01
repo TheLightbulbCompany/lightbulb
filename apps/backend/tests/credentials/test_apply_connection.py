@@ -81,15 +81,36 @@ async def test_apply_non_materializer_returns_none(monkeypatch):
         return None
 
     monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", _set)
-    result = await ac.apply_connection("org_1", "stripe", {"token": "sk_live_X"})
+    result = await ac.apply_connection("org_1", "parallel", {"token": "pk_X"})
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_apply_mcp_server_writes_full_block(monkeypatch):
-    # stripe's mcp_server wiring installs the full {command, args, env} server
-    # block at mcp.servers.stripe in one write — the integration OWNS that key.
+    # The mcp_server rail installs the full {command, args, env} server block at
+    # mcp.servers.<key> in one write — the integration OWNS that key. No registry
+    # provider rides this rail today (stripe moved to its hosted remote MCP), so
+    # pin the rail with a synthetic stdio provider.
     from core.services.credentials import apply_connection as ac
+    from core.services.credentials import registry
+    from core.services.credentials.registry import McpServer, Provider, Wiring
+
+    provider = Provider(
+        key="acme",
+        display_name="Acme",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(
+            mcp_server=McpServer(
+                key="acme",
+                command="npx",
+                args=["-y", "@acme/mcp@1.0.0"],
+                env={"ACME_API_KEY": "input.token"},
+            )
+        ),
+    )
+    monkeypatch.setattr(registry, "get_provider", lambda key: provider)
 
     calls = []
 
@@ -97,15 +118,15 @@ async def test_apply_mcp_server_writes_full_block(monkeypatch):
         calls.append((owner, path, value))
 
     monkeypatch.setattr(ac.config_patcher, "set_openclaw_config_path", _set)
-    await ac.apply_connection("org_1", "stripe", {"token": "sk_live_X"})
+    await ac.apply_connection("org_1", "acme", {"token": "sk_live_X"})
     assert calls == [
         (
             "org_1",
-            ["mcp", "servers", "stripe"],
+            ["mcp", "servers", "acme"],
             {
                 "command": "npx",
-                "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
-                "env": {"STRIPE_SECRET_KEY": "sk_live_X"},
+                "args": ["-y", "@acme/mcp@1.0.0"],
+                "env": {"ACME_API_KEY": "sk_live_X"},
                 "connectionTimeoutMs": 120000,
             },
         )

@@ -845,7 +845,13 @@ oauth_router = APIRouter(prefix="/oauth", tags=["connections"])
 
 
 @oauth_router.get("/{provider}/callback")
-async def oauth_callback(provider: str, code: str, state: str):
+async def oauth_callback(provider: str, state: str, code: str | None = None):
+    # RFC 6749 error redirect: the provider bounced the authorize (?error=
+    # access_denied|invalid_scope|…&state=…) so no code was issued. Land back on
+    # the connections page instead of 422ing raw JSON in the user's browser; the
+    # provider's error code is in the access log.
+    if not code:
+        return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_provider")
     try:
         owner_id, prov, credential = await oauth_dance.exchange(state, code, redirect_uri=_redirect_uri(provider))
     except ValueError:

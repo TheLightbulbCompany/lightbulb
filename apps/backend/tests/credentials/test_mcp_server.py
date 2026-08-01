@@ -4,15 +4,6 @@ from unittest.mock import AsyncMock
 from core.services.credentials.mcp_server import build_mcp_server_block
 
 
-def test_build_block_from_paste_credential():
-    assert build_mcp_server_block("stripe", {"token": "sk_live_X"}) == {
-        "command": "npx",
-        "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
-        "env": {"STRIPE_SECRET_KEY": "sk_live_X"},
-        "connectionTimeoutMs": 120000,
-    }
-
-
 def test_resolve_source_literal_returns_static_string():
     # `literal:` lets a provider set a static env value (e.g. a feature flag)
     # with no dependence on the credential or raw input.
@@ -55,14 +46,37 @@ def test_build_block_none_for_non_mcp_provider():
 
 @pytest.mark.asyncio
 async def test_build_connected_map_skips_actor_and_unretained(monkeypatch):
+    # No registry provider rides the stdio mcp_server rail today (stripe moved to
+    # its hosted remote MCP), so pin the rail with a synthetic provider: a
+    # retained-secret mcp_server row is emitted; the actor-refresh one (google,
+    # real registry) is excluded.
     from core.services.credentials import mcp_server as m
+    from core.services.credentials.registry import McpServer, Provider, Wiring
+
+    acme = Provider(
+        key="acme",
+        display_name="Acme",
+        acquisition="paste_token",
+        actor="mcp",
+        refresh_owner="none",
+        wiring=Wiring(
+            mcp_server=McpServer(
+                key="acme",
+                command="npx",
+                args=["-y", "@acme/mcp@1.0.0"],
+                env={"ACME_API_KEY": "input.token"},
+            )
+        ),
+    )
+    real_get = m.registry.get_provider
+    monkeypatch.setattr(m.registry, "get_provider", lambda key: acme if key == "acme" else real_get(key))
 
     monkeypatch.setattr(
         m.integrations_repo,
         "list_for_owner",
         AsyncMock(
             return_value=[
-                {"provider": "stripe", "status": "connected"},
+                {"provider": "acme", "status": "connected"},
                 {"provider": "google", "status": "connected"},
             ]
         ),
@@ -70,14 +84,14 @@ async def test_build_connected_map_skips_actor_and_unretained(monkeypatch):
     monkeypatch.setattr(
         m.integration_secret_store,
         "get",
-        AsyncMock(side_effect=lambda o, p: {"token": "sk_X"} if p == "stripe" else None),
+        AsyncMock(side_effect=lambda o, p: {"token": "sk_X"} if p == "acme" else None),
     )
     servers = await m.build_connected_integration_servers("org_1")
     assert servers == {
-        "stripe": {
+        "acme": {
             "command": "npx",
-            "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
-            "env": {"STRIPE_SECRET_KEY": "sk_X"},
+            "args": ["-y", "@acme/mcp@1.0.0"],
+            "env": {"ACME_API_KEY": "sk_X"},
             "connectionTimeoutMs": 120000,
         }
     }
@@ -85,12 +99,12 @@ async def test_build_connected_map_skips_actor_and_unretained(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_connected_map_emits_remote_block_without_retained_secret(monkeypatch):
-    # An mcp_remote provider (attio) rides the materializer rail and self-refreshes
-    # in-container, so it has NO retained Secrets-Manager secret. Its live
-    # {transport, url} block must still be emitted from the registry + connected
-    # status alone — otherwise a reprovision drops the server entry. The mcp_server
-    # provider (stripe) is still included; the actor-refresh one (google) excluded.
-    # Uses the real registry attio entry, so it pins the YAML mcp_remote wiring.
+    # An mcp_remote provider (attio, stripe) rides the materializer rail and
+    # self-refreshes in-container, so it has NO retained Secrets-Manager secret.
+    # Its live {transport, url} block must still be emitted from the registry +
+    # connected status alone — otherwise a reprovision drops the server entry.
+    # The actor-refresh CLI one (google) stays excluded. Uses the real registry
+    # entries, so it pins the YAML mcp_remote wiring.
     from core.services.credentials import mcp_server as m
 
     monkeypatch.setattr(
@@ -104,9 +118,9 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
             ]
         ),
     )
-    # attio + google have no retained secret; stripe does. get() must NOT gate the
-    # attio remote block (it is never consulted for it).
-    secret_get = AsyncMock(side_effect=lambda o, p: {"token": "sk_X"} if p == "stripe" else None)
+    # None of the three has a retained secret; get() must NOT gate a remote block
+    # (it is never consulted for one).
+    secret_get = AsyncMock(return_value=None)
     monkeypatch.setattr(m.integration_secret_store, "get", secret_get)
 
     servers = await m.build_connected_integration_servers("org_1")
@@ -120,10 +134,10 @@ async def test_build_connected_map_emits_remote_block_without_retained_secret(mo
             "requestTimeoutMs": 60000,
         },
         "stripe": {
-            "command": "npx",
-            "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
-            "env": {"STRIPE_SECRET_KEY": "sk_X"},
-            "connectionTimeoutMs": 120000,
+            "transport": "streamable-http",
+            "url": "https://mcp.stripe.com",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
         },
     }
 
@@ -159,18 +173,14 @@ async def test_build_connected_map_skips_orphan_unknown_provider(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr(
-        m.integration_secret_store,
-        "get",
-        AsyncMock(side_effect=lambda o, p: {"token": "sk_X"} if p == "stripe" else None),
-    )
+    monkeypatch.setattr(m.integration_secret_store, "get", AsyncMock(return_value=None))
     servers = await m.build_connected_integration_servers("org_1")
     assert servers == {
         "stripe": {
-            "command": "npx",
-            "args": ["-y", "@stripe/mcp@0.3.3", "--tools=all"],
-            "env": {"STRIPE_SECRET_KEY": "sk_X"},
-            "connectionTimeoutMs": 120000,
+            "transport": "streamable-http",
+            "url": "https://mcp.stripe.com",
+            "auth": "oauth",
+            "requestTimeoutMs": 60000,
         }
     }
 

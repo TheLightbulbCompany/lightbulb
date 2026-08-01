@@ -849,8 +849,46 @@ fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
     }
 }
 
+/// Override window.open in the WebView. WKWebView silently blocks
+/// popups, so every window.open is a dead click without this: OAuth
+/// popups reroute to the desktop sign-in flow, and any other http(s)
+/// URL (AWS console quick-create, Stripe dashboard, …) opens in the
+/// system browser via the shell plugin (shell:allow-open is granted to
+/// the remote origin). Injected from on_page_load — a one-shot eval at
+/// setup ran against the provisional document and was wiped when the
+/// remote page committed its fresh JS context.
+fn window_open_override_script() -> String {
+    format!(
+        r#"
+        (function() {{
+            const originalOpen = window.open;
+            window.open = function(url, target, features) {{
+                const href = url ? String(url) : '';
+                if (href.includes('accounts.google.com') || href.includes('clerk')) {{
+                    // Redirect to desktop sign-in flow instead
+                    window.location.href = '{}';
+                    return null;
+                }}
+                if (/^https?:/i.test(href)) {{
+                    window.__TAURI__.core.invoke('plugin:shell|open', {{ path: href }});
+                    return null;
+                }}
+                return originalOpen.call(window, url, target, features);
+            }};
+        }})();
+        "#,
+        DESKTOP_CALLBACK_URL
+    )
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                log("[page-load] injecting window.open override");
+                let _ = webview.eval(&window_open_override_script());
+            }
+        })
         // MUST be registered before any other plugin so it can hijack
         // launches from a deep-link click: macOS spawns a new process for
         // `isol8://...` URLs, and without single_instance the new process
@@ -971,36 +1009,6 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
-
-            // Override window.open in the WebView. WKWebView silently
-            // blocks popups, so every window.open is a dead click without
-            // this: OAuth popups reroute to the desktop sign-in flow, and
-            // any other http(s) URL (AWS console quick-create, Stripe
-            // dashboard, …) opens in the system browser via the shell
-            // plugin (shell:allow-open is granted to the remote origin).
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.eval(&format!(
-                    r#"
-                    (function() {{
-                        const originalOpen = window.open;
-                        window.open = function(url, target, features) {{
-                            const href = url ? String(url) : '';
-                            if (href.includes('accounts.google.com') || href.includes('clerk')) {{
-                                // Redirect to desktop sign-in flow instead
-                                window.location.href = '{}';
-                                return null;
-                            }}
-                            if (/^https?:/i.test(href)) {{
-                                window.__TAURI__.core.invoke('plugin:shell|open', {{ path: href }});
-                                return null;
-                            }}
-                            return originalOpen.call(window, url, target, features);
-                        }};
-                    }})();
-                    "#,
-                    DESKTOP_CALLBACK_URL
-                ));
-            }
 
             // Handle deep links (isol8:// protocol). This fires when the app
             // is already running and a cross-process deep link is delivered

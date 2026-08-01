@@ -8,15 +8,6 @@ def test_loads_known_providers():
     assert "google" in providers
 
 
-def test_paste_key_provider_shape():
-    p = registry.get_provider("stripe")
-    assert p.acquisition == "paste_token"
-    assert p.actor == "mcp"
-    assert p.refresh_owner == "none"
-    assert p.wiring.mcp_server.key == "stripe"
-    assert p.wiring.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
-
-
 def test_parallel_openclaw_paths_provider_shape():
     p = registry.get_provider("parallel")
     assert p.acquisition == "paste_token"
@@ -53,11 +44,11 @@ def test_posthog_oauth_requests_full_scope_set():
     assert "openid" in scopes
     reads = [s for s in scopes if s.endswith(":read")]
     writes = [s for s in scopes if s.endswith(":write")]
-    assert len(reads) == 92
-    assert len(writes) == 92
+    assert len(reads) == 100
+    assert len(writes) == 100
     # read/write are paired per resource: every read scope has a write twin.
     assert {s[: -len(":read")] for s in reads} == {s[: -len(":write")] for s in writes}
-    assert len(scopes) == 185
+    assert len(scopes) == 203
     assert len(scopes) == len(set(scopes))  # no duplicate scope slipped into the yaml
 
 
@@ -103,21 +94,21 @@ def test_unknown_provider_raises():
 
 
 def test_validate_key_maps_to_validation_field():
-    p = registry.get_provider("stripe")
+    p = registry.get_provider("github")
     assert p.validation is not None
     assert p.validation.method == "GET"
-    assert p.validation.url == "https://api.stripe.com/v1/account"
+    assert p.validation.url == "https://api.github.com/user"
 
 
-def test_stripe_validate_has_no_body():
-    p = registry.get_provider("stripe")
+def test_plain_get_validate_has_no_body():
+    p = registry.get_provider("github")
     assert p.validation.method == "GET"
     assert p.validation.body is None
 
 
 def test_validate_auth_scheme_is_per_provider():
-    # Stripe accepts the default Bearer scheme.
-    assert registry.get_provider("stripe").validation.auth_scheme == "Bearer"
+    # GitHub accepts the default Bearer scheme.
+    assert registry.get_provider("github").validation.auth_scheme == "Bearer"
 
 
 def test_wiring_rejects_neither_or_both():
@@ -148,27 +139,22 @@ def test_direct_oauth_requires_oauth_block():
         )  # no oauth
 
 
-def test_stripe_is_mcp_server():
-    from core.services.credentials.registry import get_provider
-
-    w = get_provider("stripe").wiring
-    assert w.mcp_server is not None and w.mcp_server.key == "stripe"
-    assert w.mcp_server.env == {"STRIPE_SECRET_KEY": "input.token"}
-
-
-# Linear, Notion, and Sentry deliver their hosted MCP over OAuth rather than a
-# local npx stdio process, so they ride the mcp_oauth materializer rail (their
-# remote-server metadata under mcp_remote), like Attio.
+# Linear, Notion, Sentry, Intercom, and Stripe deliver their hosted MCP over
+# OAuth rather than a local npx stdio process, so they ride the mcp_oauth
+# materializer rail (their remote-server metadata under mcp_remote), like Attio.
+# Stripe's URL is pathless on purpose — it must match the advertised
+# protected-resource value exactly for RFC 8707 token audiencing.
 @pytest.mark.parametrize(
-    "key,host",
+    "key,url",
     [
-        ("notion", "https://mcp.notion.com"),
-        ("linear", "https://mcp.linear.app"),
-        ("sentry", "https://mcp.sentry.dev"),
-        ("intercom", "https://mcp.intercom.com"),
+        ("notion", "https://mcp.notion.com/mcp"),
+        ("linear", "https://mcp.linear.app/mcp"),
+        ("sentry", "https://mcp.sentry.dev/mcp"),
+        ("intercom", "https://mcp.intercom.com/mcp"),
+        ("stripe", "https://mcp.stripe.com"),
     ],
 )
-def test_hosted_oauth_mcp_provider_shape(key, host):
+def test_hosted_oauth_mcp_provider_shape(key, url):
     from core.services.credentials.registry import all_providers, get_provider
 
     assert key in all_providers()
@@ -181,7 +167,7 @@ def test_hosted_oauth_mcp_provider_shape(key, host):
     assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
     assert p.mcp_remote is not None
     assert p.mcp_remote.key == key
-    assert p.mcp_remote.url == f"{host}/mcp"
+    assert p.mcp_remote.url == url
     assert p.mcp_remote.transport == "streamable-http"
     # DCR mints a public PKCE client; not BYO, no local validate spec.
     assert p.oauth.registration_url is not None

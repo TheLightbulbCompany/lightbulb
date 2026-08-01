@@ -25,11 +25,11 @@ from routers import connections
 
 class TestValidateToken:
     """``_validate_token`` builds the Authorization header from the per-provider
-    validate ``auth_scheme`` (Stripe = ``Bearer <key>``) and sends the optional
-    JSON ``body`` when the spec defines one."""
+    validate ``auth_scheme`` (vercel_cli = ``Bearer <key>``) and sends the
+    optional JSON ``body`` when the spec defines one."""
 
     @pytest.mark.asyncio
-    async def test_stripe_gets_with_bearer_authorization_header_and_no_body(self, monkeypatch):
+    async def test_vercel_gets_with_bearer_authorization_header_and_no_body(self, monkeypatch):
         from routers import connections
         from core.services.credentials import registry
 
@@ -43,11 +43,11 @@ class TestValidateToken:
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
 
-        ok = await connections._validate_token(registry.get_provider("stripe"), "sk_test_KEY")
+        ok = await connections._validate_token(registry.get_provider("vercel_cli"), "vc_test_KEY")
         assert ok is True
-        # Stripe: GET, default Bearer scheme, no JSON body.
+        # vercel_cli: GET, default Bearer scheme, no JSON body.
         assert captured["method"] == "GET"
-        assert captured["headers"]["Authorization"] == "Bearer sk_test_KEY"
+        assert captured["headers"]["Authorization"] == "Bearer vc_test_KEY"
         assert captured["json"] is None
 
     @pytest.mark.asyncio
@@ -59,7 +59,7 @@ class TestValidateToken:
             return httpx.Response(401)
 
         monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-        assert await connections._validate_token(registry.get_provider("stripe"), "bad") is False
+        assert await connections._validate_token(registry.get_provider("vercel_cli"), "bad") is False
 
     @pytest.mark.asyncio
     async def test_static_validate_headers_are_sent(self, monkeypatch):
@@ -235,7 +235,7 @@ class TestListConnections:
         assert by_key["google"]["status"] == "disconnected"
         # Catalog metadata surfaced from the registry.
         assert by_key["stripe"]["display_name"] == "Stripe"
-        assert by_key["stripe"]["acquisition"] == "paste_token"
+        assert by_key["stripe"]["acquisition"] == "direct_oauth"
         assert by_key["google"]["acquisition"] == "direct_oauth"
 
         # Status now comes from the secret-free integrations index.
@@ -431,22 +431,22 @@ class TestConnectPaste:
         mock_repo.put_status = AsyncMock(side_effect=lambda *a, **k: call_order.append("put_status"))
         mock_apply.apply_connection = AsyncMock(side_effect=lambda *a, **k: call_order.append("apply"))
 
-        response = await async_client.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
+        response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
         assert response.status_code == 200
-        assert response.json() == {"status": "connected", "provider": "stripe"}
+        assert response.json() == {"status": "connected", "provider": "vercel_cli"}
 
         # Credential persisted to Secrets Manager with the pasted token.
         mock_store.put.assert_awaited_once()
         put_args = mock_store.put.await_args
         assert put_args.args[0] == "user_test_123"
-        assert put_args.args[1] == "stripe"
-        assert put_args.args[2] == {"token": "sk_test_abc123"}
+        assert put_args.args[1] == "vercel_cli"
+        assert put_args.args[2] == {"token": "vc_test_abc123"}
 
         # Wiring engine invoked with (owner, provider, credential).
-        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "stripe", {"token": "sk_test_abc123"})
+        mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "vercel_cli", {"token": "vc_test_abc123"})
 
         # Status row written ONLY after a successful apply.
-        mock_repo.put_status.assert_awaited_once_with("user_test_123", "stripe", "connected")
+        mock_repo.put_status.assert_awaited_once_with("user_test_123", "vercel_cli", "connected")
 
         # Load-bearing ordering: store secret -> wire container -> mark connected.
         # A put_status written before apply would falsely report "connected"
@@ -469,7 +469,7 @@ class TestConnectPaste:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
-        response = await async_client.post("/api/v1/connections/stripe", json={"token": "bad"})
+        response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "bad"})
         assert response.status_code == 422
         # Nothing persisted / wired / indexed when validation fails.
         mock_store.put.assert_not_called()
@@ -491,16 +491,16 @@ class TestConnectPaste:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock(side_effect=RuntimeError("efs write failed"))
 
-        response = await async_client.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
+        response = await async_client.post("/api/v1/connections/parallel", json={"token": "pk_test_abc123"})
         # Wiring failure surfaces as a 502 — the connection never reports a false "connected".
         assert response.status_code == 502
 
         # The secret was stored, then rolled back out of Secrets Manager.
         mock_store.put.assert_awaited_once()
-        mock_store.delete.assert_awaited_once_with("user_test_123", "stripe")
+        mock_store.delete.assert_awaited_once_with("user_test_123", "parallel")
         # Status is written only after a clean apply -> never on the failure path.
         mock_repo.put_status.assert_not_called()
-        # stripe is mcp_server (no materializer) -> the EFS-artifact rollback is a no-op.
+        # parallel rides openclaw_paths (no materializer) -> the EFS-artifact rollback is a no-op.
         mock_removers.get.assert_not_called()
 
     @pytest.mark.asyncio
@@ -583,14 +583,14 @@ class TestConnectionWriteOrgAdminGate:
         mock_repo.put_status = AsyncMock()
         mock_apply.apply_connection = AsyncMock()
 
-        response = await async_client_org_admin.post("/api/v1/connections/stripe", json={"token": "sk_test_abc123"})
+        response = await async_client_org_admin.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
         # Admin clears the gate; write targets the shared org workspace.
         assert response.status_code == 200
-        assert response.json() == {"status": "connected", "provider": "stripe"}
+        assert response.json() == {"status": "connected", "provider": "vercel_cli"}
         put_args = mock_store.put.await_args
         assert put_args.args[0] == "org_test_456"
-        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "stripe", {"token": "sk_test_abc123"})
-        mock_repo.put_status.assert_awaited_once_with("org_test_456", "stripe", "connected")
+        mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "vercel_cli", {"token": "vc_test_abc123"})
+        mock_repo.put_status.assert_awaited_once_with("org_test_456", "vercel_cli", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -725,21 +725,39 @@ class TestDisconnect:
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
-    async def test_disconnect_removes_mcp_server_block(self, mock_repo, mock_store, mock_patcher, async_client):
-        # stripe is an mcp_server provider: disconnect removes the whole
-        # mcp.servers.stripe block so no live-token server block lingers on EFS.
+    async def test_disconnect_removes_mcp_server_block(
+        self, mock_repo, mock_store, mock_patcher, async_client, monkeypatch
+    ):
+        # No catalog provider rides the stdio mcp_server rail today (stripe moved
+        # to the hosted mcp_oauth rail), but the rail is still a legal wiring
+        # shape: disconnect must remove the whole mcp.servers.<key> block so no
+        # live-token server block lingers on EFS.
+        from routers import connections
+        from core.services.credentials.registry import Provider
+
+        p = Provider(
+            key="fakemcp",
+            display_name="Fake MCP",
+            acquisition="paste_token",
+            actor="mcp",
+            refresh_owner="none",
+            wiring={"mcp_server": {"key": "fakemcp", "command": "npx", "args": [], "env": {"K": "input.token"}}},
+        )
+        monkeypatch.setattr(connections.registry, "get_provider", lambda key: p)
         mock_repo.delete = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_patcher.delete_openclaw_config_path = AsyncMock()
 
-        response = await async_client.delete("/api/v1/connections/stripe")
+        response = await async_client.delete("/api/v1/connections/fakemcp")
         assert response.status_code == 200
-        assert response.json() == {"status": "disconnected", "provider": "stripe"}
+        assert response.json() == {"status": "disconnected", "provider": "fakemcp"}
 
         # Secret + status row dropped, and the integration-owned server removed.
-        mock_store.delete.assert_awaited_once_with("user_test_123", "stripe")
-        mock_repo.delete.assert_awaited_once_with("user_test_123", "stripe")
-        mock_patcher.delete_openclaw_config_path.assert_awaited_once_with("user_test_123", ["mcp", "servers", "stripe"])
+        mock_store.delete.assert_awaited_once_with("user_test_123", "fakemcp")
+        mock_repo.delete.assert_awaited_once_with("user_test_123", "fakemcp")
+        mock_patcher.delete_openclaw_config_path.assert_awaited_once_with(
+            "user_test_123", ["mcp", "servers", "fakemcp"]
+        )
 
     @pytest.mark.asyncio
     @patch("routers.connections.config_patcher")
@@ -987,8 +1005,8 @@ class TestAuthorize:
 
     @pytest.mark.asyncio
     async def test_authorize_non_oauth_provider_returns_400(self, async_client):
-        # stripe is paste_token, not an OAuth integration.
-        response = await async_client.get("/api/v1/connections/stripe/authorize")
+        # vercel_cli is paste_token, not an OAuth integration.
+        response = await async_client.get("/api/v1/connections/vercel_cli/authorize")
         assert response.status_code == 400
 
     @pytest.mark.asyncio
@@ -1037,6 +1055,18 @@ class TestOAuthCallback:
         mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
         # Status row written after a clean apply.
         mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
+
+    @pytest.mark.asyncio
+    async def test_callback_redirects_on_provider_error_redirect(self, async_client):
+        # RFC 6749 error redirect: the provider sends ?error=…&state=… and no
+        # code (denied consent, invalid_scope, …). Must land on the connections
+        # page with a banner, not 422 raw JSON in the user's browser.
+        response = await async_client.get(
+            "/api/v1/oauth/posthog/callback?error=invalid_scope&state=st1",
+            follow_redirects=False,
+        )
+        assert response.status_code in (302, 307)
+        assert "error=oauth_provider" in response.headers["location"]
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")

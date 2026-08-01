@@ -176,7 +176,9 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     if p.mcp_remote is not None:
         data["resource"] = p.mcp_remote.url
     async with httpx.AsyncClient(timeout=15) as http:
-        resp = await http.post(p.oauth.token_url, data=data)
+        # GitHub's token endpoint answers form-encoded unless asked for JSON;
+        # every other provider returns JSON regardless, so this is universal.
+        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"})
         resp.raise_for_status()
         tok = resp.json()
         # Instagram's code exchange yields a ~1h token; agents need the ~60d one.

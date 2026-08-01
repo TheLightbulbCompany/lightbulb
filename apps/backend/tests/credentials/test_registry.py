@@ -232,14 +232,22 @@ def test_wiring_accepts_exactly_one_of_three():
 
 def test_github_is_on_materializer_rail():
     # GitHub uses the gh CLI (baked into the image) via the materializer rail —
-    # a paste-token PAT seeded into gh's hosts.yml, not an mcp_server.
+    # the platform OAuth app's token seeded into gh's hosts.yml, not an mcp_server.
     p = registry.get_provider("github")
-    assert p.acquisition == "paste_token"
+    assert p.acquisition == "direct_oauth"
     assert p.actor == "cli"
+    # OAuth App tokens don't expire — nothing owns refresh.
     assert p.refresh_owner == "none"
     assert p.requires.bins == ["gh"]
     assert p.wiring.materializer == "gh_cli"
     assert p.wiring.mcp_server is None and p.wiring.openclaw_paths is None
+    # One Isol8-owned app per env, no BYO and no DCR.
+    assert p.oauth is not None
+    assert p.oauth.platform_app == "github"
+    assert not p.byo_required and p.oauth.registration_url is None
+    assert p.oauth.authorization_url == "https://github.com/login/oauth/authorize"
+    assert p.oauth.token_url == "https://github.com/login/oauth/access_token"
+    assert set(p.oauth.scopes) == {"repo", "read:org", "gist", "workflow"}
     # A bad PAT 401s, so status-based validate (no success_json_field) is enough;
     # the pinned API-version header must still ride every call.
     assert p.validation is not None

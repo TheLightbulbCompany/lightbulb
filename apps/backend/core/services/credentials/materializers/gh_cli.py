@@ -14,9 +14,10 @@ re-nests it under `hosts:` only in its in-memory merged config). The key names
 (`oauth_token`, `user`, `git_protocol`, `users`) match gh's config constants, and the
 per-user sub-map mirrors the top-level token so gh's multi-user token lookup resolves.
 
-The PAT is the owner-supplied paste token; the username is fetched from the GitHub
-`/user` endpoint with that PAT (gh stamps `user:` into hosts.yml, and a wrong value
-breaks `gh auth status` / account-scoped lookups).
+The token is whatever the acquisition rail produced — an owner-pasted PAT or the
+platform OAuth app's minted token; the username is fetched from the GitHub `/user`
+endpoint with it (gh stamps `user:` into hosts.yml, and a wrong value breaks
+`gh auth status` / account-scoped lookups).
 
 Reprovision: the gh auth lives on EFS, so a config-rewrite reprovision (which only
 touches openclaw.json) leaves it intact. A full EFS wipe drops it and needs a
@@ -50,7 +51,9 @@ def _fetch_login(token: str) -> str:
 
 
 def write(owner_id: str, provider_key: str, credential: dict) -> None:
-    token = credential["token"]
+    # Paste rail delivers {"token": ...}; the direct_oauth rail delivers the
+    # exchange payload keyed "access_token". Same shape to gh either way.
+    token = credential.get("token") or credential["access_token"]
     login = _fetch_login(token)
 
     hosts = {

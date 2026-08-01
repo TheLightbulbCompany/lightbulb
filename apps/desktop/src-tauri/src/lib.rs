@@ -972,18 +972,26 @@ end tell"#,
 
             tray::create_tray(app.handle())?;
 
-            // Override window.open in the WebView so OAuth popups open
-            // in the system browser. WKWebView silently blocks popups,
-            // so Clerk's Google OAuth popup never opens without this.
+            // Override window.open in the WebView. WKWebView silently
+            // blocks popups, so every window.open is a dead click without
+            // this: OAuth popups reroute to the desktop sign-in flow, and
+            // any other http(s) URL (AWS console quick-create, Stripe
+            // dashboard, …) opens in the system browser via the shell
+            // plugin (shell:allow-open is granted to the remote origin).
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.eval(&format!(
                     r#"
                     (function() {{
                         const originalOpen = window.open;
                         window.open = function(url, target, features) {{
-                            if (url && (url.includes('accounts.google.com') || url.includes('clerk'))) {{
+                            const href = url ? String(url) : '';
+                            if (href.includes('accounts.google.com') || href.includes('clerk')) {{
                                 // Redirect to desktop sign-in flow instead
                                 window.location.href = '{}';
+                                return null;
+                            }}
+                            if (/^https?:/i.test(href)) {{
+                                window.__TAURI__.core.invoke('plugin:shell|open', {{ path: href }});
                                 return null;
                             }}
                             return originalOpen.call(window, url, target, features);

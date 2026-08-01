@@ -88,7 +88,7 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, data=None):
+    async def post(self, url, data=None, headers=None):
         return _FakeResponse(
             {"access_token": "SHORT", "user_id": 178414123, "permissions": ["instagram_business_basic"]}
         )

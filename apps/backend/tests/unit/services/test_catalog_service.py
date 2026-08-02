@@ -225,6 +225,72 @@ async def test_deploy_falls_back_to_identity_name_for_display():
 
 
 @pytest.mark.asyncio
+async def test_deploy_backfills_entry_name_from_manifest():
+    """A slice whose agent has neither ``name`` nor ``identity`` (the
+    agent-builder path: the slice strips ``id``, which held the display name)
+    must fall back to the manifest name — for BOTH the pair RPC and the
+    file-merged entry. Without the entry backfill the aux merge wholesale-
+    replaces the entry and clobbers the display name the RPC just set,
+    leaving the sidebar showing the raw UUID after the next chokidar reload.
+    """
+    svc, _ws, apply_aux, pair_fn, _gw = _make_service()
+
+    slice_ = _slice_with_agent()
+    del slice_["agent"]["name"]
+
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="lex",
+        manifest={"name": "Lex the Legal Bot", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.5",
+        container_token="tok",
+        new_agent_id="agent_xyz",
+    )
+
+    assert pair_fn.await_args.kwargs["paperclip_agent"]["name"] == "Lex the Legal Bot"
+    assert apply_aux.await_args.kwargs["agent_entry"]["name"] == "Lex the Legal Bot"
+
+
+@pytest.mark.asyncio
+async def test_deploy_returns_dropped_keys():
+    """Sanitizer-stripped keys must ride the result dict so callers (the
+    agent-builder bridge) can surface them to the operator instead of the
+    loss dying in a CloudWatch warn."""
+    svc, _ws, _aux, _pair, _gw = _make_service()
+
+    slice_ = _slice_with_agent()
+    slice_["agent"]["archetype"] = "engineer"
+
+    result = await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.5",
+        container_token="tok",
+        new_agent_id="agent_new",
+    )
+    assert result["agent_entry_keys_dropped"] == ["archetype"]
+
+    # Clean slice → empty list, and the legacy no-agent shape must not blow
+    # up on the (previously branch-local) variable.
+    result_clean = await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_={"plugins": {}},
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.5",
+        container_token="tok",
+        new_agent_id="agent_new2",
+    )
+    assert result_clean["agent_entry_keys_dropped"] == []
+
+
+@pytest.mark.asyncio
 async def test_deploy_pair_failure_propagates_and_skips_aux():
     """If ``pair_with_openclaw`` raises, we MUST NOT proceed to the file
     merge — leaving plugins/mcp/skills for an agent the runtime doesn't

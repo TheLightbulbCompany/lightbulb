@@ -51,6 +51,8 @@ class RegisterBuiltAgentRequest(BaseModel):
     # Display name for the new agent.
     name: str = Field(..., min_length=1, max_length=120)
     # Optional org placement (Paperclip agent id the new hire reports to).
+    # None defaults to the owner's apex CEO (Friday) so built agents never
+    # land unparented in the org chart.
     reports_to: str | None = None
 
 
@@ -63,6 +65,10 @@ class RegisterBuiltAgentResponse(BaseModel):
     # Hint Atlas relays to the owner: the agent is registered but not yet listed;
     # the owner publishes it via the seller wizard.
     publish_hint: str
+    # Non-fatal degradations Atlas should relay verbatim (empty description →
+    # blank org-chart capabilities, sanitizer-dropped config keys, unresolved
+    # CEO default). Registration still succeeded when these are present.
+    warnings: list[str] = []
 
 
 def _slugify(name: str) -> str:
@@ -117,8 +123,18 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         raise HTTPException(status_code=400, detail=str(e))
 
     slice_ = package.openclaw_slice or {}
-    # Carry the built agent's description (from its own identity block, surfaced
-    # in the manifest) into the Paperclip mint so capabilities aren't empty.
+    warnings: list[str] = []
+    # Carry the built agent's description (from its entry's ``description``
+    # field, surfaced in the manifest) into the Paperclip mint so capabilities
+    # aren't empty. Warn instead of silently minting a blank org-chart card —
+    # the founders' first build (jarvis) shipped with null capabilities and
+    # nobody knew until a roster audit.
+    if not (package.manifest.get("description") or "").strip():
+        warnings.append(
+            "built agent has no description — its org-chart capabilities will be blank; "
+            "add a `description` to its agents.list entry (or a vibe in IDENTITY.md) and rebuild, "
+            "or set capabilities later in the Teams UI"
+        )
     meta = derive_from_listing(
         name=payload.name,
         description_md=package.manifest.get("description") or None,
@@ -142,6 +158,20 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         # not-ready rather than KeyError-into-misleading-rollback.
         raise HTTPException(status_code=503, detail="container not ready (no gateway token) — retry in a moment")
 
+    # Default org placement: report to the owner's apex CEO (Friday) so built
+    # agents never land unparented. Resolved only once the container is ready
+    # (after the 503 gates above) so start-up retry polls don't each cost a
+    # Paperclip fetch. Best-effort — an unreachable Paperclip degrades to the
+    # old unparented behavior with a warning, never a failure.
+    reports_to = payload.reports_to
+    if not reports_to:
+        reports_to = await agent_export.resolve_apex_ceo_agent_id(owner_id=owner_id)
+        if not reports_to:
+            warnings.append(
+                "could not resolve the company CEO — the agent is unparented in the org chart; "
+                "set its manager in the Teams UI"
+            )
+
     # 3. Mint the Paperclip agent (shares the UUID threaded into deploy as
     #    new_agent_id). Wrap the mint so a failure (or a malformed response
     #    missing "id") 503s cleanly instead of a naked 500 — and so new_agent_id
@@ -154,7 +184,7 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             name=payload.name,
             role=None,
             meta=meta,
-            reports_to=payload.reports_to,
+            reports_to=reports_to,
         )
         new_agent_id = paperclip_agent["id"]
     except Exception as exc:  # noqa: BLE001 — mint failure / malformed response
@@ -172,7 +202,7 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     #    same envelope as the marketplace deploy path.
     catalog = get_catalog_service()
     try:
-        await catalog.deploy_from_artifact(
+        deploy_result = await catalog.deploy_from_artifact(
             owner_id=owner_id,
             slug=_slugify(payload.name),
             manifest=package.manifest,
@@ -215,6 +245,15 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
             detail=f"deploy into container failed ({reason}) — retry the build in a moment",
         ) from exc
 
+    # Surface sanitizer-dropped keys so Atlas learns its bundle emitted
+    # non-schema config instead of the loss dying in a CloudWatch warn.
+    dropped = deploy_result.get("agent_entry_keys_dropped") or []
+    if dropped:
+        warnings.append(
+            f"non-schema agent-entry keys were dropped at deploy: {', '.join(sorted(dropped))} — "
+            "remove them from the generated openclaw.json"
+        )
+
     return {
         "agent_id": new_agent_id,
         "name": payload.name,
@@ -222,4 +261,5 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         # The owner publishes this via the seller wizard; surface the agent_id so
         # Atlas can tell the operator exactly which agent to publish.
         "publish_hint": "Open the marketplace publish wizard and pick this agent to list it.",
+        "warnings": warnings,
     }

@@ -384,6 +384,7 @@ class CatalogService:
         slice_ = slice_ or {}
         slice_has_agent = bool(slice_.get("agent"))
         agent_entry: dict[str, Any] = {}
+        dropped_keys: list[str] = []
 
         if slice_has_agent:
             # Build the agent entry locally so we know the new id + workspace
@@ -393,7 +394,8 @@ class CatalogService:
             # unrecognized key in the merged entry fails validation for the
             # WHOLE config and takes the owner's gateway down (Atlas's staging
             # config shipped an invented ``archetype``; frozen S3 artifacts can
-            # carry retired keys).
+            # carry retired keys). ``dropped_keys`` rides the return dict so
+            # callers can surface the loss instead of it dying in the log.
             agent_entry, dropped_keys = sanitize_agent_entry_for_schema(slice_.get("agent") or {})
             if dropped_keys:
                 put_metric("catalog_deploy.agent_entry_keys_dropped", value=len(dropped_keys))
@@ -453,12 +455,22 @@ class CatalogService:
             # the OpenClaw gateway RPC. No Paperclip API call here.
             # Prefer the top-level ``name`` field but fall back to the
             # ``identity.name`` (OpenClaw persists both, but seller agents
-            # exported from older snapshots may only have the nested one).
+            # exported from older snapshots may only have the nested one),
+            # then the manifest name. The manifest fallback matters on the
+            # agent-builder path: the slice strips ``id`` (which held the
+            # display name) so without it the pair RPC and the file entry
+            # would carry the raw UUID.
             display_name = (
                 agent_entry.get("name")
                 or (identity.get("name") if isinstance(identity, dict) else None)
+                or manifest.get("name")
                 or new_agent_id
             )
+            # Make the on-disk entry carry the name too: the aux file-merge
+            # below REPLACES the whole entry at this id, so an entry without
+            # ``name`` clobbers the display name the pair RPC just set.
+            if not agent_entry.get("name"):
+                agent_entry["name"] = display_name
             paperclip_agent: dict[str, Any] = {
                 "id": new_agent_id,
                 "name": display_name,
@@ -603,6 +615,10 @@ class CatalogService:
             # soft note instead of silently shipping a degraded agent.
             "acp_requested": acp_requested,
             "acp_enabled": acp_enabled,
+            # Non-schema keys the sanitizer stripped from the slice's agent
+            # entry — callers surface these to the operator (the agent-builder
+            # bridge relays them to Atlas) instead of losing them to the log.
+            "agent_entry_keys_dropped": dropped_keys,
         }
 
     async def unwind_partial_deploy(self, owner_id: str, new_agent_id: str) -> None:

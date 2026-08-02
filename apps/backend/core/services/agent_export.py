@@ -865,7 +865,10 @@ def export_built_agent_from_staging(owner_id: str, staging_agent_id: str) -> Cat
     # agents.list[0].id = the display name); fall back through identity → id.
     identity = agent_entry.get("identity") if isinstance(agent_entry.get("identity"), dict) else {}
     name = agent_entry.get("name") or identity.get("name") or built_agent_id
-    description = identity.get("description") or identity.get("vibe") or ""
+    # Entry-level ``description`` is the only schema-legal home for this text
+    # (IdentitySchema is .strict() with name/theme/emoji/avatar only, so the
+    # identity.* fallbacks can only ever match in an unvalidated staging file).
+    description = agent_entry.get("description") or identity.get("description") or identity.get("vibe") or ""
 
     manifest = {
         "name": name,
@@ -1268,3 +1271,24 @@ async def is_reserved_friday_agent(
     if friday is None:
         return False
     return friday.get("id") == agent_id
+
+
+async def resolve_apex_ceo_agent_id(
+    *,
+    owner_id: str,
+    fetch_paperclip_agents: Callable[..., Awaitable[list[dict]]] | None = None,
+) -> str | None:
+    """The owner's apex CEO (Friday) Paperclip agent id, or ``None``.
+
+    Used by the agent-builder bridge to default ``reports_to`` so Atlas-built
+    hires land under Friday in the org chart instead of unparented. Delegates
+    apex selection to ``company_deploy_service._find_friday_id`` (rootless
+    ``role == "ceo"``), which is safe when marketplace company deploys have
+    added division-head CEOs. Same graceful-degrade posture as
+    ``is_reserved_friday_agent``: any fetch failure yields ``None``.
+    """
+    from core.services.company_deploy_service import _find_friday_id
+
+    fetch = fetch_paperclip_agents or _default_fetch_paperclip_agents
+    agents = await fetch(owner_id=owner_id)
+    return _find_friday_id(agents)

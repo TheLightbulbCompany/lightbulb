@@ -162,6 +162,7 @@ steps:
         const needs_rollback=(verified && !registered) || (registered && !triggers_ok);
         process.stdout.write(JSON.stringify({verified, registered,
           agent_id:r.agent_id||null, triggers_ok,
+          warnings:r.warnings||[],
           file_write_confirmed:verified, verify_failed, needs_rollback}));'
     env:
       VERIFY: $verify-write.stdout
@@ -257,11 +258,12 @@ steps:
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
         const s=JSON.parse(process.env.STATUS||"null")||{};
+        const warn=(s.warnings&&s.warnings.length)?(" Warnings: "+s.warnings.join(" | ")):"";
         n.push({kind:"build_registered", channel:"atlas-approvals",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           agent_name:process.env.LOBSTER_ARG_AGENT_NAME,
           agent_id:s.agent_id,
-          summary:"Agent "+process.env.LOBSTER_ARG_AGENT_NAME+" registered (agent_id: "+s.agent_id+"). Open the marketplace publish wizard and pick this agent to list it.",
+          summary:"Agent "+process.env.LOBSTER_ARG_AGENT_NAME+" registered (agent_id: "+s.agent_id+"). Open the marketplace publish wizard and pick this agent to list it."+warn,
           created_at:new Date().toISOString()});
         process.stdout.write(JSON.stringify(n));'
     env:

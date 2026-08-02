@@ -237,6 +237,10 @@ class TestListConnections:
         assert by_key["stripe"]["display_name"] == "Stripe"
         assert by_key["stripe"]["acquisition"] == "direct_oauth"
         assert by_key["google"]["acquisition"] == "direct_oauth"
+        # The rail rides every row so the UI can badge MCP vs CLI vs skill —
+        # a connected CLI integration must not read as a broken MCP one.
+        assert by_key["stripe"]["actor"] == "mcp"
+        assert by_key["google"]["actor"] == "cli"
 
         # Status now comes from the secret-free integrations index.
         mock_repo.list_for_owner.assert_awaited_once_with("user_test_123")

@@ -266,6 +266,12 @@ def _connection_row(
         "provider": key,
         "display_name": v.display_name,
         "acquisition": v.acquisition,
+        # actor: the integration's rail — "mcp" surfaces as tools in the
+        # agent's tool list, "cli" is an authenticated binary in the agent's
+        # shell (gh/aws/gog) that NEVER appears as tools, "skill" is read by a
+        # bundled skill. The UI badges the row with it so a connected CLI
+        # integration isn't mistaken for a broken MCP one.
+        "actor": v.actor,
         "status": "unavailable" if requestable else (live or "disconnected"),
         "requestable": requestable,
         # byo_required: provider has no managed app, owner must bring one.

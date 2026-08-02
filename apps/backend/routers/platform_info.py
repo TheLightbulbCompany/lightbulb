@@ -34,6 +34,13 @@ async def get_platform_info() -> dict:
             "key": provider.key,
             "display_name": provider.display_name,
             "byo_required": provider.byo_required,
+            # The integration's rail: "mcp" (tools appear in the agent's tool
+            # list once connected), "cli" (authenticated binary in the agent's
+            # shell — never appears as tools), or "skill". Agents use this to
+            # verify the RIGHT way per rail instead of concluding a connected
+            # CLI integration is broken because no tool namespace showed up.
+            # Safe to disclose: a literal enum, no wiring detail.
+            "actor": provider.actor,
             # Gated off this environment → the owner cannot connect it directly;
             # the Integrations tab shows Request access instead.
             #

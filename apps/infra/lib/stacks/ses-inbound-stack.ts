@@ -28,7 +28,7 @@ import { Construct } from "constructs";
 //      a routine dev-stage deploy should ever touch implicitly.
 //
 // Both env's `ses_ingest_secret` are created unconditionally by AuthStack
-// (cheap, inert, matches the wsInternalSecret/resendApiKey shape), but only
+// (cheap, inert, matches the wsInternalSecret shape), but only
 // the PROD secret is ever actually read here — the ingest Lambda posts to
 // the prod backend (BACKEND_INGEST_URL is a fixed prod hostname) because
 // AGENT_EMAIL_DOMAIN mail only ever resolves under the single production

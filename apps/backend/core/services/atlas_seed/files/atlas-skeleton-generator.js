@@ -69,6 +69,26 @@ function generateOpenclawJson(spec) {
   const skillEntries = {};
   for (const s of allSkills) skillEntries[s] = { enabled: true };
 
+  // Only `name`, `description`, and `identity` {name,theme,emoji,avatar} are
+  // schema-legal identity carriers on an agent entry (AgentEntrySchema +
+  // IdentitySchema are .strict()). `description` feeds the Paperclip mint's
+  // capabilities via the export manifest — without it the org chart shows a
+  // blank agent. The archetype belongs in IDENTITY.md only; on the entry it
+  // is a non-schema key the deploy sanitizer has to strip.
+  const description = (spec.intake.vibe || spec.what_you_are || '').trim();
+
+  const agentEntry = {
+    id: agentName,
+    name: agentName,
+    workspace: `~/.openclaw/agents/${agentName}/workspace`,
+    model: 'claude-haiku-4-5',
+    thinkingDefault: 'low',
+    identity: { name: agentName, emoji: spec.intake.emoji || '🛠' },
+    skills: allSkills,
+    tools: { profile: 'coding', alsoAllow: ['lobster', 'llm-task', 'message'] }
+  };
+  if (description) agentEntry.description = description;
+
   return JSON.stringify({
     agents: {
       defaults: {
@@ -76,15 +96,7 @@ function generateOpenclawJson(spec) {
         timeoutSeconds: 600,
         blockStreamingDefault: 'off'
       },
-      list: [{
-        id: agentName,
-        workspace: `~/.openclaw/agents/${agentName}/workspace`,
-        model: 'claude-haiku-4-5',
-        thinkingDefault: 'low',
-        archetype: spec.intake.archetype || 'general',
-        skills: allSkills,
-        tools: { profile: 'coding', alsoAllow: ['lobster', 'llm-task', 'message'] }
-      }]
+      list: [agentEntry]
     },
     plugins: {
       entries: {

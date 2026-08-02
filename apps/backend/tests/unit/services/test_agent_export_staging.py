@@ -36,9 +36,14 @@ def _staging_openclaw_config() -> dict:
             "list": [
                 {
                     "id": "lex-legal",
+                    "name": "lex-legal",
                     "workspace": "~/.openclaw/agents/lex-legal/workspace",
                     "model": "claude-haiku-4-5",
+                    # Old bundles carried this non-schema key; the deploy-side
+                    # sanitizer strips it, the export must tolerate it.
                     "archetype": "general",
+                    "description": "Summarizes contracts for the legal team",
+                    "identity": {"name": "lex-legal", "emoji": "🛠"},
                     "skills": ["gog", "slack", "contract-review"],
                     "tools": {"profile": "coding", "alsoAllow": ["lobster", "llm-task"]},
                 }
@@ -136,6 +141,24 @@ def test_staging_export_slice_from_own_config(fake_staging):
     # Plugins block travels (non-provider lobster/llm-task survive the strip).
     assert slice_["plugins"]["entries"]["lobster"] == {"enabled": True}
     assert "llm-task" in slice_["plugins"]["entries"]
+
+
+def test_staging_export_description_reaches_manifest(fake_staging):
+    """The entry-level ``description`` (the only schema-legal home for it —
+    IdentitySchema has no description field) feeds the manifest, which the
+    agent-builder bridge threads into the Paperclip mint as capabilities.
+    jarvis shipped with null capabilities because this chain had no source."""
+    owner_id, staging_agent_id, _ = fake_staging
+    pkg = agent_export.export_built_agent_from_staging(owner_id=owner_id, staging_agent_id=staging_agent_id)
+
+    assert pkg.manifest["description"] == "Summarizes contracts for the legal team"
+    # name/description/identity survive into the slice so the deployed
+    # openclaw.json entry keeps the display identity (the aux file-merge
+    # replaces the whole entry — an entry without ``name`` clobbers it).
+    agent = pkg.openclaw_slice["agent"]
+    assert agent.get("name") == "lex-legal"
+    assert agent.get("description") == "Summarizes contracts for the legal team"
+    assert agent.get("identity") == {"name": "lex-legal", "emoji": "🛠"}
 
 
 def test_staging_export_falls_back_to_root_openclaw_json(tmp_path: Path):

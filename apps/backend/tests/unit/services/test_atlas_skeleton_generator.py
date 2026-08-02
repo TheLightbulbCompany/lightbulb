@@ -46,6 +46,8 @@ try {
   const r=cp.spawnSync(process.execPath,[path.join(ws,"helper.js")],{input:"{}",encoding:"utf8"});
   scriptRuns = r.status===0 && /"pass":true/.test(r.stdout||"");
 } catch(e){}
+let entry={};
+try { entry=(JSON.parse(fs.readFileSync(path.join(ws,"openclaw.json"),"utf8")).agents||{}).list[0]||{}; } catch(e){}
 const out={
   draft_pass: !!draft.pass,
   write_success: !!w.success,
@@ -57,6 +59,10 @@ const out={
   second_write_refused: w2.error==="destination_exists",
   script_runs: scriptRuns,
   script_shadows_process: scriptShadows,
+  entry_name: entry.name||"",
+  entry_description: entry.description||"",
+  entry_identity: entry.identity||null,
+  entry_has_archetype: Object.prototype.hasOwnProperty.call(entry,"archetype"),
 };
 fs.rmSync(tmp,{recursive:true,force:true});
 process.stdout.write(JSON.stringify(out));
@@ -87,3 +93,13 @@ def test_skeleton_generator_draft_write_verify():
     # The generated Node script must run — no `process` shadow crashing main().
     assert out["script_shadows_process"] is False
     assert out["script_runs"] is True
+    # The entry carries its display identity (name + identity block) and a
+    # description (vibe → what_you_are fallback) — the description feeds the
+    # Paperclip mint's capabilities via the export manifest, and an entry
+    # without ``name`` gets its display name clobbered by the deploy-time
+    # file merge. ``archetype`` is a non-schema key that belongs only in
+    # IDENTITY.md — on the entry the deploy sanitizer had to strip it.
+    assert out["entry_name"] == "lex-legal"
+    assert out["entry_description"] == "You are Lex."
+    assert out["entry_identity"] == {"name": "lex-legal", "emoji": "🛠"}
+    assert out["entry_has_archetype"] is False

@@ -26,7 +26,7 @@ Authorization: Bearer $OPENCLAW_HOOK_TOKEN
 { "staging_agent_id": "<staging dir name>", "name": "<agent name>", "reports_to": null }
 ```
 
-The per-owner URL is substituted at stage time (placeholder `{{ISOL8_BRIDGE_URL}}`); the body is `node` `JSON.stringify`-built, piped to `curl --data @-` so a special char can't malform the JSON. The bridge mints + deploys the agent live and returns `{agent_id, registered: true}`; `build.lobster` does not publish — it ends at register + a `build_registered` notification.
+`reports_to` null/omitted defaults to the company CEO (Friday) — only set it when the role spec names a different manager. The per-owner URL is substituted at stage time (placeholder `{{ISOL8_BRIDGE_URL}}`); the body is `node` `JSON.stringify`-built, piped to `curl --data @-` so a special char can't malform the JSON. The bridge mints + deploys the agent live and returns `{agent_id, registered: true, warnings: [...]}`; relay any `warnings` verbatim into the build thread (they flag e.g. a blank description → blank org-chart capabilities). `build.lobster` does not publish — it ends at register + a `build_registered` notification.
 
 ## Agent loop
 

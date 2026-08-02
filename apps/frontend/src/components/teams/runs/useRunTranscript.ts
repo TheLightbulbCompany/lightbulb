@@ -12,7 +12,9 @@
 
 import { useMemo } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { parseLogLines, type RunLogResponse } from "@/components/teams/dashboard/hooks/useRunLog";
+import type { RunLogResponse } from "@/components/teams/dashboard/hooks/useRunLog";
+import { runLogToMessages } from "./runLogToMessages";
+import type { HistoryMessage } from "@isol8/shared";
 
 /** Matches the BFF's RUN_LOG_MAX_LIMIT_BYTES ceiling. */
 export const RUN_TRANSCRIPT_LIMIT_BYTES = 262_144;
@@ -23,7 +25,7 @@ const REFRESH_MS = 15_000;
 export function useRunTranscript(
   runId: string,
   opts: { active: boolean; logBytes?: number | null },
-): { lines: string[]; truncated: boolean; isLoading: boolean } {
+): { messages: HistoryMessage[]; truncated: boolean; isLoading: boolean } {
   const { read } = useTeamsApi();
   const truncated =
     typeof opts.logBytes === "number" && opts.logBytes > RUN_TRANSCRIPT_LIMIT_BYTES;
@@ -41,7 +43,7 @@ export function useRunTranscript(
     shouldRetryOnError: false,
   });
 
-  const lines = useMemo(() => {
+  const messages = useMemo(() => {
     let content = data?.content;
     if (!content) return [];
     if (truncated) {
@@ -52,8 +54,8 @@ export function useRunTranscript(
       const firstNewline = content.indexOf("\n");
       content = firstNewline === -1 ? "" : content.slice(firstNewline + 1);
     }
-    return parseLogLines(content);
+    return runLogToMessages(content);
   }, [data?.content, truncated]);
 
-  return { lines, truncated, isLoading };
+  return { messages, truncated, isLoading };
 }

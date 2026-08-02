@@ -4,6 +4,9 @@
 import { useMemo, useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useRunTranscript } from "@/components/teams/runs/useRunTranscript";
+import { MessageList } from "@/components/chat/MessageList";
+import { buildChatItems } from "@/hooks/internal/buildChatItems";
+import { groupBySide } from "@/hooks/internal/groupBySide";
 import { EditorialButton } from "@/components/teams/shell";
 import { formatSilenceAgeMs } from "@/components/teams/shared/lib/liveRuns";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
@@ -138,6 +141,26 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     active,
     logBytes: run?.logBytes ?? null,
   });
+
+  // The run log folds into the same HistoryMessage shape chat.history returns,
+  // so the chat surface's own pipeline renders it unchanged: no live-stream
+  // state here, just the history half of ChatItemsState.
+  const renderGroups = useMemo(
+    () =>
+      groupBySide(
+        buildChatItems({
+          chatMessages: transcript.messages,
+          chatStream: null,
+          chatStreamRunId: null,
+          chatStreamThinking: null,
+          chatStreamThinkingRunId: null,
+          chatStreamSegments: [],
+          chatToolMessages: [],
+          sessionKey: `run:${runId}`,
+        }),
+      ),
+    [transcript.messages, runId],
+  );
 
   if (isLoading) {
     return (
@@ -336,17 +359,24 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               Log is larger than one read — showing the last 256 KiB.
             </p>
           )}
-          {transcript.lines.length === 0 ? (
+          {renderGroups.length === 0 ? (
             <p className="text-sm italic" style={{ color: "var(--mute)" }}>
               {transcript.isLoading ? "Loading transcript…" : "No transcript captured."}
             </p>
           ) : (
-            <pre
-              className="max-h-[50vh] overflow-auto whitespace-pre-wrap rounded px-3 py-2 font-mono text-xs"
+            // MessageList owns its own bottom-anchored scroll container and is
+            // `flex-1 min-h-0`, so it needs a bounded flex parent — dropped into
+            // an unbounded one it collapses to zero height.
+            <div
+              className="flex max-h-[60vh] flex-col overflow-hidden rounded"
               style={{ border: "1px solid var(--edge)", background: "var(--cream)" }}
             >
-              {transcript.lines.join("\n")}
-            </pre>
+              <MessageList
+                renderGroups={renderGroups}
+                agentName={agentName}
+                isStreaming={active}
+              />
+            </div>
           )}
         </section>
 
@@ -388,7 +418,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         </section>
       </main>
 
-      <aside className="@3xl:sticky @3xl:top-4 @3xl:self-start">
+      <aside className="lg:sticky lg:top-4 lg:self-start">
         <dl className="flex flex-col">
           <Prop label="Agent">{agentName}</Prop>
           <Prop label="Trigger">

@@ -11,6 +11,19 @@ interface ConnectionsListProps {
 }
 
 /**
+ * Human label for the integration's rail (`actor` from the registry). The
+ * badge answers "where will this show up once connected" — MCP integrations
+ * appear as tools in the agent's tool list, CLI ones (gh/aws/gog) are used
+ * from the agent's shell and never appear as tools, skills read the
+ * credential from a bundled skill. Unknown/absent actor renders no badge.
+ */
+const KIND_LABELS: Record<string, string> = {
+  mcp: "MCP tools",
+  cli: "CLI",
+  skill: "Skill",
+};
+
+/**
  * Renders one row per provider returned by GET /connections: a status dot
  * (connected = green / disconnected = muted), the provider's display name,
  * and the right action via ConnectButton. The provider list is fully
@@ -69,7 +82,14 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               aria-hidden="true"
             />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-medium text-[#1c1917]">{connection.display_name}</p>
+                {connection.actor && KIND_LABELS[connection.actor] && (
+                  <span className="flex-shrink-0 rounded border border-[var(--edge)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--mute)]">
+                    {KIND_LABELS[connection.actor]}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-[var(--mute)]">
                 {connected ? "Connected" : unavailable ? "Not available yet" : "Not connected"}
                 {connection.acquisition === "direct_oauth"
@@ -84,6 +104,12 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                   <span className={connected ? "text-[#2d8a4e]" : undefined}>
                     {receipt.delivers}
                   </span>
+                </p>
+              )}
+              {connection.actor === "cli" && (
+                <p className="text-xs text-[var(--mute)] mt-0.5">
+                  Works through the agent&apos;s command line — it won&apos;t appear in the
+                  agent&apos;s tool list.
                 </p>
               )}
             </div>

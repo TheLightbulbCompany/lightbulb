@@ -40,6 +40,15 @@ export interface Connection {
    * inverse of registry.available_for.
    */
   requestable?: boolean;
+  /**
+   * The integration's rail — how it reaches the agent once connected:
+   *   - "mcp"   → an MCP server; its tools appear in the agent's tool list.
+   *   - "cli"   → an authenticated CLI in the agent's shell (gh, aws, gog).
+   *               Never appears in the tool list — that's by design, not
+   *               a broken connection.
+   *   - "skill" → a bundled skill reads the credential.
+   */
+  actor?: "cli" | "mcp" | "skill" | "nango_proxy";
 }
 
 interface ConnectionsResponse {

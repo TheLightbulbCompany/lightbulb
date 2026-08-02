@@ -66,3 +66,55 @@ describe("ConnectionsList — delivery receipts", () => {
     expect(screen.queryByText(/will deliver|delivered/i)).toBeNull();
   });
 });
+
+describe("ConnectionsList — integration kind badges", () => {
+  beforeEach(() => {
+    h.connections = [];
+  });
+
+  it("badges an MCP integration as MCP tools", () => {
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "connected",
+        actor: "mcp",
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText("MCP tools")).toBeInTheDocument();
+    // MCP integrations DO surface as tools — no shell explainer.
+    expect(screen.queryByText(/command line/i)).toBeNull();
+  });
+
+  it("badges a CLI integration and explains it never appears as tools", () => {
+    h.connections = [
+      {
+        provider: "github",
+        display_name: "GitHub",
+        acquisition: "direct_oauth",
+        status: "connected",
+        actor: "cli",
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText("CLI")).toBeInTheDocument();
+    // The load-bearing line: a connected CLI integration must not read as a
+    // broken MCP one — its absence from the agent's tool list is by design.
+    expect(screen.getByText(/won.t appear in the agent.s tool list/i)).toBeInTheDocument();
+  });
+
+  it("renders no badge when the backend sends no actor (older API)", () => {
+    h.connections = [
+      { provider: "acme", display_name: "Acme", acquisition: "paste_token", status: "connected" },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.queryByText("MCP tools")).toBeNull();
+    expect(screen.queryByText("CLI")).toBeNull();
+    expect(screen.queryByText("Skill")).toBeNull();
+  });
+});

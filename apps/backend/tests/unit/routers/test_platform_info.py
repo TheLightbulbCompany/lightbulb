@@ -48,7 +48,10 @@ def test_catalog_is_public_and_lists_everything(client):
 
     # Each integration carries exactly the projected fields, nothing else.
     for entry in body["integrations"]:
-        assert set(entry.keys()) == {"key", "display_name", "byo_required", "requestable"}
+        assert set(entry.keys()) == {"key", "display_name", "byo_required", "requestable", "actor"}
+        # The rail is a literal enum — agents branch on it to know whether the
+        # integration surfaces as tools (mcp) or via the shell (cli).
+        assert entry["actor"] in {"cli", "mcp", "skill", "nango_proxy"}
     for entry in body["channels"]:
         assert set(entry.keys()) == {"key", "display_name"}
 
@@ -56,14 +59,20 @@ def test_catalog_is_public_and_lists_everything(client):
 def test_new_provider_surfaces_with_no_skill_change(client, monkeypatch):
     """Appending a provider to the registry surfaces it in the catalog — the
     whole point of the live read (no image rebuild, no skill edit)."""
-    fake = SimpleNamespace(key="acme", display_name="Acme", byo_required=True, environments=None)
+    fake = SimpleNamespace(key="acme", display_name="Acme", byo_required=True, environments=None, actor="mcp")
     real = dict(registry.all_providers())
     real["acme"] = fake
     monkeypatch.setattr(platform_info.registry, "all_providers", lambda: real)
 
     body = client.get(PREFIX).json()
     entry = next(i for i in body["integrations"] if i["key"] == "acme")
-    assert entry == {"key": "acme", "display_name": "Acme", "byo_required": True, "requestable": False}
+    assert entry == {
+        "key": "acme",
+        "display_name": "Acme",
+        "byo_required": True,
+        "requestable": False,
+        "actor": "mcp",
+    }
 
 
 def test_env_gated_provider_is_hidden_unless_it_opts_in(client, monkeypatch):

@@ -1,6 +1,23 @@
+import pytest
+
+from core.services.credentials.registry import _load
 from core.services.marketplace.requirements import Disposition
 from core.services.marketplace.requirements_classify import classify_hits
 from core.services.marketplace.requirements_detect import Hit
+
+
+@pytest.fixture(autouse=True)
+def _fresh_registry():
+    """These tests classify against the REAL providers.yaml — that coupling is
+    deliberate (it's what catches the catalog drifting from this module, e.g.
+    the Stripe hosted-MCP cutover). Clear the registry's lru_cache on both
+    sides so ambient cache state primed elsewhere in the suite can't change
+    what "real" means here: the stripe expectations here were order-dependent
+    (passing in some full-suite orders, failing in isolation and in CI) until
+    this pin."""
+    _load.cache_clear()
+    yield
+    _load.cache_clear()
 
 
 def _classify(hits, **kw):
@@ -61,8 +78,9 @@ def test_phantom_skill_is_unavailable():
 
 
 def test_stripe_env_mismatch_is_byo_with_reason():
-    # The Stripe integration wires an MCP keyed on STRIPE_SECRET_KEY; an agent
-    # referencing STRIPE_API_KEY won't be satisfied by connecting it.
+    # The Stripe integration connects a hosted MCP over OAuth and sets no env
+    # vars; an agent referencing STRIPE_API_KEY won't be satisfied by
+    # connecting it.
     reqs = _classify([Hit("env", "STRIPE_API_KEY", "p")])
     assert "stripe" in reqs
     assert reqs["stripe"].disposition == Disposition.BYO
@@ -99,17 +117,19 @@ def test_stripe_mismatch_is_byo_regardless_of_hit_order():
         assert "mismatch" in (reqs["stripe"].reason or "").lower(), order
 
 
-def test_stripe_correct_env_stays_connect():
-    """Referencing the env var the integration's MCP actually wires
-    (STRIPE_SECRET_KEY) is connectable, not a mismatch."""
+def test_stripe_formerly_wired_key_is_byo_after_hosted_cutover():
+    """STRIPE_SECRET_KEY was the wired key of the old stdio MCP; the hosted
+    OAuth MCP sets no env vars at all, so an agent scripting against it is no
+    longer satisfied by connecting — honest answer is BYO."""
     reqs = _classify([Hit("host", "api.stripe.com", "p"), Hit("env", "STRIPE_SECRET_KEY", "p")])
-    assert reqs["stripe"].disposition == Disposition.CONNECT
+    assert reqs["stripe"].disposition == Disposition.BYO
+    assert "mismatch" in (reqs["stripe"].reason or "").lower()
 
 
-def test_stripe_mixed_env_with_wired_key_stays_connect():
-    """If the agent references the wired key (STRIPE_SECRET_KEY) AND a stray
-    off-key (STRIPE_API_KEY), connecting still satisfies it — not BYO."""
-    reqs = _classify([Hit("env", "STRIPE_SECRET_KEY", "p"), Hit("env", "STRIPE_API_KEY", "p")])
+def test_stripe_host_only_stays_connect():
+    """Host/tool usage without env references is exactly what the hosted MCP
+    serves — stays CONNECT (the downgrade must not over-reach)."""
+    reqs = _classify([Hit("host", "api.stripe.com", "p")])
     assert reqs["stripe"].disposition == Disposition.CONNECT
 
 

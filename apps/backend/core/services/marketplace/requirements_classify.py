@@ -72,23 +72,29 @@ def _providers() -> dict:
 
 
 def _kind_for_provider(prov) -> str:
-    w = prov.wiring
-    if w.mcp_server:
+    # ``actor`` is the catalog's declared rail. Wiring shape is NOT the
+    # signal: hosted-OAuth MCP providers (stripe/posthog/…) wire via the
+    # ``mcp_oauth`` materializer with the server under top-level
+    # ``mcp_remote``, and github carries an ``mcp_remote`` block while
+    # being a CLI integration.
+    if prov.actor == "mcp":
         return "mcp"
-    if w.materializer:
+    if prov.actor == "cli":
         return "cli"
     return "skill"
 
 
 def _provider_for_tool(name: str):
     """Return ``(key, Provider)`` if a registry provider owns this tool name —
-    by provider key, its MCP server key, OR a CLI binary it declares
-    (``requires.bins``, e.g. ``gh`` → github, so a ``gh issue list`` pipeline
-    maps to the connectable github provider, not a phantom)."""
+    by provider key, its MCP server key (stdio or hosted remote), OR a CLI
+    binary it declares (``requires.bins``, e.g. ``gh`` → github, so a
+    ``gh issue list`` pipeline maps to the connectable github provider, not a
+    phantom)."""
     for key, prov in _providers().items():
         mcp = prov.wiring.mcp_server
+        remote = prov.mcp_remote
         bins = getattr(prov.requires, "bins", None) or []
-        if key == name or (mcp and mcp.key == name) or name in bins:
+        if key == name or (mcp and mcp.key == name) or (remote and remote.key == name) or name in bins:
             return key, prov
     return None
 
@@ -216,33 +222,52 @@ def classify_hits(
 
 
 def _apply_wiring_mismatch(by_key: dict[str, Requirement]) -> None:
-    """Downgrade a registry CONNECT row to BYO when the agent references ONLY env
-    vars the integration's MCP won't set (e.g. STRIPE_API_KEY when the tab wires
-    STRIPE_SECRET_KEY). Order-independent: evaluated once over each row's full
-    accumulated env, so the result is the same regardless of host/env hit order.
+    """Downgrade a registry CONNECT row to BYO when the agent references env
+    vars connecting the integration won't set. Order-independent: evaluated
+    once over each row's full accumulated env, so the result is the same
+    regardless of host/env hit order.
 
-    Only applies to MCP-wired providers — the "mismatch" is specifically that
-    the MCP is keyed on a particular env var. A CLI/materializer-rail provider
-    (no mcp_server) is connectable regardless of how the agent names its env, so
-    it stays CONNECT. And if the agent references the wired key at all (even
-    alongside a stray off-key), connecting the integration still satisfies it.
+    The binding is what connecting puts in the agent's ENVIRONMENT, and the
+    two MCP shapes differ:
+      - stdio ``wiring.mcp_server``: keyed on specific env vars — a row whose
+        env references NONE of them is a mismatch (e.g. STRIPE_API_KEY vs a
+        wired STRIPE_SECRET_KEY). No live provider uses this rail today, but
+        it is still schema-legal.
+      - hosted ``mcp_remote`` (actor "mcp", ``mcp_oauth`` materializer):
+        authenticates over OAuth and sets NO env vars at all — ANY env
+        reference is a mismatch. An agent scripting against
+        STRIPE_SECRET_KEY is not satisfied by connecting the hosted Stripe
+        MCP; it needs its own pasted key.
+
+    CLI/materializer-rail providers (github/aws/google) stay CONNECT
+    regardless of how the agent names its env — the binary reads its own
+    auth store, so the env-var name isn't the binding. And if the agent
+    references a wired key at all (even alongside a stray off-key),
+    connecting the integration still satisfies it.
     """
     providers = _providers()
     for r in by_key.values():
         # Any registry-provider CONNECT row, whether detected via host/env
         # (kind external_api) or via --tool (kind mcp). Non-provider rows
         # (channels) resolve to no provider below and are skipped.
-        if r.disposition != Disposition.CONNECT:
+        if r.disposition != Disposition.CONNECT or not r.env:
             continue
         prov = providers.get(r.key)
-        mcp = prov.wiring.mcp_server if prov else None
-        if mcp is None:
+        if prov is None:
+            continue
+        wired_env: set[str] = set()
+        if prov.wiring.mcp_server is not None:
+            wired_env = set(prov.wiring.mcp_server.env.keys())
+        elif not (prov.actor == "mcp" and prov.mcp_remote is not None):
             continue  # non-MCP rail: the env-var name isn't the binding
-        mcp_env = set(mcp.env.keys())
-        # Downgrade only when the agent uses env vars and NONE is the wired key.
-        if r.env and all(e not in mcp_env for e in r.env):
-            r.disposition = Disposition.BYO
-            r.reason = (
-                f"wiring mismatch: the {r.display_name} integration wires {sorted(mcp_env)[0]}; "
-                f"this agent references {r.env[0]} directly"
-            )
+        if any(e in wired_env for e in r.env):
+            continue  # references a wired key — connecting satisfies it
+        r.disposition = Disposition.BYO
+        wires = (
+            f"wires {sorted(wired_env)[0]}"
+            if wired_env
+            else "connects a hosted MCP over OAuth and sets no environment variables"
+        )
+        r.reason = (
+            f"wiring mismatch: the {r.display_name} integration {wires}; this agent references {r.env[0]} directly"
+        )

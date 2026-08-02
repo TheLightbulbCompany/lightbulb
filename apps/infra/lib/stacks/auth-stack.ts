@@ -35,7 +35,6 @@ export class AuthStack extends cdk.Stack {
   public readonly gogKeyringPassword: secretsmanager.Secret;
   public readonly metronomeApiKey: secretsmanager.Secret;
   public readonly metronomeWebhookSecret: secretsmanager.Secret;
-  public readonly resendApiKey: secretsmanager.Secret;
   public readonly sesIngestSecret: secretsmanager.Secret;
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -176,41 +175,11 @@ export class AuthStack extends cdk.Stack {
       "HMAC key for verifying Metronome-Webhook-Signature. Overwritten out-of-band with the value from the Metronome dashboard webhook config.",
     );
 
-    // ORPHANED — nothing reads this any more. Transactional email moved from
-    // Resend to SES (core/services/ses_email.py) because isol8.co was already
-    // a verified SES domain identity the backend task role could send as. The
-    // secret is left in place rather than deleted so this refactor stays
-    // non-destructive; delete it (and this block) as a deliberate follow-up.
-    this.resendApiKey = createSecret(
-      "ResendApiKey",
-      "resend_api_key",
-      { passwordLength: 48, excludePunctuation: true },
-      "ORPHANED after the SES migration — no longer read by any service. Safe to delete.",
-    );
-
-    // PHASE 1 of a two-phase cross-stack export removal — do NOT delete this
-    // line in the same change that dropped the consumer.
-    //
-    // isol8-stage.ts used to pass `auth.resendApiKey.secretName` into
-    // ServiceStack. That is a cross-stack reference, so CDK synthesised an
-    // `ExportsOutputRefResendApiKey…` Output here and an Fn::ImportValue
-    // there. Removing the consumer (PR #1529) made CDK drop the Output — but
-    // CloudFormation updates THIS stack before ServiceStack, so at that
-    // moment the export is still imported and the update fails with
-    // "Cannot delete export … as it is in use by another stack", rolling the
-    // whole auth stack back.
-    //
-    // exportValue() re-declares the Output with the identical generated name,
-    // holding it alive while ServiceStack drops its import. Once a deploy has
-    // landed with no importer, a follow-up change can delete this line (and
-    // the secret above) safely.
-    this.exportValue(this.resendApiKey.secretArn);
-
     // Shared secret the SES-ingest Lambda (ses-inbound-stack.ts, prod-stage
     // only) presents as the X-Isol8-SES-Secret header on its POST
     // to /webhooks/ses-inbound; the backend compares it in constant time (see
     // routers/ses_inbound.py). Created unconditionally in every env — same
-    // posture as wsInternalSecret/resendApiKey — but only ever actually READ
+    // posture as wsInternalSecret — but only ever actually READ
     // by the prod SesInboundStack (the ingest Lambda posts to the fixed prod
     // backend hostname regardless of which env's containers minted the
     // address). Harmless placeholder in envs where the SES stack doesn't
@@ -290,7 +259,6 @@ import boto3
 
 sm = boto3.client("secretsmanager")
 
-
 def _is_valid_fernet(value):
     if not isinstance(value, str) or len(value) != 44:
         return False
@@ -298,7 +266,6 @@ def _is_valid_fernet(value):
         return len(base64.urlsafe_b64decode(value)) == 32
     except Exception:
         return False
-
 
 def handler(event, context):
     request_type = event["RequestType"]

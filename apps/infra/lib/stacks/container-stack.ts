@@ -11,19 +11,31 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
 // Single source of truth for the pinned OpenClaw container image.
 // Bump openclaw-version.json at the repo root to upgrade.
+type OpenClawEnvConfig = {
+  tag: string;
+  // Per-env container storage layout — the O6 promotion gate. "efs" (default)
+  // keeps the whole OpenClaw state dir on the EFS mount; "local-sqlite" moves
+  // hot SQLite state to container-local disk with Litestream→S3 durability.
+  // The bucket, IAM boundary statement, env vars, and boot chain are all
+  // synthesized ONLY for envs that opt in, so flipping dev leaves prod's
+  // template byte-identical (same promotion shape as dev.tag/prod.tag).
+  storage?: "efs" | "local-sqlite";
+};
 type OpenClawVersionConfig = {
   upstream: string;
   image: string;
   tag: string;
   full: string;
   extendedImage: string;
-  dev: { tag: string };
-  prod: { tag: string };
+  dev: OpenClawEnvConfig;
+  prod: OpenClawEnvConfig;
   notes?: string;
 };
 const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
@@ -78,6 +90,25 @@ export class ContainerStack extends cdk.Stack {
     super(scope, id, props);
 
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
+
+    // Per-env OpenClaw pin + O6 storage gate, resolved ONCE up front: it
+    // shapes the IAM boundary, the replica bucket, the container env, the
+    // boot chain, and the image selection below. Unknown envs (e.g. "local")
+    // get the legacy bootstrap behavior and the EFS layout.
+    const envCfg =
+      props.environment === "dev" || props.environment === "prod"
+        ? OPENCLAW_VERSION[props.environment]
+        : undefined;
+    const envTag = envCfg?.tag ?? "bootstrap";
+    const localSqliteStorage = envCfg?.storage === "local-sqlite";
+    if (localSqliteStorage && envTag === "bootstrap") {
+      // The public bootstrap image carries neither the O6 boot script nor the
+      // litestream binary — the boot chain would crash-loop. Refuse to synth.
+      throw new Error(
+        `openclaw-version.json: ${props.environment}.storage="local-sqlite" requires a real extended-image tag (got "bootstrap")`,
+      );
+    }
+    const litestreamBucketName = `isol8-${props.environment}-openclaw-replicas`;
 
     // Import KMS key by ARN to avoid cross-stack dependency cycle
     const kmsKey = kms.Key.fromKeyArn(this, "ImportedKmsKey", props.kmsKeyArn);
@@ -328,6 +359,31 @@ export class ContainerStack extends cdk.Stack {
           ],
           resources: ["*"],
         }),
+        // O6 local-sqlite layout: the boundary must CAP (not grant) S3 access
+        // to the Litestream replica bucket, or the per-owner inline
+        // "owner-litestream-s3" policy the backend mints would be silently
+        // nullified (effective perms = inline ∩ boundary). Bucket-wide here —
+        // the boundary is shared across owners; per-owner prefix isolation
+        // lives in the inline policy. DeleteObject is required: Litestream
+        // retention/compaction prunes old LTX files.
+        ...(localSqliteStorage
+          ? [
+              new iam.PolicyStatement({
+                sid: "BoundaryLitestreamS3",
+                actions: [
+                  "s3:GetBucketLocation",
+                  "s3:ListBucket",
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:DeleteObject",
+                ],
+                resources: [
+                  `arn:aws:s3:::${litestreamBucketName}`,
+                  `arn:aws:s3:::${litestreamBucketName}/*`,
+                ],
+              }),
+            ]
+          : []),
         // Defense in depth: never let a per-owner role assume into OUR account,
         // even if a misconfigured inline policy tried to. An explicit Deny
         // always wins. Unconditional: the AWS integration's credentials are
@@ -340,6 +396,45 @@ export class ContainerStack extends cdk.Stack {
         }),
       ],
     });
+
+    // O6 Litestream replica bucket — durability layer for hot SQLite on
+    // container-local disk. Literal name (consumers reference by name, never
+    // cross-stack refs — KMS-cycle posture); SSE-S3 like every other bucket in
+    // this repo (the CMK posture deliberately does not extend to S3 — flagged
+    // trade-off: replicas carry auth_profile_store rows, fenced by BLOCK_ALL +
+    // per-owner-prefix IAM). Request metrics enabled so the idle-PUT pathology
+    // (litestream#1171: ~480 PUT/hr per idle DB) is alarmable; nominal idle is
+    // ~0 PUTs. No lifecycle expiration — Litestream retention owns pruning
+    // (deleting LTX files under it would break restores).
+    if (localSqliteStorage) {
+      const replicaBucket = new s3.Bucket(this, "OpenclawReplicasBucket", {
+        bucketName: litestreamBucketName,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+        removalPolicy: config.removalPolicy,
+        autoDeleteObjects: props.environment !== "prod",
+        metrics: [{ id: "EntireBucket" }],
+      });
+      new cloudwatch.Alarm(this, "LitestreamPutRequestsAlarm", {
+        alarmName: `isol8-${props.environment}-litestream-put-requests`,
+        alarmDescription:
+          "Litestream S3 PUT volume far above the active-fleet ceiling — " +
+          "either the idle-PUT pathology (litestream#1171) or a runaway " +
+          "checkpoint loop. Nominal idle is ~0 PUTs/DB; sustained six-figure " +
+          "hourly PUTs is never normal for this fleet size.",
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/S3",
+          metricName: "PutRequests",
+          dimensionsMap: { BucketName: replicaBucket.bucketName, FilterId: "EntireBucket" },
+          statistic: "Sum",
+          period: cdk.Duration.hours(1),
+        }),
+        threshold: 100_000,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    }
 
     // Extended OpenClaw image — built and pushed by
     // .github/workflows/build-openclaw-image.yml. Per-env tags live in
@@ -593,9 +688,19 @@ export class ContainerStack extends cdk.Stack {
       // container-stack.test.ts). The only containers where doctor remains
       // destructive are pre-migration old-layout ones — those stay frozen
       // until reprovisioned and must never be rolled onto this task def.
-      "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
-      // Step D — launch the gateway.
-      "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
+      // Step C3/D — legacy-state migration (doctor --fix) then gateway
+      // launch. Under the O6 local-sqlite layout BOTH are owned by the baked
+      // boot script: it restores hot SQLite state from S3 (or migrates it off
+      // EFS on the first cutover boot), then runs doctor + gateway as a
+      // litestream-supervised child so every committed write replicates and a
+      // SIGTERM final-syncs to S3 before exit.
+      ...(localSqliteStorage
+        ? ["exec /usr/local/bin/isol8-o6-boot.sh"]
+        : [
+            "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
+            // Step D — launch the gateway.
+            "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
+          ]),
     ].join("; ");
 
     // Image selection: use the extended ECR image once the per-env tag has been
@@ -603,11 +708,6 @@ export class ContainerStack extends cdk.Stack {
     // legacy upstream image so the env keeps deploying. This lets us flip dev
     // and prod independently via openclaw-version.json bumps without coupling.
     // Unknown envs (e.g. "local") default to legacy via the optional chain.
-    const envCfg =
-      props.environment === "dev" || props.environment === "prod"
-        ? OPENCLAW_VERSION[props.environment]
-        : undefined;
-    const envTag = envCfg?.tag ?? "bootstrap";
     const containerImage =
       envTag === "bootstrap"
         ? ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full)
@@ -663,6 +763,23 @@ export class ContainerStack extends cdk.Stack {
         // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
         // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
         OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+        // O6 local-sqlite layout: the state root moves to container-local
+        // disk (WAL returns — the journal-mode probe classifies the lexical
+        // path against mountinfo, so it must live OUTSIDE the EFS
+        // mountpoint's subtree), while openclaw.json stays pinned to the EFS
+        // durable spine so the backend's config channel (write_user_configs,
+        // config_patcher, chokidar) is unchanged. The boot script
+        // reverse-symlinks the durable stateDir subdirs (credentials/,
+        // identity/, devices/, extensions/, skills/, npm/, git/, tools/)
+        // back onto EFS. LITESTREAM_S3_BUCKET + per-user ISOL8_OWNER_ID (from
+        // the backend) parameterize replication: s3://bucket/{owner}/<db>.
+        ...(localSqliteStorage
+          ? {
+              OPENCLAW_STATE_DIR: "/openclaw-local",
+              OPENCLAW_CONFIG_PATH: "/home/node/.openclaw/openclaw.json",
+              LITESTREAM_S3_BUCKET: litestreamBucketName,
+            }
+          : {}),
       },
       secrets: {
         // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +

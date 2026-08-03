@@ -591,6 +591,27 @@ RUN set -eux; \
     done
 
 
+# ---- O6: Litestream + local-SQLite boot chain ----
+# Inert unless the CDK startupCommand invokes isol8-o6-boot.sh — only envs
+# promoted to storage="local-sqlite" in openclaw-version.json do, so this
+# image remains fully backward compatible with the EFS layout. Version pinned
+# with the checksum from the release's published checksums.txt; v0.5.15 is
+# the stabilization release of the LTX line (silent-replication fix #1037
+# landed in v0.5.9, ECS container-credential fix in v0.5.11).
+ARG LITESTREAM_VERSION=0.5.15
+ARG LITESTREAM_SHA256=839a68e69d111409262775bed78ba9f73f0835cfd23d8c128da21eedaedb50ba
+RUN set -eux; \
+    curl -fsSL -o /tmp/litestream.tgz \
+      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-x86_64.tar.gz"; \
+    echo "${LITESTREAM_SHA256}  /tmp/litestream.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream; \
+    rm /tmp/litestream.tgz; \
+    litestream version
+COPY o6/isol8-o6-boot.sh /usr/local/bin/isol8-o6-boot.sh
+COPY o6/isol8-o6-app.sh /usr/local/bin/isol8-o6-app.sh
+COPY o6/isol8-litestream.yml /etc/isol8-litestream.yml
+RUN chmod 0755 /usr/local/bin/isol8-o6-boot.sh /usr/local/bin/isol8-o6-app.sh
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node

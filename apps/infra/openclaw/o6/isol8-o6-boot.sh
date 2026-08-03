@@ -1,0 +1,155 @@
+#!/bin/sh
+# isol8-o6-boot.sh — O6 local-SQLite boot chain.
+#
+# Invoked by the CDK startupCommand ONLY on envs whose openclaw-version.json
+# storage field is "local-sqlite"; the image is backward compatible — nothing
+# runs this unless the task-def command names it.
+#
+# Sequence:
+#   0. resolve owner id (per-user task env, else the EFS facts file)
+#   1. create the local state root + reverse-symlink the durable spine to EFS
+#   2. restore every replicated SQLite DB from S3 (explicit, integrity-checked)
+#   3. else first-cutover migration: copy hot state off EFS, rewrite the two
+#      relocated path prefixes inside the DBs, archive the EFS originals
+#   4. apply the backend's clear-auth sentinel (if present)
+#   5. exec litestream replicate -exec <doctor+gateway>
+#
+# Fail-loud: any enumeration/restore/migration error exits non-zero so ECS
+# replaces the task. Proceeding past a missed restore would let OpenClaw
+# create a fresh empty DB that litestream then snapshots FORWARD over the S3
+# replica — silent data destruction, the one outcome this script must never
+# allow.
+set -eu
+
+EFS="${O6_EFS_ROOT:-/home/node/.openclaw}"
+LOCAL="${O6_LOCAL_ROOT:-/openclaw-local}"
+BUCKET="${LITESTREAM_S3_BUCKET:?LITESTREAM_S3_BUCKET is required}"
+LITESTREAM_CONFIG="${O6_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
+APP_CMD="${O6_APP_CMD:-/usr/local/bin/isol8-o6-app.sh}"
+
+log() { echo "[o6-boot] $*"; }
+
+# --- 0. Owner id: per-user task env, else the facts file on the EFS spine.
+OWNER_ID="${ISOL8_OWNER_ID:-}"
+if [ -z "$OWNER_ID" ] && [ -f "$EFS/isol8-facts.json" ]; then
+  OWNER_ID=$(jq -r '.owner_id // empty' "$EFS/isol8-facts.json" 2>/dev/null || true)
+fi
+[ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no isol8-facts.json)"; exit 1; }
+export OWNER_ID
+log "owner=$OWNER_ID bucket=$BUCKET"
+
+mkdir -p "$LOCAL/state" "$LOCAL/agents"
+
+# --- 1. Durable spine: stateDir-derived subdirs that must stay on EFS.
+# Directory symlinks are safe under atomic file replaces inside them, and none
+# of these contain SQLite, so the journal-mode probe (which classifies only
+# database paths) never sees them. skills/npm/git/tools keep clawhub skills
+# and plugin npm/git installs durable — the scanners and installers resolve
+# them through the state root, which is now local.
+for d in credentials identity devices extensions skills npm git tools; do
+  mkdir -p "$EFS/$d" || exit 1
+  ln -sfn "$EFS/$d" "$LOCAL/$d" || exit 1
+done
+# ~/.openclaw/.env is a documented owner surface loaded from the state root.
+# A file symlink would be replaced by atomic tmp+rename writers, so copy.
+if [ -f "$EFS/.env" ]; then cp "$EFS/.env" "$LOCAL/.env" || exit 1; fi
+
+# --- 2. Restore every replicated DB from S3. Explicit CLI restores (rather
+# than replicate's restore-if-db-not-exists, which covers only path-form
+# entries and runs no integrity check) so EVERY DB — including the dynamic
+# per-agent set — restores through one integrity-checked path.
+KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
+        --query 'Contents[].Key' --output text 2>/tmp/o6-s3-err) || {
+  log "FATAL: S3 enumeration failed: $(cat /tmp/o6-s3-err 2>/dev/null)"; exit 1; }
+[ "$KEYS" = "None" ] && KEYS=""
+
+# S3 object keys are <owner>/<db-rel-path>/<%04x-level>/<txid>.ltx — strip
+# the trailing two components to recover each replicated DB's rel path.
+DBS=""
+if [ -n "$KEYS" ]; then
+  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[0-9a-f][0-9a-f][0-9a-f][0-9a-f]/[^/]*\$#\1#p" | sort -u)
+fi
+
+if [ -n "$DBS" ]; then
+  for rel in $DBS; do
+    log "restore $rel"
+    mkdir -p "$LOCAL/$(dirname "$rel")" || exit 1
+    litestream restore -if-db-not-exists -if-replica-exists \
+      -integrity-check quick \
+      -o "$LOCAL/$rel" "s3://$BUCKET/$OWNER_ID/$rel" || {
+        log "FATAL: restore failed for $rel"; exit 1; }
+  done
+elif [ -d "$EFS/state" ] || [ -d "$EFS/agents" ]; then
+  # --- 3. First-cutover migration: no replica yet, hot state still on EFS.
+  # The single-writer deployment config guarantees no concurrent writer, and
+  # on EFS these DBs run rollback-journal (no -wal sidecars), so a plain copy
+  # is consistent. The EFS originals are archived (mv, not deleted) only
+  # after the copies pass integrity_check.
+  log "first-cutover migration from EFS"
+  for d in state agents; do
+    if [ -d "$EFS/$d" ]; then cp -a "$EFS/$d/." "$LOCAL/$d/" || exit 1; fi
+  done
+  # Scoped path rewrite — ONLY the two relocated subtrees. Session markers
+  # ("sqlite:<agent>:<session>:<absPath>" inside session_entries.entry_json)
+  # take precedence over config, and the state DB registers agent DBs by
+  # absolute path; both would otherwise point readers at the archived EFS
+  # paths (recreating empty DBs there — history reads as empty). Workspace
+  # paths also live under /home/node/.openclaw and must NOT be rewritten,
+  # hence prefix-scoped replaces, never a blanket one.
+  for db in "$LOCAL"/agents/*/agent/openclaw-agent.sqlite; do
+    [ -f "$db" ] || continue
+    sqlite3 "$db" "UPDATE session_entries SET entry_json = replace(replace(entry_json, '/home/node/.openclaw/agents/', '/openclaw-local/agents/'), '/home/node/.openclaw/state/', '/openclaw-local/state/') WHERE entry_json LIKE '%/home/node/.openclaw/agents/%' OR entry_json LIKE '%/home/node/.openclaw/state/%';" 2>/dev/null \
+      || log "warn: session marker rewrite skipped for $db (no session_entries table)"
+  done
+  if [ -f "$LOCAL/state/openclaw.sqlite" ]; then
+    sqlite3 "$LOCAL/state/openclaw.sqlite" "UPDATE agent_databases SET path = replace(path, '/home/node/.openclaw/agents/', '/openclaw-local/agents/') WHERE path LIKE '/home/node/.openclaw/agents/%';" 2>/dev/null \
+      || log "warn: agent_databases rewrite skipped (no agent_databases table)"
+  fi
+  # Integrity gate before the EFS originals are archived.
+  for db in "$LOCAL/state/openclaw.sqlite" "$LOCAL"/agents/*/agent/openclaw-agent.sqlite; do
+    [ -f "$db" ] || continue
+    ok=$(sqlite3 "$db" "PRAGMA integrity_check;" | head -1)
+    [ "$ok" = "ok" ] || { log "FATAL: integrity_check failed for $db: $ok"; exit 1; }
+  done
+  # A stale legacy workspace-state.json would re-trip the migration gate the
+  # native-seed heal used to clear; the state DB is present by construction
+  # at this point, which is exactly the heal's own guard condition.
+  rm -f "$EFS"/workspace-*/workspace-state.json 2>/dev/null || true
+  mkdir -p "$EFS/pre-o6-archive" || exit 1
+  for d in state agents; do
+    if [ -d "$EFS/$d" ]; then mv "$EFS/$d" "$EFS/pre-o6-archive/$d" || exit 1; fi
+  done
+  log "migration complete; EFS originals archived at pre-o6-archive/"
+else
+  log "cold start: no replica, no EFS state — fresh container"
+fi
+
+# --- 4. Clear-auth sentinel (written by the backend when it cannot reach the
+# container-local store). Applied BEFORE gateway start so a freshly staged
+# credentials/oauth.json re-imports (the import fires only when the persisted
+# store row is absent). Missing DB or table is benign: a fresh store has no
+# row, so the staged file imports on its own.
+SENTINEL="$EFS/o6-clear-auth-profiles.json"
+if [ -f "$SENTINEL" ]; then
+  for agent in $(jq -r '.agent_ids[]? // empty' "$SENTINEL" 2>/dev/null); do
+    db="$LOCAL/agents/$agent/agent/openclaw-agent.sqlite"
+    if [ -f "$db" ]; then
+      if sqlite3 "$db" "DELETE FROM auth_profile_store WHERE store_key = 'primary';" 2>/dev/null; then
+        log "sentinel: cleared auth row for agent $agent"
+      else
+        log "sentinel: no auth table for agent $agent (benign)"
+      fi
+    else
+      log "sentinel: no DB for agent $agent yet (benign)"
+    fi
+  done
+  rm -f "$SENTINEL"
+fi
+
+# --- 5. Hand off. litestream supervises the app: SIGTERM is forwarded to the
+# child (the gateway, via exec in the app script), then every DB final-syncs
+# to S3 — but ONLY when the child exits cleanly, so the gateway must exit 0
+# on SIGTERM. Config is env-expanded by litestream ($OWNER_ID exported above,
+# $LITESTREAM_S3_BUCKET from the task def).
+log "starting litestream replicate (supervising doctor+gateway)"
+exec litestream replicate -config "$LITESTREAM_CONFIG" -exec "$APP_CMD"

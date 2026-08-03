@@ -109,11 +109,43 @@ fi
 #     the cold-start path, and the owner's entire history silently rots in an
 #     ignored archive. Re-migrating from the archive is idempotent and leaves
 #     the archive in place.
+#
+# The archive arm is BOUNDED by a fill-pending marker written at archive time.
+# Without that bound the frozen archive would be consulted on every boot
+# forever, so an agent deleted AFTER cutover — whose replica prefix the backend
+# deliberately deleted — would be resurrected from the archive on the next task
+# replacement and start replicating again, silently undoing the deletion. The
+# marker is cleared as soon as S3 is proven to hold everything the archive
+# does, which is normally the very next boot.
+ARCHIVE="$EFS/pre-o6-archive"
+FILL_MARKER="$ARCHIVE/.o6-fill-pending"
+
+# Close the fill window as soon as the replica covers every database the
+# archive holds: from then on the archive is redundant and post-cutover agent
+# deletions are honored instead of being undone.
+if [ -f "$FILL_MARKER" ]; then
+  _missing=0
+  for _adb in "$ARCHIVE"/state/openclaw.sqlite "$ARCHIVE"/agents/*/agent/openclaw-agent.sqlite; do
+    [ -f "$_adb" ] || continue
+    _rel=${_adb#"$ARCHIVE"/}
+    case "$DBS" in
+      *"$_rel"*) ;;
+      *) _missing=1 ;;
+    esac
+  done
+  if [ "$_missing" = "0" ]; then
+    rm -f "$FILL_MARKER"
+    log "replica covers the full archive — fill window closed"
+  fi
+fi
+
+ARCHIVE="$EFS/pre-o6-archive"
+FILL_MARKER="$ARCHIVE/.o6-fill-pending"
 MIGRATE_SRC=""
 if [ -d "$EFS/state" ] || [ -d "$EFS/agents" ]; then
   MIGRATE_SRC="$EFS"
-elif [ -d "$EFS/pre-o6-archive/state" ] || [ -d "$EFS/pre-o6-archive/agents" ]; then
-  MIGRATE_SRC="$EFS/pre-o6-archive"
+elif [ -f "$FILL_MARKER" ] && { [ -d "$ARCHIVE/state" ] || [ -d "$ARCHIVE/agents" ]; }; then
+  MIGRATE_SRC="$ARCHIVE"
 fi
 
 # sqlite3 wrapper that tolerates ONLY a missing table. Any other failure
@@ -190,11 +222,14 @@ if [ -n "$MIGRATE_SRC" ]; then
   rm -f "$EFS"/workspace-*/.openclaw/workspace-state.json 2>/dev/null || true
   # Archive the live EFS originals (never the archive onto itself).
   if [ "$MIGRATE_SRC" = "$EFS" ]; then
-    mkdir -p "$EFS/pre-o6-archive" || exit 1
+    mkdir -p "$ARCHIVE" || exit 1
     for d in state agents; do
-      if [ -d "$EFS/$d" ]; then mv "$EFS/$d" "$EFS/pre-o6-archive/$d" || exit 1; fi
+      if [ -d "$EFS/$d" ]; then mv "$EFS/$d" "$ARCHIVE/$d" || exit 1; fi
     done
-    log "migration complete; EFS originals archived at pre-o6-archive/"
+    # Arms the bounded fill window (see MIGRATE_SRC above): until S3 is proven
+    # to hold everything, a crash before the first upload must be recoverable.
+    : > "$FILL_MARKER" || exit 1
+    log "migration complete; EFS originals archived at pre-o6-archive/ (fill window armed)"
   else
     log "migration complete; filled in from archive (archive left in place)"
   fi
@@ -210,6 +245,14 @@ fi
 SENTINEL="$EFS/o6-clear-auth-profiles.json"
 if [ -f "$SENTINEL" ]; then
   for agent in $(jq -r '.agent_ids[]? // empty' "$SENTINEL" 2>/dev/null); do
+    # ONLY the default agent. Every other agent merges its credentials from
+    # main's store, so clearing a non-default row makes that agent import the
+    # shared one-time refresh token independently -> refresh_token_reused
+    # fan-out. The backend only ever writes ["main"]; this is the fence.
+    if [ "$agent" != "main" ]; then
+      log "sentinel: ignoring non-default agent '$agent' (only main may be cleared)"
+      continue
+    fi
     db="$LOCAL/agents/$agent/agent/openclaw-agent.sqlite"
     if [ -f "$db" ]; then
       if _serr=$(sqlite3 "$db" "DELETE FROM auth_profile_store WHERE store_key = 'primary';" 2>&1); then

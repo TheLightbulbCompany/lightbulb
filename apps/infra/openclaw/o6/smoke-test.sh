@@ -92,12 +92,14 @@ reg=$(sqlite3 "$L/state/openclaw.sqlite" "SELECT path FROM agent_databases;")
 [ -d "$E/pre-o6-archive/state" ] && [ -d "$E/pre-o6-archive/agents" ] || fail "EFS originals not archived"
 [ ! -d "$E/state" ] && [ ! -d "$E/agents" ] || fail "EFS hot dirs still present"
 [ ! -f "$E/workspace-main/.openclaw/workspace-state.json" ] || fail "nested legacy workspace-state.json not removed"
+[ -f "$E/pre-o6-archive/.o6-fill-pending" ] || fail "fill window not armed at archive time"
 echo "PASS 3 migration"
 
 # ---- 3b. archive fallback: a prior boot archived EFS state but died before
 # any replica landed. The replacement must re-migrate FROM the archive, not
 # cold-start into an empty container.
 E="$WORK/t3b/efs"; L="$WORK/t3b/local"; mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/main/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
 sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','$E/agents/main/agent/openclaw-agent.sqlite');"
 sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); \
   INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:$E/agents/main/agent/openclaw-agent.sqlite\"}');"
@@ -128,6 +130,7 @@ echo "PASS 3c rewrite failure aborts cutover"
 # ---- 3d. partial replica + archive must MERGE (not be exclusive): a task that
 # died mid-first-upload leaves some DBs in S3 and the rest only in the archive.
 E="$WORK/t3d/efs"; L="$WORK/t3d/local"; mkdir -p "$E/pre-o6-archive/agents/main/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
 sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{}');"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/0000000000000001-0000000000000002.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "partial-merge run exited nonzero: $out"
@@ -135,6 +138,26 @@ unset AWS_STUB_KEYS
 [ -f "$L/state/openclaw.sqlite" ] || fail "replicated state DB not restored"
 [ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "archive-only agent DB was stranded by the partial replica"
 echo "PASS 3d partial replica merges with archive"
+
+# ---- 3e. once the replica covers the archive the window closes, and an agent
+# deleted after cutover (its replica prefix removed by the backend) must NOT be
+# resurrected from the frozen archive on the next boot.
+E="$WORK/t3e/efs"; L="$WORK/t3e/local"; mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/gone/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
+sqlite3 "$E/pre-o6-archive/agents/gone/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
+# boot 1: S3 already holds BOTH archived DBs -> window closes, no fill needed
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/ltx/0/1-2.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "window-close run exited nonzero: $out"
+echo "$out" | grep -q "fill window closed" || fail "window did not close: $out"
+[ ! -f "$E/pre-o6-archive/.o6-fill-pending" ] || fail "marker not removed"
+# boot 2: the agent has been deleted (prefix gone from S3, archive untouched)
+rm -rf "$L"; mkdir -p "$L"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "post-deletion run exited nonzero: $out"
+unset AWS_STUB_KEYS
+[ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "deleted agent resurrected from the archive"
+echo "PASS 3e closed window honors post-cutover deletion"
 
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"
@@ -163,5 +186,17 @@ out=$(run_boot "$E" "$L" 2>&1) || fail "sentinel-failure run exited nonzero: $ou
 echo "$out" | grep -q "keeping sentinel" || fail "did not report keeping the sentinel: $out"
 [ -f "$E/o6-clear-auth-profiles.json" ] || fail "sentinel consumed despite a non-benign failure"
 echo "PASS 4c sentinel retained on non-benign failure"
+
+# ---- 4d. a sentinel naming a NON-default agent must be ignored: only main's
+# row may be cleared (others merge from main; independent imports reuse the
+# one-time refresh token -> refresh_token_reused fan-out).
+E="$WORK/t4d/efs"; L="$WORK/t4d/local"; mkdir -p "$E" "$L/agents/other/agent"
+sqlite3 "$L/agents/other/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{}');"
+echo '{"agent_ids":["other"]}' > "$E/o6-clear-auth-profiles.json"
+out=$(run_boot "$E" "$L" 2>&1) || fail "non-default sentinel run exited nonzero: $out"
+rows=$(sqlite3 "$L/agents/other/agent/openclaw-agent.sqlite" "SELECT count(*) FROM auth_profile_store;")
+[ "$rows" = "1" ] || fail "non-default agent auth row was cleared"
+echo "$out" | grep -q "ignoring non-default agent" || fail "no ignore log: $out"
+echo "PASS 4d non-default sentinel ignored"
 
 echo "ALL SMOKE TESTS PASSED"

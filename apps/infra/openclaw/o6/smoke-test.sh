@@ -68,22 +68,56 @@ echo "PASS 2b enumeration fail-loud"
 
 # ---- 3. migration path ----
 E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"
-sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite');"
+sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','$E/agents/main/agent/openclaw-agent.sqlite');"
 sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); \
-  INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite\",\"cwd\":\"/home/node/.openclaw/workspace-main\"}');"
-echo "seed" > "$E/workspace-main/workspace-state.json"
+  INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:$E/agents/main/agent/openclaw-agent.sqlite\",\"cwd\":\"$E/workspace-main\"}');"
+mkdir -p "$E/workspace-main/.openclaw"
+echo "seed" > "$E/workspace-main/.openclaw/workspace-state.json"
 mkdir -p "$L"
 out=$(run_boot "$E" "$L" 2>&1) || fail "migration exited nonzero: $out"
-echo "$out" | grep -q "first-cutover migration" || fail "migration branch not taken"
+echo "$out" | grep -q "cutover migration from $E" || fail "migration branch not taken: $out"
 mk=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT entry_json FROM session_entries;")
-echo "$mk" | grep -q "sqlite:main:s1:/openclaw-local/agents/main/agent/openclaw-agent.sqlite" || fail "marker not rewritten: $mk"
-echo "$mk" | grep -q '"cwd":"/home/node/.openclaw/workspace-main"' || fail "workspace path was wrongly rewritten: $mk"
+echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite" || fail "marker not rewritten: $mk"
+echo "$mk" | grep -q "\"cwd\":\"$E/workspace-main\"" || fail "workspace path was wrongly rewritten: $mk"
 reg=$(sqlite3 "$L/state/openclaw.sqlite" "SELECT path FROM agent_databases;")
-[ "$reg" = "/openclaw-local/agents/main/agent/openclaw-agent.sqlite" ] || fail "agent_databases not rewritten: $reg"
+[ "$reg" = "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "agent_databases not rewritten: $reg"
 [ -d "$E/pre-o6-archive/state" ] && [ -d "$E/pre-o6-archive/agents" ] || fail "EFS originals not archived"
 [ ! -d "$E/state" ] && [ ! -d "$E/agents" ] || fail "EFS hot dirs still present"
-[ ! -f "$E/workspace-main/workspace-state.json" ] || fail "legacy workspace-state.json not removed"
+[ ! -f "$E/workspace-main/.openclaw/workspace-state.json" ] || fail "nested legacy workspace-state.json not removed"
 echo "PASS 3 migration"
+
+# ---- 3b. archive fallback: a prior boot archived EFS state but died before
+# any replica landed. The replacement must re-migrate FROM the archive, not
+# cold-start into an empty container.
+E="$WORK/t3b/efs"; L="$WORK/t3b/local"; mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/main/agent" "$L"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','$E/agents/main/agent/openclaw-agent.sqlite');"
+sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); \
+  INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:$E/agents/main/agent/openclaw-agent.sqlite\"}');"
+out=$(run_boot "$E" "$L" 2>&1) || fail "archive fallback exited nonzero: $out"
+echo "$out" | grep -q "cutover migration from $E/pre-o6-archive" || fail "archive branch not taken: $out"
+[ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "archive DB not restored to local"
+mk=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT entry_json FROM session_entries;")
+echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite" || fail "archive-path marker not rewritten to configured local root: $mk"
+[ -d "$E/pre-o6-archive/state" ] || fail "archive was consumed instead of left in place"
+echo "PASS 3b archive fallback"
+
+# ---- 3c. a non-missing-table sqlite failure must ABORT the cutover, leaving
+# the EFS originals unarchived (silently archiving them while markers still
+# point at EFS is the data-loss shape).
+E="$WORK/t3c/efs"; L="$WORK/t3c/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$L"
+sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
+# session_entries exists but is read-only at the file level -> UPDATE fails
+# with a write error, NOT "no such table".
+sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{\"p\":\"$E/agents/x\"}');"
+chmod 0444 "$E/agents/main/agent/openclaw-agent.sqlite"
+if out=$(run_boot "$E" "$L" 2>&1); then
+  chmod 0644 "$E/agents/main/agent/openclaw-agent.sqlite"
+  fail "read-only DB rewrite did not abort: $out"
+fi
+chmod 0644 "$E/agents/main/agent/openclaw-agent.sqlite"
+echo "$out" | grep -q "FATAL: sqlite failed" || fail "abort did not report a sqlite failure: $out"
+[ -d "$E/state" ] && [ -d "$E/agents" ] || fail "EFS originals archived despite failed rewrite"
+echo "PASS 3c rewrite failure aborts cutover"
 
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"

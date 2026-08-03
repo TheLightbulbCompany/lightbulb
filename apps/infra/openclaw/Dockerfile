@@ -607,6 +607,11 @@ RUN set -eux; \
     tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream; \
     rm /tmp/litestream.tgz; \
     litestream version
+# Pre-create the local state root while still root. The per-user task def runs
+# the container as root today (`user: "0:0"`), so the boot script could mkdir
+# it itself — this is insurance that keeps the boot chain working if that ever
+# changes, and it costs one empty directory.
+RUN mkdir -p /openclaw-local && chown node:node /openclaw-local
 COPY o6/isol8-o6-boot.sh /usr/local/bin/isol8-o6-boot.sh
 COPY o6/isol8-o6-app.sh /usr/local/bin/isol8-o6-app.sh
 COPY o6/isol8-litestream.yml /etc/isol8-litestream.yml

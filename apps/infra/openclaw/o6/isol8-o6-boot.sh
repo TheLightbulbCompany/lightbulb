@@ -70,6 +70,37 @@ if [ -n "$KEYS" ]; then
   DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[0-9a-f][0-9a-f][0-9a-f][0-9a-f]/[^/]*\$#\1#p" | sort -u)
 fi
 
+# Migration source, in precedence order:
+#   $EFS/{state,agents}              — first cutover boot (live EFS state)
+#   $EFS/pre-o6-archive/{state,agents} — a PRIOR boot archived them but the
+#     task died before Litestream durably replicated anything. Without this
+#     arm the replacement task finds no replica and no live EFS state, takes
+#     the cold-start path, and the owner's entire history silently rots in an
+#     ignored archive. Re-migrating from the archive is idempotent and leaves
+#     the archive in place.
+MIGRATE_SRC=""
+if [ -d "$EFS/state" ] || [ -d "$EFS/agents" ]; then
+  MIGRATE_SRC="$EFS"
+elif [ -d "$EFS/pre-o6-archive/state" ] || [ -d "$EFS/pre-o6-archive/agents" ]; then
+  MIGRATE_SRC="$EFS/pre-o6-archive"
+fi
+
+# sqlite3 wrapper that tolerates ONLY a missing table. Any other failure
+# (SQLITE_BUSY, I/O error, schema mismatch) must abort the migration: the DB
+# would still pass integrity_check while its absolute markers still point at
+# the about-to-be-archived EFS paths, so history would resolve to a moved-away
+# location and read as empty.
+o6_sqlite() {
+  _db=$1; _sql=$2
+  if _err=$(sqlite3 "$_db" "$_sql" 2>&1); then
+    return 0
+  fi
+  case "$_err" in
+    *"no such table"*) log "warn: $(basename "$_db"): $_err" ;;
+    *) log "FATAL: sqlite failed on $_db: $_err"; return 1 ;;
+  esac
+}
+
 if [ -n "$DBS" ]; then
   for rel in $DBS; do
     log "restore $rel"
@@ -79,31 +110,31 @@ if [ -n "$DBS" ]; then
       -o "$LOCAL/$rel" "s3://$BUCKET/$OWNER_ID/$rel" || {
         log "FATAL: restore failed for $rel"; exit 1; }
   done
-elif [ -d "$EFS/state" ] || [ -d "$EFS/agents" ]; then
-  # --- 3. First-cutover migration: no replica yet, hot state still on EFS.
+elif [ -n "$MIGRATE_SRC" ]; then
+  # --- 3. Cutover migration: no replica yet, hot state still reachable.
   # The single-writer deployment config guarantees no concurrent writer, and
   # on EFS these DBs run rollback-journal (no -wal sidecars), so a plain copy
   # is consistent. The EFS originals are archived (mv, not deleted) only
   # after the copies pass integrity_check.
-  log "first-cutover migration from EFS"
+  log "cutover migration from $MIGRATE_SRC"
   for d in state agents; do
-    if [ -d "$EFS/$d" ]; then cp -a "$EFS/$d/." "$LOCAL/$d/" || exit 1; fi
+    if [ -d "$MIGRATE_SRC/$d" ]; then cp -a "$MIGRATE_SRC/$d/." "$LOCAL/$d/" || exit 1; fi
   done
   # Scoped path rewrite — ONLY the two relocated subtrees. Session markers
   # ("sqlite:<agent>:<session>:<absPath>" inside session_entries.entry_json)
   # take precedence over config, and the state DB registers agent DBs by
   # absolute path; both would otherwise point readers at the archived EFS
   # paths (recreating empty DBs there — history reads as empty). Workspace
-  # paths also live under /home/node/.openclaw and must NOT be rewritten,
-  # hence prefix-scoped replaces, never a blanket one.
+  # paths also live under the state root and must NOT be rewritten, hence
+  # prefix-scoped replaces, never a blanket one. The FROM prefixes are always
+  # the canonical EFS roots even when re-migrating from the archive: the
+  # markers inside those DBs were written before the archive move.
   for db in "$LOCAL"/agents/*/agent/openclaw-agent.sqlite; do
     [ -f "$db" ] || continue
-    sqlite3 "$db" "UPDATE session_entries SET entry_json = replace(replace(entry_json, '/home/node/.openclaw/agents/', '/openclaw-local/agents/'), '/home/node/.openclaw/state/', '/openclaw-local/state/') WHERE entry_json LIKE '%/home/node/.openclaw/agents/%' OR entry_json LIKE '%/home/node/.openclaw/state/%';" 2>/dev/null \
-      || log "warn: session marker rewrite skipped for $db (no session_entries table)"
+    o6_sqlite "$db" "UPDATE session_entries SET entry_json = replace(replace(entry_json, '$EFS/agents/', '$LOCAL/agents/'), '$EFS/state/', '$LOCAL/state/') WHERE entry_json LIKE '%$EFS/agents/%' OR entry_json LIKE '%$EFS/state/%';" || exit 1
   done
   if [ -f "$LOCAL/state/openclaw.sqlite" ]; then
-    sqlite3 "$LOCAL/state/openclaw.sqlite" "UPDATE agent_databases SET path = replace(path, '/home/node/.openclaw/agents/', '/openclaw-local/agents/') WHERE path LIKE '/home/node/.openclaw/agents/%';" 2>/dev/null \
-      || log "warn: agent_databases rewrite skipped (no agent_databases table)"
+    o6_sqlite "$LOCAL/state/openclaw.sqlite" "UPDATE agent_databases SET path = replace(path, '$EFS/agents/', '$LOCAL/agents/') WHERE path LIKE '$EFS/agents/%';" || exit 1
   fi
   # Integrity gate before the EFS originals are archived.
   for db in "$LOCAL/state/openclaw.sqlite" "$LOCAL"/agents/*/agent/openclaw-agent.sqlite; do
@@ -113,13 +144,19 @@ elif [ -d "$EFS/state" ] || [ -d "$EFS/agents" ]; then
   done
   # A stale legacy workspace-state.json would re-trip the migration gate the
   # native-seed heal used to clear; the state DB is present by construction
-  # at this point, which is exactly the heal's own guard condition.
-  rm -f "$EFS"/workspace-*/workspace-state.json 2>/dev/null || true
-  mkdir -p "$EFS/pre-o6-archive" || exit 1
-  for d in state agents; do
-    if [ -d "$EFS/$d" ]; then mv "$EFS/$d" "$EFS/pre-o6-archive/$d" || exit 1; fi
-  done
-  log "migration complete; EFS originals archived at pre-o6-archive/"
+  # at this point, which is exactly the heal's own guard condition. The marker
+  # lives at workspace-<agent>/.openclaw/workspace-state.json.
+  rm -f "$EFS"/workspace-*/.openclaw/workspace-state.json 2>/dev/null || true
+  # Archive the live EFS originals (never the archive onto itself).
+  if [ "$MIGRATE_SRC" = "$EFS" ]; then
+    mkdir -p "$EFS/pre-o6-archive" || exit 1
+    for d in state agents; do
+      if [ -d "$EFS/$d" ]; then mv "$EFS/$d" "$EFS/pre-o6-archive/$d" || exit 1; fi
+    done
+    log "migration complete; EFS originals archived at pre-o6-archive/"
+  else
+    log "migration complete; re-migrated from archive (archive left in place)"
+  fi
 else
   log "cold start: no replica, no EFS state — fresh container"
 fi

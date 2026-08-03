@@ -1261,6 +1261,7 @@ jobs:
       - Build-Synth
       - Assets-FileAsset7
       - Assets-FileAsset8
+      - Assets-FileAsset9
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
@@ -1299,7 +1300,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset9
+      - Assets-FileAsset10
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
@@ -1327,7 +1328,7 @@ jobs:
         with:
           name: isol8-dev-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset9.outputs.asset-hash }}.json
+            needs.Assets-FileAsset10.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1338,12 +1339,12 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset10
       - Assets-FileAsset11
-      - Assets-FileAsset2
       - Assets-FileAsset12
+      - Assets-FileAsset2
       - Assets-FileAsset13
       - Assets-FileAsset14
+      - Assets-FileAsset15
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -1373,7 +1374,7 @@ jobs:
         with:
           name: isol8-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset10.outputs.asset-hash }}.json
+            needs.Assets-FileAsset11.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1384,8 +1385,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset15
       - Assets-FileAsset16
+      - Assets-FileAsset8
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1415,7 +1416,7 @@ jobs:
         with:
           name: isol8-dev-paperclip
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset15.outputs.asset-hash }}.json
+            needs.Assets-FileAsset16.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1427,7 +1428,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset17
-      - Assets-FileAsset16
+      - Assets-FileAsset8
       - Assets-FileAsset18
       - Assets-FileAsset19
       - Assets-FileAsset20
@@ -1726,7 +1727,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset26
-      - Assets-FileAsset8
+      - Assets-FileAsset9
       - Assets-FileAsset27
       - Assets-FileAsset2
       - dev-isol8-dev-auth-Deploy
@@ -1878,7 +1879,7 @@ jobs:
       - Assets-FileAsset31
       - Assets-FileAsset32
       - Assets-FileAsset2
-      - Assets-FileAsset8
+      - Assets-FileAsset9
       - prod-isol8-prod-auth-Deploy
       - prod-isol8-prod-dns-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -1929,7 +1930,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset33
-      - Assets-FileAsset8
+      - Assets-FileAsset9
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -2030,11 +2031,11 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset35
-      - Assets-FileAsset11
-      - Assets-FileAsset2
       - Assets-FileAsset12
+      - Assets-FileAsset2
       - Assets-FileAsset13
       - Assets-FileAsset14
+      - Assets-FileAsset15
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-dns-Deploy
       - prod-isol8-prod-auth-Deploy

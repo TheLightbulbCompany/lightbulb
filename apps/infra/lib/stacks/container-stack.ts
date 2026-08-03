@@ -12,7 +12,6 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as s3 from "aws-cdk-lib/aws-s3";
-import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
@@ -397,6 +396,25 @@ export class ContainerStack extends cdk.Stack {
       ],
     });
 
+    // ROLLBACK CONSTRAINT (read before flipping an env back to "efs"):
+    // flipping storage back removes this conditional resource from the stack
+    // while RemovalPolicy.RETAIN (prod) leaves the literal-named bucket
+    // behind, so a later re-promotion fails with "bucket already exists"
+    // until it is imported or deleted. This is not a hidden trap so much as
+    // the shape of the whole rollback: containers that already migrated have
+    // their pre-cutover state in EFS pre-o6-archive/, and returning them to
+    // the EFS layout requires restoring that archive too. Rollback is an ops
+    // runbook (see docs/superpowers/plans/2026-08-03-o6-sqlite-off-efs.md),
+    // never a bare flag flip.
+    //
+    // The per-owner S3 GRANT is NOT here: this boundary statement is only a
+    // cap. The actual prefix-scoped inline policy ("owner-litestream-s3") is
+    // minted per owner by the backend's ensure_owner_bedrock_role, and
+    // existing owners are backfilled by
+    // apps/backend/scripts/ensure_litestream_s3_policies.py — which MUST run
+    // before any fleet restart wave in a freshly flipped env, or litestream
+    // (the boot supervisor) AccessDenies and tasks crash-loop.
+    //
     // O6 Litestream replica bucket — durability layer for hot SQLite on
     // container-local disk. Literal name (consumers reference by name, never
     // cross-stack refs — KMS-cycle posture); SSE-S3 like every other bucket in
@@ -407,32 +425,13 @@ export class ContainerStack extends cdk.Stack {
     // ~0 PUTs. No lifecycle expiration — Litestream retention owns pruning
     // (deleting LTX files under it would break restores).
     if (localSqliteStorage) {
-      const replicaBucket = new s3.Bucket(this, "OpenclawReplicasBucket", {
+      new s3.Bucket(this, "OpenclawReplicasBucket", {
         bucketName: litestreamBucketName,
         encryption: s3.BucketEncryption.S3_MANAGED,
         blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
         removalPolicy: config.removalPolicy,
         autoDeleteObjects: props.environment !== "prod",
         metrics: [{ id: "EntireBucket" }],
-      });
-      new cloudwatch.Alarm(this, "LitestreamPutRequestsAlarm", {
-        alarmName: `isol8-${props.environment}-litestream-put-requests`,
-        alarmDescription:
-          "Litestream S3 PUT volume far above the active-fleet ceiling — " +
-          "either the idle-PUT pathology (litestream#1171) or a runaway " +
-          "checkpoint loop. Nominal idle is ~0 PUTs/DB; sustained six-figure " +
-          "hourly PUTs is never normal for this fleet size.",
-        metric: new cloudwatch.Metric({
-          namespace: "AWS/S3",
-          metricName: "PutRequests",
-          dimensionsMap: { BucketName: replicaBucket.bucketName, FilterId: "EntireBucket" },
-          statistic: "Sum",
-          period: cdk.Duration.hours(1),
-        }),
-        threshold: 100_000,
-        evaluationPeriods: 2,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
     }
 

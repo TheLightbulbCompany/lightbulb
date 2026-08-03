@@ -1,3 +1,5 @@
+import * as path from "path";
+import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
@@ -31,6 +33,16 @@ const BEDROCK_DAILY_CACHE_WRITE_TOKEN_THRESHOLD = 10_000_000;
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
+
+// Per-env O6 storage gate (same file + shape the container/service stacks
+// read). Litestream alarms exist only for envs actually replicating.
+const OPENCLAW_VERSION: {
+  dev: { storage?: string };
+  prod: { storage?: string };
+  [key: string]: unknown;
+} = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"), "utf8"),
+);
 
 export interface ObservabilityStackProps extends cdk.StackProps {
   envName: string;
@@ -764,6 +776,42 @@ export class ObservabilityStack extends cdk.Stack {
     // gauge, so it joins the universal FIS stop set + the container set.
     this.fisStopAlarmArns.push(w10.alarmArn);
     this.fisContainerStopAlarmArns.push(w10.alarmArn);
+
+    // W10b: litestream-put-requests (O6 local-sqlite envs only).
+    // Litestream's documented failure modes are quiet: the idle-PUT pathology
+    // (litestream#1171, ~480 PUT/hr against a DB with zero writes) and
+    // checkpoint loops both burn S3 requests without erroring. Nominal idle is
+    // ~0 PUTs/DB, so sustained six-figure hourly PUTs across the fleet is
+    // never normal. Bucket name is the literal deterministic one (no
+    // cross-stack ref — same anti-KMS-cycle posture as the rest of the repo).
+    const o6Storage =
+      this.envName === "dev"
+        ? OPENCLAW_VERSION.dev.storage
+        : this.envName === "prod"
+          ? OPENCLAW_VERSION.prod.storage
+          : undefined;
+    if (o6Storage === "local-sqlite") {
+      const litestreamPuts = new cloudwatch.Alarm(this, "W10B", {
+        alarmName: `isol8-${this.envName}-W10B-litestream-put-requests`,
+        alarmDescription:
+          "Litestream S3 PUT volume far above the active-fleet ceiling — idle-PUT pathology or a runaway checkpoint loop",
+        metric: new cloudwatch.Metric({
+          namespace: "AWS/S3",
+          metricName: "PutRequests",
+          dimensionsMap: {
+            BucketName: `isol8-${this.envName}-openclaw-replicas`,
+            FilterId: "EntireBucket",
+          },
+          statistic: "Sum",
+          period: cdk.Duration.hours(1),
+        }),
+        threshold: 100_000,
+        evaluationPeriods: 2,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      litestreamPuts.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    }
 
     // W11: chat-session-usage-fetch-error
     this.createAlarm({

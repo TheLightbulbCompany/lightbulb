@@ -19,6 +19,7 @@ per-container Ed25519 device seed (KMS-decrypted from the container row) and
 signs the connect.
 """
 
+import asyncio
 import logging
 
 from core.containers import get_ecs_manager
@@ -120,9 +121,30 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
         return False
     try:
         await pre_stage_auth_profile_store(user_id=owner_id, oauth_tokens=tokens)
-        await clear_default_agent_auth_profile_row(user_id=owner_id)
+        cleared = await clear_default_agent_auth_profile_row(user_id=owner_id)
     except Exception as exc:  # noqa: BLE001 — best-effort (no workspace/container yet)
         logger.warning("push_oauth_credential: stage/clear failed for owner=%s: %s", owner_id, exc)
         return False
+    if cleared == "restart_required":
+        # O6 local-SQLite layout: the auth row lives on container-local disk;
+        # the clear left a boot sentinel on EFS, and only a task replacement
+        # applies it. Bounce a RUNNING container asynchronously — this path
+        # backs /oauth/poll, whose response must stay fast, and a cold or
+        # never-booted container consumes the sentinel on its next boot anyway.
+        asyncio.create_task(_restart_for_sentinel_apply(owner_id))
     logger.info("push_oauth_credential: staged fresh ChatGPT token", extra={"owner_id": owner_id})
     return True
+
+
+async def _restart_for_sentinel_apply(owner_id: str) -> None:
+    """Bounce a RUNNING container so its boot script applies the O6 clear-auth
+    sentinel and the staged oauth.json re-imports. No-op when the container is
+    cold. Never raises — a failed bounce self-heals on the next boot."""
+    try:
+        container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+        if not container or not ip:
+            return
+        await get_ecs_manager().force_redeploy_user_service(owner_id)
+        logger.info("o6 auth-reimport: forced redeploy", extra={"owner_id": owner_id})
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("o6 auth-reimport restart failed for %s: %s", owner_id, exc)

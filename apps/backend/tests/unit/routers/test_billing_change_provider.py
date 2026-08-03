@@ -920,3 +920,53 @@ async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, col
     # openclaw.json end-to-end.
     mock_replace.assert_not_awaited()
     cold_reprovision.drain_then_dispatch_provision.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_change_provider_to_chatgpt_falls_cold_when_clear_needs_restart(async_client, cold_reprovision):
+    """O6 local-SQLite layout: the auth-row clear cannot run in place (store is
+    container-local) — it writes a boot sentinel and reports restart_required.
+    The hot swap must ABORT and fall back to the stop-first cold path, whose
+    restart contract the frontend already renders. replace_provider_block must
+    never run on the aborted hot path (a patched config without a cleared auth
+    row would keep serving the stale token)."""
+    bedrock_account = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "bedrock_claude",
+    }
+
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=bedrock_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "tok", "account_id": "acc"}),
+        ),
+        patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()),
+        patch(
+            "core.containers.workspace.clear_default_agent_auth_profile_row",
+            new=AsyncMock(return_value="restart_required"),
+        ),
+        patch("core.services.config_patcher.replace_provider_block", new=AsyncMock()) as mock_replace,
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "chatgpt_oauth"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["provider_choice"] == "chatgpt_oauth"
+    assert body["restart"] is True, "must take the cold path (restart contract)"
+    mock_replace.assert_not_awaited()
+    cold_reprovision.drain_then_dispatch_provision.assert_called_once()

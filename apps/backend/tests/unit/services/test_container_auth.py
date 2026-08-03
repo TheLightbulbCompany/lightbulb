@@ -7,6 +7,7 @@ strictly best-effort: never raises, returns False when there's no live store
 to clear.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -130,3 +131,65 @@ async def test_push_credential_best_effort_when_stage_raises():
         result = await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c")
     assert result is False  # never raises
     clear.assert_not_called()
+
+
+async def test_push_credential_restart_required_schedules_bounce():
+    """O6 layout: the clear reports restart_required -> an async bounce is
+    scheduled (fire-and-forget; /oauth/poll response must not block on it)."""
+    with (
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
+        ),
+        patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()),
+        patch(
+            "core.containers.workspace.clear_default_agent_auth_profile_row",
+            new=AsyncMock(return_value="restart_required"),
+        ),
+        patch("core.services.container_auth._restart_for_sentinel_apply", new=AsyncMock()) as bounce,
+    ):
+        result = await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c")
+        await asyncio.sleep(0)
+    assert result is True
+    bounce.assert_awaited_once_with("org_1")
+
+
+async def test_push_credential_plain_clear_does_not_bounce():
+    """Old layout (clear returned a bool): no bounce is ever scheduled."""
+    with (
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new=AsyncMock(return_value={"access_token": "a", "refresh_token": "r"}),
+        ),
+        patch("core.containers.workspace.pre_stage_auth_profile_store", new=AsyncMock()),
+        patch(
+            "core.containers.workspace.clear_default_agent_auth_profile_row",
+            new=AsyncMock(return_value=True),
+        ),
+        patch("core.services.container_auth._restart_for_sentinel_apply", new=AsyncMock()) as bounce,
+    ):
+        result = await container_auth.push_oauth_credential_to_container(owner_id="org_1", connector_id="user_c")
+        await asyncio.sleep(0)
+    assert result is True
+    bounce.assert_not_awaited()
+
+
+async def test_restart_for_sentinel_apply_only_bounces_running():
+    """The bounce helper redeploys ONLY a running container; a cold one
+    consumes the sentinel on its next boot anyway. Never raises."""
+    with patch("core.services.container_auth.get_ecs_manager") as get_mgr:
+        mgr = get_mgr.return_value
+        mgr.resolve_running_container = AsyncMock(return_value=(None, None))
+        mgr.force_redeploy_user_service = AsyncMock()
+        await container_auth._restart_for_sentinel_apply("org_1")
+        mgr.force_redeploy_user_service.assert_not_called()
+
+        mgr.resolve_running_container = AsyncMock(return_value=({"service_name": "s"}, "10.0.0.1"))
+        await container_auth._restart_for_sentinel_apply("org_1")
+        mgr.force_redeploy_user_service.assert_awaited_once_with("org_1")
+
+
+async def test_restart_for_sentinel_apply_swallows_errors():
+    with patch("core.services.container_auth.get_ecs_manager") as get_mgr:
+        get_mgr.return_value.resolve_running_container = AsyncMock(side_effect=RuntimeError("ecs down"))
+        await container_auth._restart_for_sentinel_apply("org_1")  # must not raise

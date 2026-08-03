@@ -22,6 +22,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -913,7 +914,41 @@ def _delete_default_agent_auth_row_blocking(db_path: Path) -> tuple[int, str | N
         return 0, f"write_failed: {e}"
 
 
-async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
+# O6 local-SQLite layout: sentinel on the EFS durable spine asking the
+# container's boot script to delete the default agent's auth_profile_store row
+# (before gateway start) so a freshly staged credentials/oauth.json re-imports.
+# Written when the backend cannot reach the store directly (it lives on
+# container-local disk); consumed + deleted by the boot script, which skips
+# missing DBs and tolerates a missing table (a fresh container has no row and
+# imports the staged file anyway).
+O6_CLEAR_AUTH_SENTINEL_FILENAME = "o6-clear-auth-profiles.json"
+
+
+def _write_o6_clear_auth_sentinel(user_root: Path) -> None:
+    # Written against the SAME efs_root the caller resolved (env override
+    # included) rather than the Workspace singleton, which binds its mount
+    # path from settings at first construction. The boot script runs as root,
+    # so ownership is cosmetic — chown kept for fleet-convention parity.
+    path = user_root / O6_CLEAR_AUTH_SENTINEL_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "agent_ids": [_DEFAULT_AGENT_DIR],
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        os.chown(path, _EFS_USER_UID, _EFS_USER_GID)
+    except OSError:
+        pass
+
+
+async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
     """Delete the DEFAULT agent's persisted auth-profile store row so OpenClaw
     6.6 re-imports a freshly staged ``credentials/oauth.json`` on its next load.
 
@@ -938,7 +973,13 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
     with the live writer.
 
     Returns True if a row was deleted, False on no-op (no store yet / no row /
-    contention we couldn't win). Never raises on a missing store or table.
+    contention we couldn't win), or the string ``"restart_required"`` on the
+    O6 local-SQLite layout (``settings.LITESTREAM_BUCKET`` set and no store on
+    EFS): the row lives on container-local disk the backend cannot reach, so a
+    sentinel is written to the EFS durable spine instead and only a container
+    boot applies it — the CALLER decides whether to bounce a running container
+    (never-booted containers consume the sentinel on first boot anyway).
+    Never raises on a missing store or table.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
@@ -949,6 +990,15 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool:
 
     db_path = Path(efs_root) / user_id / "agents" / _DEFAULT_AGENT_DIR / "agent" / "openclaw-agent.sqlite"
     if not db_path.exists():
+        # A store present on EFS (the arm below) always wins: during an env's
+        # cutover window, old-layout containers keep the hot in-place DELETE.
+        if settings.LITESTREAM_BUCKET:
+            _write_o6_clear_auth_sentinel(Path(efs_root) / user_id)
+            logger.info(
+                "clear_default_agent_auth_profile_row: wrote O6 sentinel for %s (store is container-local)",
+                user_id,
+            )
+            return "restart_required"
         return False  # Container never booted / no per-agent store yet.
 
     # Run the blocking sqlite work (incl. the busy-timeout wait) off the event

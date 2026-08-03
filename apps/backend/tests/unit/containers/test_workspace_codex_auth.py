@@ -311,3 +311,53 @@ async def test_clear_default_agent_missing_table_emits_no_failure_metric(fake_ef
     result = await clear_default_agent_auth_profile_row(user_id="org_1")
     assert result is False
     assert metrics == [], f"missing-table must not emit a failure metric, got {metrics}"
+
+
+# ---------------------------------------------------------------------------
+# O6 local-SQLite layout: the per-agent store lives on container-local disk.
+# With LITESTREAM_BUCKET set and no store on EFS, the clear writes a boot
+# sentinel and reports restart_required; an EFS store (old-layout container in
+# the same env during the cutover window) still wins with the hot DELETE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clear_writes_o6_sentinel_when_store_is_container_local(fake_efs_root, monkeypatch):
+    from core.config import settings as core_settings
+    from core.containers.workspace import O6_CLEAR_AUTH_SENTINEL_FILENAME
+
+    monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert result == "restart_required"
+    sentinel = fake_efs_root / "org_1" / O6_CLEAR_AUTH_SENTINEL_FILENAME
+    data = json.loads(sentinel.read_text())
+    assert data["agent_ids"] == ["main"]
+
+
+@pytest.mark.asyncio
+async def test_clear_prefers_efs_delete_over_sentinel_during_cutover(fake_efs_root, monkeypatch):
+    """An EFS store always wins: old-layout containers keep the hot in-place
+    DELETE even when the env already has the O6 bucket configured."""
+    from core.config import settings as core_settings
+    from core.containers.workspace import O6_CLEAR_AUTH_SENTINEL_FILENAME
+
+    monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
+    path = _make_agent_sqlite(fake_efs_root, "org_1", "main")
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert result is True
+    assert _store_rows(path) == []
+    assert not (fake_efs_root / "org_1" / O6_CLEAR_AUTH_SENTINEL_FILENAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_stays_benign_noop_without_o6_bucket(fake_efs_root):
+    """No LITESTREAM_BUCKET (prod/old layout): a missing store returns False
+    and writes NOTHING — first-connect-during-onboarding stays a pure no-op."""
+    result = await clear_default_agent_auth_profile_row(user_id="u_never")
+
+    assert result is False
+    assert not (fake_efs_root / "u_never").exists()

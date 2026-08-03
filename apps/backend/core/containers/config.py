@@ -1530,6 +1530,16 @@ def build_openclaw_config_dict(
                 "video": {"enabled": False},
             },
         },
+        # cron.store pins the cron STORE KEY to its historical resolved value.
+        # Cron rows in the container's state DB are keyed by the resolved
+        # jobs.json path STRING (the file itself need not exist); the default
+        # derives from the state dir, so relocating the state root off EFS
+        # would re-key the store and every existing row would vanish from the
+        # scheduler. The pin is byte-equal to today's derived default, making
+        # it a no-op on the EFS layout while keeping the key stable across the
+        # local-SQLite cutover. Schema-verified: `cron.store` is a string on
+        # CronSchema (zod-schema.root-shape.ts, strict-safe).
+        #
         # The BEDROCK TRIAL additionally kills the cron SERVICE outright, not
         # just the tool: trial containers must not self-run. This closes the
         # in-container scheduler (including memory-dreaming's own registrations)
@@ -1537,10 +1547,12 @@ def build_openclaw_config_dict(
         # the cron TOOL is already denied fleet-wide via tools.deny, so this is
         # belt-and-suspenders against anything that could still arm a schedule
         # (an imported/carried-forward job, future config drift). Schema-verified
-        # key: `cron.enabled` is a boolean on the pinned 7.1 CronSchema. Paid
-        # providers emit no cron key at all — the service stays on, governed by
-        # tools.deny as before.
-        **({"cron": {"enabled": False}} if is_bedrock_trial else {}),
+        # key: `cron.enabled` is a boolean on the pinned CronSchema. Paid
+        # providers keep the service on, governed by tools.deny as before.
+        "cron": {
+            "store": "/home/node/.openclaw/cron/jobs.json",
+            **({"enabled": False} if is_bedrock_trial else {}),
+        },
         "skills": {
             "install": {
                 "nodeManager": "npm",

@@ -716,9 +716,11 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         assert utility_model == "openai/gpt-5.4-mini"
         assert subagent_model == "openai/gpt-5.5"
         assert llm_task_model is None
-        # The search pin must be DROPPED on the Codex path so hosted search
-        # engages (mirrors provision-time omission).
-        assert web_search_provider is None
+        # The search pin SURVIVES the swap (mirrors provision-time, which now
+        # pins on every path). Dropping it here used to be justified by
+        # "Codex-native hosted search engages" — but chatgpt_oauth owners run
+        # the EMBEDDED runtime, so dropping it left them with no web search.
+        assert web_search_provider == "parallel-free"
         # Same for toolSearch: never written for chatgpt_oauth at provision,
         # so the swap must delete any stale embedded-runtime key.
         assert tool_search_mode is None

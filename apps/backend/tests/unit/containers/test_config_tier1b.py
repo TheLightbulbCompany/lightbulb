@@ -102,10 +102,18 @@ class TestWebFetchAndSearch:
             cfg = _cfg(choice, **kwargs)
             assert cfg["tools"]["web"]["search"] == {"provider": "parallel-free"}, choice
 
-    def test_search_unpinned_on_codex_so_hosted_search_engages(self):
-        """A pinned managed provider suppresses Codex-native hosted search the
-        owner's ChatGPT subscription already includes."""
-        assert "search" not in _cfg("chatgpt_oauth")["tools"]["web"]
+    def test_search_pinned_on_chatgpt_oauth_too(self):
+        """Regression: chatgpt_oauth used to be left unpinned so that
+        "Codex-native hosted search" could engage. Those owners run the
+        EMBEDDED runtime (we never set agents.defaults.embeddedHarness.runtime),
+        which has no hosted search, so the exception left them with a
+        web_search tool that had no provider and threw on every call — and no
+        fallback, since firecrawl_search needs an API key we never set.
+
+        If chatgpt_oauth is ever genuinely moved onto the Codex runtime, change
+        the runtime first; this assertion is what should force that discussion.
+        """
+        assert _cfg("chatgpt_oauth")["tools"]["web"]["search"] == {"provider": "parallel-free"}
 
 
 class TestToolDeny:

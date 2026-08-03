@@ -275,11 +275,11 @@ async def replace_provider_block(
     cheap-tier config (or drops back to enable-only when ``None``).
 
     ``web_search_provider`` keeps ``tools.web.search.provider`` in sync:
-    provisioning pins ``parallel-free`` on embedded-runtime paths but OMITS
-    the key on chatgpt_oauth (a pinned managed provider suppresses
-    Codex-native hosted search). ``None`` deletes the pin so the swap
-    target's native search engages; a value (re)pins it. ``tools.web.fetch``
-    is never touched.
+    provisioning pins ``parallel-free`` on every provider path, so live
+    callers always pass it. ``None`` deletes the pin — kept as the generic
+    clear, but note that an owner left with no pin has NO web search at all
+    (the embedded runtime supplies none, and firecrawl_search needs an API
+    key we do not set). ``tools.web.fetch`` is never touched.
 
     Raises ``ConfigPatchError`` (via ``_locked_rmw``) if the owner has
     no ``openclaw.json`` on EFS yet. Callers should fall back to a full
@@ -367,10 +367,11 @@ async def replace_provider_block(
             if isinstance(subagents, dict):
                 subagents.pop("model", None)
 
-        # tools.web.search.provider is provider-derived (parallel-free on
-        # embedded runtimes, ABSENT on chatgpt_oauth so Codex-native hosted
-        # search engages) — re-pin or delete like the model overrides above.
-        # Only the search subtree is touched; fetch config survives.
+        # tools.web.search.provider: re-pin when a provider is given, delete
+        # when None — same shape as the model overrides above. Only the search
+        # subtree is touched; fetch config survives. Callers currently always
+        # pass parallel-free (see billing_service): the None/delete branch is
+        # the generic clear, not a live provider path.
         tools = current.get("tools")
         if web_search_provider is not None:
             # Create the path when absent (parity with the heartbeat/subagents

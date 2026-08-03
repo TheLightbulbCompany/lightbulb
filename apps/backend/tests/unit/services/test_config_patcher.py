@@ -1874,7 +1874,7 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
         utility_model="openai/gpt-5.4-mini",
         subagent_model="openai/gpt-5.5",
         llm_task_model=None,
-        web_search_provider=None,
+        web_search_provider="parallel-free",
         tool_search_mode=None,
     )
     config = _read_config(bedrock_efs_dir)
@@ -1908,10 +1908,13 @@ async def test_replace_provider_block_to_oauth_repins_all_provider_keys(bedrock_
     assert entries["aws-exec-profile"] == {"enabled": True}
     assert "amazon-bedrock" not in entries
 
-    # The parallel-free search pin is DELETED on the Codex path (a managed
-    # pin suppresses Codex-native hosted search); fetch config survives.
+    # The parallel-free search pin SURVIVES the swap to ChatGPT OAuth, and
+    # fetch config survives alongside it. billing_service used to pass None
+    # here so "Codex-native hosted search" could engage — but these owners run
+    # the EMBEDDED runtime, so that deleted a working pin and left them with no
+    # web search at all.
     web = config["tools"]["web"]
-    assert "search" not in web
+    assert web["search"] == {"provider": "parallel-free"}
     assert web["fetch"] == {"enabled": True, "provider": "firecrawl"}
 
     # Stale toolSearch from the Bedrock provision must not survive onto the

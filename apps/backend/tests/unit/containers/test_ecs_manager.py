@@ -2329,6 +2329,138 @@ class TestResizeUserContainer:
             assert call_kwargs["memory"] == "2048"
 
     @pytest.mark.asyncio
+    async def test_resize_carries_per_user_env_and_secrets_from_prior_revision(self, manager, mock_ecs_client):
+        """resize must preserve per-user env/secrets layered on the prior
+        revision (bearer token, ACP harness env, BYOK secret refs).
+
+        The CDK base carries only fleet-static values; the per-user set exists
+        ONLY on the owner's current revision, injected at provision/restart.
+        Cloning from the base without carrying it strips
+        AWS_BEARER_TOKEN_BEDROCK / OPENAI_API_KEY etc. on every Track-2 image
+        apply — the container reboots with no inference credentials until the
+        next full restart. Base values must still win on conflicting names so
+        the drift fence of test_resize_reads_env_from_base_not_current holds.
+        """
+        base_def = {
+            "family": "isol8-dev-openclaw",
+            "taskRoleArn": "",
+            "executionRoleArn": "",
+            "networkMode": "awsvpc",
+            "containerDefinitions": [
+                {
+                    "name": "openclaw",
+                    "image": "alpine/openclaw:latest",
+                    "environment": [
+                        {"name": "HOME", "value": "/home/node"},
+                        {"name": "CLAWHUB_WORKDIR", "value": "/home/node/.openclaw"},
+                    ],
+                    "secrets": [
+                        {
+                            "name": "GOG_KEYRING_PASSWORD",
+                            "valueFrom": "arn:aws:secretsmanager:us-east-1:123:secret:gog",
+                        },
+                    ],
+                }
+            ],
+            "volumes": [
+                {
+                    "name": "openclaw-workspace",
+                    "efsVolumeConfiguration": {
+                        "fileSystemId": "fs-test123",
+                        "transitEncryption": "ENABLED",
+                        "authorizationConfig": {"accessPointId": "fsap-base", "iam": "ENABLED"},
+                    },
+                }
+            ],
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+        }
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        prior_def = {
+            **base_def,
+            "family": "isol8-dev-openclaw-user",
+            "containerDefinitions": [
+                {
+                    "name": "openclaw",
+                    "image": "ecr/openclaw-extended:old",
+                    "environment": [
+                        {"name": "HOME", "value": "/home/stale"},
+                        {"name": "OPENCLAW_HOOK_TOKEN", "value": "old-hook"},
+                        {"name": "AWS_BEARER_TOKEN_BEDROCK", "value": "bearer-xyz"},
+                        {"name": "AWS_BEDROCK_FORCE_HTTP1", "value": "1"},
+                    ],
+                    "secrets": [
+                        {
+                            "name": "GOG_KEYRING_PASSWORD",
+                            "valueFrom": "arn:aws:secretsmanager:us-east-1:123:secret:gog-stale",
+                        },
+                        {"name": "OPENAI_API_KEY", "valueFrom": "arn:aws:secretsmanager:us-east-1:123:secret:byok"},
+                    ],
+                }
+            ],
+        }
+
+        def describe_side_effect(taskDefinition):
+            if taskDefinition == prior_arn:
+                return {"taskDefinition": prior_def}
+            return {"taskDefinition": base_def}
+
+        mock_ecs_client.describe_task_definition.side_effect = describe_side_effect
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    access_point_id="fsap-user-789",
+                    task_definition_arn=prior_arn,
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_image="ecr/openclaw-extended:new")
+
+            call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            env_entries = call_kwargs["containerDefinitions"][0]["environment"]
+            env = {e["name"]: e["value"] for e in env_entries}
+            # Carried per-user values
+            assert env["AWS_BEARER_TOKEN_BEDROCK"] == "bearer-xyz"
+            assert env["AWS_BEDROCK_FORCE_HTTP1"] == "1"
+            # Base wins on conflicts: drift fence intact, stale values dropped
+            assert env["HOME"] == "/home/node"
+            assert env["CLAWHUB_WORKDIR"] == "/home/node/.openclaw"
+            # The hook token minted THIS call wins over the prior revision's
+            assert env["OPENCLAW_HOOK_TOKEN"] != "old-hook"
+            assert len(env_entries) == len(env), "duplicate env names registered"
+            secrets_entries = call_kwargs["containerDefinitions"][0]["secrets"]
+            secrets = {s["name"]: s["valueFrom"] for s in secrets_entries}
+            assert secrets["OPENAI_API_KEY"] == "arn:aws:secretsmanager:us-east-1:123:secret:byok"
+            assert secrets["GOG_KEYRING_PASSWORD"] == "arn:aws:secretsmanager:us-east-1:123:secret:gog"
+            assert len(secrets_entries) == len(secrets), "duplicate secret names registered"
+            # New image still stamped on the openclaw container
+            assert call_kwargs["containerDefinitions"][0]["image"] == "ecr/openclaw-extended:new"
+
+    @pytest.mark.asyncio
     async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):
         # Service is currently running with tasks -- resize should fire the
         # poller to drive tasks through the rolling replacement.

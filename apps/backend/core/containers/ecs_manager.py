@@ -581,6 +581,36 @@ class EcsManager:
 
         return reg_kwargs
 
+    @staticmethod
+    def _carry_per_user_container_state(new_defs: list[dict], prior_defs: list[dict]) -> None:
+        """Preserve per-user env/secrets across a base-clone re-register.
+
+        The CDK base carries only fleet-static env/secrets; the per-user set
+        (AWS_BEARER_TOKEN_BEDROCK, ACP harness env, BYOK secret refs, ...) is
+        layered at provision/restart time and exists ONLY on the owner's prior
+        revision. resize/image-update clones from the base as a drift fence,
+        so names the new revision already defines win unconditionally; only
+        names it lacks are carried over. Stale carried names converge on the
+        next full restart, which rebuilds the set from provisioning context.
+        Mutates ``new_defs`` in place.
+        """
+
+        def _primary(defs: list[dict]) -> dict | None:
+            for cd in defs:
+                if cd.get("name") == "openclaw":
+                    return cd
+            return defs[0] if defs else None
+
+        new_cd = _primary(new_defs)
+        prior_cd = _primary(prior_defs)
+        if not new_cd or not prior_cd:
+            return
+        for key in ("environment", "secrets"):
+            have = {e.get("name") for e in new_cd.get(key, [])}
+            carried = [e for e in prior_cd.get(key, []) if e.get("name") not in have]
+            if carried:
+                new_cd[key] = [*new_cd.get(key, []), *carried]
+
     def _register_task_definition(
         self,
         access_point_id: str,
@@ -1357,6 +1387,26 @@ class EcsManager:
                 hook_token=hook_token,
                 task_role_arn=bedrock_task_role_arn,
             )
+
+            # Carry the per-user env/secrets from the owner's current revision
+            # onto the fresh base clone. Without this, every resize/Track-2
+            # image apply strips AWS_BEARER_TOKEN_BEDROCK, the ACP harness env,
+            # and BYOK secret refs — the container reboots with no inference
+            # credentials until the next full restart rebuilds them. Base names
+            # win, so the drift fence above still heals structural drift.
+            # Deregistered prior revisions stay describable (INACTIVE), and a
+            # failure here must fail the resize loudly — proceeding would
+            # register a credential-stripped revision, the very bug this fixes.
+            prior_task_def_arn = container.get("task_definition_arn")
+            if prior_task_def_arn:
+                prior_resp = await asyncio.to_thread(
+                    self._ecs.describe_task_definition,
+                    taskDefinition=prior_task_def_arn,
+                )
+                self._carry_per_user_container_state(
+                    reg_kwargs["containerDefinitions"],
+                    prior_resp["taskDefinition"].get("containerDefinitions", []),
+                )
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
             new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]

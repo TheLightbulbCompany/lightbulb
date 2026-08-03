@@ -125,24 +125,16 @@ export function Hero() {
 
         <h1 className="ld-hero-h1">
           <span className="ld-line">
-            <span className="ld-line-inner">The best businesses</span>
+            <span className="ld-line-inner">Build a company</span>
           </span>
           <span className="ld-line">
-            <span className="ld-line-inner">
-              run themselves. <em>Yours can too.</em>
-            </span>
+            <span className="ld-line-inner">that runs on AI.</span>
           </span>
         </h1>
 
         <div className="ld-hero-row">
           <p className="ld-hero-sub">
-            isol8 is live. Point agents at the business you already run and the
-            manual work goes away: sales, support, finance, whatever&rsquo;s
-            eating your week. Or start the thing you never had the headcount for
-            and let it run itself from day one. Agents deploy in{" "}
-            <strong>one click</strong>, run things the way you would, and hand
-            off to each other, so work moves <strong>end to end</strong> without
-            you in the middle.
+            The best businesses will. Yours can too.
           </p>
 
           <div className="ld-hero-actions">

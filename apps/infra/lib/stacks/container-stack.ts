@@ -694,7 +694,14 @@ export class ContainerStack extends cdk.Stack {
       // litestream-supervised child so every committed write replicates and a
       // SIGTERM final-syncs to S3 before exit.
       ...(localSqliteStorage
-        ? ["exec /usr/local/bin/isol8-o6-boot.sh"]
+        ? [
+            // The synth gate cannot inspect image contents, and it accepts any
+            // non-bootstrap tag — so a storage flip paired with a tag built
+            // before the O6 chain existed would otherwise die on a bare
+            // "not found". Diagnose it instead.
+            "[ -x /usr/local/bin/isol8-o6-boot.sh ] || { echo '[boot] FATAL: storage=local-sqlite but this image has no O6 boot chain. Pin a tag built from a commit containing apps/infra/openclaw/o6/.'; exit 1; }",
+            "exec /usr/local/bin/isol8-o6-boot.sh",
+          ]
         : [
             "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
             // Step D — launch the gateway.

@@ -1125,6 +1125,14 @@ def build_openclaw_config_dict(
         # Use the real upstream version so warnIfConfigFromFuture
         # (io.ts:885) parses it as semver and short-circuits cleanly.
         "meta": {"lastTouchedVersion": DEPLOYED_UPSTREAM_VERSION},
+        # The audit ledger writes one IMMEDIATE SQLite transaction per agent/tool
+        # event from a dedicated worker thread into the shared state DB. On EFS
+        # (rollback journal, NFS lock latency) that worker is the dominant lock
+        # contender — steady lock-wait failures that drop writes and stall the
+        # gateway event loop. Nothing in Isol8 consumes the ledger (no audit.*
+        # RPC callers); tool/run history is covered by transcripts, CloudWatch,
+        # and Paperclip run records.
+        "audit": {"enabled": False},
         "gateway": {
             "mode": "local",
             "bind": "lan",

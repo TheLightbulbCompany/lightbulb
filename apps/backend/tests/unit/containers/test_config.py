@@ -56,6 +56,12 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is False
 
+    def test_audit_ledger_disabled(self):
+        """The audit ledger's per-event transactions are the dominant SQLite
+        lock contender on EFS, and nothing in Isol8 consumes audit.* RPCs."""
+        config = _cfg()
+        assert config["audit"] == {"enabled": False}
+
     def test_agents_defaults_workspace_routes_to_efs(self):
         config = _cfg()
         assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspace"

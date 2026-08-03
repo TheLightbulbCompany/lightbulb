@@ -154,4 +154,14 @@ out=$(run_boot "$E" "$L" 2>&1) || fail "sentinel-no-db exited nonzero: $out"
 [ ! -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "junk DB created by sentinel apply"
 echo "PASS 4b sentinel benign"
 
+# ---- 4c. a non-benign sentinel failure must KEEP the sentinel (so the next
+# boot retries) instead of silently consuming the retry request.
+E="$WORK/t4c/efs"; L="$WORK/t4c/local"; mkdir -p "$E" "$L/agents/main/agent"
+printf 'not a database' > "$L/agents/main/agent/openclaw-agent.sqlite"
+echo '{"agent_ids":["main"]}' > "$E/o6-clear-auth-profiles.json"
+out=$(run_boot "$E" "$L" 2>&1) || fail "sentinel-failure run exited nonzero: $out"
+echo "$out" | grep -q "keeping sentinel" || fail "did not report keeping the sentinel: $out"
+[ -f "$E/o6-clear-auth-profiles.json" ] || fail "sentinel consumed despite a non-benign failure"
+echo "PASS 4c sentinel retained on non-benign failure"
+
 echo "ALL SMOKE TESTS PASSED"

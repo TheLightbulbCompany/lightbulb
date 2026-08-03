@@ -1,6 +1,7 @@
 # Litestream config for the O6 local-SQLite container layout.
 #
-# $LITESTREAM_S3_BUCKET comes from the task definition; $OWNER_ID is exported
+# $LITESTREAM_S3_BUCKET comes from the task definition; $OWNER_ID and
+# $O6_LOCAL_ROOT are exported
 # by isol8-o6-boot.sh (per-user env, facts-file fallback) — litestream's
 # config parser env-expands both at load time. There is NO top-level replica
 # key in litestream's schema (and its YAML parsing is non-strict — an
@@ -18,19 +19,19 @@
 addr: "127.0.0.1:9090"
 
 dbs:
-  - path: /openclaw-local/state/openclaw.sqlite
+  - path: $O6_LOCAL_ROOT/state/openclaw.sqlite
     replica:
       type: s3
       bucket: $LITESTREAM_S3_BUCKET
       path: $OWNER_ID/state/openclaw.sqlite
       region: us-east-1
-  - path: /openclaw-local/state/openclaw-quarantine.sqlite
+  - path: $O6_LOCAL_ROOT/state/openclaw-quarantine.sqlite
     replica:
       type: s3
       bucket: $LITESTREAM_S3_BUCKET
       path: $OWNER_ID/state/openclaw-quarantine.sqlite
       region: us-east-1
-  - dir: /openclaw-local/agents
+  - dir: $O6_LOCAL_ROOT/agents
     pattern: "openclaw-agent.sqlite"
     recursive: true
     watch: true

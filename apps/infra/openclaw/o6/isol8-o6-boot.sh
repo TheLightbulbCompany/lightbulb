@@ -46,7 +46,11 @@ if [ -z "$OWNER_ID" ] && [ -f "$EFS/isol8-facts.json" ]; then
 fi
 [ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no isol8-facts.json)"; exit 1; }
 export OWNER_ID
-log "owner=$OWNER_ID bucket=$BUCKET"
+# The baked litestream config references $O6_LOCAL_ROOT so it always watches
+# the SAME root this script restored/migrated into — a hardcoded path there
+# would silently replicate nothing when the root is overridden.
+export O6_LOCAL_ROOT="$LOCAL"
+log "owner=$OWNER_ID bucket=$BUCKET local_root=$LOCAL"
 
 mkdir -p "$LOCAL/state" "$LOCAL/agents"
 
@@ -61,8 +65,13 @@ for d in credentials identity devices extensions skills npm git tools; do
   ln -sfn "$EFS/$d" "$LOCAL/$d" || exit 1
 done
 # ~/.openclaw/.env is a documented owner surface loaded from the state root.
-# A file symlink would be replaced by atomic tmp+rename writers, so copy.
-if [ -f "$EFS/.env" ]; then cp "$EFS/.env" "$LOCAL/.env" || exit 1; fi
+# Symlink rather than copy: a one-way copy makes EFS authoritative forever, so
+# any runtime write lands on ephemeral disk and is silently reverted by the
+# next task. Through the symlink, reads resolve and in-place writes stay
+# durable. (An atomic tmp+rename writer would replace the link with a local
+# file and lose durability for that surface — .env is not Litestream-covered
+# either way; the symlink is strictly better than the copy.)
+ln -sfn "$EFS/.env" "$LOCAL/.env" || exit 1
 
 # --- 2. Restore every replicated DB from S3. Explicit CLI restores (rather
 # than replicate's restore-if-db-not-exists, which covers only path-form
@@ -203,16 +212,26 @@ if [ -f "$SENTINEL" ]; then
   for agent in $(jq -r '.agent_ids[]? // empty' "$SENTINEL" 2>/dev/null); do
     db="$LOCAL/agents/$agent/agent/openclaw-agent.sqlite"
     if [ -f "$db" ]; then
-      if sqlite3 "$db" "DELETE FROM auth_profile_store WHERE store_key = 'primary';" 2>/dev/null; then
+      if _serr=$(sqlite3 "$db" "DELETE FROM auth_profile_store WHERE store_key = 'primary';" 2>&1); then
         log "sentinel: cleared auth row for agent $agent"
       else
-        log "sentinel: no auth table for agent $agent (benign)"
+        case "$_serr" in
+          *"no such table"*) log "sentinel: no auth table for agent $agent (benign)" ;;
+          *)
+            # An I/O error, corruption, or schema mismatch. Consuming the
+            # sentinel here would leave the stale primary row shadowing the
+            # freshly staged oauth.json with no retry request on disk, so the
+            # owner's reconnect would silently keep using the spent token.
+            log "sentinel: FAILED for agent $agent ($_serr) — keeping sentinel for the next boot"
+            SENTINEL_RETRY=1
+            ;;
+        esac
       fi
     else
       log "sentinel: no DB for agent $agent yet (benign)"
     fi
   done
-  rm -f "$SENTINEL"
+  [ "${SENTINEL_RETRY:-0}" = "1" ] || rm -f "$SENTINEL"
 fi
 
 # --- 5. Hand off. litestream supervises the app: SIGTERM is forwarded to the

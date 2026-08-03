@@ -1314,6 +1314,22 @@ class EcsManager:
         # cold-start leaves the row stuck.
         asyncio.create_task(self._await_running_transition(user_id))
 
+    async def force_redeploy_user_service(self, user_id: str) -> None:
+        """Replace the service's task with a fresh one on the CURRENT revision.
+
+        No task-def re-register — this is a plain forceNewDeployment, used when
+        a container-local state change can only be applied by a boot pass (the
+        O6 clear-auth sentinel). Single-writer deployment config keeps the old
+        task fully stopped before the replacement starts.
+        """
+        await asyncio.to_thread(
+            self._ecs.update_service,
+            cluster=self._cluster,
+            service=self._service_name(user_id),
+            forceNewDeployment=True,
+            deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+        )
+
     async def resize_user_container(
         self,
         user_id: str,

@@ -647,3 +647,21 @@ class TestChannelAccountsReinjection:
             "agentId": "agent_a",
             "match": {"channel": "telegram", "accountId": "agent_a"},
         } in cfg["bindings"]
+
+
+class TestCronStorePin:
+    """cron.store pins the state-DB cron row key to its historical resolved
+    value so relocating the state root off EFS (O6) cannot re-key the store
+    and orphan every existing cron row. Byte-equal to the derived default =>
+    a no-op on the EFS layout."""
+
+    def test_cron_store_pinned_for_paid_providers(self):
+        for provider in ("bedrock_claude", "chatgpt_oauth"):
+            cfg = _cfg(provider)
+            assert cfg["cron"]["store"] == "/home/node/.openclaw/cron/jobs.json", provider
+            assert "enabled" not in cfg["cron"], provider
+
+    def test_trial_cron_disabled_and_still_pinned(self):
+        cfg = _cfg("bedrock_trial", aip_arns={"sonnet": _AIPS["sonnet"]})
+        assert cfg["cron"]["enabled"] is False
+        assert cfg["cron"]["store"] == "/home/node/.openclaw/cron/jobs.json"

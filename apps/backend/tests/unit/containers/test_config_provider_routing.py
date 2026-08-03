@@ -57,17 +57,21 @@ async def test_chatgpt_oauth_branch(tmp_path):
 
 
 def test_config_keeps_cron_service_and_heartbeat():
-    """The emitted config carries no top-level `cron` block (the in-container
-    cron SERVICE stays on, governed by tools.deny) and keeps the 30m heartbeat
-    cadence. The trial lockdown that switched both off for the deleted `meta`
-    provider is re-homed onto the Bedrock trial config mode."""
+    """The emitted config keeps the in-container cron SERVICE on for paid
+    providers (no `cron.enabled: false`; the TOOL stays governed by
+    tools.deny) and keeps the 30m heartbeat cadence. The `cron` block itself
+    is now always present carrying the store-key pin (O6: the state-DB cron
+    rows are keyed by this resolved path string, which must survive the
+    state-root relocation). The trial lockdown that switched the service off
+    for the deleted `meta` provider is re-homed onto the Bedrock trial mode."""
     cfg = build_openclaw_config_dict(
         user_id="u_1",
         gateway_token="test-token",
         provider_choice="bedrock_claude",
         aip_arns=_AIPS,
     )
-    assert "cron" not in cfg
+    assert "enabled" not in cfg["cron"], "paid providers keep the cron service on"
+    assert cfg["cron"]["store"] == "/home/node/.openclaw/cron/jobs.json"
     assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
 
 
@@ -776,7 +780,7 @@ def test_one_aip_bedrock_claude_no_longer_raises():
     models = cfg["models"]["providers"]["amazon-bedrock"]["models"]
     assert [m["id"] for m in models] == [_AIPS["sonnet"]]
     assert cfg["agents"]["defaults"]["model"] == {"primary": _SONNET_REF, "fallbacks": [_SONNET_REF]}
-    assert "cron" not in cfg
+    assert "enabled" not in cfg["cron"]  # cron SERVICE stays on; block now carries the O6 store-key pin
     assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
 
 
@@ -798,7 +802,7 @@ def test_bedrock_without_sonnet_aip_fails_closed(provider_choice, bad_aips):
 
 
 def test_bedrock_trial_disables_cron_service():
-    assert _trial_cfg()["cron"] == {"enabled": False}
+    assert _trial_cfg()["cron"] == {"enabled": False, "store": "/home/node/.openclaw/cron/jobs.json"}
 
 
 def test_bedrock_trial_disables_heartbeat():
@@ -825,7 +829,7 @@ def test_bedrock_trial_emits_no_acp_block():
 def test_paid_bedrock_keeps_cron_heartbeat_channels_and_acp():
     """The trial lockdown must not leak onto the paid path."""
     cfg = _paid_cfg(channel_accounts=_CHANNEL_ACCOUNTS, acp_enabled=True)
-    assert "cron" not in cfg
+    assert "enabled" not in cfg["cron"]  # cron SERVICE stays on; block now carries the O6 store-key pin
     assert cfg["agents"]["defaults"]["heartbeat"] == {
         "every": "30m",
         "isolatedSession": True,

@@ -125,7 +125,8 @@ FILL_MARKER="$ARCHIVE/.o6-fill-pending"
 # deletions are honored instead of being undone.
 if [ -f "$FILL_MARKER" ]; then
   _missing=0
-  for _adb in "$ARCHIVE"/state/openclaw.sqlite "$ARCHIVE"/agents/*/agent/openclaw-agent.sqlite; do
+  for _adb in "$ARCHIVE"/state/openclaw.sqlite "$ARCHIVE"/state/openclaw-quarantine.sqlite \
+              "$ARCHIVE"/agents/*/agent/openclaw-agent.sqlite; do
     [ -f "$_adb" ] || continue
     _rel=${_adb#"$ARCHIVE"/}
     case "$DBS" in
@@ -141,12 +142,30 @@ fi
 
 ARCHIVE="$EFS/pre-o6-archive"
 FILL_MARKER="$ARCHIVE/.o6-fill-pending"
-MIGRATE_SRC=""
+# Sources are ADDITIVE, not alternatives: a task killed between the two archive
+# moves leaves one subtree live on EFS and the other already archived, so
+# picking a single source would silently drop whichever half is in the other
+# place. cp -an makes applying both idempotent (a restored replica always wins).
+FILL_EFS=0
+FILL_ARCHIVE=0
 if [ -d "$EFS/state" ] || [ -d "$EFS/agents" ]; then
-  MIGRATE_SRC="$EFS"
-elif [ -f "$FILL_MARKER" ] && { [ -d "$ARCHIVE/state" ] || [ -d "$ARCHIVE/agents" ]; }; then
-  MIGRATE_SRC="$ARCHIVE"
+  FILL_EFS=1
 fi
+if [ -f "$FILL_MARKER" ]; then
+  if [ -d "$ARCHIVE/state" ] || [ -d "$ARCHIVE/agents" ]; then
+    FILL_ARCHIVE=1
+  fi
+fi
+
+o6_fill_from() {
+  _src=$1
+  for _d in state agents; do
+    if [ -d "$_src/$_d" ]; then
+      cp -an "$_src/$_d/." "$LOCAL/$_d/" || return 1
+    fi
+  done
+  return 0
+}
 
 # sqlite3 wrapper that tolerates ONLY a missing table. Any other failure
 # (SQLITE_BUSY, I/O error, schema mismatch) must abort the migration: the DB
@@ -180,7 +199,7 @@ if [ -n "$DBS" ]; then
   done
 fi
 
-if [ -n "$MIGRATE_SRC" ]; then
+if [ "$FILL_EFS" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
   # --- 3. Cutover migration: fills every database the restore above did not
   # produce. `cp -n` never clobbers a restored replica (which is always the
   # more recent copy), so this is a fill-in, not an overwrite.
@@ -188,10 +207,10 @@ if [ -n "$MIGRATE_SRC" ]; then
   # on EFS these DBs run rollback-journal (no -wal sidecars), so a plain copy
   # is consistent. The EFS originals are archived (mv, not deleted) only
   # after the copies pass integrity_check.
-  log "cutover migration from $MIGRATE_SRC"
-  for d in state agents; do
-    if [ -d "$MIGRATE_SRC/$d" ]; then cp -an "$MIGRATE_SRC/$d/." "$LOCAL/$d/" || exit 1; fi
-  done
+  log "cutover migration (live_efs=$FILL_EFS archive=$FILL_ARCHIVE)"
+  [ "$FILL_EFS" = "1" ] && { o6_fill_from "$EFS" || exit 1; }
+  [ "$FILL_ARCHIVE" = "1" ] && { o6_fill_from "$ARCHIVE" || exit 1; }
+  :
   # Scoped path rewrite — ONLY the two relocated subtrees. Session markers
   # ("sqlite:<agent>:<session>:<absPath>" inside session_entries.entry_json)
   # take precedence over config, and the state DB registers agent DBs by
@@ -220,15 +239,16 @@ if [ -n "$MIGRATE_SRC" ]; then
   # at this point, which is exactly the heal's own guard condition. The marker
   # lives at workspace-<agent>/.openclaw/workspace-state.json.
   rm -f "$EFS"/workspace-*/.openclaw/workspace-state.json 2>/dev/null || true
-  # Archive the live EFS originals (never the archive onto itself).
-  if [ "$MIGRATE_SRC" = "$EFS" ]; then
+  # Archive the live EFS originals. The recovery marker is armed BEFORE the
+  # first destructive move: a task killed between the two moves must still be
+  # recoverable, and without the marker the replacement would ignore whatever
+  # was already archived.
+  if [ "$FILL_EFS" = "1" ]; then
     mkdir -p "$ARCHIVE" || exit 1
+    : > "$FILL_MARKER" || exit 1
     for d in state agents; do
       if [ -d "$EFS/$d" ]; then mv "$EFS/$d" "$ARCHIVE/$d" || exit 1; fi
     done
-    # Arms the bounded fill window (see MIGRATE_SRC above): until S3 is proven
-    # to hold everything, a crash before the first upload must be recoverable.
-    : > "$FILL_MARKER" || exit 1
     log "migration complete; EFS originals archived at pre-o6-archive/ (fill window armed)"
   else
     log "migration complete; filled in from archive (archive left in place)"

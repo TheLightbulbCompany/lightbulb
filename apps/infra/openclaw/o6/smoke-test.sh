@@ -83,7 +83,7 @@ mkdir -p "$E/workspace-main/.openclaw"
 echo "seed" > "$E/workspace-main/.openclaw/workspace-state.json"
 mkdir -p "$L"
 out=$(run_boot "$E" "$L" 2>&1) || fail "migration exited nonzero: $out"
-echo "$out" | grep -q "cutover migration from $E" || fail "migration branch not taken: $out"
+echo "$out" | grep -q "cutover migration (live_efs=1" || fail "migration branch not taken: $out"
 mk=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT entry_json FROM session_entries;")
 echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite" || fail "marker not rewritten: $mk"
 echo "$mk" | grep -q "\"cwd\":\"$E/workspace-main\"" || fail "workspace path was wrongly rewritten: $mk"
@@ -104,7 +104,7 @@ sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(
 sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); \
   INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:$E/agents/main/agent/openclaw-agent.sqlite\"}');"
 out=$(run_boot "$E" "$L" 2>&1) || fail "archive fallback exited nonzero: $out"
-echo "$out" | grep -q "cutover migration from $E/pre-o6-archive" || fail "archive branch not taken: $out"
+echo "$out" | grep -q "cutover migration (live_efs=0 archive=1)" || fail "archive branch not taken: $out"
 [ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "archive DB not restored to local"
 mk=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT entry_json FROM session_entries;")
 echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite" || fail "archive-path marker not rewritten to configured local root: $mk"
@@ -158,6 +158,19 @@ out=$(run_boot "$E" "$L" 2>&1) || fail "post-deletion run exited nonzero: $out"
 unset AWS_STUB_KEYS
 [ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "deleted agent resurrected from the archive"
 echo "PASS 3e closed window honors post-cutover deletion"
+
+# ---- 3f. interrupted archive: a task killed between the two mv's leaves state
+# archived and agents still live. Both halves must be recovered.
+E="$WORK/t3f/efs"; L="$WORK/t3f/local"
+mkdir -p "$E/pre-o6-archive/state" "$E/agents/main/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
+sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
+out=$(run_boot "$E" "$L" 2>&1) || fail "interrupted-archive run exited nonzero: $out"
+echo "$out" | grep -q "live_efs=1 archive=1" || fail "did not use BOTH sources: $out"
+[ -f "$L/state/openclaw.sqlite" ] || fail "archived state DB not recovered"
+[ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "live agent DB not recovered"
+echo "PASS 3f interrupted archive recovers both halves"
 
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"

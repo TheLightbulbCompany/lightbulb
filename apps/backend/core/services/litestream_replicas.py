@@ -39,7 +39,17 @@ def _delete_prefix_blocking(bucket: str, prefix: str) -> int:
         keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if not keys:
             continue
-        s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
+        # DeleteObjects is partial-success by design: per-key failures (object
+        # lock, retention, a key-scoped authz denial) come back in ``Errors``
+        # WITHOUT raising. Counting the request as a success there would report
+        # a clean wipe while the surviving objects — including agent DBs whose
+        # auth_profile_store rows hold live OAuth tokens — get restored on the
+        # owner's next boot. Quiet mode still returns Errors.
+        resp = s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
+        errors = resp.get("Errors") or []
+        if errors:
+            sample = "; ".join(f"{e.get('Key')}: {e.get('Code')}" for e in errors[:3])
+            raise RuntimeError(f"{len(errors)} of {len(keys)} objects not deleted ({sample})")
         deleted += len(keys)
     return deleted
 

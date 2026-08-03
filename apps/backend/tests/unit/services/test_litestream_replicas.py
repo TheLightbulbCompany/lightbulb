@@ -30,6 +30,7 @@ async def test_deletes_owner_prefix_in_batches(monkeypatch):
         {},  # empty trailing page must not call delete_objects
     ]
     s3.get_paginator.return_value.paginate.return_value = iter(pages)
+    s3.delete_objects.return_value = {}  # no per-key Errors
     with patch("boto3.client", return_value=s3):
         assert await litestream_replicas.delete_replica_prefix("org_1") is True
     assert s3.get_paginator.return_value.paginate.call_args.kwargs == {"Bucket": "b", "Prefix": "org_1/"}
@@ -59,5 +60,22 @@ async def test_failure_returns_false_never_raises(monkeypatch):
     monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
     s3 = MagicMock()
     s3.get_paginator.return_value.paginate.side_effect = RuntimeError("s3 down")
+    with patch("boto3.client", return_value=s3):
+        assert await litestream_replicas.delete_replica_prefix("org_1") is False
+
+
+@pytest.mark.asyncio
+async def test_per_object_delete_errors_are_failures(monkeypatch):
+    """DeleteObjects is partial-success: per-key failures land in Errors without
+    raising. Reporting success there would leave restorable OAuth-bearing rows
+    behind while the caller believes the wipe was clean."""
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate.return_value = iter(
+        [{"Contents": [{"Key": "org_1/state/openclaw.sqlite/0000/1.ltx"}]}]
+    )
+    s3.delete_objects.return_value = {
+        "Errors": [{"Key": "org_1/state/openclaw.sqlite/0000/1.ltx", "Code": "AccessDenied"}]
+    }
     with patch("boto3.client", return_value=s3):
         assert await litestream_replicas.delete_replica_prefix("org_1") is False

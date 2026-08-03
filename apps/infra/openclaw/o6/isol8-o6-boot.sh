@@ -73,11 +73,23 @@ KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
   log "FATAL: S3 enumeration failed: $(cat /tmp/o6-s3-err 2>/dev/null)"; exit 1; }
 [ "$KEYS" = "None" ] && KEYS=""
 
-# S3 object keys are <owner>/<db-rel-path>/<%04x-level>/<txid>.ltx — strip
-# the trailing two components to recover each replicated DB's rel path.
+# S3 object keys are <owner>/<db-rel-path>/ltx/<level>/<minTXID>-<maxTXID>.ltx
+# — VERIFIED by running litestream v0.5.15 against this exact config, not
+# inferred: there IS a literal "ltx/" segment, and levels are plain decimal
+# (0, 1, 9), not zero-padded hex. Anchor on the "ltx/" segment and strip the
+# trailing three components. Getting this wrong is the worst failure in the
+# script: no key matches, DBS comes back empty, and a container with a
+# perfectly good replica silently takes the migration/cold-start path.
 DBS=""
 if [ -n "$KEYS" ]; then
-  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[0-9a-f][0-9a-f][0-9a-f][0-9a-f]/[^/]*\$#\1#p" | sort -u)
+  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/ltx/[^/]*/[^/]*\$#\1#p" | sort -u)
+  # Objects exist but none parsed => litestream's key layout moved under us.
+  # Continuing would cold-start on top of a live replica and then snapshot the
+  # empty database FORWARD over it. Crash instead.
+  [ -n "$DBS" ] || {
+    log "FATAL: S3 prefix $OWNER_ID/ has objects but none match <db>/ltx/<level>/<file>; refusing to continue"
+    exit 1
+  }
 fi
 
 # Migration source, in precedence order:

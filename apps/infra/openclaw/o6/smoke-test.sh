@@ -53,7 +53,7 @@ echo "PASS 1 cold start"
 
 # ---- 2. restore path ----
 E="$WORK/t2/efs"; L="$WORK/t2/local"; mkdir -p "$E" "$L"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/0000/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/0001/0000000000000001-0000000000000003.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/ltx/0/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/ltx/9/0000000000000001-0000000000000003.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "restore run exited nonzero: $out"
 unset AWS_STUB_KEYS
 grep -q "restore -if-db-not-exists -if-replica-exists -integrity-check quick -o $L/state/openclaw.sqlite s3://test-bucket/org_smoke/state/openclaw.sqlite" "$WORK/t2/ls.log" || fail "state restore args"
@@ -65,6 +65,14 @@ echo "PASS 2 restore"
 E="$WORK/t2b/efs"; L="$WORK/t2b/local"; mkdir -p "$E" "$L"
 if (export AWS_STUB_FAIL=1; run_boot "$E" "$L" >/dev/null 2>&1); then fail "enumeration failure did not exit nonzero"; fi
 echo "PASS 2b enumeration fail-loud"
+
+# ---- 2c. objects present but unparseable => FAIL LOUD (a silent cold start
+# here would snapshot an empty DB forward over a live replica).
+E="$WORK/t2c/efs"; L="$WORK/t2c/local"; mkdir -p "$E" "$L"
+if (export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1.ltx"; run_boot "$E" "$L" >/dev/null 2>&1); then
+  fail "unparseable S3 keys did not abort"
+fi
+echo "PASS 2c unparseable keys fail loud"
 
 # ---- 3. migration path ----
 E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"
@@ -121,7 +129,7 @@ echo "PASS 3c rewrite failure aborts cutover"
 # died mid-first-upload leaves some DBs in S3 and the rest only in the archive.
 E="$WORK/t3d/efs"; L="$WORK/t3d/local"; mkdir -p "$E/pre-o6-archive/agents/main/agent" "$L"
 sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{}');"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/0000000000000001-0000000000000002.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "partial-merge run exited nonzero: $out"
 unset AWS_STUB_KEYS
 [ -f "$L/state/openclaw.sqlite" ] || fail "replicated state DB not restored"

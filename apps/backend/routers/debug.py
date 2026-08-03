@@ -274,6 +274,17 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         logger.warning("EFS rm -rf failed for %s: %s", owner_id, e)
         failures.append(f"efs: {e}")
 
+    # ---- Litestream S3 replicas (O6 local-sqlite layout) --------------------
+    # Without this, the reprovisioned container's boot script RESTORES the
+    # pre-wipe hot state from S3 and the "empty slate" contract silently
+    # breaks. No-op on the EFS layout (LITESTREAM_BUCKET unset).
+    from core.services.litestream_replicas import delete_replica_prefix
+
+    if not await delete_replica_prefix(owner_id):
+        failures.append("litestream_replicas: delete failed (stale state will restore)")
+    else:
+        deleted["litestream_replicas"] = True
+
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
     # Per-step try/except so one transient throttle on (e.g.) container_repo
     # doesn't abort the rest of the teardown — we want every table attempted,

@@ -1976,8 +1976,14 @@ async def _process_rpc_background(
             if isinstance(agent_id, str) and agent_id:
                 try:
                     from core.containers import get_workspace
+                    from core.services.litestream_replicas import delete_replica_prefix
 
                     await asyncio.to_thread(get_workspace().cleanup_agent_dirs, owner_id, agent_id)
+                    # O6 local-sqlite layout: also drop the deleted agent's S3
+                    # replicas, or the boot script re-materializes its DB on
+                    # every subsequent boot (restore enumerates the S3 prefix,
+                    # not openclaw.json). No-op on the EFS layout.
+                    await delete_replica_prefix(owner_id, agent_id=agent_id)
                 except Exception as cleanup_exc:
                     logger.warning(
                         "[%s] post-delete cleanup failed for agent=%s: %s",

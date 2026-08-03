@@ -39,6 +39,10 @@ EXPECTED_ORDER = [
     "paperclip_aurora_user",
     "ecs_service",
     "efs_workspace_dir",
+    # O6: replica-prefix delete rides right after the EFS wipe — leaving the
+    # S3 replicas behind resurrects pre-wipe state (incl. auth rows) on the
+    # owner's next provision. No-op ("ok") while LITESTREAM_BUCKET is unset.
+    "litestream_replicas",
     "bedrock_aips",
     "bedrock_role",
     "metronome",
@@ -455,7 +459,14 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.agent_keys_delete.side_effect = RuntimeError("sm down")
 
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    with (
+        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
+        patch(
+            "core.services.litestream_replicas.delete_replica_prefix",
+            new=AsyncMock(return_value=False),  # helper never raises; False => step failed
+        ),
+    ):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     assert [s.system for s in report.steps] == EXPECTED_ORDER
     assert all(s.status == "failed" for s in report.steps[:-1])
@@ -497,7 +508,8 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_preview_wipe_would_delete_everything_present(wipe_mocks):
-    report = await preview_wipe(OWNER_ID)
+    with patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"):
+        report = await preview_wipe(OWNER_ID)
 
     by_system = {s.system: s for s in report.steps}
     for system in EXPECTED_ORDER:

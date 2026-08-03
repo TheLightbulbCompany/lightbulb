@@ -87,6 +87,41 @@ def _foundation_model_arns(regions: tuple[str, ...]) -> list[str]:
     return [f"arn:aws:bedrock:{region}::foundation-model/{model}" for region in regions for model in FM_IDS]
 
 
+def build_owner_litestream_s3_policy(owner_id: str, bucket: str) -> dict:
+    """Per-owner Litestream S3 grant, scoped to the owner's replica prefix.
+
+    The shared OwnerBedrockBoundary caps this bucket-wide; this inline policy
+    is the per-owner prefix fence (same shape as the EFS access-point fence).
+    ListBucket is prefix-conditioned; GetBucketLocation carries no prefix
+    semantics so it is granted unconditioned on the bucket. DeleteObject is
+    required — litestream retention/compaction prunes old LTX files.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ReplicaBucketLocation",
+                "Effect": "Allow",
+                "Action": ["s3:GetBucketLocation"],
+                "Resource": f"arn:aws:s3:::{bucket}",
+            },
+            {
+                "Sid": "ReplicaBucketList",
+                "Effect": "Allow",
+                "Action": ["s3:ListBucket"],
+                "Resource": f"arn:aws:s3:::{bucket}",
+                "Condition": {"StringLike": {"s3:prefix": [f"{owner_id}/*"]}},
+            },
+            {
+                "Sid": "ReplicaObjects",
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+                "Resource": f"arn:aws:s3:::{bucket}/{owner_id}/*",
+            },
+        ],
+    }
+
+
 def build_owner_bedrock_policy(
     *,
     owner_id: str,
@@ -581,6 +616,24 @@ async def ensure_owner_bedrock_role(
             RoleName=role_name,
             PolicyName="owner-bedrock",
             PolicyDocument=json.dumps(doc),
+        )
+
+    # O6 local-sqlite layout: per-owner Litestream S3 grant. UNCONDITIONAL —
+    # unlike the Bedrock grant above, every provider ships replicas and a
+    # revoked/trial-capped owner keeps durability (skip_bedrock_grant governs
+    # inference, not storage). A SEPARATE PolicyName: the break-glass script
+    # swaps the "owner-bedrock" document wholesale, and folding S3 into it
+    # would strip replication mid-incident. Inert while LITESTREAM_BUCKET is
+    # unset (EFS layout). Existing owners provisioned before the env flipped
+    # are backfilled by scripts/ensure_litestream_s3_policies.py — run it
+    # BEFORE any fleet force-apply onto the O6 boot chain, or litestream (the
+    # boot supervisor) AccessDenies and the task crash-loops.
+    if settings.LITESTREAM_BUCKET:
+        await run_in_thread(
+            client.put_role_policy,
+            RoleName=role_name,
+            PolicyName="owner-litestream-s3",
+            PolicyDocument=json.dumps(build_owner_litestream_s3_policy(owner_id, settings.LITESTREAM_BUCKET)),
         )
 
     await container_repo.update_fields(owner_id, {"bedrock_role_arn": role_arn})

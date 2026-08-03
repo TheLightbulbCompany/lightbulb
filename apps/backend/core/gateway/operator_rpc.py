@@ -54,6 +54,23 @@ class GatewayConnectAuthError(RuntimeError):
         self.retry_after_ms = retry_after_ms
 
 
+class GatewayConnectNotPairedError(RuntimeError):
+    """Connect rejected ``NOT_PAIRED`` — the signing device is not in the
+    gateway's trust store.
+
+    The rejection is not a dead end: the gateway persists a pending pairing
+    request for the device and returns its id in the error ``details``
+    (``connect-device-pairing.ts`` ``buildPairingConnectErrorDetails``). The
+    pairing seam connects AS a freshly-minted device precisely to harvest that
+    ``requestId`` and approve it over an admin connection. Subclasses
+    RuntimeError so pre-existing broad handlers keep working.
+    """
+
+    def __init__(self, message: str, *, details: dict | None = None):
+        super().__init__(message)
+        self.details = details if isinstance(details, dict) else {}
+
+
 async def perform_signed_connect(
     ws,
     *,
@@ -62,6 +79,7 @@ async def perform_signed_connect(
     caps: list[str] | None = None,
     recv_timeout: float = _DEFAULT_TIMEOUT,
     scopes=None,
+    identity=None,
 ) -> dict:
     """Run the OpenClaw 4.5 signed-device connect handshake on an open socket.
 
@@ -71,12 +89,18 @@ async def perform_signed_connect(
 
     1. Receive ``connect.challenge`` and extract its nonce.
     2. Load the per-container operator device identity (seed is KMS-encrypted in
-       the containers DynamoDB row, bound by encryption context to ``owner_id``).
+       the containers DynamoDB row, bound by encryption context to ``owner_id``),
+       unless the caller passed ``identity`` — the pairing probe connects AS a
+       Paperclip agent's operator device (whose key the backend minted) to
+       create a pending pairing request, so it must sign with that device, not
+       the backend's.
     3. Sign the canonical v2 payload over the nonce and send the connect request
        with both the shared token AND the signed device.
     4. Verify ``hello-ok`` and return the parsed response.
 
-    Raises ``RuntimeError`` on any handshake failure.
+    Raises ``GatewayConnectNotPairedError`` when the gateway rejects the device
+    as unpaired (the pending-request details ride on the exception), and
+    ``RuntimeError`` on any other handshake failure.
     """
     from core.crypto import kms_secrets
     from core.crypto.operator_device import (
@@ -101,21 +125,23 @@ async def perform_signed_connect(
     if not nonce:
         raise RuntimeError(f"connect.challenge missing nonce: {challenge}")
 
-    # Step 2: load the operator device identity for this container.
-    container = await container_repo.get_by_owner_id(owner_id)
-    if not container:
-        raise RuntimeError(f"No container row for owner {owner_id}")
-    enc_seed = container.get("operator_priv_key_enc")
-    if not enc_seed:
-        raise RuntimeError(
-            f"Container row for owner {owner_id} missing operator_priv_key_enc "
-            "(pre-4.5 provision — reprovision required)"
+    # Step 2: load the operator device identity for this container (unless the
+    # caller signs as a different device — see the docstring).
+    if identity is None:
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container:
+            raise RuntimeError(f"No container row for owner {owner_id}")
+        enc_seed = container.get("operator_priv_key_enc")
+        if not enc_seed:
+            raise RuntimeError(
+                f"Container row for owner {owner_id} missing operator_priv_key_enc "
+                "(pre-4.5 provision — reprovision required)"
+            )
+        seed_bytes = kms_secrets.decrypt_bytes(
+            enc_seed,
+            encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
         )
-    seed_bytes = kms_secrets.decrypt_bytes(
-        enc_seed,
-        encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
-    )
-    identity = load_operator_device_from_seed(seed_bytes)
+        identity = load_operator_device_from_seed(seed_bytes)
 
     # Step 3: sign the v2 payload with the nonce and send the connect request.
     device = sign_connect_request(
@@ -150,6 +176,11 @@ async def perform_signed_connect(
             error = {}
         message = error.get("message", "unknown error")
         code = error.get("code")
+        if code == "NOT_PAIRED":
+            raise GatewayConnectNotPairedError(
+                f"Gateway connect failed: {message}",
+                details=error.get("details"),
+            )
         if isinstance(code, str) and "AUTH" in code.upper():
             # retryAfterMs sits directly on the error object or nested under
             # error.data, depending on the gateway version.

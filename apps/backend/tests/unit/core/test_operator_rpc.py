@@ -248,6 +248,52 @@ class TestPerformSignedConnect:
             with pytest.raises(RuntimeError, match="operator_priv_key_enc"):
                 await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
 
+    @pytest.mark.asyncio
+    async def test_not_paired_rejection_carries_details(self, mock_device_auth_deps):
+        """NOT_PAIRED surfaces as GatewayConnectNotPairedError with the pending
+        pairing requestId riding on .details — the pairing seam approves it."""
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": "pairing required: device is not approved yet",
+                            "code": "NOT_PAIRED",
+                            "details": {"requestId": "req-42", "reason": "not-paired"},
+                        },
+                    }
+                ),
+            ]
+        )
+        with pytest.raises(operator_rpc.GatewayConnectNotPairedError) as ei:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+        assert ei.value.details["requestId"] == "req-42"
+
+    @pytest.mark.asyncio
+    async def test_identity_override_skips_container_row_load(self, operator_seed):
+        """An explicit identity (the pairing probe signing as a Paperclip
+        agent's device) must bypass the DDB+KMS backend-device load entirely
+        and sign the connect with the supplied key."""
+        from core.crypto.operator_device import load_operator_device_from_seed
+
+        identity = load_operator_device_from_seed(operator_seed)
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True, "payload": {}}),
+            ]
+        )
+        with patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as mock_get:
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t", identity=identity)
+            mock_get.assert_not_awaited()
+        sent = json.loads(ws.send.await_args.args[0])
+        assert sent["params"]["device"]["id"] == identity.device_id
+        assert sent["params"]["device"]["publicKey"] == identity.public_key_b64
+
 
 # --------------------------------------------------------------------------
 # gateway_rpc_oneshot

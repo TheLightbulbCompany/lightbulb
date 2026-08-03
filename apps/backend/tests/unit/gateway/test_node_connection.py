@@ -149,8 +149,10 @@ async def test_connect_raises_on_upstream_rejection(monkeypatch, mock_ws):
         gateway_token="t",
     )
 
-    async def push(_):
-        pass
+    pushed = []
+
+    async def push(frame):
+        pushed.append(frame)
 
     conn.set_client_push_callback(push)
 
@@ -169,6 +171,16 @@ async def test_connect_raises_on_upstream_rejection(monkeypatch, mock_ws):
 
     with pytest.raises(RuntimeError, match="bad signature|rejected|handshake"):
         await conn.connect()
+
+    # The rejection res frame is forwarded downstream (keyed to the client's
+    # own request id) before the raise — a direct gateway connection would
+    # deliver it, and hiding it leaves the client's pending connect to time
+    # out into a generic "gateway request timeout (connect)" instead of the
+    # real reason (e.g. NOT_PAIRED).
+    rejections = [f for f in pushed if f.get("type") == "res" and f.get("ok") is False]
+    assert len(rejections) == 1
+    assert rejections[0]["id"] == "x"
+    assert rejections[0]["error"]["message"] == "bad signature"
 
 
 async def test_submit_signed_connect_idempotent_when_future_done():

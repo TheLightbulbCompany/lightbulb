@@ -874,6 +874,7 @@ async def deploy_listing(
                 owner_id=owner_id,
                 paperclip_agent=paperclip_agent,
                 gateway_token=container_token,
+                ip=container_ip,
             )
 
             # Recreate the listing's captured routines (schedules) on the buyer,

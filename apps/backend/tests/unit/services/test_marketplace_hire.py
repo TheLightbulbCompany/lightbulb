@@ -150,14 +150,38 @@ def _ecs_double(running=True):
     return ecs
 
 
+_FULL_AGENT = {
+    "id": _AGENT_ID,
+    "name": "Pulse",
+    "adapterType": "openclaw_gateway",
+    "adapterConfig": {"devicePrivateKeyPem": "PEM"},
+}
+
+
+def _admin_double(monkeypatch, get_agent=None):
+    """Mock the full-agent fetch deploy_for_approval does before pairing."""
+    admin = MagicMock()
+    admin.get_agent = get_agent or AsyncMock(return_value=_FULL_AGENT)
+    monkeypatch.setattr("core.services.paperclip_admin_client.PaperclipAdminClient", lambda **kwargs: admin)
+    monkeypatch.setattr(
+        "core.services.paperclip_admin_session.get_admin_session_cookie",
+        AsyncMock(return_value="cookie"),
+    )
+    monkeypatch.setattr("core.config.settings.PAPERCLIP_INTERNAL_URL", "http://paperclip.internal", raising=False)
+    return admin
+
+
 @pytest.mark.asyncio
-@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", new_callable=AsyncMock)
+# autospec pins the real signature: the pre-fix call passed only (owner_id,
+# paperclip_agent) and an AsyncMock happily swallowed it while production
+# TypeError'd and rolled back every approval-path hire.
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")
 @patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
-    get_listing, get_ecs, get_catalog, fetch, pair
+    get_listing, get_ecs, get_catalog, fetch, pair, monkeypatch
 ):
     """The whole point of payload.agentId: the workspace lands on the agent the
     approval governs, and the operator device is paired — without which the
@@ -168,6 +192,7 @@ async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
     get_catalog.return_value = catalog
+    _admin_double(monkeypatch)
 
     await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
@@ -180,6 +205,37 @@ async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
     # Manifest comes from the listing ROW, mirroring deploy_listing.
     assert kwargs["manifest"]["version"] == 9
     pair.assert_awaited_once()
+    pair_kwargs = pair.await_args.kwargs
+    # The FULL agent record (with the PEM) and the live-pairing coordinates —
+    # a stub {"id": ...} no-ops inside the helper.
+    assert pair_kwargs["paperclip_agent"] == _FULL_AGENT
+    assert pair_kwargs["gateway_token"] == "gwt"
+    assert pair_kwargs["ip"] == "10.0.0.5"
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_pairing_failure_does_not_roll_back_a_committed_install(
+    get_listing, get_ecs, get_catalog, fetch, rollback, monkeypatch
+):
+    """Pairing is best-effort AFTER the install commits: the paired.json
+    fallback pairs the device at next boot, so a pairing hiccup must not
+    destroy a completed hire."""
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    _admin_double(monkeypatch, get_agent=AsyncMock(side_effect=RuntimeError("paperclip down")))
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    rollback.assert_not_awaited()
 
 
 @pytest.mark.asyncio

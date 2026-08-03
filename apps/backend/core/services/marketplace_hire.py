@@ -243,7 +243,6 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
             container_ip=container_ip,
             container_token=container["gateway_token"],
         )
-        await ensure_operator_device_paired(owner_id=owner_id, paperclip_agent={"id": agent_id})
     except Exception:
         logger.exception(
             "deploy_for_approval: install failed for agent=%s listing=%s — rolling back",
@@ -252,6 +251,35 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         )
         await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
         raise
+
+    # Trust the agent's operator device AFTER the install is committed, and
+    # best-effort like every other create path: the pairing helper needs the
+    # FULL agent record (adapterConfig.devicePrivateKeyPem — Paperclip echoes
+    # it to admin actors), and a pairing hiccup must not roll back a completed
+    # install — the paired.json fallback pairs the device at next container
+    # boot instead.
+    try:
+        import httpx
+
+        from core.config import settings
+        from core.services.paperclip_admin_client import PaperclipAdminClient
+        from core.services.paperclip_admin_session import get_admin_session_cookie
+
+        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+            admin = PaperclipAdminClient(http_client=http)
+            cookie = await get_admin_session_cookie(http)
+            full_agent = await admin.get_agent(session_cookie=cookie, agent_id=agent_id)
+        await ensure_operator_device_paired(
+            owner_id=owner_id,
+            paperclip_agent=full_agent,
+            gateway_token=container["gateway_token"],
+            ip=container_ip,
+        )
+    except Exception:  # noqa: BLE001 — pairing must not undo a committed install
+        logger.exception(
+            "deploy_for_approval: device pairing failed for agent=%s (pairs at next container boot)",
+            agent_id,
+        )
 
 
 def _fetch_artifact(listing: dict) -> tuple[bytes, dict]:

@@ -1496,6 +1496,7 @@ async def _intercept_agents_create(
         owner_id=owner_id,
         paperclip_agent=paperclip_agent,
         gateway_token=token,
+        ip=ip,
     )
 
     # Persist the Paperclip meta into openclaw.json so the marketplace

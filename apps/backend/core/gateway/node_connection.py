@@ -212,6 +212,18 @@ class NodeUpstreamConnection:
             raise RuntimeError("Node handshake: too many non-res messages before hello-ok")
 
         if not msg.get("ok"):
+            # Forward the rejection downstream before failing. The signed
+            # connect went upstream verbatim, so this res frame is keyed to the
+            # client's own request id — a direct gateway connection would
+            # deliver it, and hiding it here leaves the client's pending
+            # connect to time out into a generic "gateway request timeout
+            # (connect)" instead of the real reason (e.g. NOT_PAIRED).
+            try:
+                await self._client_push_callback(
+                    {**msg, "id": signed_id} if isinstance(signed_id, str) and signed_id else msg
+                )
+            except Exception:  # noqa: BLE001 — best-effort on an already-failing path
+                logger.debug("Node handshake rejection push failed", exc_info=True)
             error_detail = json.dumps(msg.get("error", msg), default=str)[:500]
             raise RuntimeError(f"Node handshake rejected: {error_detail}")
 

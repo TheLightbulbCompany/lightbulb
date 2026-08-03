@@ -288,7 +288,9 @@ async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[
                 ip=ip,
                 token=gateway_token,
             )
-            await ensure_operator_device_paired(owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token)
+            await ensure_operator_device_paired(
+                owner_id=owner_id, paperclip_agent=pc, gateway_token=gateway_token, ip=ip
+            )
 
             # Land identity + skill bindings onto EFS + openclaw.json. Company
             # agents are peers in one owner-authored org, so the materializer is

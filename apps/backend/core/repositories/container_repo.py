@@ -818,6 +818,9 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
       code (5xx/429 transient, 4xx deterministic) and is reused verbatim.
     - ``ValueError`` / ``TypeError`` / ``KeyError`` are deterministic
       config/shape bugs — a retry can't fix a malformed value.
+    - An AWS ``ClientError`` whose code is ``ValidationException`` is a
+      malformed request — deterministic; other client errors (throttle,
+      capacity, 5xx) keep the retryable default.
     - A small set of known-deterministic message markers (provider-config
       failures that raise as plain ``Exception``) are matched case-insensitively
       after the attr/type checks, so they still classify deterministic.
@@ -839,6 +842,14 @@ def classify_provision_error(exc: BaseException) -> tuple[str, bool]:
         return cause, bool(retryable_attr)
     if isinstance(exc, (ValueError, TypeError, KeyError)):
         return cause, False
+    # An AWS ValidationException is a malformed request (bad attribute value,
+    # empty index key, ...) — identical on every retry, so deterministic.
+    # Other ClientErrors (throttling, 5xx, capacity) keep the retryable
+    # default below.
+    if isinstance(exc, ClientError):
+        code = (exc.response or {}).get("Error", {}).get("Code", "")
+        if code == "ValidationException":
+            return cause, False
     message = str(exc).lower()
     if "byo_provider is required" in message or "unknown provider_choice" in message:
         return cause, False

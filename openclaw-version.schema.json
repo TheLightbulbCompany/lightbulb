@@ -37,6 +37,11 @@
       "additionalProperties": false,
       "required": ["tag"],
       "properties": {
+        "storage": {
+          "type": "string",
+          "enum": ["efs", "local-sqlite"],
+          "description": "Per-env container storage layout (O6 promotion gate): 'efs' keeps the OpenClaw state dir on EFS; 'local-sqlite' moves hot SQLite to container-local disk with Litestream→S3 durability. Gated at CDK synth per env, exactly like tag."
+        },
         "tag": {
           "type": "string",
           "description": "Tag of the extended image deployed to dev.",
@@ -49,6 +54,11 @@
       "additionalProperties": false,
       "required": ["tag"],
       "properties": {
+        "storage": {
+          "type": "string",
+          "enum": ["efs", "local-sqlite"],
+          "description": "Per-env container storage layout (O6 promotion gate): 'efs' keeps the OpenClaw state dir on EFS; 'local-sqlite' moves hot SQLite to container-local disk with Litestream→S3 durability. Gated at CDK synth per env, exactly like tag."
+        },
         "tag": {
           "type": "string",
           "description": "Tag of the extended image deployed to prod.",

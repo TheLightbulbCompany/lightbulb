@@ -26,8 +26,8 @@ import { Construct } from "constructs";
 // the read in container-stack.ts — bump openclaw-version.json only.
 interface OpenClawVersionConfig {
   tag: string;
-  dev: { tag: string };
-  prod: { tag: string };
+  dev: { tag: string; storage?: "efs" | "local-sqlite" };
+  prod: { tag: string; storage?: "efs" | "local-sqlite" };
   [key: string]: unknown;
 }
 
@@ -257,6 +257,29 @@ export class ServiceStack extends cdk.Stack {
         resources: ["*"],
       }),
     );
+
+    // O6 replica lifecycle (storage-gated): the backend owns the S3 replica
+    // prefix's lifecycle — wipe/reprovision and agent-delete flows must
+    // prefix-delete s3://isol8-{env}-openclaw-replicas/{owner}/..., or the
+    // next boot's restore resurrects pre-wipe state (sessions, device trust,
+    // auth rows with live OAuth tokens). List+Delete only — the backend never
+    // reads replica bytes.
+    if ((env === "dev" || env === "prod") && OPENCLAW_VERSION[env].storage === "local-sqlite") {
+      this.taskRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: "LitestreamReplicaLifecycle",
+          actions: ["s3:ListBucket"],
+          resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas`],
+        }),
+      );
+      this.taskRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: "LitestreamReplicaDelete",
+          actions: ["s3:DeleteObject"],
+          resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*`],
+        }),
+      );
+    }
 
     // ECS management (per-user Fargate tasks)
     this.taskRole.addToPolicy(
@@ -1132,6 +1155,15 @@ export class ServiceStack extends cdk.Stack {
       OPENCLAW_UPSTREAM_VERSION: OPENCLAW_VERSION.tag,
       OPENCLAW_DEV_TAG: OPENCLAW_VERSION.dev.tag,
       OPENCLAW_PROD_TAG: OPENCLAW_VERSION.prod.tag,
+      // O6 storage gate (openclaw-version.json per-env `storage`): when this
+      // env runs the local-sqlite layout, the backend learns the Litestream
+      // replica bucket. Empty/absent = EFS layout — every backend O6 code
+      // path (sentinel writes, replica lifecycle deletes) stays inert, which
+      // is what keeps this merge prod-inert until the promotion PR flips the
+      // field. Name-based (never a bucket ref) per the KMS-cycle posture.
+      ...((env === "dev" || env === "prod") && OPENCLAW_VERSION[env].storage === "local-sqlite"
+        ? { LITESTREAM_BUCKET: `isol8-${env}-openclaw-replicas` }
+        : {}),
       WS_MANAGEMENT_API_URL: props.managementApiUrl,
       WS_GATEWAY_URL: props.webSocketUrl,
       WS_CONNECTIONS_TABLE: props.connectionsTableName,

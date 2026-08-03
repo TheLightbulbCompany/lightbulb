@@ -293,7 +293,20 @@ const StreamingMarkdownContent = React.memo(function StreamingMarkdownContent({
   );
 });
 
+/**
+ * Reasoning-summary parts arrive concatenated with no separator (OpenClaw's
+ * OpenAI transport handles `reasoning_summary_text.delta` but not the
+ * `reasoning_summary_part.added` boundary), so consecutive `**Title**` headers
+ * collide into `**A****B**`. Markdown then pairs the delimiters ACROSS the
+ * boundary — alternating bold, with leftover `****` rendered literally. Split
+ * the collision back into one header per paragraph.
+ */
+export function splitCollidedHeaders(content: string): string {
+  return content.replace(/\*\*(?=\*\*)/g, "**\n\n");
+}
+
 function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
+  const text = splitCollidedHeaders(content);
   // Live (streaming) thinking mounts EXPANDED so reasoning is visible as it
   // flows — a collapsed "Thinking..." pill reads as dead air during long
   // thinking phases. The folded history block mounts collapsed as before.
@@ -326,9 +339,9 @@ function ThinkingBlock({ content, streaming }: { content: string; streaming?: bo
       {isExpanded && (
         <div className="px-3 py-2 text-sm text-[var(--mute)] border-t border-[var(--edge)]">
           {streaming ? (
-            <StreamingMarkdownContent content={content} />
+            <StreamingMarkdownContent content={text} />
           ) : (
-            <MarkdownContent content={content} />
+            <MarkdownContent content={text} />
           )}
         </div>
       )}

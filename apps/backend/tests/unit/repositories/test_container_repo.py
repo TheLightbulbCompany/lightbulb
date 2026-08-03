@@ -550,6 +550,24 @@ def test_classify_provision_error_validation_is_deterministic():
         assert retryable is False
 
 
+def test_classify_provision_error_aws_validation_exception_deterministic():
+    """A ClientError coded ValidationException (e.g. an empty-string GSI key
+    in a PutItem) is a malformed request that fails identically forever —
+    deterministic. Other ClientError codes keep the retryable default."""
+    from botocore.exceptions import ClientError
+
+    from core.repositories import container_repo
+
+    def _client_error(code):
+        return ClientError({"Error": {"Code": code, "Message": "boom"}}, "PutItem")
+
+    _, retryable = container_repo.classify_provision_error(_client_error("ValidationException"))
+    assert retryable is False
+
+    _, retryable = container_repo.classify_provision_error(_client_error("ThrottlingException"))
+    assert retryable is True
+
+
 def test_classify_provision_error_unknown_defaults_retryable():
     """An unrecognised failure (incl. EcsManagerError wrapping AWS
     Spot/throttle/capacity) defaults retryable=True — a needless retry is

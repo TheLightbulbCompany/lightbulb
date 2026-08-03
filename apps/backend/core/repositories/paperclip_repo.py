@@ -347,7 +347,6 @@ class PaperclipRepo:
         item = {
             "user_id": company.user_id,
             "org_id": company.org_id,
-            "company_id": company.company_id,
             "paperclip_user_id": company.paperclip_user_id,
             "paperclip_password_encrypted": company.paperclip_password_encrypted,
             "service_token_encrypted": company.service_token_encrypted,
@@ -355,6 +354,13 @@ class PaperclipRepo:
             "created_at": company.created_at.isoformat(),
             "updated_at": company.updated_at.isoformat(),
         }
+        # A not-yet-known company_id ("") must be OMITTED, never written as an
+        # empty string: company_id keys the by-company-id GSI, and DynamoDB
+        # rejects the whole PutItem when an index key attribute is "". The
+        # sparse index skips such rows, which is also semantically right — a
+        # pre-company row has no business in a companyId lookup.
+        if company.company_id:
+            item["company_id"] = company.company_id
         if company.last_error is not None:
             item["last_error"] = company.last_error
         if company.scheduled_purge_at is not None:
@@ -427,7 +433,11 @@ class PaperclipRepo:
         return PaperclipCompany(
             user_id=item["user_id"],
             org_id=item["org_id"],
-            company_id=item["company_id"],
+            # Absent on pre-company rows (seeding claims, failed markers) —
+            # writers omit it rather than storing "" (illegal as a
+            # by-company-id GSI key). Hydrate back to "" so consumers keep
+            # their existing truthiness checks.
+            company_id=item.get("company_id", ""),
             paperclip_user_id=item.get("paperclip_user_id", ""),
             paperclip_password_encrypted=item.get("paperclip_password_encrypted", ""),
             service_token_encrypted=item.get("service_token_encrypted", ""),
@@ -827,12 +837,15 @@ class PaperclipRepo:
         item = {
             "user_id": user_id,
             "org_id": org_id,
-            "company_id": company_id,
             "status": "failed",
             "last_error": reason,
             "created_at": now,
             "updated_at": now,
         }
+        # Omitted (not "") when unknown — "" is illegal as a by-company-id
+        # GSI key and would reject the whole put. See put().
+        if company_id:
+            item["company_id"] = company_id
         table = self._table()
         try:
             await run_in_thread(
@@ -993,7 +1006,7 @@ class PaperclipRepo:
         and it lives on the real row so the loser can simply poll it.
 
         Claim-row shape: ``status="seeding"`` + ``seeding_claim_id`` +
-        ``seeding_claimed_at``, with ``company_id=""`` and deliberately NO
+        ``seeding_claimed_at``, with NO ``company_id`` and deliberately NO
         credential fields (``get()`` tolerates that, same as the failed
         marker). A ``status="seeding"`` row is BY CONSTRUCTION always this
         bare claim: the winner's very next durable write (the post-sign-up
@@ -1012,10 +1025,12 @@ class PaperclipRepo:
         read so two concurrent stealers can't both win.
         """
         now = datetime.now(timezone.utc)
+        # No company_id: none exists yet, and writing "" would be rejected
+        # outright as an empty by-company-id GSI key. get() hydrates the
+        # absent attribute back to "".
         item = {
             "user_id": user_id,
             "org_id": org_id,
-            "company_id": "",
             "status": "seeding",
             "seeding_claim_id": claim_id,
             "seeding_claimed_at": now.isoformat(),

@@ -36,6 +36,7 @@ def repo():
                 {"AttributeName": "status", "AttributeType": "S"},
                 {"AttributeName": "scheduled_purge_at", "AttributeType": "S"},
                 {"AttributeName": "org_id", "AttributeType": "S"},
+                {"AttributeName": "company_id", "AttributeType": "S"},
             ],
             BillingMode="PAY_PER_REQUEST",
             GlobalSecondaryIndexes=[
@@ -56,6 +57,21 @@ def repo():
                         {"AttributeName": "org_id", "KeyType": "HASH"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    # Mirrors the prod table (database-stack.ts). Load-bearing
+                    # for the seed-claim / failed-marker tests: DynamoDB
+                    # rejects any PutItem whose company_id is an empty STRING
+                    # once this index exists, so those writes must OMIT the
+                    # attribute — a table without this GSI cannot catch that.
+                    "IndexName": "by-company-id",
+                    "KeySchema": [
+                        {"AttributeName": "company_id", "KeyType": "HASH"},
+                    ],
+                    "Projection": {
+                        "ProjectionType": "INCLUDE",
+                        "NonKeyAttributes": ["status"],
+                    },
                 },
             ],
         )
@@ -320,7 +336,8 @@ async def test_seed_claim_fresh_wins_then_second_caller_loses(repo):
 async def test_seed_claim_row_reads_back_as_bare_seeding_row(repo):
     """The claim row must be readable via get() — the loser polls it and the
     status readers surface it — so _item_to_company must tolerate the bare
-    shape (status="seeding", company_id="", NO credential attributes)."""
+    shape (status="seeding", NO company_id, NO credential attributes —
+    get() hydrates the absent company_id back to "")."""
     await repo.try_acquire_seed_claim("u1", org_id="org_a", claim_id="a")
     row = await repo.get("u1")
     assert row is not None

@@ -9,8 +9,9 @@
 #   0. resolve owner id (per-user task env, else the EFS facts file)
 #   1. create the local state root + reverse-symlink the durable spine to EFS
 #   2. restore every replicated SQLite DB from S3 (explicit, integrity-checked)
-#   3. else first-cutover migration: copy hot state off EFS, rewrite the two
-#      relocated path prefixes inside the DBs, archive the EFS originals
+#   3. fill any database the restore did not produce from EFS (or a prior
+#      boot's archive): copy, rewrite the two relocated path prefixes inside
+#      the DBs, integrity-check, then archive the live EFS originals
 #   4. apply the backend's clear-auth sentinel (if present)
 #   5. exec litestream replicate -exec <doctor+gateway>
 #
@@ -28,6 +29,15 @@ LITESTREAM_CONFIG="${O6_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
 APP_CMD="${O6_APP_CMD:-/usr/local/bin/isol8-o6-app.sh}"
 
 log() { echo "[o6-boot] $*"; }
+
+# Dependency preflight. Every one of these is baked into the extended image,
+# but a missing binary would otherwise degrade silently rather than loudly:
+# no jq means the clear-auth sentinel is consumed without being applied (a
+# stale auth row survives and a freshly staged oauth.json never re-imports),
+# and no sqlite3 means the migration's path rewrite is skipped.
+for _bin in sqlite3 jq aws litestream; do
+  command -v "$_bin" >/dev/null 2>&1 || { log "FATAL: required binary '$_bin' is missing from this image"; exit 1; }
+done
 
 # --- 0. Owner id: per-user task env, else the facts file on the EFS spine.
 OWNER_ID="${ISOL8_OWNER_ID:-}"
@@ -101,6 +111,11 @@ o6_sqlite() {
   esac
 }
 
+# Restore every replicated DB first. This is NOT exclusive with the migration
+# below: a task that died mid-first-upload leaves SOME databases in S3 while
+# the rest exist only under the migration source, so treating the two as
+# alternatives would permanently strand those agents' history. Restore what
+# S3 has, then let the migration fill in whatever is still missing locally.
 if [ -n "$DBS" ]; then
   for rel in $DBS; do
     log "restore $rel"
@@ -110,15 +125,19 @@ if [ -n "$DBS" ]; then
       -o "$LOCAL/$rel" "s3://$BUCKET/$OWNER_ID/$rel" || {
         log "FATAL: restore failed for $rel"; exit 1; }
   done
-elif [ -n "$MIGRATE_SRC" ]; then
-  # --- 3. Cutover migration: no replica yet, hot state still reachable.
+fi
+
+if [ -n "$MIGRATE_SRC" ]; then
+  # --- 3. Cutover migration: fills every database the restore above did not
+  # produce. `cp -n` never clobbers a restored replica (which is always the
+  # more recent copy), so this is a fill-in, not an overwrite.
   # The single-writer deployment config guarantees no concurrent writer, and
   # on EFS these DBs run rollback-journal (no -wal sidecars), so a plain copy
   # is consistent. The EFS originals are archived (mv, not deleted) only
   # after the copies pass integrity_check.
   log "cutover migration from $MIGRATE_SRC"
   for d in state agents; do
-    if [ -d "$MIGRATE_SRC/$d" ]; then cp -a "$MIGRATE_SRC/$d/." "$LOCAL/$d/" || exit 1; fi
+    if [ -d "$MIGRATE_SRC/$d" ]; then cp -an "$MIGRATE_SRC/$d/." "$LOCAL/$d/" || exit 1; fi
   done
   # Scoped path rewrite — ONLY the two relocated subtrees. Session markers
   # ("sqlite:<agent>:<session>:<absPath>" inside session_entries.entry_json)
@@ -137,7 +156,8 @@ elif [ -n "$MIGRATE_SRC" ]; then
     o6_sqlite "$LOCAL/state/openclaw.sqlite" "UPDATE agent_databases SET path = replace(path, '$EFS/agents/', '$LOCAL/agents/') WHERE path LIKE '$EFS/agents/%';" || exit 1
   fi
   # Integrity gate before the EFS originals are archived.
-  for db in "$LOCAL/state/openclaw.sqlite" "$LOCAL"/agents/*/agent/openclaw-agent.sqlite; do
+  for db in "$LOCAL/state/openclaw.sqlite" "$LOCAL/state/openclaw-quarantine.sqlite" \
+            "$LOCAL"/agents/*/agent/openclaw-agent.sqlite; do
     [ -f "$db" ] || continue
     ok=$(sqlite3 "$db" "PRAGMA integrity_check;" | head -1)
     [ "$ok" = "ok" ] || { log "FATAL: integrity_check failed for $db: $ok"; exit 1; }
@@ -155,9 +175,9 @@ elif [ -n "$MIGRATE_SRC" ]; then
     done
     log "migration complete; EFS originals archived at pre-o6-archive/"
   else
-    log "migration complete; re-migrated from archive (archive left in place)"
+    log "migration complete; filled in from archive (archive left in place)"
   fi
-else
+elif [ -z "$DBS" ]; then
   log "cold start: no replica, no EFS state — fresh container"
 fi
 

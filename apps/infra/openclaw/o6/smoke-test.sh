@@ -106,18 +106,27 @@ echo "PASS 3b archive fallback"
 # point at EFS is the data-loss shape).
 E="$WORK/t3c/efs"; L="$WORK/t3c/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$L"
 sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
-# session_entries exists but is read-only at the file level -> UPDATE fails
-# with a write error, NOT "no such table".
-sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{\"p\":\"$E/agents/x\"}');"
-chmod 0444 "$E/agents/main/agent/openclaw-agent.sqlite"
+# A corrupt agent DB: the rewrite fails with "file is not a database", which
+# is NOT "no such table". Deterministic regardless of UID — the deployed task
+# runs as root, where a chmod-based failure would simply be bypassed.
+printf 'this is not a sqlite database at all' > "$E/agents/main/agent/openclaw-agent.sqlite"
 if out=$(run_boot "$E" "$L" 2>&1); then
-  chmod 0644 "$E/agents/main/agent/openclaw-agent.sqlite"
-  fail "read-only DB rewrite did not abort: $out"
+  fail "corrupt-DB rewrite did not abort: $out"
 fi
-chmod 0644 "$E/agents/main/agent/openclaw-agent.sqlite"
 echo "$out" | grep -q "FATAL: sqlite failed" || fail "abort did not report a sqlite failure: $out"
 [ -d "$E/state" ] && [ -d "$E/agents" ] || fail "EFS originals archived despite failed rewrite"
 echo "PASS 3c rewrite failure aborts cutover"
+
+# ---- 3d. partial replica + archive must MERGE (not be exclusive): a task that
+# died mid-first-upload leaves some DBs in S3 and the rest only in the archive.
+E="$WORK/t3d/efs"; L="$WORK/t3d/local"; mkdir -p "$E/pre-o6-archive/agents/main/agent" "$L"
+sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{}');"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "partial-merge run exited nonzero: $out"
+unset AWS_STUB_KEYS
+[ -f "$L/state/openclaw.sqlite" ] || fail "replicated state DB not restored"
+[ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "archive-only agent DB was stranded by the partial replica"
+echo "PASS 3d partial replica merges with archive"
 
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"

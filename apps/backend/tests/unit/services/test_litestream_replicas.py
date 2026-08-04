@@ -91,9 +91,13 @@ async def test_cleanup_deleted_agent_reclaims_efs_and_replicas(monkeypatch):
     ws = MagicMock()
     monkeypatch.setattr(ws_mod, "get_workspace", lambda: ws)
     with patch("core.services.litestream_replicas.delete_replica_prefix", new=AsyncMock(return_value=True)) as drp:
-        await ws_mod.cleanup_deleted_agent("org_1", "agent-x")
+        with patch.object(ws_mod, "_REPLICA_RACE_SETTLE_S", 0):
+            await ws_mod.cleanup_deleted_agent("org_1", "agent-x")
     ws.cleanup_agent_dirs.assert_called_once_with("org_1", "agent-x")
-    drp.assert_awaited_once_with("org_1", agent_id="agent-x")
+    # TWO passes: the container is still running, so an in-flight Litestream
+    # upload can recreate the prefix right after the first delete.
+    assert drp.await_count == 2
+    assert all(c.kwargs == {"agent_id": "agent-x"} for c in drp.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -104,5 +108,6 @@ async def test_cleanup_deleted_agent_still_drops_replicas_when_efs_fails(monkeyp
     ws.cleanup_agent_dirs.side_effect = RuntimeError("efs down")
     monkeypatch.setattr(ws_mod, "get_workspace", lambda: ws)
     with patch("core.services.litestream_replicas.delete_replica_prefix", new=AsyncMock(return_value=True)) as drp:
-        await ws_mod.cleanup_deleted_agent("org_1", "agent-x")  # must not raise
-    drp.assert_awaited_once()
+        with patch.object(ws_mod, "_REPLICA_RACE_SETTLE_S", 0):
+            await ws_mod.cleanup_deleted_agent("org_1", "agent-x")  # must not raise
+    assert drp.await_count == 2

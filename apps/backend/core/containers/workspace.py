@@ -932,6 +932,16 @@ async def cleanup_deleted_agent(user_id: str, agent_id: str, *, workspace: "Work
         logger.warning("cleanup_deleted_agent: EFS cleanup failed for %s/%s: %s", user_id, agent_id, exc)
     from core.services.litestream_replicas import delete_replica_prefix
 
+    # The container is STILL RUNNING here (unlike a wipe, which drains first),
+    # so its Litestream is still watching the agent's database at the moment
+    # OpenClaw removes it. A sync already in flight can PutObject back into the
+    # prefix right after the first delete, and the boot script restores from
+    # the S3 prefix — so the "deleted" agent would re-materialize forever.
+    # Litestream's dir watcher drops a removed database within its monitor
+    # interval (1s), so a second pass a few seconds later reaps anything the
+    # first one raced. If the second pass finds objects, that is worth seeing.
+    await delete_replica_prefix(user_id, agent_id=agent_id)
+    await asyncio.sleep(_REPLICA_RACE_SETTLE_S)
     await delete_replica_prefix(user_id, agent_id=agent_id)
 
 
@@ -942,6 +952,11 @@ async def cleanup_deleted_agent(user_id: str, agent_id: str, *, workspace: "Work
 # container-local disk); consumed + deleted by the boot script, which skips
 # missing DBs and tolerates a missing table (a fresh container has no row and
 # imports the staged file anyway).
+# Seconds to wait before the second replica-delete pass on agent delete — a
+# few multiples of Litestream's 1s sync interval, so an in-flight upload cannot
+# outlive it.
+_REPLICA_RACE_SETTLE_S = 5.0
+
 O6_CLEAR_AUTH_SENTINEL_FILENAME = "o6-clear-auth-profiles.json"
 
 

@@ -35,7 +35,23 @@ case "$1" in
   replicate) exit 0 ;;
 esac
 EOF
-chmod +x "$STUBS/aws" "$STUBS/litestream"
+cat > "$STUBS/stat" <<'EOF'
+#!/bin/sh
+# Emulates `stat -f -c %T <path>` as it behaves in the container. GNU stat is
+# absent on macOS, so WITHOUT this stub every case fell through the mount fence
+# via its old fail-open "unknown" branch — which is exactly the defect that let
+# a prod container archive an owner's live databases. The harness must model
+# the real filesystem, not accidentally disable the guard it is testing.
+# STAT_STUB_NESTED=fail makes stat EXIT NONZERO, which is what drives the
+# boot script's `|| echo ...` fallback — the path that used to fail open.
+case "$*" in
+  *"/state"|*"/agents")
+    [ "${STAT_STUB_NESTED:-ext4}" = "fail" ] && exit 1
+    echo "${STAT_STUB_NESTED:-ext4}" ;;
+  *) echo "${STAT_STUB_OTHER:-nfs}" ;;
+esac
+EOF
+chmod +x "$STUBS/aws" "$STUBS/litestream" "$STUBS/stat"
 export PATH="$STUBS:$PATH"
 
 # $1 = EFS_RAW (the un-shadowed second view: pre-cutover state + archive live here)
@@ -407,18 +423,28 @@ echo "PASS 3i cutover converts migrated databases to WAL"
 # Simulated by pointing the check at a path the harness reports as nfs — we
 # cannot mount NFS here, so assert the guard's shape by stubbing `stat`.
 E="$WORK/t5/efs"; L="$WORK/t5/local"; mkdir -p "$E" "$L"
-cat > "$STUBS/stat" <<'EOF'
-#!/bin/sh
-# emulate `stat -f -c %T <path>` reporting an NFS mount for the state dirs
-case "$*" in *"/state"|*"/agents") echo nfs4 ;; *) echo ext2/ext3 ;; esac
-EOF
-chmod +x "$STUBS/stat"
+export STAT_STUB_NESTED=nfs4
 if out=$(run_boot "$E" "$L" 2>&1); then
-  rm -f "$STUBS/stat"
+  unset STAT_STUB_NESTED
   fail "boot did not abort when state/ was on nfs: $out"
 fi
-rm -f "$STUBS/stat"
-echo "$out" | grep -q "nested ephemeral mount is missing or shadowed" || fail "wrong abort reason: $out"
+unset STAT_STUB_NESTED
+echo "$out" | grep -q "expected local disk" || fail "wrong abort reason: $out"
 echo "PASS 5 mount-order fence aborts on nfs"
+
+# ---- 5b. the fence must FAIL CLOSED when the filesystem cannot be identified.
+# The original spelling denied nfs/smb/cifs and fell back to "unknown", which
+# matched nothing and PASSED — so any stat failure sailed through. That is the
+# defect that let a prod container archive an owner's live databases out from
+# under itself while coming up empty.
+E="$WORK/t5b/efs"; L="$WORK/t5b/local"; mkdir -p "$E" "$L"
+export STAT_STUB_NESTED=fail
+if out=$(run_boot "$E" "$L" 2>&1); then
+  unset STAT_STUB_NESTED
+  fail "boot continued when the filesystem could not be identified: $out"
+fi
+unset STAT_STUB_NESTED
+echo "$out" | grep -q "expected local disk" || fail "wrong abort reason: $out"
+echo "PASS 5b fence fails CLOSED on an unidentifiable filesystem"
 
 echo "ALL SMOKE TESTS PASSED"

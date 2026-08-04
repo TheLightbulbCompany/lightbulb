@@ -78,12 +78,29 @@ mkdir -p "$STATE_ROOT/state" "$STATE_ROOT/agents"
 # literal mountPoints[] order rather than by depth, so a reordering would leave
 # the EFS mount covering them and every commit would go back to NFS at ~95ms —
 # a green deploy that silently fixes nothing. Fail instead of degrading.
+# ALLOW-LIST, not a deny-list. The previous spelling denied nfs/smb/cifs and
+# fell back to "unknown" when stat failed — and "unknown" matched nothing, so
+# ANY failure to classify the filesystem PASSED the fence. A guard whose
+# failure mode is "assume it's fine" is not a guard.
+#
+# This is not hypothetical: it is why a prod container proceeded to archive an
+# owner's live databases out from under itself instead of refusing to boot,
+# when its nested mounts were absent. Everything downstream of here — the
+# copy, the archive `mv`, the recreate — assumes these two paths are local
+# disk. If we cannot PROVE that, the only safe action is to stop.
 for _p in "$STATE_ROOT/state" "$STATE_ROOT/agents"; do
-  _fs=$(stat -f -c %T "$_p" 2>/dev/null || echo unknown)
+  _fs=$(stat -f -c %T "$_p" 2>/dev/null || echo "stat-failed")
   case "$_fs" in
-    nfs*|smb*|cifs*)
-      log "FATAL: $_p is on '$_fs' — the nested ephemeral mount is missing or shadowed by the EFS mount."
-      log "       SQLite would run on the network filesystem and O6 would be a silent no-op. Check mountPoints order."
+    ext2/ext3|ext4|xfs|btrfs|overlayfs|tmpfs) ;;
+    *)
+      log "FATAL: $_p reports filesystem '$_fs'; expected local disk (ext4/xfs/...)."
+      log "       Either the nested ephemeral mount is missing, or the EFS mount is"
+      log "       shadowing it, or the filesystem could not be identified at all."
+      log "       Continuing would run SQLite on the network filesystem AND would"
+      log "       archive this owner's live databases to pre-migration-archive/ while"
+      log "       the container came up empty. Refusing to boot."
+      log "       Check mountPoints order in container-stack.ts and that the"
+      log "       openclaw-state / openclaw-agents volumes actually attached."
       exit 1
       ;;
   esac

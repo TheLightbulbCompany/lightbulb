@@ -95,14 +95,18 @@ KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
 # yet, and the "recognized nothing" guard below would otherwise crash-loop the
 # container on it forever.
 #
-# Replica keys are <owner>/<db-rel-path>/ltx/<level>/<minTXID>-<maxTXID>.ltx —
-# VERIFIED by running litestream v0.5.15 against this exact config, not
-# inferred: there IS a literal "ltx/" segment and levels are plain decimal.
+# Replica key layout DIFFERS BY REPLICA TYPE — verified against a real dev
+# bucket, after a local file-replica test led us to the wrong answer:
+#   s3   : <owner>/<db-rel-path>/<%04d-level>/<minTXID>-<maxTXID>.ltx
+#   file : <path>/<db-rel-path>/ltx/<level>/<minTXID>-<maxTXID>.ltx
+# Accept both: strip the trailing <level>/<file>.ltx, then strip a trailing
+# "/ltx" if that form was used. Hard-coding either shape makes DBS empty, and
+# an empty DBS with a live replica is the worst failure this script has.
 TOMBSTONES=""
 DBS=""
 if [ -n "$KEYS" ]; then
   TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.o6-deleted\$#\1#p" | sort -u)
-  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/ltx/[^/]*/[^/]*\$#\1#p" | sort -u)
+  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[^/]*/[^/]*\.ltx\$#\1#p" | sed 's#/ltx\$##' | sort -u)
   if [ -z "$DBS" ] && [ -z "$TOMBSTONES" ]; then
     log "FATAL: S3 prefix $OWNER_ID/ has objects but none match <db>/ltx/<level>/<file>; refusing to continue"
     exit 1

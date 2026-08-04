@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 
 from core.config import settings
 from core.containers.workspace import get_workspace
 from core.repositories import agent_email_repo, billing_repo
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def build_owner_facts(owner_id: str, billing_account: dict | None, *, email_addr
         #   email_enabled=True,  address="..."   -> that is the address
         "email_enabled": bool((settings.AGENT_EMAIL_DOMAIN or "").strip()),
         "email_address": email_address,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": utc_now_iso(),
     }
 
 

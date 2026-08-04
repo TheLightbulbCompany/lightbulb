@@ -48,7 +48,7 @@ from uuid import uuid4
 from boto3.dynamodb.conditions import Key
 
 from core.auth import is_org_owner_id
-from core.dynamodb import get_table, run_in_thread
+from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
@@ -775,7 +775,7 @@ class PaperclipRepo:
         expr_names = {"#s": "status"}
         expr_values: dict = {
             ":s": status,
-            ":u": datetime.now(timezone.utc).isoformat(),
+            ":u": utc_now_iso(),
         }
         if last_error is not None:
             update_expr += ", last_error = :e"
@@ -833,7 +833,7 @@ class PaperclipRepo:
         unknown id) cannot self-heal a retry, and a truthful failed row is the
         honest terminal outcome. ``get()`` tolerates the absent credentials.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         item = {
             "user_id": user_id,
             "org_id": org_id,
@@ -1217,7 +1217,7 @@ class PaperclipRepo:
 
         Never raises.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         table = self._table()
         try:
             await run_in_thread(
@@ -1261,7 +1261,7 @@ class PaperclipRepo:
         happened (or didn't), and a bookkeeping failure must not turn a
         delivered email into a 500.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         table = self._table()
         try:
             await run_in_thread(
@@ -1349,7 +1349,7 @@ class PaperclipRepo:
         ``(<NOT_READY|STALE_GENERATION>, None)``.
         """
         dispatch_id = str(uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         table = self._table()
         try:
             await run_in_thread(
@@ -1421,7 +1421,7 @@ class PaperclipRepo:
                 ExpressionAttributeValues={
                     ":delivered": "delivered",
                     ":complete": "complete",
-                    ":t": datetime.now(timezone.utc).isoformat(),
+                    ":t": utc_now_iso(),
                     ":gen": onboarding_generation,
                     ":did": dispatch_id,
                     ":dispatched": "dispatched",
@@ -1457,7 +1457,7 @@ class PaperclipRepo:
                 ExpressionAttributeValues={
                     ":failed": "failed",
                     ":err": reason,
-                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":u": utc_now_iso(),
                     ":gen": onboarding_generation,
                     ":did": dispatch_id,
                     ":dispatched": "dispatched",
@@ -1504,7 +1504,7 @@ class PaperclipRepo:
                 ExpressionAttributeValues={
                     ":not_started": "not_started",
                     ":err": reason,
-                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":u": utc_now_iso(),
                     ":gen": onboarding_generation,
                     ":did": dispatch_id,
                     ":dispatched": "dispatched",
@@ -1546,7 +1546,7 @@ class PaperclipRepo:
                 ExpressionAttributeValues={
                     ":ns": "not_started",
                     ":zero": 0,
-                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":u": utc_now_iso(),
                     ":gen": onboarding_generation,
                     ":submitted": "submitted",
                     ":failed": "failed",
@@ -1623,7 +1623,7 @@ class PaperclipRepo:
         brief = (brief_text or "").strip()
         brief_set = ", onboarding_brief_text = :brief" if brief else ""
         for _attempt in range(3):
-            now = datetime.now(timezone.utc).isoformat()
+            now = utc_now_iso()
             values: dict = {
                 ":submitted": "submitted",
                 ":not_started": "not_started",
@@ -1706,7 +1706,7 @@ class PaperclipRepo:
             ExpressionAttributeValues={
                 ":g": goal_id,
                 ":p": project_id,
-                ":u": datetime.now(timezone.utc).isoformat(),
+                ":u": utc_now_iso(),
                 ":gen": onboarding_generation,
                 ":submitted": "submitted",
             },
@@ -1752,7 +1752,7 @@ class PaperclipRepo:
                     ":not_started": "not_started",
                     ":gen": onboarding_generation,
                     ":submitted": "submitted",
-                    ":u": datetime.now(timezone.utc).isoformat(),
+                    ":u": utc_now_iso(),
                 },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -1837,7 +1837,7 @@ class PaperclipRepo:
             "owner_id": owner_id,
             "path": path,
             "submitted_by": submitted_by,
-            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "submitted_at": utc_now_iso(),
         }
         # Absent, not "": "no idea supplied" is a real signal on the "you pick"
         # path, and it must survive the round trip as None rather than as a
@@ -1925,7 +1925,7 @@ class PaperclipRepo:
             ExpressionAttributeValues={
                 ":one": 1,
                 ":e": reason[:500],
-                ":t": datetime.now(timezone.utc).isoformat(),
+                ":t": utc_now_iso(),
             },
             ReturnValues="UPDATED_NEW",
         )
@@ -1949,7 +1949,7 @@ class PaperclipRepo:
             ExpressionAttributeValues={
                 ":failed": "failed",
                 ":e": reason[:500],
-                ":t": datetime.now(timezone.utc).isoformat(),
+                ":t": utc_now_iso(),
             },
         )
         # The funnel is about to re-render for every tab on this company.

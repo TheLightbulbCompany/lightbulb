@@ -13,7 +13,6 @@ import time
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 from websockets import connect as ws_connect
@@ -24,6 +23,7 @@ from core.observability.logging import bind_log_context
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 from core.services.connection_service import ConnectionService
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -457,7 +457,6 @@ class GatewayConnection:
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
-        from datetime import timezone
 
         # Wrap as {type: "event"} so the frontend WS router in useGateway
         # delivers it to onEvent subscribers (unrecognized types are dropped).
@@ -467,7 +466,7 @@ class GatewayConnection:
             "payload": {
                 "state": state,
                 "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": utc_now_iso(),
             },
         }
 
@@ -873,7 +872,7 @@ class GatewayConnection:
 
                 await container_repo.update_fields(
                     self.user_id,
-                    {"last_gateway_handshake_at": datetime.now(timezone.utc).isoformat()},
+                    {"last_gateway_handshake_at": utc_now_iso()},
                 )
             except Exception as exc:
                 logger.debug(

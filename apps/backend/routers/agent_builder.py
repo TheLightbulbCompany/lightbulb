@@ -72,6 +72,20 @@ class RegisterBuiltAgentResponse(BaseModel):
 
 
 def _slugify(name: str) -> str:
+    """Slug for a NEWLY built agent's deploy — capped, with a non-empty fallback.
+
+    Deliberately NOT shared with the two other slugifiers in this codebase;
+    they answer different questions and merging them would need a cap flag and
+    a fallback flag to keep all three callers correct:
+
+    - ``core.services.company_identity.slugify`` builds an *email local part*,
+      so it must NFKD-decompose and drop non-ASCII (``é`` is not legal there).
+      This one leaves that to the ``[^a-z0-9]+`` collapse.
+    - ``core.services.agent_export._slugify`` is a frozen compatibility shim
+      that reproduces a historical derivation so legacy marketplace listings
+      still resolve to a live workspace. It must not gain a cap or a fallback,
+      because changing its output changes which listings resolve.
+    """
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:64] or "agent"
 
 

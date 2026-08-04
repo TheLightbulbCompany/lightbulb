@@ -381,3 +381,95 @@ async def test_clear_writes_sentinel_even_when_efs_store_still_visible(fake_efs_
     assert _store_rows(path) == []
     # ...and the sentinel is there so the container-local copy gets cleared too
     assert (fake_efs_root / "org_1" / O6_CLEAR_AUTH_SENTINEL_FILENAME).is_file()
+
+
+# ---------------------------------------------------------------------------
+# O6 archive sweep. On an owner's first boot under the local-SQLite layout the
+# boot script moves the pre-cutover EFS `state/` + `agents/` wholesale into
+# `pre-o6-archive/` — auth_profile_store rows and all. The live sweeps above
+# walk `agents/*`, which post-cutover is the recreated-empty mount destination,
+# so without an explicit archive pass a disconnected owner keeps a usable
+# refresh token on EFS indefinitely.
+# ---------------------------------------------------------------------------
+
+
+def _archive_agent_dir(root, user: str, agent_id: str):
+    d = root / user / "pre-o6-archive" / "agents" / agent_id / "agent"
+    d.mkdir(parents=True)
+    return d
+
+
+def _seed_archived_store(db_path, *, store_key: str = "primary") -> None:
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT)")
+        con.execute(
+            "INSERT INTO auth_profile_store VALUES(?, ?)",
+            (store_key, json.dumps({"profiles": {"openai:default": {"refresh": "still-usable"}}})),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_purges_archived_auth_rows(fake_efs_root):
+    """A disconnected owner must not keep a live refresh token in the archive."""
+    user = "u_archive"
+    d = _archive_agent_dir(fake_efs_root, user, "main")
+    db = d / "openclaw-agent.sqlite"
+    _seed_archived_store(db)
+
+    await delete_auth_profile_store(user_id=user)
+
+    assert _store_rows(db) == [], "archived auth_profile_store row survived disconnect"
+
+
+@pytest.mark.asyncio
+async def test_delete_purges_every_archived_agent_not_just_main(fake_efs_root):
+    """The pre-6.6 fan-out means an old archive can hold several independently
+    usable tokens, so the sweep is not scoped to the default agent."""
+    user = "u_archive_many"
+    dbs = []
+    for aid in ("main", "friday-uuid", "atlas-uuid"):
+        db = _archive_agent_dir(fake_efs_root, user, aid) / "openclaw-agent.sqlite"
+        _seed_archived_store(db, store_key=aid)
+        dbs.append(db)
+
+    await delete_auth_profile_store(user_id=user)
+
+    for db in dbs:
+        assert _store_rows(db) == [], f"archived row survived for {db.parent.parent.name}"
+
+
+@pytest.mark.asyncio
+async def test_delete_sweeps_legacy_archived_auth_profiles_json(fake_efs_root):
+    """The legacy per-agent JSON gets archived too, and is just as usable."""
+    user = "u_archive_legacy"
+    legacy = _archive_agent_dir(fake_efs_root, user, "main") / "auth-profiles.json"
+    legacy.write_text("{}")
+
+    await delete_auth_profile_store(user_id=user)
+
+    assert not legacy.exists(), "archived legacy auth-profiles.json not swept"
+
+
+@pytest.mark.asyncio
+async def test_delete_tolerates_archive_without_auth_table(fake_efs_root):
+    """An archived DB that never persisted auth is benign, not an error."""
+    user = "u_archive_no_table"
+    db = _archive_agent_dir(fake_efs_root, user, "main") / "openclaw-agent.sqlite"
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("CREATE TABLE unrelated(x)")
+        con.commit()
+    finally:
+        con.close()
+
+    await delete_auth_profile_store(user_id=user)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_delete_no_op_when_no_archive(fake_efs_root):
+    """Owners provisioned natively under O6 have no archive at all."""
+    await delete_auth_profile_store(user_id="u_no_archive")  # must not raise

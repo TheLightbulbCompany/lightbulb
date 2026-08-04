@@ -327,6 +327,22 @@ rows=$(sqlite3 "$L/agents/other/agent/openclaw-agent.sqlite" "SELECT count(*) FR
 echo "$out" | grep -q "ignoring non-default agent" || fail "no ignore log: $out"
 echo "PASS 4d non-default sentinel ignored"
 
+# ---- 4e. a sentinel carried INTO the cutover boot must be DROPPED, not
+# applied. It was written while the owner still ran the EFS layout, where the
+# backend already did the hot delete against this very database; applying it
+# now would clear however many rotations happened since and force a re-import
+# of a long-spent staged token (the June refresh_token_reused incident).
+E="$WORK/t4e/efs"; L="$WORK/t4e/local"; mkdir -p "$E/agents/main/agent" "$E/state" "$L"
+sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE t(x);"
+sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{\"rotated\":true}');"
+echo '{"agent_ids":["main"],"requested_at":"2026-01-01T00:00:00Z"}' > "$L/o6-clear-auth-profiles.json"
+out=$(run_boot "$E" "$L" 2>&1) || fail "cutover-with-sentinel run exited nonzero: $out"
+rows=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT count(*) FROM auth_profile_store;")
+[ "$rows" = "1" ] || fail "cutover boot applied a stale sentinel and destroyed the live credential"
+[ ! -f "$L/o6-clear-auth-profiles.json" ] || fail "stale sentinel left behind to fire on a later boot"
+echo "$out" | grep -q "dropping stale request carried into the cutover boot" || fail "no stale-sentinel log: $out"
+echo "PASS 4e stale sentinel dropped on the cutover boot"
+
 # ---- 5. the mount-order fence: if state/ or agents/ ends up on the network
 # filesystem (ECS mounts in array order, so a reordering shadows the ephemeral
 # volumes), boot must FAIL rather than silently run SQLite on NFS at ~95ms.

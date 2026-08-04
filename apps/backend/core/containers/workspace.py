@@ -878,7 +878,74 @@ async def delete_auth_profile_store(*, user_id: str) -> None:
         except OSError as e:
             logger.warning("delete_auth_profile_store: %s -- %s", legacy, e)
 
+    removed += await asyncio.to_thread(_purge_o6_archive_credentials, efs_root, user_id)
+
     logger.info("deleted_oauth_credential", extra={"user_id": user_id, "removed": removed})
+
+
+# Where isol8-o6-boot.sh parks the pre-cutover EFS state on an owner's first
+# boot under the local-SQLite layout. Frozen; the runtime never reads it again.
+O6_ARCHIVE_DIRNAME = "pre-o6-archive"
+
+
+def _purge_o6_archive_credentials(efs_root: str, user_id: str) -> list[str]:
+    """Strip OAuth material from the frozen pre-O6 archive on disconnect.
+
+    The archive is a rollback safety net, not live state — but the agent
+    databases inside it were moved there wholesale, ``auth_profile_store`` row
+    and all. Without this sweep a disconnected owner keeps a usable refresh
+    token sitting on EFS indefinitely, which is precisely what this module's
+    caller promises does not happen. The live paths above scan ``agents/*``,
+    which post-cutover is the recreated-empty mount destination, so they walk
+    right past it.
+
+    Blocking (sqlite + stat); call via ``asyncio.to_thread``. Best-effort by
+    design: the archive is expendable, so a failure here must never fail the
+    disconnect that already revoked the token upstream.
+    """
+    archive_agents = Path(efs_root) / user_id / O6_ARCHIVE_DIRNAME / "agents"
+    if not archive_agents.is_dir():
+        return []
+
+    removed: list[str] = []
+    try:
+        agent_dirs = sorted(p for p in archive_agents.iterdir() if p.is_dir())
+    except OSError as e:
+        logger.warning("purge_o6_archive_credentials: listdir %s -- %s", archive_agents, e)
+        return []
+
+    for agent_dir in agent_dirs:
+        rel = f"{O6_ARCHIVE_DIRNAME}/agents/{agent_dir.name}/agent"
+        legacy = agent_dir / "agent" / "auth-profiles.json"
+        try:
+            if legacy.exists():
+                legacy.unlink()
+                removed.append(f"{rel}/auth-profiles.json")
+        except OSError as e:
+            logger.warning("purge_o6_archive_credentials: %s -- %s", legacy, e)
+
+        db = agent_dir / "agent" / "openclaw-agent.sqlite"
+        if not db.exists():
+            continue
+        # Every agent, not just the default: the row-per-agent fan-out predates
+        # 6.6, so an old archive can hold several independently usable tokens.
+        # Nothing runs against these files, so there is no writer to contend
+        # with and no reason to scope the delete.
+        try:
+            con = sqlite3.connect(str(db), timeout=10.0)
+            try:
+                con.execute("DELETE FROM auth_profile_store")
+                con.commit()
+            finally:
+                con.close()
+            removed.append(f"{rel}/openclaw-agent.sqlite:auth_profile_store")
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e).lower():
+                logger.warning("purge_o6_archive_credentials: %s -- %s", db, e)
+        except sqlite3.Error as e:
+            logger.warning("purge_o6_archive_credentials: %s -- %s", db, e)
+
+    return removed
 
 
 # The default agent's on-disk dir name. OpenClaw's DEFAULT agent (Isol8's

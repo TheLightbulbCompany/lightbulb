@@ -326,7 +326,27 @@ fi
 # credentials/oauth.json re-imports — the import fires only when the persisted
 # store row is absent.
 SENTINEL="$STATE_ROOT/o6-clear-auth-profiles.json"
-if [ -f "$SENTINEL" ]; then
+if [ -f "$SENTINEL" ] && [ "$FILL_RAW" = "1" ]; then
+  # A sentinel carried INTO the cutover boot is stale by construction, and
+  # applying it would destroy a live credential.
+  #
+  # The backend writes the sentinel on every O6-env reconnect, but when the EFS
+  # store is still visible it ALSO performs the hot DELETE against that same EFS
+  # database — and returns a value no caller bounces on. So a container still
+  # pinned to a pre-O6 task-def revision keeps running on the EFS layout,
+  # rotating its refresh token for as long as it likes, while the sentinel sits
+  # unread on the durable spine. This boot — its FIRST on the O6 revision —
+  # would copy that well-rotated database in and immediately clear the row,
+  # forcing a re-import of a staged oauth.json that is by now many rotations
+  # spent. That is the June refresh_token_reused incident, reproduced exactly.
+  #
+  # Skipping is provably safe, not merely safer: the hot DELETE already applied
+  # to the very database this boot just copied in, so the row is gone either
+  # way. A sentinel written on any LATER boot is fresh by construction, because
+  # every boot through the branch below consumes one.
+  log "sentinel: dropping stale request carried into the cutover boot (hot delete already applied on EFS)"
+  rm -f "$SENTINEL"
+elif [ -f "$SENTINEL" ]; then
   for agent in $(jq -r '.agent_ids[]? // empty' "$SENTINEL" 2>/dev/null); do
     # ONLY the default agent. Every other agent merges its credentials from
     # main's store, so clearing a non-default row makes that agent import the

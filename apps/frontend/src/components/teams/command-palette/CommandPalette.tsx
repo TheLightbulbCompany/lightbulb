@@ -7,7 +7,7 @@
 // (NewIssueDialog) merges.
 
 import { useState, useMemo } from "react";
-import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
 import { filterNavActions, type CommandPaletteAction } from "./commandPaletteActions";

@@ -109,3 +109,4 @@ export {
   shouldHideHistoryMessage,
 } from "./chat/history";
 export type { ContentBlock, HistoryMessage } from "./chat/history";
+export { SESSION_ID_RE, buildChatSessionKey, sessionIdFromKey } from "./chat/sessionKey";

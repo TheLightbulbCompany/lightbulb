@@ -1,5 +1,5 @@
 import { shouldSuppressBanner } from "./notifications";
-import { sessionIdFromKey } from "./sessionKey";
+import { sessionIdFromKey } from "@isol8/shared";
 
 const SID = "0f6b2f9a-1234-4abc-8def-0123456789ab";
 

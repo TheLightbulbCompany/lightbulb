@@ -46,7 +46,7 @@ import {
 } from "../../../lib/attachments";
 import { projectHistoryToChatItems } from "../../../lib/chatHistory";
 import { useNavParamConsumer } from "../../../lib/useNavParamConsumer";
-import { buildChatSessionKey } from "../../../lib/sessionKey";
+import { buildChatSessionKey } from "@isol8/shared";
 import { useGateway } from "../../../providers/gateway";
 
 /**

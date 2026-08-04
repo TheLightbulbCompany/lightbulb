@@ -2,7 +2,7 @@
 
 import { useUser } from "@clerk/nextjs";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
-import { buildChatSessionKey } from "@/lib/sessionKey";
+import { buildChatSessionKey } from "@isol8/shared";
 import { buildModelRef, type ModelEntry } from "@/lib/models";
 
 /**

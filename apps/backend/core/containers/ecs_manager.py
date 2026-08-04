@@ -1532,6 +1532,15 @@ class EcsManager:
         )
         return False
 
+    async def wait_until_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
+        """Block until the user's service has no running/pending tasks.
+
+        Public wrapper for cross-module callers (wipe/reprovision flows that
+        must not race a still-running container's writes). Returns False on
+        timeout; callers proceed anyway.
+        """
+        return await self._wait_for_service_drained(user_id, timeout_s=timeout_s)
+
     async def reprovision_for_user(self, user_id: str) -> dict:
         """Full reprovision: re-register the task def from the current CDK
         base (picks up the latest pinned image) AND rewrite the EFS

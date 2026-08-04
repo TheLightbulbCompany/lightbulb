@@ -280,6 +280,13 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # breaks. No-op on the EFS layout (LITESTREAM_BUCKET unset).
     from core.services.litestream_replicas import delete_replica_prefix
 
+    # Drain first: the service delete above is asynchronous, and a still
+    # running container's litestream can upload after the prefix delete —
+    # the reprovision would then restore the state this endpoint just wiped.
+    try:
+        await ecs_mgr.wait_until_drained(owner_id)
+    except Exception as e:  # noqa: BLE001 — best-effort ordering
+        logger.warning("drain wait failed for %s: %s", owner_id, e)
     if not await delete_replica_prefix(owner_id):
         failures.append("litestream_replicas: delete failed (stale state will restore)")
     else:

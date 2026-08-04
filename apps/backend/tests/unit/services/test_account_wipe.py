@@ -136,6 +136,10 @@ def wipe_mocks():
 
     ecs_manager_stub = MagicMock()
     ecs_manager_stub.delete_user_service = AsyncMock(return_value=None)
+    # The replica-delete step drains first — delete_user_service only SUBMITS
+    # the teardown, so an in-flight litestream upload could otherwise land
+    # after the prefix delete and be restored on the next provision.
+    ecs_manager_stub.wait_until_drained = AsyncMock(return_value=True)
     get_ecs_manager_fn = MagicMock(return_value=ecs_manager_stub)
 
     workspace_stub = MagicMock()
@@ -683,3 +687,26 @@ def test_wipe_report_to_dict_shape():
             },
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_replica_delete_waits_for_drain(wipe_mocks):
+    """Ordering matters: a still-running container's litestream can upload
+    after the prefix delete, and the next provision would restore the state
+    the wipe reported as erased."""
+    order: list[str] = []
+    wipe_mocks.ecs_manager_stub.wait_until_drained = AsyncMock(
+        side_effect=lambda *a, **k: order.append("drain") or True
+    )
+
+    async def _del(owner_id, *, agent_id=None):
+        order.append("delete_replicas")
+        return True
+
+    with (
+        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
+        patch("core.services.litestream_replicas.delete_replica_prefix", new=_del),
+    ):
+        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    assert order == ["drain", "delete_replicas"], order

@@ -1031,3 +1031,22 @@ class TestLitestreamS3Policy:
         await mod.ensure_owner_bedrock_role("org_abc", {}, skip_bedrock_grant=True)
 
         fake.put_role_policy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkeypatch):
+    """IAM refuses DeleteRole while ANY inline policy remains, so leaving
+    owner-litestream-s3 behind fails the wipe's bedrock_role step for every
+    O6 owner and leaks the role."""
+    import core.billing.bedrock_aip as mod
+
+    fake = MagicMock()
+    monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+    monkeypatch.setattr(mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "", raising=False)
+
+    await mod.delete_owner_bedrock_role("org_abc")
+
+    deleted = {c.kwargs["PolicyName"] for c in fake.delete_role_policy.call_args_list}
+    assert deleted == {"owner-bedrock", "owner-litestream-s3"}
+    fake.delete_role.assert_called_once()

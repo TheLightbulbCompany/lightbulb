@@ -215,9 +215,21 @@ class TestDeleteOwnerBedrockRole:
 
         await mod.delete_owner_bedrock_role("org_abc")
 
-        assert calls == ["delete_role_policy", "detach_role_policy", "delete_role"]
-        fake.delete_role_policy.assert_called_once_with(
-            RoleName="isol8-dev-owner-bedrock-org_abc", PolicyName="owner-bedrock"
+        # BOTH inline policies are deleted before the detach: IAM refuses
+        # DeleteRole while any inline policy remains, and O6 owners carry
+        # owner-litestream-s3 alongside owner-bedrock.
+        assert calls == [
+            "delete_role_policy",
+            "delete_role_policy",
+            "detach_role_policy",
+            "delete_role",
+        ]
+        assert [c.kwargs["PolicyName"] for c in fake.delete_role_policy.call_args_list] == [
+            "owner-bedrock",
+            "owner-litestream-s3",
+        ]
+        assert all(
+            c.kwargs["RoleName"] == "isol8-dev-owner-bedrock-org_abc" for c in fake.delete_role_policy.call_args_list
         )
         fake.detach_role_policy.assert_called_once_with(
             RoleName="isol8-dev-owner-bedrock-org_abc",
@@ -256,7 +268,7 @@ class TestDeleteOwnerBedrockRole:
 
         await mod.delete_owner_bedrock_role("org_abc")  # must not raise
 
-        fake.delete_role_policy.assert_called_once()
+        assert fake.delete_role_policy.call_count == 2  # owner-bedrock + owner-litestream-s3
         fake.detach_role_policy.assert_called_once()
         fake.delete_role.assert_called_once()
 

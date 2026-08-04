@@ -812,15 +812,19 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
     client = _iam_client()
     role_name = _owner_role_name(owner_id)
 
-    try:
-        await run_in_thread(
-            client.delete_role_policy,
-            RoleName=role_name,
-            PolicyName="owner-bedrock",
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "NoSuchEntity":
-            raise
+    # BOTH inline policies must go: IAM refuses DeleteRole while any inline
+    # policy remains, so leaving owner-litestream-s3 behind would make the
+    # account-wipe bedrock_role step fail for every O6 owner and leak the role.
+    for policy_name in ("owner-bedrock", "owner-litestream-s3"):
+        try:
+            await run_in_thread(
+                client.delete_role_policy,
+                RoleName=role_name,
+                PolicyName=policy_name,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "NoSuchEntity":
+                raise
 
     if settings.BEDROCK_OWNER_BASE_POLICY_ARN:
         try:

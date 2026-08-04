@@ -32,7 +32,6 @@ Depends on injected collaborators so unit tests can mock them:
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import io
 import logging
@@ -657,12 +656,9 @@ class CatalogService:
             # that can be large enough to block the event loop and stall
             # unrelated WS chat traffic, so run it on a worker thread — same
             # posture as the agents.delete path in websocket_chat.py.
-            await asyncio.to_thread(self._workspace.cleanup_agent_dirs, owner_id, new_agent_id)
-            # O6 local-sqlite layout: drop any replicas the aborted agent's DB
-            # already shipped, or the boot script restores it forever after.
-            from core.services.litestream_replicas import delete_replica_prefix
+            from core.containers.workspace import cleanup_deleted_agent
 
-            await delete_replica_prefix(owner_id, agent_id=new_agent_id)
+            await cleanup_deleted_agent(owner_id, new_agent_id, workspace=self._workspace)
         except Exception:
             logger.exception(
                 "unwind_partial_deploy: failed to clean EFS dirs for agent %s owner %s",

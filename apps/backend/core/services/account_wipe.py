@@ -546,6 +546,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     async def _s4b() -> str:
         from core.services.litestream_replicas import delete_replica_prefix
 
+        # delete_user_service only SUBMITS the scale-to-zero + delete; a still
+        # running container's litestream can land an in-flight upload after we
+        # delete, and the next provision would restore the "erased" state.
+        # Drain first (bounded; returns False on timeout and we proceed).
+        if ids.container:
+            await get_ecs_manager().wait_until_drained(owner_id)
         ok = await delete_replica_prefix(owner_id)
         if not ok:
             raise RuntimeError("replica prefix delete failed")

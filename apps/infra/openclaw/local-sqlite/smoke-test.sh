@@ -144,7 +144,12 @@ E="$WORK/t2h/efs"; L="$WORK/t2h/local"; mkdir -p "$E" "$L"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "file-layout keys exited nonzero: $out"
 unset AWS_STUB_KEYS
-echo "$out" | grep -q "restore state/openclaw.sqlite" || fail "file-layout key not parsed: $out"
+# EXACT, not a substring: the previous spelling matched
+# "restore state/openclaw.sqlite/ltx" too, so this case stayed green for weeks
+# while the parser silently produced the wrong path (the strip used '\$',
+# a LITERAL dollar inside single quotes, not the end anchor).
+echo "$out" | grep -qE "restore state/openclaw\.sqlite( |$)" || fail "file-layout key not parsed to a bare db path: $out"
+echo "$out" | grep -q "restore state/openclaw.sqlite/ltx" && fail "file-layout key kept its ltx/ segment: $out"
 echo "PASS 2h both litestream key layouts parse"
 
 # ---- 3. migration path ----

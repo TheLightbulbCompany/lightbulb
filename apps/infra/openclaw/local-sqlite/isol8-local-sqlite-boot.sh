@@ -111,7 +111,7 @@ TOMBSTONES=""
 DBS=""
 if [ -n "$KEYS" ]; then
   TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.replica-deleted\$#\1#p" | sort -u)
-  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[^/]*/[^/]*\.ltx\$#\1#p" | sed 's#/ltx\$##' | sort -u)
+  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[^/]*/[^/]*\.ltx\$#\1#p" | sed 's#/ltx$##' | sort -u)
   if [ -z "$DBS" ] && [ -z "$TOMBSTONES" ]; then
     log "FATAL: S3 prefix $OWNER_ID/ has objects but none match <db>/ltx/<level>/<file>; refusing to continue"
     exit 1
@@ -152,7 +152,6 @@ drop_tombstoned_agents() {
     rm -rf "${STATE_ROOT:?}/$_t" 2>/dev/null || true
   done
 }
-drop_tombstoned_agents
 
 # --- 3. Restore every replicated database. Explicit CLI restores (rather than
 # replicate's restore-if-db-not-exists, which covers only path-form entries and
@@ -235,23 +234,15 @@ copy_missing_files() {
   [ -d "$_s" ] || return 0
   mkdir -p "$_d" || return 1
   cp -an "$_s/." "$_d/" 2>/dev/null || true
-  # Existence is not enough: a cp that fails partway (ENOSPC, an EFS I/O
-  # error, a short write) leaves a file that exists and is truncated. Compare
-  # sizes. Files the destination ALREADY had are legitimately different — the
-  # restored replica is newer than the fill source and must win — so only
-  # files this copy was responsible for creating are checked.
-  _bad=$( (cd "$_s" && find . -type f 2>/dev/null) | while IFS= read -r _f; do
-    if [ ! -e "$_d/$_f" ]; then
-      echo "MISSING $_f"
-    elif [ "$(wc -c < "$_d/$_f" 2>/dev/null || echo -1)" -lt "$(wc -c < "$_s/$_f" 2>/dev/null || echo 0)" ]; then
-      echo "TRUNCATED $_f"
-    fi
-  done )
-  if [ -n "$_bad" ]; then
-    log "FATAL: copy from $_s did not land intact at $_d:"
-    printf '%s\n' "$_bad" | head -5 | sed 's/^/         /'
-    return 1
-  fi
+  # No post-copy size verification. The obvious check — compare every source
+  # file against its destination — FATALs on a case this function must accept:
+  # a destination file that legitimately differs because the S3 restore already
+  # put a newer, smaller copy there (a VACUUM drops page count). Verifying only
+  # the files this copy created would mean listing the destination before and
+  # after, which is thousands of extra NFS round trips inside the health-check
+  # window. PRAGMA integrity_check runs over every migrated database a few
+  # steps below and is the real detector for a short write; the databases are
+  # the only content here whose corruption is unrecoverable.
   return 0
 }
 

@@ -111,7 +111,10 @@ def slugify(value: str) -> str:
     """Lowercase ``[a-z0-9-]`` form, capped at ``MAX_SLUG_LEN``.
 
     Non-ASCII is decomposed and stripped rather than transliterated — the
-    result has to be a legal email local part, not a faithful rendering.
+    result has to be a legal email local part, not a faithful rendering. That
+    requirement is why this is not shared with ``agent_export._slugify`` (a
+    frozen legacy-compat derivation) or ``routers.agent_builder._slugify``
+    (different cap, empty-name fallback); see the latter's docstring.
     """
     decomposed = unicodedata.normalize("NFKD", value)
     ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")

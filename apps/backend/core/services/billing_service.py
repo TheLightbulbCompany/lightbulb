@@ -1517,10 +1517,14 @@ async def _hot_swap_provider(
     heartbeat_model = heartbeat_model_ref(new_provider, None)
     utility_model = heartbeat_model
     subagent_model = default_model["primary"]
-    # chatgpt_oauth must run UNPINNED web search (a managed-provider pin
-    # suppresses Codex-native hosted search); embedded runtimes re-pin the
-    # keyless default. Mirrors build_openclaw_config_dict.
-    web_search_provider = None if new_provider == "chatgpt_oauth" else "parallel-free"
+    # EVERY provider path pins the keyless default. This used to leave
+    # chatgpt_oauth unpinned so Codex-native hosted search could engage, but
+    # that assumed those owners run OpenClaw's Codex runtime — we never set
+    # `agents.defaults.embeddedHarness.runtime`, so they run the EMBEDDED
+    # runtime, which has no hosted search. Passing None here did not "let
+    # Codex take over", it DELETED a working pin and left the owner with no
+    # web search at all. Mirrors build_openclaw_config_dict.
+    web_search_provider = "parallel-free"
 
     try:
         await replace_provider_block(

@@ -1502,12 +1502,22 @@ def build_openclaw_config_dict(
                 # throw "disabled or no provider" unless one is set;
                 # parallel-free needs no API key and is reliable from Fargate.
                 #
-                # EXCEPT chatgpt_oauth: a pinned managed provider SUPPRESSES
-                # Codex-native hosted search (they're mutually exclusive), so
-                # pinning here would downgrade search the owner's ChatGPT
-                # subscription already includes. Omitting the key lets the
-                # Codex runtime engage its own hosted search automatically.
-                **({} if provider_choice == "chatgpt_oauth" else {"search": {"provider": "parallel-free"}}),
+                # Set on EVERY provider path, chatgpt_oauth included. This
+                # previously carried a chatgpt_oauth exception, on the premise
+                # that pinning a managed provider would suppress Codex-native
+                # hosted search the owner's ChatGPT subscription already pays
+                # for. That premise assumed those owners run OpenClaw's Codex
+                # runtime. They do not: we never set
+                # `agents.defaults.embeddedHarness.runtime`, so every agent runs
+                # the default EMBEDDED runtime, which has no hosted search of
+                # its own. Prod logs (2026-08-03) showed the result — every
+                # chatgpt_oauth research call dying on "web_search is disabled
+                # or no provider is available", with no fallback, because
+                # firecrawl_search needs an API key we never set either.
+                #
+                # If chatgpt_oauth owners are ever moved onto the Codex runtime,
+                # revisit this line — but change the runtime first, not this.
+                "search": {"provider": "parallel-free"},
             },
             # Tool Search: hide the full tool catalog behind
             # tool_search/tool_describe/tool_call. Worth the extra bridge

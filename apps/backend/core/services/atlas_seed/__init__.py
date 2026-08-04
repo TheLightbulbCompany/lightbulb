@@ -116,8 +116,33 @@ def _bridge_url(owner_id: str) -> str:
 
 
 # Junk that must never be seeded into a user's workspace, even if it sneaks
-# into the vendored tree (mirrors agent_export's hygiene filter).
-_SKIP = {".DS_Store", "__pycache__", ".git"}
+# into the vendored tree (mirrors agent_export's hygiene filter). Directory
+# names are matched against every part of the relative path, so a nested
+# ``skills/<bundle>/test/`` is dropped as a whole subtree — vendored upstream
+# suites never run in a workspace (nothing invokes them, and the owner's
+# container has no dev dependencies to run them with).
+_SKIP = {".DS_Store", "__pycache__", ".git", "test", "tests", "__tests__", "node_modules"}
+
+# Upstream packaging/docs carried along by vendored skill bundles. No SKILL.md
+# references any of them, so they are pure staging cost with no reader.
+# Deliberately matched only under ``skills/`` (see ``_is_staged``): Atlas's own
+# top-level AGENTS.md / SOUL.md / IDENTITY.md are load-bearing, and a bare
+# basename rule would be one upstream ``AGENTS.md`` away from eating them.
+_SKIP_VENDOR_DOCS = {"README.md", "README.zh-CN.md", "CONTRIBUTING.md", "CHANGELOG.md"}
+
+
+def _is_staged(rel_path: Path) -> bool:
+    """Whether a vendored file is written into the workspace.
+
+    Single predicate shared by ``_bundle_fingerprint`` and the staging loop.
+    They MUST agree: if the fingerprint covered a file the loop skips, every
+    workspace would read as permanently stale and force-refresh the whole
+    bundle on every single provision.
+    """
+    if any(part in _SKIP for part in rel_path.parts):
+        return False
+    return not (rel_path.parts[:1] == ("skills",) and rel_path.name in _SKIP_VENDOR_DOCS)
+
 
 # Marker file recording which bundle fingerprint an EXISTING workspace was last
 # staged with. A dotfile so agent_export's hygiene filter keeps it out of
@@ -140,7 +165,7 @@ def _bundle_fingerprint() -> str:
         if not abs_path.is_file():
             continue
         rel_path = abs_path.relative_to(_FILES_DIR)
-        if any(part in _SKIP for part in rel_path.parts):
+        if not _is_staged(rel_path):
             continue
         h.update(rel_path.as_posix().encode())
         h.update(b"\0")
@@ -355,7 +380,7 @@ async def pre_stage_atlas(
         if not abs_path.is_file():
             continue
         rel_path = abs_path.relative_to(_FILES_DIR)
-        if any(part in _SKIP for part in rel_path.parts):
+        if not _is_staged(rel_path):
             continue
         rel = rel_path.as_posix()
         if force and rel in _prewritten_rels:

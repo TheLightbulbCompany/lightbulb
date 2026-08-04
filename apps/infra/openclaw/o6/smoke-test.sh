@@ -65,7 +65,7 @@ echo "PASS 1 cold start"
 
 # ---- 2. restore path ----
 E="$WORK/t2/efs"; L="$WORK/t2/local"; mkdir -p "$E" "$L"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/ltx/0/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/ltx/9/0000000000000001-0000000000000003.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/0000/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/0001/0000000000000001-0000000000000003.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "restore run exited nonzero: $out"
 unset AWS_STUB_KEYS
 grep -q "restore -if-db-not-exists -if-replica-exists -integrity-check quick -o $L/state/openclaw.sqlite s3://test-bucket/org_smoke/state/openclaw.sqlite" "$WORK/t2/ls.log" || fail "state restore args"
@@ -81,14 +81,16 @@ echo "PASS 2b enumeration fail-loud"
 # ---- 2c. objects present but unparseable => FAIL LOUD (a silent cold start
 # here would snapshot an empty DB forward over a live replica).
 E="$WORK/t2c/efs"; L="$WORK/t2c/local"; mkdir -p "$E" "$L"
-if (export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1.ltx"; run_boot "$E" "$L" >/dev/null 2>&1); then
+# NOTE: "…/openclaw.sqlite/0000/1.ltx" is the REAL S3 shape and parses fine —
+# use something that is genuinely not a replica object.
+if (export AWS_STUB_KEYS="org_smoke/some-unexpected-object.bin"; run_boot "$E" "$L" >/dev/null 2>&1); then
   fail "unparseable S3 keys did not abort"
 fi
 echo "PASS 2c unparseable keys fail loud"
 
 # ---- 2d. a tombstoned agent prefix is purged and never restored ----
 E="$WORK/t2d/efs"; L="$WORK/t2d/local"; mkdir -p "$E" "$L"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/.o6-deleted"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/0000/1-2.ltx	org_smoke/agents/gone/.o6-deleted"
 out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone run exited nonzero: $out"
 unset AWS_STUB_KEYS
 echo "$out" | grep -q "tombstone: purging deleted agent prefix agents/gone" || fail "tombstone not honored: $out"
@@ -113,7 +115,7 @@ mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/gone/agent" "$L"
 : > "$E/pre-o6-archive/.o6-fill-pending"
 sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
 sqlite3 "$E/pre-o6-archive/agents/gone/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/.o6-deleted"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/gone/.o6-deleted"
 out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone-vs-fill run exited nonzero: $out"
 unset AWS_STUB_KEYS
 [ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "archive fill resurrected a tombstoned agent"
@@ -123,7 +125,7 @@ echo "PASS 2f tombstoned agent survives neither fill nor coverage"
 # ---- 2g. a partial purge must KEEP the tombstone: objects are deleted before
 # the marker, so a failure leaves the marker for the next boot to retry.
 E="$WORK/t2g/efs"; L="$WORK/t2g/local"; mkdir -p "$E" "$L"
-export AWS_STUB_KEYS="org_smoke/agents/gone/.o6-deleted	org_smoke/agents/gone/agent/openclaw-agent.sqlite/ltx/0/1-2.ltx"
+export AWS_STUB_KEYS="org_smoke/agents/gone/.o6-deleted	org_smoke/agents/gone/agent/openclaw-agent.sqlite/0000/1-2.ltx"
 export S3RM_LOG="$WORK/t2g/s3rm.log"
 export AWS_STUB_PURGE_FAIL=1
 out=$(run_boot "$E" "$L" 2>&1) || fail "partial-purge run exited nonzero: $out"
@@ -134,6 +136,16 @@ echo "$out" | grep -q "keeping the tombstone so the next boot retries" || fail "
 grep -v -- "--recursive" "$S3RM_LOG" | grep -q "\.o6-deleted" && fail "deleted the marker despite a failed object purge"
 unset S3RM_LOG AWS_STUB_KEYS
 echo "PASS 2g partial purge keeps the tombstone"
+
+# ---- 2h. the OTHER litestream key layout (file replicas use an extra "ltx/"
+# segment). The parser must accept both — hard-coding either makes DBS empty,
+# and an empty DBS against a live replica is the worst failure mode here.
+E="$WORK/t2h/efs"; L="$WORK/t2h/local"; mkdir -p "$E" "$L"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "file-layout keys exited nonzero: $out"
+unset AWS_STUB_KEYS
+echo "$out" | grep -q "restore state/openclaw.sqlite" || fail "file-layout key not parsed: $out"
+echo "PASS 2h both litestream key layouts parse"
 
 # ---- 3. migration path ----
 E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"
@@ -201,7 +213,7 @@ echo "PASS 3c corrupt DB aborts cutover before archiving"
 E="$WORK/t3d/efs"; L="$WORK/t3d/local"; mkdir -p "$E/pre-o6-archive/agents/main/agent" "$L"
 : > "$E/pre-o6-archive/.o6-fill-pending"
 sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{}');"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/0000000000000001-0000000000000002.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "partial-merge run exited nonzero: $out"
 unset AWS_STUB_KEYS
 [ -f "$L/state/openclaw.sqlite" ] || fail "replicated state DB not restored"
@@ -216,13 +228,13 @@ E="$WORK/t3e/efs"; L="$WORK/t3e/local"; mkdir -p "$E/pre-o6-archive/state" "$E/p
 sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
 sqlite3 "$E/pre-o6-archive/agents/gone/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
 # boot 1: S3 already holds BOTH archived DBs -> window closes, no fill needed
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/ltx/0/1-2.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/0000/1-2.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "window-close run exited nonzero: $out"
 echo "$out" | grep -q "fill window closed" || fail "window did not close: $out"
 [ ! -f "$E/pre-o6-archive/.o6-fill-pending" ] || fail "marker not removed"
 # boot 2: the agent has been deleted (prefix gone from S3, archive untouched)
 rm -rf "$L"; mkdir -p "$L"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "post-deletion run exited nonzero: $out"
 unset AWS_STUB_KEYS
 [ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "deleted agent resurrected from the archive"
@@ -247,7 +259,7 @@ echo "PASS 3f interrupted archive recovers both halves"
 E="$WORK/t3g/efs"; L="$WORK/t3g/local"
 mkdir -p "$E/state" "$E/agents" "$E/pre-o6-archive/state" "$L"   # empty mount dirs + a prior archive
 sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE t(x);"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "post-cutover boot exited nonzero: $out"
 unset AWS_STUB_KEYS
 echo "$out" | grep -q "efs_raw=1" && fail "empty recreated mount dirs read as live EFS state: $out"

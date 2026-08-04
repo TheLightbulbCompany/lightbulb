@@ -44,11 +44,30 @@ GATEWAY_PORT = 18789
 # Timeouts for each phase of the handshake. The "wait for signed connect"
 # timeout is the round-trip budget: backend pushes challenge to client (~50ms
 # Management API), Tauri proxy forwards to subprocess, subprocess signs
-# (Ed25519 is microseconds), reply traverses the same path back. Real-world
-# we expect ~300ms; 10s gives generous headroom for cold paths / paused
-# subprocesses without hanging $default forever.
+# (Ed25519 is microseconds), reply traverses the same path back.
+#
+# This was 10s on the premise that the round trip is ~300ms and 10s is
+# "generous headroom". Production disagrees. API Gateway access logs for a
+# clean prod handshake (2026-08-03):
+#
+#   23:08:23  CONNECTION_API  POST /@connections  <- challenge pushed
+#   23:08:36  MESSAGE         $default            <- signed reply, 13s later
+#
+# The delay is entirely client-side (backend integrationLatency 111ms). Cause:
+# macOS App Nap. The Tauri app owns the relay socket and forwards the
+# challenge to the subprocess over loopback; when the app is backgrounded and
+# idle, macOS demotes it to the background QoS band (measured scheduling
+# priority 4 backgrounded vs 46-54 foregrounded, while the signing subprocess
+# stays at 31 throughout). The throttled RELAY is the delay, not the signing.
+#
+# 13-18s was the observed range, so 10s converted a routine background app
+# into a permanent reconnect flap: timeout -> upstream torn down -> the
+# late-but-valid signature lands on the "no upstream" branch in
+# websocket_chat and is discarded -> retry -> repeat. The desktop-side fix
+# is to opt out of App Nap, but this budget must not be the thing standing
+# between a healthy Mac and a working node.
 _UPSTREAM_RECV_TIMEOUT = 10.0
-_SIGNED_CONNECT_TIMEOUT = 10.0
+_SIGNED_CONNECT_TIMEOUT = 30.0
 
 
 class NodeUpstreamConnection:

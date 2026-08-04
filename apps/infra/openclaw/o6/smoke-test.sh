@@ -264,13 +264,16 @@ sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE t(x);"
 sqlite3 "$E/pre-o6-archive/agents/old/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
 sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE t(x);"
 sqlite3 "$E/agents/newagent/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-out=$(run_boot "$E" "$L" 2>&1) || fail "archive-merge run exited nonzero: $out"
-echo "$out" | grep -q "merging live" || fail "did not merge into the canonical archive: $out"
+out=$(run_boot "$E" "$L" 2>&1) || fail "archive-collision run exited nonzero: $out"
+echo "$out" | grep -q "refusing to archive or merge" || fail "did not refuse to reconcile: $out"
 ls -d "$E"/pre-o6-archive/state-* "$E"/pre-o6-archive/agents-* 2>/dev/null && fail "created a side archive nothing reads"
+# BOTH copies must survive — reconciling would have to destroy one of them.
 [ -f "$E/pre-o6-archive/agents/old/agent/openclaw-agent.sqlite" ] || fail "pre-existing archive entry destroyed"
-[ -f "$E/pre-o6-archive/agents/newagent/agent/openclaw-agent.sqlite" ] || fail "live agent not merged into the archive"
-[ -z "$(ls -A "$E/state" 2>/dev/null)" ] || fail "live state not cleared after merge"
-echo "PASS 3h live content merges into the canonical archive"
+[ -f "$E/agents/newagent/agent/openclaw-agent.sqlite" ] || fail "live agent destroyed"
+[ -f "$E/state/openclaw.sqlite" ] || fail "live state destroyed"
+# and the live data is what the container actually boots on
+[ -f "$L/agents/newagent/agent/openclaw-agent.sqlite" ] || fail "live agent not copied into the nested mount"
+echo "PASS 3h archive collision preserves both copies and boots on live data"
 
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"

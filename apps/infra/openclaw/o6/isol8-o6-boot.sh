@@ -226,12 +226,21 @@ o6_copy_missing() {
   [ -d "$_s" ] || return 0
   mkdir -p "$_d" || return 1
   cp -an "$_s/." "$_d/" 2>/dev/null || true
-  _absent=$( (cd "$_s" && find . -type f 2>/dev/null) | while IFS= read -r _f; do
-    [ -e "$_d/$_f" ] || echo "$_f"
+  # Existence is not enough: a cp that fails partway (ENOSPC, an EFS I/O
+  # error, a short write) leaves a file that exists and is truncated. Compare
+  # sizes. Files the destination ALREADY had are legitimately different — the
+  # restored replica is newer than the fill source and must win — so only
+  # files this copy was responsible for creating are checked.
+  _bad=$( (cd "$_s" && find . -type f 2>/dev/null) | while IFS= read -r _f; do
+    if [ ! -e "$_d/$_f" ]; then
+      echo "MISSING $_f"
+    elif [ "$(wc -c < "$_d/$_f" 2>/dev/null || echo -1)" -lt "$(wc -c < "$_s/$_f" 2>/dev/null || echo 0)" ]; then
+      echo "TRUNCATED $_f"
+    fi
   done )
-  if [ -n "$_absent" ]; then
-    log "FATAL: copy from $_s left files missing at $_d:"
-    printf '%s\n' "$_absent" | head -5 | sed 's/^/         /'
+  if [ -n "$_bad" ]; then
+    log "FATAL: copy from $_s did not land intact at $_d:"
+    printf '%s\n' "$_bad" | head -5 | sed 's/^/         /'
     return 1
   fi
   return 0
@@ -282,19 +291,19 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
       o6_has_content "$EFS_RAW/$d" || continue
       if [ -e "$ARCHIVE/$d" ]; then
         # Anomalous: a canonical archive already exists AND live content came
-        # back (an operator restore, or a rollback). Merge into the canonical
-        # archive rather than parking it under a timestamped name — the fill
-        # and coverage logic only ever read $ARCHIVE/state and $ARCHIVE/agents,
-        # so a side directory would be invisible to recovery and the databases
-        # in it unreachable if the task died before they reached S3.
-        # cp -an keeps the pre-existing archive authoritative and adds only
-        # what is not already there, so nothing is destroyed either way.
-        log "warn: $ARCHIVE/$d already exists — merging live $d into it instead of replacing"
-        o6_copy_missing "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1
-        rm -rf "${EFS_RAW:?}/$d" || exit 1
-      else
-        mv "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1
+        # back (an operator restore, or a rollback). DO NOT try to reconcile
+        # them. Merging would have to choose a winner per colliding file, and
+        # either choice destroys the other copy — with the live one being the
+        # newer and the archive being the only recovery source if this task
+        # dies before Litestream uploads. So: archive nothing this boot, delete
+        # nothing, and say so loudly. The live databases are already copied
+        # into the nested mounts and replicating; both copies survive on EFS
+        # for an operator to reconcile deliberately.
+        log "warn: $ARCHIVE/$d exists AND live $d has content — refusing to archive or merge."
+        log "       Both copies are preserved on EFS; resolve manually. Boot continues on the live data."
+        continue
       fi
+      mv "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1
       # Recreate the mount destination so the next task can still mount over
       # it — the runtime would do this anyway, but leaving it implicit invites
       # exactly the confusion the content test above is guarding against.

@@ -152,15 +152,6 @@ for _t in $TOMBSTONES; do
   DBS=$(printf '%s\n' $DBS | grep -v "^$_t/" || true)
 done
 
-# Re-applied after every fill: both migration sources predate the deletion and
-# would copy the agent straight back, after which litestream republishes it and
-# the delete is silently undone.
-drop_tombstoned_agents() {
-  for _t in $TOMBSTONES; do
-    rm -rf "${STATE_ROOT:?}/$_t" 2>/dev/null || true
-  done
-}
-
 # --- 3. Restore every replicated database. Explicit CLI restores (rather than
 # replicate's restore-if-db-not-exists, which covers only path-form entries and
 # runs no integrity check) so EVERY database — including the dynamic per-agent

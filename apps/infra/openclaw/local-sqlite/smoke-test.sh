@@ -54,7 +54,7 @@ EOF
 chmod +x "$STUBS/aws" "$STUBS/litestream" "$STUBS/stat"
 export PATH="$STUBS:$PATH"
 
-# $2 = STATE_ROOT (the EFS mount as the container sees it; state/ + agents/ are
+# $1 = STATE_ROOT (the EFS mount as the container sees it; state/ + agents/ are
 #      the nested ephemeral mounts, modelled here as ordinary empty dirs)
 run_boot() {
   env ROOT_DIR="$1" sh -c '

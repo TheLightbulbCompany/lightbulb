@@ -97,30 +97,44 @@ KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
 # trailing three components. Getting this wrong is the worst failure in the
 # script: no key matches, DBS comes back empty, and a container with a
 # perfectly good replica silently takes the migration/cold-start path.
-DBS=""
-if [ -n "$KEYS" ]; then
-  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/ltx/[^/]*/[^/]*\$#\1#p" | sort -u)
-  # Objects exist but none parsed => litestream's key layout moved under us.
-  # Continuing would cold-start on top of a live replica and then snapshot the
-  # empty database FORWARD over it. Crash instead.
-  [ -n "$DBS" ] || {
-    log "FATAL: S3 prefix $OWNER_ID/ has objects but none match <db>/ltx/<level>/<file>; refusing to continue"
-    exit 1
-  }
-fi
-
 # Agent tombstones (written by the backend when an agent is deleted while the
 # container is still running, where no delete can be made race-free by waiting).
-# Purge the whole prefix and exclude it from the restore set — here, at boot,
-# nothing is replicating it, so this is the one moment the delete is safe.
-TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.o6-deleted\$#\1#p" | sort -u)
+# Parsed BEFORE the DB keys: a freshly deleted agent's prefix can legitimately
+# contain ONLY the marker and no LTX object yet, and the "recognized nothing"
+# guard below would otherwise crash-loop the container on it forever.
+TOMBSTONES=""
+DBS=""
+if [ -n "$KEYS" ]; then
+  TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.o6-deleted\$#\1#p" | sort -u)
+  DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/ltx/[^/]*/[^/]*\$#\1#p" | sort -u)
+  # Objects exist but NOTHING was recognized => litestream's key layout moved
+  # under us. Continuing would cold-start on top of a live replica and then
+  # snapshot the empty database FORWARD over it. Crash instead.
+  if [ -z "$DBS" ] && [ -z "$TOMBSTONES" ]; then
+    log "FATAL: S3 prefix $OWNER_ID/ has objects but none match <db>/ltx/<level>/<file>; refusing to continue"
+    exit 1
+  fi
+fi
+
+# Purge tombstoned prefixes — at boot nothing is replicating them, which is the
+# one moment the delete is actually safe — and drop them from the restore set.
 for _t in $TOMBSTONES; do
   log "tombstone: purging deleted agent prefix $_t"
   aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive >/dev/null 2>&1 \
     || log "warn: tombstone purge failed for $_t (will retry next boot)"
   DBS=$(printf '%s\n' $DBS | grep -v "^$_t/" || true)
-  rm -rf "${LOCAL:?}/$_t" 2>/dev/null || true
 done
+
+# Re-applied AFTER every fill below, because the migration sources (live EFS and
+# the pre-cutover archive) both predate the deletion and would copy the agent
+# straight back in — Litestream would then republish it and the delete would be
+# silently undone.
+o6_drop_tombstoned() {
+  for _t in $TOMBSTONES; do
+    rm -rf "${LOCAL:?}/$_t" 2>/dev/null || true
+  done
+}
+o6_drop_tombstoned
 
 # Migration source, in precedence order:
 #   $EFS/{state,agents}              — first cutover boot (live EFS state)
@@ -150,6 +164,12 @@ if [ -f "$FILL_MARKER" ]; then
               "$ARCHIVE"/agents/*/agent/openclaw-agent.sqlite; do
     [ -f "$_adb" ] || continue
     _rel=${_adb#"$ARCHIVE"/}
+    # A deliberately deleted agent must not hold the fill window open forever.
+    _skip=0
+    for _t in $TOMBSTONES; do
+      case "$_rel" in "$_t"/*) _skip=1 ;; esac
+    done
+    [ "$_skip" = "1" ] && continue
     case "$DBS" in
       *"$_rel"*) ;;
       *) _missing=1 ;;
@@ -231,7 +251,8 @@ if [ "$FILL_EFS" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
   log "cutover migration (live_efs=$FILL_EFS archive=$FILL_ARCHIVE)"
   [ "$FILL_EFS" = "1" ] && { o6_fill_from "$EFS" || exit 1; }
   [ "$FILL_ARCHIVE" = "1" ] && { o6_fill_from "$ARCHIVE" || exit 1; }
-  :
+  # Both sources predate any deletion — undo what they just resurrected.
+  o6_drop_tombstoned
   # Scoped path rewrite — ONLY the two relocated subtrees. Session markers
   # ("sqlite:<agent>:<session>:<absPath>" inside session_entries.entry_json)
   # take precedence over config, and the state DB registers agent DBs by

@@ -85,6 +85,30 @@ echo "$out" | grep -q "restore agents/gone" && fail "restored a tombstoned agent
 echo "$out" | grep -q "restore state/openclaw.sqlite" || fail "live DB not restored alongside the tombstone: $out"
 echo "PASS 2d tombstoned agent purged, not restored"
 
+# ---- 2e. a prefix containing ONLY a tombstone (no LTX yet) must boot, not
+# crash-loop on the "recognized nothing" guard.
+E="$WORK/t2e/efs"; L="$WORK/t2e/local"; mkdir -p "$E" "$L"
+export AWS_STUB_KEYS="org_smoke/agents/justdeleted/.o6-deleted"
+out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone-only prefix crash-looped: $out"
+unset AWS_STUB_KEYS
+echo "$out" | grep -q "tombstone: purging deleted agent prefix agents/justdeleted" || fail "tombstone not processed: $out"
+echo "$out" | grep -q "FATAL" && fail "tombstone-only prefix hit the recognized-nothing guard: $out"
+echo "PASS 2e tombstone-only prefix boots"
+
+# ---- 2f. a tombstoned agent must NOT be resurrected by the archive fill, and
+# must not hold the fill window open.
+E="$WORK/t2f/efs"; L="$WORK/t2f/local"
+mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/gone/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
+sqlite3 "$E/pre-o6-archive/agents/gone/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/.o6-deleted"
+out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone-vs-fill run exited nonzero: $out"
+unset AWS_STUB_KEYS
+[ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "archive fill resurrected a tombstoned agent"
+echo "$out" | grep -q "fill window closed" || fail "tombstoned agent held the fill window open: $out"
+echo "PASS 2f tombstoned agent survives neither fill nor coverage"
+
 # ---- 3. migration path ----
 E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"
 sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','$E/agents/main/agent/openclaw-agent.sqlite');"

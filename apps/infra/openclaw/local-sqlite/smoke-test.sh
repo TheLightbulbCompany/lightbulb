@@ -137,6 +137,22 @@ grep -v -- "--recursive" "$S3RM_LOG" | grep -q "\.replica-deleted" && fail "dele
 unset S3RM_LOG AWS_STUB_KEYS
 echo "PASS 2g partial purge keeps the tombstone"
 
+# ---- 2i. a FAILED restore must still abort the boot now that restores run
+# concurrently. `wait` with no argument discards every child's status, so the
+# script collects per-PID; this case is what stops that regressing. Continuing
+# past a missed restore lets OpenClaw create an empty DB that litestream then
+# snapshots FORWARD over the live replica — the destruction the header warns of.
+E="$WORK/t2i/efs"; L="$WORK/t2i/local"; mkdir -p "$E" "$L"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/a1/agent/openclaw-agent.sqlite/0000/1-2.ltx"
+export LS_RESTORE_EXIT=1
+if out=$(run_boot "$E" "$L" 2>&1); then
+  unset AWS_STUB_KEYS LS_RESTORE_EXIT
+  fail "boot exited 0 despite a failed restore: $out"
+fi
+unset AWS_STUB_KEYS LS_RESTORE_EXIT
+echo "$out" | grep -q "FATAL" || fail "failed restore did not log FATAL: $out"
+echo "PASS 2i failed restore aborts the boot under concurrency"
+
 # ---- 2h. the OTHER litestream key layout (file replicas use an extra "ltx/"
 # segment). The parser must accept both — hard-coding either makes DBS empty,
 # and an empty DBS against a live replica is the worst failure mode here.
@@ -144,7 +160,12 @@ E="$WORK/t2h/efs"; L="$WORK/t2h/local"; mkdir -p "$E" "$L"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
 out=$(run_boot "$E" "$L" 2>&1) || fail "file-layout keys exited nonzero: $out"
 unset AWS_STUB_KEYS
-echo "$out" | grep -q "restore state/openclaw.sqlite" || fail "file-layout key not parsed: $out"
+# EXACT, not a substring: the previous spelling matched
+# "restore state/openclaw.sqlite/ltx" too, so this case stayed green for weeks
+# while the parser silently produced the wrong path (the strip used '\$',
+# a LITERAL dollar inside single quotes, not the end anchor).
+echo "$out" | grep -qE "restore state/openclaw\.sqlite( |$)" || fail "file-layout key not parsed to a bare db path: $out"
+echo "$out" | grep -q "restore state/openclaw.sqlite/ltx" && fail "file-layout key kept its ltx/ segment: $out"
 echo "PASS 2h both litestream key layouts parse"
 
 # ---- 3. migration path ----
@@ -204,7 +225,7 @@ printf 'this is not a sqlite database at all' > "$E/agents/main/agent/openclaw-a
 if out=$(run_boot "$E" "$L" 2>&1); then
   fail "corrupt DB did not abort: $out"
 fi
-echo "$out" | grep -q "FATAL: integrity_check failed" || fail "abort did not report an integrity failure: $out"
+echo "$out" | grep -qE "FATAL: (quick_check|integrity_check) failed" || fail "abort did not report a corruption failure: $out"
 [ -d "$E/state" ] && [ -d "$E/agents" ] || fail "EFS originals archived despite failed rewrite"
 echo "PASS 3c corrupt DB aborts cutover before archiving"
 

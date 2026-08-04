@@ -591,10 +591,10 @@ RUN set -eux; \
     done
 
 
-# ---- O6: Litestream + local-SQLite boot chain ----
-# Inert unless the CDK startupCommand invokes isol8-local-sqlite-boot.sh — only envs
-# promoted to storage="local-sqlite" in openclaw-version.json do, so this
-# image remains fully backward compatible with the EFS layout. Version pinned
+# ---- Litestream + local-SQLite boot chain ----
+# Every environment runs this chain — the per-env storage gate was removed once
+# dev proved the layout, so any tag pinned in openclaw-version.json MUST be
+# built from a commit containing apps/infra/openclaw/local-sqlite/. Version pinned
 # with the checksum from the release's published checksums.txt; v0.5.15 is
 # the stabilization release of the LTX line (silent-replication fix #1037
 # landed in v0.5.9, ECS container-credential fix in v0.5.11).
@@ -607,11 +607,6 @@ RUN set -eux; \
     tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream; \
     rm /tmp/litestream.tgz; \
     litestream version
-# Pre-create the local state root while still root. The per-user task def runs
-# the container as root today (`user: "0:0"`), so the boot script could mkdir
-# it itself — this is insurance that keeps the boot chain working if that ever
-# changes, and it costs one empty directory.
-RUN mkdir -p /openclaw-local && chown node:node /openclaw-local
 COPY local-sqlite/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-boot.sh
 COPY local-sqlite/isol8-local-sqlite-app.sh /usr/local/bin/isol8-local-sqlite-app.sh
 COPY local-sqlite/isol8-litestream.yml /etc/isol8-litestream.yml

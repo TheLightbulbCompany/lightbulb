@@ -21,6 +21,11 @@ on:
       # tuning it (sensitivity, disabled_threats) only ships via a rebuild.
       - "apps/infra/openclaw/sage/**"
       - "openclaw-version.json"
+  # The boot chain can destroy an owner's data, so its smoke suite must gate
+  # the image rather than run after it ships. Same paths as the push trigger.
+  pull_request:
+    paths:
+      - "apps/infra/openclaw/local-sqlite/**"
   workflow_dispatch: {}
 
 permissions:
@@ -29,8 +34,29 @@ permissions:
   packages: read
 
 jobs:
+  # 400+ lines of POSIX sh that migrates and can delete an owner's SQLite state.
+  # It had a real smoke harness and nothing ran it — a case was asserting
+  # nothing for weeks, undetected. ubuntu-latest (not CI_RUNNER) because it
+  # needs only sh + sqlite3 and should not queue behind the self-hosted backlog.
+  boot-chain-smoke:
+    name: local-sqlite boot chain smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Run smoke suite
+        run: |
+          sh apps/infra/openclaw/local-sqlite/smoke-test.sh \
+             apps/infra/openclaw/local-sqlite/isol8-local-sqlite-boot.sh
+
   build-and-push:
     name: Build and push extended OpenClaw image
+    # A boot chain that fails its own suite must never reach ECR.
+    needs: boot-chain-smoke
+    if: github.event_name != 'pull_request'
     runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 30
     steps:

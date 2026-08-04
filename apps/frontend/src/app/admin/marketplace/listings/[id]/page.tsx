@@ -4,6 +4,7 @@ import { getListingPreview } from "@/app/admin/_actions/marketplace";
 
 import { ModerationActions } from "../ModerationActions";
 import { TakedownButton } from "../TakedownButton";
+import { formatBytes } from "@/lib/utils";
 
 export const metadata = { title: "Listing review · Admin" };
 export const dynamic = "force-dynamic";
@@ -73,12 +74,6 @@ function flagsToRejectionPrefill(flags: SafetyFlag[]): string {
     lines.push(`… and ${high.length - 10} more high-severity findings`);
   }
   return lines.join("\n");
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**

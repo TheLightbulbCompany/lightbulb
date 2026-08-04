@@ -7,6 +7,7 @@ import { MetricStat } from "@/components/admin/MetricStat";
 import { StatusChip } from "@/components/admin/StatusChip";
 import { Tile } from "@/components/admin/Tile";
 import { getSystemHealth } from "@/app/admin/_lib/api";
+import { truncate } from "@/lib/utils";
 
 export const metadata = { title: "Health · Admin" };
 
@@ -65,11 +66,6 @@ const UPSTREAM_TONE: Record<string, "ok" | "warn" | "error" | "unknown"> = {
   down: "error",
   unconfigured: "unknown",
 };
-
-function truncate(input: string, max: number): string {
-  if (input.length <= max) return input;
-  return `${input.slice(0, max)}…`;
-}
 
 const FLEET_TILES: Array<{ key: keyof FleetCounts; label: string }> = [
   { key: "running", label: "Running" },

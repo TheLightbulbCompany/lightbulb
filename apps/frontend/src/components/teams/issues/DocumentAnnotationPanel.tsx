@@ -16,10 +16,7 @@ import type {
   DocumentAnnotationComment,
   PendingAnchor,
 } from "./lib/documentReviewTypes";
-
-function truncate(value: string, limit: number) {
-  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
-}
+import { truncate } from "@/lib/utils";
 
 function commentAuthor(comment: DocumentAnnotationComment, agents: CompanyAgent[]): string {
   if (comment.authorAgentId) {
@@ -216,7 +213,7 @@ export function DocumentAnnotationPanel({
                   className="mx-3 mt-2 rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
                   style={{ background: "var(--edge)", color: "var(--mute)" }}
                 >
-                  {truncate(thread.selectedText, 120)}
+                  {truncate(thread.selectedText, 119)}
                 </blockquote>
                 {expanded ? (
                   <div className="flex flex-col gap-2 px-3 py-2" onClick={(e) => e.stopPropagation()}>
@@ -282,7 +279,7 @@ export function DocumentAnnotationPanel({
                     <span style={{ color: "var(--ink)" }}>
                       {thread.comments.length} comment{thread.comments.length === 1 ? "" : "s"}
                     </span>
-                    {latest ? ` · ${truncate(latest.body, 100)}` : ""}
+                    {latest ? ` · ${truncate(latest.body, 99)}` : ""}
                   </p>
                 )}
               </article>
@@ -297,7 +294,7 @@ export function DocumentAnnotationPanel({
             className="rounded px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
             style={{ background: "var(--edge)", color: "var(--mute)" }}
           >
-            {truncate(pendingAnchor.selectedText, 160)}
+            {truncate(pendingAnchor.selectedText, 159)}
           </blockquote>
           <textarea
             data-testid="document-annotation-composer"

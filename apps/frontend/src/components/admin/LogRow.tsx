@@ -3,7 +3,7 @@
 import * as React from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import { cn, truncate } from "@/lib/utils";
 import { CodeBlock } from "@/components/admin/CodeBlock";
 import { formatRelativeTime } from "@/app/admin/_lib/time";
 
@@ -31,11 +31,6 @@ const LEVEL_BADGE_CLASS: Record<string, string> = {
 function levelBadgeClass(level: string | null | undefined): string {
   if (!level) return LEVEL_BADGE_CLASS.DEBUG;
   return LEVEL_BADGE_CLASS[level.toUpperCase()] ?? LEVEL_BADGE_CLASS.DEBUG;
-}
-
-function truncate(input: string, max: number): string {
-  if (input.length <= max) return input;
-  return `${input.slice(0, max)}\u2026`;
 }
 
 /**

@@ -12,13 +12,9 @@ import {
 import { formatRelativeTime } from "@/app/admin/_lib/time";
 
 import { UsersClientHeader } from "./UsersClientHeader";
+import { truncate } from "@/lib/utils";
 
 export const metadata = { title: "Users \u00b7 Admin" };
-
-function truncateId(id: string, head = 12): string {
-  if (id.length <= head) return id;
-  return `${id.slice(0, head)}\u2026`;
-}
 
 function RelativeTimestamp({ value }: { value: number | string | null | undefined }) {
   const when = formatRelativeTime(value);
@@ -125,7 +121,7 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
                 ) : null}
               </td>
               <td className="px-3 py-2 font-mono text-xs text-zinc-300" title={u.clerk_id}>
-                {truncateId(u.clerk_id)}
+                {truncate(u.clerk_id, 12)}
               </td>
               <td className="px-3 py-2 text-zinc-300">{u.subscription_status ?? "—"}</td>
               <td className="px-3 py-2">

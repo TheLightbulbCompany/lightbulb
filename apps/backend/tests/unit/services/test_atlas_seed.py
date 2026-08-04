@@ -127,6 +127,77 @@ async def test_skips_junk_files(workspace_stub, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skips_vendored_suites_and_docs_but_keeps_atlas_own_markdown(workspace_stub, tmp_path, monkeypatch):
+    """Vendored skill bundles carry upstream test suites + packaging docs that
+    nothing in a workspace reads. They must not be staged — but the basename
+    rule must never reach Atlas's own top-level identity markdown."""
+    root = tmp_path / "files"
+    bundle = root / "skills" / "capability-evolver"
+    (bundle / "test").mkdir(parents=True)
+    (bundle / "src").mkdir(parents=True)
+    # Atlas's own files — load-bearing, must survive.
+    (root / "AGENTS.md").write_text("# Atlas", encoding="utf-8")
+    (root / "IDENTITY.md").write_text("# Atlas", encoding="utf-8")
+    # Vendored bundle: SKILL.md + code stay, suite + upstream docs go.
+    (bundle / "SKILL.md").write_text("# evolver", encoding="utf-8")
+    (bundle / "index.js").write_text("module.exports={}", encoding="utf-8")
+    (bundle / "package.json").write_text("{}", encoding="utf-8")
+    (bundle / "src" / "config.js").write_text("//x", encoding="utf-8")
+    (bundle / "test" / "ops.test.js").write_text("//t", encoding="utf-8")
+    (bundle / "README.md").write_text("# upstream", encoding="utf-8")
+    (bundle / "README.zh-CN.md").write_text("# 上游", encoding="utf-8")
+    (bundle / "CONTRIBUTING.md").write_text("# contrib", encoding="utf-8")
+    (bundle / "CHANGELOG.md").write_text("# log", encoding="utf-8")
+    monkeypatch.setattr(atlas_seed, "_FILES_DIR", root)
+
+    agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
+    await pre_stage_atlas(owner_id="user_x", paperclip_agents=agents, workspace=workspace_stub)
+    paths = [p for (_u, p) in workspace_stub.calls]
+
+    assert not any("/test/" in p for p in paths)
+    for doc in ("README.md", "README.zh-CN.md", "CONTRIBUTING.md", "CHANGELOG.md"):
+        assert not any(p.endswith(f"capability-evolver/{doc}") for p in paths), doc
+    # Kept: the skill's own entrypoint doc, its code, and Atlas's markdown.
+    assert "workspace-uuid-atlas/skills/capability-evolver/SKILL.md" in paths
+    assert "workspace-uuid-atlas/skills/capability-evolver/index.js" in paths
+    assert "workspace-uuid-atlas/skills/capability-evolver/src/config.js" in paths
+    assert "workspace-uuid-atlas/skills/capability-evolver/package.json" in paths
+    assert "workspace-uuid-atlas/AGENTS.md" in paths
+    assert "workspace-uuid-atlas/IDENTITY.md" in paths
+
+
+def test_fingerprint_covers_exactly_what_staging_writes(tmp_path, monkeypatch):
+    """The fingerprint and the staging loop share ``_is_staged``. If they ever
+    diverged — fingerprint hashing a file the loop skips — every workspace
+    would read as permanently stale and force-refresh the whole bundle on
+    every provision. This pins the two to the same predicate."""
+    root = tmp_path / "files"
+    bundle = root / "skills" / "evolver"
+    (bundle / "test").mkdir(parents=True)
+    (root / "AGENTS.md").write_text("a", encoding="utf-8")
+    (bundle / "SKILL.md").write_text("s", encoding="utf-8")
+    (bundle / "README.md").write_text("r", encoding="utf-8")
+    (bundle / "test" / "x.test.js").write_text("t", encoding="utf-8")
+    monkeypatch.setattr(atlas_seed, "_FILES_DIR", root)
+
+    staged = {
+        p.relative_to(root).as_posix()
+        for p in root.rglob("*")
+        if p.is_file() and atlas_seed._is_staged(p.relative_to(root))
+    }
+    assert staged == {"AGENTS.md", "skills/evolver/SKILL.md"}
+
+    # Mutating a skipped file must not move the fingerprint; mutating a staged
+    # one must. That is the property the shared predicate guarantees.
+    before = atlas_seed._bundle_fingerprint()
+    (bundle / "test" / "x.test.js").write_text("CHANGED", encoding="utf-8")
+    (bundle / "README.md").write_text("CHANGED", encoding="utf-8")
+    assert atlas_seed._bundle_fingerprint() == before
+    (bundle / "SKILL.md").write_text("CHANGED", encoding="utf-8")
+    assert atlas_seed._bundle_fingerprint() != before
+
+
+@pytest.mark.asyncio
 async def test_per_file_error_does_not_raise_or_abort(workspace_stub, fake_files_dir):
     agents = [{"id": "uuid-atlas", "role": "general", "name": "Atlas"}]
     calls = {"n": 0}

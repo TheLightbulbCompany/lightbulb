@@ -274,6 +274,30 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         logger.warning("EFS rm -rf failed for %s: %s", owner_id, e)
         failures.append(f"efs: {e}")
 
+    # ---- Litestream S3 replicas (O6 local-sqlite layout) --------------------
+    # Without this, the reprovisioned container's boot script RESTORES the
+    # pre-wipe hot state from S3 and the "empty slate" contract silently
+    # breaks. No-op on the EFS layout (LITESTREAM_BUCKET unset).
+    from core.services.litestream_replicas import delete_replica_prefix
+
+    # Drain first: the service delete above is asynchronous, and a still
+    # running container's litestream can upload AFTER the prefix delete — the
+    # reprovision would then restore the state this endpoint just wiped. A
+    # drain timeout is a failure, not a licence to delete anyway. The budget
+    # exceeds the container's stopTimeout (120s).
+    if settings.LITESTREAM_BUCKET:
+        try:
+            drained = await ecs_mgr.wait_until_drained(owner_id, timeout_s=180.0)
+        except Exception as e:  # noqa: BLE001 — treated as not-drained below
+            logger.warning("drain wait failed for %s: %s", owner_id, e)
+            drained = False
+        if not drained:
+            failures.append("litestream_replicas: container did not drain; replicas left intact")
+        elif not await delete_replica_prefix(owner_id):
+            failures.append("litestream_replicas: delete failed (stale state will restore)")
+        else:
+            deleted["litestream_replicas"] = True
+
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
     # Per-step try/except so one transient throttle on (e.g.) container_repo
     # doesn't abort the rest of the teardown — we want every table attempted,

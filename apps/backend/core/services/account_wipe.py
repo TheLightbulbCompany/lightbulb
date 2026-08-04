@@ -335,6 +335,18 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="directory does not exist",
     )
 
+    # O6 replica prefix — existence would need an S3 List per preview; the
+    # delete is idempotent, so mirror the usage_counters convention: show
+    # would_delete when the env replicates at all, skipped on the EFS layout.
+    _preview_step(
+        steps,
+        system="litestream_replicas",
+        action="delete_replica_prefix",
+        exists=bool(settings.LITESTREAM_BUCKET),
+        detail_if_exists=f"s3://{settings.LITESTREAM_BUCKET}/{owner_id}/",
+        detail_if_absent="LITESTREAM_BUCKET unset (EFS layout)",
+    )
+
     bedrock_aip_arns: dict = (ids.container or {}).get("bedrock_aip_arns") or {}
     _preview_step(
         steps,
@@ -525,6 +537,37 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         return f"/mnt/efs/users/{owner_id}"
 
     await _step(steps, system="efs_workspace_dir", action="delete_user_dir", fn=_s4)
+
+    # --- Step 4b: Litestream S3 replicas (O6 local-sqlite layout) ----------
+    # The container boot script restores whatever survives under the owner's
+    # replica prefix — leaving it behind resurrects pre-wipe sessions, device
+    # trust, and auth_profile_store rows (live OAuth refresh tokens) on the
+    # next provision. Idempotent; no-op while LITESTREAM_BUCKET is unset.
+    async def _s4b() -> str:
+        from core.services.litestream_replicas import delete_replica_prefix
+
+        # delete_user_service only SUBMITS the scale-to-zero + delete; a still
+        # running container's litestream can land an in-flight upload AFTER we
+        # delete, silently repopulating the prefix so the next provision
+        # restores the state this wipe reported as erased. Drain first, and
+        # treat a drain timeout as a FAILURE rather than deleting anyway: a
+        # visible, retryable failed step beats a racy delete reported as
+        # success. Budget exceeds the container's stopTimeout (120s) so a
+        # normal full-length drain does not read as a timeout.
+        if not settings.LITESTREAM_BUCKET:
+            return "skipped (EFS layout — no replicas)"
+        # NOT gated on ids.container: delete_user_service removes the row
+        # before this step, so a retried wipe sees container=None while the
+        # task may still be draining. wait_until_drained returns immediately
+        # when the service is already gone, so the unconditional call is cheap.
+        if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=180.0):
+            raise RuntimeError("container did not drain; refusing to delete replicas while a writer may still be live")
+        ok = await delete_replica_prefix(owner_id)
+        if not ok:
+            raise RuntimeError("replica prefix delete failed")
+        return f"s3 prefix {owner_id}/"
+
+    await _step(steps, system="litestream_replicas", action="delete_replica_prefix", fn=_s4b)
 
     # --- Step 5 (spec #6-7 folded): Bedrock AIPs ---------------------------
     # Pass the pre-fetched ARNs explicitly (from the identifier snapshot

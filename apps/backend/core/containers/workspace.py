@@ -914,6 +914,35 @@ def _delete_default_agent_auth_row_blocking(db_path: Path) -> tuple[int, str | N
         return 0, f"write_failed: {e}"
 
 
+async def cleanup_deleted_agent(user_id: str, agent_id: str, *, workspace: "Workspace | None" = None) -> None:
+    """Reclaim everything a deleted agent leaves behind: its EFS directories
+    AND its Litestream replica prefix.
+
+    Single chokepoint for every ``agents.delete`` path (chat, admin, failed
+    catalog deploy). ``workspace`` overrides the singleton for callers that
+    hold an injected instance (catalog_service). The replica half matters because the boot script restores
+    from the S3 prefix rather than from openclaw.json — an orphaned prefix
+    re-materializes the deleted agent's database on every subsequent boot,
+    forever. Best-effort: the delete itself already succeeded upstream.
+    """
+    ws = workspace or get_workspace()
+    try:
+        await asyncio.to_thread(ws.cleanup_agent_dirs, user_id, agent_id)
+    except Exception as exc:  # noqa: BLE001 — post-delete reclamation
+        logger.warning("cleanup_deleted_agent: EFS cleanup failed for %s/%s: %s", user_id, agent_id, exc)
+    from core.services.litestream_replicas import delete_replica_prefix, write_replica_tombstone
+
+    # The container is STILL RUNNING here (unlike a wipe, which drains first),
+    # so its Litestream is still watching the agent's database at the moment
+    # OpenClaw removes it, and an in-flight — or throttled, or retrying —
+    # upload can land after ANY delay we might wait. So the delete is
+    # best-effort (avoids paying storage in the common case) and the TOMBSTONE
+    # is what makes it correct: the boot script purges a tombstoned prefix and
+    # refuses to restore from it, at a moment when nothing is replicating it.
+    await delete_replica_prefix(user_id, agent_id=agent_id)
+    await write_replica_tombstone(user_id, agent_id)
+
+
 # O6 local-SQLite layout: sentinel on the EFS durable spine asking the
 # container's boot script to delete the default agent's auth_profile_store row
 # (before gateway start) so a freshly staged credentials/oauth.json re-imports.

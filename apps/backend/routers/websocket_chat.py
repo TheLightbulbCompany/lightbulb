@@ -1975,9 +1975,9 @@ async def _process_rpc_background(
             agent_id = (params or {}).get("agentId")
             if isinstance(agent_id, str) and agent_id:
                 try:
-                    from core.containers import get_workspace
+                    from core.containers.workspace import cleanup_deleted_agent
 
-                    await asyncio.to_thread(get_workspace().cleanup_agent_dirs, owner_id, agent_id)
+                    await cleanup_deleted_agent(owner_id, agent_id)
                 except Exception as cleanup_exc:
                     logger.warning(
                         "[%s] post-delete cleanup failed for agent=%s: %s",

@@ -39,6 +39,10 @@ EXPECTED_ORDER = [
     "paperclip_aurora_user",
     "ecs_service",
     "efs_workspace_dir",
+    # O6: replica-prefix delete rides right after the EFS wipe — leaving the
+    # S3 replicas behind resurrects pre-wipe state (incl. auth rows) on the
+    # owner's next provision. No-op ("ok") while LITESTREAM_BUCKET is unset.
+    "litestream_replicas",
     "bedrock_aips",
     "bedrock_role",
     "metronome",
@@ -132,6 +136,10 @@ def wipe_mocks():
 
     ecs_manager_stub = MagicMock()
     ecs_manager_stub.delete_user_service = AsyncMock(return_value=None)
+    # The replica-delete step drains first — delete_user_service only SUBMITS
+    # the teardown, so an in-flight litestream upload could otherwise land
+    # after the prefix delete and be restored on the next provision.
+    ecs_manager_stub.wait_until_drained = AsyncMock(return_value=True)
     get_ecs_manager_fn = MagicMock(return_value=ecs_manager_stub)
 
     workspace_stub = MagicMock()
@@ -455,7 +463,14 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.agent_keys_delete.side_effect = RuntimeError("sm down")
 
-    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+    with (
+        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
+        patch(
+            "core.services.litestream_replicas.delete_replica_prefix",
+            new=AsyncMock(return_value=False),  # helper never raises; False => step failed
+        ),
+    ):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     assert [s.system for s in report.steps] == EXPECTED_ORDER
     assert all(s.status == "failed" for s in report.steps[:-1])
@@ -497,7 +512,8 @@ async def test_preview_wipe_calls_no_delete_method(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_preview_wipe_would_delete_everything_present(wipe_mocks):
-    report = await preview_wipe(OWNER_ID)
+    with patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"):
+        report = await preview_wipe(OWNER_ID)
 
     by_system = {s.system: s for s in report.steps}
     for system in EXPECTED_ORDER:
@@ -671,3 +687,51 @@ def test_wipe_report_to_dict_shape():
             },
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_replica_delete_waits_for_drain(wipe_mocks):
+    """Ordering matters: a still-running container's litestream can upload
+    after the prefix delete, and the next provision would restore the state
+    the wipe reported as erased."""
+    order: list[str] = []
+    wipe_mocks.ecs_manager_stub.wait_until_drained = AsyncMock(
+        side_effect=lambda *a, **k: order.append("drain") or True
+    )
+
+    async def _del(owner_id, *, agent_id=None):
+        order.append("delete_replicas")
+        return True
+
+    with (
+        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
+        patch("core.services.litestream_replicas.delete_replica_prefix", new=_del),
+    ):
+        await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    assert order == ["drain", "delete_replicas"], order
+
+
+@pytest.mark.asyncio
+async def test_replica_delete_refuses_when_drain_times_out(wipe_mocks):
+    """A drain timeout must FAIL the step, not delete anyway: deleting while a
+    writer may still be live lets a late upload repopulate the prefix, and the
+    next provision restores state the wipe reported as erased."""
+    wipe_mocks.ecs_manager_stub.wait_until_drained = AsyncMock(return_value=False)
+    deleted = False
+
+    async def _del(owner_id, *, agent_id=None):
+        nonlocal deleted
+        deleted = True
+        return True
+
+    with (
+        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
+        patch("core.services.litestream_replicas.delete_replica_prefix", new=_del),
+    ):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    step = {s.system: s for s in report.steps}["litestream_replicas"]
+    assert step.status == "failed"
+    assert "did not drain" in (step.error or "")
+    assert deleted is False, "must not delete replicas while a writer may be live"

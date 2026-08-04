@@ -976,3 +976,77 @@ class TestKillSwitch:
         fake.delete_role_policy.assert_called_once()
         row = aip_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_abc"}})["Item"]
         assert row["bedrock_revoked"]["BOOL"] is True
+
+
+class TestLitestreamS3Policy:
+    """O6: the per-owner Litestream S3 grant must reach EVERY owner (it is
+    storage durability, not inference) and must live under its own PolicyName
+    so the break-glass owner-bedrock swap can never strip it."""
+
+    def test_policy_shape_prefix_scoped(self):
+        import core.billing.bedrock_aip as mod
+
+        doc = mod.build_owner_litestream_s3_policy("org_abc", "isol8-dev-openclaw-replicas")
+        sids = {st["Sid"]: st for st in doc["Statement"]}
+        assert sids["ReplicaObjects"]["Resource"] == "arn:aws:s3:::isol8-dev-openclaw-replicas/org_abc/*"
+        assert set(sids["ReplicaObjects"]["Action"]) == {"s3:GetObject", "s3:PutObject", "s3:DeleteObject"}
+        assert sids["ReplicaBucketList"]["Condition"] == {"StringLike": {"s3:prefix": ["org_abc/*"]}}
+        assert sids["ReplicaBucketLocation"]["Resource"] == "arn:aws:s3:::isol8-dev-openclaw-replicas"
+
+    @pytest.mark.asyncio
+    async def test_put_even_under_skip_bedrock_grant(self, aip_tables, monkeypatch):
+        """chatgpt_oauth/byo_key/revoked owners get the S3 grant: their
+        containers replicate too. The Bedrock inline policy stays withheld."""
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+        monkeypatch.setattr(mod.settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas", raising=False)
+
+        await mod.ensure_owner_bedrock_role("org_abc", {}, skip_bedrock_grant=True)
+
+        fake.put_role_policy.assert_called_once()
+        kwargs = fake.put_role_policy.call_args.kwargs
+        assert kwargs["PolicyName"] == "owner-litestream-s3"
+        assert "org_abc/*" in kwargs["PolicyDocument"]
+
+    @pytest.mark.asyncio
+    async def test_not_put_when_bucket_unset(self, aip_tables, monkeypatch):
+        import core.billing.bedrock_aip as mod
+
+        fake = MagicMock()
+        fake.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::877352799272:role/isol8-dev-owner-bedrock-org_abc"}}
+        monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+        monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+        monkeypatch.setattr(
+            mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "arn:aws:iam::877352799272:policy/base", raising=False
+        )
+        monkeypatch.setattr(mod.settings, "LITESTREAM_BUCKET", "", raising=False)
+
+        await mod.ensure_owner_bedrock_role("org_abc", {}, skip_bedrock_grant=True)
+
+        fake.put_role_policy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkeypatch):
+    """IAM refuses DeleteRole while ANY inline policy remains, so leaving
+    owner-litestream-s3 behind fails the wipe's bedrock_role step for every
+    O6 owner and leaks the role."""
+    import core.billing.bedrock_aip as mod
+
+    fake = MagicMock()
+    monkeypatch.setattr(mod, "_iam_client", lambda: fake)
+    monkeypatch.setattr(mod.settings, "ENVIRONMENT", "dev", raising=False)
+    monkeypatch.setattr(mod.settings, "BEDROCK_OWNER_BASE_POLICY_ARN", "", raising=False)
+
+    await mod.delete_owner_bedrock_role("org_abc")
+
+    deleted = {c.kwargs["PolicyName"] for c in fake.delete_role_policy.call_args_list}
+    assert deleted == {"owner-bedrock", "owner-litestream-s3"}
+    fake.delete_role.assert_called_once()

@@ -85,6 +85,36 @@ class TestBrowserBounds:
         assert browser["defaultProfile"] == "openclaw"
         assert browser["profiles"]["openclaw"]["cdpPort"] == 18800
 
+    def test_upstream_documented_linux_recipe_is_applied(self):
+        """Upstream's documented Linux fix for "Failed to start Chrome CDP on
+        port 18800" (docs/tools/browser-linux-troubleshooting.md) is
+        enabled + executablePath + headless + noSandbox. We shipped only two
+        of the four, and never raised the timeouts the same doc says to raise
+        on slow storage — our profile lives on EFS.
+
+        headless especially: upstream's default is FALSE, and we were relying
+        on the implicit "no DISPLAY/WAYLAND_DISPLAY -> fall back to headless"
+        path. That makes a load-bearing property depend on the ABSENCE of an
+        env var; anything that later sets DISPLAY launches a headful Chrome
+        with no X server.
+
+        Applies to every provider path — the browser is not provider-specific.
+        """
+        for choice, kwargs in (
+            ("bedrock_claude", {}),
+            ("bedrock_trial", {}),
+            ("chatgpt_oauth", {}),
+            ("byo_key", {"byo_provider": "anthropic"}),
+        ):
+            browser = _cfg(choice, **kwargs)["browser"]
+            assert browser["headless"] is True, choice
+            assert browser["noSandbox"] is True, choice
+            assert browser["executablePath"] == "/usr/bin/chromium", choice
+            # Schema caps both at 120_000; defaults (15s/8s) are the ones
+            # upstream says to raise on slow storage.
+            assert 15_000 < browser["localLaunchTimeoutMs"] <= 120_000, choice
+            assert 8_000 < browser["localCdpReadyTimeoutMs"] <= 120_000, choice
+
 
 class TestWebFetchAndSearch:
     def test_fetch_gets_keyless_firecrawl_fallback(self):

@@ -1741,6 +1741,40 @@ def build_openclaw_config_dict(
             # this, OpenClaw's managed driver fails with "Running as
             # root without --no-sandbox is not supported."
             "noSandbox": True,
+            # The next three keys are upstream's DOCUMENTED Linux recipe
+            # (docs/tools/browser-linux-troubleshooting.md, "Failed to start
+            # Chrome CDP on port 18800" — the exact error our containers
+            # throw). We had only `enabled` + `noSandbox` of it.
+            #
+            # headless: upstream's default is FALSE. We were getting headless
+            # only via the implicit fallback ("local managed profiles fall
+            # back to headless on Linux when both DISPLAY and WAYLAND_DISPLAY
+            # are unset"). That happens to hold today — neither var is set in
+            # container-stack.ts or the Dockerfile — but it makes a load-
+            # bearing property depend on the ABSENCE of env vars, and any
+            # future image that sets DISPLAY (xvfb, a GUI dep pulling one in)
+            # silently launches a headful Chrome with no X server. Upstream's
+            # recipe sets it explicitly; so do we.
+            "headless": True,
+            # executablePath: upstream's recipe pins the binary rather than
+            # relying on auto-detection. Ours resolves through
+            # findChromeExecutableLinux()'s candidate list, where
+            # /usr/bin/chromium (the Dockerfile layer-9 symlink) happens to
+            # win before the Playwright-cache fallback. Both point at the same
+            # file, so pinning changes no behaviour today — it just stops the
+            # choice being an accident of list order.
+            "executablePath": "/usr/bin/chromium",
+            # Timeouts: upstream defaults are 15s launch / 8s CDP-ready, and
+            # the doc says raise them on "Raspberry Pi, older VPS hosts, or
+            # SLOW STORAGE". Chrome's profile lives under CONFIG_DIR
+            # (~/.openclaw = EFS = NFS) and a Chrome profile is SQLite- and
+            # lock-heavy, which is the same amplifier that gives this box
+            # 7.8s integrity scans. Prod threw BOTH shapes minutes apart on
+            # 2026-08-03: `browser failed: timed out` at 23:27:01 and
+            # `Failed to start Chrome CDP ... http_unreachable` at 23:27:33.
+            # Schema caps both at 120_000.
+            "localLaunchTimeoutMs": 60_000,
+            "localCdpReadyTimeoutMs": 30_000,
             "profiles": {
                 "openclaw": {
                     "driver": "openclaw",

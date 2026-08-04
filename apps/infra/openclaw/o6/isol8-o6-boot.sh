@@ -119,7 +119,14 @@ for _t in $TOMBSTONES; do
   # surviving LTX objects with nothing marking them deleted — and the next boot
   # would restore the agent we just deleted. Keeping the tombstone means the
   # next boot simply retries.
-  if aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive --exclude "*.o6-deleted" >/dev/null 2>&1; then
+  # Both exclude spellings: the CLI matches these against the key relative to
+  # the prefix, and the marker sits at the prefix root, so "*.o6-deleted" and
+  # ".o6-deleted" cover the two readings. Getting this wrong only matters on a
+  # PARTIAL failure — a fully successful purge removes everything anyway — but
+  # that is exactly the case this ordering exists for. Verified against real S3
+  # in Phase 3.
+  if aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive \
+       --exclude "*.o6-deleted" --exclude ".o6-deleted" >/dev/null 2>&1; then
     aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/.o6-deleted" >/dev/null 2>&1 \
       || log "warn: tombstone marker for $_t survived its own purge (harmless; next boot retries)"
   else

@@ -1,8 +1,6 @@
 // apps/frontend/src/components/ui/badge.tsx
 
-// Standard shadcn/ui Badge primitive. Adapted to use `@radix-ui/react-slot`
-// (the package present in this repo) instead of the upstream `radix-ui`
-// umbrella package so we don't add a new npm dep.
+// Standard shadcn/ui Badge primitive.
 
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";

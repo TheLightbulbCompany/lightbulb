@@ -11,7 +11,7 @@ import { makeAdapter } from "../../lib/adapter";
 import { parseAgentDeepLink } from "../../lib/deepLink";
 import { configureNotificationHandler } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
-import { sessionIdFromKey } from "../../lib/sessionKey";
+import { sessionIdFromKey } from "@isol8/shared";
 
 /** Route a tapped notification (warm OR cold-start launch) to its agent chat,
  * landing on the session the reply belongs to (sessionKey → ?sessionId, which

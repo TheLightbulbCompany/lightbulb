@@ -1,7 +1,7 @@
 // sessions.list projection (sessions contract §3) — port of the web's
 // useAgentSessions filtering, minus SWR: the mobile sheet fetches on open.
 
-import { SESSION_ID_RE } from "./sessionKey";
+import { SESSION_ID_RE } from "@isol8/shared";
 
 export interface AgentSession {
   /** Trailing UUID for a real session; null == the legacy "General" session. */

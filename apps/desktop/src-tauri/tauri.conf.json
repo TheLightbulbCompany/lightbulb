@@ -46,6 +46,7 @@
     ],
     "macOS": {
       "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist",
       "signingIdentity": "Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)",
       "minimumSystemVersion": "10.15"
     }

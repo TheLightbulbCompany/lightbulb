@@ -116,11 +116,13 @@ def _bridge_url(owner_id: str) -> str:
 
 
 # Junk that must never be seeded into a user's workspace, even if it sneaks
-# into the vendored tree (mirrors agent_export's hygiene filter). Directory
-# names are matched against every part of the relative path, so a nested
-# ``skills/<bundle>/test/`` is dropped as a whole subtree — vendored upstream
-# suites never run in a workspace (nothing invokes them, and the owner's
-# container has no dev dependencies to run them with).
+# into the vendored tree (mirrors agent_export's hygiene filter). Matched by
+# exact equality against each part of the relative path — so a whole
+# ``skills/<bundle>/test/`` subtree drops, but a ``testing/`` dir or a
+# ``contest.md`` file does not. (A bare *file* named e.g. ``test`` would also
+# match; the vendored tree has none, and one would be junk anyway.) Vendored
+# upstream suites never run in a workspace: nothing invokes them, and the
+# owner's container has no dev dependencies to run them with.
 _SKIP = {".DS_Store", "__pycache__", ".git", "test", "tests", "__tests__", "node_modules"}
 
 # Upstream packaging/docs carried along by vendored skill bundles. No SKILL.md

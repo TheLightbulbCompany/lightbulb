@@ -1,22 +1,24 @@
 """Materializers write a CLI's own credential file onto the owner's EFS workspace
 (0600, owned by uid/gid 1000, atomic) so a baked CLI reads it at runtime. This
-generalizes core/containers/workspace.py:700-786 (the ChatGPT auth-profile rail)."""
+generalizes core/containers/workspace.py:700-786 (the ChatGPT auth-profile rail).
+
+The shape every materializer module implements is
+``write(owner_id, provider_key, credential)`` plus a mirroring ``remove(...)``,
+registered by name in ``materializers/__init__.py``. That contract is enforced
+by the registry's tests, not by a type: this repo runs ruff and pytest in CI
+and no type checker, so an annotation here cannot fail a build.
+"""
 
 from __future__ import annotations
 
 import os
 import tempfile
 from pathlib import Path
-from typing import Protocol
 
 from core.config import settings
 
 NODE_UID = 1000
 NODE_GID = 1000
-
-
-class Materializer(Protocol):
-    def __call__(self, owner_id: str, provider_key: str, credential: dict) -> None: ...
 
 
 def owner_efs_root(owner_id: str) -> Path:

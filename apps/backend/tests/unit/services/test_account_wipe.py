@@ -710,3 +710,28 @@ async def test_replica_delete_waits_for_drain(wipe_mocks):
         await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     assert order == ["drain", "delete_replicas"], order
+
+
+@pytest.mark.asyncio
+async def test_replica_delete_refuses_when_drain_times_out(wipe_mocks):
+    """A drain timeout must FAIL the step, not delete anyway: deleting while a
+    writer may still be live lets a late upload repopulate the prefix, and the
+    next provision restores state the wipe reported as erased."""
+    wipe_mocks.ecs_manager_stub.wait_until_drained = AsyncMock(return_value=False)
+    deleted = False
+
+    async def _del(owner_id, *, agent_id=None):
+        nonlocal deleted
+        deleted = True
+        return True
+
+    with (
+        patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),
+        patch("core.services.litestream_replicas.delete_replica_prefix", new=_del),
+    ):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    step = {s.system: s for s in report.steps}["litestream_replicas"]
+    assert step.status == "failed"
+    assert "did not drain" in (step.error or "")
+    assert deleted is False, "must not delete replicas while a writer may be live"

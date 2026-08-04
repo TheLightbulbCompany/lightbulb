@@ -618,7 +618,7 @@ async def ensure_owner_bedrock_role(
             PolicyDocument=json.dumps(doc),
         )
 
-    # O6 local-sqlite layout: per-owner Litestream S3 grant. UNCONDITIONAL —
+    # local-sqlite layout: per-owner Litestream S3 grant. UNCONDITIONAL —
     # unlike the Bedrock grant above, every provider ships replicas and a
     # revoked/trial-capped owner keeps durability (skip_bedrock_grant governs
     # inference, not storage). A SEPARATE PolicyName: the break-glass script
@@ -626,7 +626,7 @@ async def ensure_owner_bedrock_role(
     # would strip replication mid-incident. Inert while LITESTREAM_BUCKET is
     # unset (EFS layout). Existing owners provisioned before the env flipped
     # are backfilled by scripts/ensure_litestream_s3_policies.py — run it
-    # BEFORE any fleet force-apply onto the O6 boot chain, or litestream (the
+    # BEFORE any fleet force-apply onto the local-sqlite boot chain, or litestream (the
     # boot supervisor) AccessDenies and the task crash-loops.
     if settings.LITESTREAM_BUCKET:
         await run_in_thread(
@@ -814,7 +814,7 @@ async def delete_owner_bedrock_role(owner_id: str) -> None:
 
     # BOTH inline policies must go: IAM refuses DeleteRole while any inline
     # policy remains, so leaving owner-litestream-s3 behind would make the
-    # account-wipe bedrock_role step fail for every O6 owner and leak the role.
+    # account-wipe bedrock_role step fail for every local-sqlite owner and leak the role.
     for policy_name in ("owner-bedrock", "owner-litestream-s3"):
         try:
             await run_in_thread(

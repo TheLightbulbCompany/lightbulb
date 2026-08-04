@@ -979,7 +979,7 @@ class TestKillSwitch:
 
 
 class TestLitestreamS3Policy:
-    """O6: the per-owner Litestream S3 grant must reach EVERY owner (it is
+    """local-sqlite: the per-owner Litestream S3 grant must reach EVERY owner (it is
     storage durability, not inference) and must live under its own PolicyName
     so the break-glass owner-bedrock swap can never strip it."""
 
@@ -1037,7 +1037,7 @@ class TestLitestreamS3Policy:
 async def test_delete_owner_role_removes_both_inline_policies(aip_tables, monkeypatch):
     """IAM refuses DeleteRole while ANY inline policy remains, so leaving
     owner-litestream-s3 behind fails the wipe's bedrock_role step for every
-    O6 owner and leaks the role."""
+    local-sqlite owner and leaks the role."""
     import core.billing.bedrock_aip as mod
 
     fake = MagicMock()

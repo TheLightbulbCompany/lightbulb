@@ -1,5 +1,6 @@
 #!/bin/sh
-# isol8-o6-boot.sh — O6 local-SQLite boot chain.
+# isol8-local-sqlite-boot.sh — prepare container-local SQLite state, then hand
+# off to litestream.
 #
 # Invoked by the CDK startupCommand ONLY on envs whose openclaw-version.json
 # storage field is "local-sqlite"; the image is backward compatible — nothing
@@ -37,15 +38,19 @@
 # replica — silent data destruction, the one outcome this script must prevent.
 set -eu
 
-STATE_ROOT="${O6_STATE_ROOT:-/home/node/.openclaw}"
-EFS_RAW="${O6_EFS_RAW:-/efs-raw}"
+STATE_ROOT="${ISOL8_STATE_ROOT:-/home/node/.openclaw}"
+EFS_RAW="${ISOL8_EFS_RAW:-/efs-raw}"
 BUCKET="${LITESTREAM_S3_BUCKET:?LITESTREAM_S3_BUCKET is required}"
-LITESTREAM_CONFIG="${O6_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
-APP_CMD="${O6_APP_CMD:-/usr/local/bin/isol8-o6-app.sh}"
-ARCHIVE="$EFS_RAW/pre-o6-archive"
-FILL_MARKER="$ARCHIVE/.o6-fill-pending"
+LITESTREAM_CONFIG="${ISOL8_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
+APP_CMD="${ISOL8_APP_CMD:-/usr/local/bin/isol8-local-sqlite-app.sh}"
+ARCHIVE="$EFS_RAW/pre-migration-archive"
+FILL_MARKER="$ARCHIVE/.migration-fill-pending"
 
-log() { echo "[o6-boot] $*"; }
+log() { echo "[storage-boot] $*"; }
+
+# Scratch file for capturing sqlite3 stderr without folding it into $(...).
+_walerr="${TMPDIR:-/tmp}/sqlite-wal-err.$$"
+trap 'rm -f "$_walerr"' EXIT
 
 # Dependency preflight. All of these are baked into the extended image, but a
 # missing binary would otherwise degrade silently rather than loudly: no jq
@@ -62,9 +67,9 @@ if [ -z "$OWNER_ID" ] && [ -f "$STATE_ROOT/isol8-facts.json" ]; then
 fi
 [ -n "$OWNER_ID" ] || { log "FATAL: owner id unresolved (no ISOL8_OWNER_ID env, no isol8-facts.json)"; exit 1; }
 export OWNER_ID
-# The baked litestream config references $O6_STATE_ROOT so it always replicates
+# The baked litestream config references $ISOL8_STATE_ROOT so it always replicates
 # the SAME databases this script restored into.
-export O6_STATE_ROOT="$STATE_ROOT"
+export ISOL8_STATE_ROOT="$STATE_ROOT"
 log "owner=$OWNER_ID bucket=$BUCKET state_root=$STATE_ROOT"
 
 mkdir -p "$STATE_ROOT/state" "$STATE_ROOT/agents"
@@ -86,8 +91,8 @@ done
 
 # --- 2. Enumerate the owner's S3 prefix.
 KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
-        --query 'Contents[].Key' --output text 2>/tmp/o6-s3-err) || {
-  log "FATAL: S3 enumeration failed: $(cat /tmp/o6-s3-err 2>/dev/null)"; exit 1; }
+        --query 'Contents[].Key' --output text 2>/tmp/isol8-s3-err) || {
+  log "FATAL: S3 enumeration failed: $(cat /tmp/isol8-s3-err 2>/dev/null)"; exit 1; }
 [ "$KEYS" = "None" ] && KEYS=""
 
 # Agent tombstones are parsed BEFORE the database keys: a freshly deleted
@@ -105,7 +110,7 @@ KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$OWNER_ID/" \
 TOMBSTONES=""
 DBS=""
 if [ -n "$KEYS" ]; then
-  TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.o6-deleted\$#\1#p" | sort -u)
+  TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.replica-deleted\$#\1#p" | sort -u)
   DBS=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(.*\)/[^/]*/[^/]*\.ltx\$#\1#p" | sed 's#/ltx\$##' | sort -u)
   if [ -z "$DBS" ] && [ -z "$TOMBSTONES" ]; then
     log "FATAL: S3 prefix $OWNER_ID/ has objects but none match <db>/ltx/<level>/<file>; refusing to continue"
@@ -124,14 +129,14 @@ for _t in $TOMBSTONES; do
   # would restore the agent we just deleted. Keeping the tombstone means the
   # next boot simply retries.
   # Both exclude spellings: the CLI matches these against the key relative to
-  # the prefix, and the marker sits at the prefix root, so "*.o6-deleted" and
-  # ".o6-deleted" cover the two readings. Getting this wrong only matters on a
+  # the prefix, and the marker sits at the prefix root, so "*.replica-deleted" and
+  # ".replica-deleted" cover the two readings. Getting this wrong only matters on a
   # PARTIAL failure — a fully successful purge removes everything anyway — but
   # that is exactly the case this ordering exists for. Verified against real S3
   # in Phase 3.
   if aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive \
-       --exclude "*.o6-deleted" --exclude ".o6-deleted" >/dev/null 2>&1; then
-    aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/.o6-deleted" >/dev/null 2>&1 \
+       --exclude "*.replica-deleted" --exclude ".replica-deleted" >/dev/null 2>&1; then
+    aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/.replica-deleted" >/dev/null 2>&1 \
       || log "warn: tombstone marker for $_t survived its own purge (harmless; next boot retries)"
   else
     log "warn: replica purge failed for $_t — keeping the tombstone so the next boot retries"
@@ -142,12 +147,12 @@ done
 # Re-applied after every fill: both migration sources predate the deletion and
 # would copy the agent straight back, after which litestream republishes it and
 # the delete is silently undone.
-o6_drop_tombstoned() {
+drop_tombstoned_agents() {
   for _t in $TOMBSTONES; do
     rm -rf "${STATE_ROOT:?}/$_t" 2>/dev/null || true
   done
 }
-o6_drop_tombstoned
+drop_tombstoned_agents
 
 # --- 3. Restore every replicated database. Explicit CLI restores (rather than
 # replicate's restore-if-db-not-exists, which covers only path-form entries and
@@ -175,20 +180,20 @@ done
 # as soon as the replica provably covers everything the archive holds.
 # EXISTENCE IS NOT ENOUGH. The nested mounts need their destination
 # directories to exist inside the parent EFS mount, so after the cutover moved
-# the originals into pre-o6-archive the runtime recreates them — EMPTY, on EFS.
+# the originals into pre-migration-archive the runtime recreates them — EMPTY, on EFS.
 # An existence test would therefore see "live EFS state" on every subsequent
 # boot, re-arm the fill window forever, and try to re-archive onto an archive
 # that already exists. Test for CONTENT.
-o6_has_content() {
+dir_has_content() {
   [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
 }
 FILL_RAW=0
 FILL_ARCHIVE=0
-if o6_has_content "$EFS_RAW/state" || o6_has_content "$EFS_RAW/agents"; then
+if dir_has_content "$EFS_RAW/state" || dir_has_content "$EFS_RAW/agents"; then
   FILL_RAW=1
 fi
 if [ -f "$FILL_MARKER" ]; then
-  if o6_has_content "$ARCHIVE/state" || o6_has_content "$ARCHIVE/agents"; then
+  if dir_has_content "$ARCHIVE/state" || dir_has_content "$ARCHIVE/agents"; then
     FILL_ARCHIVE=1
   fi
 fi
@@ -216,25 +221,6 @@ if [ -f "$FILL_MARKER" ]; then
     rm -f "$FILL_MARKER"
     FILL_ARCHIVE=0
     log "replica covers the full archive — fill window closed"
-    # ...and REAP it. The archive is crash-safety for exactly one window — the
-    # gap between "copied onto ephemeral disk" and "durable in S3" — and that
-    # window just provably closed: every archived database is covered by the
-    # replica. Keeping it past this point buys nothing and costs plenty: a full
-    # per-owner copy of state/+agents/ on EFS forever, including auth_profile_store
-    # rows holding usable OAuth refresh tokens. It is not a rollback path either
-    # — a rollback restores from S3, which has CURRENT data, where the archive is
-    # frozen at cutover and gets staler every day it survives.
-    #
-    # Detached, never synchronous: a recursive unlink over NFS is exactly the
-    # storm the startup command's legacy-dir comments warn about, and this runs
-    # inside the health-check start period. Ordering is load-bearing — the
-    # marker is already gone above, so a container dying mid-delete leaves a
-    # partial archive that can never arm a fill (FILL_ARCHIVE requires the
-    # marker), making a torn delete inert rather than dangerous.
-    if [ -d "$ARCHIVE" ]; then
-      log "reaping pre-o6-archive in the background (replica is now the durable copy)"
-      ( rm -rf "$ARCHIVE" >/dev/null 2>&1 & )
-    fi
   fi
 fi
 
@@ -244,7 +230,7 @@ fi
 # but an exit code that means opposite things on two platforms is not something
 # to build recovery on — so the copy's status is advisory and the postcondition
 # (every source file now present at the destination) is what decides.
-o6_copy_missing() {
+copy_missing_files() {
   _s=$1; _d=$2
   [ -d "$_s" ] || return 0
   mkdir -p "$_d" || return 1
@@ -269,19 +255,19 @@ o6_copy_missing() {
   return 0
 }
 
-o6_fill_from() {
+fill_state_from() {
   _src=$1
   for _d in state agents; do
-    o6_copy_missing "$_src/$_d" "$STATE_ROOT/$_d" || return 1
+    copy_missing_files "$_src/$_d" "$STATE_ROOT/$_d" || return 1
   done
   return 0
 }
 
 if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
   log "cutover fill (efs_raw=$FILL_RAW archive=$FILL_ARCHIVE)"
-  [ "$FILL_RAW" = "1" ] && { o6_fill_from "$EFS_RAW" || exit 1; }
-  [ "$FILL_ARCHIVE" = "1" ] && { o6_fill_from "$ARCHIVE" || exit 1; }
-  o6_drop_tombstoned
+  [ "$FILL_RAW" = "1" ] && { fill_state_from "$EFS_RAW" || exit 1; }
+  [ "$FILL_ARCHIVE" = "1" ] && { fill_state_from "$ARCHIVE" || exit 1; }
+  drop_tombstoned_agents
 
   # Integrity gate before anything is archived. NOTE there is no path rewriting
   # here and none is needed: the databases land at the SAME absolute paths they
@@ -308,10 +294,19 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
     # backoff — the race is not winnable from litestream's side.
     #
     # A hard kill in that window would leave the cutover unreplicated. The
-    # armed fill marker plus pre-o6-archive/ still recovers it, but that is a
+    # armed fill marker plus pre-migration-archive/ still recovers it, but that is a
     # safety net doing a job the design should not need.
-    jm=$(sqlite3 "$db" "PRAGMA journal_mode=WAL;" 2>&1 | head -1)
-    [ "$jm" = "wal" ] || { log "FATAL: could not put $db into WAL after cutover (got '$jm')"; exit 1; }
+    # stderr is captured SEPARATELY: folding it into $jm makes any sqlite error
+    # message become the compared value, so the fatal below would report the
+    # error text as if it were a journal mode.
+    jm=$(sqlite3 "$db" "PRAGMA journal_mode=WAL;" 2>"$_walerr" | head -1)
+    if [ "$jm" != "wal" ]; then
+      log "FATAL: could not put $db into WAL after cutover (journal_mode='$jm')"
+      [ -s "$_walerr" ] && log "       sqlite3: $(head -1 "$_walerr")"
+      log "       litestream cannot replicate a non-WAL database, so booting on it would"
+      log "       leave this owner silently unreplicated. Check the file's mode/ownership."
+      exit 1
+    fi
   done
 
   # A stale legacy workspace-state.json would re-trip the migration gate the
@@ -331,7 +326,7 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
     mkdir -p "$ARCHIVE" || exit 1
     : > "$FILL_MARKER" || exit 1
     for d in state agents; do
-      o6_has_content "$EFS_RAW/$d" || continue
+      dir_has_content "$EFS_RAW/$d" || continue
       if [ -e "$ARCHIVE/$d" ]; then
         # Anomalous: a canonical archive already exists AND live content came
         # back (an operator restore, or a rollback). DO NOT try to reconcile
@@ -352,7 +347,7 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
       # exactly the confusion the content test above is guarding against.
       mkdir -p "$EFS_RAW/$d" || exit 1
     done
-    log "cutover complete; EFS originals archived at pre-o6-archive/ (fill window armed)"
+    log "cutover complete; EFS originals archived at pre-migration-archive/ (fill window armed)"
   else
     log "cutover complete; filled in from archive (archive left in place)"
   fi
@@ -364,28 +359,35 @@ fi
 # container-local store). Applied BEFORE gateway start so a freshly staged
 # credentials/oauth.json re-imports — the import fires only when the persisted
 # store row is absent.
-SENTINEL="$STATE_ROOT/o6-clear-auth-profiles.json"
-if [ -f "$SENTINEL" ] && [ "$FILL_RAW" = "1" ]; then
-  # A sentinel carried INTO the cutover boot is stale by construction, and
-  # applying it would destroy a live credential.
+SENTINEL="$STATE_ROOT/clear-auth-profiles.json"
+SENTINEL_HOT_DELETE=""
+[ -f "$SENTINEL" ] && SENTINEL_HOT_DELETE=$(jq -r '.hot_delete // ""' "$SENTINEL" 2>/dev/null || true)
+
+if [ -f "$SENTINEL" ] && [ "$FILL_RAW" = "1" ] && [ "$SENTINEL_HOT_DELETE" = "succeeded" ]; then
+  # A sentinel carried into the cutover boot is redundant ONLY when the backend
+  # confirms its hot DELETE landed — hence the hot_delete stamp rather than
+  # inferring anything from FILL_RAW.
   #
-  # The backend writes the sentinel on every O6-env reconnect, but when the EFS
-  # store is still visible it ALSO performs the hot DELETE against that same EFS
-  # database — and returns a value no caller bounces on. So a container still
-  # pinned to a pre-O6 task-def revision keeps running on the EFS layout,
-  # rotating its refresh token for as long as it likes, while the sentinel sits
-  # unread on the durable spine. This boot — its FIRST on the O6 revision —
-  # would copy that well-rotated database in and immediately clear the row,
-  # forcing a re-import of a staged oauth.json that is by now many rotations
-  # spent. That is the June refresh_token_reused incident, reproduced exactly.
+  # The backend writes the sentinel on every reconnect under this layout, but
+  # while the EFS store is still visible it ALSO performs the hot DELETE
+  # against that same EFS database, and returns a value no caller bounces on.
+  # So a container still pinned to a pre-cutover task-def revision keeps
+  # running on the EFS layout, rotating its refresh token freely, while the
+  # sentinel sits unread on the durable spine. This boot — its FIRST on the new
+  # revision — would copy that well-rotated database in and immediately clear
+  # the row, forcing a re-import of a staged oauth.json many rotations spent.
+  # That is the June refresh_token_reused incident, reproduced exactly.
   #
-  # Skipping is provably safe, not merely safer: the hot DELETE already applied
-  # to the very database this boot just copied in, so the row is gone either
-  # way. A sentinel written on any LATER boot is fresh by construction, because
-  # every boot through the branch below consumes one.
-  log "sentinel: dropping stale request carried into the cutover boot (hot delete already applied on EFS)"
+  # With hot_delete=succeeded the row is already gone from the database this
+  # boot just copied in, so dropping the request changes nothing. Any other
+  # value means the row came across WITH the copy: "failed" is a delete that
+  # lost to SQLITE_BUSY against the live writer, and this sentinel is its only
+  # retry request — consuming it silently would strand a spent token, which is
+  # exactly what the backend logs and meters oauth.auth_row_clear_failed for.
+  log "sentinel: dropping redundant request carried into the cutover boot (backend confirmed the hot delete)"
   rm -f "$SENTINEL"
 elif [ -f "$SENTINEL" ]; then
+  [ "$FILL_RAW" = "1" ] && log "sentinel: applying on the cutover boot (hot_delete='${SENTINEL_HOT_DELETE:-unset}' — the stale row came across with the copy)"
   for agent in $(jq -r '.agent_ids[]? // empty' "$SENTINEL" 2>/dev/null); do
     # ONLY the default agent. Every other agent merges its credentials from
     # main's store, so clearing a non-default row makes that agent import the

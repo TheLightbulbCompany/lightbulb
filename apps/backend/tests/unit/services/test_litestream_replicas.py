@@ -122,7 +122,7 @@ async def test_tombstone_written_under_the_agent_prefix(monkeypatch):
     s3 = MagicMock()
     with patch("boto3.client", return_value=s3):
         assert await litestream_replicas.write_replica_tombstone("org_1", "agent-x") is True
-    s3.put_object.assert_called_once_with(Bucket="b", Key="org_1/agents/agent-x/.o6-deleted", Body=b"")
+    s3.put_object.assert_called_once_with(Bucket="b", Key="org_1/agents/agent-x/.replica-deleted", Body=b"")
 
 
 @pytest.mark.asyncio

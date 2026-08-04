@@ -1319,7 +1319,7 @@ class EcsManager:
 
         No task-def re-register — this is a plain forceNewDeployment, used when
         a container-local state change can only be applied by a boot pass (the
-        O6 clear-auth sentinel). Single-writer deployment config keeps the old
+        clear-auth sentinel). Single-writer deployment config keeps the old
         task fully stopped before the replacement starts.
         """
         await asyncio.to_thread(

@@ -255,10 +255,10 @@ class Settings(BaseSettings):
     MARKETPLACE_SELLERS_TABLE: str = os.getenv("MARKETPLACE_SELLERS_TABLE", "")
     MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
 
-    # Litestream replica bucket for the O6 local-SQLite container layout (set
+    # Litestream replica bucket for the local-sqlite container layout (set
     # by CDK ServiceStack per env, dev-first). Empty means the env still runs
     # the EFS state layout: the backend can reach hot SQLite directly on EFS
-    # and every O6 code path (sentinel, S3 replica lifecycle) stays inert.
+    # and every local-sqlite code path (sentinel, S3 replica lifecycle) stays inert.
     LITESTREAM_BUCKET: str = os.getenv("LITESTREAM_BUCKET", "")
 
     # Provisioned agent email (set by CDK ServiceStack). This is the BASE

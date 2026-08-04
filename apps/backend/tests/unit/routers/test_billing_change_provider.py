@@ -924,7 +924,7 @@ async def test_change_provider_bedrock_to_byo_always_cold_path(async_client, col
 
 @pytest.mark.asyncio
 async def test_change_provider_to_chatgpt_falls_cold_when_clear_needs_restart(async_client, cold_reprovision):
-    """O6 local-SQLite layout: the auth-row clear cannot run in place (store is
+    """local-sqlite layout: the auth-row clear cannot run in place (store is
     container-local) — it writes a boot sentinel and reports restart_required.
     The hot swap must ABORT and fall back to the stop-first cold path, whose
     restart contract the frontend already renders. replace_provider_block must

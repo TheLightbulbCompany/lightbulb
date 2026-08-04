@@ -1,4 +1,4 @@
-"""S3 replica-prefix lifecycle for the O6 local-SQLite container layout.
+"""S3 replica-prefix lifecycle for the local-sqlite container layout.
 
 Litestream replicates each owner's hot SQLite DBs to
 ``s3://{LITESTREAM_BUCKET}/{owner_id}/...`` and the container's boot script
@@ -29,7 +29,7 @@ from core.observability.metrics import put_metric
 logger = logging.getLogger(__name__)
 
 # Object the container boot script looks for before restoring an agent DB.
-TOMBSTONE_NAME = ".o6-deleted"
+TOMBSTONE_NAME = ".replica-deleted"
 
 
 def _delete_prefix_blocking(bucket: str, prefix: str) -> int:

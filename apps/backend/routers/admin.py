@@ -820,7 +820,7 @@ async def admin_agent_delete(
     )
     # Same post-delete reclamation the chat path does. OpenClaw's own
     # movePathToTrash cannot cross the EFS->overlay device boundary, so the
-    # agent's directories leak without this; under the O6 layout its S3 replica
+    # agent's directories leak without this; under the local-sqlite layout its S3 replica
     # prefix would also survive and re-materialize the deleted agent's database
     # on every subsequent boot. Best-effort — the delete already succeeded.
     from core.containers.workspace import cleanup_deleted_agent

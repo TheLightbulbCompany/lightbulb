@@ -878,74 +878,7 @@ async def delete_auth_profile_store(*, user_id: str) -> None:
         except OSError as e:
             logger.warning("delete_auth_profile_store: %s -- %s", legacy, e)
 
-    removed += await asyncio.to_thread(_purge_o6_archive_credentials, efs_root, user_id)
-
     logger.info("deleted_oauth_credential", extra={"user_id": user_id, "removed": removed})
-
-
-# Where isol8-o6-boot.sh parks the pre-cutover EFS state on an owner's first
-# boot under the local-SQLite layout. Frozen; the runtime never reads it again.
-O6_ARCHIVE_DIRNAME = "pre-o6-archive"
-
-
-def _purge_o6_archive_credentials(efs_root: str, user_id: str) -> list[str]:
-    """Strip OAuth material from the frozen pre-O6 archive on disconnect.
-
-    The archive is a rollback safety net, not live state — but the agent
-    databases inside it were moved there wholesale, ``auth_profile_store`` row
-    and all. Without this sweep a disconnected owner keeps a usable refresh
-    token sitting on EFS indefinitely, which is precisely what this module's
-    caller promises does not happen. The live paths above scan ``agents/*``,
-    which post-cutover is the recreated-empty mount destination, so they walk
-    right past it.
-
-    Blocking (sqlite + stat); call via ``asyncio.to_thread``. Best-effort by
-    design: the archive is expendable, so a failure here must never fail the
-    disconnect that already revoked the token upstream.
-    """
-    archive_agents = Path(efs_root) / user_id / O6_ARCHIVE_DIRNAME / "agents"
-    if not archive_agents.is_dir():
-        return []
-
-    removed: list[str] = []
-    try:
-        agent_dirs = sorted(p for p in archive_agents.iterdir() if p.is_dir())
-    except OSError as e:
-        logger.warning("purge_o6_archive_credentials: listdir %s -- %s", archive_agents, e)
-        return []
-
-    for agent_dir in agent_dirs:
-        rel = f"{O6_ARCHIVE_DIRNAME}/agents/{agent_dir.name}/agent"
-        legacy = agent_dir / "agent" / "auth-profiles.json"
-        try:
-            if legacy.exists():
-                legacy.unlink()
-                removed.append(f"{rel}/auth-profiles.json")
-        except OSError as e:
-            logger.warning("purge_o6_archive_credentials: %s -- %s", legacy, e)
-
-        db = agent_dir / "agent" / "openclaw-agent.sqlite"
-        if not db.exists():
-            continue
-        # Every agent, not just the default: the row-per-agent fan-out predates
-        # 6.6, so an old archive can hold several independently usable tokens.
-        # Nothing runs against these files, so there is no writer to contend
-        # with and no reason to scope the delete.
-        try:
-            con = sqlite3.connect(str(db), timeout=10.0)
-            try:
-                con.execute("DELETE FROM auth_profile_store")
-                con.commit()
-            finally:
-                con.close()
-            removed.append(f"{rel}/openclaw-agent.sqlite:auth_profile_store")
-        except sqlite3.OperationalError as e:
-            if "no such table" not in str(e).lower():
-                logger.warning("purge_o6_archive_credentials: %s -- %s", db, e)
-        except sqlite3.Error as e:
-            logger.warning("purge_o6_archive_credentials: %s -- %s", db, e)
-
-    return removed
 
 
 # The default agent's on-disk dir name. OpenClaw's DEFAULT agent (Isol8's
@@ -1010,28 +943,40 @@ async def cleanup_deleted_agent(user_id: str, agent_id: str, *, workspace: "Work
     await write_replica_tombstone(user_id, agent_id)
 
 
-# O6 local-SQLite layout: sentinel on the EFS durable spine asking the
+# local-sqlite layout: sentinel on the EFS durable spine asking the
 # container's boot script to delete the default agent's auth_profile_store row
 # (before gateway start) so a freshly staged credentials/oauth.json re-imports.
 # Written when the backend cannot reach the store directly (it lives on
 # container-local disk); consumed + deleted by the boot script, which skips
 # missing DBs and tolerates a missing table (a fresh container has no row and
 # imports the staged file anyway).
-O6_CLEAR_AUTH_SENTINEL_FILENAME = "o6-clear-auth-profiles.json"
+CLEAR_AUTH_SENTINEL_FILENAME = "clear-auth-profiles.json"
 
 
-def _write_o6_clear_auth_sentinel(user_root: Path) -> None:
+def _write_clear_auth_sentinel(user_root: Path, *, hot_delete: str) -> None:
+    """``hot_delete`` records what happened to the EFS copy of the row, and is
+    the discriminator the boot script needs to decide whether a sentinel that
+    survives into the cutover boot may be dropped.
+
+    ``"succeeded"`` — the row was deleted from the database the cutover boot
+    then copies in, so the sentinel is redundant there and dropping it is safe.
+    ``"failed"`` — the delete lost to SQLITE_BUSY against the live writer; the
+    stale row SURVIVES into the copy and this sentinel is the only retry
+    request that exists. ``"absent"`` — no EFS store to delete (already
+    migrated), so the row can only be cleared at boot.
+    """
     # Written against the SAME efs_root the caller resolved (env override
     # included) rather than the Workspace singleton, which binds its mount
     # path from settings at first construction. The boot script runs as root,
     # so ownership is cosmetic — chown kept for fleet-convention parity.
-    path = user_root / O6_CLEAR_AUTH_SENTINEL_FILENAME
+    path = user_root / CLEAR_AUTH_SENTINEL_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "agent_ids": [_DEFAULT_AGENT_DIR],
                 "requested_at": datetime.now(timezone.utc).isoformat(),
+                "hot_delete": hot_delete,
             },
             indent=2,
         )
@@ -1070,7 +1015,7 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
 
     Returns True if a row was deleted, False on no-op (no store yet / no row /
     contention we couldn't win), or the string ``"restart_required"`` on the
-    O6 local-SQLite layout (``settings.LITESTREAM_BUCKET`` set and no store on
+    local-sqlite layout (``settings.LITESTREAM_BUCKET`` set and no store on
     EFS): the row lives on container-local disk the backend cannot reach, so a
     sentinel is written to the EFS durable spine instead and only a container
     boot applies it — the CALLER decides whether to bounce a running container
@@ -1086,21 +1031,11 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
 
     db_path = Path(efs_root) / user_id / "agents" / _DEFAULT_AGENT_DIR / "agent" / "openclaw-agent.sqlite"
 
-    # On an O6 env the sentinel is written UNCONDITIONALLY, even when an EFS
-    # store is still visible. During the one cutover boot the container has
-    # already copied the databases to its local mounts but has not yet archived
-    # the EFS originals, so a hot DELETE landing in that window edits a copy
-    # nothing will read again and the stale auth row survives locally —
-    # silently breaking the reconnect it was supposed to fix. Writing both
-    # costs one small file and the boot apply is a no-op when the row is
-    # already gone.
-    if settings.LITESTREAM_BUCKET:
-        _write_o6_clear_auth_sentinel(Path(efs_root) / user_id)
-
     if not db_path.exists():
         if settings.LITESTREAM_BUCKET:
+            _write_clear_auth_sentinel(Path(efs_root) / user_id, hot_delete="absent")
             logger.info(
-                "clear_default_agent_auth_profile_row: wrote O6 sentinel for %s (store is container-local)",
+                "clear_default_agent_auth_profile_row: wrote clear-auth sentinel for %s (store is container-local)",
                 user_id,
             )
             return "restart_required"
@@ -1109,6 +1044,24 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
     # Run the blocking sqlite work (incl. the busy-timeout wait) off the event
     # loop so lock contention with the live writer can't stall the backend.
     deleted, failure = await asyncio.to_thread(_delete_default_agent_auth_row_blocking, db_path)
+
+    # On a local-sqlite env the sentinel is written EVEN THOUGH the EFS store was
+    # visible and we just deleted from it. During the one cutover boot the
+    # container has already copied the databases to its local mounts but has
+    # not yet archived the EFS originals, so a hot DELETE landing in that
+    # window edits a copy nothing will read again while the stale row survives
+    # locally — silently breaking the reconnect it was supposed to fix.
+    #
+    # The outcome is stamped into the sentinel because it is the ONLY thing
+    # that tells the boot script whether a sentinel reaching the cutover boot
+    # is redundant (the row is gone from the copy it is about to make) or
+    # load-bearing (the delete lost to SQLITE_BUSY, so the stale row is coming
+    # across with the copy and this is its only retry request).
+    if settings.LITESTREAM_BUCKET:
+        _write_clear_auth_sentinel(
+            Path(efs_root) / user_id,
+            hot_delete="failed" if (failure and failure != "no_table") else "succeeded",
+        )
 
     if failure == "no_table":
         # Store file exists but the auth_profile_store table was never created

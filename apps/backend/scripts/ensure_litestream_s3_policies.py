@@ -2,8 +2,8 @@
 existing owner task role.
 
 ``ensure_owner_bedrock_role`` puts the policy from the PROVISION path only,
-so owners provisioned before an env flipped to the O6 local-sqlite layout
-never receive it. Their containers would then be force-applied onto the O6
+so owners provisioned before an env flipped to the local-sqlite layout
+never receive it. Their containers would then be force-applied onto the local-sqlite
 boot chain, where litestream — the boot supervisor — AccessDenies on S3 and
 the task crash-loops. RUN THIS BEFORE ANY FLEET FORCE-APPLY/RESTART WAVE in
 a freshly-flipped env.
@@ -35,7 +35,7 @@ logger = logging.getLogger("ensure_litestream_s3_policies")
 async def main(dry_run: bool) -> int:
     bucket = settings.LITESTREAM_BUCKET
     if not bucket:
-        logger.error("LITESTREAM_BUCKET is unset — this env is not on the O6 layout; nothing to do.")
+        logger.error("LITESTREAM_BUCKET is unset — this env is not on the local-sqlite layout; nothing to do.")
         return 2
 
     import boto3

@@ -10,6 +10,7 @@ STUBS="$WORK/stubs"; mkdir -p "$STUBS"
 cat > "$STUBS/aws" <<'EOF'
 #!/bin/sh
 # emits $AWS_STUB_KEYS as the list-objects-v2 --output text payload
+[ "$1" = "s3" ] && exit 0   # `aws s3 rm --recursive` (tombstone purge)
 [ "${AWS_STUB_FAIL:-}" = "1" ] && { echo "boom" >&2; exit 1; }
 printf '%s' "${AWS_STUB_KEYS:-None}"
 EOF
@@ -73,6 +74,16 @@ if (export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1.ltx"; run_boot 
   fail "unparseable S3 keys did not abort"
 fi
 echo "PASS 2c unparseable keys fail loud"
+
+# ---- 2d. a tombstoned agent prefix is purged and never restored ----
+E="$WORK/t2d/efs"; L="$WORK/t2d/local"; mkdir -p "$E" "$L"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/ltx/0/1-2.ltx	org_smoke/agents/gone/.o6-deleted"
+out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone run exited nonzero: $out"
+unset AWS_STUB_KEYS
+echo "$out" | grep -q "tombstone: purging deleted agent prefix agents/gone" || fail "tombstone not honored: $out"
+echo "$out" | grep -q "restore agents/gone" && fail "restored a tombstoned agent: $out"
+echo "$out" | grep -q "restore state/openclaw.sqlite" || fail "live DB not restored alongside the tombstone: $out"
+echo "PASS 2d tombstoned agent purged, not restored"
 
 # ---- 3. migration path ----
 E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"

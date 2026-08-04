@@ -60,7 +60,15 @@ mkdir -p "$LOCAL/state" "$LOCAL/agents"
 # database paths) never sees them. skills/npm/git/tools keep clawhub skills
 # and plugin npm/git installs durable — the scanners and installers resolve
 # them through the state root, which is now local.
-for d in credentials identity devices extensions skills npm git tools; do
+# media + delivery-queue-media + logs: NOT for durability of the files
+# themselves so much as to avoid a split-brain — the delivery queue's rows live
+# in the REPLICATED state DB while its media files would not be replicated, so
+# after a restore a queued outbound attachment would resolve to a missing file.
+# (upstream's own comment on delivery-queue-media says it is held outside the
+# media store precisely so a TTL sweep cannot reclaim an attachment a durable
+# row still has to send.) None of these hold SQLite, so the "no SQLite behind
+# the symlinked spine" invariant is intact.
+for d in credentials identity devices extensions skills npm git tools media delivery-queue-media logs; do
   mkdir -p "$EFS/$d" || exit 1
   ln -sfn "$EFS/$d" "$LOCAL/$d" || exit 1
 done
@@ -100,6 +108,19 @@ if [ -n "$KEYS" ]; then
     exit 1
   }
 fi
+
+# Agent tombstones (written by the backend when an agent is deleted while the
+# container is still running, where no delete can be made race-free by waiting).
+# Purge the whole prefix and exclude it from the restore set — here, at boot,
+# nothing is replicating it, so this is the one moment the delete is safe.
+TOMBSTONES=$(printf '%s\n' $KEYS | sed -n "s#^$OWNER_ID/\(agents/[^/]*\)/\.o6-deleted\$#\1#p" | sort -u)
+for _t in $TOMBSTONES; do
+  log "tombstone: purging deleted agent prefix $_t"
+  aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive >/dev/null 2>&1 \
+    || log "warn: tombstone purge failed for $_t (will retry next boot)"
+  DBS=$(printf '%s\n' $DBS | grep -v "^$_t/" || true)
+  rm -rf "${LOCAL:?}/$_t" 2>/dev/null || true
+done
 
 # Migration source, in precedence order:
 #   $EFS/{state,agents}              — first cutover boot (live EFS state)

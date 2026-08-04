@@ -421,8 +421,11 @@ export class ContainerStack extends cdk.Stack {
     // this repo (the CMK posture deliberately does not extend to S3 — flagged
     // trade-off: replicas carry auth_profile_store rows, fenced by BLOCK_ALL +
     // per-owner-prefix IAM). Request metrics enabled so the idle-PUT pathology
-    // (litestream#1171: ~480 PUT/hr per idle DB) is alarmable; nominal idle is
-    // ~0 PUTs. No lifecycle expiration — Litestream retention owns pruning
+    // (litestream#1171, still OPEN: ~480 PUT/hr per idle DB) is alarmable.
+    // Litestream's docs say an incremental sync with no new WAL pages writes
+    // no file, but we have NOT observed our own idle rate yet — treat this
+    // alarm, not that claim, as the source of truth, and gate the prod
+    // promotion on a measured idle window. No lifecycle expiration — Litestream retention owns pruning
     // (deleting LTX files under it would break restores).
     if (localSqliteStorage) {
       new s3.Bucket(this, "OpenclawReplicasBucket", {
@@ -877,6 +880,21 @@ export class ContainerStack extends cdk.Stack {
       sourceVolume: "openclaw-workspace",
       readOnly: false,
     });
+
+    // O6: back the local state root with a config-less ECS volume rather than
+    // the container's overlayfs writable layer. Measured on Fargate: an ECS
+    // ephemeral volume is real ext4 on the task's NVMe device (statfs 0xef53)
+    // and commits there run ~1.4ms vs ~1.75ms on overlayfs and ~95ms on the
+    // EFS mount. It draws from the same 20 GiB task pool, so it costs nothing
+    // extra — Fargate includes the first 20 GiB.
+    if (localSqliteStorage) {
+      this.openclawTaskDef.addVolume({ name: "openclaw-local" });
+      openclawContainer.addMountPoints({
+        containerPath: "/openclaw-local",
+        sourceVolume: "openclaw-local",
+        readOnly: false,
+      });
+    }
 
     // Add EFS volume — the backend replaces the access point per user
     this.openclawTaskDef.addVolume({

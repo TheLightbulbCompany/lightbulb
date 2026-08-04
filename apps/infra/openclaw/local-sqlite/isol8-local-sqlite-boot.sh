@@ -157,13 +157,36 @@ drop_tombstoned_agents() {
 # replicate's restore-if-db-not-exists, which covers only path-form entries and
 # runs no integrity check) so EVERY database — including the dynamic per-agent
 # set — comes back through one integrity-checked path.
+#
+# Restores run CONCURRENTLY, bounded. Each one is process start + a LIST + a GET
+# chain — S3-I/O-bound, not CPU-bound, so a 1 vCPU task is not the limiter. The
+# targets are distinct by construction ($DBS is `sort -u`'d), so no two restores
+# can write the same path. Serial cost grows with the owner's agent count: ~3-5s
+# at 3 databases, ~10-20s at 11 — paid on EVERY scale-from-zero wake, in front
+# of doctor's own 300s cap inside a 300s health-check start period.
+#
+# Failure handling is the reason for the explicit PID list rather than a bare
+# `wait`: `wait` with no argument discards every child's status, and a missed
+# restore is the one outcome this script must never continue past.
+_restore_pids=""
+_restore_running=0
 for rel in $DBS; do
   log "restore $rel"
-  mkdir -p "$STATE_ROOT/$(dirname "$rel")" || exit 1
+  mkdir -p "$STATE_ROOT/${rel%/*}" || exit 1
   litestream restore -if-db-not-exists -if-replica-exists \
     -integrity-check quick \
-    -o "$STATE_ROOT/$rel" "s3://$BUCKET/$OWNER_ID/$rel" || {
-      log "FATAL: restore failed for $rel"; exit 1; }
+    -o "$STATE_ROOT/$rel" "s3://$BUCKET/$OWNER_ID/$rel" &
+  _restore_pids="$_restore_pids $!"
+  _restore_running=$((_restore_running + 1))
+  if [ "$_restore_running" -ge 6 ]; then
+    for _p in $_restore_pids; do
+      wait "$_p" || { log "FATAL: a restore failed (pid $_p)"; exit 1; }
+    done
+    _restore_pids=""; _restore_running=0
+  fi
+done
+for _p in $_restore_pids; do
+  wait "$_p" || { log "FATAL: a restore failed (pid $_p)"; exit 1; }
 done
 
 # --- 4. Fill anything the restore did not produce.
@@ -267,8 +290,8 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
   for db in "$STATE_ROOT/state/openclaw.sqlite" "$STATE_ROOT/state/openclaw-quarantine.sqlite" \
             "$STATE_ROOT"/agents/*/agent/openclaw-agent.sqlite; do
     [ -f "$db" ] || continue
-    ok=$(sqlite3 "$db" "PRAGMA integrity_check;" | head -1)
-    [ "$ok" = "ok" ] || { log "FATAL: integrity_check failed for $db: $ok"; exit 1; }
+    ok=$(sqlite3 "$db" "PRAGMA quick_check;" | head -1)
+    [ "$ok" = "ok" ] || { log "FATAL: quick_check failed for $db: $ok"; exit 1; }
 
     # Convert to WAL here, while we still own these files exclusively.
     #

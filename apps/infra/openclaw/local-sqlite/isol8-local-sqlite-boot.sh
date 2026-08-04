@@ -74,11 +74,13 @@ mkdir -p "$STATE_ROOT/state" "$STATE_ROOT/agents"
 # ANY failure to classify the filesystem PASSED the fence. A guard whose
 # failure mode is "assume it's fine" is not a guard.
 #
-# This is not hypothetical: it is why a prod container proceeded to archive an
-# owner's live databases out from under itself instead of refusing to boot,
-# when its nested mounts were absent. Everything downstream of here — the
-# copy, the archive `mv`, the recreate — assumes these two paths are local
-# disk. If we cannot PROVE that, the only safe action is to stop.
+# The fence used to also protect the one-time EFS->local migration, which would
+# copy and then `mv` an owner's live databases aside on the assumption these
+# paths were local disk. That machinery is gone, so the stakes are lower now:
+# continuing past a failed check means running SQLite on NFS — the ~95ms commit
+# latency and lock contention this whole layout exists to escape — not data
+# loss. Still worth failing on, because the alternative is a green deploy that
+# silently fixes nothing.
 for _p in "$STATE_ROOT/state" "$STATE_ROOT/agents"; do
   _fs=$(stat -f -c %T "$_p" 2>/dev/null || echo "stat-failed")
   case "$_fs" in
@@ -87,9 +89,9 @@ for _p in "$STATE_ROOT/state" "$STATE_ROOT/agents"; do
       log "FATAL: $_p reports filesystem '$_fs'; expected local disk (ext4/xfs/...)."
       log "       Either the nested ephemeral mount is missing, or the EFS mount is"
       log "       shadowing it, or the filesystem could not be identified at all."
-      log "       Continuing would run SQLite on the network filesystem AND would"
-      log "       archive this owner's live databases to pre-migration-archive/ while"
-      log "       the container came up empty. Refusing to boot."
+      log "       Continuing would run SQLite on the network filesystem — ~95ms per"
+      log "       commit and the lock contention this layout exists to escape — so"
+      log "       the deploy would look green while fixing nothing. Refusing to boot."
       log "       Check mountPoints order in container-stack.ts and that the"
       log "       openclaw-state / openclaw-agents volumes actually attached."
       exit 1

@@ -10,7 +10,13 @@ STUBS="$WORK/stubs"; mkdir -p "$STUBS"
 cat > "$STUBS/aws" <<'EOF'
 #!/bin/sh
 # emits $AWS_STUB_KEYS as the list-objects-v2 --output text payload
-[ "$1" = "s3" ] && exit 0   # `aws s3 rm --recursive` (tombstone purge)
+if [ "$1" = "s3" ]; then      # `aws s3 rm` (tombstone purge)
+  echo "s3rm $*" >> "${S3RM_LOG:-/dev/null}"
+  case "$*" in
+    *--recursive*) [ "${AWS_STUB_PURGE_FAIL:-}" = "1" ] && exit 1 ;;
+  esac
+  exit 0
+fi
 [ "${AWS_STUB_FAIL:-}" = "1" ] && { echo "boom" >&2; exit 1; }
 printf '%s' "${AWS_STUB_KEYS:-None}"
 EOF
@@ -113,6 +119,21 @@ unset AWS_STUB_KEYS
 [ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "archive fill resurrected a tombstoned agent"
 echo "$out" | grep -q "fill window closed" || fail "tombstoned agent held the fill window open: $out"
 echo "PASS 2f tombstoned agent survives neither fill nor coverage"
+
+# ---- 2g. a partial purge must KEEP the tombstone: objects are deleted before
+# the marker, so a failure leaves the marker for the next boot to retry.
+E="$WORK/t2g/efs"; L="$WORK/t2g/local"; mkdir -p "$E" "$L"
+export AWS_STUB_KEYS="org_smoke/agents/gone/.o6-deleted	org_smoke/agents/gone/agent/openclaw-agent.sqlite/ltx/0/1-2.ltx"
+export S3RM_LOG="$WORK/t2g/s3rm.log"
+export AWS_STUB_PURGE_FAIL=1
+out=$(run_boot "$E" "$L" 2>&1) || fail "partial-purge run exited nonzero: $out"
+unset AWS_STUB_PURGE_FAIL
+echo "$out" | grep -q "keeping the tombstone so the next boot retries" || fail "did not keep tombstone on purge failure: $out"
+# the recursive call carries --exclude "*.o6-deleted", so match only the
+# NON-recursive invocation that would actually remove the marker
+grep -v -- "--recursive" "$S3RM_LOG" | grep -q "\.o6-deleted" && fail "deleted the marker despite a failed object purge"
+unset S3RM_LOG AWS_STUB_KEYS
+echo "PASS 2g partial purge keeps the tombstone"
 
 # ---- 3. migration path ----
 E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"

@@ -113,8 +113,18 @@ fi
 # one moment the delete is actually safe — and drop them from the restore set.
 for _t in $TOMBSTONES; do
   log "tombstone: purging deleted agent prefix $_t"
-  aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive >/dev/null 2>&1 \
-    || log "warn: tombstone purge failed for $_t (will retry next boot)"
+  # ORDER MATTERS: purge the replica objects FIRST and only drop the tombstone
+  # once they are gone. `aws s3 rm --recursive` deletes in arbitrary order, so
+  # a partial failure that happened to remove the marker first would leave
+  # surviving LTX objects with nothing marking them deleted — and the next boot
+  # would restore the agent we just deleted. Keeping the tombstone means the
+  # next boot simply retries.
+  if aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/" --recursive --exclude "*.o6-deleted" >/dev/null 2>&1; then
+    aws s3 rm "s3://$BUCKET/$OWNER_ID/$_t/.o6-deleted" >/dev/null 2>&1 \
+      || log "warn: tombstone marker for $_t survived its own purge (harmless; next boot retries)"
+  else
+    log "warn: replica purge failed for $_t — keeping the tombstone so the next boot retries"
+  fi
   DBS=$(printf '%s\n' $DBS | grep -v "^$_t/" || true)
 done
 

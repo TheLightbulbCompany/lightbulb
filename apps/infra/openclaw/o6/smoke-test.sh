@@ -154,7 +154,11 @@ echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite"
 reg=$(sqlite3 "$L/state/openclaw.sqlite" "SELECT path FROM agent_databases;")
 [ "$reg" = "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "registry should already be correct: $reg"
 [ -d "$E/pre-o6-archive/state" ] && [ -d "$E/pre-o6-archive/agents" ] || fail "EFS originals not archived"
-[ ! -d "$E/state" ] && [ ! -d "$E/agents" ] || fail "EFS hot dirs still present"
+# The originals are archived, but the mount DESTINATIONS are recreated empty —
+# the nested volumes need somewhere to mount, and an empty dir must not read as
+# live state on the next boot (case 3g).
+[ -z "$(ls -A "$E/state" 2>/dev/null)" ] || fail "EFS state/ still has content after archiving"
+[ -z "$(ls -A "$E/agents" 2>/dev/null)" ] || fail "EFS agents/ still has content after archiving"
 [ ! -f "$E/workspace-main/.openclaw/workspace-state.json" ] || fail "nested legacy workspace-state.json not removed"
 [ -f "$E/pre-o6-archive/.o6-fill-pending" ] || fail "fill window not armed at archive time"
 echo "PASS 3 migration"
@@ -236,6 +240,20 @@ echo "$out" | grep -q "efs_raw=1 archive=1" || fail "did not use BOTH sources: $
 [ -f "$L/state/openclaw.sqlite" ] || fail "archived state DB not recovered"
 [ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "live agent DB not recovered"
 echo "PASS 3f interrupted archive recovers both halves"
+
+# ---- 3g. after cutover the mount destinations exist again but are EMPTY.
+# That must NOT read as live EFS state: re-arming the fill window every boot
+# would resurrect archived data forever and re-archive onto the archive.
+E="$WORK/t3g/efs"; L="$WORK/t3g/local"
+mkdir -p "$E/state" "$E/agents" "$E/pre-o6-archive/state" "$L"   # empty mount dirs + a prior archive
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE t(x);"
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "post-cutover boot exited nonzero: $out"
+unset AWS_STUB_KEYS
+echo "$out" | grep -q "efs_raw=1" && fail "empty recreated mount dirs read as live EFS state: $out"
+[ ! -f "$E/pre-o6-archive/.o6-fill-pending" ] || fail "fill window re-armed on a post-cutover boot"
+[ ! -d "$E/pre-o6-archive/state/state" ] || fail "archived onto the existing archive (nested)"
+echo "PASS 3g empty recreated mount dirs are not live state"
 
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"

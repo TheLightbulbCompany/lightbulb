@@ -162,13 +162,22 @@ done
 # Unbounded, the frozen archive would be consulted on every boot forever, so an
 # agent deleted after cutover would be resurrected from it. The marker clears
 # as soon as the replica provably covers everything the archive holds.
+# EXISTENCE IS NOT ENOUGH. The nested mounts need their destination
+# directories to exist inside the parent EFS mount, so after the cutover moved
+# the originals into pre-o6-archive the runtime recreates them — EMPTY, on EFS.
+# An existence test would therefore see "live EFS state" on every subsequent
+# boot, re-arm the fill window forever, and try to re-archive onto an archive
+# that already exists. Test for CONTENT.
+o6_has_content() {
+  [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
+}
 FILL_RAW=0
 FILL_ARCHIVE=0
-if [ -d "$EFS_RAW/state" ] || [ -d "$EFS_RAW/agents" ]; then
+if o6_has_content "$EFS_RAW/state" || o6_has_content "$EFS_RAW/agents"; then
   FILL_RAW=1
 fi
 if [ -f "$FILL_MARKER" ]; then
-  if [ -d "$ARCHIVE/state" ] || [ -d "$ARCHIVE/agents" ]; then
+  if o6_has_content "$ARCHIVE/state" || o6_has_content "$ARCHIVE/agents"; then
     FILL_ARCHIVE=1
   fi
 fi
@@ -243,7 +252,16 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
     mkdir -p "$ARCHIVE" || exit 1
     : > "$FILL_MARKER" || exit 1
     for d in state agents; do
-      if [ -d "$EFS_RAW/$d" ]; then mv "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1; fi
+      o6_has_content "$EFS_RAW/$d" || continue
+      # Never move onto an existing archive: mv would nest it INSIDE
+      # ($ARCHIVE/state/state) and quietly bury the earlier copy.
+      _dest="$ARCHIVE/$d"
+      [ -e "$_dest" ] && _dest="$ARCHIVE/$d-$(date +%s)"
+      mv "$EFS_RAW/$d" "$_dest" || exit 1
+      # Recreate the mount destination so the next task can still mount over
+      # it — the runtime would do this anyway, but leaving it implicit invites
+      # exactly the confusion this block is guarding against.
+      mkdir -p "$EFS_RAW/$d" || exit 1
     done
     log "cutover complete; EFS originals archived at pre-o6-archive/ (fill window armed)"
   else

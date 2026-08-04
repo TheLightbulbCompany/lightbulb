@@ -54,12 +54,11 @@ EOF
 chmod +x "$STUBS/aws" "$STUBS/litestream" "$STUBS/stat"
 export PATH="$STUBS:$PATH"
 
-# $1 = EFS_RAW (the un-shadowed second view: pre-cutover state + archive live here)
-# $2 = STATE_ROOT (the EFS mount as the container sees it; state/ + agents/ are
+# $1 = STATE_ROOT (the EFS mount as the container sees it; state/ + agents/ are
 #      the nested ephemeral mounts, modelled here as ordinary empty dirs)
 run_boot() {
-  env RAW_DIR="$1" ROOT_DIR="$2" sh -c '
-    export ISOL8_EFS_RAW="$RAW_DIR" ISOL8_STATE_ROOT="$ROOT_DIR" \
+  env ROOT_DIR="$1" sh -c '
+    export ISOL8_STATE_ROOT="$ROOT_DIR" \
       LITESTREAM_S3_BUCKET=test-bucket ISOL8_OWNER_ID=org_smoke \
       ISOL8_LITESTREAM_CONFIG=/dev/null ISOL8_APP_CMD=/bin/true LS_LOG="$ROOT_DIR/../ls.log"
     exec sh "$0"
@@ -69,8 +68,8 @@ run_boot() {
 fail() { echo "SMOKE FAIL: $*"; exit 1; }
 
 # ---- 1. cold start ----
-E="$WORK/t1/efs"; L="$WORK/t1/local"; mkdir -p "$E" "$L"
-out=$(run_boot "$E" "$L" 2>&1) || fail "cold start exited nonzero: $out"
+L="$WORK/t1/local"; mkdir -p "$L"
+out=$(run_boot "$L" 2>&1) || fail "cold start exited nonzero: $out"
 echo "$out" | grep -q "cold start" || fail "cold-start branch not taken"
 # No symlinks in this design: nothing outside state/ and agents/ moves at all.
 for d in credentials identity devices extensions skills npm git tools media logs; do
@@ -80,9 +79,9 @@ grep -q "litestream replicate" "$WORK/t1/ls.log" || fail "replicate not exec'd"
 echo "PASS 1 cold start"
 
 # ---- 2. restore path ----
-E="$WORK/t2/efs"; L="$WORK/t2/local"; mkdir -p "$E" "$L"
+L="$WORK/t2/local"; mkdir -p "$L"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/0000/0000000000000001-0000000000000002.ltx	org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite/0001/0000000000000001-0000000000000003.ltx"
-out=$(run_boot "$E" "$L" 2>&1) || fail "restore run exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "restore run exited nonzero: $out"
 unset AWS_STUB_KEYS
 grep -q "restore -if-db-not-exists -if-replica-exists -integrity-check quick -o $L/state/openclaw.sqlite s3://test-bucket/org_smoke/state/openclaw.sqlite" "$WORK/t2/ls.log" || fail "state restore args"
 grep -q "\-o $L/agents/agent-a1/agent/openclaw-agent.sqlite s3://test-bucket/org_smoke/agents/agent-a1/agent/openclaw-agent.sqlite" "$WORK/t2/ls.log" || fail "agent restore args"
@@ -90,24 +89,24 @@ grep -q "\-o $L/agents/agent-a1/agent/openclaw-agent.sqlite s3://test-bucket/org
 echo "PASS 2 restore"
 
 # ---- 2b. enumeration failure is fatal ----
-E="$WORK/t2b/efs"; L="$WORK/t2b/local"; mkdir -p "$E" "$L"
-if (export AWS_STUB_FAIL=1; run_boot "$E" "$L" >/dev/null 2>&1); then fail "enumeration failure did not exit nonzero"; fi
+L="$WORK/t2b/local"; mkdir -p "$L"
+if (export AWS_STUB_FAIL=1; run_boot "$L" >/dev/null 2>&1); then fail "enumeration failure did not exit nonzero"; fi
 echo "PASS 2b enumeration fail-loud"
 
 # ---- 2c. objects present but unparseable => FAIL LOUD (a silent cold start
 # here would snapshot an empty DB forward over a live replica).
-E="$WORK/t2c/efs"; L="$WORK/t2c/local"; mkdir -p "$E" "$L"
+L="$WORK/t2c/local"; mkdir -p "$L"
 # NOTE: "…/openclaw.sqlite/0000/1.ltx" is the REAL S3 shape and parses fine —
 # use something that is genuinely not a replica object.
-if (export AWS_STUB_KEYS="org_smoke/some-unexpected-object.bin"; run_boot "$E" "$L" >/dev/null 2>&1); then
+if (export AWS_STUB_KEYS="org_smoke/some-unexpected-object.bin"; run_boot "$L" >/dev/null 2>&1); then
   fail "unparseable S3 keys did not abort"
 fi
 echo "PASS 2c unparseable keys fail loud"
 
 # ---- 2d. a tombstoned agent prefix is purged and never restored ----
-E="$WORK/t2d/efs"; L="$WORK/t2d/local"; mkdir -p "$E" "$L"
+L="$WORK/t2d/local"; mkdir -p "$L"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/0000/1-2.ltx	org_smoke/agents/gone/.replica-deleted"
-out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone run exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "tombstone run exited nonzero: $out"
 unset AWS_STUB_KEYS
 echo "$out" | grep -q "tombstone: purging deleted agent prefix agents/gone" || fail "tombstone not honored: $out"
 echo "$out" | grep -q "restore agents/gone" && fail "restored a tombstoned agent: $out"
@@ -116,35 +115,21 @@ echo "PASS 2d tombstoned agent purged, not restored"
 
 # ---- 2e. a prefix containing ONLY a tombstone (no LTX yet) must boot, not
 # crash-loop on the "recognized nothing" guard.
-E="$WORK/t2e/efs"; L="$WORK/t2e/local"; mkdir -p "$E" "$L"
+L="$WORK/t2e/local"; mkdir -p "$L"
 export AWS_STUB_KEYS="org_smoke/agents/justdeleted/.replica-deleted"
-out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone-only prefix crash-looped: $out"
+out=$(run_boot "$L" 2>&1) || fail "tombstone-only prefix crash-looped: $out"
 unset AWS_STUB_KEYS
 echo "$out" | grep -q "tombstone: purging deleted agent prefix agents/justdeleted" || fail "tombstone not processed: $out"
 echo "$out" | grep -q "FATAL" && fail "tombstone-only prefix hit the recognized-nothing guard: $out"
 echo "PASS 2e tombstone-only prefix boots"
 
-# ---- 2f. a tombstoned agent must NOT be resurrected by the archive fill, and
-# must not hold the fill window open.
-E="$WORK/t2f/efs"; L="$WORK/t2f/local"
-mkdir -p "$E/pre-migration-archive/state" "$E/pre-migration-archive/agents/gone/agent" "$L"
-: > "$E/pre-migration-archive/.migration-fill-pending"
-sqlite3 "$E/pre-migration-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
-sqlite3 "$E/pre-migration-archive/agents/gone/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/gone/.replica-deleted"
-out=$(run_boot "$E" "$L" 2>&1) || fail "tombstone-vs-fill run exited nonzero: $out"
-unset AWS_STUB_KEYS
-[ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "archive fill resurrected a tombstoned agent"
-echo "$out" | grep -q "fill window closed" || fail "tombstoned agent held the fill window open: $out"
-echo "PASS 2f tombstoned agent survives neither fill nor coverage"
-
 # ---- 2g. a partial purge must KEEP the tombstone: objects are deleted before
 # the marker, so a failure leaves the marker for the next boot to retry.
-E="$WORK/t2g/efs"; L="$WORK/t2g/local"; mkdir -p "$E" "$L"
+L="$WORK/t2g/local"; mkdir -p "$L"
 export AWS_STUB_KEYS="org_smoke/agents/gone/.replica-deleted	org_smoke/agents/gone/agent/openclaw-agent.sqlite/0000/1-2.ltx"
 export S3RM_LOG="$WORK/t2g/s3rm.log"
 export AWS_STUB_PURGE_FAIL=1
-out=$(run_boot "$E" "$L" 2>&1) || fail "partial-purge run exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "partial-purge run exited nonzero: $out"
 unset AWS_STUB_PURGE_FAIL
 echo "$out" | grep -q "keeping the tombstone so the next boot retries" || fail "did not keep tombstone on purge failure: $out"
 # the recursive call carries --exclude "*.replica-deleted", so match only the
@@ -158,10 +143,10 @@ echo "PASS 2g partial purge keeps the tombstone"
 # script collects per-PID; this case is what stops that regressing. Continuing
 # past a missed restore lets OpenClaw create an empty DB that litestream then
 # snapshots FORWARD over the live replica — the destruction the header warns of.
-E="$WORK/t2i/efs"; L="$WORK/t2i/local"; mkdir -p "$E" "$L"
+L="$WORK/t2i/local"; mkdir -p "$L"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/a1/agent/openclaw-agent.sqlite/0000/1-2.ltx"
 export LS_RESTORE_EXIT=1
-if out=$(run_boot "$E" "$L" 2>&1); then
+if out=$(run_boot "$L" 2>&1); then
   unset AWS_STUB_KEYS LS_RESTORE_EXIT
   fail "boot exited 0 despite a failed restore: $out"
 fi
@@ -172,9 +157,9 @@ echo "PASS 2i failed restore aborts the boot under concurrency"
 # ---- 2h. the OTHER litestream key layout (file replicas use an extra "ltx/"
 # segment). The parser must accept both — hard-coding either makes DBS empty,
 # and an empty DBS against a live replica is the worst failure mode here.
-E="$WORK/t2h/efs"; L="$WORK/t2h/local"; mkdir -p "$E" "$L"
+L="$WORK/t2h/local"; mkdir -p "$L"
 export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/ltx/0/1-2.ltx"
-out=$(run_boot "$E" "$L" 2>&1) || fail "file-layout keys exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "file-layout keys exited nonzero: $out"
 unset AWS_STUB_KEYS
 # EXACT, not a substring: the previous spelling matched
 # "restore state/openclaw.sqlite/ltx" too, so this case stayed green for weeks
@@ -184,170 +169,30 @@ echo "$out" | grep -qE "restore state/openclaw\.sqlite( |$)" || fail "file-layou
 echo "$out" | grep -q "restore state/openclaw.sqlite/ltx" && fail "file-layout key kept its ltx/ segment: $out"
 echo "PASS 2h both litestream key layouts parse"
 
-# ---- 3. migration path ----
-E="$WORK/t3/efs"; L="$WORK/t3/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$E/workspace-main"
-# Marker strings use the STATE_ROOT path: pre-cutover the container's state dir
-# IS that path, and $E is just a second view of the same filesystem.
-sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','$L/agents/main/agent/openclaw-agent.sqlite');"
-sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); \
-  INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite\",\"cwd\":\"$L/workspace-main\"}');"
-mkdir -p "$E/workspace-main/.openclaw"
-echo "seed" > "$E/workspace-main/.openclaw/workspace-state.json"
-mkdir -p "$L"
-out=$(run_boot "$E" "$L" 2>&1) || fail "migration exited nonzero: $out"
-echo "$out" | grep -q "cutover fill (efs_raw=1" || fail "migration branch not taken: $out"
-# NO path rewriting in this design — assert the markers are UNCHANGED, which
-# is exactly why the rewrite could be deleted.
-mk=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT entry_json FROM session_entries;")
-echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite" || fail "marker should already be correct: $mk"
-reg=$(sqlite3 "$L/state/openclaw.sqlite" "SELECT path FROM agent_databases;")
-[ "$reg" = "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "registry should already be correct: $reg"
-[ -d "$E/pre-migration-archive/state" ] && [ -d "$E/pre-migration-archive/agents" ] || fail "EFS originals not archived"
-# The originals are archived, but the mount DESTINATIONS are recreated empty —
-# the nested volumes need somewhere to mount, and an empty dir must not read as
-# live state on the next boot (case 3g).
-[ -z "$(ls -A "$E/state" 2>/dev/null)" ] || fail "EFS state/ still has content after archiving"
-[ -z "$(ls -A "$E/agents" 2>/dev/null)" ] || fail "EFS agents/ still has content after archiving"
-[ ! -f "$E/workspace-main/.openclaw/workspace-state.json" ] || fail "nested legacy workspace-state.json not removed"
-[ -f "$E/pre-migration-archive/.migration-fill-pending" ] || fail "fill window not armed at archive time"
-echo "PASS 3 migration"
-
-# ---- 3b. archive fallback: a prior boot archived EFS state but died before
-# any replica landed. The replacement must re-migrate FROM the archive, not
-# cold-start into an empty container.
-E="$WORK/t3b/efs"; L="$WORK/t3b/local"; mkdir -p "$E/pre-migration-archive/state" "$E/pre-migration-archive/agents/main/agent" "$L"
-: > "$E/pre-migration-archive/.migration-fill-pending"
-sqlite3 "$E/pre-migration-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT); INSERT INTO agent_databases VALUES('main','$L/agents/main/agent/openclaw-agent.sqlite');"
-sqlite3 "$E/pre-migration-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); \
-  INSERT INTO session_entries VALUES('s1','{\"sessionFile\":\"sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite\"}');"
-out=$(run_boot "$E" "$L" 2>&1) || fail "archive fallback exited nonzero: $out"
-echo "$out" | grep -q "cutover fill (efs_raw=0 archive=1)" || fail "archive branch not taken: $out"
-[ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "archive DB not restored to local"
-mk=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT entry_json FROM session_entries;")
-echo "$mk" | grep -q "sqlite:main:s1:$L/agents/main/agent/openclaw-agent.sqlite" || fail "archive marker changed: $mk"
-[ -d "$E/pre-migration-archive/state" ] || fail "archive was consumed instead of left in place"
-echo "PASS 3b archive fallback"
-
-# ---- 3c. a corrupt database must ABORT the cutover at the integrity gate,
-# leaving
-# the EFS originals unarchived (silently archiving them while markers still
-# point at EFS is the data-loss shape).
-E="$WORK/t3c/efs"; L="$WORK/t3c/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$L"
-sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
-# A corrupt agent DB. Deterministic regardless of UID — the deployed task
-# runs as root, where a chmod-based failure would simply be bypassed. With no
-# path rewriting in this design, the integrity gate is what catches it.
-printf 'this is not a sqlite database at all' > "$E/agents/main/agent/openclaw-agent.sqlite"
-if out=$(run_boot "$E" "$L" 2>&1); then
-  fail "corrupt DB did not abort: $out"
-fi
-echo "$out" | grep -qE "FATAL: (quick_check|integrity_check) failed" || fail "abort did not report a corruption failure: $out"
-[ -d "$E/state" ] && [ -d "$E/agents" ] || fail "EFS originals archived despite failed rewrite"
-echo "PASS 3c corrupt DB aborts cutover before archiving"
-
-# ---- 3d. partial replica + archive must MERGE (not be exclusive): a task that
-# died mid-first-upload leaves some DBs in S3 and the rest only in the archive.
-E="$WORK/t3d/efs"; L="$WORK/t3d/local"; mkdir -p "$E/pre-migration-archive/agents/main/agent" "$L"
-: > "$E/pre-migration-archive/.migration-fill-pending"
-sqlite3 "$E/pre-migration-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT); INSERT INTO session_entries VALUES('s1','{}');"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/0000000000000001-0000000000000002.ltx"
-out=$(run_boot "$E" "$L" 2>&1) || fail "partial-merge run exited nonzero: $out"
-unset AWS_STUB_KEYS
-[ -f "$L/state/openclaw.sqlite" ] || fail "replicated state DB not restored"
-[ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "archive-only agent DB was stranded by the partial replica"
-echo "PASS 3d partial replica merges with archive"
-
-# ---- 3e. once the replica covers the archive the window closes, and an agent
-# deleted after cutover (its replica prefix removed by the backend) must NOT be
-# resurrected from the frozen archive on the next boot.
-E="$WORK/t3e/efs"; L="$WORK/t3e/local"; mkdir -p "$E/pre-migration-archive/state" "$E/pre-migration-archive/agents/gone/agent" "$L"
-: > "$E/pre-migration-archive/.migration-fill-pending"
-sqlite3 "$E/pre-migration-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
-sqlite3 "$E/pre-migration-archive/agents/gone/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-# boot 1: S3 already holds BOTH archived DBs -> window closes, no fill needed
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/gone/agent/openclaw-agent.sqlite/0000/1-2.ltx"
-out=$(run_boot "$E" "$L" 2>&1) || fail "window-close run exited nonzero: $out"
-echo "$out" | grep -q "fill window closed" || fail "window did not close: $out"
-[ ! -f "$E/pre-migration-archive/.migration-fill-pending" ] || fail "marker not removed"
-# boot 2: the agent has been deleted (prefix gone from S3, archive untouched)
-rm -rf "$L"; mkdir -p "$L"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx"
-out=$(run_boot "$E" "$L" 2>&1) || fail "post-deletion run exited nonzero: $out"
-unset AWS_STUB_KEYS
-[ ! -f "$L/agents/gone/agent/openclaw-agent.sqlite" ] || fail "deleted agent resurrected from the archive"
-echo "PASS 3e closed window honors post-cutover deletion"
-
-# ---- 3f. interrupted archive: a task killed between the two mv's leaves state
-# archived and agents still live. Both halves must be recovered.
-E="$WORK/t3f/efs"; L="$WORK/t3f/local"
-mkdir -p "$E/pre-migration-archive/state" "$E/agents/main/agent" "$L"
-: > "$E/pre-migration-archive/.migration-fill-pending"
-sqlite3 "$E/pre-migration-archive/state/openclaw.sqlite" "CREATE TABLE agent_databases(agent_id TEXT, path TEXT);"
-sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-out=$(run_boot "$E" "$L" 2>&1) || fail "interrupted-archive run exited nonzero: $out"
-echo "$out" | grep -q "efs_raw=1 archive=1" || fail "did not use BOTH sources: $out"
-[ -f "$L/state/openclaw.sqlite" ] || fail "archived state DB not recovered"
-[ -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "live agent DB not recovered"
-echo "PASS 3f interrupted archive recovers both halves"
-
-# ---- 3g. after cutover the mount destinations exist again but are EMPTY.
-# That must NOT read as live EFS state: re-arming the fill window every boot
-# would resurrect archived data forever and re-archive onto the archive.
-E="$WORK/t3g/efs"; L="$WORK/t3g/local"
-mkdir -p "$E/state" "$E/agents" "$E/pre-migration-archive/state" "$L"   # empty mount dirs + a prior archive
-sqlite3 "$E/pre-migration-archive/state/openclaw.sqlite" "CREATE TABLE t(x);"
-export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx"
-out=$(run_boot "$E" "$L" 2>&1) || fail "post-cutover boot exited nonzero: $out"
-unset AWS_STUB_KEYS
-echo "$out" | grep -q "efs_raw=1" && fail "empty recreated mount dirs read as live EFS state: $out"
-[ ! -f "$E/pre-migration-archive/.migration-fill-pending" ] || fail "fill window re-armed on a post-cutover boot"
-[ ! -d "$E/pre-migration-archive/state/state" ] || fail "archived onto the existing archive (nested)"
-echo "PASS 3g empty recreated mount dirs are not live state"
-
-# ---- 3h. live content returning while a canonical archive exists must MERGE
-# into that archive (which fill/coverage actually read), never land in a side
-# directory nothing looks at.
-E="$WORK/t3h/efs"; L="$WORK/t3h/local"
-mkdir -p "$E/state" "$E/agents/newagent/agent" "$E/pre-migration-archive/state" "$E/pre-migration-archive/agents/old/agent" "$L"
-sqlite3 "$E/pre-migration-archive/state/openclaw.sqlite" "CREATE TABLE t(x);"
-sqlite3 "$E/pre-migration-archive/agents/old/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE t(x);"
-sqlite3 "$E/agents/newagent/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
-out=$(run_boot "$E" "$L" 2>&1) || fail "archive-collision run exited nonzero: $out"
-echo "$out" | grep -q "refusing to archive or merge" || fail "did not refuse to reconcile: $out"
-ls -d "$E"/pre-migration-archive/state-* "$E"/pre-migration-archive/agents-* 2>/dev/null && fail "created a side archive nothing reads"
-# BOTH copies must survive — reconciling would have to destroy one of them.
-[ -f "$E/pre-migration-archive/agents/old/agent/openclaw-agent.sqlite" ] || fail "pre-existing archive entry destroyed"
-[ -f "$E/agents/newagent/agent/openclaw-agent.sqlite" ] || fail "live agent destroyed"
-[ -f "$E/state/openclaw.sqlite" ] || fail "live state destroyed"
-# and the live data is what the container actually boots on
-[ -f "$L/agents/newagent/agent/openclaw-agent.sqlite" ] || fail "live agent not copied into the nested mount"
-echo "PASS 3h archive collision preserves both copies and boots on live data"
-
 # ---- 4. sentinel ----
-E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"
+L="$WORK/t4/local"; mkdir -p "$L/agents/main/agent"
 sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{}');"
 echo '{"agent_ids":["main"],"requested_at":"now"}' > "$L/clear-auth-profiles.json"
-out=$(run_boot "$E" "$L" 2>&1) || fail "sentinel run exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "sentinel run exited nonzero: $out"
 rows=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT count(*) FROM auth_profile_store;")
 [ "$rows" = "0" ] || fail "auth row not cleared"
 [ ! -f "$L/clear-auth-profiles.json" ] || fail "sentinel not removed"
 echo "PASS 4 sentinel"
 
 # ---- 4b. sentinel with no DB is benign ----
-E="$WORK/t4b/efs"; L="$WORK/t4b/local"; mkdir -p "$E" "$L"
+L="$WORK/t4b/local"; mkdir -p "$L"
 echo '{"agent_ids":["main"]}' > "$L/clear-auth-profiles.json"
-out=$(run_boot "$E" "$L" 2>&1) || fail "sentinel-no-db exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "sentinel-no-db exited nonzero: $out"
 [ ! -f "$L/clear-auth-profiles.json" ] || fail "sentinel not consumed"
 [ ! -f "$L/agents/main/agent/openclaw-agent.sqlite" ] || fail "junk DB created by sentinel apply"
 echo "PASS 4b sentinel benign"
 
 # ---- 4c. a non-benign sentinel failure must KEEP the sentinel (so the next
 # boot retries) instead of silently consuming the retry request.
-E="$WORK/t4c/efs"; L="$WORK/t4c/local"; mkdir -p "$E" "$L/agents/main/agent"
+L="$WORK/t4c/local"; mkdir -p "$L/agents/main/agent"
 printf 'not a database' > "$L/agents/main/agent/openclaw-agent.sqlite"
 echo '{"agent_ids":["main"]}' > "$L/clear-auth-profiles.json"
-out=$(run_boot "$E" "$L" 2>&1) || fail "sentinel-failure run exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "sentinel-failure run exited nonzero: $out"
 echo "$out" | grep -q "keeping sentinel" || fail "did not report keeping the sentinel: $out"
 [ -f "$L/clear-auth-profiles.json" ] || fail "sentinel consumed despite a non-benign failure"
 echo "PASS 4c sentinel retained on non-benign failure"
@@ -355,76 +200,23 @@ echo "PASS 4c sentinel retained on non-benign failure"
 # ---- 4d. a sentinel naming a NON-default agent must be ignored: only main's
 # row may be cleared (others merge from main; independent imports reuse the
 # one-time refresh token -> refresh_token_reused fan-out).
-E="$WORK/t4d/efs"; L="$WORK/t4d/local"; mkdir -p "$E" "$L/agents/other/agent"
+L="$WORK/t4d/local"; mkdir -p "$L/agents/other/agent"
 sqlite3 "$L/agents/other/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{}');"
 echo '{"agent_ids":["other"]}' > "$L/clear-auth-profiles.json"
-out=$(run_boot "$E" "$L" 2>&1) || fail "non-default sentinel run exited nonzero: $out"
+out=$(run_boot "$L" 2>&1) || fail "non-default sentinel run exited nonzero: $out"
 rows=$(sqlite3 "$L/agents/other/agent/openclaw-agent.sqlite" "SELECT count(*) FROM auth_profile_store;")
 [ "$rows" = "1" ] || fail "non-default agent auth row was cleared"
 echo "$out" | grep -q "ignoring non-default agent" || fail "no ignore log: $out"
 echo "PASS 4d non-default sentinel ignored"
-
-# ---- 4e. a sentinel reaching the cutover boot with hot_delete=succeeded is
-# redundant (the backend already cleared the row from the very database this
-# boot copies in) and must be DROPPED — applying it would clear however many
-# rotations happened since and force a re-import of a long-spent staged token.
-E="$WORK/t4e/efs"; L="$WORK/t4e/local"; mkdir -p "$E/agents/main/agent" "$E/state" "$L"
-sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE t(x);" >/dev/null
-sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{\"rotated\":true}');" >/dev/null
-echo '{"agent_ids":["main"],"requested_at":"2026-01-01T00:00:00Z","hot_delete":"succeeded"}' > "$L/clear-auth-profiles.json"
-out=$(run_boot "$E" "$L" 2>&1) || fail "cutover-with-sentinel run exited nonzero: $out"
-rows=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT count(*) FROM auth_profile_store;")
-[ "$rows" = "1" ] || fail "cutover boot applied a redundant sentinel and destroyed the live credential"
-[ ! -f "$L/clear-auth-profiles.json" ] || fail "redundant sentinel left behind to fire on a later boot"
-echo "$out" | grep -q "dropping redundant request carried into the cutover boot" || fail "no drop log: $out"
-echo "PASS 4e redundant sentinel dropped on the cutover boot"
-
-# ---- 4f. the SAME shape but hot_delete=failed MUST still apply. That is a
-# backend delete that lost to SQLITE_BUSY against the live writer, so the stale
-# row came across WITH the copy and this sentinel is its only retry request.
-# Dropping it strands a spent token while reporting success.
-E="$WORK/t4f/efs"; L="$WORK/t4f/local"; mkdir -p "$E/agents/main/agent" "$E/state" "$L"
-sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE t(x);" >/dev/null
-sqlite3 "$E/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{\"spent\":true}');" >/dev/null
-echo '{"agent_ids":["main"],"requested_at":"2026-01-01T00:00:00Z","hot_delete":"failed"}' > "$L/clear-auth-profiles.json"
-out=$(run_boot "$E" "$L" 2>&1) || fail "failed-hot-delete run exited nonzero: $out"
-rows=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT count(*) FROM auth_profile_store;")
-[ "$rows" = "0" ] || fail "sentinel was NOT applied after a failed hot delete — stale auth row survives"
-[ ! -f "$L/clear-auth-profiles.json" ] || fail "sentinel not consumed"
-echo "$out" | grep -q "applying on the cutover boot" || fail "no apply log: $out"
-echo "PASS 4f sentinel still applies when the hot delete failed"
-
-# ---- 3i. cutover must leave every migrated database in WAL ----
-# The originals come off EFS, where OpenClaw force-sets journal_mode=DELETE
-# because WAL is unsafe on NFS. litestream is exec'd moments after the fill and
-# immediately tries to establish a WAL; against a DELETE-mode database that
-# fails and it backs off exponentially. Observed on the first real cutover:
-# nine consecutive failures reaching a 4m16s backoff, replication dead for the
-# container's whole life, only the SIGTERM final-sync reaching S3.
-E="$WORK/t3i/efs"; L="$WORK/t3i/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$L"
-for db in "$E/state/openclaw.sqlite" "$E/agents/main/agent/openclaw-agent.sqlite"; do
-  sqlite3 "$db" "PRAGMA journal_mode=DELETE; CREATE TABLE t(x); INSERT INTO t VALUES(1);" >/dev/null
-  jm=$(sqlite3 "$db" "PRAGMA journal_mode;")
-  [ "$jm" = "delete" ] || fail "fixture setup: $db should start in delete mode, got $jm"
-done
-out=$(run_boot "$E" "$L" 2>&1) || fail "wal-conversion run exited nonzero: $out"
-echo "$out" | grep -q "cutover fill (efs_raw=1" || fail "migration branch not taken: $out"
-for db in "$L/state/openclaw.sqlite" "$L/agents/main/agent/openclaw-agent.sqlite"; do
-  jm=$(sqlite3 "$db" "PRAGMA journal_mode;")
-  [ "$jm" = "wal" ] || fail "migrated $db left in '$jm' — litestream will fail to establish a WAL"
-  [ "$(sqlite3 "$db" 'SELECT count(*) FROM t;')" = "1" ] || fail "row lost converting $db to WAL"
-done
-echo "PASS 3i cutover converts migrated databases to WAL"
-
 
 # ---- 5. the mount-order fence: if state/ or agents/ ends up on the network
 # filesystem (ECS mounts in array order, so a reordering shadows the ephemeral
 # volumes), boot must FAIL rather than silently run SQLite on NFS at ~95ms.
 # Simulated by pointing the check at a path the harness reports as nfs — we
 # cannot mount NFS here, so assert the guard's shape by stubbing `stat`.
-E="$WORK/t5/efs"; L="$WORK/t5/local"; mkdir -p "$E" "$L"
+L="$WORK/t5/local"; mkdir -p "$L"
 export STAT_STUB_NESTED=nfs4
-if out=$(run_boot "$E" "$L" 2>&1); then
+if out=$(run_boot "$L" 2>&1); then
   unset STAT_STUB_NESTED
   fail "boot did not abort when state/ was on nfs: $out"
 fi
@@ -437,9 +229,9 @@ echo "PASS 5 mount-order fence aborts on nfs"
 # matched nothing and PASSED — so any stat failure sailed through. That is the
 # defect that let a prod container archive an owner's live databases out from
 # under itself while coming up empty.
-E="$WORK/t5b/efs"; L="$WORK/t5b/local"; mkdir -p "$E" "$L"
+L="$WORK/t5b/local"; mkdir -p "$L"
 export STAT_STUB_NESTED=fail
-if out=$(run_boot "$E" "$L" 2>&1); then
+if out=$(run_boot "$L" 2>&1); then
   unset STAT_STUB_NESTED
   fail "boot continued when the filesystem could not be identified: $out"
 fi

@@ -255,6 +255,23 @@ echo "$out" | grep -q "efs_raw=1" && fail "empty recreated mount dirs read as li
 [ ! -d "$E/pre-o6-archive/state/state" ] || fail "archived onto the existing archive (nested)"
 echo "PASS 3g empty recreated mount dirs are not live state"
 
+# ---- 3h. live content returning while a canonical archive exists must MERGE
+# into that archive (which fill/coverage actually read), never land in a side
+# directory nothing looks at.
+E="$WORK/t3h/efs"; L="$WORK/t3h/local"
+mkdir -p "$E/state" "$E/agents/newagent/agent" "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/old/agent" "$L"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE t(x);"
+sqlite3 "$E/pre-o6-archive/agents/old/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
+sqlite3 "$E/state/openclaw.sqlite" "CREATE TABLE t(x);"
+sqlite3 "$E/agents/newagent/agent/openclaw-agent.sqlite" "CREATE TABLE session_entries(id TEXT, entry_json TEXT);"
+out=$(run_boot "$E" "$L" 2>&1) || fail "archive-merge run exited nonzero: $out"
+echo "$out" | grep -q "merging live" || fail "did not merge into the canonical archive: $out"
+ls -d "$E"/pre-o6-archive/state-* "$E"/pre-o6-archive/agents-* 2>/dev/null && fail "created a side archive nothing reads"
+[ -f "$E/pre-o6-archive/agents/old/agent/openclaw-agent.sqlite" ] || fail "pre-existing archive entry destroyed"
+[ -f "$E/pre-o6-archive/agents/newagent/agent/openclaw-agent.sqlite" ] || fail "live agent not merged into the archive"
+[ -z "$(ls -A "$E/state" 2>/dev/null)" ] || fail "live state not cleared after merge"
+echo "PASS 3h live content merges into the canonical archive"
+
 # ---- 4. sentinel ----
 E="$WORK/t4/efs"; L="$WORK/t4/local"; mkdir -p "$E" "$L/agents/main/agent"
 sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE auth_profile_store(store_key TEXT, store_json TEXT); INSERT INTO auth_profile_store VALUES('primary','{}');"

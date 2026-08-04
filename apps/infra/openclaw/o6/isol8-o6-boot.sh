@@ -215,12 +215,32 @@ if [ -f "$FILL_MARKER" ]; then
   fi
 fi
 
+# Copy anything the destination does not already have, then VERIFY.
+# `cp -an` cannot be trusted by exit status: GNU coreutils returns 0 when it
+# skips an existing file, BSD returns 1 for the same skip. The image is Debian,
+# but an exit code that means opposite things on two platforms is not something
+# to build recovery on — so the copy's status is advisory and the postcondition
+# (every source file now present at the destination) is what decides.
+o6_copy_missing() {
+  _s=$1; _d=$2
+  [ -d "$_s" ] || return 0
+  mkdir -p "$_d" || return 1
+  cp -an "$_s/." "$_d/" 2>/dev/null || true
+  _absent=$( (cd "$_s" && find . -type f 2>/dev/null) | while IFS= read -r _f; do
+    [ -e "$_d/$_f" ] || echo "$_f"
+  done )
+  if [ -n "$_absent" ]; then
+    log "FATAL: copy from $_s left files missing at $_d:"
+    printf '%s\n' "$_absent" | head -5 | sed 's/^/         /'
+    return 1
+  fi
+  return 0
+}
+
 o6_fill_from() {
   _src=$1
   for _d in state agents; do
-    if [ -d "$_src/$_d" ]; then
-      cp -an "$_src/$_d/." "$STATE_ROOT/$_d/" || return 1
-    fi
+    o6_copy_missing "$_src/$_d" "$STATE_ROOT/$_d" || return 1
   done
   return 0
 }
@@ -260,14 +280,24 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
     : > "$FILL_MARKER" || exit 1
     for d in state agents; do
       o6_has_content "$EFS_RAW/$d" || continue
-      # Never move onto an existing archive: mv would nest it INSIDE
-      # ($ARCHIVE/state/state) and quietly bury the earlier copy.
-      _dest="$ARCHIVE/$d"
-      [ -e "$_dest" ] && _dest="$ARCHIVE/$d-$(date +%s)"
-      mv "$EFS_RAW/$d" "$_dest" || exit 1
+      if [ -e "$ARCHIVE/$d" ]; then
+        # Anomalous: a canonical archive already exists AND live content came
+        # back (an operator restore, or a rollback). Merge into the canonical
+        # archive rather than parking it under a timestamped name — the fill
+        # and coverage logic only ever read $ARCHIVE/state and $ARCHIVE/agents,
+        # so a side directory would be invisible to recovery and the databases
+        # in it unreachable if the task died before they reached S3.
+        # cp -an keeps the pre-existing archive authoritative and adds only
+        # what is not already there, so nothing is destroyed either way.
+        log "warn: $ARCHIVE/$d already exists — merging live $d into it instead of replacing"
+        o6_copy_missing "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1
+        rm -rf "${EFS_RAW:?}/$d" || exit 1
+      else
+        mv "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1
+      fi
       # Recreate the mount destination so the next task can still mount over
       # it — the runtime would do this anyway, but leaving it implicit invites
-      # exactly the confusion this block is guarding against.
+      # exactly the confusion the content test above is guarding against.
       mkdir -p "$EFS_RAW/$d" || exit 1
     done
     log "cutover complete; EFS originals archived at pre-o6-archive/ (fill window armed)"

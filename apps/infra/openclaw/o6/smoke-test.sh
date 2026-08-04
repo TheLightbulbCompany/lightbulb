@@ -343,6 +343,28 @@ rows=$(sqlite3 "$L/agents/main/agent/openclaw-agent.sqlite" "SELECT count(*) FRO
 echo "$out" | grep -q "dropping stale request carried into the cutover boot" || fail "no stale-sentinel log: $out"
 echo "PASS 4e stale sentinel dropped on the cutover boot"
 
+# ---- 3i. cutover must leave every migrated database in WAL ----
+# The originals come off EFS, where OpenClaw force-sets journal_mode=DELETE
+# because WAL is unsafe on NFS. litestream is exec'd moments after the fill and
+# immediately tries to establish a WAL; against a DELETE-mode database that
+# fails and it backs off exponentially. Observed on the first real cutover:
+# nine consecutive failures reaching a 4m16s backoff, replication dead for the
+# container's whole life, only the SIGTERM final-sync reaching S3.
+E="$WORK/t3i/efs"; L="$WORK/t3i/local"; mkdir -p "$E/state" "$E/agents/main/agent" "$L"
+for db in "$E/state/openclaw.sqlite" "$E/agents/main/agent/openclaw-agent.sqlite"; do
+  sqlite3 "$db" "PRAGMA journal_mode=DELETE; CREATE TABLE t(x); INSERT INTO t VALUES(1);" >/dev/null
+  jm=$(sqlite3 "$db" "PRAGMA journal_mode;")
+  [ "$jm" = "delete" ] || fail "fixture setup: $db should start in delete mode, got $jm"
+done
+out=$(run_boot "$E" "$L" 2>&1) || fail "wal-conversion run exited nonzero: $out"
+echo "$out" | grep -q "cutover fill (efs_raw=1" || fail "migration branch not taken: $out"
+for db in "$L/state/openclaw.sqlite" "$L/agents/main/agent/openclaw-agent.sqlite"; do
+  jm=$(sqlite3 "$db" "PRAGMA journal_mode;")
+  [ "$jm" = "wal" ] || fail "migrated $db left in '$jm' — litestream will fail to establish a WAL"
+  [ "$(sqlite3 "$db" 'SELECT count(*) FROM t;')" = "1" ] || fail "row lost converting $db to WAL"
+done
+echo "PASS 3i cutover converts migrated databases to WAL"
+
 # ---- 5. the mount-order fence: if state/ or agents/ ends up on the network
 # filesystem (ECS mounts in array order, so a reordering shadows the ephemeral
 # volumes), boot must FAIL rather than silently run SQLite on NFS at ~95ms.

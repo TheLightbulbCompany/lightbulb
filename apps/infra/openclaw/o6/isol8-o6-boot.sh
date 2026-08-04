@@ -273,6 +273,26 @@ if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
     [ -f "$db" ] || continue
     ok=$(sqlite3 "$db" "PRAGMA integrity_check;" | head -1)
     [ "$ok" = "ok" ] || { log "FATAL: integrity_check failed for $db: $ok"; exit 1; }
+
+    # Convert to WAL here, while we still own these files exclusively.
+    #
+    # They were just copied off EFS, where OpenClaw force-sets
+    # journal_mode=DELETE because WAL is unsafe on NFS — so they arrive as
+    # rollback-journal databases with no -wal sidecar. litestream is exec'd
+    # moments from now and immediately tries to establish one; against a
+    # DELETE-mode database that fails ("ensure wal exists: disk I/O error"),
+    # and litestream backs off EXPONENTIALLY. Observed on the first real
+    # cutover: nine consecutive failures reaching a 4m16s backoff, replication
+    # dead for the container's entire 5.5-minute life, with only the graceful
+    # SIGTERM final-sync ever reaching S3. The gateway does convert these to
+    # WAL when it opens them, but by then litestream is already deep in
+    # backoff — the race is not winnable from litestream's side.
+    #
+    # A hard kill in that window would leave the cutover unreplicated. The
+    # armed fill marker plus pre-o6-archive/ still recovers it, but that is a
+    # safety net doing a job the design should not need.
+    jm=$(sqlite3 "$db" "PRAGMA journal_mode=WAL;" 2>&1 | head -1)
+    [ "$jm" = "wal" ] || { log "FATAL: could not put $db into WAL after cutover (got '$jm')"; exit 1; }
   done
 
   # A stale legacy workspace-state.json would re-trip the migration gate the

@@ -5,16 +5,9 @@ import { Download, Paperclip, Trash2, Upload } from "lucide-react";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { useIssueAttachments } from "./hooks/useIssueAttachments";
 import type { IssueAttachment } from "@/components/teams/shared/types";
+import { formatBytes } from "@/lib/utils";
 
 /** Human-readable byte size. Local (no shared helper exists in the teams tree). */
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  const value = bytes / 1024 ** i;
-  return `${i === 0 ? value : value.toFixed(1)} ${units[i]}`;
-}
-
 function AttachmentRow({
   attachment,
   onDownload,

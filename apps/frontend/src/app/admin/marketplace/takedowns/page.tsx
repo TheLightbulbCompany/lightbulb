@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { listRecentTakedowns } from "@/app/admin/_actions/marketplace";
+import { truncate } from "@/lib/utils";
 
 export const metadata = { title: "Takedowns · Admin" };
 // Always re-fetch on navigation so the audit-log view reflects takedowns
@@ -21,11 +22,6 @@ interface TakedownRow {
 }
 
 const BASIS_TRUNCATE = 240;
-
-function truncate(s: string | undefined, max: number): string {
-  if (!s) return "";
-  return s.length <= max ? s : s.slice(0, max).trimEnd() + "…";
-}
 
 /**
  * Recent takedowns (audit-log view) — Server Component.
@@ -104,7 +100,7 @@ export default async function RecentTakedownsPage() {
               </dl>
               {td.basis_md && (
                 <p className="whitespace-pre-line rounded bg-zinc-950 p-3 text-sm text-zinc-200">
-                  {truncate(td.basis_md, BASIS_TRUNCATE)}
+                  {truncate(td.basis_md ?? "", BASIS_TRUNCATE)}
                 </p>
               )}
             </li>

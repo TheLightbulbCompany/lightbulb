@@ -285,17 +285,18 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # reprovision would then restore the state this endpoint just wiped. A
     # drain timeout is a failure, not a licence to delete anyway. The budget
     # exceeds the container's stopTimeout (120s).
-    try:
-        drained = await ecs_mgr.wait_until_drained(owner_id, timeout_s=180.0)
-    except Exception as e:  # noqa: BLE001 — treated as not-drained below
-        logger.warning("drain wait failed for %s: %s", owner_id, e)
-        drained = False
-    if not drained:
-        failures.append("litestream_replicas: container did not drain; replicas left intact")
-    elif not await delete_replica_prefix(owner_id):
-        failures.append("litestream_replicas: delete failed (stale state will restore)")
-    else:
-        deleted["litestream_replicas"] = True
+    if settings.LITESTREAM_BUCKET:
+        try:
+            drained = await ecs_mgr.wait_until_drained(owner_id, timeout_s=180.0)
+        except Exception as e:  # noqa: BLE001 — treated as not-drained below
+            logger.warning("drain wait failed for %s: %s", owner_id, e)
+            drained = False
+        if not drained:
+            failures.append("litestream_replicas: container did not drain; replicas left intact")
+        elif not await delete_replica_prefix(owner_id):
+            failures.append("litestream_replicas: delete failed (stale state will restore)")
+        else:
+            deleted["litestream_replicas"] = True
 
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
     # Per-step try/except so one transient throttle on (e.g.) container_repo

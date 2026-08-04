@@ -554,6 +554,8 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         # visible, retryable failed step beats a racy delete reported as
         # success. Budget exceeds the container's stopTimeout (120s) so a
         # normal full-length drain does not read as a timeout.
+        if not settings.LITESTREAM_BUCKET:
+            return "skipped (EFS layout — no replicas)"
         if ids.container:
             if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=180.0):
                 raise RuntimeError(

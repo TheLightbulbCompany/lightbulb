@@ -216,6 +216,25 @@ if [ -f "$FILL_MARKER" ]; then
     rm -f "$FILL_MARKER"
     FILL_ARCHIVE=0
     log "replica covers the full archive — fill window closed"
+    # ...and REAP it. The archive is crash-safety for exactly one window — the
+    # gap between "copied onto ephemeral disk" and "durable in S3" — and that
+    # window just provably closed: every archived database is covered by the
+    # replica. Keeping it past this point buys nothing and costs plenty: a full
+    # per-owner copy of state/+agents/ on EFS forever, including auth_profile_store
+    # rows holding usable OAuth refresh tokens. It is not a rollback path either
+    # — a rollback restores from S3, which has CURRENT data, where the archive is
+    # frozen at cutover and gets staler every day it survives.
+    #
+    # Detached, never synchronous: a recursive unlink over NFS is exactly the
+    # storm the startup command's legacy-dir comments warn about, and this runs
+    # inside the health-check start period. Ordering is load-bearing — the
+    # marker is already gone above, so a container dying mid-delete leaves a
+    # partial archive that can never arm a fill (FILL_ARCHIVE requires the
+    # marker), making a torn delete inert rather than dangerous.
+    if [ -d "$ARCHIVE" ]; then
+      log "reaping pre-o6-archive in the background (replica is now the durable copy)"
+      ( rm -rf "$ARCHIVE" >/dev/null 2>&1 & )
+    fi
   fi
 fi
 

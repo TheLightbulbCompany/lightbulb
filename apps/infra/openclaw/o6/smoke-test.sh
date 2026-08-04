@@ -365,6 +365,43 @@ for db in "$L/state/openclaw.sqlite" "$L/agents/main/agent/openclaw-agent.sqlite
 done
 echo "PASS 3i cutover converts migrated databases to WAL"
 
+# ---- 3j. closing the fill window must REAP the archive ----
+# The archive is crash-safety for one window — copied-to-ephemeral-disk until
+# durable-in-S3 — and keeping it past that costs a full per-owner copy of
+# state/+agents/ on EFS forever, auth_profile_store rows included.
+E="$WORK/t3j/efs"; L="$WORK/t3j/local"
+mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/main/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE t(x);" >/dev/null
+sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE t(x);" >/dev/null
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx	org_smoke/agents/main/agent/openclaw-agent.sqlite/0000/1-2.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "archive-reap run exited nonzero: $out"
+unset AWS_STUB_KEYS
+echo "$out" | grep -q "fill window closed" || fail "window did not close: $out"
+echo "$out" | grep -q "reaping pre-o6-archive" || fail "no reap log: $out"
+# The reap is deliberately detached so it never blocks boot over NFS.
+i=0; while [ -d "$E/pre-o6-archive" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+[ ! -d "$E/pre-o6-archive" ] || fail "archive survived the window close"
+echo "PASS 3j closing the fill window reaps the archive"
+
+# ---- 3k. the archive must NOT be reaped while the window is still open ----
+# Coverage is the whole predicate: if the replica does not yet hold every
+# archived database, the archive is still the ONLY durable copy of the gap.
+E="$WORK/t3k/efs"; L="$WORK/t3k/local"
+mkdir -p "$E/pre-o6-archive/state" "$E/pre-o6-archive/agents/main/agent" "$L"
+: > "$E/pre-o6-archive/.o6-fill-pending"
+sqlite3 "$E/pre-o6-archive/state/openclaw.sqlite" "CREATE TABLE t(x); INSERT INTO t VALUES(1);" >/dev/null
+sqlite3 "$E/pre-o6-archive/agents/main/agent/openclaw-agent.sqlite" "CREATE TABLE t(x);" >/dev/null
+# S3 covers the state DB but NOT the agent DB -> window stays open
+export AWS_STUB_KEYS="org_smoke/state/openclaw.sqlite/0000/1-2.ltx"
+out=$(run_boot "$E" "$L" 2>&1) || fail "open-window run exited nonzero: $out"
+unset AWS_STUB_KEYS
+echo "$out" | grep -q "fill window closed" && fail "window closed without full replica coverage: $out"
+sleep 0.5
+[ -d "$E/pre-o6-archive" ] || fail "archive reaped while the fill window was still open"
+[ -f "$E/pre-o6-archive/.o6-fill-pending" ] || fail "marker removed while the window was still open"
+echo "PASS 3k archive survives while the fill window is open"
+
 # ---- 5. the mount-order fence: if state/ or agents/ ends up on the network
 # filesystem (ECS mounts in array order, so a reordering shadows the ephemeral
 # volumes), boot must FAIL rather than silently run SQLite on NFS at ~95ms.

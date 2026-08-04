@@ -51,11 +51,10 @@ function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
   });
 }
 
-// The three pieces the boot script cannot supply itself: the replica bucket
-// name (LITESTREAM_S3_BUCKET), the second EFS view it archives through
-// (/efs-raw), and the nested ephemeral volumes that give WAL back. Mount
-// ORDER is load-bearing — ECS mounts in literal mountPoints[] order, so the
-// EFS views must precede the nested ephemeral mounts or EFS covers them and
+// The two pieces the boot script cannot supply itself: the replica bucket name
+// (LITESTREAM_S3_BUCKET) and the nested ephemeral volumes that give WAL back.
+// Mount ORDER is load-bearing — ECS mounts in literal mountPoints[] order, so
+// the EFS mount must precede the nested ephemeral mounts or EFS covers them and
 // every commit silently goes back to NFS.
 function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void {
   template.hasResourceProperties("AWS::S3::Bucket", {
@@ -71,7 +70,6 @@ function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void 
         ]),
         MountPoints: [
           Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
-          Match.objectLike({ ContainerPath: "/efs-raw", SourceVolume: "openclaw-workspace-raw" }),
           Match.objectLike({ ContainerPath: "/home/node/.openclaw/state", SourceVolume: "openclaw-state" }),
           Match.objectLike({ ContainerPath: "/home/node/.openclaw/agents", SourceVolume: "openclaw-agents" }),
         ],
@@ -80,17 +78,20 @@ function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void 
   });
 
   // Volume DECLARATION order is incidental (unlike mountPoints order above),
-  // so match by name. The raw view must carry an efsVolumeConfiguration —
-  // that is what makes the backend's per-user clone rewrite its accessPointId
-  // alongside the primary mount; the hot pair must carry none, or they stop
-  // being local disk.
+  // so match by name. The workspace volume must carry an efsVolumeConfiguration
+  // — that is what makes the backend's per-user clone rewrite its
+  // accessPointId; the hot pair must carry none, or they stop being local disk.
   const taskDef = Object.values(
     template.findResources("AWS::ECS::TaskDefinition"),
   )[0] as { Properties: { Volumes: { Name: string; EFSVolumeConfiguration?: unknown }[] } };
   const byName = Object.fromEntries(taskDef.Properties.Volumes.map((v) => [v.Name, v]));
-  expect(byName["openclaw-workspace-raw"].EFSVolumeConfiguration).toBeDefined();
+  expect(byName["openclaw-workspace"].EFSVolumeConfiguration).toBeDefined();
   expect(byName["openclaw-state"]).toEqual({ Name: "openclaw-state" });
   expect(byName["openclaw-agents"]).toEqual({ Name: "openclaw-agents" });
+  // The second EFS view is retired: it existed only so the one-time EFS->local
+  // migration could rename the pre-cutover databases out from under a nested
+  // mountpoint. Assert it stays gone.
+  expect(byName["openclaw-workspace-raw"]).toBeUndefined();
 }
 
 describe("ContainerStack — dev", () => {

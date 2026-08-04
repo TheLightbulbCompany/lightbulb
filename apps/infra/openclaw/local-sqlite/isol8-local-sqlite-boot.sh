@@ -26,12 +26,11 @@
 #      silently put SQLite back on NFS)
 #   2. enumerate S3: agent tombstones + replicated databases
 #   3. restore every replicated database, integrity-checked
-#   4. fill anything still missing from the un-shadowed EFS view (or a prior
-#      boot's archive), integrity-gate, then archive the originals
+#   4. cold-start log (nothing to migrate — see the note there)
 #   5. apply the backend's clear-auth sentinel
 #   6. exec litestream replicate -exec <doctor+gateway>
 #
-# Fail-loud: any enumeration/restore/migration error exits non-zero so ECS
+# Fail-loud: any enumeration or restore error exits non-zero so ECS
 # replaces the task. Proceeding past a missed restore would let OpenClaw create
 # a fresh empty database that litestream then snapshots FORWARD over the S3
 # replica — silent data destruction, the one outcome this script must prevent.
@@ -43,10 +42,6 @@ LITESTREAM_CONFIG="${ISOL8_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
 APP_CMD="${ISOL8_APP_CMD:-/usr/local/bin/isol8-local-sqlite-app.sh}"
 
 log() { echo "[storage-boot] $*"; }
-
-# Scratch file for capturing sqlite3 stderr without folding it into $(...).
-_walerr="${TMPDIR:-/tmp}/sqlite-wal-err.$$"
-trap 'rm -f "$_walerr"' EXIT
 
 # Dependency preflight. All of these are baked into the extended image, but a
 # missing binary would otherwise degrade silently rather than loudly: no jq

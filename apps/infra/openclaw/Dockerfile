@@ -592,7 +592,7 @@ RUN set -eux; \
 
 
 # ---- O6: Litestream + local-SQLite boot chain ----
-# Inert unless the CDK startupCommand invokes isol8-o6-boot.sh — only envs
+# Inert unless the CDK startupCommand invokes isol8-local-sqlite-boot.sh — only envs
 # promoted to storage="local-sqlite" in openclaw-version.json do, so this
 # image remains fully backward compatible with the EFS layout. Version pinned
 # with the checksum from the release's published checksums.txt; v0.5.15 is
@@ -612,10 +612,10 @@ RUN set -eux; \
 # it itself — this is insurance that keeps the boot chain working if that ever
 # changes, and it costs one empty directory.
 RUN mkdir -p /openclaw-local && chown node:node /openclaw-local
-COPY o6/isol8-o6-boot.sh /usr/local/bin/isol8-o6-boot.sh
-COPY o6/isol8-o6-app.sh /usr/local/bin/isol8-o6-app.sh
-COPY o6/isol8-litestream.yml /etc/isol8-litestream.yml
-RUN chmod 0755 /usr/local/bin/isol8-o6-boot.sh /usr/local/bin/isol8-o6-app.sh
+COPY local-sqlite/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-boot.sh
+COPY local-sqlite/isol8-local-sqlite-app.sh /usr/local/bin/isol8-local-sqlite-app.sh
+COPY local-sqlite/isol8-litestream.yml /etc/isol8-litestream.yml
+RUN chmod 0755 /usr/local/bin/isol8-local-sqlite-boot.sh /usr/local/bin/isol8-local-sqlite-app.sh
 
 # ---- Restore runtime context ----
 USER node

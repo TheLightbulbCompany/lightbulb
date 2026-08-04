@@ -274,7 +274,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         logger.warning("EFS rm -rf failed for %s: %s", owner_id, e)
         failures.append(f"efs: {e}")
 
-    # ---- Litestream S3 replicas (O6 local-sqlite layout) --------------------
+    # ---- Litestream S3 replicas (local-sqlite layout) --------------------
     # Without this, the reprovisioned container's boot script RESTORES the
     # pre-wipe hot state from S3 and the "empty slate" contract silently
     # breaks. No-op on the EFS layout (LITESTREAM_BUCKET unset).

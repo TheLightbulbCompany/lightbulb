@@ -1483,7 +1483,7 @@ async def _hot_swap_provider(
         # re-imports on the next run — without this, a switch/reconnect into
         # chatgpt_oauth keeps using the old (often spent) token. See
         # project_openclaw_oauth_auth_model. Best-effort: a fresh container has no
-        # row (no-op) and the EFS file alone still seeds a cold boot. On the O6
+        # row (no-op) and the EFS file alone still seeds a cold boot. On the local-sqlite
         # local-SQLite layout the row lives on container-local disk — the clear
         # returns "restart_required" after writing a boot sentinel, and only a
         # task replacement applies it, so the swap cannot stay hot: fall back

@@ -335,7 +335,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_absent="directory does not exist",
     )
 
-    # O6 replica prefix — existence would need an S3 List per preview; the
+    # Litestream replica prefix — existence would need an S3 List per preview; the
     # delete is idempotent, so mirror the usage_counters convention: show
     # would_delete when the env replicates at all, skipped on the EFS layout.
     _preview_step(
@@ -538,7 +538,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     await _step(steps, system="efs_workspace_dir", action="delete_user_dir", fn=_s4)
 
-    # --- Step 4b: Litestream S3 replicas (O6 local-sqlite layout) ----------
+    # --- Step 4b: Litestream S3 replicas (local-sqlite layout) ----------
     # The container boot script restores whatever survives under the owner's
     # replica prefix — leaving it behind resurrects pre-wipe sessions, device
     # trust, and auth_profile_store rows (live OAuth refresh tokens) on the

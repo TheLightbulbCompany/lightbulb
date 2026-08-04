@@ -358,7 +358,7 @@ export class ContainerStack extends cdk.Stack {
           ],
           resources: ["*"],
         }),
-        // O6 local-sqlite layout: the boundary must CAP (not grant) S3 access
+        // local-sqlite layout: the boundary must CAP (not grant) S3 access
         // to the Litestream replica bucket, or the per-owner inline
         // "owner-litestream-s3" policy the backend mints would be silently
         // nullified (effective perms = inline ∩ boundary). Bucket-wide here —
@@ -402,7 +402,7 @@ export class ContainerStack extends cdk.Stack {
     // behind, so a later re-promotion fails with "bucket already exists"
     // until it is imported or deleted. This is not a hidden trap so much as
     // the shape of the whole rollback: containers that already migrated have
-    // their pre-cutover state in EFS pre-o6-archive/, and returning them to
+    // their pre-cutover state in EFS pre-migration-archive/, and returning them to
     // the EFS layout requires restoring that archive too. Rollback is an ops
     // runbook (see docs/superpowers/plans/2026-08-03-o6-sqlite-off-efs.md),
     // never a bare flag flip.
@@ -691,7 +691,7 @@ export class ContainerStack extends cdk.Stack {
       // destructive are pre-migration old-layout ones — those stay frozen
       // until reprovisioned and must never be rolled onto this task def.
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
-      // launch. Under the O6 local-sqlite layout BOTH are owned by the baked
+      // launch. Under the local-sqlite layout BOTH are owned by the baked
       // boot script: it restores hot SQLite state from S3 (or migrates it off
       // EFS on the first cutover boot), then runs doctor + gateway as a
       // litestream-supervised child so every committed write replicates and a
@@ -702,8 +702,8 @@ export class ContainerStack extends cdk.Stack {
             // non-bootstrap tag — so a storage flip paired with a tag built
             // before the O6 chain existed would otherwise die on a bare
             // "not found". Diagnose it instead.
-            "[ -x /usr/local/bin/isol8-o6-boot.sh ] || { echo '[boot] FATAL: storage=local-sqlite but this image has no O6 boot chain. Pin a tag built from a commit containing apps/infra/openclaw/o6/.'; exit 1; }",
-            "exec /usr/local/bin/isol8-o6-boot.sh",
+            "[ -x /usr/local/bin/isol8-local-sqlite-boot.sh ] || { echo '[boot] FATAL: storage=local-sqlite but this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }",
+            "exec /usr/local/bin/isol8-local-sqlite-boot.sh",
           ]
         : [
             "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
@@ -772,7 +772,7 @@ export class ContainerStack extends cdk.Stack {
         // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
         // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
         OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
-        // O6 local-sqlite layout: the state root moves to container-local
+        // local-sqlite layout: the state root moves to container-local
         // disk (WAL returns — the journal-mode probe classifies the lexical
         // path against mountinfo, so it must live OUTSIDE the EFS
         // mountpoint's subtree), while openclaw.json stays pinned to the EFS
@@ -782,7 +782,7 @@ export class ContainerStack extends cdk.Stack {
         // identity/, devices/, extensions/, skills/, npm/, git/, tools/)
         // back onto EFS. LITESTREAM_S3_BUCKET + per-user ISOL8_OWNER_ID (from
         // the backend) parameterize replication: s3://bucket/{owner}/<db>.
-        // O6 local-sqlite layout: the state dir does NOT move. Two config-less
+        // local-sqlite layout: the state dir does NOT move. Two config-less
         // ECS volumes are mounted NESTED inside the EFS mount at
         // .openclaw/state and .openclaw/agents (real ext4 on the task NVMe —
         // measured 1.38ms/commit vs ~95ms on the EFS mount), so WAL comes back
@@ -882,7 +882,7 @@ export class ContainerStack extends cdk.Stack {
       readOnly: false,
     });
 
-    // O6 local-sqlite layout. Mount ORDER is load-bearing: ECS mounts in the
+    // local-sqlite layout. Mount ORDER is load-bearing: ECS mounts in the
     // literal mountPoints[] order rather than by depth, so the second EFS view
     // is registered here — after the primary EFS mount above and BEFORE the
     // nested ephemeral volumes below. If that order ever inverts, the EFS

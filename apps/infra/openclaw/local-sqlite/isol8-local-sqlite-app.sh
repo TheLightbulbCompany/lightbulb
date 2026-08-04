@@ -1,5 +1,5 @@
 #!/bin/sh
-# isol8-o6-app.sh — the litestream -exec child: doctor then gateway.
+# isol8-local-sqlite-app.sh — the litestream -exec child: doctor then gateway.
 #
 # exec makes the gateway the actual child process, so litestream's SIGTERM
 # forwarding reaches it directly. litestream performs its final replica sync

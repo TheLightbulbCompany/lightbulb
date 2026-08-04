@@ -126,7 +126,7 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
         logger.warning("push_oauth_credential: stage/clear failed for owner=%s: %s", owner_id, exc)
         return False
     if cleared == "restart_required":
-        # O6 local-SQLite layout: the auth row lives on container-local disk;
+        # local-sqlite layout: the auth row lives on container-local disk;
         # the clear left a boot sentinel on EFS, and only a task replacement
         # applies it. Bounce a RUNNING container asynchronously — this path
         # backs /oauth/poll, whose response must stay fast, and a cold or
@@ -137,7 +137,7 @@ async def push_oauth_credential_to_container(*, owner_id: str, connector_id: str
 
 
 async def _restart_for_sentinel_apply(owner_id: str) -> None:
-    """Bounce a RUNNING container so its boot script applies the O6 clear-auth
+    """Bounce a RUNNING container so its boot script applies the clear-auth
     sentinel and the staged oauth.json re-imports. No-op when the container is
     cold. Never raises — a failed bounce self-heals on the next boot."""
     try:

@@ -383,9 +383,9 @@ export class ContainerStack extends cdk.Stack {
     // (prod) leaves this literal-named bucket behind, so a later re-promotion
     // fails with "bucket already exists" until it is imported or deleted, and
     // containers that already migrated have their pre-cutover state in EFS
-    // pre-migration-archive/, which must be restored too. Rollback is an ops
-    // runbook (see docs/superpowers/plans/2026-08-03-o6-sqlite-off-efs.md),
-    // never a bare revert.
+    // pre-migration-archive/, which must be restored too. Rollback is a manual
+    // ops sequence -- restore that archive into .openclaw/{state,agents}, then
+    // revert -- never a bare revert.
     //
     // The per-owner S3 GRANT is NOT here: this boundary statement is only a
     // cap. The actual prefix-scoped inline policy ("owner-litestream-s3") is

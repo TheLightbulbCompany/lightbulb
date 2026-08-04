@@ -556,11 +556,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         # normal full-length drain does not read as a timeout.
         if not settings.LITESTREAM_BUCKET:
             return "skipped (EFS layout — no replicas)"
-        if ids.container:
-            if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=180.0):
-                raise RuntimeError(
-                    "container did not drain; refusing to delete replicas while a writer may still be live"
-                )
+        # NOT gated on ids.container: delete_user_service removes the row
+        # before this step, so a retried wipe sees container=None while the
+        # task may still be draining. wait_until_drained returns immediately
+        # when the service is already gone, so the unconditional call is cheap.
+        if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=180.0):
+            raise RuntimeError("container did not drain; refusing to delete replicas while a writer may still be live")
         ok = await delete_replica_prefix(owner_id)
         if not ok:
             raise RuntimeError("replica prefix delete failed")

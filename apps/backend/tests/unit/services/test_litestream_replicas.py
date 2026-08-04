@@ -91,13 +91,13 @@ async def test_cleanup_deleted_agent_reclaims_efs_and_replicas(monkeypatch):
     ws = MagicMock()
     monkeypatch.setattr(ws_mod, "get_workspace", lambda: ws)
     with patch("core.services.litestream_replicas.delete_replica_prefix", new=AsyncMock(return_value=True)) as drp:
-        with patch.object(ws_mod, "_REPLICA_RACE_SETTLE_S", 0):
+        with patch(
+            "core.services.litestream_replicas.write_replica_tombstone", new=AsyncMock(return_value=True)
+        ) as tomb:
             await ws_mod.cleanup_deleted_agent("org_1", "agent-x")
+    tomb.assert_awaited_once_with("org_1", "agent-x")
     ws.cleanup_agent_dirs.assert_called_once_with("org_1", "agent-x")
-    # TWO passes: the container is still running, so an in-flight Litestream
-    # upload can recreate the prefix right after the first delete.
-    assert drp.await_count == 2
-    assert all(c.kwargs == {"agent_id": "agent-x"} for c in drp.await_args_list)
+    drp.assert_awaited_once_with("org_1", agent_id="agent-x")
 
 
 @pytest.mark.asyncio
@@ -108,6 +108,30 @@ async def test_cleanup_deleted_agent_still_drops_replicas_when_efs_fails(monkeyp
     ws.cleanup_agent_dirs.side_effect = RuntimeError("efs down")
     monkeypatch.setattr(ws_mod, "get_workspace", lambda: ws)
     with patch("core.services.litestream_replicas.delete_replica_prefix", new=AsyncMock(return_value=True)) as drp:
-        with patch.object(ws_mod, "_REPLICA_RACE_SETTLE_S", 0):
+        with patch("core.services.litestream_replicas.write_replica_tombstone", new=AsyncMock(return_value=True)):
             await ws_mod.cleanup_deleted_agent("org_1", "agent-x")  # must not raise
-    assert drp.await_count == 2
+    drp.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tombstone_written_under_the_agent_prefix(monkeypatch):
+    """The tombstone — not a timed second delete — is what makes agent deletion
+    correct: an in-flight/throttled Litestream upload can land after ANY delay,
+    so the next boot must be told to purge and not restore."""
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    s3 = MagicMock()
+    with patch("boto3.client", return_value=s3):
+        assert await litestream_replicas.write_replica_tombstone("org_1", "agent-x") is True
+    s3.put_object.assert_called_once_with(Bucket="b", Key="org_1/agents/agent-x/.o6-deleted", Body=b"")
+
+
+@pytest.mark.asyncio
+async def test_tombstone_noop_without_bucket_and_rejects_unsafe_id(monkeypatch):
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "", raising=False)
+    with patch("boto3.client") as c:
+        assert await litestream_replicas.write_replica_tombstone("org_1", "a") is True
+        c.assert_not_called()
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    with patch("boto3.client") as c:
+        assert await litestream_replicas.write_replica_tombstone("org_1", "../evil") is False
+        c.assert_not_called()

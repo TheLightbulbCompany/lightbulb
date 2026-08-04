@@ -930,19 +930,17 @@ async def cleanup_deleted_agent(user_id: str, agent_id: str, *, workspace: "Work
         await asyncio.to_thread(ws.cleanup_agent_dirs, user_id, agent_id)
     except Exception as exc:  # noqa: BLE001 — post-delete reclamation
         logger.warning("cleanup_deleted_agent: EFS cleanup failed for %s/%s: %s", user_id, agent_id, exc)
-    from core.services.litestream_replicas import delete_replica_prefix
+    from core.services.litestream_replicas import delete_replica_prefix, write_replica_tombstone
 
     # The container is STILL RUNNING here (unlike a wipe, which drains first),
     # so its Litestream is still watching the agent's database at the moment
-    # OpenClaw removes it. A sync already in flight can PutObject back into the
-    # prefix right after the first delete, and the boot script restores from
-    # the S3 prefix — so the "deleted" agent would re-materialize forever.
-    # Litestream's dir watcher drops a removed database within its monitor
-    # interval (1s), so a second pass a few seconds later reaps anything the
-    # first one raced. If the second pass finds objects, that is worth seeing.
+    # OpenClaw removes it, and an in-flight — or throttled, or retrying —
+    # upload can land after ANY delay we might wait. So the delete is
+    # best-effort (avoids paying storage in the common case) and the TOMBSTONE
+    # is what makes it correct: the boot script purges a tombstoned prefix and
+    # refuses to restore from it, at a moment when nothing is replicating it.
     await delete_replica_prefix(user_id, agent_id=agent_id)
-    await asyncio.sleep(_REPLICA_RACE_SETTLE_S)
-    await delete_replica_prefix(user_id, agent_id=agent_id)
+    await write_replica_tombstone(user_id, agent_id)
 
 
 # O6 local-SQLite layout: sentinel on the EFS durable spine asking the
@@ -952,11 +950,6 @@ async def cleanup_deleted_agent(user_id: str, agent_id: str, *, workspace: "Work
 # container-local disk); consumed + deleted by the boot script, which skips
 # missing DBs and tolerates a missing table (a fresh container has no row and
 # imports the staged file anyway).
-# Seconds to wait before the second replica-delete pass on agent delete — a
-# few multiples of Litestream's 1s sync interval, so an in-flight upload cannot
-# outlive it.
-_REPLICA_RACE_SETTLE_S = 5.0
-
 O6_CLEAR_AUTH_SENTINEL_FILENAME = "o6-clear-auth-profiles.json"
 
 

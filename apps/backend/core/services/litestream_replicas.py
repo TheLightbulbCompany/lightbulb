@@ -28,6 +28,9 @@ from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
+# Object the container boot script looks for before restoring an agent DB.
+TOMBSTONE_NAME = ".o6-deleted"
+
 
 def _delete_prefix_blocking(bucket: str, prefix: str) -> int:
     import boto3
@@ -52,6 +55,44 @@ def _delete_prefix_blocking(bucket: str, prefix: str) -> int:
             raise RuntimeError(f"{len(errors)} of {len(keys)} objects not deleted ({sample})")
         deleted += len(keys)
     return deleted
+
+
+def _put_tombstone_blocking(bucket: str, key: str) -> None:
+    import boto3
+
+    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=b"")
+
+
+async def write_replica_tombstone(owner_id: str, agent_id: str) -> bool:
+    """Mark an agent's replica prefix as deleted, authoritatively.
+
+    Deleting the prefix while the container is still running cannot be made
+    race-free by waiting: an in-flight (or throttled, or retrying) Litestream
+    upload may land after any delay we pick. The tombstone removes the timing
+    question — the next boot purges the prefix and refuses to restore from it,
+    at a moment when nothing is replicating it. The immediate delete stays as
+    best-effort so we do not pay storage for the common case.
+    """
+    bucket = settings.LITESTREAM_BUCKET
+    if not bucket:
+        return True
+    if "/" in agent_id or ".." in agent_id or not agent_id.strip():
+        logger.warning("write_replica_tombstone: refusing unsafe agent_id %r", agent_id)
+        return False
+    key = f"{owner_id}/agents/{agent_id}/{TOMBSTONE_NAME}"
+    try:
+        await asyncio.to_thread(_put_tombstone_blocking, bucket, key)
+        logger.info("wrote_replica_tombstone", extra={"owner_id": owner_id, "agent_id": agent_id})
+        return True
+    except Exception as exc:  # noqa: BLE001 — cleanup path, never raise
+        logger.error(
+            "write_replica_tombstone FAILED for %s/%s: %s — a late upload could resurrect this agent",
+            owner_id,
+            agent_id,
+            exc,
+        )
+        put_metric("litestream.tombstone_write_failed")
+        return False
 
 
 async def delete_replica_prefix(owner_id: str, *, agent_id: str | None = None) -> bool:

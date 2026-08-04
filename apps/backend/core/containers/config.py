@@ -1774,16 +1774,62 @@ def build_openclaw_config_dict(
             # file, so pinning changes no behaviour today — it just stops the
             # choice being an accident of list order.
             "executablePath": "/usr/bin/chromium",
-            # Timeouts: upstream defaults are 15s launch / 8s CDP-ready, and
-            # the doc says raise them on "Raspberry Pi, older VPS hosts, or
-            # SLOW STORAGE". Chrome's profile lives under CONFIG_DIR
-            # (~/.openclaw = EFS = NFS) and a Chrome profile is SQLite- and
-            # lock-heavy, which is the same amplifier that gives this box
-            # 7.8s integrity scans. Prod threw BOTH shapes minutes apart on
-            # 2026-08-03: `browser failed: timed out` at 23:27:01 and
-            # `Failed to start Chrome CDP ... http_unreachable` at 23:27:33.
-            # Schema caps both at 120_000.
-            "localLaunchTimeoutMs": 60_000,
+            # Crash-reporter args — THE reason Chrome never started here.
+            #
+            # Prod stderr (2026-08-03): `chrome_crashpad_handler: --database
+            # is required`, with CDP `http_unreachable after 26ms`. 26ms is an
+            # abort, not a slow start — Chrome dies before it can listen.
+            #
+            # Chromium derives its crashpad database path from XDG_CONFIG_HOME.
+            # Ours is `/home/node/.openclaw/.config` (container-stack.ts) —
+            # i.e. the EFS/NFS mount — where crashpad cannot initialise its
+            # database, so Chrome spawns the handler with no `--database` and
+            # the handler aborts. This is a well-known Chromium-in-container
+            # failure, not an OpenClaw bug: playwright#34031, puppeteer#11023,
+            # ferrum#544, chrome-php#649. It bites us and not Playwright
+            # because Playwright's default switch list already carries
+            # --disable-breakpad while OpenClaw's argv (written for DESKTOP
+            # Chrome) carries no crash-reporter switch at all — that flag has
+            # never existed anywhere in the fork's browser extension.
+            #
+            # The community fix is to repoint XDG_CONFIG_HOME at a writable
+            # local dir. We CANNOT: it is deliberately pinned to `.openclaw`
+            # so gog/mcporter/lobster keep their config on persistent storage,
+            # and moving it would silently make all of those ephemeral. So fix
+            # it at the browser instead, which is the only consumer that cares:
+            #
+            #   --disable-breakpad     turns the subsystem off (we have no use
+            #                          for crash dumps from an agent's browser)
+            #   --crash-dumps-dir=...  belt-and-braces: if any code path still
+            #                          wants a database it gets a writable
+            #                          LOCAL one. /tmp/openclaw-browser already
+            #                          exists — container-stack.ts creates it
+            #                          for the profile symlink.
+            #
+            # extraArgs appends into the launch argv (chrome.ts:847) and is
+            # schema-verified at the DEPLOYED tag v2026.7.2-isol8.2
+            # (zod-schema.root-shape.ts:261).
+            "extraArgs": [
+                "--disable-breakpad",
+                "--crash-dumps-dir=/tmp/openclaw-browser/crashpad",
+            ],
+            # Timeouts: upstream defaults are 15s launch / 8s CDP-ready.
+            #
+            # localLaunchTimeoutMs was briefly 60s, raised on the theory that
+            # the profile was on slow NFS storage. That theory was WRONG — the
+            # profile is on /tmp (container-stack.ts symlinks
+            # ~/.openclaw/browser -> /tmp/openclaw-browser), and 26ms was never
+            # consistent with slow storage anyway.
+            #
+            # Worse, 60s actively HID the bug: the launcher waited patiently
+            # while a shorter tool-level timeout fired first, so the failure
+            # arrived as a bare `browser failed: timed out` with no CDP
+            # diagnostic and no Chrome stderr. Keep the launch budget BELOW
+            # the tool timeout (BROWSER_ACTION_TIMEOUT_MS = 60_000,
+            # browser/constants.ts) so the launcher's own error always wins the
+            # race and stays visible. 20s = default plus headroom for a
+            # 1 vCPU box. Schema caps both at 120_000.
+            "localLaunchTimeoutMs": 20_000,
             "localCdpReadyTimeoutMs": 30_000,
             "profiles": {
                 "openclaw": {

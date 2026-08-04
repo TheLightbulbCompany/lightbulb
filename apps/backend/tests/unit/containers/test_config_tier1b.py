@@ -115,6 +115,43 @@ class TestBrowserBounds:
             assert 15_000 < browser["localLaunchTimeoutMs"] <= 120_000, choice
             assert 8_000 < browser["localCdpReadyTimeoutMs"] <= 120_000, choice
 
+    def test_crash_reporter_neutralised_on_every_provider_path(self):
+        """Chrome aborts at launch without this — the root cause of the
+        container browser never starting.
+
+        Chromium derives its crashpad database path from XDG_CONFIG_HOME,
+        which container-stack.ts pins to /home/node/.openclaw/.config (the
+        EFS/NFS mount). Crashpad cannot initialise a database there, so Chrome
+        spawns the handler with no --database, the handler aborts, and Chrome
+        dies before CDP listens — prod showed `http_unreachable after 26ms`
+        plus `chrome_crashpad_handler: --database is required`.
+
+        Repointing XDG_CONFIG_HOME (the usual community fix) is NOT available:
+        it is pinned so gog/mcporter/lobster keep persistent config. So the
+        browser gets fixed at the browser.
+        """
+        for choice, kwargs in (
+            ("bedrock_claude", {}),
+            ("bedrock_trial", {}),
+            ("chatgpt_oauth", {}),
+            ("byo_key", {"byo_provider": "anthropic"}),
+        ):
+            args = _cfg(choice, **kwargs)["browser"]["extraArgs"]
+            assert "--disable-breakpad" in args, choice
+            assert any(a.startswith("--crash-dumps-dir=/tmp/") for a in args), choice
+
+    def test_launch_budget_stays_below_the_tool_timeout(self):
+        """The launcher's own error must win the race against the tool-level
+        timeout, or the CDP diagnostic and Chrome stderr are lost.
+
+        Setting localLaunchTimeoutMs to 60s (== BROWSER_ACTION_TIMEOUT_MS in
+        browser/constants.ts) turned a diagnosable `Failed to start Chrome CDP
+        ... http_unreachable ... chrome_crashpad_handler: --database is
+        required` into a bare `browser failed: timed out`, which is how this
+        bug stayed unexplained. Keep a margin.
+        """
+        assert _cfg()["browser"]["localLaunchTimeoutMs"] <= 40_000
+
 
 class TestWebFetchAndSearch:
     def test_fetch_gets_keyless_firecrawl_fallback(self):

@@ -226,7 +226,7 @@ async def test_signed_connect_future_allocated_before_challenge_push(monkeypatch
 
     Without the fix, the push callback runs submit_signed_connect before
     the future exists, the call is dropped, and connect() hangs the full
-    10s _SIGNED_CONNECT_TIMEOUT.
+    _SIGNED_CONNECT_TIMEOUT.
     """
     from core.gateway import node_connection
 
@@ -326,3 +326,29 @@ async def test_reader_forwards_upstream_frames_to_client(monkeypatch, mock_ws):
             break
 
     assert any(p.get("id") == "rpc-1" for p in pushed), f"upstream frame not pushed; got {pushed}"
+
+
+def test_signed_connect_timeout_tolerates_observed_client_latency():
+    """The signed-connect budget must exceed real-world client latency.
+
+    Regression guard for the desktop node-host flap (2026-08-03). The budget
+    was 10s on the assumption of a ~300ms round trip. Prod API Gateway logs
+    showed a clean handshake where the Mac replied 13s after the challenge
+    push, with backend integrationLatency of 111ms — the delay was entirely
+    client-side, caused by macOS App Nap throttling the Tauri relay process
+    (scheduling priority 4 backgrounded vs 46-54 foregrounded).
+
+    At 10s that routine background state became a PERMANENT flap: the
+    upstream is torn down on timeout, so the late-but-valid signature lands
+    on the "no upstream" branch and is discarded, and the subprocess retries
+    into the same wall forever. Observed range was 13-18s.
+
+    Lowering this back under the observed range re-breaks desktop browser
+    control for any user whose app is not in the foreground.
+    """
+    from core.gateway.node_connection import _SIGNED_CONNECT_TIMEOUT
+
+    assert _SIGNED_CONNECT_TIMEOUT >= 25.0, (
+        "signed-connect budget must stay above the 13-18s App-Nap-throttled "
+        f"client latency observed in prod; got {_SIGNED_CONNECT_TIMEOUT}s"
+    )

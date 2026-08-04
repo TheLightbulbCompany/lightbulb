@@ -846,21 +846,19 @@ export class ContainerStack extends cdk.Stack {
     });
 
     // local-sqlite layout. Mount ORDER is load-bearing: ECS mounts in the
-    // literal mountPoints[] order rather than by depth, so the second EFS view
-    // is registered here — after the primary EFS mount above and BEFORE the
-    // nested ephemeral volumes below. If that order ever inverts, the EFS
-    // mount covers the ephemeral ones and every commit silently goes back to
-    // NFS; the boot script asserts the filesystem type and refuses to start
-    // rather than degrade.
-    // Second view of the SAME per-user EFS access point. The nested mounts
-    // shadow .openclaw/state and .openclaw/agents, so this is how the boot
-    // script reaches the pre-cutover databases — and how it archives them,
-    // since a mountpoint cannot be renamed but this view of it can.
-    openclawContainer.addMountPoints({
-      containerPath: "/efs-raw",
-      sourceVolume: "openclaw-workspace-raw",
-      readOnly: false,
-    });
+    // literal mountPoints[] order rather than by depth, so the ephemeral
+    // volumes must be registered AFTER the primary EFS mount above. If that
+    // order ever inverts, the EFS mount covers the ephemeral ones and every
+    // commit silently goes back to NFS; the boot script asserts the filesystem
+    // type and refuses to start rather than degrade.
+    //
+    // There is no second EFS view any more. /efs-raw existed solely so the
+    // one-time EFS->local migration could reach — and rename aside — the
+    // pre-cutover databases that these nested mounts shadow. That migration ran
+    // once, on 2026-08-04, for all five prod owners; the archives it left sit on
+    // the EFS spine at .openclaw/pre-migration-archive/ and are reachable
+    // through the primary mount.
+    //
     // The hot SQLite: real ext4 on the task's NVMe device. Draws from the
     // same 20 GiB pool Fargate already includes, so it adds no cost.
     for (const [name, path] of [
@@ -878,18 +876,6 @@ export class ContainerStack extends cdk.Stack {
     // Add EFS volume — the backend replaces the access point per user
     this.openclawTaskDef.addVolume({
       name: "openclaw-workspace",
-      efsVolumeConfiguration: {
-        fileSystemId: this.efsFileSystem.fileSystemId,
-        transitEncryption: "ENABLED",
-        authorizationConfig: { iam: "ENABLED" },
-      },
-    });
-    // Same filesystem + same per-user access point, mounted a second time so
-    // the paths the nested volumes shadow stay reachable. The backend's
-    // per-user task-def clone rewrites accessPointId on EVERY volume that
-    // carries an efsVolumeConfiguration, so this needs no backend change.
-    this.openclawTaskDef.addVolume({
-      name: "openclaw-workspace-raw",
       efsVolumeConfiguration: {
         fileSystemId: this.efsFileSystem.fileSystemId,
         transitEncryption: "ENABLED",

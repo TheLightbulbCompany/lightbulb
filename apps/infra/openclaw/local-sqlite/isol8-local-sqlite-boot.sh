@@ -17,9 +17,8 @@
 # and no rewriting of session markers or the agent registry.
 #
 # The nested mounts SHADOW whatever the EFS mount holds at those two paths, so
-# the pre-cutover state is reached through a SECOND view of the same EFS
-# ($EFS_RAW) — which is also where it gets archived to, since a mountpoint
-# cannot be renamed but the un-shadowed view of it can.
+# there is no EFS->local migration: every pre-existing container was migrated
+# once by hand on 2026-08-04, and a new container has never had SQLite on EFS.
 #
 # Sequence:
 #   0. resolve owner id + preflight the binaries this script needs
@@ -39,12 +38,9 @@
 set -eu
 
 STATE_ROOT="${ISOL8_STATE_ROOT:-/home/node/.openclaw}"
-EFS_RAW="${ISOL8_EFS_RAW:-/efs-raw}"
 BUCKET="${LITESTREAM_S3_BUCKET:?LITESTREAM_S3_BUCKET is required}"
 LITESTREAM_CONFIG="${ISOL8_LITESTREAM_CONFIG:-/etc/isol8-litestream.yml}"
 APP_CMD="${ISOL8_APP_CMD:-/usr/local/bin/isol8-local-sqlite-app.sh}"
-ARCHIVE="$EFS_RAW/pre-migration-archive"
-FILL_MARKER="$ARCHIVE/.migration-fill-pending"
 
 log() { echo "[storage-boot] $*"; }
 
@@ -206,184 +202,21 @@ for _p in $_restore_pids; do
   wait "$_p" || { log "FATAL: a restore failed (pid $_p)"; exit 1; }
 done
 
-# --- 4. Fill anything the restore did not produce.
+# --- 4. Cold start.
 #
-# Sources are ADDITIVE, not alternatives: a task killed between the two archive
-# moves leaves one subtree live and the other already archived, so picking a
-# single source would silently drop whichever half is in the other place.
-# cp -an makes applying both idempotent — a restored replica always wins.
+# There is deliberately no EFS->local copy here. Every pre-existing container
+# was migrated once, by hand, on 2026-08-04 (all five prod owners, via the
+# admin reprovision path); their pre-cutover databases remain on the EFS spine
+# under pre-migration-archive/ if anyone ever needs them. A container created
+# from now on has never had SQLite on EFS, so there is nothing to carry over:
+# it either restores from its S3 replica above, or it is genuinely new.
 #
-# The archive arm is BOUNDED by a fill-pending marker written before the moves.
-# Unbounded, the frozen archive would be consulted on every boot forever, so an
-# agent deleted after cutover would be resurrected from it. The marker clears
-# as soon as the replica provably covers everything the archive holds.
-# EXISTENCE IS NOT ENOUGH. The nested mounts need their destination
-# directories to exist inside the parent EFS mount, so after the cutover moved
-# the originals into pre-migration-archive the runtime recreates them — EMPTY, on EFS.
-# An existence test would therefore see "live EFS state" on every subsequent
-# boot, re-arm the fill window forever, and try to re-archive onto an archive
-# that already exists. Test for CONTENT.
-dir_has_content() {
-  [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
-}
-FILL_RAW=0
-FILL_ARCHIVE=0
-if dir_has_content "$EFS_RAW/state" || dir_has_content "$EFS_RAW/agents"; then
-  FILL_RAW=1
-fi
-if [ -f "$FILL_MARKER" ]; then
-  if dir_has_content "$ARCHIVE/state" || dir_has_content "$ARCHIVE/agents"; then
-    FILL_ARCHIVE=1
-  fi
-fi
-
-# Close the fill window once the replica covers every archived database: from
-# then on the archive is redundant and post-cutover deletions stay deleted.
-if [ -f "$FILL_MARKER" ]; then
-  _missing=0
-  for _adb in "$ARCHIVE"/state/openclaw.sqlite "$ARCHIVE"/state/openclaw-quarantine.sqlite \
-              "$ARCHIVE"/agents/*/agent/openclaw-agent.sqlite; do
-    [ -f "$_adb" ] || continue
-    _rel=${_adb#"$ARCHIVE"/}
-    # A deliberately deleted agent must not hold the fill window open forever.
-    _skip=0
-    for _t in $TOMBSTONES; do
-      case "$_rel" in "$_t"/*) _skip=1 ;; esac
-    done
-    [ "$_skip" = "1" ] && continue
-    case "$DBS" in
-      *"$_rel"*) ;;
-      *) _missing=1 ;;
-    esac
-  done
-  if [ "$_missing" = "0" ]; then
-    rm -f "$FILL_MARKER"
-    FILL_ARCHIVE=0
-    log "replica covers the full archive — fill window closed"
-  fi
-fi
-
-# Copy anything the destination does not already have, then VERIFY.
-# `cp -an` cannot be trusted by exit status: GNU coreutils returns 0 when it
-# skips an existing file, BSD returns 1 for the same skip. The image is Debian,
-# but an exit code that means opposite things on two platforms is not something
-# to build recovery on — so the copy's status is advisory and the postcondition
-# (every source file now present at the destination) is what decides.
-copy_missing_files() {
-  _s=$1; _d=$2
-  [ -d "$_s" ] || return 0
-  mkdir -p "$_d" || return 1
-  cp -an "$_s/." "$_d/" 2>/dev/null || true
-  # No post-copy size verification. The obvious check — compare every source
-  # file against its destination — FATALs on a case this function must accept:
-  # a destination file that legitimately differs because the S3 restore already
-  # put a newer, smaller copy there (a VACUUM drops page count). Verifying only
-  # the files this copy created would mean listing the destination before and
-  # after, which is thousands of extra NFS round trips inside the health-check
-  # window. PRAGMA integrity_check runs over every migrated database a few
-  # steps below and is the real detector for a short write; the databases are
-  # the only content here whose corruption is unrecoverable.
-  return 0
-}
-
-fill_state_from() {
-  _src=$1
-  for _d in state agents; do
-    copy_missing_files "$_src/$_d" "$STATE_ROOT/$_d" || return 1
-  done
-  return 0
-}
-
-if [ "$FILL_RAW" = "1" ] || [ "$FILL_ARCHIVE" = "1" ]; then
-  log "cutover fill (efs_raw=$FILL_RAW archive=$FILL_ARCHIVE)"
-  [ "$FILL_RAW" = "1" ] && { fill_state_from "$EFS_RAW" || exit 1; }
-  [ "$FILL_ARCHIVE" = "1" ] && { fill_state_from "$ARCHIVE" || exit 1; }
-  drop_tombstoned_agents
-
-  # Integrity gate before anything is archived. NOTE there is no path rewriting
-  # here and none is needed: the databases land at the SAME absolute paths they
-  # were copied from, so every session marker and agent-registry row inside
-  # them stays correct by construction. That is the whole point of this design.
-  for db in "$STATE_ROOT/state/openclaw.sqlite" "$STATE_ROOT/state/openclaw-quarantine.sqlite" \
-            "$STATE_ROOT"/agents/*/agent/openclaw-agent.sqlite; do
-    [ -f "$db" ] || continue
-    ok=$(sqlite3 "$db" "PRAGMA quick_check;" | head -1)
-    [ "$ok" = "ok" ] || { log "FATAL: quick_check failed for $db: $ok"; exit 1; }
-
-    # Convert to WAL here, while we still own these files exclusively.
-    #
-    # They were just copied off EFS, where OpenClaw force-sets
-    # journal_mode=DELETE because WAL is unsafe on NFS — so they arrive as
-    # rollback-journal databases with no -wal sidecar. litestream is exec'd
-    # moments from now and immediately tries to establish one; against a
-    # DELETE-mode database that fails ("ensure wal exists: disk I/O error"),
-    # and litestream backs off EXPONENTIALLY. Observed on the first real
-    # cutover: nine consecutive failures reaching a 4m16s backoff, replication
-    # dead for the container's entire 5.5-minute life, with only the graceful
-    # SIGTERM final-sync ever reaching S3. The gateway does convert these to
-    # WAL when it opens them, but by then litestream is already deep in
-    # backoff — the race is not winnable from litestream's side.
-    #
-    # A hard kill in that window would leave the cutover unreplicated. The
-    # armed fill marker plus pre-migration-archive/ still recovers it, but that is a
-    # safety net doing a job the design should not need.
-    # stderr is captured SEPARATELY: folding it into $jm makes any sqlite error
-    # message become the compared value, so the fatal below would report the
-    # error text as if it were a journal mode.
-    jm=$(sqlite3 "$db" "PRAGMA journal_mode=WAL;" 2>"$_walerr" | head -1)
-    if [ "$jm" != "wal" ]; then
-      log "FATAL: could not put $db into WAL after cutover (journal_mode='$jm')"
-      [ -s "$_walerr" ] && log "       sqlite3: $(head -1 "$_walerr")"
-      log "       litestream cannot replicate a non-WAL database, so booting on it would"
-      log "       leave this owner silently unreplicated. Check the file's mode/ownership."
-      exit 1
-    fi
-  done
-
-  # A stale legacy workspace-state.json would re-trip the migration gate the
-  # native-seed heal used to clear; the state DB is present by construction
-  # here, which is exactly that heal's own guard condition.
-  rm -f "$EFS_RAW"/workspace-*/.openclaw/workspace-state.json 2>/dev/null || true
-
-  # Archive the originals through the UN-SHADOWED view: $STATE_ROOT/state is a
-  # mountpoint and cannot be renamed, but $EFS_RAW/state is an ordinary
-  # directory on the same filesystem. Once moved, the backend's own "does the
-  # EFS database exist" probes correctly report absent — which is what routes
-  # agent-auth clearing through the boot sentinel below instead of a hot delete
-  # against a database the container is no longer using.
-  # The marker is armed BEFORE the first move so an interruption between the
-  # two is still recoverable.
-  if [ "$FILL_RAW" = "1" ]; then
-    mkdir -p "$ARCHIVE" || exit 1
-    : > "$FILL_MARKER" || exit 1
-    for d in state agents; do
-      dir_has_content "$EFS_RAW/$d" || continue
-      if [ -e "$ARCHIVE/$d" ]; then
-        # Anomalous: a canonical archive already exists AND live content came
-        # back (an operator restore, or a rollback). DO NOT try to reconcile
-        # them. Merging would have to choose a winner per colliding file, and
-        # either choice destroys the other copy — with the live one being the
-        # newer and the archive being the only recovery source if this task
-        # dies before Litestream uploads. So: archive nothing this boot, delete
-        # nothing, and say so loudly. The live databases are already copied
-        # into the nested mounts and replicating; both copies survive on EFS
-        # for an operator to reconcile deliberately.
-        log "warn: $ARCHIVE/$d exists AND live $d has content — refusing to archive or merge."
-        log "       Both copies are preserved on EFS; resolve manually. Boot continues on the live data."
-        continue
-      fi
-      mv "$EFS_RAW/$d" "$ARCHIVE/$d" || exit 1
-      # Recreate the mount destination so the next task can still mount over
-      # it — the runtime would do this anyway, but leaving it implicit invites
-      # exactly the confusion the content test above is guarding against.
-      mkdir -p "$EFS_RAW/$d" || exit 1
-    done
-    log "cutover complete; EFS originals archived at pre-migration-archive/ (fill window armed)"
-  else
-    log "cutover complete; filled in from archive (archive left in place)"
-  fi
-elif [ -z "$DBS" ]; then
-  log "cold start: no replica, no EFS state — fresh container"
+# The copy/archive/fill-window machinery that used to live here was ~180 lines
+# guarding a one-time event for five containers. Deleting it also retires the
+# second EFS view (/efs-raw), which existed only so the archive could be
+# renamed out from under a nested mountpoint.
+if [ -z "$DBS" ]; then
+  log "cold start: no replica — fresh container"
 fi
 
 # --- 5. Clear-auth sentinel (written by the backend when it cannot reach the
@@ -391,34 +224,7 @@ fi
 # credentials/oauth.json re-imports — the import fires only when the persisted
 # store row is absent.
 SENTINEL="$STATE_ROOT/clear-auth-profiles.json"
-SENTINEL_HOT_DELETE=""
-[ -f "$SENTINEL" ] && SENTINEL_HOT_DELETE=$(jq -r '.hot_delete // ""' "$SENTINEL" 2>/dev/null || true)
-
-if [ -f "$SENTINEL" ] && [ "$FILL_RAW" = "1" ] && [ "$SENTINEL_HOT_DELETE" = "succeeded" ]; then
-  # A sentinel carried into the cutover boot is redundant ONLY when the backend
-  # confirms its hot DELETE landed — hence the hot_delete stamp rather than
-  # inferring anything from FILL_RAW.
-  #
-  # The backend writes the sentinel on every reconnect under this layout, but
-  # while the EFS store is still visible it ALSO performs the hot DELETE
-  # against that same EFS database, and returns a value no caller bounces on.
-  # So a container still pinned to a pre-cutover task-def revision keeps
-  # running on the EFS layout, rotating its refresh token freely, while the
-  # sentinel sits unread on the durable spine. This boot — its FIRST on the new
-  # revision — would copy that well-rotated database in and immediately clear
-  # the row, forcing a re-import of a staged oauth.json many rotations spent.
-  # That is the June refresh_token_reused incident, reproduced exactly.
-  #
-  # With hot_delete=succeeded the row is already gone from the database this
-  # boot just copied in, so dropping the request changes nothing. Any other
-  # value means the row came across WITH the copy: "failed" is a delete that
-  # lost to SQLITE_BUSY against the live writer, and this sentinel is its only
-  # retry request — consuming it silently would strand a spent token, which is
-  # exactly what the backend logs and meters oauth.auth_row_clear_failed for.
-  log "sentinel: dropping redundant request carried into the cutover boot (backend confirmed the hot delete)"
-  rm -f "$SENTINEL"
-elif [ -f "$SENTINEL" ]; then
-  [ "$FILL_RAW" = "1" ] && log "sentinel: applying on the cutover boot (hot_delete='${SENTINEL_HOT_DELETE:-unset}' — the stale row came across with the copy)"
+if [ -f "$SENTINEL" ]; then
   for agent in $(jq -r '.agent_ids[]? // empty' "$SENTINEL" 2>/dev/null); do
     # ONLY the default agent. Every other agent merges its credentials from
     # main's store, so clearing a non-default row makes that agent import the
@@ -451,6 +257,7 @@ elif [ -f "$SENTINEL" ]; then
   done
   [ "${SENTINEL_RETRY:-0}" = "1" ] || rm -f "$SENTINEL"
 fi
+
 
 # --- 6. Hand off. litestream supervises the app: SIGTERM is forwarded to the
 # child (the gateway, via exec in the app script), then every database

@@ -337,11 +337,12 @@ async def test_clear_writes_o6_sentinel_when_store_is_container_local(fake_efs_r
 
 
 @pytest.mark.asyncio
-async def test_clear_prefers_efs_delete_over_sentinel_during_cutover(fake_efs_root, monkeypatch):
-    """An EFS store always wins: old-layout containers keep the hot in-place
-    DELETE even when the env already has the O6 bucket configured."""
+async def test_clear_does_the_efs_delete_when_the_store_is_visible(fake_efs_root, monkeypatch):
+    """An EFS store still gets the hot in-place DELETE — but see
+    test_clear_writes_sentinel_even_when_efs_store_still_visible: on an O6 env
+    the sentinel is ALSO written, because during the cutover boot the EFS copy
+    may already be the stale one."""
     from core.config import settings as core_settings
-    from core.containers.workspace import O6_CLEAR_AUTH_SENTINEL_FILENAME
 
     monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
     path = _make_agent_sqlite(fake_efs_root, "org_1", "main")
@@ -350,7 +351,6 @@ async def test_clear_prefers_efs_delete_over_sentinel_during_cutover(fake_efs_ro
 
     assert result is True
     assert _store_rows(path) == []
-    assert not (fake_efs_root / "org_1" / O6_CLEAR_AUTH_SENTINEL_FILENAME).exists()
 
 
 @pytest.mark.asyncio
@@ -361,3 +361,23 @@ async def test_clear_stays_benign_noop_without_o6_bucket(fake_efs_root):
 
     assert result is False
     assert not (fake_efs_root / "u_never").exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_writes_sentinel_even_when_efs_store_still_visible(fake_efs_root, monkeypatch):
+    """During the one cutover boot the container has already copied the DBs to
+    its local mounts but has not yet archived the EFS originals. A hot DELETE
+    landing in that window edits a copy nothing reads again, so the stale row
+    survives locally and the reconnect silently fails. Write both."""
+    from core.config import settings as core_settings
+    from core.containers.workspace import O6_CLEAR_AUTH_SENTINEL_FILENAME
+
+    monkeypatch.setattr(core_settings, "LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas")
+    path = _make_agent_sqlite(fake_efs_root, "org_1", "main")
+
+    result = await clear_default_agent_auth_profile_row(user_id="org_1")
+
+    assert result is True  # the in-place delete still happened
+    assert _store_rows(path) == []
+    # ...and the sentinel is there so the container-local copy gets cleared too
+    assert (fake_efs_root / "org_1" / O6_CLEAR_AUTH_SENTINEL_FILENAME).is_file()

@@ -19,13 +19,6 @@ import { Construct } from "constructs";
 // Bump openclaw-version.json at the repo root to upgrade.
 type OpenClawEnvConfig = {
   tag: string;
-  // Per-env container storage layout — the O6 promotion gate. "efs" (default)
-  // keeps the whole OpenClaw state dir on the EFS mount; "local-sqlite" moves
-  // hot SQLite state to container-local disk with Litestream→S3 durability.
-  // The bucket, IAM boundary statement, env vars, and boot chain are all
-  // synthesized ONLY for envs that opt in, so flipping dev leaves prod's
-  // template byte-identical (same promotion shape as dev.tag/prod.tag).
-  storage?: "efs" | "local-sqlite";
 };
 type OpenClawVersionConfig = {
   upstream: string;
@@ -90,23 +83,15 @@ export class ContainerStack extends cdk.Stack {
 
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
 
-    // Per-env OpenClaw pin + O6 storage gate, resolved ONCE up front: it
-    // shapes the IAM boundary, the replica bucket, the container env, the
-    // boot chain, and the image selection below. Unknown envs (e.g. "local")
-    // get the legacy bootstrap behavior and the EFS layout.
+    // Per-env OpenClaw pin, resolved ONCE up front — it selects the image
+    // below. Unknown envs (e.g. "local") fall back to the public bootstrap
+    // image, which carries no local-sqlite boot chain; the boot guard in the
+    // startup command is what catches that, loudly, at runtime.
     const envCfg =
       props.environment === "dev" || props.environment === "prod"
         ? OPENCLAW_VERSION[props.environment]
         : undefined;
     const envTag = envCfg?.tag ?? "bootstrap";
-    const localSqliteStorage = envCfg?.storage === "local-sqlite";
-    if (localSqliteStorage && envTag === "bootstrap") {
-      // The public bootstrap image carries neither the O6 boot script nor the
-      // litestream binary — the boot chain would crash-loop. Refuse to synth.
-      throw new Error(
-        `openclaw-version.json: ${props.environment}.storage="local-sqlite" requires a real extended-image tag (got "bootstrap")`,
-      );
-    }
     const litestreamBucketName = `isol8-${props.environment}-openclaw-replicas`;
 
     // Import KMS key by ARN to avoid cross-stack dependency cycle
@@ -365,24 +350,20 @@ export class ContainerStack extends cdk.Stack {
         // the boundary is shared across owners; per-owner prefix isolation
         // lives in the inline policy. DeleteObject is required: Litestream
         // retention/compaction prunes old LTX files.
-        ...(localSqliteStorage
-          ? [
-              new iam.PolicyStatement({
-                sid: "BoundaryLitestreamS3",
-                actions: [
-                  "s3:GetBucketLocation",
-                  "s3:ListBucket",
-                  "s3:GetObject",
-                  "s3:PutObject",
-                  "s3:DeleteObject",
-                ],
-                resources: [
-                  `arn:aws:s3:::${litestreamBucketName}`,
-                  `arn:aws:s3:::${litestreamBucketName}/*`,
-                ],
-              }),
-            ]
-          : []),
+        new iam.PolicyStatement({
+          sid: "BoundaryLitestreamS3",
+          actions: [
+            "s3:GetBucketLocation",
+            "s3:ListBucket",
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+          ],
+          resources: [
+            `arn:aws:s3:::${litestreamBucketName}`,
+            `arn:aws:s3:::${litestreamBucketName}/*`,
+          ],
+        }),
         // Defense in depth: never let a per-owner role assume into OUR account,
         // even if a misconfigured inline policy tried to. An explicit Deny
         // always wins. Unconditional: the AWS integration's credentials are
@@ -396,26 +377,26 @@ export class ContainerStack extends cdk.Stack {
       ],
     });
 
-    // ROLLBACK CONSTRAINT (read before flipping an env back to "efs"):
-    // flipping storage back removes this conditional resource from the stack
-    // while RemovalPolicy.RETAIN (prod) leaves the literal-named bucket
-    // behind, so a later re-promotion fails with "bucket already exists"
-    // until it is imported or deleted. This is not a hidden trap so much as
-    // the shape of the whole rollback: containers that already migrated have
-    // their pre-cutover state in EFS pre-migration-archive/, and returning them to
-    // the EFS layout requires restoring that archive too. Rollback is an ops
+    // ROLLBACK CONSTRAINT: there is no EFS-layout flag to flip back to — the
+    // local-sqlite layout is the only layout. Reverting means reverting the
+    // code, and that alone does NOT restore an env: RemovalPolicy.RETAIN
+    // (prod) leaves this literal-named bucket behind, so a later re-promotion
+    // fails with "bucket already exists" until it is imported or deleted, and
+    // containers that already migrated have their pre-cutover state in EFS
+    // pre-migration-archive/, which must be restored too. Rollback is an ops
     // runbook (see docs/superpowers/plans/2026-08-03-o6-sqlite-off-efs.md),
-    // never a bare flag flip.
+    // never a bare revert.
     //
     // The per-owner S3 GRANT is NOT here: this boundary statement is only a
     // cap. The actual prefix-scoped inline policy ("owner-litestream-s3") is
     // minted per owner by the backend's ensure_owner_bedrock_role, and
     // existing owners are backfilled by
     // apps/backend/scripts/ensure_litestream_s3_policies.py — which MUST run
-    // before any fleet restart wave in a freshly flipped env, or litestream
-    // (the boot supervisor) AccessDenies and tasks crash-loop.
+    // before any fleet restart wave in an env whose owners predate this
+    // bucket, or litestream (the boot supervisor) AccessDenies and tasks
+    // crash-loop.
     //
-    // O6 Litestream replica bucket — durability layer for hot SQLite on
+    // Litestream replica bucket — durability layer for hot SQLite on
     // container-local disk. Literal name (consumers reference by name, never
     // cross-stack refs — KMS-cycle posture); SSE-S3 like every other bucket in
     // this repo (the CMK posture deliberately does not extend to S3 — flagged
@@ -427,16 +408,14 @@ export class ContainerStack extends cdk.Stack {
     // alarm, not that claim, as the source of truth, and gate the prod
     // promotion on a measured idle window. No lifecycle expiration — Litestream retention owns pruning
     // (deleting LTX files under it would break restores).
-    if (localSqliteStorage) {
-      new s3.Bucket(this, "OpenclawReplicasBucket", {
-        bucketName: litestreamBucketName,
-        encryption: s3.BucketEncryption.S3_MANAGED,
-        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-        removalPolicy: config.removalPolicy,
-        autoDeleteObjects: props.environment !== "prod",
-        metrics: [{ id: "EntireBucket" }],
-      });
-    }
+    new s3.Bucket(this, "OpenclawReplicasBucket", {
+      bucketName: litestreamBucketName,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: config.removalPolicy,
+      autoDeleteObjects: props.environment !== "prod",
+      metrics: [{ id: "EntireBucket" }],
+    });
 
     // Extended OpenClaw image — built and pushed by
     // .github/workflows/build-openclaw-image.yml. Per-env tags live in
@@ -662,23 +641,20 @@ export class ContainerStack extends cdk.Stack {
       "mkdir -p /home/node/.openclaw/mcporter || exit 1",
       "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
-      // Step C3 — boot-time legacy-state migration, BEFORE the gateway
-      // starts. 2026.7.x fail-closes agent runs on un-migrated legacy
-      // per-workspace setup state — including the ``.openclaw/
-      // workspace-state.json`` setup marker our own seeders stage — so
-      // doctor must import it at boot or every freshly seeded agent is born
-      // gated. `--fix` applies recommended repairs; `--yes
-      // --non-interactive` are LOAD-BEARING: doctor's confirm prompts HANG
-      // on a closed stdin (observed killing a prod boot at the 300s
-      // timeout before the migration ever ran), and `--non-interactive` is
-      // also what auto-applies the legacy-state migration. `< /dev/null` is
-      // the last line of defense for any unguarded prompt; `timeout
-      // --kill-after` bounds a wedged run inside the health-check budget
-      // (startPeriod 300); `|| echo` keeps a doctor failure from bricking
-      // the container (gateway still starts; the runtime gate surfaces
-      // unmigrated state visibly).
+      // Step C3/D — legacy-state migration (doctor --fix) then gateway
+      // launch. BOTH are owned by the baked boot script: it restores hot
+      // SQLite state from S3 (or migrates it off EFS on the first cutover
+      // boot), then runs doctor + gateway as a litestream-supervised child so
+      // every committed write replicates and a SIGTERM final-syncs to S3
+      // before exit. The doctor invocation's load-bearing flags (`--fix
+      // --yes --non-interactive < /dev/null`, bounded by `timeout
+      // --kill-after` inside the startPeriod-300 health-check budget, made
+      // non-fatal by `|| echo`) live in
+      // apps/infra/openclaw/local-sqlite/isol8-local-sqlite-app.sh — 2026.7.x
+      // fail-closes agent runs on un-migrated legacy per-workspace setup
+      // state, and doctor's confirm prompts HANG on a closed stdin.
       //
-      // SAFETY — why doctor is allowed back on this boot path (2026-07-21
+      // SAFETY — why doctor is allowed on this boot path at all (2026-07-21
       // incident follow-up): upstream doctor's removed-workspaces-state
       // repair recursively DELETES `<stateDir>/workspaces` as retired
       // Workspaces-PLUGIN state. Agent workspaces now live at upstream's
@@ -690,26 +666,13 @@ export class ContainerStack extends cdk.Stack {
       // container-stack.test.ts). The only containers where doctor remains
       // destructive are pre-migration old-layout ones — those stay frozen
       // until reprovisioned and must never be rolled onto this task def.
-      // Step C3/D — legacy-state migration (doctor --fix) then gateway
-      // launch. Under the local-sqlite layout BOTH are owned by the baked
-      // boot script: it restores hot SQLite state from S3 (or migrates it off
-      // EFS on the first cutover boot), then runs doctor + gateway as a
-      // litestream-supervised child so every committed write replicates and a
-      // SIGTERM final-syncs to S3 before exit.
-      ...(localSqliteStorage
-        ? [
-            // The synth gate cannot inspect image contents, and it accepts any
-            // non-bootstrap tag — so a storage flip paired with a tag built
-            // before the O6 chain existed would otherwise die on a bare
-            // "not found". Diagnose it instead.
-            "[ -x /usr/local/bin/isol8-local-sqlite-boot.sh ] || { echo '[boot] FATAL: storage=local-sqlite but this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }",
-            "exec /usr/local/bin/isol8-local-sqlite-boot.sh",
-          ]
-        : [
-            "timeout --kill-after=30 300 node /app/openclaw.mjs doctor --fix --yes --non-interactive < /dev/null || echo '[boot] openclaw doctor --fix did not finish cleanly; continuing to gateway'",
-            // Step D — launch the gateway.
-            "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
-          ]),
+      //
+      // The boot guard is the ONLY thing between a tag/config mismatch and a
+      // silently-wrong container: synth cannot inspect image contents and
+      // accepts any tag, so a tag built before the local-sqlite chain existed
+      // would otherwise die on a bare "not found". Diagnose it instead.
+      "[ -x /usr/local/bin/isol8-local-sqlite-boot.sh ] || { echo '[boot] FATAL: this image has no local-sqlite boot chain. Pin a tag built from a commit containing apps/infra/openclaw/local-sqlite/.'; exit 1; }",
+      "exec /usr/local/bin/isol8-local-sqlite-boot.sh",
     ].join("; ");
 
     // Image selection: use the extended ECR image once the per-env tag has been
@@ -789,7 +752,7 @@ export class ContainerStack extends cdk.Stack {
         // while every other path, and every absolute path already recorded
         // inside the databases, stays literally unchanged. Only the bucket
         // needs to reach the container.
-        ...(localSqliteStorage ? { LITESTREAM_S3_BUCKET: litestreamBucketName } : {}),
+        LITESTREAM_S3_BUCKET: litestreamBucketName,
       },
       secrets: {
         // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +
@@ -889,29 +852,27 @@ export class ContainerStack extends cdk.Stack {
     // mount covers the ephemeral ones and every commit silently goes back to
     // NFS; the boot script asserts the filesystem type and refuses to start
     // rather than degrade.
-    if (localSqliteStorage) {
-      // Second view of the SAME per-user EFS access point. The nested mounts
-      // shadow .openclaw/state and .openclaw/agents, so this is how the boot
-      // script reaches the pre-cutover databases — and how it archives them,
-      // since a mountpoint cannot be renamed but this view of it can.
+    // Second view of the SAME per-user EFS access point. The nested mounts
+    // shadow .openclaw/state and .openclaw/agents, so this is how the boot
+    // script reaches the pre-cutover databases — and how it archives them,
+    // since a mountpoint cannot be renamed but this view of it can.
+    openclawContainer.addMountPoints({
+      containerPath: "/efs-raw",
+      sourceVolume: "openclaw-workspace-raw",
+      readOnly: false,
+    });
+    // The hot SQLite: real ext4 on the task's NVMe device. Draws from the
+    // same 20 GiB pool Fargate already includes, so it adds no cost.
+    for (const [name, path] of [
+      ["openclaw-state", "/home/node/.openclaw/state"],
+      ["openclaw-agents", "/home/node/.openclaw/agents"],
+    ] as const) {
+      this.openclawTaskDef.addVolume({ name });
       openclawContainer.addMountPoints({
-        containerPath: "/efs-raw",
-        sourceVolume: "openclaw-workspace-raw",
+        containerPath: path,
+        sourceVolume: name,
         readOnly: false,
       });
-      // The hot SQLite: real ext4 on the task's NVMe device. Draws from the
-      // same 20 GiB pool Fargate already includes, so it adds no cost.
-      for (const [name, path] of [
-        ["openclaw-state", "/home/node/.openclaw/state"],
-        ["openclaw-agents", "/home/node/.openclaw/agents"],
-      ] as const) {
-        this.openclawTaskDef.addVolume({ name });
-        openclawContainer.addMountPoints({
-          containerPath: path,
-          sourceVolume: name,
-          readOnly: false,
-        });
-      }
     }
 
     // Add EFS volume — the backend replaces the access point per user
@@ -923,20 +884,18 @@ export class ContainerStack extends cdk.Stack {
         authorizationConfig: { iam: "ENABLED" },
       },
     });
-    if (localSqliteStorage) {
-      // Same filesystem + same per-user access point, mounted a second time so
-      // the paths the nested volumes shadow stay reachable. The backend's
-      // per-user task-def clone rewrites accessPointId on EVERY volume that
-      // carries an efsVolumeConfiguration, so this needs no backend change.
-      this.openclawTaskDef.addVolume({
-        name: "openclaw-workspace-raw",
-        efsVolumeConfiguration: {
-          fileSystemId: this.efsFileSystem.fileSystemId,
-          transitEncryption: "ENABLED",
-          authorizationConfig: { iam: "ENABLED" },
-        },
-      });
-    }
+    // Same filesystem + same per-user access point, mounted a second time so
+    // the paths the nested volumes shadow stay reachable. The backend's
+    // per-user task-def clone rewrites accessPointId on EVERY volume that
+    // carries an efsVolumeConfiguration, so this needs no backend change.
+    this.openclawTaskDef.addVolume({
+      name: "openclaw-workspace-raw",
+      efsVolumeConfiguration: {
+        fileSystemId: this.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
 
     // ---- ECS task lifecycle telemetry ----
     // ECS retains stopped-task records for only 1 hour, after which we lose

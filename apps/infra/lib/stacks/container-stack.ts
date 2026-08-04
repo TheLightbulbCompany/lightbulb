@@ -421,8 +421,11 @@ export class ContainerStack extends cdk.Stack {
     // this repo (the CMK posture deliberately does not extend to S3 — flagged
     // trade-off: replicas carry auth_profile_store rows, fenced by BLOCK_ALL +
     // per-owner-prefix IAM). Request metrics enabled so the idle-PUT pathology
-    // (litestream#1171: ~480 PUT/hr per idle DB) is alarmable; nominal idle is
-    // ~0 PUTs. No lifecycle expiration — Litestream retention owns pruning
+    // (litestream#1171, still OPEN: ~480 PUT/hr per idle DB) is alarmable.
+    // Litestream's docs say an incremental sync with no new WAL pages writes
+    // no file, but we have NOT observed our own idle rate yet — treat this
+    // alarm, not that claim, as the source of truth, and gate the prod
+    // promotion on a measured idle window. No lifecycle expiration — Litestream retention owns pruning
     // (deleting LTX files under it would break restores).
     if (localSqliteStorage) {
       new s3.Bucket(this, "OpenclawReplicasBucket", {
@@ -779,13 +782,14 @@ export class ContainerStack extends cdk.Stack {
         // identity/, devices/, extensions/, skills/, npm/, git/, tools/)
         // back onto EFS. LITESTREAM_S3_BUCKET + per-user ISOL8_OWNER_ID (from
         // the backend) parameterize replication: s3://bucket/{owner}/<db>.
-        ...(localSqliteStorage
-          ? {
-              OPENCLAW_STATE_DIR: "/openclaw-local",
-              OPENCLAW_CONFIG_PATH: "/home/node/.openclaw/openclaw.json",
-              LITESTREAM_S3_BUCKET: litestreamBucketName,
-            }
-          : {}),
+        // O6 local-sqlite layout: the state dir does NOT move. Two config-less
+        // ECS volumes are mounted NESTED inside the EFS mount at
+        // .openclaw/state and .openclaw/agents (real ext4 on the task NVMe —
+        // measured 1.38ms/commit vs ~95ms on the EFS mount), so WAL comes back
+        // while every other path, and every absolute path already recorded
+        // inside the databases, stays literally unchanged. Only the bucket
+        // needs to reach the container.
+        ...(localSqliteStorage ? { LITESTREAM_S3_BUCKET: litestreamBucketName } : {}),
       },
       secrets: {
         // Password for the gog CLI's file keyring (see XDG_CONFIG_HOME +
@@ -878,6 +882,38 @@ export class ContainerStack extends cdk.Stack {
       readOnly: false,
     });
 
+    // O6 local-sqlite layout. Mount ORDER is load-bearing: ECS mounts in the
+    // literal mountPoints[] order rather than by depth, so the second EFS view
+    // is registered here — after the primary EFS mount above and BEFORE the
+    // nested ephemeral volumes below. If that order ever inverts, the EFS
+    // mount covers the ephemeral ones and every commit silently goes back to
+    // NFS; the boot script asserts the filesystem type and refuses to start
+    // rather than degrade.
+    if (localSqliteStorage) {
+      // Second view of the SAME per-user EFS access point. The nested mounts
+      // shadow .openclaw/state and .openclaw/agents, so this is how the boot
+      // script reaches the pre-cutover databases — and how it archives them,
+      // since a mountpoint cannot be renamed but this view of it can.
+      openclawContainer.addMountPoints({
+        containerPath: "/efs-raw",
+        sourceVolume: "openclaw-workspace-raw",
+        readOnly: false,
+      });
+      // The hot SQLite: real ext4 on the task's NVMe device. Draws from the
+      // same 20 GiB pool Fargate already includes, so it adds no cost.
+      for (const [name, path] of [
+        ["openclaw-state", "/home/node/.openclaw/state"],
+        ["openclaw-agents", "/home/node/.openclaw/agents"],
+      ] as const) {
+        this.openclawTaskDef.addVolume({ name });
+        openclawContainer.addMountPoints({
+          containerPath: path,
+          sourceVolume: name,
+          readOnly: false,
+        });
+      }
+    }
+
     // Add EFS volume — the backend replaces the access point per user
     this.openclawTaskDef.addVolume({
       name: "openclaw-workspace",
@@ -887,6 +923,20 @@ export class ContainerStack extends cdk.Stack {
         authorizationConfig: { iam: "ENABLED" },
       },
     });
+    if (localSqliteStorage) {
+      // Same filesystem + same per-user access point, mounted a second time so
+      // the paths the nested volumes shadow stay reachable. The backend's
+      // per-user task-def clone rewrites accessPointId on EVERY volume that
+      // carries an efsVolumeConfiguration, so this needs no backend change.
+      this.openclawTaskDef.addVolume({
+        name: "openclaw-workspace-raw",
+        efsVolumeConfiguration: {
+          fileSystemId: this.efsFileSystem.fileSystemId,
+          transitEncryption: "ENABLED",
+          authorizationConfig: { iam: "ENABLED" },
+        },
+      });
+    }
 
     // ---- ECS task lifecycle telemetry ----
     // ECS retains stopped-task records for only 1 hour, after which we lose

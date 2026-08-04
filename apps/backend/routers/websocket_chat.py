@@ -1968,7 +1968,8 @@ async def _process_rpc_background(
         # rename from EFS to the local overlay's $HOME/.Trash), leaking the
         # agent's on-EFS dirs forever. Clean them up from the backend.
         #
-        # `cleanup_agent_dirs` is sync (`shutil.rmtree`) and EFS-backed dirs
+        # `cleanup_deleted_agent` runs the sync EFS `shutil.rmtree` on a worker
+        # thread — those dirs
         # can be large enough to block the event loop and stall unrelated
         # WS chat traffic, so it runs on a worker thread via `to_thread`.
         if method == "agents.delete":

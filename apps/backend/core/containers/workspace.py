@@ -1018,11 +1018,20 @@ async def clear_default_agent_auth_profile_row(*, user_id: str) -> bool | str:
         return False  # No EFS configured (e.g. tests without it) — nothing to do.
 
     db_path = Path(efs_root) / user_id / "agents" / _DEFAULT_AGENT_DIR / "agent" / "openclaw-agent.sqlite"
+
+    # On an O6 env the sentinel is written UNCONDITIONALLY, even when an EFS
+    # store is still visible. During the one cutover boot the container has
+    # already copied the databases to its local mounts but has not yet archived
+    # the EFS originals, so a hot DELETE landing in that window edits a copy
+    # nothing will read again and the stale auth row survives locally —
+    # silently breaking the reconnect it was supposed to fix. Writing both
+    # costs one small file and the boot apply is a no-op when the row is
+    # already gone.
+    if settings.LITESTREAM_BUCKET:
+        _write_o6_clear_auth_sentinel(Path(efs_root) / user_id)
+
     if not db_path.exists():
-        # A store present on EFS (the arm below) always wins: during an env's
-        # cutover window, old-layout containers keep the hot in-place DELETE.
         if settings.LITESTREAM_BUCKET:
-            _write_o6_clear_auth_sentinel(Path(efs_root) / user_id)
             logger.info(
                 "clear_default_agent_auth_profile_row: wrote O6 sentinel for %s (store is container-local)",
                 user_id,

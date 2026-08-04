@@ -652,7 +652,8 @@ class CatalogService:
             )
 
         try:
-            # cleanup_agent_dirs is sync (shutil.rmtree) over EFS-backed dirs
+            # cleanup_deleted_agent runs the sync EFS rmtree on a worker thread —
+            # those dirs
             # that can be large enough to block the event loop and stall
             # unrelated WS chat traffic, so run it on a worker thread — same
             # posture as the agents.delete path in websocket_chat.py.

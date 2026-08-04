@@ -10,6 +10,9 @@ on:
       # script) must rebuild + republish — otherwise promoted tags keep shipping
       # stale skill content.
       - "apps/infra/openclaw/skills/**"
+      # Same staleness class: the Dockerfile bakes the O6 boot chain
+      # (isol8-o6-boot.sh / isol8-o6-app.sh / isol8-litestream.yml).
+      - "apps/infra/openclaw/o6/**"
       # The Dockerfile also bakes apps/infra/openclaw/plugins/** (the in-repo
       # aws-exec-profile plugin) into /app/dist/extensions, so a change there
       # must rebuild + republish too.

@@ -22,12 +22,12 @@ import mimetypes
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from core.config import settings
 from core.observability.metrics import put_metric
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -975,7 +975,7 @@ def _write_clear_auth_sentinel(user_root: Path, *, hot_delete: str) -> None:
         json.dumps(
             {
                 "agent_ids": [_DEFAULT_AGENT_DIR],
-                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "requested_at": utc_now_iso(),
                 "hot_delete": hot_delete,
             },
             indent=2,

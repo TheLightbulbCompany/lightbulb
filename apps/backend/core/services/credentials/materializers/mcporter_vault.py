@@ -33,10 +33,10 @@ import fcntl
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 from core.services.credentials.materializers.base import NODE_GID, NODE_UID, owner_efs_root
+from core.dynamodb import utc_now_iso
 
 _MCPORTER_DIR = "mcporter"
 
@@ -109,7 +109,7 @@ def seed(owner_id: str, server_key: str, server_url: str, credential: dict, scop
         "serverUrl": server_url,
         "tokens": _tokens(credential, scopes),
         "clientInfo": credential["client_information"],
-        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "updatedAt": utc_now_iso(),
     }
 
     def _add_vault(d: dict) -> None:

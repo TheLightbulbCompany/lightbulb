@@ -34,6 +34,7 @@ from typing import Optional
 
 import boto3
 from botocore.exceptions import ClientError
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -599,7 +600,7 @@ class ConnectionService:
             "userId": {"S": owner_id},
             "orgId": {"S": ""},
             "ownerId": {"S": owner_id},
-            "connectedAt": {"S": datetime.now(timezone.utc).isoformat()},
+            "connectedAt": {"S": utc_now_iso()},
             "connectionType": {"S": "gateway"},
             "connToken": {"S": conn_token},
             "lastPingAt": {"N": str(now)},

@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from core.observability.metrics import put_metric
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,6 @@ UNAVAILABLE = "unavailable"
 PARTIAL = "partial"
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def envelope(
     data: Any,
     *,
@@ -38,7 +34,7 @@ def envelope(
 ) -> dict:
     return {
         "data": data,
-        "freshness_ts": freshness_ts or _now_iso(),
+        "freshness_ts": freshness_ts or utc_now_iso(),
         "source_state": source_state,
         "errors": errors or [],
     }

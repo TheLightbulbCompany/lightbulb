@@ -44,6 +44,7 @@ from core.observability.metrics import put_metric
 from core.services import agent_export
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
+from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -556,7 +557,7 @@ class CatalogService:
             content={
                 "template_slug": slug,
                 "template_version": template_version,
-                "deployed_at": datetime.now(timezone.utc).isoformat(),
+                "deployed_at": utc_now_iso(),
             },
         )
 

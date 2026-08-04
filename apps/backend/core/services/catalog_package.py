@@ -5,9 +5,9 @@ from __future__ import annotations
 import io
 import tarfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
+from core.dynamodb import utc_now_iso
 
 
 @dataclass
@@ -61,7 +61,7 @@ def build_manifest(
         "required_skills": required_skills,
         "required_plugins": required_plugins,
         "required_tools": required_tools,
-        "published_at": datetime.now(timezone.utc).isoformat(),
+        "published_at": utc_now_iso(),
         "published_by": published_by,
     }
 

@@ -20,6 +20,79 @@ function buildStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(containerStack);
 }
 
+// The local-sqlite layout is unconditional — no per-env `storage` gate — so
+// both envs are asserted against the same shape. Extracted rather than
+// duplicated so a future divergence has to be written deliberately.
+
+// The boot guard is the ONLY thing between "tag built before the boot chain
+// existed" and a container that fails on a bare `not found`. Synth cannot
+// inspect image contents, so this diagnostic + `exit 1` is the whole safety
+// net; it must stay ordered immediately before the exec that needs it.
+// doctor + gateway now live inside the boot script (which runs them as a
+// litestream-supervised child), not in this command.
+function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
+  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+    Family: `isol8-${env}-openclaw`,
+    ContainerDefinitions: Match.arrayWith([
+      Match.objectLike({
+        Name: "openclaw",
+        Command: [
+          "sh",
+          "-c",
+          Match.stringLikeRegexp(
+            // `\\|` escapes the regex alternation so we match a literal `|`.
+            "\\[ -x /usr/local/bin/isol8-local-sqlite-boot\\.sh \\] \\|\\| \\{ echo .*FATAL.*"
+            + "exit 1; \\}; "
+            + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
+          ),
+        ],
+      }),
+    ]),
+  });
+}
+
+// The three pieces the boot script cannot supply itself: the replica bucket
+// name (LITESTREAM_S3_BUCKET), the second EFS view it archives through
+// (/efs-raw), and the nested ephemeral volumes that give WAL back. Mount
+// ORDER is load-bearing — ECS mounts in literal mountPoints[] order, so the
+// EFS views must precede the nested ephemeral mounts or EFS covers them and
+// every commit silently goes back to NFS.
+function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void {
+  template.hasResourceProperties("AWS::S3::Bucket", {
+    BucketName: `isol8-${env}-openclaw-replicas`,
+  });
+  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+    Family: `isol8-${env}-openclaw`,
+    ContainerDefinitions: Match.arrayWith([
+      Match.objectLike({
+        Name: "openclaw",
+        Environment: Match.arrayWith([
+          { Name: "LITESTREAM_S3_BUCKET", Value: `isol8-${env}-openclaw-replicas` },
+        ]),
+        MountPoints: [
+          Match.objectLike({ ContainerPath: "/home/node/.openclaw", SourceVolume: "openclaw-workspace" }),
+          Match.objectLike({ ContainerPath: "/efs-raw", SourceVolume: "openclaw-workspace-raw" }),
+          Match.objectLike({ ContainerPath: "/home/node/.openclaw/state", SourceVolume: "openclaw-state" }),
+          Match.objectLike({ ContainerPath: "/home/node/.openclaw/agents", SourceVolume: "openclaw-agents" }),
+        ],
+      }),
+    ]),
+  });
+
+  // Volume DECLARATION order is incidental (unlike mountPoints order above),
+  // so match by name. The raw view must carry an efsVolumeConfiguration —
+  // that is what makes the backend's per-user clone rewrite its accessPointId
+  // alongside the primary mount; the hot pair must carry none, or they stop
+  // being local disk.
+  const taskDef = Object.values(
+    template.findResources("AWS::ECS::TaskDefinition"),
+  )[0] as { Properties: { Volumes: { Name: string; EFSVolumeConfiguration?: unknown }[] } };
+  const byName = Object.fromEntries(taskDef.Properties.Volumes.map((v) => [v.Name, v]));
+  expect(byName["openclaw-workspace-raw"].EFSVolumeConfiguration).toBeDefined();
+  expect(byName["openclaw-state"]).toEqual({ Name: "openclaw-state" });
+  expect(byName["openclaw-agents"]).toEqual({ Name: "openclaw-agents" });
+}
+
 describe("ContainerStack — dev", () => {
   let template: Template;
   beforeAll(() => {
@@ -122,9 +195,8 @@ describe("ContainerStack — dev", () => {
           //   1) the archive-rename guard for a legacy REAL directory
           //   2) the actual mv to a timestamped archive path
           //   3) mkdir + symlink to ephemeral /tmp/openclaw-browser
-          //      then directly `exec node` to launch the gateway
-          //      (no pre-step `clawhub install` anymore — markdown-
-          //      converter wasn't needed and was bloating cold-start).
+          //      then `exec` into the baked local-sqlite boot chain, which
+          //      owns doctor + gateway as a litestream-supervised child.
           Command: [
             "sh",
             "-c",
@@ -138,7 +210,7 @@ describe("ContainerStack — dev", () => {
               + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
               + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
               + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
-              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
+              + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
             ),
           ],
         }),
@@ -146,37 +218,12 @@ describe("ContainerStack — dev", () => {
     });
   });
 
-  test("openclaw container runs bounded, promptless, non-blocking doctor legacy-state migration before the gateway", () => {
-    // Load-bearing: 2026.7.x fail-closes agent runs on un-migrated legacy
-    // setup state — including the workspace-state.json marker our own
-    // seeders stage — so this boot step is what lets freshly seeded agents
-    // run. Safety properties pinned: bounded (`timeout --kill-after`),
-    // promptless (`--yes --non-interactive`: doctor prompts HANG on closed
-    // stdin, and `--non-interactive` also auto-applies the migration),
-    // headless-safe (`< /dev/null`), non-blocking (`|| echo`), and ordered
-    // BEFORE `exec ... gateway` (no gateway holds the SQLite lock during
-    // the migration). Doctor is safe on this boot path ONLY because agent
-    // workspaces now live at workspace-<id> — the companion test below
-    // pins that the command never references the doomed
-    // .openclaw/workspaces path.
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          Command: [
-            "sh",
-            "-c",
-            Match.stringLikeRegexp(
-              // `\\|` escapes the regex alternation so we match a literal `|`.
-              "timeout --kill-after=30 300 node /app/openclaw\\.mjs doctor --fix --yes --non-interactive < /dev/null "
-              + "\\|\\| echo .*"
-              + "exec node /app/openclaw\\.mjs gateway --port 18789 --bind lan$",
-            ),
-          ],
-        }),
-      ]),
-    });
+  test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
+    expectBootChainGuard(template, "dev");
+  });
+
+  test("openclaw container gets the litestream replica bucket + nested local-sqlite mounts", () => {
+    expectLocalSqliteLayout(template, "dev");
   });
 
   test("openclaw container startup never references the retired workspaces/ layout", () => {
@@ -462,6 +509,25 @@ describe("ContainerStack — prod", () => {
 
   test("does NOT create the ECR repo (referenced by name from dev)", () => {
     template.resourceCountIs("AWS::ECR::Repository", 0);
+  });
+
+  // Prod is the whole point of removing the `storage` gate: it used to synth
+  // the EFS layout, and these two now pin that it gets the identical
+  // local-sqlite shape dev does.
+  test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
+    expectBootChainGuard(template, "prod");
+  });
+
+  test("openclaw container gets the litestream replica bucket + nested local-sqlite mounts", () => {
+    expectLocalSqliteLayout(template, "prod");
+  });
+
+  test("replica bucket is RETAINed in prod (never auto-deleted)", () => {
+    template.hasResource("AWS::S3::Bucket", {
+      Properties: Match.objectLike({ BucketName: "isol8-prod-openclaw-replicas" }),
+      DeletionPolicy: "Retain",
+      UpdateReplacePolicy: "Retain",
+    });
   });
 
   test("does NOT create the image-builder role (single account-wide role)", () => {

@@ -430,12 +430,57 @@ async fn start_node_host(
         .map(|s| s.gateway_token.clone())
         .unwrap_or_else(|| Arc::new(RwLock::new(None)));
 
+    // Self-mint the $connect token from our own Keychain key, so the node
+    // never depends on the webview having pushed a Clerk JWT.
+    //
+    // The URL cell carries a ~60s Clerk JWT that ONLY `send_auth_token`
+    // refreshes. When the webview does not run that push the node reconnects
+    // forever against a dead token and 403s with no recovery — measured on a
+    // live install 2026-08-05: 66 consecutive `403 Forbidden` against 0 token
+    // pushes, at normal scheduling priority (so not App Nap). This is the same
+    // failure #1181 fixed for the CLI node-host via `proxy::JwtProvider`; the
+    // Mac node never got it.
+    //
+    // Safe because the WS authorizer resolves ANY paired device by id
+    // (`paired_devices[deviceId]`, websocket-authorizer/index.py:236) — not
+    // just the CLI one — and the Mac device is registered there with
+    // clientId=openclaw-macos.
+    //
+    // Falls back to the URL token when the pair response is not available
+    // (nothing to mint against), rather than hard-failing node startup.
+    let mint_inputs = app.try_state::<AuthState>().and_then(|s| {
+        s.pair_response.lock().ok().and_then(|g| {
+            g.as_ref()
+                .map(|p| (p.device_id_mac.clone(), p.owner_id.clone()))
+        })
+    });
+
     let mut client = node_client::NodeClient::with_shared_url(
         gateway_url,
         display_name,
-        identity,
+        identity.clone(),
         gateway_token,
     );
+
+    match mint_inputs {
+        Some((device_id_mac, owner_id)) => {
+            let key_pem = identity.private_key_pem.clone();
+            client.set_token_provider(Arc::new(move || {
+                // 90s lifetime matches the CLI node-host (#1181): long enough
+                // to absorb clock skew, short enough that a leaked token is
+                // near-worthless.
+                match device_token::mint_device_token(&key_pem, &device_id_mac, &owner_id, 90) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log(&format!("[node] device-token mint failed: {e}"));
+                        String::new()
+                    }
+                }
+            }));
+            log("[node] using self-minted device token for $connect");
+        }
+        None => log("[node] no pair response yet — falling back to webview-supplied token"),
+    }
 
     // Flip the tray/renderer status ONLY when the node client emits a real
     // transition. Previously we said "connected" right after start() returned,

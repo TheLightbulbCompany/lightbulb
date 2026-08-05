@@ -675,7 +675,8 @@ class CatalogService:
         Returns True iff the ACP block was written. Returns False (no-op) when:
           - the listing doesn't require ACP,
           - the buyer's provider can't authenticate any harness
-            (``derive_enabled_harnesses`` returns []; e.g. a Gemini-only owner).
+            (``derive_enabled_harnesses`` returns []; notably every
+            ``chatgpt_oauth`` owner, plus Gemini-only ones).
 
         ACP is a container-wide capability — OpenClaw's gate is the root
         ``acp.enabled`` flag read by ``isAcpRuntimeSpawnAvailable``, plus a

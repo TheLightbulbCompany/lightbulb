@@ -995,11 +995,26 @@ def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> 
 
     - ``bedrock_claude`` -> ``["claude"]`` (Claude Code via
       ``CLAUDE_CODE_USE_BEDROCK=1`` + the container task-role IAM).
-    - ``chatgpt_oauth``  -> ``["codex"]``  (Codex via the OAuth tokens we
-      pre-stage onto EFS; codex-auth-bridge reads host auth — works for
-      personal AND org owners, the latter via the org connector).
     - ``byo_key`` + ``anthropic`` -> ``["claude"]`` (``ANTHROPIC_API_KEY``).
     - ``byo_key`` + ``openai``    -> ``["codex"]``  (``OPENAI_API_KEY``).
+
+    ``chatgpt_oauth`` returns ``[]``. It used to return ``["codex"]`` on the
+    premise that acpx's codex-auth-bridge would pick up the ChatGPT OAuth tokens
+    we pre-stage onto EFS. It does not, and never did: the bridge builds an
+    ISOLATED ``CODEX_HOME``, copies only ``config.toml`` out of the host one, and
+    writes ``codex-home/auth.json`` in exactly one case — ``CODEX_API_KEY`` or
+    ``OPENAI_API_KEY`` present in the process env. It never reads OpenClaw's own
+    ``credentials/oauth.json`` (different format, different path, written by
+    ``workspace.pre_stage_auth_profile_store``). A subscription-OAuth owner
+    therefore has NO credential path: every spawn failed ``Authentication
+    required`` while ``acp.enabled`` still advertised the harness to the agent.
+
+    That is an upstream property of the ACP adapters, not something we can wire
+    around — openclaw/openclaw#53456 is the same defect on the Claude Code side,
+    where ``claude-agent-acp`` rejects Claude Max subscription OAuth. Restoring a
+    harness here needs a REAL credential, not different wiring: an owner-supplied
+    OpenAI key delivered as ``CODEX_API_KEY``, or Bedrock AIPs + a gate token
+    minted for the owner so the ``claude`` harness applies.
 
     Gemini is intentionally absent: there is no Google credential path on the
     platform today, so no owner can authenticate it. Returns ``[]`` for any
@@ -1015,8 +1030,6 @@ def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> 
         return []
     if provider_choice == "bedrock_claude":
         return ["claude"]
-    if provider_choice == "chatgpt_oauth":
-        return ["codex"]
     if provider_choice == "byo_key":
         if byo_provider == "anthropic":
             return ["claude"]

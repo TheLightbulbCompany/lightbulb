@@ -18,7 +18,10 @@ _TOKEN = "tok-acp-test"
     "provider_choice,byo_provider,expected",
     [
         ("bedrock_claude", None, ["claude"]),
-        ("chatgpt_oauth", None, ["codex"]),
+        # acpx's codex-auth-bridge only writes Codex credentials from
+        # CODEX_API_KEY/OPENAI_API_KEY — it never reads the ChatGPT OAuth we
+        # stage — so a subscription-OAuth owner can authenticate no harness.
+        ("chatgpt_oauth", None, []),
         ("byo_key", "anthropic", ["claude"]),
         ("byo_key", "openai", ["codex"]),
         # No Google credential path today -> no harness; unknown combos -> none.
@@ -70,15 +73,17 @@ def _build(provider_choice, byo_provider=None, *, acp_enabled):
 
 def test_acp_omitted_by_default():
     """Dark by default: no acp block, no acpx entry when acp_enabled is False."""
-    config = _build("chatgpt_oauth", acp_enabled=False)
+    config = _build("byo_key", "anthropic", acp_enabled=False)
     assert "acp" not in config
     assert "acpx" not in config["plugins"]["entries"]
 
 
-def test_acp_emitted_when_enabled_chatgpt():
+def test_acp_omitted_for_chatgpt_oauth_even_when_enabled():
+    """No harness can authenticate against a ChatGPT subscription, so the block
+    is withheld rather than advertising a spawn that always 401s."""
     config = _build("chatgpt_oauth", acp_enabled=True)
-    assert config["acp"]["allowedAgents"] == ["codex"]
-    assert config["plugins"]["entries"]["acpx"]["enabled"] is True
+    assert "acp" not in config
+    assert "acpx" not in config["plugins"]["entries"]
 
 
 def test_acp_emitted_when_enabled_byo_anthropic():

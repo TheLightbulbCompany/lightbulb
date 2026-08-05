@@ -65,6 +65,50 @@ type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
 type InvokeSender = mpsc::UnboundedSender<NodeInvokeRequest>;
 type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Called on EVERY connect attempt to obtain the `$connect` token, mirroring
+/// `proxy::JwtProvider` on the CLI node-host path (#1181).
+///
+/// Why this exists: the URL cell alone carried a ~60s Clerk JWT that ONLY the
+/// webview refreshed (`send_auth_token`). When the webview does not run that
+/// push — backgrounded launch, a lost desktop permission grant making
+/// `useGateway` bail before it calls, an unloaded page — the node reconnects
+/// forever with a dead token and 403s with no recovery. Measured on a live
+/// install 2026-08-05: 66 consecutive `403 Forbidden` against 0 token pushes,
+/// at normal scheduling priority (so not App Nap).
+///
+/// A provider inverts that: the node mints its own short-lived EdDSA device
+/// token from its Keychain key each time, so it never depends on another
+/// component having run.
+pub type TokenProvider = Arc<dyn Fn() -> String + Send + Sync>;
+
+/// Replace (or insert) the `token` query parameter on a gateway URL.
+///
+/// Kept as a pure function so the rewrite is unit-testable without a socket;
+/// the connect loop calls it per attempt with a freshly minted token.
+fn with_fresh_token(base_url: &str, token: &str) -> String {
+    match url::Url::parse(base_url) {
+        Ok(mut u) => {
+            let others: Vec<(String, String)> = u
+                .query_pairs()
+                .filter(|(k, _)| k != "token")
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            {
+                let mut qp = u.query_pairs_mut();
+                qp.clear();
+                for (k, v) in &others {
+                    qp.append_pair(k, v);
+                }
+                qp.append_pair("token", token);
+            }
+            u.to_string()
+        }
+        // Never drop the connection over a URL we cannot parse — fall back to
+        // the caller's string and let the connect attempt report the real error.
+        Err(_) => base_url.to_string(),
+    }
+}
+
 pub struct NodeClient {
     /// Shared so callers can update the URL (e.g. with a refreshed JWT) and
     /// the next reconnect picks it up. Guard is never held across await.
@@ -81,6 +125,9 @@ pub struct NodeClient {
     /// so the upstream container's signed-connect verifier can authenticate
     /// this device against the paired registry.
     gateway_token: GatewayTokenCell,
+    /// When set, mints the `$connect` token per attempt instead of trusting
+    /// whatever token is baked into `url`. See [`TokenProvider`].
+    token_provider: Option<TokenProvider>,
 }
 
 impl NodeClient {
@@ -116,7 +163,17 @@ impl NodeClient {
             status_cb: None,
             identity,
             gateway_token,
+            token_provider: None,
         }
+    }
+
+    /// Install the per-connect token provider. Call BEFORE start().
+    ///
+    /// With this set the node authenticates itself and no longer depends on
+    /// the webview pushing a Clerk JWT — which is the failure that leaves it
+    /// 403-looping with no recovery.
+    pub fn set_token_provider(&mut self, provider: TokenProvider) {
+        self.token_provider = Some(provider);
     }
 
     /// Install a callback the connection loop invokes on status transitions.
@@ -141,6 +198,7 @@ impl NodeClient {
         let status_cb = self.status_cb.clone();
         let identity = self.identity.clone();
         let gateway_token = self.gateway_token.clone();
+        let token_provider = self.token_provider.clone();
 
         tokio::spawn(async move {
             connection_loop(
@@ -153,6 +211,7 @@ impl NodeClient {
                 status_cb,
                 identity,
                 gateway_token,
+                token_provider,
             )
             .await;
         });
@@ -202,6 +261,7 @@ async fn connection_loop(
     status_cb: Option<StatusCallback>,
     identity: DeviceIdentity,
     gateway_token: GatewayTokenCell,
+    token_provider: Option<TokenProvider>,
 ) {
     let mut reconnect_delay = std::time::Duration::from_secs(1);
     let max_delay = std::time::Duration::from_secs(30);
@@ -218,7 +278,20 @@ async fn connection_loop(
     loop {
         // Snapshot the current URL so a mid-connect token update is picked up
         // on the very next reconnect attempt.
-        let current_url = url.read().unwrap().clone();
+        // Mint the $connect token fresh per attempt when a provider is set.
+        // Without this the loop would retry a dead webview-supplied JWT
+        // forever (66 straight 403s observed in prod, 0 refreshes).
+        let base_url = url.read().unwrap().clone();
+        let current_url = match &token_provider {
+            Some(provider) => {
+                let token = provider();
+                if token.is_empty() {
+                    crate::log("[node-client] token provider returned empty; connect will 403 and retry");
+                }
+                with_fresh_token(&base_url, &token)
+            }
+            None => base_url,
+        };
         crate::log(&format!("[node-client] Connecting to {}...", mask_token(&current_url)));
         emit_status("connecting");
 
@@ -880,5 +953,42 @@ mod handshake_tests {
         assert!(!pk.contains('='));
         assert!(!pk.contains('+'));
         assert!(!pk.contains('/'));
+    }
+
+    // --- with_fresh_token ---
+    //
+    // Regression guard for the Mac node 403 loop (2026-08-05). The node
+    // authenticated with a Clerk JWT that only the webview refreshed; when
+    // that push never happened it retried a dead token forever — 66 straight
+    // `403 Forbidden` against 0 refreshes, at normal scheduling priority.
+    // These lock the URL rewrite that lets the node supply its own token.
+
+    #[test]
+    fn replaces_an_existing_stale_token() {
+        let out = with_fresh_token("wss://ws.isol8.co/?token=STALE", "FRESH");
+        assert!(out.contains("token=FRESH"), "{out}");
+        assert!(!out.contains("STALE"), "stale token must not survive: {out}");
+        assert_eq!(out.matches("token=").count(), 1, "exactly one token param: {out}");
+    }
+
+    #[test]
+    fn inserts_a_token_when_absent() {
+        let out = with_fresh_token("wss://ws.isol8.co/", "FRESH");
+        assert!(out.contains("token=FRESH"), "{out}");
+    }
+
+    #[test]
+    fn preserves_other_query_params() {
+        let out = with_fresh_token("wss://ws.isol8.co/?clientId=openclaw-macos&token=STALE", "FRESH");
+        assert!(out.contains("clientId=openclaw-macos"), "{out}");
+        assert!(out.contains("token=FRESH"), "{out}");
+        assert!(!out.contains("STALE"), "{out}");
+    }
+
+    #[test]
+    fn unparseable_url_falls_back_rather_than_dropping_the_connection() {
+        // A URL we cannot parse must not become an empty/garbage target; let
+        // the connect attempt surface the real error instead.
+        assert_eq!(with_fresh_token("not a url", "FRESH"), "not a url");
     }
 }

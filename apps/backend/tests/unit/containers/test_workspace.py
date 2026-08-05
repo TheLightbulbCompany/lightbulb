@@ -444,3 +444,70 @@ class TestMcporterRemoved:
         assert user_dir.exists(), "User dir should exist"
         assert not (user_dir / ".mcporter").exists(), "mcporter dir should not be created"
         assert not (user_dir / ".mcporter" / "mcporter.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# XDG base dirs (container tool config/data/cache)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureXdgDirs:
+    """`ensure_xdg_dirs` fixes the ownership bug that stopped the container's
+    managed Chromium from ever starting.
+
+    XDG_CONFIG_HOME had been created root-owned 755. The container process
+    reports uid 0, but the EFS access point squashes it to uid 1000 — so the
+    dir was effectively read-only while `id -u` still said 0. Chrome could not
+    create `$XDG_CONFIG_HOME/google-chrome-for-testing/Crash Reports/`,
+    crashpad failed to init its database, and Chrome dumped core ~26ms into
+    launch. Proven in-container 2026-08-04: identical Chrome argv against a
+    *writable* dir on the SAME EFS mount starts fine.
+    """
+
+    def _chown_recorder(self, monkeypatch):
+        calls: list[tuple[str, int, int]] = []
+        import core.containers.workspace as ws_mod
+
+        monkeypatch.setattr(ws_mod.os, "chown", lambda p, uid, gid: calls.append((str(p), uid, gid)))
+        return calls
+
+    def test_creates_xdg_dirs_owned_by_access_point_user(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+        calls = self._chown_recorder(monkeypatch)
+        ws = Workspace(mount_path=str(tmp_path))
+        ws.ensure_xdg_dirs("u1")
+
+        root = tmp_path / "u1"
+        for rel in (".config", ".local/share", ".cache"):
+            assert (root / rel).is_dir(), rel
+            assert any(c[0] == str(root / rel) for c in calls), rel
+        # Everything chowned goes to the access-point user, never root.
+        assert calls and all(c[1:] == (1000, 1000) for c in calls)
+
+    def test_reowns_an_existing_root_owned_dir(self, monkeypatch, tmp_path):
+        """The live bug: .config already exists but is root-owned. Creating it
+        is a no-op, so the chown must still happen or nothing is fixed."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+        (tmp_path / "u1" / ".config").mkdir(parents=True)
+        calls = self._chown_recorder(monkeypatch)
+        ws = Workspace(mount_path=str(tmp_path))
+        ws.ensure_xdg_dirs("u1")
+
+        assert any(c[0] == str(tmp_path / "u1" / ".config") for c in calls)
+
+    def test_failure_does_not_block_provisioning(self, monkeypatch, tmp_path):
+        """Best-effort by design — a chown failure must not abort a provision."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+        import core.containers.workspace as ws_mod
+
+        def _boom(*_a, **_k):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(ws_mod.os, "chown", _boom)
+        Workspace(mount_path=str(tmp_path)).ensure_xdg_dirs("u1")  # must not raise
+
+    def test_skipped_in_local_environment(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(settings, "ENVIRONMENT", "local")
+        calls = self._chown_recorder(monkeypatch)
+        Workspace(mount_path=str(tmp_path)).ensure_xdg_dirs("u1")
+        assert calls == []

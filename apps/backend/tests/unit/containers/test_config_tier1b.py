@@ -115,30 +115,16 @@ class TestBrowserBounds:
             assert 15_000 < browser["localLaunchTimeoutMs"] <= 120_000, choice
             assert 8_000 < browser["localCdpReadyTimeoutMs"] <= 120_000, choice
 
-    def test_crash_reporter_neutralised_on_every_provider_path(self):
-        """Chrome aborts at launch without this — the root cause of the
-        container browser never starting.
-
-        Chromium derives its crashpad database path from XDG_CONFIG_HOME,
-        which container-stack.ts pins to /home/node/.openclaw/.config (the
-        EFS/NFS mount). Crashpad cannot initialise a database there, so Chrome
-        spawns the handler with no --database, the handler aborts, and Chrome
-        dies before CDP listens — prod showed `http_unreachable after 26ms`
-        plus `chrome_crashpad_handler: --database is required`.
-
-        Repointing XDG_CONFIG_HOME (the usual community fix) is NOT available:
-        it is pinned so gog/mcporter/lobster keep persistent config. So the
-        browser gets fixed at the browser.
+    def test_no_crash_reporter_flags(self):
+        """Regression: --disable-breakpad + --crash-dumps-dir were added (#1594)
+        as a fix for Chrome's `chrome_crashpad_handler: --database is required`
+        abort, then tested in the prod container with OpenClaw's exact argv —
+        byte-identical failure with the flags present. The cause was an
+        unwritable XDG_CONFIG_HOME (root-owned on EFS vs the access point's
+        uid 1000), fixed in Workspace.ensure_xdg_dirs. These flags do nothing
+        for a launch failure; do not re-add them for one.
         """
-        for choice, kwargs in (
-            ("bedrock_claude", {}),
-            ("bedrock_trial", {}),
-            ("chatgpt_oauth", {}),
-            ("byo_key", {"byo_provider": "anthropic"}),
-        ):
-            args = _cfg(choice, **kwargs)["browser"]["extraArgs"]
-            assert "--disable-breakpad" in args, choice
-            assert any(a.startswith("--crash-dumps-dir=/tmp/") for a in args), choice
+        assert "extraArgs" not in _cfg()["browser"]
 
     def test_launch_budget_stays_below_the_tool_timeout(self):
         """The launcher's own error must win the race against the tool-level

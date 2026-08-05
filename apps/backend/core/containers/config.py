@@ -1774,45 +1774,19 @@ def build_openclaw_config_dict(
             # file, so pinning changes no behaviour today — it just stops the
             # choice being an accident of list order.
             "executablePath": "/usr/bin/chromium",
-            # Crash-reporter args — THE reason Chrome never started here.
+            # NO crash-reporter extraArgs. `--disable-breakpad` +
+            # `--crash-dumps-dir` were added here (#1594) on the theory that
+            # Chrome's `chrome_crashpad_handler: --database is required` abort
+            # was a missing-flag problem. Tested directly in the prod container
+            # 2026-08-04 with OpenClaw's exact argv: BOTH flags present,
+            # byte-identical failure. Reverted.
             #
-            # Prod stderr (2026-08-03): `chrome_crashpad_handler: --database
-            # is required`, with CDP `http_unreachable after 26ms`. 26ms is an
-            # abort, not a slow start — Chrome dies before it can listen.
-            #
-            # Chromium derives its crashpad database path from XDG_CONFIG_HOME.
-            # Ours is `/home/node/.openclaw/.config` (container-stack.ts) —
-            # i.e. the EFS/NFS mount — where crashpad cannot initialise its
-            # database, so Chrome spawns the handler with no `--database` and
-            # the handler aborts. This is a well-known Chromium-in-container
-            # failure, not an OpenClaw bug: playwright#34031, puppeteer#11023,
-            # ferrum#544, chrome-php#649. It bites us and not Playwright
-            # because Playwright's default switch list already carries
-            # --disable-breakpad while OpenClaw's argv (written for DESKTOP
-            # Chrome) carries no crash-reporter switch at all — that flag has
-            # never existed anywhere in the fork's browser extension.
-            #
-            # The community fix is to repoint XDG_CONFIG_HOME at a writable
-            # local dir. We CANNOT: it is deliberately pinned to `.openclaw`
-            # so gog/mcporter/lobster keep their config on persistent storage,
-            # and moving it would silently make all of those ephemeral. So fix
-            # it at the browser instead, which is the only consumer that cares:
-            #
-            #   --disable-breakpad     turns the subsystem off (we have no use
-            #                          for crash dumps from an agent's browser)
-            #   --crash-dumps-dir=...  belt-and-braces: if any code path still
-            #                          wants a database it gets a writable
-            #                          LOCAL one. /tmp/openclaw-browser already
-            #                          exists — container-stack.ts creates it
-            #                          for the profile symlink.
-            #
-            # extraArgs appends into the launch argv (chrome.ts:847) and is
-            # schema-verified at the DEPLOYED tag v2026.7.2-isol8.2
-            # (zod-schema.root-shape.ts:261).
-            "extraArgs": [
-                "--disable-breakpad",
-                "--crash-dumps-dir=/tmp/openclaw-browser/crashpad",
-            ],
+            # The real cause was never Chrome's argv — XDG_CONFIG_HOME
+            # (<owner>/.config on EFS) was root-owned 755 while the EFS access
+            # point squashes the container's root to uid 1000, so Chrome could
+            # not create its crash dir at all. See
+            # Workspace.ensure_xdg_dirs. Do not re-add these flags to "fix"
+            # a launch failure; they do nothing for it.
             # Timeouts: upstream defaults are 15s launch / 8s CDP-ready.
             #
             # localLaunchTimeoutMs was briefly 60s, raised on the theory that

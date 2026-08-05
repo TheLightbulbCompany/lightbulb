@@ -95,6 +95,18 @@ _TEXT_EXTENSIONS: set[str] = {
 _EFS_USER_UID = 1000
 _EFS_USER_GID = 1000
 
+# XDG base dirs the per-user container's tools write into. container-stack.ts
+# points XDG_CONFIG_HOME / XDG_DATA_HOME at the first two so gog (and anything
+# else XDG-respecting) persists across restarts; .cache is the conventional
+# third. Relative to the owner's EFS root, which the container sees as
+# ~/.openclaw.
+#
+# These MUST be owned by the access-point user. The container process reports
+# uid 0, but the EFS access point squashes it to _EFS_USER_UID — so a
+# root-owned 755 dir here is READ-ONLY to everything in the container, while
+# `id -u` still says 0. That mismatch is exactly what made this hard to see.
+_XDG_CONTAINER_DIRS: tuple[str, ...] = (".config", ".local/share", ".cache")
+
 _workspace: Optional["Workspace"] = None
 
 
@@ -185,6 +197,45 @@ class Workspace:
             ) from exc
 
         return p
+
+    def ensure_xdg_dirs(self, user_id: str) -> None:
+        """Create the container's XDG base dirs owned by the access-point user.
+
+        Chrome proved why this matters. `XDG_CONFIG_HOME` had been created
+        root-owned 755, and the EFS access point squashes the container's root
+        to uid 1000 — so Chrome could not create
+        ``$XDG_CONFIG_HOME/google-chrome-for-testing/Crash Reports/``, crashpad
+        failed to initialise its database, and Chrome dumped core ~26ms into
+        launch, long before CDP could listen. Proven in-container 2026-08-04:
+        the same Chrome argv with a *writable* dir on the SAME EFS mount starts
+        fine, so this is a permission bit, not NFS.
+
+        gog is the other consumer — `container-stack.ts` sets XDG_CONFIG_HOME
+        specifically so it persists its config — so an unwritable dir degrades
+        that too, silently.
+
+        Best-effort: a failure here must not block provisioning. It is
+        idempotent and re-runs on every config write, so a container that
+        misses it self-heals on the next one.
+        """
+        if settings.ENVIRONMENT == "local":
+            return
+
+        root = self.user_path(user_id)
+        for rel in _XDG_CONTAINER_DIRS:
+            path = root / rel
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                # Walks parents up to the user root, so `.local` is fixed
+                # alongside `.local/share`.
+                self._chown_for_access_point(path, user_id)
+            except (OSError, WorkspaceError) as exc:
+                logger.error(
+                    "ensure_xdg_dirs: could not prepare %s for %s: %s",
+                    path,
+                    user_id,
+                    exc,
+                )
 
     def list_agents(self, user_id: str) -> list[str]:
         """List agent names (subdirectories) under a user's agents/ dir.

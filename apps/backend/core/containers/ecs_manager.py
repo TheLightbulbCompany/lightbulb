@@ -3259,6 +3259,14 @@ class EcsManager:
         # this every Telegram/Slack/Discord bot token + pairing is dropped.
         channel_accounts = await _provision_channel_accounts(owner_id)
 
+        # The container's XDG dirs must be writable by the access-point user
+        # (uid 1000) before anything in the container tries to use them. Done
+        # here rather than only at first provision so it self-heals on every
+        # config write — existing containers were created with a root-owned
+        # XDG_CONFIG_HOME, which silently made the managed Chromium unable to
+        # start at all (see Workspace.ensure_xdg_dirs).
+        get_workspace().ensure_xdg_dirs(owner_id)
+
         config_path = Path(settings.EFS_MOUNT_PATH) / owner_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,

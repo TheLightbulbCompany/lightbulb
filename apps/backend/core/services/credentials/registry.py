@@ -134,6 +134,12 @@ class OAuthSpec(BaseModel):
     scope_separator: str = " "
     pkce: bool = True
     extra_authorize_params: dict[str, str] = Field(default_factory=dict)
+    # How a CONFIDENTIAL client proves itself at the token endpoint. Every provider
+    # here accepted the secret in the form body until X, which classifies a Web App
+    # / Automated App or Bot as confidential and 401s a posted secret — it requires
+    # HTTP Basic (RFC 6749 §2.3.1). A public/PKCE-only client has no secret, so this
+    # is inert for the DCR providers.
+    token_endpoint_auth_method: Literal["client_secret_post", "client_secret_basic"] = "client_secret_post"
     # Dynamic Client Registration endpoint. When set and the owner has no BYO app
     # stored, the dance registers a fresh public OAuth client at this URL (RFC 7591)
     # and caches it, so a headless owner never needs to pre-create an OAuth app.

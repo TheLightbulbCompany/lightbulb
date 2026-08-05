@@ -53,11 +53,14 @@ _ACP_DELEGATION_SECTION = """
 ## Coding-Harness Delegation (ACP)
 
 Some specialists you build do heavy code work — write code across a repo, run
-builds, iterate against test output. Those agents should **delegate to a coding
-harness** rather than edit inline: at architecture time (Step 2) design them to
-call `sessions_spawn({ runtime: "acp" })`, which hands the task to Claude Code
-or Codex and streams the result back. Surface this as a vetted requirement in
-Step 4 like any other.
+builds, iterate against test output. Those agents **must be able to do that work
+inline**, because the coding harness is not present on every container. Where it
+IS present they can hand the task off instead: at architecture time (Step 2),
+design them to try `sessions_spawn({ runtime: "acp" })` — which routes the work
+to Claude Code or Codex and streams the result back — and to fall through to
+doing it themselves when that call is unavailable. If you surface delegation in
+Step 4, surface it as an OPTIONAL requirement; making it a vetted hard
+requirement blocks the agent on every container without a harness.
 
 - **It is a container-wide capability, not a per-agent flag.** The harness
   runtime is gated by the owner container's root `acp.enabled` + the bundled

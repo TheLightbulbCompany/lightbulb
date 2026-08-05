@@ -194,8 +194,8 @@ Flat modules: `config.py` (Pydantic settings), `auth.py` (Clerk JWT via PyJWT;
 `openclaw_version.py`, `secrets_manager.py`, `tenancy_codes.py`.
 
 Subpackages: `billing/` (Bedrock AIPs, pricing, gate URL — see the Billing
-section), `containers/`, `gateway/`, `repositories/`, `services/`, `runtime/`,
-`crypto/`, `middleware/`, `observability/`.
+section), `containers/`, `gateway/`, `repositories/`, `services/`, `crypto/`,
+`middleware/`, `observability/`.
 
 ### Repositories (`core/repositories/`)
 

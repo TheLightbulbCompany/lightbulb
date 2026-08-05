@@ -531,7 +531,7 @@ class Workspace:
 
         Uses O_EXCL semantics so the existence check + create is atomic at
         the filesystem level — no race window between checking and writing.
-        Mirrors OpenClaw's `writeFileIfMissing` (`agents/workspace.ts:183`)
+        Mirrors OpenClaw's `writeFileIfMissing` (`agents/workspace.ts`)
         so any file pre-staged by Isol8 is honored by OpenClaw's own
         bootstrap on first agent run.
 

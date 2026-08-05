@@ -685,7 +685,7 @@ describe("useAgentChat — multi-tab observation (runId adoption + agent_busy ro
   it("adopts an observed run's runId and ENQUEUES a new send instead of dispatching into the busy gate", async () => {
     // This tab did NOT start the run — it observes another tab's run via the
     // owner-keyed fan-out. Mirrors upstream handleChatEvent adoption
-    // (controllers/chat.ts:711 / tui-event-handlers.ts:461): the observed runId
+    // (controllers/chat.ts / tui-event-handlers.ts): the observed runId
     // becomes the active run, so the tab knows it's busy and queues.
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));

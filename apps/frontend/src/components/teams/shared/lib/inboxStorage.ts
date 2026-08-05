@@ -113,7 +113,7 @@ export function saveLastInboxTab(companyId: string, tab: InboxTab): void {
  * Read + validate the last-active inbox tab. Returns `"all"` when the key is
  * missing, the stored value isn't a known InboxTab, or storage access throws.
  * Deliberate divergence from upstream's `"mine"` default
- * (paperclip/ui/src/lib/inbox.ts:614-631): first-time users have nothing
+ * (paperclip/ui/src/lib/inbox.ts): first-time users have nothing
  * assigned to them yet, so an empty "Mine" tab is a dead-end first impression.
  */
 export function loadLastInboxTab(companyId: string): InboxTab {

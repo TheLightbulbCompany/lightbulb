@@ -144,7 +144,7 @@ def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
 
 
 # The 7 config files OpenClaw seeds in every agent workspace.
-# Source: desktop/openclaw/src/agents/workspace.ts:26-34. These are the only
+# Source: desktop/openclaw/src/agents/workspace.ts. These are the only
 # filenames the Config tab treats as first-class personality/config files;
 # writes via tab="config" are restricted to this set.
 CONFIG_ALLOWLIST: set[str] = {

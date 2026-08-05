@@ -148,7 +148,7 @@ export class ObservabilityStack extends cdk.Stack {
     );
 
     // SMS subscription will be added manually after the oncall phone secret
-    // is created in Secrets Manager. See docs/ops/setup-oncall.md.
+    // is created in Secrets Manager.
 
     // Warn tier: email only
     this.warnTopic = new sns.Topic(this, "AlertsWarn", {

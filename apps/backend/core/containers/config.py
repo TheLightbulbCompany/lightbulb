@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 # core.openclaw_version (CDK-injected env var in deployed containers, repo JSON
 # in local dev / CI). Used as the `meta.lastTouchedVersion` value openclaw
 # expects in our generated config: defeats `missing-meta-vs-last-good`
-# auto-restore (src/config/io.observe-recovery.ts:425) and must match what
-# openclaw itself self-writes (io.ts:879 uses `VERSION` from package.json), or
-# warnIfConfigFromFuture (io.ts:885) fires. Deliberately the DEPLOYED image's
+# auto-restore (src/config/io.observe-recovery.ts) and must match what
+# openclaw itself self-writes (io.ts uses `VERSION` from package.json), or
+# warnIfConfigFromFuture (io.ts) fires. Deliberately the DEPLOYED image's
 # version, NOT the build-target `tag` — `tag` can be bumped ahead of a per-env
 # promotion, and a provision in that window must not stamp a future version.
 DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
@@ -44,14 +44,17 @@ DEPLOYED_UPSTREAM_VERSION = openclaw_version.deployed_upstream_version()
 CHANNEL_PROVIDER_IDS = ("telegram", "discord", "slack")
 
 # The two Bedrock config modes. Both emit the same `amazon-bedrock` provider
-# block shape; they differ in the CATALOG (how many tiers the owner's IAM lets
-# them invoke) and in POLICY (a trial container must not self-run).
+# block shape; they differ in the CATALOG (how many tiers the bedrock-gate will
+# admit for this owner) and in POLICY (a trial container must not self-run).
 #
 #   bedrock_claude — the paid three-tier ladder (opus / sonnet / haiku).
 #   bedrock_trial  — the no-card free tier. Exactly ONE tier (sonnet), because
-#                    ensure_owner_aips mints one AIP and build_owner_bedrock_policy
-#                    pins the owner's IAM role to it: emitting opus/haiku here
-#                    would AccessDenied on every turn that touched them.
+#                    ensure_owner_aips mints one AIP and the gate admits only ARNs
+#                    present in that owner's own token row (bedrock-gate auth.mjs,
+#                    `tierForModel` -> forbiddenAip): emitting opus/haiku here
+#                    would 403 on every turn that touched them. Model pinning is
+#                    the GATE's job, not IAM's — build_owner_bedrock_policy grants
+#                    no bedrock:Invoke* to anyone.
 #
 # `bedrock_trial` is a config MODE resolved from the owner's subscription_status
 # (`trial_local`), never a stored provider_choice — same relationship the deleted
@@ -66,13 +69,34 @@ BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", BEDROCK_TRIAL_CHOICE)
 #
 # These bound how far a run can RUN AWAY; none of them changes what an agent can
 # DO. OpenClaw's agentic loop is a literal `while (true)` with no step, tool-call
-# or token cap (the strict 7.1 schema rejects maxSteps/maxToolCalls/budget
+# or token cap (the strict config schema rejects maxSteps/maxToolCalls/budget
 # outright), so without these a single un-aborted loop can burn thousands of
 # dollars against whichever credential the owner is on.
 #
 # They are NOT the enforcement fence — the agent has `exec: full` and can rewrite
-# its own openclaw.json. The fence is the IAM revoke + desiredCount=0 kill switch.
-# These are free insurance that shrinks the per-incident blast radius.
+# its own openclaw.json. What the real fence is depends on the path:
+#
+# - BEDROCK, both tiers: no owner task role carries `bedrock:Invoke*` at all
+#   (build_owner_bedrock_policy is deny-only), so the shell path AccessDenies and
+#   the bedrock-gate is the only door. What the gate does behind that door is NOT
+#   the same on both tiers:
+#     * TRIAL — a true valve. Reserve against the owner's counter, 429 before a
+#       single token, settle Bedrock's reported usage when the stream ends.
+#     * PAID  — admission is checked against a CACHED Metronome projection (the
+#       metronome-fast-gate row). When that row is absent — e.g. a freshly
+#       converted owner, since it is only written by the low-balance webhook or a
+#       lazy refresh — `paidReserve` admits unconditionally and debits nothing
+#       (ledger.mjs: "no row → allow (backstopped)"). So paid spend is NOT
+#       per-call fenced; the backstop is the meter Lambda reconciling from
+#       Bedrock's own invocation logs, plus its deny-flag + desiredCount=0 kill.
+#   Note settle happens AFTER the stream, not before it — the pre-token check is
+#   the reservation, not the settlement.
+#
+# - BYO-key and ChatGPT-OAuth: no gate at all, the owner's own credential is used
+#   directly. For those owners these bounds are the ONLY thing between a stuck
+#   loop and their bill.
+#
+# Cheap insurance everywhere; load-bearing off the trial path.
 # ---------------------------------------------------------------------------
 
 # agents.defaults.timeoutSeconds — the big one. Upstream defaults to 172800
@@ -206,10 +230,10 @@ def _build_node_paired_entry(
     """One `devices/paired.json` entry for the in-container node role.
 
     The ``tokens.node`` sub-entry is load-bearing in OpenClaw >= 2026.5.7.
-    Upstream's ``listEffectivePairedDeviceRoles`` (src/infra/device-pairing.ts:246)
+    Upstream's ``listEffectivePairedDeviceRoles`` (src/infra/device-pairing.ts)
     fails closed for tokenless paired records — even with ``role: "node"``
     and ``roles: ["node"]`` set, the WS handshake's role-upgrade gate
-    (server/ws-connection/message-handler.ts:1188-1206) rejects the
+    (server/ws-connection/message-handler.ts) rejects the
     connect with ``PAIRING_REQUIRED reason=role-upgrade`` because
     ``listActiveTokenRoles(undefined) === undefined`` resolves the
     effective role set to ``[]``. Pre-2026.5.x records without
@@ -268,7 +292,7 @@ async def ensure_node_paired_entry(
 
     On disk paired.json is a FLAT ``Record<deviceId, PairedDevice>`` —
     upstream's ``writeJson(pairedPath, state.pairedByDeviceId)`` only
-    persists the inner record (``openclaw/src/infra/device-pairing.ts:181``).
+    persists the inner record (``openclaw/src/infra/device-pairing.ts``).
     The ``pairedByDeviceId`` wrapper is in-memory only and MUST NOT be
     written.
 
@@ -332,7 +356,7 @@ def build_device_paired_json(
     The paired.json file is the container's trust store — it maps each
     pre-approved device public key to a role + scope list, and the gateway
     rejects any connect request whose signed device identity isn't in this
-    file (see OpenClaw 4.5 `handshake-auth-helpers.ts:244-281`).
+    file (see OpenClaw 4.5 `handshake-auth-helpers.ts`).
 
     Entries written:
     - **node** — the in-container agent's loopback identity (role: "node",
@@ -395,7 +419,7 @@ def _build_exec_policy() -> dict:
     deployed image does not have — so it falls back to hanging.
 
     Without any policy OpenClaw defaults to security="deny", which blocks
-    every exec call silently (openclaw/src/agents/exec-defaults.ts:98).
+    every exec call silently (openclaw/src/agents/exec-defaults.ts).
     """
     return {
         "exec": {
@@ -774,7 +798,7 @@ def _build_agents_list(paperclip_agents: list[dict], ceo_model: str | None = Non
         }
         # Pass through the friendly display name when Paperclip has one.
         # OpenClaw's agent-runtime schema accepts an optional ``name`` on
-        # agents.list[] entries (zod-schema.agent-runtime.ts:816); the
+        # agents.list[] entries (zod-schema.agent-runtime.ts); the
         # chat surface and the frontend sidebar both render this when
         # present. Without it, OpenClaw falls back to the agentId (UUID),
         # which surfaces as a long string in the chat sidebar instead of
@@ -1118,12 +1142,12 @@ def build_openclaw_config_dict(
 
     config = {
         # Synthetic meta defeats openclaw's "missing-meta-vs-last-good"
-        # auto-restore in src/config/io.observe-recovery.ts:425. That
+        # auto-restore in src/config/io.observe-recovery.ts. That
         # check treats every backend overwrite as anomalous (openclaw
         # adds its own meta after first boot; our overwrites strip it),
         # silently restoring from .bak and clobbering whatever we wrote.
         # Use the real upstream version so warnIfConfigFromFuture
-        # (io.ts:885) parses it as semver and short-circuits cleanly.
+        # (io.ts) parses it as semver and short-circuits cleanly.
         "meta": {"lastTouchedVersion": DEPLOYED_UPSTREAM_VERSION},
         # The audit ledger writes one IMMEDIATE SQLite transaction per agent/tool
         # event from a dedicated worker thread into the shared state DB. On EFS
@@ -1605,7 +1629,7 @@ def build_openclaw_config_dict(
             # large diffs. 1 MB matches the documented upper bound for
             # both providers.
             "maxBodyBytes": 1_048_576,
-            # OpenClaw v2026.5.7 (gateway/hooks.ts:75-95) requires
+            # OpenClaw v2026.5.7 (gateway/hooks.ts) requires
             # "hook:" in this list when ``defaultSessionKey`` is unset
             # (we don't set it above). Omitting "hook:" makes the gateway
             # throw at boot — every newly-provisioned container would
@@ -1726,7 +1750,7 @@ def build_openclaw_config_dict(
         "browser": {
             # Two profiles always defined; the `user` profile is
             # statically declared but only routable when a desktop node
-            # is paired (extensions/browser/src/browser-tool.ts:243
+            # is paired (extensions/browser/src/browser-tool.ts
             # filters by node.connected). Default is `openclaw` so
             # not-yet-bound sessions (channels, cron, unpaired UI) get
             # container Chromium — bundled in the extended image.
@@ -1810,7 +1834,7 @@ def build_openclaw_config_dict(
                     "driver": "openclaw",
                     "color": "#FF4500",
                     # Required since OpenClaw v2026.5.7-0d10b38 — upstream
-                    # zod-schema.ts:483 now refines any non-`existing-session`
+                    # zod-schema.ts now refines any non-`existing-session`
                     # profile to require cdpPort or cdpUrl, with the message
                     # "Profile must set cdpPort or cdpUrl". Without it the
                     # gateway exits at boot with `Gateway failed to start:
@@ -1818,7 +1842,7 @@ def build_openclaw_config_dict(
                     # and the container loops failed-to-start forever.
                     # 18800 matches upstream's documented default for the
                     # bundled-Chromium openclaw driver (docs/tools/
-                    # browser-linux-troubleshooting.md, chrome.test.ts:921).
+                    # browser-linux-troubleshooting.md, chrome.test.ts).
                     # Each container is per-user-isolated so collisions
                     # can't happen.
                     "cdpPort": 18800,
@@ -1830,7 +1854,7 @@ def build_openclaw_config_dict(
                     # Surfaces in the OpenClaw UI as the profile chip.
                     # No cdpPort/cdpUrl needed — `existing-session` is
                     # the one driver upstream's schema exempts from the
-                    # require-cdp check (zod-schema.ts:483).
+                    # require-cdp check (zod-schema.ts).
                     "color": "#0066FF",
                 },
             },

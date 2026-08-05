@@ -123,7 +123,7 @@ export const BOOTSTRAP_MESSAGE =
  * one-at-a-time off the SERVER's run-ended signal (`run_ended`, or a
  * terminal done/error for the active run when no run_ended trails it) —
  * never on a local busy→idle edge. Mirrors upstream OpenClaw control-ui's
- * chat queue (~/Desktop/openclaw/ui/src/ui/app-chat.ts:181-217).
+ * chat queue (upstream ui/src/ui/app-chat.ts).
  *
  * `sendState` tracks a send's transport status:
  *   - undefined  — a plain queued send awaiting the normal drain.
@@ -620,7 +620,7 @@ export function useAgentChat(
   // Deferred abort intent. cancelMessage() while disconnected stores the
   // target {agentId, runId} here; the reconnect rising-edge effect below
   // replays it exactly once. Mirrors upstream app-chat.ts's host.pendingAbort
-  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:213).
+  // (upstream ui/src/ui/app-chat.ts).
   const pendingAbortRef = useRef<{ agentId: string; runId: string | null } | null>(null);
 
   // Approval queue snapshot — used to keep the busy gate armed while an
@@ -692,7 +692,7 @@ export function useAgentChat(
   // agent_chat) and removes the item from the normal queue, since it's now
   // part of the live run. No-op if no active run or the id isn't queued.
   // Mirrors upstream OpenClaw web UI's steerQueuedChatMessage
-  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:737).
+  // (upstream ui/src/ui/app-chat.ts).
   const steerMessage = useCallback(
     (id: string) => {
       const activeRunId = clientRunIdRef.current;
@@ -1302,8 +1302,8 @@ export function useAgentChat(
       }
 
       // Adopt an observed run as the active run when we have none — mirrors
-      // upstream handleChatEvent (controllers/chat.ts:711 `if (!chatRunId &&
-      // sessionMatches) chatRunId = payload.runId`; tui-event-handlers.ts:461).
+      // upstream handleChatEvent (controllers/chat.ts `if (!chatRunId &&
+      // sessionMatches) chatRunId = payload.runId`; tui-event-handlers.ts).
       // A tab OBSERVING another tab's run (owner-keyed fan-out delivers its
       // events here) thereby knows it's busy and ENQUEUES subsequent sends
       // rather than dispatching into the backend serialize gate. This is the
@@ -2000,7 +2000,7 @@ export function useAgentChat(
   // This is invoked off the SERVER's run-ended signal — `run_ended`, or a
   // terminal done/error for the active runId when no run_ended trails it —
   // NEVER on a local clientRunId falling edge. Mirrors upstream OpenClaw web
-  // UI's flushChatQueue (app-chat.ts:775): drain only when !isChatBusy, send
+  // UI's flushChatQueue (app-chat.ts): drain only when !isChatBusy, send
   // one, and let the dispatched message's own run-ended re-invoke the drain
   // for the next one. dispatchNow re-arms clientRunIdRef, so the gate stays
   // closed for the freshly-dispatched run until its server terminal.
@@ -2032,7 +2032,7 @@ export function useAgentChat(
   //   - free + connected → dispatch immediately (re-queued as failed again
   //     if the send throws).
   // Mirrors upstream OpenClaw web UI's retryQueuedChatMessage
-  // (~/Desktop/openclaw/ui/src/ui/chat/chat-queue.ts:914).
+  // (upstream ui/src/ui/chat/chat-queue.ts).
   const retryQueuedMessage = useCallback(
     (id: string) => {
       const item = queuedMessagesRef.current.find((m) => m.id === id);
@@ -2172,7 +2172,7 @@ export function useAgentChat(
       // Disconnected: park the send as waiting-reconnect instead of
       // dropping it. The reconnect rising-edge effect replays it (and
       // resumes the normal drain) once the socket is back. Mirrors upstream
-      // markQueuedChatSendsWaitingForReconnect (chat-queue.ts:848).
+      // markQueuedChatSendsWaitingForReconnect (chat-queue.ts).
       if (!isConnected) {
         console.info("[chat] send parked: gateway disconnected, queued as waiting-reconnect");
         const id = `queued-${crypto.randomUUID()}`;
@@ -2216,7 +2216,7 @@ export function useAgentChat(
   // the live turn and drain the queue. We deliberately do NOT clear
   // isStreaming / live state locally: server-reconcile drives "done", not a
   // local edge. Mirrors upstream OpenClaw web UI's handleAbortChat
-  // (~/Desktop/openclaw/ui/src/ui/app-chat.ts:201).
+  // (upstream ui/src/ui/app-chat.ts).
   const cancelMessage = useCallback(async () => {
     if (!agentIdRef.current || !isStreaming) return;
 
@@ -2230,7 +2230,7 @@ export function useAgentChat(
 
     // Disconnected: queue the abort intent and replay it on the next
     // reconnect rising edge (see the pending-abort replay effect below).
-    // Mirrors upstream app-chat.ts:211.
+    // Mirrors upstream app-chat.ts.
     if (!isConnected) {
       pendingAbortRef.current = {
         agentId: agentIdRef.current,
@@ -2273,7 +2273,7 @@ export function useAgentChat(
   //      flag so they become plain queued sends, then resume the normal
   //      drain (drainQueue dispatches the head; each dispatched send's
   //      server run-ended re-invokes the drain for the next). Mirrors
-  //      retryReconnectableQueuedChatSends (chat-queue.ts:883).
+  //      retryReconnectableQueuedChatSends (chat-queue.ts).
   const prevConnectedRef = useRef(isConnected);
   useEffect(() => {
     const rose = !prevConnectedRef.current && isConnected;

@@ -83,7 +83,7 @@ def test_build_paired_entry_public_key_is_base64url_raw():
     """REGRESSION: paired.json's ``publicKey`` field must be the
     base64url-no-pad raw 32 bytes — upstream's gateway does strict string
     equality of paired.json against the wire-format pubkey in the signed
-    connect frame (message-handler.ts:1151-1153
+    connect frame (message-handler.ts
     ``paired?.publicKey === devicePublicKey``). Writing PEM here always
     mismatches and the gateway treats every paired device as NOT_PAIRED.
     """
@@ -270,7 +270,7 @@ class _FakeWorkspace:
 async def test_pair_desktop_devices_writes_two_paired_entries_flat():
     """Persisted dict must be FLAT — keyed directly by deviceId, no
     `pairedByDeviceId` wrapper. Upstream openclaw writes/reads the flat shape
-    on disk (device-pairing.ts:181,186); a wrapper makes our entries invisible
+    on disk (device-pairing.ts); a wrapper makes our entries invisible
     to the gateway's coercePairingStateRecord load path.
     """
     workspace = _FakeWorkspace(initial={})
@@ -1043,7 +1043,7 @@ async def test_revoke_desktop_device_no_op_on_missing():
 async def test_efs_workspace_adapter_writes_to_devices_paired_json(tmp_path):
     """Path regression: paired.json must live at <owner>/devices/paired.json,
     not <owner>/paired.json. Openclaw's resolvePairingPaths reads
-    <stateDir>/devices/paired.json (pairing-files.ts:6-13).
+    <stateDir>/devices/paired.json (pairing-files.ts).
     """
     workspace = Workspace(mount_path=str(tmp_path))
     mock_container_repo = MagicMock()

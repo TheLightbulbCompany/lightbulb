@@ -8,12 +8,12 @@ env-derived gateway hostnames; an out-of-allowlist URL is an operator
 bug (the URL is read from our own infrastructure), not user input,
 so we raise rather than 4xx.
 
-Field shape per ``paperclip/packages/adapters/openclaw-gateway/src/index.ts:21``:
+Field shape per ``paperclip/packages/adapters/openclaw-gateway/src/index.ts``:
 { url, authToken, sessionKeyStrategy, sessionKey }. Note ``authToken``,
 not ``token``.
 
 Adapter type is ``"openclaw_gateway"`` with an underscore — canonical
-per ``paperclip/packages/shared/src/constants.ts:40``.
+per ``paperclip/packages/shared/src/constants.ts``.
 
 Session key strategy is ``"issue"`` so each Paperclip issue assigned
 to an agent gets its own OpenClaw session
@@ -27,7 +27,7 @@ session that is still unambiguously a Paperclip one.
 
 The ``paperclip:`` prefix on that fallback is load-bearing, not
 cosmetic. Once ``agentId`` is set the adapter prefixes the fallback with
-``agent:<agentId>:`` (openclaw-gateway execute.ts:137-139), so a bare
+``agent:<agentId>:`` (openclaw-gateway execute.ts), so a bare
 ``user_id`` fallback would resolve to ``agent:<agentId>:<user_id>`` —
 byte-identical to what ``build_chat_session_key(agent_id, user_id,
 session_id=None)`` (routers/websocket_chat.py) produces for the owner's
@@ -61,7 +61,7 @@ PAPERCLIP_OPERATOR_CLIENT_ID: Final[str] = "paperclip-operator"
 _GATEWAY_URL_RE: Final[re.Pattern[str]] = re.compile(r"\A(?:wss://ws(?:-[a-z]+)?\.isol8\.co|ws://localhost:[0-9]+)\Z")
 
 # Per-run agent timeout (seconds) + the gateway's wait for that run (ms). The
-# openclaw-gateway adapter defaults BOTH to 120s (build-config.ts:67-68 —
+# openclaw-gateway adapter defaults BOTH to 120s (build-config.ts —
 # `timeoutSec=120`, `waitTimeoutMs=120000`), a value tuned for short, single-step
 # heartbeat runs. Our agents do substantive single-run work that routinely exceeds
 # 2 min, so at 120s the gateway stamps a still-working run `timed_out` and

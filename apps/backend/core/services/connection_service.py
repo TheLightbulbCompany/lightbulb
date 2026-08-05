@@ -419,9 +419,9 @@ class ConnectionService:
     async def count_live_chat_connections(self, owner_id: str) -> int:
         """Count live chat-typed WS connections for owner_id.
 
-        "Live" (binding rules, see docs/superpowers/sdd/task-11-brief.md --
-        a later task's scale-to-zero "is anyone here?" check consumes this
-        count, and that stop side must over-preserve, never over-kill):
+        "Live" (binding rules -- the scale-to-zero "is anyone here?" check
+        consumes this count, and that stop side must over-preserve, never
+        over-kill):
           - connectionType == "chat" only. node/operator connections are
             transparent pipes (desktop node-host, control-UI proxy), not
             "someone looking at the chat UI".

@@ -3,7 +3,7 @@
 // Post-process buildChatItems' output: wrap consecutive items belonging
 // to the same visual side (user vs assistant) into one RenderGroup.
 // Mirrors upstream's `groupMessages` at
-// `~/Desktop/openclaw/ui/src/ui/chat/build-chat-items.ts:151-200`.
+// `upstream ui/src/ui/chat/build-chat-items.ts`.
 
 import type { ChatRenderItem, RenderGroup, RenderSide, HistoryMessage } from "./types";
 

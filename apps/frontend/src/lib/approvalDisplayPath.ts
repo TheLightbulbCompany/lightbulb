@@ -2,7 +2,7 @@
 //
 // Compact an absolute path under a user home directory to a ~-prefixed
 // form for display in approval cards. Ported from upstream OpenClaw
-// (~/Desktop/openclaw/src/infra/approval-display-paths.ts). WHY: raw
+// (upstream src/infra/approval-display-paths.ts). WHY: raw
 // /Users/<name>/… paths are noisy and leak the OS username; ~/… is the
 // same affordance the native control UI shows.
 

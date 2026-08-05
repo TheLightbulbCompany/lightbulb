@@ -32,7 +32,7 @@ export interface ToolBlockPair {
  * message's content array. Pairing is by id (block-level). Orphan tool_results
  * (no matching tool_use) are dropped.
  *
- * Source: upstream's `tool-cards.ts:73-185` does positional-within-message
+ * Source: upstream's `tool-cards.ts` does positional-within-message
  * pairing; we use id-based to be more robust to reordering. Functionally
  * equivalent for messages that have one tool_use + one tool_result in order.
  */

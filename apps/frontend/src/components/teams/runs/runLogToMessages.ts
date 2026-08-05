@@ -6,7 +6,7 @@
 //
 // The openclaw_gateway adapter logs EVERY agent event verbatim BEFORE it
 // branches on the stream (paperclip-fork
-// packages/adapters/openclaw-gateway/src/server/execute.ts:1299) as
+// packages/adapters/openclaw-gateway/src/server/execute.ts) as
 //
 //   [openclaw-gateway:event] run=<id> stream=<name> data=<json>
 //

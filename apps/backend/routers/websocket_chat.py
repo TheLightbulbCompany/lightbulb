@@ -302,8 +302,8 @@ _RUN_DISPATCH_ALTERNATIVE = {
 # to budget — same question, different verdicts.
 #
 # In practice the Paperclip openclaw-gateway adapter only ever sends `agent`
-# (paperclip/packages/adapters/openclaw-gateway/src/server/execute.ts:1289).
-# `agent.wait` (:1319) is the separate call that AWAITS an already-started run
+# (paperclip/packages/adapters/openclaw-gateway/src/server/execute.ts).
+# `agent.wait` is the separate call that AWAITS an already-started run
 # and is deliberately NOT gated — refusing it would strand a live run rather
 # than prevent one, and the spend it represents is already committed.
 _WAKE_GATED_METHODS = _RUN_DISPATCH_METHODS
@@ -1070,7 +1070,7 @@ async def ws_message(
             # The subprocess only ever sends ONE `connect` frame: the signed
             # reply to the upstream container's `connect.challenge` (the
             # OpenClaw v3 handshake is server-initiated, see
-            # ~/Desktop/openclaw/src/gateway/client.ts:880). The backend
+            # upstream src/gateway/client.ts). The backend
             # started the upstream handshake itself on `$connect` via
             # `_kick_off_node_connect`, so by the time this signed-connect
             # frame arrives there's an awaiting NodeUpstreamConnection
@@ -1155,11 +1155,11 @@ async def ws_message(
         # Frontend-minted UUID per user turn. Forwarded to OpenClaw as
         # idempotencyKey so the frontend can match the chat.final event
         # to the user's send and drain its local chat queue. Mirrors
-        # upstream ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:502.
+        # upstream ui/src/ui/controllers/chat.ts.
         # Optional for backwards-compat with old frontend builds — when
         # absent, the backend mints a UUID below so OpenClaw's chat.send
         # always carries an idempotencyKey (the field is read by upstream
-        # chat.ts:2450 which does `const clientRunId = p.idempotencyKey`).
+        # src/gateway/server-methods/chat.ts which does `const clientRunId = p.idempotencyKey`).
         client_run_id = body.get("clientRunId")
         # Side-channel (`/btw`) send. Upstream's webchat routes a `/btw`/`/side`
         # message through the SAME wire call as a normal chat.send (deliver:false
@@ -1259,7 +1259,7 @@ async def ws_message(
 
     if msg_type == "agent_steer":
         # Inject `text` into the in-flight run for this session. Upstream's
-        # sendSteerChatMessage (ui/controllers/chat.ts:674 -> requestChatSend)
+        # sendSteerChatMessage (ui/controllers/chat.ts -> requestChatSend)
         # is just a chat.send with deliver:false + a freshly-generated
         # idempotencyKey on the SAME sessionKey; the container's queue-mode
         # "steer" merges it into the active run. There is no separate steer RPC
@@ -2276,7 +2276,7 @@ async def _process_agent_chat_background(
                 #      surface (APPROVAL_CLIENT_MISMATCH — see upstream
                 #      bug filed by us).
                 # Setting execNode without execHost lets exec.host
-                # default to "auto" (exec-defaults.ts:47): the agent
+                # default to "auto" (exec-defaults.ts): the agent
                 # picks per-command. When it explicitly targets node,
                 # execNode is already bound. When it picks sandbox or
                 # gateway, no node round-trip + no approval gate.
@@ -2289,7 +2289,7 @@ async def _process_agent_chat_background(
                         req_id=f"bind-node-{uuid4()}",
                         method="sessions.patch",
                         # OpenClaw's sessions.patch takes `key` (see
-                        # openclaw/src/gateway/server-methods/sessions.ts:1262).
+                        # openclaw/src/gateway/server-methods/sessions.ts).
                         # chat.send still uses `sessionKey` — that's a separate
                         # schema that didn't change.
                         params={
@@ -2368,7 +2368,7 @@ async def _process_agent_chat_background(
         # parked-vs-dead window.
         #
         # The runId this send is bound to: == the chat.send idempotencyKey ==
-        # the runId OpenClaw stamps on every event for this run (chat.ts:2450).
+        # the runId OpenClaw stamps on every event for this run (src/gateway/server-methods/chat.ts).
         # Computed up-front so a side run can be registered under the SAME id its
         # terminal will carry.
         run_id_for_send = client_run_id or str(uuid4())
@@ -2388,26 +2388,26 @@ async def _process_agent_chat_background(
             await pool.ensure_connection(owner_id, ip, container["gateway_token"])
             pool.mark_side_run(owner_id, run_id_for_send)
 
-        # Idempotency key for OpenClaw's chat.send. We always send one so
-        # upstream's dedupe (`context.dedupe.get(`chat:${clientRunId}`)`,
-        # chat.ts:2488) and in-flight detection
-        # (`context.chatAbortControllers.get(clientRunId)`, chat.ts:2496) in
-        # ~/Desktop/openclaw/src/gateway/server-methods/chat.ts have a stable
-        # key to match against. When the frontend supplies `clientRunId`, we use
-        # it so the frontend can correlate the eventual chat.final back to its
-        # send (drives the local chat queue drain). When absent (old client), we
-        # mint a backend UUID — matches the pre-clientRunId behavior. Upstream
-        # chat.ts:2640 calls `context.addChatRun(clientRunId, ...)` with
-        # whichever value we pass (and chat.ts:2450 reads it as the runId).
+        # Idempotency key for OpenClaw's chat.send. Everything below lives in
+        # upstream src/gateway/server-methods/chat.ts.
+        #
+        # We always send one so upstream's dedupe
+        # (`context.dedupe.get(`chat:${clientRunId}`)`) and its in-flight
+        # detection (`context.chatAbortControllers.get(clientRunId)`) have a
+        # stable key to match against. When the frontend supplies `clientRunId`
+        # we use it, so the frontend can correlate the eventual chat.final back
+        # to its send (drives the local chat queue drain). When absent (old
+        # client) we mint a backend UUID — matches the pre-clientRunId
+        # behavior. Upstream calls `context.addChatRun(clientRunId, ...)` with
+        # whichever value we pass, and reads it back as the runId.
         #
         # deliver:false matches upstream's web-UI requestChatSend
         # (ui/src/ui/controllers/chat.ts) for EVERY web send — normal, steer,
         # and /btw alike: a direct streaming client gets the reply over the
         # socket and must NOT also re-broadcast it to external channels. The
-        # server only delivers externally on `params.deliver === true`
-        # (chat.ts:674), so this is the explicit form of the previous omitted
-        # default (verified behaviorally identical), shared by normal + side
-        # sends.
+        # server only delivers externally on `params.deliver === true`, so this
+        # is the explicit form of the previous omitted default (verified
+        # behaviorally identical), shared by normal + side sends.
         chat_send_params: dict[str, object] = {
             "sessionKey": session_key,
             "message": message,
@@ -2487,7 +2487,7 @@ async def _process_agent_abort_background(
     """Cancel the in-flight run for ``agent:{agent_id}:{user_id}``.
 
     Forwards upstream's ``chat.abort``. Param shape mirrors openclaw's
-    abortChatRun (ui/src/ui/controllers/chat.ts:682): ``{sessionKey, runId}``
+    abortChatRun (ui/src/ui/controllers/chat.ts): ``{sessionKey, runId}``
     when the runId is known, else ``{sessionKey}`` alone.
 
     Fire-and-don't-wait-for-terminal: chat.abort only requests cancellation.
@@ -2596,7 +2596,7 @@ async def _process_agent_steer_background(
     """Inject ``text`` into the in-flight run for ``agent:{agent_id}:{user_id}``.
 
     Upstream's steer (sendSteerChatMessage -> requestChatSend,
-    ui/src/ui/controllers/chat.ts:674/438) is an ordinary ``chat.send`` with
+    ui/src/ui/controllers/chat.ts) is an ordinary ``chat.send`` with
     ``deliver:false`` and a freshly-generated ``idempotencyKey`` on the SAME
     sessionKey. The container's queue-mode "steer" merges the message into the
     active run rather than starting a new turn — so there is no separate steer

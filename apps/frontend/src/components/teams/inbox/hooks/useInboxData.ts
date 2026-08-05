@@ -1,5 +1,5 @@
 // Ported from upstream Paperclip's pages/Inbox.tsx data-fetching block
-// (paperclip/ui/src/pages/Inbox.tsx:744-835) (MIT, (c) 2025 Paperclip AI).
+// (paperclip/ui/src/pages/Inbox.tsx) (MIT, (c) 2025 Paperclip AI).
 // Translated from React Query's useQuery to SWR via our useTeamsApi hook.
 // Subset: 3 issue fetches (mine / recent-touched / all). Heartbeat /
 // dashboard / live-runs / approvals fetches are not yet ported.

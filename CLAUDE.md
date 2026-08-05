@@ -9,7 +9,7 @@ Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/
 Every freshly provisioned owner gets two seed agents inside their Paperclip company: **Friday** (the per-owner CEO / orchestrator) and **Atlas** (the in-house agent-recruiter). Both are seeded by `paperclip_provisioning.provision_org` — see the "Provisioning Flow" section below. Custom agents beyond Friday/Atlas can be **published to the Isol8 marketplace** for other users to deploy — see the "Marketplace" section.
 
 The OpenClaw container image Isol8 runs is an **extended image** built from the **Isol8 OpenClaw fork** (`ghcr.io/isol8ai/agent`, a **Debian**-based image — NOT Alpine) with additional Linux skill binaries and baked externalized plugins (Slack/Discord/Bedrock). Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned base + per-env extended tags are tracked in `openclaw-version.json` at the repo root, where the fields mean distinct things:
-- `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/isol8ai/agent:2026.6.1-isol8.1`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
+- `upstream` — the fork base the Dockerfile `FROM`s (e.g. `ghcr.io/isol8ai/agent:2026.7.2-isol8.2`). A **private** GHCR package, pulled only by the authenticated build workflow. Keep it in lockstep with the Dockerfile `FROM` line.
 - `image`/`tag`/`full` — the **legacy public** upstream image (`ghcr.io/openclaw/openclaw`), kept only as the bootstrap/unknown-env fallback in `container-stack.ts` (pulled by per-user ECS tasks with **no** registry credentials, so it must stay anonymously pullable). `tag` also feeds the `OPENCLAW_UPSTREAM_VERSION` env fallback.
 - `extendedImage` + per-env `dev.tag`/`prod.tag` — the ECR extended image actually deployed; `dev.tag`/`prod.tag` are the per-environment promotion gate (flip dev, validate, then prod). They drive `meta.lastTouchedVersion` via `deployed_upstream_version()`.
 
@@ -62,25 +62,11 @@ cd apps/backend && uv sync            # Python deps
 
 **Database:** DynamoDB tables provisioned by CDK (`apps/infra/lib/stacks/database-stack.ts`). No relational DB — items are plain dicts, accessed via repositories in `apps/backend/core/repositories/`.
 
-**All services (via Turborepo):**
 ```bash
-turbo run dev                         # Start all services in parallel
-turbo run dev --filter=@isol8/frontend    # Frontend only
-turbo run dev --filter=@isol8/backend     # Backend only
-```
-
-**Backend:**
-```bash
-cd apps/backend
-uv run uvicorn main:app --reload --port 8000
-```
-
-**Frontend:**
-```bash
-cd apps/frontend
-pnpm run dev                   # localhost:3000
-pnpm run build                 # Production build
-pnpm run lint                  # ESLint
+turbo run dev                              # everything, in parallel
+turbo run dev --filter=@isol8/frontend     # or @isol8/backend
+cd apps/backend  && uv run uvicorn main:app --reload --port 8000
+cd apps/frontend && pnpm run dev           # localhost:3000; also `build`, `lint`
 ```
 
 ### Running Tests
@@ -159,7 +145,7 @@ gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
 
 ```
 Client --> wss://ws-dev.isol8.co --> API Gateway --> Lambda Auth --> VPC Link V1 --> NLB --> ALB
-  --> FastAPI /ws/message --> ECS describe_tasks IP discovery --> per-user OpenClaw container (ECS Fargate)
+  --> FastAPI /ws/message --> Cloud Map DiscoverInstances --> per-user OpenClaw container (ECS Fargate)
   <-- FastAPI pushes streaming chunks via Management API
                                                     |
                                         EFS /mnt/efs/users/{user_id}/
@@ -168,53 +154,15 @@ Client --> wss://ws-dev.isol8.co --> API Gateway --> Lambda Auth --> VPC Link V1
 
 ### Production Infrastructure
 
-```
-isol8/                       # Turborepo monorepo (Isol8AI/isol8)
-+-- apps/
-|   +-- frontend/            # Next.js 16 (Vercel auto-deploy)
-|   +-- backend/             # FastAPI on ECS Fargate (uv managed, Docker image to ECR)
-|   +-- desktop/             # Tauri desktop app (signed DMG via CI)
-|   +-- infra/               # AWS CDK (TypeScript) — the single IaC source of truth
-|       +-- lib/stacks/      # auth, network, database, container, api, service, paperclip, dns, observability
-|       +-- openclaw/        # Extended OpenClaw Dockerfile (ECR: isol8/openclaw-extended)
-+-- packages/                # Shared packages (empty/future)
-+-- paperclip/               # GITIGNORED — read-only VANILLA upstream (paperclipai/paperclip) clone; reference only, NOT what we deploy
-+-- openclaw-version.json    # Pinned upstream + per-env extended image tags
-+-- paperclip-version.json   # Pinned Paperclip FORK image (ghcr.io/isol8ai/paperclip) + per-env extended tags
-+-- turbo.json               # Task orchestration
-+-- pnpm-workspace.yaml      # Workspace definitions
-+-- package.json             # Root (devDeps: turbo)
-```
+Turborepo monorepo (`Isol8AI/isol8`): `apps/{frontend,backend,desktop,infra,mobile}`,
+`packages/` (shared TS). The non-obvious entries at the root:
 
-```
-+---------------+     +----------------------------------------------------+
-|   Vercel      |     |                      AWS                            |
-|  (Frontend)   |     |                                                    |
-|               |---->|  WebSocket API GW --> VPC Link V1 --> NLB --> ALB   |
-|               |<----|       | Management API                              |
-|               |     |       Lambda Authorizer (Clerk JWT)                 |
-|               |     |       DynamoDB ws-connections table                 |
-|               |     |                                                    |
-|  REST API     |---->|  ALB ----------------------> ECS Fargate            |
-|               |     |                                (FastAPI backend    |
-|               |     |                                 service — uvicorn) |
-|               |     |                                      |             |
-|               |     |                          connection pool to        |
-|               |     |                          per-user OpenClaw         |
-|               |     |                                                    |
-|               |     |  ECS Fargate (per-user OpenClaw containers)        |
-|               |     |  EFS (per-user workspaces at /mnt/efs/users/)     |
-|               |     |  Cloud Map (service discovery)                     |
-|               |     |  DynamoDB (users, containers, billing,             |
-|               |     |            api-keys, usage-counters,               |
-|               |     |            pending-updates, channel-links,         |
-|               |     |            admin-actions, ws-connections,          |
-|               |     |            company-slugs, agent-email-addresses)   |
-|               |     |  Secrets Manager + KMS                             |
-|               |     |  S3 (config + catalog) + CloudFront                |
-|               |     |  ECR (isol8-backend, isol8/openclaw-extended)      |
-+---------------+     +----------------------------------------------------+
-```
+- `paperclip/` — **GITIGNORED**, a read-only clone of *vanilla* upstream
+  (`paperclipai/paperclip`). Reference only. **NOT what we deploy** — see the
+  fork note under AWS CDK Stacks.
+- `openclaw-version.json` / `paperclip-version.json` — the image pins. Both
+  carry a `notes` field explaining what each field means and what may not be
+  changed without breaking the fleet. Read it before bumping.
 
 ### AWS Configuration
 
@@ -229,46 +177,37 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 
 ## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app with lifespan handler that boots the gateway connection pool, starts container lifecycle management (`startup_containers` / `shutdown_containers`), starts the update-service scheduled worker, boots the Teams event broker singleton, and installs observability middleware. ~25 routers registered under `/api/v1` (run `ls apps/backend/routers/` and `ls apps/backend/routers/teams/` for the current set — the per-router annotations below have a tendency to drift). CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app with lifespan handler that boots the gateway connection pool, starts container lifecycle management (`startup_containers` / `shutdown_containers`), starts the update-service scheduled worker, boots the Teams event broker singleton, and installs observability middleware. CORS middleware, custom OpenAPI schema with BearerAuth.
 
 No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
+> **File inventories are not kept here.** They rot faster than anyone updates
+> them. Run `ls` on the directory you're touching. What this file documents is
+> the *why* — invariants, single-writers, and things that look wrong until you
+> know the reason.
+
 ### Core (`core/`)
 
-| File / Dir | Purpose |
-|------------|---------|
-| `config.py` | Pydantic settings: ECS/EFS/CloudMap, Stripe billing, Bedrock, CORS, plan budgets, S3 buckets, encryption key. |
-| `auth.py` | Clerk JWT validation via PyJWT. `get_current_user` dependency returns `AuthContext`. JWKS cache with 1-hour TTL. |
-| `dynamodb.py` | Low-level DynamoDB client + table helpers. |
-| `encryption.py` | Fernet symmetric encryption helpers (used by key_service + channel links). |
-| `constants.py` | `SYSTEM_ACTOR_ID = "__system__"` for audit logs. |
-| `crypto/` | `kms_secrets.py` (KMS-backed secret fetch), `operator_device.py` (desktop auth device attestation). |
-| `middleware/` | `admin_metrics.py` — per-request metric emission for the admin surface. |
-| `observability/` | `logging.py`, `metrics.py` (CloudWatch EMF), `middleware.py`, `e2e_correlation.py` (correlation ID propagation). |
+Flat modules: `config.py` (Pydantic settings), `auth.py` (Clerk JWT via PyJWT;
+`get_current_user` → `AuthContext`, JWKS cache w/ 1-hour TTL), `dynamodb.py`,
+`encryption.py` (Fernet), `constants.py` (`SYSTEM_ACTOR_ID = "__system__"`),
+`openclaw_version.py`, `secrets_manager.py`, `tenancy_codes.py`.
+
+Subpackages: `billing/` (Bedrock AIPs, pricing, gate URL — see the Billing
+section), `containers/`, `gateway/`, `repositories/`, `services/`, `crypto/`,
+`middleware/`, `observability/`.
 
 ### Repositories (`core/repositories/`)
 
-DynamoDB-backed data access. One repo per table.
-
-| File | Table(s) |
-|------|----------|
-| `user_repo.py` | `users` |
-| `container_repo.py` | `containers` |
-| `billing_repo.py` | `billing-accounts`, usage counters |
-| `api_key_repo.py` | `api-keys` (BYOK, encrypted) |
-| `usage_repo.py` | `usage-counters` (atomic counters + daily rollups) |
-| `update_repo.py` | `pending-updates` (container update queue) |
-| `channel_link_repo.py` | `channel-links` (Telegram/Discord/WhatsApp bindings) |
-| `admin_actions_repo.py` | `admin-actions` (audit log of admin ops) |
-| `company_slug_repo.py` | `company-slugs` (platform-unique slug reservations, conditional put) |
-| `agent_email_repo.py` | `agent-email-addresses` (provisioned agent email addresses, conditional put) |
+One repo per DynamoDB table; items are plain dicts. Table names follow
+`isol8-{env}-{suffix}` (see `database-stack.ts`).
 
 ### Container Orchestration (`core/containers/`)
 
 | File | Purpose |
 |------|---------|
 | `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()`. `startup_containers()` / `shutdown_containers()` lifecycle. Usage-recording callback. |
-| `ecs_manager.py` | Per-user ECS Fargate lifecycle. Container IP discovery via ECS `describe_tasks` (`discover_ip`), **not** Cloud Map — Cloud Map is registration-only (each per-user service is attached via `serviceRegistries`, but the backend never queries it for IPs). Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
+| `ecs_manager.py` | Per-user ECS Fargate lifecycle. Container IP discovery is **Cloud Map** `DiscoverInstances` (`discover_ip`), **not** `describe_tasks`: every per-user service registers into ONE shared Cloud Map service via `serviceRegistries`, and the lookup is scoped to a tenant by filtering the `ECS_SERVICE_NAME` attribute. `HealthStatus="HEALTHY_OR_ELSE_ALL"` because the shared service has no `HealthCheckCustomConfig`, so ECS-registered instances report `UNKNOWN`. **Never cache a container IP across reconnects** — the service is long-lived but the task IP is ephemeral (changes on every deploy / OOM / health-restart / reprovision); a cached dead IP caused a prod outage where the pool showed "connected" and every RPC timed out. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
 | `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. |
 | `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
 
@@ -281,34 +220,46 @@ DynamoDB-backed data access. One repo per table.
 
 ### Services (`core/services/`)
 
-The services directory has grown past per-file annotation. Run `ls apps/backend/core/services/` for the current list. Notable groups:
+`ls apps/backend/core/services/` for the current list. The ones whose behaviour
+you cannot guess from the filename:
 
-- **Billing / usage**: `billing_service.py` (Stripe customers, checkout, portal, subscription lifecycle), `usage_service.py` (per-owner + per-member atomic counters → Stripe Meters).
-- **Container lifecycle**: `update_service.py` (Track 1 silent config patches + Track 2 queued updates; `run_scheduled_worker`), `config_patcher.py` (EFS-safe JSON deep-merge under NFS-compatible `fcntl.lockf`), `config_policy.py` / `config_reconciler.py` (tier-based config protection), `provision_gate.py` (subscription / credits / OAuth gate evaluation).
-- **Gateway / WebSocket**: `connection_service.py` (DDB connectionId↔user_id state), `management_api_client.py`, `node_proxy.py` (per-user node-host tracking — relocated from routers/ in May 2026).
-- **Catalog**: `catalog_service.py` plus `catalog_slice.py` / `catalog_package.py` helpers. `catalog_service.deploy_from_artifact` is the consumption-side entry point for marketplace deploys.
-- **Marketplace**: `marketplace_service.py` (DDB rows + S3 artifact uploads + status state machine: draft → review → published; published-version transitions are atomic via TransactWriteItems), `marketplace_search.py` (60s in-process cache of published listings, Python-side tokenized scoring), `marketplace_safety.py` (scan tarballs for credential/PII patterns), `agent_export.py` (seller-agent → tarball snapshotter; explicitly filters `sessions/`, `agent/`, dotfiles, junk dirs — see `_OPENCLAW_RUNTIME_STATE_DIRS` docstring for why).
-- **Provisioning**: `user_provision.py` (`ensure_user_ready` — the SINGLE canonical readiness entry point, called only from `GET /container/status`; owner path seeds Paperclip synchronously then dispatches container provision as background task), `container_provision.py` (provider-choice resolution), `provision_dispatch.py` (`dispatch_provision` — the SFN executor every provisioning trigger funnels through), `friday_identity.py` (IDENTITY/SOUL/USER seeding for Friday + Atlas roster prompt copy).
-- **Admin surface**: `admin_service.py`, `admin_audit.py`, `admin_redact.py`, `clerk_admin.py` (Clerk REST wrapper — every Clerk API call should go through here), `cloudwatch_logs.py` / `cloudwatch_url.py`, `posthog_admin.py`.
-- **Teams BFF (Paperclip)**: many `paperclip_*` services (`paperclip_admin_client.py`, `paperclip_admin_session.py`, `paperclip_user_session.py`, `paperclip_event_client.py`, `paperclip_provisioning.py` — owns `provision_org` which seeds Friday + Atlas, `paperclip_autoprovision.py`, `paperclip_owner_email.py`, `paperclip_event_router.py`, `teams_event_broker_singleton.py`, etc.) coordinating with the per-tenant Paperclip BFF.
-- **Auth / identity**: `oauth_service.py` (ChatGPT OAuth flow), `key_service.py` (BYOK API key encryption via Fernet), `service_token.py` (JWT minting for cross-service calls).
-- **Cross-cutting**: `idempotency.py` (DDB conditional-write keyed store), `webhook_dedup.py`, `system_health.py`.
+- `user_provision.py` — `ensure_user_ready` is the SINGLE canonical readiness
+  entry point, called only from `GET /container/status`. Owner path seeds
+  Paperclip synchronously, then dispatches the container provision as a
+  background task.
+- `provision_dispatch.py` — `dispatch_provision`, the SFN executor every
+  provisioning trigger funnels through. There is no inline fallback.
+- `paperclip_provisioning.py` — owns `provision_org`, which seeds Friday + Atlas.
+- `config_patcher.py` — EFS-safe JSON deep-merge under NFS-compatible
+  `fcntl.lockf` (not `flock`).
+- `clerk_admin.py` — Clerk REST wrapper for the admin surface. New Clerk calls
+  **should** go through here, but two predate it and still hit `api.clerk.com`
+  inline via httpx: `routers/billing.py` and `routers/desktop_auth.py`. A
+  fleet-wide change to how we call Clerk has to touch all three.
+- `node_proxy.py` — per-user node-host tracking. Lives in services/, not
+  routers/, despite the name; `routers/websocket_chat.py` consumes it directly.
+- `catalog_service.deploy_from_artifact` — the consumption-side entry point for
+  marketplace deploys.
+- `agent_export.py` — seller-agent → tarball snapshotter. It tars
+  `workspace-{id}/` (the seller's actual content) and **never** `agents/{id}/`
+  (OpenClaw runtime state — `sessions/` logs, `agent/` auth tokens). Runtime
+  state is excluded *by which root it points at*, not by a filter list; the
+  filters only drop dotfiles and junk dirs. See `_resolve_agent_dir`'s docstring.
 
 ### Routers (`routers/`) — all mounted under `/api/v1`
 
-Run `ls apps/backend/routers/` and `ls apps/backend/routers/teams/` for the current set. The flat-`routers/` files cover users, webhooks (Clerk + Stripe), websocket_chat, billing, container lifecycle (`container.py`, `container_rpc.py`, `container_recover.py`), `control_ui_proxy.py`, `channels.py`, `settings_keys.py`, `integrations.py` (MCP servers), `updates.py`, `catalog.py`, `config.py`, `workspace_files.py`, `desktop_auth.py`, `paperclip_proxy.py` (per-tenant Paperclip proxy with route-filter security model — see `docs/audit-2026-05-02-paperclip-routes.md`), `oauth.py` (ChatGPT OAuth), `admin.py`, `admin_catalog.py`, marketplace surfaces (`marketplace_listings.py` for seller create/submit + buyer search/deploy, `marketplace_admin.py` for admin approve/reject + retire, `marketplace_purchases.py` for the Stripe checkout/webhook for paid listings, `marketplace_payouts.py` for seller payout accounts), and `debug.py` (403 in prod).
+~40 flat modules plus the `routers/teams/` subpackage (the Teams Inbox BFF —
+agents, threads, messages, channels, members, attachments, search; composes the
+`paperclip_*` services). `ls` both for the current set.
 
-The `routers/teams/` subpackage is the Teams Inbox BFF surface — agents, threads, messages, channels, members, attachments, search, etc. It composes the `paperclip_*` services and is what the `/teams/*` UI calls.
+Worth knowing: `paperclip_proxy.py` is the per-tenant Paperclip proxy and has a
+route-filter security model — see `docs/audit-2026-05-02-paperclip-routes.md`
+before touching it. `debug.py` returns 403 in prod.
 
-Per-user node-host tracking (`handle_node_connect`, `is_node_connection`, etc.) was relocated to `core/services/node_proxy.py` in May 2026 — it never lived behind an HTTP route despite the historical filename, and `routers/websocket_chat.py` consumes it directly.
+### Models (`models/`) and schemas (`schemas/`)
 
-### Models (`models/`)
-
-Intentionally empty (just an `__init__.py` docstring: *"DynamoDB items are plain dicts, no ORM models needed."*). Use repositories instead.
-
-### Request/response schemas (`schemas/`)
-
-Pydantic request/response models for the HTTP surface: `billing.py`, `user_schemas.py`.
+`models/` is intentionally empty — DynamoDB items are plain dicts, no ORM.
+`schemas/` holds the Pydantic request/response models for the HTTP surface.
 
 ---
 
@@ -318,17 +269,16 @@ React 19, Tailwind CSS v4, Clerk auth, SWR, lucide-react icons.
 
 ### Pages (`src/app/`)
 
-| Path | Purpose |
-|------|---------|
-| `/` | Landing page (`components/landing/`) |
-| `/chat` | The app. Desktop renders the **dockable workspace shell** (`components/workspace/` — chat, teams, control, file-viewer panels in a dockable layout); mobile renders `ChatLayout` via `MobileChatShell`. Teams and control are in-shell panels, not standalone routes — the legacy `/teams/*` URL tree was removed and now 404s. |
-| `/marketplace` | Marketplace browse/detail + seller surfaces |
-| `/onboarding` | Post-signup provisioning flow |
-| `/settings` | Settings layout |
-| `/admin` | Admin surface — accessible only via allowed admin hosts (`admin.isol8.co`, `admin.dev.isol8.co`, `admin.localhost:3000`); 404s on non-admin hosts. Allowlist lives in `apps/frontend/src/middleware.ts`. |
-| `/sign-in`, `/sign-up` | Clerk auth pages |
-| `/auth/desktop-callback` | Desktop app OAuth callback |
-| `/privacy`, `/terms`, `/support`, … | Static marketing/legal pages |
+`find apps/frontend/src/app -name page.tsx` for the current routes. The two
+that will mislead you otherwise:
+
+- **`/chat`** is the whole app. Desktop renders the **dockable workspace shell**
+  (`components/workspace/` — chat, teams, control, file-viewer panels); mobile
+  renders `ChatLayout` via `MobileChatShell`. Teams and control are in-shell
+  panels, **not routes** — the legacy `/teams/*` URL tree was removed and 404s.
+- **`/admin`** only resolves on allowed admin hosts (`admin.isol8.co`,
+  `admin.dev.isol8.co`, `admin.localhost:3000`) and 404s everywhere else.
+  Allowlist lives in `apps/frontend/src/middleware.ts`.
 
 ### Source map (`src/`)
 
@@ -347,8 +297,10 @@ touching. The load-bearing structure:
   ported-from-upstream-Paperclip modules carry a header saying so).
 - `components/control/` — control panels (`ControlPanelRouter.tsx` routes;
   `ControlSidebar.NAV_ITEMS` is the live, sidebar-visible set).
-- `components/{admin,channels,settings,landing,marketplace,providers,ui}/` —
-  what their names say; `ui/` is shadcn/ui.
+- the rest of `components/` (`admin`, `agents`, `blog`, `channels`, `desktop`,
+  `getstarted`, `landing`, `legal`, `marketplace`, `notifications`,
+  `onboarding`, `providers`, `settings`, `support`, `ui`) — what their names
+  say; `ui/` is shadcn/ui.
 - `hooks/` — `useGateway.tsx` (WebSocket provider: reconnection, ping/pong,
   event pub-sub, RPC matching), `useAgentChat.ts` (chat state machine),
   `useGatewayRpc.ts` (SWR-wrapped RPC), `useTeamsApi.ts` (Teams BFF fetch),
@@ -373,7 +325,7 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
   |  agent_id,       |  POST /ws/message|                       |
   |  message}        |  (VPC Link/NLB)  |                       |
   |----------------->|----------------->|                       |
-  |                  |                  | ECS describe_tasks    |
+  |                  |                  | Cloud Map discover    |
   |                  |                  | -> user container IP  |
   |                  |                  | WebSocket RPC pool    |
   |                  |                  | chat.send {message}   |
@@ -442,7 +394,7 @@ Key invariants:
 
 - **`GET /container/status` is the only caller of `ensure_user_ready`** (see `user_provision.py` module docstring). Clerk webhooks are pure record-keeping; they do not trigger provisioning.
 - **Paperclip URL is NOT in `openclaw.json`** — the Paperclip↔OpenClaw binding is on the Paperclip seed-agent's `adapterConfig.url`. The container connects to Paperclip via the agent's adapter at runtime; the container's own config only knows the agent IDs and workspace paths.
-- **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success (see `_ensure_paperclip_for_owner` line 141-156).
+- **`provision_org` is idempotent** — short-circuits on existing active rows. Member adds and duplicate signups return 409, which the caller treats as success (see `_ensure_paperclip_for_owner`).
 
 ### Legacy containers (pre-Paperclip provisioning)
 
@@ -499,7 +451,7 @@ Three provider paths the user / org chooses between (stored on the per-owner `bi
 2. **ChatGPT OAuth** — available to personal owners AND org workspaces (see `routers/oauth.py` module docstring; the org admin who completes the device-code flow is the recorded `oauth_connector_user_id`, and only they can manage/re-select it — one ChatGPT account ↔ one container); user signs in to their own OpenAI account.
 3. **BYO API key** — owner provides their own Anthropic / OpenAI key, encrypted via Fernet in `api_keys` table.
 
-The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner — see `provision-gate-ui` plan/spec.
+The provision gate (`core/services/provision_gate.py`) blocks chat when subscription is not active, OAuth tokens are missing, or Bedrock credits are exhausted. The frontend renders a structured "blocked" state instead of an indefinite spinner.
 
 ### Usage Flow
 
@@ -541,9 +493,9 @@ Sellers publish custom OpenClaw agents; buyers discover them and deploy a copy i
 POST /api/v1/marketplace/listings                       (create draft row in DDB)
 POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → S3)
    └─ agent_export.export_agent_from_efs
+        ├─ _resolve_agent_dir — resolves workspace-{id}/, NEVER agents/{id}/
+        │                       (that root is OpenClaw runtime state, not seller content)
         ├─ _build_tarball   — filters .git, __pycache__, node_modules, .DS_Store, dotfiles
-        │                     AND _OPENCLAW_RUNTIME_STATE_DIRS (sessions/, agent/)
-        │                     — see agent_export.py:70-88 for why; PR #687.
         ├─ marketplace_safety.scan_tarball  — credential / PII pattern scan
         ├─ extract_agent_slice              — agent + plugins + selected MCPs/skills + cron jobs,
         │                                     scrubbed of secrets
@@ -555,7 +507,7 @@ POST /listings/{id}/artifact-from-agent                 (snapshot EFS agent → 
 POST /listings/{id}/submit                              (draft → review)
 ```
 
-**Friday is unpublishable** — `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py:49` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
+**Friday is unpublishable** — the `FRIDAY_PUBLISH_ERROR_MSG` guard in `agent_export.py` blocks the export at the router boundary. Publishing Friday would leak owner-keyed seeding content and hand a buyer a clone of someone else's CEO.
 
 ### Admin approval
 
@@ -590,40 +542,23 @@ POST /marketplace/listings/{slug}/deploy
 
 ### Backend (.env)
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `CLERK_ISSUER` | Clerk domain for JWT validation | Required |
-| `CLERK_SECRET_KEY` | Clerk secret key | Optional |
-| `CLERK_WEBHOOK_SECRET` | Clerk webhook verification | Optional |
-| `AWS_REGION` | AWS region | `us-east-1` |
-| `BEDROCK_ENABLED` | Enable Bedrock model discovery | `true` |
-| `ENVIRONMENT` | Environment name (dev/staging/prod) | Empty |
-| `ECS_CLUSTER_ARN` | ECS Fargate cluster | Required for containers |
-| `ECS_TASK_DEFINITION` | ECS task definition | Required |
-| `ECS_SUBNETS` | Comma-separated subnet IDs | Required |
-| `ECS_SECURITY_GROUP_ID` | Security group for containers | Required |
-| `CLOUD_MAP_NAMESPACE_ID` | Cloud Map namespace | Required |
-| `CLOUD_MAP_SERVICE_ID` | Cloud Map service | Required |
-| `EFS_MOUNT_PATH` | EFS mount root | `/mnt/efs/users` |
-| `EFS_FILE_SYSTEM_ID` | EFS filesystem | Required |
-| `WS_MANAGEMENT_API_URL` | Management API endpoint | Set by CDK |
-| `WS_CONNECTIONS_TABLE` | DynamoDB table | `isol8-websocket-connections` |
-| `STRIPE_SECRET_KEY` | Stripe API key | Empty |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook verification | Empty |
-| `STRIPE_METER_ID` | Stripe usage meter ID | Empty |
-| `BILLING_MARKUP` | Markup multiplier | `1.4` |
-| `ENCRYPTION_KEY` | Fernet key for BYOK | Required for key management |
-| `CORS_ORIGINS` | Comma-separated origins | `http://localhost:3000` |
-| `STRIPE_FLAT_PRICE_ID` | Stripe price for the $50/mo flat tier (personal owners) | Required for billing |
-| `STRIPE_TEAM_BASE_PRICE_ID` | Stripe flat-base price for org subscriptions, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). Must differ from the seat price id or checkout refuses to start | Set by CDK |
-| `STRIPE_TEAM_SEAT_PRICE_ID` | Stripe per-seat price for org subscriptions; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20) | Set by CDK |
-| `STRIPE_ULTRA_PRICE_ID` | Stripe price for the Ultra Pro tier. Display dollars mirrored by `ULTRA_PRICE_USD` (150) | Set by CDK |
-| `MARKETPLACE_LISTINGS_TABLE` | DDB listings table (draft / review / published / retired / taken_down rows) | Set by CDK; empty disables marketplace |
-| `MARKETPLACE_PURCHASES_TABLE` | DDB purchases table (buyer entitlements + Stripe payment refs) | Set by CDK |
-| `MARKETPLACE_PAYOUT_ACCOUNTS_TABLE` | DDB seller payout-account table | Set by CDK |
-| `MARKETPLACE_TAKEDOWNS_TABLE` | DDB takedown / abuse-report table | Set by CDK |
-| `MARKETPLACE_ARTIFACTS_BUCKET` | S3 bucket for `listings/{id}/v{n}/workspace.tar.gz` + `manifest.json` + `openclaw-slice.json` | Set by CDK |
-| `AGENT_EMAIL_DOMAIN` | Domain agent email addresses are minted under (e.g. `agents.isol8.co`); empty disables agent-email minting entirely | Empty |
+**`apps/backend/core/config.py` is the source of truth** — the `Settings` class
+lists the variables and their defaults. (A few are read via `os.getenv` outside
+`Settings`: the `OPENCLAW_*` version overrides in `core/openclaw_version.py`.)
+Only the ones with a non-obvious constraint are worth writing down here:
+
+| Variable | Constraint |
+|----------|-----------|
+| `ENCRYPTION_KEY` | Fernet key for BYOK. Rotating it orphans every stored key. |
+| `CLOUD_MAP_SERVICE_ARN` | Registration target — the shared Cloud Map service every per-user ECS service attaches to via `serviceRegistries`. |
+| `CLOUD_MAP_NAMESPACE_NAME` + `CLOUD_MAP_SERVICE_NAME` | Discovery side — `DiscoverInstances` takes *names*, not the ARN, so both are needed on top of the ARN. Unset ⇒ `discover_ip` returns None and every container looks unreachable. |
+| `STRIPE_TEAM_BASE_PRICE_ID` | Org flat base, always quantity 1. Display dollars mirrored by `TEAM_BASE_PRICE_USD` (50). **Must differ from the seat price id** or checkout refuses to start. |
+| `STRIPE_TEAM_SEAT_PRICE_ID` | Org per-seat; quantity = live Clerk member count. Display dollars mirrored by `TEAM_SEAT_PRICE_USD` (20). |
+| `MARKETPLACE_LISTINGS_TABLE` | Empty **disables the marketplace entirely**. |
+| `AGENT_EMAIL_DOMAIN` | Empty disables agent-email minting entirely. |
+| `CORS_ORIGINS` | Comma-separated. Note API Gateway CORS overrides FastAPI's on the WS path. |
+
+Everything ECS/EFS/WS/table-name-shaped is set by CDK — don't hand-set them.
 
 ### Frontend (.env.local)
 
@@ -644,19 +579,23 @@ POST /marketplace/listings/{slug}/deploy
 
 ## AWS CDK Stacks
 
-Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-environment stage classes: `local-stage.ts`, `isol8-stage.ts`. Stacks deliberately pass secret *names* (not `ISecret`) and KMS key *ARNs* (not objects) between stacks to avoid cross-stack KMS auto-grant cycles — see comments in `service-stack.ts`.
+Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-environment stage class: `isol8-stage.ts`. Stacks deliberately pass secret *names* (not `ISecret`) and KMS key *ARNs* (not objects) between stacks to avoid cross-stack KMS auto-grant cycles — see comments in `service-stack.ts`.
 
 | Stack | Purpose |
 |-------|---------|
 | `network-stack.ts` | VPC (public/private subnets, NAT), ALB, NLB (for WebSocket VPC Link V1), security groups |
 | `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
-| `database-stack.ts` | All DynamoDB tables (users, containers, billing-accounts, api-keys, usage-counters, pending-updates, channel-links, admin-actions, ws-connections, marketplace-listings + marketplace-purchases + marketplace-payout-accounts + marketplace-takedowns, company-slugs, agent-email-addresses, plus Teams BFF tables) and the marketplace artifacts S3 bucket |
-| `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace/service, container task-definition scaffolding |
+| `database-stack.ts` | Every DynamoDB table (`isol8-{env}-{suffix}`) + the marketplace artifacts S3 bucket |
+| `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace + the one shared Cloud Map service all per-user services register into, container task-definition scaffolding |
 | `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, autoscaling, target-group wiring, DynamoDB/secrets IAM |
 | `api-stack.ts` | WebSocket API Gateway, Lambda authorizer (Clerk JWT), VPC Link V1 wiring |
+| `bedrock-gate-stack.ts` | The streaming Lambda fronting bedrock-runtime — the enforcement fence for all Bedrock inference. See the Billing section. |
+| `bedrock-meter-stack.ts` | Invocation-log meter Lambda — the auditor + backstop kill, and the sole Metronome writer. |
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Aurora cluster, Fargate service, Cloud Map service discovery, ALB host route. Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
+| `ses-inbound-stack.ts` | Inbound agent email (SES → Lambda → backend). |
 | `dns-stack.ts` | Route53 records + ACM certs (ALB + CloudFront) |
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
+| `fis-stack.ts` | Fault Injection Simulator experiments. |
 
 `apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `isol8/openclaw-extended`. The tag Isol8 runs is pinned in `openclaw-version.json`.
 

@@ -402,7 +402,7 @@ export function ChatInput({
                       : null;
               // Steer is only meaningful while a run is live and the item is
               // a plain queued send (not failed / waiting). Mirrors upstream
-              // chat-queue.ts:69-86 (canAbort && !sendState).
+              // chat-queue.ts (canAbort && !sendState).
               const canSteer =
                 !!isStreaming && !!onSteerQueued && !q.sendState;
               const canRetry = q.sendState === "failed" && !!onRetryQueued;
@@ -546,7 +546,7 @@ export function ChatInput({
                 // useAgentChat enqueues it and drains on the server run-ended
                 // signal. Surface that as a "Queue" affordance so the button's
                 // accessible label / tooltip reflects the actual action.
-                // Mirrors upstream OpenClaw web UI (chat/run-controls.ts:83-91).
+                // Mirrors upstream OpenClaw web UI (chat/run-controls.ts).
                 aria-label={isStreaming ? "Queue message" : "Send message"}
                 title={isStreaming ? "Queue" : "Send"}
               >

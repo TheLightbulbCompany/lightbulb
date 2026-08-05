@@ -273,7 +273,7 @@ class GatewayConnection:
         self._push_tasks: Set[asyncio.Task] = set()
         # One-shot completion observers keyed by runId (== chat.send's
         # idempotencyKey, which OpenClaw echoes as `runId` on every event for
-        # the run — chat.ts:2450). Registered via
+        # the run — src/gateway/server-methods/chat.ts). Registered via
         # ``register_run_completion_callback`` by a caller that needs to
         # observe a SPECIFIC dispatched run's terminal (final/error/aborted)
         # without being the browser tab that sent it — e.g. the server-owned
@@ -628,7 +628,7 @@ class GatewayConnection:
         When an exec tool needs an out-of-band (async) approval, OpenClaw's
         embedded agent emits an ``agent`` event with ``stream:"approval"``,
         ``data.phase:"requested"`` carrying the CURRENT run's id (upstream
-        src/agents/embedded-agent-subscribe.handlers.tools.ts:1348-1384, on an
+        src/agents/embedded-agent-subscribe.handlers.tools.ts, on an
         exec result with status ``approval-pending``). That run (Run A) then
         reaches run-loop completion and emits its GENUINE terminal chat
         ``final`` — it does NOT pause-and-resume as the same run. The work
@@ -800,7 +800,7 @@ class GatewayConnection:
         scoped-auth system (see `src/gateway/method-scopes.ts` in the
         reference). A connect request that provides only `auth.token` with
         no signed device identity gets its self-declared scopes silently
-        cleared by the server (`message-handler.ts:438-595`), leaving the
+        cleared by the server (`message-handler.ts`), leaving the
         connection with zero permissions — which breaks `sessions.list`
         (billing poll), `status`, and most of our RPC surface.
 
@@ -886,7 +886,7 @@ class GatewayConnection:
         """Subscribe this connection to OpenClaw `sessions.changed` broadcasts.
 
         OpenClaw only broadcasts session events to connections that have called
-        `sessions.subscribe` (fork src/gateway/server-methods/sessions.ts:906),
+        `sessions.subscribe` (fork src/gateway/server-methods/sessions.ts),
         and drops the subscription on disconnect. Sent on every connect; because
         `reopen()` calls `connect()`, this re-subscribes on reconnect too.
         Fire-and-forget: the `{subscribed:true}` ack is not needed to proceed —
@@ -924,7 +924,7 @@ class GatewayConnection:
         The bedrock-gate returns budget denials as `429 ThrottlingException`
         so the container never learns it's behind a proxy. OpenClaw classifies
         that as `errorKind: "rate_limit"` and — at two or more model attempts —
-        discards the gate's own message (`model-fallback.ts:741`). So by the
+        discards the gate's own message (`model-fallback.ts`). So by the
         time the error reaches us the money reason is gone, and the only honest
         way to recover it is to re-read the budget.
 
@@ -1002,7 +1002,7 @@ class GatewayConnection:
         """Extract streaming text, thinking, tool, and activity events from an OpenClaw agent event.
 
         OpenClaw's gateway coalesces the assistant/thinking streams at a
-        hardcoded 150ms per run (fork src/gateway/server-chat.ts:1147,
+        hardcoded 150ms per run (fork src/gateway/server-chat.ts,
         ``sendOrBufferAgentTextEvent``), so events arrive as ~150ms lumps
         carrying BOTH the accumulated ``text`` and the incremental ``delta``
         (coalesced events concatenate their deltas — see
@@ -1659,7 +1659,7 @@ class GatewayConnection:
         Event routing:
         - ``agent`` events: streaming text via ``_transform_agent_event``.
           OpenClaw coalesces these at a hardcoded 150ms per stream per run
-          (fork server-chat.ts:1147) — they are NOT per-token.
+          (fork server-chat.ts) — they are NOT per-token.
         - ``chat`` events: only terminal states (final/error/aborted). Delta
           states are ignored because agent events already carry the same
           text (the ``chat`` stream has its own, separate 150ms throttle).
@@ -1689,7 +1689,7 @@ class GatewayConnection:
 
             # Extract per-member routing target from sessionKey. OpenClaw
             # includes sessionKey in agent/chat event payloads (set in
-            # server-chat.ts:865). For org webchat sessions the key is
+            # server-chat.ts). For org webchat sessions the key is
             # "agent:{agentId}:{userId}" — _parse_session_key extracts
             # member_id so we can route events to the specific member
             # who initiated the chat instead of broadcasting to all org

@@ -9,7 +9,7 @@
  * deduped by runId so `run_ended` + `done` for the same run never double-send.
  *
  * Mirrors upstream OpenClaw web UI's `flushChatQueue` model
- * (~/Desktop/openclaw/ui/src/ui/app-chat.ts:775) which drains only when
+ * (upstream ui/src/ui/app-chat.ts) which drains only when
  * `!isChatBusy` and re-invokes when the run truly ends per the server.
  */
 

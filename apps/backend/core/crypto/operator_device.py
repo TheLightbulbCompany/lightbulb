@@ -4,7 +4,7 @@ OpenClaw 4.5 replaced the flat "shared token = admin access" model with a
 scoped auth system (see `src/gateway/method-scopes.ts` in the OpenClaw
 reference). A client that provides only `auth.token` in its connect request
 gets an empty scope set — the server clears self-declared scopes because it
-can't bind them to a pre-approved identity (`message-handler.ts:438-595`).
+can't bind them to a pre-approved identity (`message-handler.ts`).
 
 To receive `operator.read` / `operator.write` scopes, a client must:
 
@@ -63,7 +63,7 @@ from cryptography.hazmat.primitives.serialization import (
 # `secrets.reload`, `cron.add/update/remove`, and `sessions.patch/reset/delete`
 # from the frontend to the gateway — all of which require admin scope per
 # `src/gateway/method-scopes.ts` in the OpenClaw reference. The authorize
-# function short-circuits on admin (`method-scopes.ts:232`), so we keep the
+# function short-circuits on admin (`method-scopes.ts`), so we keep the
 # read + write entries for observability ("this device was granted these
 # specific scopes") but admin is what actually unblocks every method.
 #
@@ -71,7 +71,7 @@ from cryptography.hazmat.primitives.serialization import (
 # device-auth scopes via `src/shared/device-auth.ts:normalizeDeviceAuthScopes`
 # which calls `.toSorted()` — alphabetical order. The paired.json entry we
 # write to EFS goes through that normalization path
-# (`src/infra/device-pairing.ts:254`), so the persisted form is
+# (`src/infra/device-pairing.ts`), so the persisted form is
 # alphabetically sorted. When the client (us) signs the v2 connect payload,
 # the server rebuilds the same payload from `connectParams.scopes` in the
 # order WE sent them, and Ed25519 verifies byte-by-byte — so we must send
@@ -198,7 +198,7 @@ def build_v2_connect_payload(
     """Build the canonical v2 device-auth payload string.
 
     Mirrors `buildDeviceAuthPayload` in OpenClaw
-    `src/gateway/device-auth.ts:20-34`. The server rebuilds this exact string
+    `src/gateway/device-auth.ts`. The server rebuilds this exact string
     from the fields in the connect request and verifies our signature against
     it, so any formatting drift here breaks the handshake.
 
@@ -233,7 +233,7 @@ def sign_connect_request(
 ) -> dict:
     """Produce the `device` dict that goes into the connect request params.
 
-    Returned shape matches what `handshake-auth-helpers.ts:244-281` expects:
+    Returned shape matches what `handshake-auth-helpers.ts` expects:
         {
           "id":        device_id (hex sha256 of public key),
           "publicKey": base64url(raw public key),

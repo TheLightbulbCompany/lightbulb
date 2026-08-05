@@ -401,7 +401,7 @@ class TestGatewayConnectionHandshake:
         assert params["maxProtocol"] == 4
         # Backend needs admin for skills.install, agents.create/update/delete,
         # etc. — read/write alone was too restrictive. Admin short-circuits
-        # per-method checks on the server (method-scopes.ts:232).
+        # per-method checks on the server (method-scopes.ts).
         assert params["scopes"] == ["operator.admin", "operator.read", "operator.write"]
         assert params["auth"]["token"] == "test-token"
         assert params["client"]["id"] == "gateway-client"
@@ -1397,10 +1397,10 @@ class TestActiveRunTracking:
         the same sessionKey, in order):
           1. agent event, stream="approval", data.phase="requested",
              data.status="pending" — the run paused awaiting the user's decision
-             (src/agents/embedded-agent-subscribe.handlers.tools.ts:1378 →
-              emitAgentApprovalEvent / onAgentEvent, infra/agent-events.ts:263).
+             (src/agents/embedded-agent-subscribe.handlers.tools.ts →
+              emitAgentApprovalEvent / onAgentEvent, infra/agent-events.ts).
           2. chat event, state="final" — the embedded runner closes the *bracket*
-             (finalizeLifecycleEvent → emitChatFinal, src/gateway/server-chat.ts:419),
+             (finalizeLifecycleEvent → emitChatFinal, src/gateway/server-chat.ts),
              but the run CONTINUES after approval with a fresh lifecycle/end.
         Clearing _active_runs on (2) drops the run-active signal across the
         approval (UI "dead air"), so the interim final must be treated as

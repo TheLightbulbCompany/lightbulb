@@ -2,7 +2,7 @@
 /**
  * Global exec-approval queue.
  *
- * Mirrors OpenClaw's native pattern (see ~/Desktop/openclaw/ui/src/ui/app-gateway.ts
+ * Mirrors OpenClaw's native pattern (see upstream ui/src/ui/app-gateway.ts
  * `enqueueApprovalRequest` and ui/src/ui/views/exec-approval.ts):
  *
  *   - Approvals live in a separate queue, NOT bound to chat message bubbles.
@@ -406,7 +406,7 @@ export function useExecApprovals(): UseExecApprovalsReturn {
       setQueue((prev) => [...prev, req]);
 
       // Schedule auto-prune at expiry. Matches OpenClaw's pattern at
-      // ui/src/ui/app-gateway.ts:140 — without this, a never-resolved
+      // ui/src/ui/app-gateway.ts — without this, a never-resolved
       // approval sits in the queue indefinitely.
       const delay = Math.max(0, req.expiresAtMs - Date.now() + 500);
       const timer = setTimeout(

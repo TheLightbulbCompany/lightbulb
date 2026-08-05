@@ -171,7 +171,7 @@ class CreateRoutineBody(_Strict):
     """Body for ``POST /teams/routines``.
 
     Mirrors upstream's ``createRoutineSchema``
-    (paperclip/packages/shared/src/validators/routine.ts:52-65): a routine
+    (paperclip/packages/shared/src/validators/routine.ts): a routine
     is a titled, assignable unit of recurring work. The cron schedule is
     NOT part of the routine row — it lives on a separate schedule trigger
     created via ``POST /routines/{id}/triggers`` (``CreateRoutineTriggerBody``).
@@ -188,7 +188,7 @@ class CreateRoutineBody(_Strict):
     # --- A2 (editable routines): full-shape create fields --------------------
     # Scheduling policies + variables + env + circuit-breaker (autoPause) —
     # upstream ``createRoutineSchema`` accepts all of these
-    # (paperclip/packages/shared/src/validators/routine.ts:52-67, deployed fork
+    # (paperclip/packages/shared/src/validators/routine.ts, deployed fork
     # 2026.7 = vanilla 936215693 + circuit-breaker patch). ``variables`` carries
     # the routine's typed variable definitions INCLUDING the ``date`` type added
     # by upstream #8655; forwarded verbatim (upstream validates each entry via
@@ -243,7 +243,7 @@ class CreateRoutineTriggerBody(_Strict):
     """Body for ``POST /teams/routines/{id}/triggers``.
 
     Schedule-only subset of upstream's ``createRoutineTriggerSchema``
-    (paperclip/packages/shared/src/validators/routine.ts:118-132). The
+    (paperclip/packages/shared/src/validators/routine.ts). The
     Teams create dialog only wires the ``schedule`` kind (cron); webhook /
     api triggers are deferred. ``kind`` is fixed to ``schedule`` so the
     discriminated union resolves cleanly upstream.

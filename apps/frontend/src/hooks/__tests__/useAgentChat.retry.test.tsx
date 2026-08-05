@@ -6,7 +6,7 @@
  * socket dropped between the run-ended signal and the send), the item stays
  * in the queue with sendState:"failed" + sendError. retryQueuedMessage(id)
  * re-attempts it. Mirrors upstream OpenClaw web UI's retryQueuedChatMessage
- * (~/Desktop/openclaw/ui/src/ui/chat/chat-queue.ts:914).
+ * (upstream ui/src/ui/chat/chat-queue.ts).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

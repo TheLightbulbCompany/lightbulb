@@ -298,7 +298,7 @@ _STRIPPED_CRON_KEYS = frozenset({"id", "sessionKey", "state", "createdAtMs", "up
 #   - on cross-user deploy, dumps the new agent's data into a directory
 #     keyed to the wrong id.
 # Stripping it lets OpenClaw auto-derive ``/home/node/.openclaw/agents/{id}/agent``
-# (see openclaw/src/config/agent-dirs.ts:60-79).
+# (see openclaw/src/config/agent-dirs.ts).
 
 
 def strip_user_specific_fields(agent_entry: dict[str, Any]) -> dict[str, Any]:

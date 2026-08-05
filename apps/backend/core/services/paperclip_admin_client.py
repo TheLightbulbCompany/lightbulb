@@ -16,8 +16,10 @@ The two unauthenticated routes — ``sign_up_user`` and
 ``sign_in_user`` — hit Better Auth's public endpoints directly and
 don't carry any auth at all.
 
-Endpoint surface verified against the local Paperclip checkout at
-``~/Desktop/paperclip``:
+Endpoint surface verified against the Isol8 Paperclip FORK
+(``Isol8AI/paperclip``) — what we actually deploy. The vanilla
+``paperclipai/paperclip`` clone can diverge; don't verify against it.
+Paths below are fork-relative:
 
   - Auth (Better Auth): mounted at ``/api/auth/*`` in
     ``server/src/auth/better-auth.ts``. Standard Better Auth routes —
@@ -31,7 +33,7 @@ Endpoint surface verified against the local Paperclip checkout at
         company-join invite (requires ``users:invite`` permission;
         the user behind ``session_cookie`` must already be a member).
         Body shape: ``createCompanyInviteSchema`` from
-        ``packages/shared/src/validators/access.ts:12``:
+        ``packages/shared/src/validators/access.ts``:
         ``{allowedJoinTypes: "human"|"agent"|"both", humanRole?, defaultsPayload?, agentMessage?}``.
         Note: invites are NOT email-targeted — they're token-based.
         The returned ``token`` is the credential that any human can
@@ -73,7 +75,7 @@ Notable deviations from the original plan template:
 
 That env var (read in ``server/src/config.ts``, applied as
 ``disableSignUp: config.authDisableSignUp`` to Better Auth in
-``server/src/auth/better-auth.ts:121``) is enforced by the Better Auth
+``server/src/auth/better-auth.ts``) is enforced by the Better Auth
 library itself — when ``true``, the public ``/api/auth/sign-up/email``
 route is rejected for ALL callers, including the backend. This means
 production cannot call ``sign_up_user`` while the flag is on. The
@@ -469,7 +471,7 @@ class PaperclipAdminClient:
         """Create a Paperclip company.
 
         Maps to ``POST /api/companies`` (see
-        ``server/src/routes/companies.ts:267``).
+        ``server/src/routes/companies.ts``).
 
         Server returns ``201`` with the company object including ``id``,
         ``name``, ``description``, ``status``, ``budgetMonthlyCents``,
@@ -498,7 +500,7 @@ class PaperclipAdminClient:
         """Hard-delete a company.
 
         Maps to ``DELETE /api/companies/{companyId}`` (see
-        ``server/src/routes/companies.ts:400``). 404 is swallowed so
+        ``server/src/routes/companies.ts``). 404 is swallowed so
         cleanup retries are idempotent.
         """
         await self._delete(
@@ -529,7 +531,7 @@ class PaperclipAdminClient:
 
         Maps to ``POST /api/companies/{companyId}/invites``. Body
         shape (per ``createCompanyInviteSchema`` in
-        ``packages/shared/src/validators/access.ts:12``)::
+        ``packages/shared/src/validators/access.ts``)::
 
             {
               "allowedJoinTypes": "human",   # we never use agent invites here
@@ -564,7 +566,7 @@ class PaperclipAdminClient:
         """Accept an invite as the new member (signed in via session_cookie).
 
         Maps to ``POST /api/invites/{token}/accept`` (see
-        ``server/src/routes/access.ts:3199``). For human accept the
+        ``server/src/routes/access.ts``). For human accept the
         body is just ``{requestType: "human"}``; the resulting
         ``join_request`` is returned and starts in
         ``status: "pending_approval"`` until an existing admin
@@ -586,7 +588,7 @@ class PaperclipAdminClient:
         """Approve a pending join request as a board admin.
 
         Maps to ``POST /api/companies/{companyId}/join-requests/{requestId}/approve``
-        (see ``server/src/routes/access.ts:3697``). The signed-in
+        (see ``server/src/routes/access.ts``). The signed-in
         user behind ``session_cookie`` must hold ``joins:approve`` on
         the company (every owner does by default).
         """
@@ -619,10 +621,10 @@ class PaperclipAdminClient:
         """Create an agent (employee) inside a company.
 
         Maps to ``POST /api/companies/{companyId}/agents`` (see
-        ``server/src/routes/agents.ts:1634``). ``adapterType`` and
+        ``server/src/routes/agents.ts``). ``adapterType`` and
         ``adapterConfig`` are sibling fields on the request body per
         ``createAgentSchema`` in
-        ``packages/shared/src/validators/agent.ts:47``.
+        ``packages/shared/src/validators/agent.ts``.
         """
         body: dict[str, Any] = {
             "name": name,
@@ -658,12 +660,12 @@ class PaperclipAdminClient:
         """Mint a long-lived API key for an agent.
 
         Maps to ``POST /api/agents/{agentId}/keys`` (see
-        ``server/src/routes/agents.ts:2334``). The response includes the
+        ``server/src/routes/agents.ts``). The response includes the
         plaintext ``token`` exactly once — callers MUST store it
         immediately; it is hashed at rest server-side.
 
         Response shape (per ``createApiKey`` in
-        ``server/src/services/agents.ts:607``)::
+        ``server/src/services/agents.ts``)::
 
             {
               "id": "...",
@@ -2215,7 +2217,7 @@ class PaperclipAdminClient:
         """Attach a trigger (schedule/webhook/api) to a routine.
 
         Maps to ``POST /api/routines/{routineId}/triggers`` upstream
-        (paperclip/server/src/routes/routines.ts:253). The cron schedule
+        (paperclip/server/src/routes/routines.ts). The cron schedule
         lives on a schedule trigger, NOT the routine row — see
         ``createRoutineTriggerSchema``. Body is whitelisted by the BFF
         (``CreateRoutineTriggerBody``). Returns ``{trigger, secretMaterial}``.
@@ -2268,7 +2270,7 @@ class PaperclipAdminClient:
         """Manually fire a routine.
 
         Maps to ``POST /api/routines/{routineId}/run`` upstream
-        (paperclip/server/src/routes/routines.ts:280). Body is forwarded
+        (paperclip/server/src/routes/routines.ts). Body is forwarded
         as-is to upstream, which validates against ``runRoutineSchema``
         (optional ``reason``, ``inputOverrides``, etc.).
 
@@ -2289,7 +2291,7 @@ class PaperclipAdminClient:
         """List run history for a routine.
 
         Maps to ``GET /api/routines/{routineId}/runs`` upstream
-        (paperclip/server/src/routes/routines.ts:150). Returns a list of
+        (paperclip/server/src/routes/routines.ts). Returns a list of
         run objects matching upstream ``RoutineRunSummary`` (id, status,
         source, triggeredAt, completedAt, failureReason, linkedIssue,
         trigger). Note: upstream uses ``triggeredAt`` (not ``startedAt``).
@@ -2335,7 +2337,7 @@ class PaperclipAdminClient:
         whitelisted by the BFF (``UpdateRoutineTriggerBody``).
 
         Maps to ``PATCH /api/routine-triggers/{triggerId}`` upstream
-        (paperclip/server/src/routes/routines.ts:500).
+        (paperclip/server/src/routes/routines.ts).
         """
         return await self._patch(
             f"/api/routine-triggers/{trigger_id}",
@@ -2352,7 +2354,7 @@ class PaperclipAdminClient:
         """Delete a routine trigger. 404 is swallowed as already-gone.
 
         Maps to ``DELETE /api/routine-triggers/{triggerId}`` upstream
-        (paperclip/server/src/routes/routines.ts:543).
+        (paperclip/server/src/routes/routines.ts).
         """
         return await self._delete(
             f"/api/routine-triggers/{trigger_id}",
@@ -2370,7 +2372,7 @@ class PaperclipAdminClient:
         operator exactly once.
 
         Maps to ``POST /api/routine-triggers/{triggerId}/rotate-secret``
-        upstream (paperclip/server/src/routes/routines.ts:585). The upstream
+        upstream (paperclip/server/src/routes/routines.ts). The upstream
         body is an empty object (``rotateRoutineTriggerSecretSchema``).
         """
         return await self._post(
@@ -2388,7 +2390,7 @@ class PaperclipAdminClient:
         """List a routine's revision history (title/trigger snapshots).
 
         Maps to ``GET /api/routines/{routineId}/revisions`` upstream
-        (paperclip/server/src/routes/routines.ts:200). Returns a bare list.
+        (paperclip/server/src/routes/routines.ts). Returns a bare list.
         """
         result = await self._get(
             f"/api/routines/{routine_id}/revisions",
@@ -2406,7 +2408,7 @@ class PaperclipAdminClient:
         """Restore a routine to a prior revision snapshot.
 
         Maps to ``POST /api/routines/{routineId}/revisions/{revisionId}/restore``
-        upstream (paperclip/server/src/routes/routines.ts:421). No body.
+        upstream (paperclip/server/src/routes/routines.ts). No body.
         """
         return await self._post(
             f"/api/routines/{routine_id}/revisions/{revision_id}/restore",
@@ -2671,7 +2673,7 @@ class PaperclipAdminClient:
         """Archive a single company membership.
 
         Maps to ``POST /api/companies/{companyId}/members/{memberId}/archive``
-        (see ``paperclip/server/src/routes/access.ts:4230``). The
+        (see ``paperclip/server/src/routes/access.ts``). The
         signed-in user behind ``session_cookie`` must hold
         ``users:manage_permissions`` on the company. ``member_id`` is
         the Paperclip ``company_membership.id`` (NOT the Better Auth

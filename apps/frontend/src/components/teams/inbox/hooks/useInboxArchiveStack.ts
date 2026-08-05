@@ -1,7 +1,7 @@
 // apps/frontend/src/components/teams/inbox/hooks/useInboxArchiveStack.ts
 
 // Ported from upstream Paperclip's pages/Inbox.tsx archiveIssueMutation +
-// unarchiveIssueMutation + archive-stack state (paperclip/ui/src/pages/Inbox.tsx:1407-1582)
+// unarchiveIssueMutation + archive-stack state (paperclip/ui/src/pages/Inbox.tsx)
 // (MIT, (c) 2025 Paperclip AI). Translated from React Query mutations to SWR
 // cache mutations via useSWRConfig().mutate.
 

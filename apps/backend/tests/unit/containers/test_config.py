@@ -70,7 +70,7 @@ class TestOpenclawConfigShape:
         """`meta.lastTouchedVersion` must be the real openclaw version
         (parses as semver in upstream's compareOpenClawVersions); arbitrary
         strings work for hasConfigMeta but trigger spurious "from future"
-        warnings in warnIfConfigFromFuture (io.ts:885)."""
+        warnings in warnIfConfigFromFuture (io.ts)."""
         config = _cfg()
         assert config["meta"]["lastTouchedVersion"] == DEPLOYED_UPSTREAM_VERSION
 
@@ -194,7 +194,7 @@ class TestOpenclawConfigShape:
         sandbox; this mirrors Paperclip's dangerouslySkipPermissions
         default for unattended agents. `mode` is mutually exclusive with
         security/ask. OpenClaw's default security=deny would silently
-        block every exec call (exec-defaults.ts:98)."""
+        block every exec call (exec-defaults.ts)."""
         config = _cfg()
         exec_cfg = config["tools"]["exec"]
         assert exec_cfg["mode"] == "full"
@@ -254,7 +254,7 @@ class TestOpenclawConfigShape:
         assert browser["profiles"]["openclaw"]["driver"] == "openclaw"
         assert isinstance(browser["profiles"]["openclaw"]["color"], str)
         # cdpPort required by upstream schema since v2026.5.7-0d10b38:
-        # zod-schema.ts:483 refines any non-`existing-session` profile
+        # zod-schema.ts refines any non-`existing-session` profile
         # to require cdpPort or cdpUrl. If this assertion ever fails
         # the container will boot-loop with "Profile must set cdpPort
         # or cdpUrl".

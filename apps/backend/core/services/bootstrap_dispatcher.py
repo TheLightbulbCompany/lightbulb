@@ -4,12 +4,10 @@ Friday's first-run kickoff is dispatched by the BACKEND, exactly once per
 ``onboarding_generation``, with no browser tab required. The kickoff message
 is the USER'S OWN BRIEF (``onboarding_brief.build_first_run_message`` woven
 from the ``onboarding_brief_text`` persisted at ``/onboarding/brief`` submit),
-so Friday's chat opens with the user's ask -- not a canned prompt. See
-``docs/superpowers/specs/2026-07-25-onboarding-first-message-design.md``
-(Option A). This replaces the client-side latch it used to depend on
-(``useFirstRunKickoff`` + Clerk ``firstRun.started``/``completed``) and the
-thread-emptiness reconcile that latch needed to self-heal -- both
-deleted in this same PR. See
+so Friday's chat opens with the user's ask -- not a canned prompt. This
+replaces the client-side latch it used to depend on (``useFirstRunKickoff``
++ Clerk ``firstRun.started``/``completed``) and the thread-emptiness
+reconcile that latch needed to self-heal -- both since deleted. See
 ``docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md`` §2
 ("Server-owned bootstrap") and INV-5.
 

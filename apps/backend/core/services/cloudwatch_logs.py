@@ -8,10 +8,9 @@ Backed by boto3 logs.FilterLogEvents on the backend service log group.
 The IAM permission lives on the backend ECS task role
 (see apps/infra/lib/stacks/service-stack.ts: CloudWatchLogsReadForAdmin).
 
-Log group naming matches service-stack.ts:519 + isol8-stage.ts:113 +
-local-stage.ts:116 — `/ecs/isol8-${env}` (no /aws prefix, no -backend
-suffix). Keep this module's IAM scope in sync with the resolved log
-group ARN.
+Log group naming matches service-stack.ts + isol8-stage.ts —
+`/ecs/isol8-${env}` (no /aws prefix, no -backend suffix). Keep this
+module's IAM scope in sync with the resolved log group ARN.
 """
 
 import json

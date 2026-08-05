@@ -6,7 +6,7 @@
  * the gateway send primitive, then removes the item from the normal queue
  * (it's now injected into the live run). No-op if no active run. Mirrors
  * upstream OpenClaw web UI's steerQueuedChatMessage
- * (~/Desktop/openclaw/ui/src/ui/app-chat.ts:737).
+ * (upstream ui/src/ui/app-chat.ts).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

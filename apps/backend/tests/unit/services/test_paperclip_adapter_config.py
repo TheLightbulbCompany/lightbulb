@@ -210,7 +210,7 @@ def test_synthesize_sets_per_agent_claimed_path_when_agent_id_given():
 
 def test_synthesize_sets_agent_id_so_runs_route_to_that_agent():
     """The adapter reads the target agent from config, not from the run's agent
-    record (openclaw-gateway execute.ts:1207/1228). Omit it and chat.send carries
+    record (openclaw-gateway execute.ts). Omit it and chat.send carries
     no agent, so OpenClaw falls back to the default (ceo) agent — every agent's
     run then executes as Friday. It also drives the agent:<id>: sessionKey prefix
     that per-agent session isolation and usage attribution depend on.
@@ -228,7 +228,7 @@ def test_fallback_session_key_cannot_collide_with_the_owners_chat_session():
     """REGRESSION: the no-issue fallback key must not equal the /chat General key.
 
     Once ``agentId`` is set the adapter prefixes the fallback sessionKey with
-    ``agent:<agentId>:`` (openclaw-gateway execute.ts:137-139). A bare
+    ``agent:<agentId>:`` (openclaw-gateway execute.ts). A bare
     ``user_id`` fallback therefore resolves to ``agent:<agentId>:<user_id>`` —
     exactly ``build_chat_session_key(agent_id, user_id, None)``. Every heartbeat
     and manual wake would then be appended to the owner's real /chat transcript,

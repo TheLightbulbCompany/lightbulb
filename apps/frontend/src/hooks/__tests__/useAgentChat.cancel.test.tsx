@@ -5,11 +5,11 @@
  * clientRunId and does NOT locally clear isStreaming / live state — it
  * waits for the server's terminal (`run_ended` outcome "aborted") to drive
  * the teardown. Mirrors upstream OpenClaw web UI's handleAbortChat
- * (~/Desktop/openclaw/ui/src/ui/app-chat.ts:201): server-reconcile drives
+ * (upstream ui/src/ui/app-chat.ts): server-reconcile drives
  * done, not a local edge.
  *
  * When disconnected, the abort is stored as a pending intent and replayed
- * on the next reconnect (isConnected rising edge) — mirror app-chat.ts:211.
+ * on the next reconnect (isConnected rising edge) — mirror app-chat.ts.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

@@ -6,7 +6,7 @@ the OPENCLAW_HOOK_TOKEN env-var placeholder, a 1 MB body cap, and the safe
 ``allowedSessionKeyPrefixes`` list.
 
 The single most load-bearing assertion is that ``allowedSessionKeyPrefixes``
-includes ``"hook:"``. OpenClaw v2026.5.7 (gateway/hooks.ts:75-95) crashes at
+includes ``"hook:"``. OpenClaw v2026.5.7 (gateway/hooks.ts) crashes at
 boot when ``defaultSessionKey`` is unset and ``"hook:"`` is missing from the
 allowed list — every newly-provisioned container would refuse to start.
 """
@@ -72,7 +72,7 @@ def test_hooks_session_key_safety_settings():
     assert cfg["hooks"]["allowRequestSessionKey"] is True
     prefixes = cfg["hooks"]["allowedSessionKeyPrefixes"]
     assert "isol8-" in prefixes
-    # OpenClaw v2026.5.7 (gateway/hooks.ts:75-95) crashes at boot when
+    # OpenClaw v2026.5.7 (gateway/hooks.ts) crashes at boot when
     # defaultSessionKey is unset and "hook:" is not in the allowed list.
     # Without this prefix every newly-provisioned container refuses to start.
     # DO NOT WEAKEN OR REMOVE THIS ASSERTION.

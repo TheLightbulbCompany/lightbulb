@@ -277,7 +277,7 @@ class PaperclipProvisioning:
 
         Paperclip's ``POST /api/companies`` requires
         ``req.actor.isInstanceAdmin`` in ``authenticated`` deployment mode
-        (per ``paperclip/server/src/routes/companies.ts:269``). The
+        (per ``paperclip/server/src/routes/companies.ts``). The
         old flow signed up the new user and immediately tried to create
         the company AS that user — which 403'd because the new user
         isn't an admin. Fixed flow: the bootstrap admin
@@ -499,7 +499,7 @@ class PaperclipProvisioning:
             #    dropping straight to the seed retry below. The user is already
             #    an approved owner of it from the first attempt. Otherwise the
             #    ADMIN creates the company (admin becomes the initial owner via
-            #    Paperclip's auto-ensureMembership in ``routes/companies.ts:273``).
+            #    Paperclip's auto-ensureMembership in ``routes/companies.ts``).
             if reconciling_company:
                 company_id = existing.company_id
                 # Only used as the slug-derivation fallback below; the adopted
@@ -688,7 +688,7 @@ class PaperclipProvisioning:
                         # Atlas was originally typed as ``role="recruiter"``
                         # but Paperclip's AGENT_ROLES enum doesn't include
                         # "recruiter" (see paperclip/packages/shared/src/
-                        # constants.ts:44). The constraint here is just
+                        # constants.ts). The constraint here is just
                         # "must not be 'ceo'" because config.py:463 selects
                         # the ceo-role agent as the default. "general" is the
                         # most semantically neutral fit — which is exactly why

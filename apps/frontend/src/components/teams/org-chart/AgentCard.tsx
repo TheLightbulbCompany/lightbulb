@@ -52,7 +52,7 @@ function statusLabel(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-// Upstream PauseReason codes (packages/shared/src/constants.ts:469) → prose.
+// Upstream PauseReason codes (packages/shared/src/constants.ts) → prose.
 // Rendering the raw code ("Paused · company_archived") leaks an internal enum
 // into the card; map it to a human label and fall back to the raw code for any
 // future value.

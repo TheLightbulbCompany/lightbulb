@@ -358,7 +358,7 @@ export class PaperclipStack extends cdk.Stack {
     // It is NOT the agent's Paperclip API URL. The deployed image derives the agent's
     // injected URL from PAPERCLIP_RUNTIME_API_URL (= origin(authPublicBaseUrl)), BUT
     // the per-agent adapterConfig `paperclipApiUrl` override takes precedence
-    // (openclaw-gateway execute.ts:351). The backend sets that override to the in-VPC
+    // (openclaw-gateway execute.ts). The backend sets that override to the in-VPC
     // host in synthesize_openclaw_adapter, so agents reach Paperclip independently of
     // this value. That decoupling is what lets PUBLIC_URL stay the auth origin.
     const paperclipPublicUrl =
@@ -451,8 +451,8 @@ export class PaperclipStack extends cdk.Stack {
         // (`POST /api/auth/sign-up/email`). All "first-admin" bootstrap
         // paths in upstream Paperclip — direct signup, board-claim, and
         // the bootstrap_ceo invite — funnel through this same endpoint
-        // (verified in paperclip/ui/src/pages/InviteLanding.tsx:368 and
-        // paperclip/server/src/auth/better-auth.ts:118-122). Setting this
+        // (verified in paperclip/ui/src/pages/InviteLanding.tsx and
+        // paperclip/server/src/auth/better-auth.ts). Setting this
         // to "true" before any instance_admin exists makes the deployment
         // un-bootstrappable, and no out-of-band path exists upstream.
         //

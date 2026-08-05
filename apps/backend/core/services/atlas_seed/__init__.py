@@ -66,11 +66,21 @@ Step 4 like any other.
   prompt — does it reach for `sessions_spawn` — and (b) marking the
   marketplace listing `enable_acp` at publish so the buyer's container turns
   the runtime on at deploy.
-- **It only works when the owner's provider can authenticate a harness.**
-  Claude Code needs Anthropic creds (Bedrock or an Anthropic key); Codex needs
-  OpenAI creds (ChatGPT OAuth or an OpenAI key). An owner with neither gets no
-  harness — design the agent to degrade to inline work, and say so in its
-  AGENTS.md rather than promising delegation it can't deliver.
+- **It only works when the owner's provider can authenticate a harness, and a
+  ChatGPT subscription does NOT.** The ACP adapters take API keys, never
+  subscription OAuth: they read `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` (or
+  `CODEX_API_KEY`) from the environment and never see the owner's OAuth tokens.
+  So Claude Code works on Bedrock or an Anthropic key, Codex works on an OpenAI
+  API key, and an owner signed in with **ChatGPT OAuth has no harness at all** —
+  their container ships no `acp` block, and `sessions_spawn({runtime: "acp"})`
+  is simply unavailable. Design every agent to do the work inline when no
+  harness is present, and say so in its AGENTS.md rather than promising
+  delegation it can't deliver.
+- **Never make harness delegation a hard requirement.** An agent whose prompt
+  says it *must* delegate code edits to ACP has no path forward on a container
+  without a harness — it will report itself blocked instead of doing the job.
+  Delegation is an optimization to reach for when it is there, never a
+  precondition for working.
 - **No aspirational capability claims (H4).** Only describe an agent as
   delegating to a harness if it actually calls `sessions_spawn`. Don't ship a
   prompt that claims harness delegation an agent never invokes.

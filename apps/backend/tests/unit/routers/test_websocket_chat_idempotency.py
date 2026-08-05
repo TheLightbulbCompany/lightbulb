@@ -1,6 +1,6 @@
 """Verify that clientRunId from the agent_chat payload is forwarded as
 idempotencyKey to OpenClaw chat.send, mirroring upstream control-ui's
-pattern in ~/Desktop/openclaw/ui/src/ui/controllers/chat.ts:502.
+pattern in upstream ui/src/ui/controllers/chat.ts.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -68,7 +68,7 @@ async def test_missing_client_run_id_falls_back_to_backend_minted_uuid():
     """Backwards-compat: when the frontend doesn't send clientRunId, the
     backend mints its own UUID so OpenClaw's chat.send always has an
     idempotencyKey (preserves the historical contract — see
-    ~/Desktop/openclaw/src/gateway/server-methods/chat.ts:2037-2052)."""
+    upstream src/gateway/server-methods/chat.ts)."""
 
     fake_pool = MagicMock()
     fake_pool.send_rpc = AsyncMock(return_value={"ok": True})

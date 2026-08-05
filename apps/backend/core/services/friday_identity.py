@@ -62,8 +62,8 @@ from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
-# The two seed formats (contract fixed in
-# docs/superpowers/specs/2026-07-25-native-workspace-seed-design.md):
+# The two seed formats (contract mirrors the fork's boot hook — see the
+# `upstream` notes in openclaw-version.json for which fork patch adds it):
 #   - NATIVE sentinel — what we WRITE. A non-legacy file the fork's boot hook
 #     feeds through its own idempotent ``mergeWorkspaceSetupState`` upsert, then
 #     deletes. Its name MUST NOT be a legacy source path

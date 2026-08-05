@@ -5,9 +5,7 @@ fallback (spec §7, PR-10: "no dual-run window"). Dispatch is crash-safe by
 execution NAME: the claim write stamps the name atomically (container_repo),
 and StartExecution is idempotent for STANDARD workflows on identical
 name+input, so any later poll can safely re-issue the same call. See
-docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §7 and
-the docs/superpowers/specs/2026-07-22-durable-provisioning-executor-design.md
-§3 for the original crash-safety argument, which is unchanged by the reshape.
+docs/superpowers/specs/2026-07-24-onboarding-architecture-design.md §7.
 
 Two hazards #1388 left open, both closed here (spec §7 "Required reshape"):
 

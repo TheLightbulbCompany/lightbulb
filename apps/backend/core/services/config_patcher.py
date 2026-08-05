@@ -163,7 +163,7 @@ def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict) -> None:
 
     Dedupe-safe: binding equality is structural (Python ``dict ==``), so
     repeated patches are no-ops. Shape matches the zod schema at
-    ``desktop/openclaw src/config/zod-schema.agents.ts:37-44``.
+    ``desktop/openclaw src/config/zod-schema.agents.ts``.
     """
     channels = patch.get("channels")
     if not isinstance(channels, dict):

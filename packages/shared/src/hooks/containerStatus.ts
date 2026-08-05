@@ -4,8 +4,7 @@
  * (`containerStatus.ts`). Extracted because the two were independently
  * hand-written copies of the same parse and had already drifted (mobile's
  * copy silently dropped the top-level `blocked` fallback and never surfaced
- * a "container failed" state) — mobile onboarding-parity Slice 1. See
- * docs/superpowers/plans/2026-07-21-mobile-onboarding-parity.md.
+ * a "container failed" state) — mobile onboarding-parity Slice 1.
  *
  * Deliberately NOT here: readiness / polling / rendering decisions. The 200
  * body is passed through UNTOUCHED — `runtime_phase`, `lifecycle`,

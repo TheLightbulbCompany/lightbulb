@@ -3,7 +3,7 @@
 // Small merge that interleaves issue comments and agent-initiated thread
 // interactions into one chronologically sorted timeline. The sort mirrors
 // upstream Paperclip's `sortByCreated` + ordered-message tie-break
-// (paperclip/ui/src/lib/issue-chat-messages.ts:147-153,1002-1008): order by
+// (paperclip/ui/src/lib/issue-chat-messages.ts): order by
 // creation timestamp ascending, then by id for a stable result when two items
 // share a timestamp. We deliberately do NOT port the assistant-ui /
 // run-transcript machinery — comments + interactions are the only two streams

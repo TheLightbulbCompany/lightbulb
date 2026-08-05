@@ -1,7 +1,7 @@
 // apps/frontend/src/components/teams/inbox/InboxToolbar.tsx
 
 // Ported from upstream Paperclip's pages/Inbox.tsx toolbar block
-// (paperclip/ui/src/pages/Inbox.tsx:1874-2056) (MIT, (c) 2025 Paperclip AI).
+// (paperclip/ui/src/pages/Inbox.tsx) (MIT, (c) 2025 Paperclip AI).
 // Tabs + search + filters + mark-all-read. Drops nesting toggle, group-by
 // popover, and column picker.
 //

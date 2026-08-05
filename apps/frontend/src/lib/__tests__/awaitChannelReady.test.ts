@@ -49,7 +49,7 @@ describe("awaitChannelReady", () => {
 
   it("does NOT treat bare running:true (pre-auth race) as success", async () => {
     // running:true with no connected and no error must NOT resolve ready —
-    // the gateway sets running:true before auth runs (server-channels.ts:584).
+    // the gateway sets running:true before auth runs (server-channels.ts).
     const callRpc = scriptedCallRpc("telegram", "a", [
       { running: true, lastStartAt: 200, lastError: null },
     ]);

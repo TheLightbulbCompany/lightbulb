@@ -306,11 +306,11 @@ export function BotSetupWizard({
     setStepIndex(steps.indexOf("connecting"));
 
     // OpenClaw stores per-account runtime state in a Map that PERSISTS
-    // across restarts: src/gateway/server-channels.ts:246-256 setRuntime
+    // across restarts: src/gateway/server-channels.ts setRuntime
     // does { ...current, ...patch } so stale fields stick around. When
     // the previous attempt failed it left lastError="not configured" on
     // the runtime entry. The new restart only clears it when the new
-    // instance successfully starts (server-channels.ts:392 lastError:
+    // instance successfully starts (server-channels.ts lastError:
     // null) — until then, polling channels.status returns the stale
     // error and we'd false-positive a failure.
     //
@@ -342,7 +342,7 @@ export function BotSetupWizard({
       // Field name varies per provider:
       //   telegram → botToken
       //   discord  → token       (NOT botToken — confirmed in
-      //                            extensions/discord/src/shared.ts:62,115:
+      //                            extensions/discord/src/shared.ts:
       //                            clearBaseFields=['token','name'],
       //                            isConfigured: account.token)
       //   slack    → botToken + appToken (socket mode)

@@ -29,7 +29,7 @@ import type {
 } from "@/components/teams/shared/types";
 
 // The /routines BFF is a pure passthrough of upstream Paperclip's
-// `RoutineListItem` (paperclip/packages/shared/src/types/routine.ts:214), so a
+// `RoutineListItem` (paperclip/packages/shared/src/types/routine.ts), so a
 // row carries `title` / `assigneeAgentId` / `triggers[]` / `lastTriggeredAt`,
 // NOT the flat `name` / `cron` / `agent_id` an earlier scaffold assumed. We
 // read the upstream fields first and fall back to the legacy flat names so any

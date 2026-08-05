@@ -354,7 +354,7 @@ async def handle_node_disconnect(
                         req_id=f"clear-exec-{uuid4()}",
                         method="sessions.patch",
                         # OpenClaw's sessions.patch takes `key`, not `sessionKey`
-                        # (openclaw/src/gateway/server-methods/sessions.ts:1262).
+                        # (openclaw/src/gateway/server-methods/sessions.ts).
                         params={"key": sk, "execNode": None, "execHost": None},
                         ip=ip,
                         token=container["gateway_token"],

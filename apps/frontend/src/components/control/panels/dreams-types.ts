@@ -1,6 +1,6 @@
 // Types mirroring the OpenClaw gateway's doctor.memory.* RPC payloads.
-// Source: openclaw doctor.ts:84-135 (DoctorMemoryStatusPayload /
-// DoctorMemoryDreamingPayload) and ui/controllers/dreaming.ts:56-190.
+// Source: openclaw doctor.ts (DoctorMemoryStatusPayload /
+// DoctorMemoryDreamingPayload) and ui/controllers/dreaming.ts.
 // All fields optional/defensive — a container with no memory manager
 // returns only { agentId, embedding } with no `dreaming` block.
 

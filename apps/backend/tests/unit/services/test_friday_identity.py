@@ -301,7 +301,7 @@ async def test_state_file_written_first_with_setup_completed(monkeypatch):
     state = _json.loads(first_content)
     assert "version" not in state
     # setupCompletedAt is the field reconcileWorkspaceBootstrapCompletionState
-    # checks at upstream src/agents/workspace.ts:278-282 — must be non-empty.
+    # checks at upstream src/agents/workspace.ts — must be non-empty.
     assert isinstance(state["setupCompletedAt"], str)
     assert state["setupCompletedAt"]
     assert isinstance(state["bootstrapSeededAt"], str)

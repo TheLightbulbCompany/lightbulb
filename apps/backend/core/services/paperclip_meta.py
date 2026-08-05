@@ -5,7 +5,7 @@ OpenClaw's ``AgentEntrySchema`` is ``.strict()`` so we can't add
 ``role`` / ``title`` / ``capabilities`` to it. But it has
 ``params: z.record(z.string(), z.unknown()).optional()`` as a
 documented free-form extension point (see ``openclaw/src/config/
-zod-schema.agent-runtime.ts:1002`` + the ``config-misc.test.ts``
+zod-schema.agent-runtime.ts`` + the ``config-misc.test.ts``
 case "accepts documented agents.list[].params overrides").
 
 We put the Paperclip-relevant fields under ``params.paperclip``. This

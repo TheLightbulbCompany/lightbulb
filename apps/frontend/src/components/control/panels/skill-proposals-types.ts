@@ -1,5 +1,5 @@
 // apps/frontend/src/components/control/panels/skill-proposals-types.ts
-// Mirrors openclaw src/skills/workshop/types.ts:75-167.
+// Mirrors openclaw src/skills/workshop/types.ts.
 
 export type SkillProposalKind = "create" | "update";
 export type SkillProposalStatus = "pending" | "applied" | "rejected" | "quarantined" | "stale";

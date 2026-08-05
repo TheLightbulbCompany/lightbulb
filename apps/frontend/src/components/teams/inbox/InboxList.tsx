@@ -1,5 +1,5 @@
 // Ported from upstream Paperclip's pages/Inbox.tsx row-renderer block
-// (paperclip/ui/src/pages/Inbox.tsx:2121-2521) (MIT, (c) 2025 Paperclip AI).
+// (paperclip/ui/src/pages/Inbox.tsx) (MIT, (c) 2025 Paperclip AI).
 // Flat list with today/earlier/search section dividers. Drops parent-child
 // nesting. Only renders InboxWorkItem.kind="issue".
 //

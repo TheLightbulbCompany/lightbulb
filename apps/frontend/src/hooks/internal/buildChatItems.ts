@@ -1,7 +1,7 @@
 // apps/frontend/src/hooks/internal/buildChatItems.ts
 //
 // Build a flat render-item list from useAgentChat's state. Mirrors
-// upstream's `~/Desktop/openclaw/ui/src/ui/chat/build-chat-items.ts:249-364`
+// upstream's `ui/src/ui/chat/build-chat-items.ts`
 // with one addition: a `live-thinking` item kind (Isol8 keeps live
 // thinking, upstream drops it).
 

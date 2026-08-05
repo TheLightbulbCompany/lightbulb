@@ -137,7 +137,7 @@ def _make_admin_mock() -> MagicMock:
     admin.list_routines = AsyncMock(return_value=[])
     admin.delete_routine = AsyncMock(return_value={})
     admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})
-    # accept_invite returns the join request flat — see access.ts:3604
+    # accept_invite returns the join request flat — see access.ts
     # (toJoinRequestResponse spreads the row, so ``id`` is top-level).
     admin.accept_invite = AsyncMock(return_value={"id": "req_default"})
     admin.approve_join_request = AsyncMock(return_value={})
@@ -1027,7 +1027,7 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
 
     The original implementation tolerated four different keys
     (``request_id``/``requestId``/``joinRequest.id``/``id``) but the
-    actual Paperclip route (``server/src/routes/access.ts:3604``)
+    actual Paperclip route (``server/src/routes/access.ts``)
     always returns the join-request row spread flat with field
     ``id``. Defensive multi-key fallback was dead code that would
     mask a future schema change. We now strictly require ``id`` and

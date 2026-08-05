@@ -1,7 +1,7 @@
 // apps/frontend/src/components/teams/inbox/hooks/useInboxKeyboardNav.ts
 
 // Ported from upstream Paperclip's pages/Inbox.tsx inline keydown listener
-// (paperclip/ui/src/pages/Inbox.tsx:1604-1820) (MIT, (c) 2025 Paperclip AI).
+// (paperclip/ui/src/pages/Inbox.tsx) (MIT, (c) 2025 Paperclip AI).
 // Subset: j/k/ArrowDown/Up navigation, Enter open, a/y archive, r mark-read,
 // u undo-archive. Drops ArrowLeft/Right group-collapse, capital-U mark-unread,
 // and quick-archive arming.

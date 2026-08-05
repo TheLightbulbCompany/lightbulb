@@ -6,7 +6,7 @@
  * the hook replays the waiting-reconnect items (re-attempts them) exactly
  * once, then resumes the normal drain. Mirrors upstream OpenClaw web UI's
  * markQueuedChatSendsWaitingForReconnect / retryReconnectableQueuedChatSends
- * (~/Desktop/openclaw/ui/src/ui/chat/chat-queue.ts:848-913).
+ * (upstream ui/src/ui/chat/chat-queue.ts).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";

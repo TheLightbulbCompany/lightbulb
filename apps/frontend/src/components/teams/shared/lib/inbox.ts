@@ -133,7 +133,7 @@ function isWithinLast24h(issueIso: string | null | undefined, cutoffMs: number):
  *   24h) and Earlier sections. Empty sections are omitted.
  *
  * Uses a rolling 24h window (not local-midnight) so the boundary is timezone-
- * agnostic — matches upstream Paperclip's `Inbox.tsx:2306` (`Date.now() - 24h`).
+ * agnostic — matches upstream Paperclip's `Inbox.tsx` (`Date.now() - 24h`).
  *
  * `nowIso` is required so callers can drive the date boundary deterministically
  * in tests.

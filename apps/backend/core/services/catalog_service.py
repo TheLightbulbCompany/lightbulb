@@ -438,7 +438,7 @@ class CatalogService:
             # the whole RPC 422 — leaving the freshly-created agent stuck
             # with ``name=<uuid>`` from ``agents.create`` and showing the
             # UUID in the buyer's sidebar.
-            # See openclaw/src/gateway/protocol/schema/agents-models-skills.ts:97.
+            # See openclaw/src/gateway/protocol/schema/agents-models-skills.ts.
             # The pairing helper sets ``agentId`` + ``name`` itself, so we
             # only need to thread the optional identity decorations here.
             identity = agent_entry.get("identity")

@@ -6,7 +6,7 @@
 // 60s and DELETEd the just-configured (valid) bot, blaming the token. This
 // poller instead waits past the deferral ceiling, surfaces the wait, and keys
 // success on a real `connected` transition rather than the bare `running:true`
-// the gateway sets BEFORE auth runs (server-channels.ts:584-591) — so a bad
+// the gateway sets BEFORE auth runs (server-channels.ts) — so a bad
 // token surfaces as a real `lastError` (fail-fast) instead of a false success.
 
 export type ChannelAccountSnapshot = {

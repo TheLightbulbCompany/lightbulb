@@ -171,9 +171,7 @@ def project_name_for(first_name: str) -> str:
 #
 # This replaces the old generic ``FIRST_RUN_PROMPT`` ("Friday — I just set up
 # my company. Read BRIEF.md…"), which showed a canned instruction (or nothing)
-# instead of the user's own ask. See
-# ``docs/superpowers/specs/2026-07-25-onboarding-first-message-design.md``
-# (Option A).
+# instead of the user's own ask.
 # ---------------------------------------------------------------------------
 
 # No idea given ("I don't know yet — you pick"): there is no brief to lead

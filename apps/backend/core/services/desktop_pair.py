@@ -186,7 +186,7 @@ def _public_key_raw_base64url(pubkey_pem: str) -> str:
     Mirrors upstream's ``publicKeyRawBase64UrlFromPem`` (openclaw
     src/infra/device-identity.ts). This is the EXACT wire format the
     gateway sees in the signed connect frame and the EXACT shape it
-    string-compares against paired.json (message-handler.ts:1151-1153
+    string-compares against paired.json (message-handler.ts
     `paired?.publicKey === devicePublicKey`). Writing PEM here breaks the
     equality and gets every device flagged NOT_PAIRED.
     """
@@ -214,8 +214,8 @@ def build_paired_entry(
     The ``publicKey`` field is the base64url-no-pad 32-byte raw key, NOT
     the PEM. Upstream's gateway does strict string equality of paired.json's
     ``publicKey`` against the wire-format pubkey in the signed connect
-    frame (message-handler.ts:1151-1153); the wire format is
-    base64url-no-pad raw 32 bytes (server.auth.shared.ts:194
+    frame (message-handler.ts); the wire format is
+    base64url-no-pad raw 32 bytes (server.auth.shared.ts
     `publicKeyRawBase64UrlFromPem`). PEM here would always mismatch.
 
     tokens.node is load-bearing — listEffectivePairedDeviceRoles returns []
@@ -251,7 +251,7 @@ def build_paired_entry(
     }
     if user_id is not None:
         # Custom Isol8 field. Upstream openclaw's `coercePairingStateRecord`
-        # (pairing-files.ts:16) does a permissive cast — unknown fields are
+        # (pairing-files.ts) does a permissive cast — unknown fields are
         # preserved across read/write cycles. We use this on re-pair to
         # distinguish "this user's prior stale entries" (safe to prune)
         # from "another org member's still-valid entry" (must preserve).
@@ -390,7 +390,7 @@ async def pair_desktop_devices(
 
     def _mutate(paired: dict) -> bool:
         # paired is a FLAT Record<deviceId, PairedDevice> per upstream's
-        # device-pairing.ts:181 (writeJson writes the inner record, not the
+        # device-pairing.ts (writeJson writes the inner record, not the
         # `pairedByDeviceId` wrapper).
         #
         # Two responsibilities:
@@ -582,11 +582,11 @@ class EfsWorkspaceAdapter:
 
     - paired.json lives at ``<EFS>/users/{owner_id}/devices/paired.json`` —
       this is the path openclaw's ``resolvePairingPaths`` resolves
-      (``pairing-files.ts:6-13``) and the gateway reads on container start.
+      (``pairing-files.ts``) and the gateway reads on container start.
       Storing at ``<owner>/paired.json`` would be invisible to the gateway.
     - On disk the file is a FLAT ``Record<deviceId, PairedDevice>`` —
       upstream's ``writeJson(pairedPath, state.pairedByDeviceId)`` persists
-      only the inner record (``device-pairing.ts:181,186``). The
+      only the inner record (``device-pairing.ts``). The
       ``pairedByDeviceId`` wrapper exists ONLY as an in-memory type and
       MUST NOT be written.
     - The gateway_token is the per-container token minted by ECS provisioning

@@ -2,9 +2,9 @@
 # isol8-local-sqlite-boot.sh — prepare container-local SQLite state, then hand
 # off to litestream.
 #
-# Invoked by the CDK startupCommand ONLY on envs whose openclaw-version.json
-# storage field is "local-sqlite"; the image is backward compatible — nothing
-# runs this unless the task-def command names it.
+# Invoked unconditionally by the CDK startupCommand in every environment. The
+# per-env `storage` gate this used to sit behind was removed in #1601 — there is
+# no EFS layout left to fall back to, so there is nothing to gate on.
 #
 # DESIGN: the OpenClaw state dir does NOT move. Two config-less ECS volumes are
 # mounted NESTED INSIDE the EFS mount, at <state-root>/state and

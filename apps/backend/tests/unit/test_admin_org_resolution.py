@@ -912,8 +912,8 @@ class TestAdminMutationOwnerResolution:
 # The correct OpenClaw RPCs, anchored to the main-app call sites:
 #   agent.identity.get {agentId}            (AgentOverviewTab.tsx:27)
 #   sessions.list     {includeGlobal, ...} (SessionsPanel.tsx:123-137)
-#   skills.status     {agentId}            (SkillsPanel.tsx)
-#   config.get        {}                    (ConfigPanel.tsx)
+#   skills.status     {agentId}            (SkillsTab.tsx)
+#   config.get        {}                    (AgentOverviewTab.tsx)
 #
 # sessions.list isn't agent-filterable server-side — main app narrows
 # client-side and we must too.
@@ -1010,7 +1010,7 @@ async def test_get_agent_detail_uses_camelcase_params():
     assert captured["agent.identity.get"] == {"agentId": "agt_1"}
     # skills.status: only {agentId}.
     assert captured["skills.status"] == {"agentId": "agt_1"}
-    # config.get: no params (matches ConfigPanel.tsx).
+    # config.get: no params (matches AgentOverviewTab.tsx).
     assert captured["config.get"] == {}
     # sessions.list: include-* flags, and NO agent filter of any form (main
     # app filters client-side — OpenClaw's schema would reject agentId here).

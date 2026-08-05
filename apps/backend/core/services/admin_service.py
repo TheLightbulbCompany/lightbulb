@@ -569,13 +569,13 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     # `{"code":"INVALID_REQUEST","message":"unknown method: agents.get"}`):
     #   1. Method names: the correct RPCs are `agent.identity.get` (NOT
     #      `agents.get`) and `skills.status` (NOT `skills.list`). See
-    #      AgentOverviewTab.tsx:27 and SkillsPanel.tsx.
+    #      AgentOverviewTab.tsx and SkillsTab.tsx.
     #   2. Wire format: OpenClaw's schemas use camelCase (`agentId`), not
     #      snake_case. Main app always sends camelCase — we must too.
     #   3. `sessions.list` isn't filterable by agent server-side; main app
-    #      fetches the full list and narrows client-side (SessionsPanel.tsx
-    #      :123-137). We replicate that below. `config.get` takes no params
-    #      (ConfigPanel.tsx).
+    #      fetches the full list and narrows client-side (SessionsPanel.tsx).
+    #      We replicate that below. `config.get` takes no params
+    #      (AgentOverviewTab.tsx).
     try:
         identity, sessions_raw, skills, config = await asyncio.wait_for(
             asyncio.gather(
@@ -632,8 +632,8 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         skills_list = []
 
     # config.get returns either a plain config dict OR the envelope
-    # {raw: "<openclaw.json as string>", hash} used by ConfigPanel (see
-    # ConfigPanel.tsx lines 21-26). redact_openclaw_config only walks
+    # {raw: "<openclaw.json as string>", hash} used by the raw-config
+    # editor surfaces. redact_openclaw_config only walks
     # dict/list nodes and passes strings through, so a raw-envelope
     # response would leak BYOK secrets verbatim in config_redacted.raw.
     # Parse+redact the envelope before returning.

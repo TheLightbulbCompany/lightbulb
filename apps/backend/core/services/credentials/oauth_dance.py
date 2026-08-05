@@ -169,8 +169,15 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     # A public (PKCE-only) client has no secret — sending an empty client_secret
     # makes some token endpoints reject the request, so omit the field entirely.
     # The code_verifier is the client's proof for a public client.
+    # A confidential one authenticates the way its provider declares: in the form
+    # body (the default every provider but X accepts) or via HTTP Basic, which X
+    # requires and which it 401s without.
+    auth = None
     if client_secret:
-        data["client_secret"] = client_secret
+        if p.oauth.token_endpoint_auth_method == "client_secret_basic":
+            auth = httpx.BasicAuth(client_id, client_secret)
+        else:
+            data["client_secret"] = client_secret
     # RFC 8707 resource indicator: mirror the authorize request so the issued token
     # is audienced to the canonical MCP server URI. Only for MCP-remote providers.
     if p.mcp_remote is not None:
@@ -178,7 +185,7 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
     async with httpx.AsyncClient(timeout=15) as http:
         # GitHub's token endpoint answers form-encoded unless asked for JSON;
         # every other provider returns JSON regardless, so this is universal.
-        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"})
+        resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
         resp.raise_for_status()
         tok = resp.json()
         # Instagram's code exchange yields a ~1h token; agents need the ~60d one.

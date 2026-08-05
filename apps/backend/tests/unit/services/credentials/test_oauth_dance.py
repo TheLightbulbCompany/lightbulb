@@ -79,6 +79,10 @@ class _FakeAsyncClient:
     """Stub httpx.AsyncClient capturing the IG exchange sequence: POST (code
     exchange -> short-lived token + user_id) then GET (long-lived upgrade)."""
 
+    # Last POST's (data, auth), so a test can assert how the client authenticated
+    # at the token endpoint without threading the instance out of exchange().
+    last_post: dict = {}
+
     def __init__(self, *args, **kwargs):
         self.get_params = None
 
@@ -88,7 +92,8 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, data=None, headers=None):
+    async def post(self, url, data=None, headers=None, auth=None):
+        _FakeAsyncClient.last_post = {"data": data, "auth": auth}
         return _FakeResponse(
             {"access_token": "SHORT", "user_id": 178414123, "permissions": ["instagram_business_basic"]}
         )
@@ -121,3 +126,37 @@ async def test_exchange_instagram_upgrades_to_long_lived_and_blanks_platform_sec
     # The platform app secret never leaves the dance in the credential payload.
     assert cred["client_secret"] == ""
     assert cred["client_information"] == {"client_id": "ig_cid"}
+
+
+async def _exchange_for(provider: str) -> dict:
+    """Run exchange() for a BYO confidential client and return the captured POST."""
+    with (
+        patch("core.services.credentials.oauth_dance.httpx.AsyncClient", _FakeAsyncClient),
+        patch("core.services.credentials.oauth_dance.oauth_app_store.get", new_callable=AsyncMock) as store_get,
+        patch("core.services.credentials.oauth_dance._oauth_client", new_callable=AsyncMock) as client,
+        patch("core.services.credentials.oauth_dance.oauth_state_repo.consume", new_callable=AsyncMock) as consume,
+    ):
+        store_get.return_value = None
+        client.return_value = ("cid", "sec")
+        consume.return_value = {"owner_id": "user_1", "provider": provider, "verifier": "v" * 43, "client_id": "cid"}
+        await oauth_dance.exchange("state123", "code456", redirect_uri="https://api/cb")
+    return _FakeAsyncClient.last_post
+
+
+@pytest.mark.asyncio
+async def test_exchange_uses_basic_auth_when_provider_declares_it():
+    # X rejects a confidential client that posts its secret: the code exchange has
+    # to carry HTTP Basic instead, and the secret must not also ride in the body.
+    post = await _exchange_for("x")
+    assert isinstance(post["auth"], oauth_dance.httpx.BasicAuth)
+    assert post["auth"]._auth_header == oauth_dance.httpx.BasicAuth("cid", "sec")._auth_header
+    assert "client_secret" not in post["data"]
+
+
+@pytest.mark.asyncio
+async def test_exchange_posts_secret_by_default():
+    # Every other confidential provider keeps the pre-X behaviour: secret in the
+    # form body, no Authorization header.
+    post = await _exchange_for("google")
+    assert post["auth"] is None
+    assert post["data"]["client_secret"] == "sec"

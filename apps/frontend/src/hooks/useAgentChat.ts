@@ -553,6 +553,13 @@ export function useAgentChat(
   // OpenClaw's sessions.changed for the initiating member) and belt-and-
   // suspenders cleared on the authoritative terminal frames + on a
   // connection drop, so a lost `run_active:false` can't strand it true.
+  //
+  // The backend does NOT forward the payload's `hasActiveRun` verbatim — that
+  // flag is a liveness heuristic that leaks true on a loaded container and used
+  // to strand the status pill on "Working…". It resolves run-active with
+  // OpenClaw's own rule (terminal `status` beats a stale `hasActiveRun`), in
+  // `connection_pool._is_session_run_active`. Keep that the single decision
+  // point; don't re-derive busy-ness from raw session fields here.
   const [containerRunActive, setContainerRunActive] = useState(false);
 
   // Ephemeral `/btw` side-result cards. Transient by design: never written to

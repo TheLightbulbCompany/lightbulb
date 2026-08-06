@@ -1,6 +1,6 @@
 import json
 import pytest
-from core.gateway.connection_pool import GatewayConnection
+from core.gateway.connection_pool import GatewayConnection, _is_session_run_active
 
 
 class FakeWS:
@@ -207,4 +207,85 @@ async def test_reset_run_state_dedup_relights_on_reconnect(monkeypatch):
     assert run_active == [
         {"type": "run_active", "active": True, "agent_id": "agentA"},
         {"type": "run_active", "active": True, "agent_id": "agentA"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        # Ported 1:1 from OpenClaw's own ui/src/lib/session-run-state.test.ts —
+        # this backend is just another one of its clients and must agree.
+        ({"status": "running", "hasActiveRun": False}, False),
+        ({"status": "running", "hasActiveRun": True}, True),
+        # A terminal status WINS over a stale hasActiveRun:true. This is the
+        # stuck "Working…" pill: the container's in-memory run registry leaks an
+        # entry, but the durable per-turn status says the run ended.
+        ({"status": "done", "hasActiveRun": True}, False),
+        ({"status": "failed", "hasActiveRun": True}, False),
+        ({"status": "killed", "hasActiveRun": True}, False),
+        ({"status": "timeout", "hasActiveRun": True}, False),
+        # No status (fresh/unknown session row) -> fall back to the flag.
+        ({"hasActiveRun": True}, True),
+        ({"hasActiveRun": False}, False),
+        # Neither field: buildGatewaySessionSnapshot returns {} when there is no
+        # session row, so absence must read as inactive, not as a crash.
+        ({}, False),
+        ({"status": "running"}, True),
+        # Defensive: a non-bool hasActiveRun must not be coerced — fall through
+        # to status rather than treating a truthy string as an active run.
+        ({"status": "done", "hasActiveRun": "yes"}, False),
+        ({"hasActiveRun": "yes"}, False),
+    ],
+)
+def test_is_session_run_active_matches_upstream_rule(payload, expected):
+    assert _is_session_run_active(payload) is expected
+
+
+@pytest.mark.asyncio
+async def test_sessions_changed_clears_pill_on_terminal_status_despite_stale_flag(monkeypatch):
+    """Regression: the chat status pill stranded on "Working…" after a finished turn.
+
+    A container under load leaks an entry in one of the three registries behind
+    ``hasActiveRun``, so it keeps reporting true long after the run ended. The
+    same payload carries the durable ``status``, which is terminal. Reading only
+    the flag re-lit the pill with no closing false ever arriving.
+    """
+    conn = GatewayConnection.__new__(GatewayConnection)
+    conn.user_id = "user_1"
+    conn.owner_id = "user_1"
+    conn._active_runs = {}
+    conn._run_state = {}
+    conn._side_run_ids = {}
+    conn._push_tasks = set()
+    forwarded: list[dict] = []
+
+    async def fake_forward(message, target_member_id=None):
+        forwarded.append(message)
+
+    monkeypatch.setattr(conn, "_forward_to_frontends", fake_forward)
+
+    def changed(has_active_run, status):
+        return {
+            "type": "event",
+            "event": "sessions.changed",
+            "payload": {
+                "sessionKey": "agent:agentA:user_1",
+                "hasActiveRun": has_active_run,
+                "status": status,
+            },
+        }
+
+    # Run starts: status flips to "running" at run start, so the bar lights.
+    await conn._handle_message(changed(True, "running"))
+    # Run ends. The registry has leaked, so hasActiveRun is STILL true — but the
+    # turn committed a terminal status alongside it.
+    await conn._handle_message(changed(True, "done"))
+    # Later stale re-broadcast of the same leaked flag: already deduped to
+    # inactive, so nothing more is forwarded and the pill cannot re-light.
+    await conn._handle_message(changed(True, "done"))
+
+    run_active = [m for m in forwarded if m["type"] == "run_active"]
+    assert run_active == [
+        {"type": "run_active", "active": True, "agent_id": "agentA"},
+        {"type": "run_active", "active": False, "agent_id": "agentA"},
     ]

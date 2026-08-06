@@ -2117,11 +2117,13 @@ class GatewayConnection:
                 await self._forward_to_frontends(frame, target_member)
 
             elif event_name == "sessions.changed":
-                # OpenClaw's authoritative per-session run-state (from its live
-                # abort-controller registry), broadcast on every run
-                # start/end/transition. The payload embeds `hasActiveRun`, so we
-                # read it directly — NO follow-up RPC (that would deadlock inside
-                # the reader loop). Webchat-only + member-demuxed: a non-webchat
+                # OpenClaw's authoritative per-session run-state, broadcast on
+                # every run start/end/transition. The payload embeds both
+                # `hasActiveRun` and `status`, so we resolve it locally — NO
+                # follow-up RPC (that would deadlock inside the reader loop).
+                # `hasActiveRun` ALONE is not trustworthy; see
+                # `_is_session_run_active` for why terminal `status` must win.
+                # Webchat-only + member-demuxed: a non-webchat
                 # or member-less key must never reach the web UI (would leak
                 # another surface or broadcast to the whole org). Deduped against
                 # the last-forwarded value so message/transcript-driven
@@ -2134,7 +2136,7 @@ class GatewayConnection:
                 # here also guarantees per-member demux.
                 if session_source != "webchat":
                     return
-                active = bool(payload.get("hasActiveRun"))
+                active = _is_session_run_active(payload)
                 # Normalized to lowercase — see `mark_run_active` for why
                 # every ``_active_runs``/``_run_state`` touch must agree on
                 # casing (this dict is written only from event-side keys, but
@@ -3289,6 +3291,40 @@ class GatewayConnectionPool:
             gauge("gateway.connection.parked", parked_count)
         except Exception:
             pass
+
+
+def _is_session_run_active(payload: dict) -> bool:
+    """Resolve a session's run-active state from a `sessions.changed` payload.
+
+    Port of OpenClaw's own client-side rule (openclaw/ui/src/lib/session-run-state.ts
+    `isSessionRunActive`). The payload carries TWO run-state fields and they are not
+    redundant — trusting only `hasActiveRun` is what stranded the chat status pill on
+    "Working…" after a finished turn:
+
+    - ``hasActiveRun`` is a liveness HEURISTIC: an OR over three in-memory registries
+      (chat abort-controllers, projected remote runs, the embedded-agent run registry —
+      see gateway/server-methods/session-active-runs.ts `resolveVisibleActiveSessionRunState`).
+      Any one of them leaking an entry pins it true indefinitely, which is what happens
+      to a container under load.
+    - ``status`` is the DURABLE record, committed atomically with the transcript turn in
+      the SQLite write transaction. It is set to "running" at run start and to a terminal
+      value ("done"/"failed"/"killed"/"timeout") at run end
+      (gateway/session-lifecycle-state.ts `deriveGatewaySessionLifecycleSnapshot`).
+
+    So a terminal ``status`` WINS over a stale ``hasActiveRun: true``. Crucially this does
+    NOT blank the status bar during long silent tool windows: `status` stays "running"
+    across the yielded/waiting phase too (`isAgentLifecycleYieldedWaiting`), which is
+    exactly the case the frontend's server-truth `active` flag exists to cover.
+
+    Every other OpenClaw client already applies this rule; we are the outlier.
+    """
+    status = payload.get("status")
+    if status and status != "running":
+        return False
+    has_active_run = payload.get("hasActiveRun")
+    if isinstance(has_active_run, bool):
+        return has_active_run
+    return status == "running"
 
 
 def _parse_session_key(session_key: str) -> dict:

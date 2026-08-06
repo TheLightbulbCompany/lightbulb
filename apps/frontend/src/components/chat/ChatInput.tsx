@@ -11,6 +11,7 @@ import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { SlashCommandMenu, flattenVisible } from "@/components/chat/SlashCommandMenu";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const FALLBACK_MAX_TEXTAREA_HEIGHT = 200; // Matches Tailwind max-h-50 (12.5rem)
 
 interface PendingFile {
   file: File;
@@ -103,6 +104,28 @@ export function ChatInput({
   const { commands } = useSlashCommands(agentId ?? null);
   const visible = slash.isCommand ? flattenVisible(commands, slash.query) : [];
   const menuOpen = slash.isCommand && visible.length > 0 && !slash.argText;
+
+  const resizeTextarea = React.useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+
+    // Modern Chromium/Safari can honor `field-sizing: content`, but Firefox and
+    // older engines need an explicit scrollHeight-based fallback. Reset first so
+    // deleting text can shrink the composer, then cap at the same max height as
+    // the Tailwind class so overflow only appears once the visible max is reached.
+    el.style.height = "auto";
+    const computedMaxHeight = Number.parseFloat(window.getComputedStyle(el).maxHeight);
+    const maxHeight = Number.isFinite(computedMaxHeight)
+      ? computedMaxHeight
+      : FALLBACK_MAX_TEXTAREA_HEIGHT;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
+  React.useLayoutEffect(() => {
+    resizeTextarea();
+  }, [input, resizeTextarea]);
 
   // Keep the highlighted row in range as the query (and therefore the visible
   // set) changes — resetting to the top is the least-surprising behavior.

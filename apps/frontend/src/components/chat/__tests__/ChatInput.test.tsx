@@ -138,6 +138,36 @@ describe("ChatInput — Steer action", () => {
   });
 });
 
+describe("ChatInput — auto-grow fallback", () => {
+  it("uses scrollHeight to expand the textarea in browsers without field-sizing support", () => {
+    render(<ChatInput onSend={vi.fn()} />);
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: 72,
+    });
+
+    fireEvent.change(textarea, { target: { value: "line 1\nline 2\nline 3" } });
+
+    expect(textarea.style.height).toBe("72px");
+    expect(textarea.style.overflowY).toBe("hidden");
+  });
+
+  it("caps fallback growth at the composer max height and then allows overflow scrolling", () => {
+    render(<ChatInput onSend={vi.fn()} />);
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: 240,
+    });
+
+    fireEvent.change(textarea, { target: { value: "lots\nof\ntext" } });
+
+    expect(textarea.style.height).toBe("200px");
+    expect(textarea.style.overflowY).toBe("auto");
+  });
+});
+
 describe("ChatInput — Retry action", () => {
   it("shows a Retry action on a failed item and wires it", () => {
     const onRetry = vi.fn();

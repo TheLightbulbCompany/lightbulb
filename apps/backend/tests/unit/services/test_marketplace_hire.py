@@ -481,6 +481,25 @@ async def test_rollback_keeps_both_sides_on_a_timeout(get_catalog, delete_pc):
 
 
 @pytest.mark.asyncio
+@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("core.services.catalog_service.get_catalog_service")
+async def test_rollback_keeps_the_row_when_the_unwind_itself_raises(get_catalog, delete_pc):
+    """``unwind_partial_deploy`` is documented never to raise, so a raise here is
+    an unknown-unknown: the container may still hold the workspace, the
+    agents.list entry and the sidecar. Dropping the Paperclip row on top of that
+    manufactures an agent Teams cannot show or delete. A retained row is
+    recoverable; a ghost is not."""
+    catalog = MagicMock()
+    catalog.unwind_partial_deploy = AsyncMock(side_effect=RuntimeError("efs stalled"))
+    get_catalog.return_value = catalog
+
+    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=None)
+
+    catalog.unwind_partial_deploy.assert_awaited_once()
+    delete_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
 @patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)

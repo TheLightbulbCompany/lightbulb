@@ -398,13 +398,19 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
         try:
             unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=pc_id, cause=agent_cause)
         except Exception:
+            # ``unwind_partial_deploy`` is documented never to raise, so this is
+            # the unknown-unknown branch. Treat it as a FAILED unwind: the
+            # container may still hold the workspace, the agents.list entry and
+            # the sidecar, and dropping the Paperclip row on top of that is what
+            # manufactures an unreachable ghost. A retained row is deletable from
+            # Teams; a ghost is not.
             logger.exception("company_deploy rollback: unwind failed for agent=%s", pc_id)
-            unwound = True  # container side unknown; still drop the Paperclip row
+            unwound = False
         if not unwound:
             logger.warning(
                 "company_deploy rollback: keeping agent=%s (owner=%s) — container-side install was NOT "
-                "safely unwound (client-side timeout, or the sidecar unlink failed), so it stays visible "
-                "+ deletable in Teams",
+                "safely unwound (client-side timeout, the sidecar unlink failed, or the unwind itself "
+                "raised), so it stays visible + deletable in Teams",
                 pc_id,
                 owner_id,
             )

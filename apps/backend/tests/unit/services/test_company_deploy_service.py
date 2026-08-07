@@ -128,6 +128,10 @@ class Harness:
         self.deleted: list[str] = []
         self.unwound: list[str] = []
         self.unwind_causes: list[BaseException | None] = []
+        # When set, FakeCatalog.unwind_partial_deploy raises instead of returning
+        # — the unknown-unknown branch the rollback has to treat as a FAILED
+        # unwind rather than a completed one.
+        self.unwind_raises: BaseException | None = None
         self.container = {"gateway_token": "gw_token"}
         self.ip = "10.0.0.5"
 
@@ -205,6 +209,8 @@ def _install(monkeypatch, h: Harness, plan=None):
         async def unwind_partial_deploy(self, *, owner_id, new_agent_id, cause=None):
             h.unwound.append(new_agent_id)
             h.unwind_causes.append(cause)
+            if h.unwind_raises is not None:
+                raise h.unwind_raises
             # Mirrors the real return contract: False iff the unwind was SKIPPED
             # because the cause was a client-side timeout. The rollback keys the
             # Paperclip delete off this.
@@ -561,6 +567,31 @@ async def test_timeout_on_the_last_agent_still_unwinds_the_earlier_ones(monkeypa
     # The nine completed agents are fully rolled back; the timed-out one is
     # kept on BOTH sides so it stays visible + deletable in Teams.
     assert h.deleted == [f"pc_{i}" for i in range(1, 10)]
+
+
+@pytest.mark.asyncio
+async def test_rollback_keeps_the_row_when_the_unwind_itself_raises(monkeypatch):
+    """``unwind_partial_deploy`` is documented never to raise, so a raise is an
+    unknown-unknown: the container may still hold the workspace, the agents.list
+    entry and the sidecar. Deleting the Paperclip row on top of that produces an
+    agent Teams cannot show or remove. A retained row is recoverable; a ghost
+    is not."""
+    plan = _simple_plan()
+    h = Harness()
+    h.unwind_raises = RuntimeError("efs stalled")
+    _install(monkeypatch, h, plan=plan)
+
+    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+        raise RuntimeError("pair blew up")
+
+    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    # The unwind was attempted...
+    assert h.unwound != []
+    # ...but because it raised, the Paperclip row is KEPT, not deleted.
+    assert h.deleted == []
 
 
 # ---------------------------------------------------------------------------

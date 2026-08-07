@@ -384,13 +384,20 @@ async def _rollback_agent(*, owner_id: str, agent_id: str, cause: BaseException 
             owner_id=owner_id, new_agent_id=agent_id, cause=cause
         )
     except Exception:
+        # ``unwind_partial_deploy`` is documented never to raise, so this is the
+        # unknown-unknown branch. Treat it like a failed unwind, not a completed
+        # one: the container side may still hold the workspace, the agents.list
+        # entry and the sidecar, and deleting the Paperclip row on top of that is
+        # what manufactures an unreachable ghost. Keeping the row is recoverable
+        # (delete it from Teams); a ghost is not.
         logger.exception("marketplace_hire: unwind failed for agent %s", agent_id)
-        unwound = True  # container side is unknown; still drop the Paperclip row
+        unwound = False
 
     if not unwound:
         logger.warning(
             "marketplace_hire: keeping paperclip agent %s for owner=%s — container-side install was NOT "
-            "unwound (client-side timeout), so it stays visible + deletable in Teams",
+            "safely unwound (client-side timeout, the sidecar unlink failed, or the unwind itself "
+            "raised), so it stays visible + deletable in Teams",
             agent_id,
             owner_id,
         )

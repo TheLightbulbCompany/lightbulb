@@ -49,46 +49,12 @@ logger = logging.getLogger("backfill_metronome_ledgers")
 # consult it for them (every call site checks provider_choice first).
 _BEDROCK_PROVIDER = "bedrock_claude"
 
-# Statuses that mean "this owner is paying us right now". trial_local is
-# deliberately absent: free-tier owners are governed by the $3/day meter cap and
-# must never be given a ledger (ensure_metronome_customer short-circuits them,
-# and a zero balance would read as "out of credits" to the low-balance
-# enforcer). past_due/unpaid are included — they still have a live subscription
-# and can recover, and a ledger they cannot spend from blocks nothing.
-_PAID_STATUSES = {"active", "trialing", "past_due", "unpaid"}
-
-
-def _is_paying(account: dict) -> bool:
-    """Whether this owner has a live or recoverable subscription.
-
-    NOT the same set as ``provision_gate.is_subscription_active`` — do not
-    "restore" parity between them, they answer different questions:
-
-      is_subscription_active  {active, trialing, trial_local}
-          "may use the platform right now"
-      _PAID_STATUSES          {active, trialing, past_due, unpaid}
-          "has a live or recoverable subscription"
-
-    The differences are deliberate. ``trial_local`` is excluded because
-    free-tier owners must never get a ledger at all. ``past_due``/``unpaid``
-    are included because they still have a live subscription and can recover
-    — a ledger they cannot yet spend from blocks nothing, and having it ready
-    means recovery does not also need a provisioning round trip.
-
-    What IS borrowed from ``is_subscription_active`` is the legacy fallback: a
-    row with ``subscription_status is None`` and a ``stripe_subscription_id``
-    is a real paid subscription whose status was never backfilled by
-    ``customer.subscription.updated``, and that function treats it as active.
-    Skipping those here would leave exactly the owners the gates consider paid
-    without a ledger — the lockout this script exists to prevent. The None
-    guard is strict, matching it: a NON-None status outside the allowlist
-    (canceled, incomplete) stays excluded even with a stale
-    ``stripe_subscription_id`` on the row.
-    """
-    status = account.get("subscription_status")
-    if status in _PAID_STATUSES:
-        return True
-    return status is None and bool(account.get("stripe_subscription_id"))
+# Eligibility is NOT redefined here. `ensure_metronome_customer` owns "who gets
+# a ledger" (LEDGER_ELIGIBLE_STATUSES / is_ledger_eligible) and enforces it, so
+# this one-shot imports the same predicate rather than keeping a parallel copy.
+# A copy that drifted wider would select owners the live path then refuses,
+# which now surfaces as an INCOMPLETE failure and a non-zero exit on a run that
+# was actually correct.
 
 
 def _needs_backfill(account: dict) -> bool:
@@ -100,7 +66,9 @@ def _needs_backfill(account: dict) -> bool:
     there are no prepaid commits, so no balance can exist and the fences treat
     it as unprovisioned. Re-running ensure on that owner completes the link.
     """
-    if not _is_paying(account):
+    from core.billing.metronome_provisioning import is_ledger_eligible
+
+    if not is_ledger_eligible(account):
         return False
     if account.get("provider_choice") != _BEDROCK_PROVIDER:
         return False

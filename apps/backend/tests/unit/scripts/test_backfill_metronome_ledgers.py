@@ -123,10 +123,10 @@ class TestTableResolution:
 
 
 class TestLegacyPaidRows:
-    """`provision_gate.is_subscription_active` treats `status is None` +
-    `stripe_subscription_id` as ACTIVE — a real paid subscription whose status
-    was never backfilled. A status allowlist alone skips them, leaving exactly
-    the owners the gates consider paid without a ledger."""
+    """Selection now delegates to `metronome_provisioning.is_ledger_eligible`,
+    the same predicate `ensure_metronome_customer` enforces. These cases pin the
+    observable behaviour through `_needs_backfill` so a drift in either the
+    shared predicate or this call site shows up here."""
 
     def test_legacy_paid_bedrock_row_is_selected(self):
         assert _needs_backfill(_row(subscription_status=None, stripe_subscription_id="sub_legacy")) is True

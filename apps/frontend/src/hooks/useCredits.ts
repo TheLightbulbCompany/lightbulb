@@ -9,10 +9,6 @@ export type CreditsBalance = {
    *  (Metronome outage, or the owner has no Metronome customer yet). */
   balance_microcents: number | null;
   balance_dollars: string | null;
-  /** Whether the Metronome credits lifecycle is wired for this environment.
-   *  When false, top-ups are guaranteed to 400 — surfaces must offer a
-   *  different provider path instead of the top-up form. Optional so a
-   *  not-yet-redeployed backend (no field) is treated as enabled. */
   /** Whether the owner has consented to one-click top-ups (card on file,
    *  no checkout redirect). Granted only via a prior Checkout with the
    *  opt-in box ticked; false/absent routes purchases through Checkout. */

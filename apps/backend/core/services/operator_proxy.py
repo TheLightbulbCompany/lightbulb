@@ -182,7 +182,7 @@ async def handle_operator_connect(
                 "Operator relay connect NOT_PAIRED for owner=%s conn=%s device=%s -- attempting self-heal approval",
                 owner_id,
                 connection_id,
-                (upstream.device_id or "?")[:16] if upstream.device_id else "?",
+                (upstream.device_id or "?")[:16],
             )
             healed = await approve_pending_device_from_rejection(
                 owner_id=owner_id,

@@ -1227,9 +1227,18 @@ async def test_approve_pending_device_from_rejection_no_retry_on_auth_error(monk
 
 
 @pytest.mark.asyncio
-async def test_approve_pending_device_from_rejection_no_device_id_is_noop():
+async def test_approve_pending_device_from_rejection_no_device_id_is_noop(monkeypatch):
     """No deviceId in the rejection payload -> nothing to approve; must not
-    attempt any RPC and must not raise."""
+    attempt any RPC and must not raise. Stubs gateway_rpc_oneshot to raise if
+    called, so a regression of the early return would fail on the assertion
+    below instead of hanging ~10s trying a real connect to 10.0.0.9:18789 and
+    then failing on an incidental TypeError."""
+
+    async def _oneshot_should_not_be_called(*args, **kwargs):
+        raise AssertionError("gateway_rpc_oneshot must not be called when device_id is None")
+
+    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot_should_not_be_called)
+
     healed = await approve_pending_device_from_rejection(
         owner_id="owner_z",
         ip="10.0.0.9",

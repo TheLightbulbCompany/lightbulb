@@ -12,10 +12,6 @@ def test_metronome_settings_present_with_defaults():
     assert settings.METRONOME_API_KEY == ""
     assert settings.METRONOME_WEBHOOK_SECRET == ""
     assert settings.METRONOME_FAST_GATE_TABLE == ""
-    # The lifecycle master switch defaults OFF: provisioning/funding/display
-    # no-op until the per-env runbook (tokens + rate card + webhook secret)
-    # flips it via service-stack env.
-    assert settings.METRONOME_LIFECYCLE_ENABLED is False
     # Rate card is created per-env in the Metronome console; wired via env.
     assert settings.METRONOME_RATE_CARD_ID == ""
     # Metronome's global USD-(cents) credit-type id — identical in our

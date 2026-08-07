@@ -9,11 +9,6 @@ export type CreditsBalance = {
    *  (Metronome outage, or the owner has no Metronome customer yet). */
   balance_microcents: number | null;
   balance_dollars: string | null;
-  /** Whether the Metronome credits lifecycle is wired for this environment.
-   *  When false, top-ups are guaranteed to 400 — surfaces must offer a
-   *  different provider path instead of the top-up form. Optional so a
-   *  not-yet-redeployed backend (no field) is treated as enabled. */
-  lifecycle_enabled?: boolean;
   /** Whether the owner has consented to one-click top-ups (card on file,
    *  no checkout redirect). Granted only via a prior Checkout with the
    *  opt-in box ticked; false/absent routes purchases through Checkout. */
@@ -141,10 +136,6 @@ export function useCredits() {
 
   return {
     balance: data,
-    // false ONLY when the backend explicitly says so — undefined (still
-    // loading, or an older backend without the field) must not flash the
-    // credits-unavailable state at users in lifecycle-enabled envs.
-    lifecycleEnabled: data ? data.lifecycle_enabled !== false : undefined,
     // Strict true: undefined/absent (loading, older backend) must route to
     // the safe default — explicit Checkout — never to an implicit charge.
     autoChargeEnabled: data?.auto_charge_enabled === true,

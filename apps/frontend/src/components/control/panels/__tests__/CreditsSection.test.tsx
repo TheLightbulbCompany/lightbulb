@@ -11,7 +11,6 @@ describe("CreditsSection", () => {
     mockUseCredits.mockReset();
     mockUseCredits.mockReturnValue({
       balance: { balance_microcents: 3_952_000_000, balance_dollars: "39.52" },
-      lifecycleEnabled: true,
       autoChargeEnabled: false,
       refresh: vi.fn(),
       startTopUp: vi.fn(),

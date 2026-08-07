@@ -43,6 +43,19 @@ export const trialExpired = () =>
   new GateError(429, "ThrottlingException", "isol8: free trial ended — upgrade to keep going", "trial_expired");
 export const creditExhausted = () =>
   new GateError(429, "ThrottlingException", "isol8: credit balance exhausted", "credit_exhausted");
+// DISTINCT from creditExhausted on purpose. "Drained their balance" is normal
+// business; "has no ledger at all" is a provisioning failure on our side. They
+// emit different metrics (`gate.credit_exhausted` vs
+// `gate.ledger_unprovisioned`), so a broken provisioning deploy shows up as
+// its own signal instead of hiding inside a counter that rises whenever
+// customers legitimately run out of credits.
+export const ledgerUnprovisioned = () =>
+  new GateError(
+    429,
+    "ThrottlingException",
+    "isol8: billing is not set up for this account — contact support@isol8.co",
+    "ledger_unprovisioned",
+  );
 
 // Routing / internal
 export const notFound = () =>

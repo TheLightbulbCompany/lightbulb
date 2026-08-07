@@ -26,14 +26,18 @@ def _http_error(status_code: int) -> httpx.HTTPStatusError:
 
 
 def _billing_row(**overrides):
-    row = {"owner_id": "org_abc", "stripe_customer_id": "cus_123"}
+    # `subscription_status: "active"` is the state every case here implicitly
+    # assumed: ensure_metronome_customer now refuses ineligible owners up front
+    # (is_ledger_eligible), so a row with no status would short-circuit before
+    # any of the provisioning mechanics under test could run. Pass an explicit
+    # status to exercise the eligibility guard itself.
+    row = {"owner_id": "org_abc", "stripe_customer_id": "cus_123", "subscription_status": "active"}
     row.update(overrides)
     return row
 
 
 @pytest.fixture(autouse=True)
-def lifecycle_enabled(monkeypatch):
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
+def metronome_env(monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_RATE_CARD_ID", "rc-1")
     monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 
@@ -163,22 +167,6 @@ async def test_persisted_customer_without_contract_creates_only_the_contract(bil
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_disabled_is_a_pure_noop(billing_repo_mock, monkeypatch):
-    """With the master switch off, the ~3s /container/status poll must not
-    spam doomed calls against placeholder secrets — no billing-row read, no
-    HTTP client construction."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
-    get_mock, set_mock, _ = billing_repo_mock
-    with patch("core.billing.metronome_provisioning.httpx.AsyncClient") as client_cls:
-        result = await ensure_metronome_customer(owner_id="org_abc")
-
-    assert result is None
-    client_cls.assert_not_called()
-    get_mock.assert_not_awaited()
-    set_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_alias_conflict_adopts_existing_customer(billing_repo_mock):
     """A 409 on create means a prior attempt already claimed the alias
     (crashed before persisting the UUID) — adopt that customer instead of
@@ -290,7 +278,9 @@ async def test_missing_stripe_customer_defers_contract_creation(billing_repo_moc
     UUID persists; the missing contract id keeps every later status poll
     re-entering until the link lands."""
     get_mock, set_mock, set_customer_mock = billing_repo_mock
-    get_mock.return_value = {"owner_id": "org_abc"}
+    # Eligible owner, but no stripe_customer_id — that absence is the condition
+    # under test, not the eligibility guard that now runs before it.
+    get_mock.return_value = {"owner_id": "org_abc", "subscription_status": "active"}
     fake = _fake_client()
     with patch("core.observability.metrics.put_metric") as metric_mock:
         cust_id = await ensure_metronome_customer(owner_id="org_abc", client=fake)
@@ -382,3 +372,41 @@ async def test_trial_local_owner_is_never_provisioned_into_metronome(billing_rep
     client_cls.assert_not_called()
     set_mock.assert_not_awaited()
     set_customer_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["trial_local", "canceled", "incomplete", "incomplete_expired", "paused"])
+async def test_ineligible_statuses_get_no_ledger(billing_repo_mock, status):
+    """Only live/recoverable subscriptions get a ledger.
+
+    trial_local was always excluded (a zero balance reads as "out of credits"
+    to the low-balance enforcer). The others matter since `ensure_user_ready`
+    began calling this BEFORE the provision gate: previously a canceled owner
+    never reached this function because the gate returned first, so a canceled
+    owner polling /container/status would have had a real customer + contract
+    + two alerts created over live HTTP for an account that can never spend.
+    """
+    get_mock, set_mock, set_customer_mock = billing_repo_mock
+    get_mock.return_value = _billing_row(subscription_status=status)
+    client = MagicMock()
+    client.create_customer = AsyncMock()
+
+    assert await ensure_metronome_customer(owner_id="org_abc", client=client) is None
+
+    client.create_customer.assert_not_awaited()
+    set_mock.assert_not_awaited()
+    set_customer_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_without_status_is_eligible(billing_repo_mock):
+    """`status is None` + a stripe_subscription_id is a real paid subscription
+    whose status was never backfilled — the gates treat it as active, so it
+    must get a ledger or the fences lock out exactly the owners they consider
+    paid."""
+    from core.billing.metronome_provisioning import is_ledger_eligible
+
+    assert is_ledger_eligible({"subscription_status": None, "stripe_subscription_id": "sub_1"}) is True
+    assert is_ledger_eligible({"subscription_status": None}) is False
+    # A stale subscription id must not revive an explicitly dead status.
+    assert is_ledger_eligible({"subscription_status": "canceled", "stripe_subscription_id": "sub_1"}) is False

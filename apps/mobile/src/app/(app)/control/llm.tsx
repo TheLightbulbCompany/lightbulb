@@ -49,7 +49,6 @@ interface CreditsBalance {
   balance_microcents: number | null;
   /** Pre-formatted "%.2f" without "$", null when balance unavailable. */
   balance_dollars: string | null;
-  lifecycle_enabled?: boolean;
 }
 
 /** `models.authStatus` RPC → provider auth health list (drives the dot). */
@@ -413,12 +412,10 @@ export default function LlmPanel() {
     state.account.provider_choice === "bedrock_claude"
   ) {
     const credits = state.credits;
-    // lifecycle_enabled === false ⇒ top-ups unavailable in this env; absent =
-    // treat as enabled (contract §2). Top-up itself is web-only (D1).
-    // Only offer top-up when the balance actually loaded and lifecycle
-    // credits are enabled — a failed fetch (credits == null) must not show a
-    // top-up link next to an unavailable balance.
-    const topUpAvailable = credits != null && credits.lifecycle_enabled !== false;
+    // Top-up itself is web-only (D1). Only offer it when the balance actually
+    // loaded — a failed fetch (credits == null) must not show a top-up link
+    // next to an unavailable balance.
+    const topUpAvailable = credits != null;
     creditsCard = (
       <Card>
         <Text style={styles.overline}>BEDROCK CREDITS</Text>

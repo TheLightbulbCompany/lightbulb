@@ -10,8 +10,14 @@ Read model:
 - The fast-gate DDB row (fed by the low-balance webhook) is the cached
   answer. ``remaining_microcents <= RESERVE_ESTIMATE_MICROCENTS`` blocks —
   NOT ``<= 0`` — mirroring the bedrock-gate's own admission rule (see
-  ``_row_blocked``); a MISSING row does NOT block (a brand-new owner must
-  not be gated by a missing projection).
+  ``_row_blocked``); a MISSING row does not block ON ITS OWN — the ledger
+  check below decides that case, since "projection not written yet" and "no
+  ledger at all" look identical here but mean opposite things.
+- An owner with no COMPLETE ledger (Metronome customer AND contract) ⇒ BLOCK.
+  Nothing can be debited and no balance can exist, so admitting is unmetered
+  spend on our account, not leniency. Only reachable for bedrock_claude
+  owners, and never for the free tier (``gate_chat`` returns before Layer 3
+  for trial_local; ``provision_gate`` short-circuits them earlier still).
 - When the row is stale (older than ``METRONOME_GATE_STALENESS_S``) and the
   owner actually has a Metronome customer, the gate lazily refreshes from
   ``getNetBalance`` and rewrites the row. Metronome-down ⇒ the stale row is
@@ -58,9 +64,70 @@ async def is_owner_blocked(owner_id: str) -> bool:
     refreshed = await _refresh_from_metronome(owner_id, gate)
     if refreshed is not None:
         return refreshed <= RESERVE_ESTIMATE_MICROCENTS
-    # Refresh unavailable (no Metronome customer, or Metronome down): use
-    # the stale row as-is. A missing row stays NOT blocked.
+
+    # Refresh unavailable. Two situations, opposite answers:
+    #
+    #   no COMPLETE ledger -> BLOCK. Nothing can be debited and no balance can
+    #     exist, so admitting is unmetered spend on our account rather than
+    #     leniency. Every caller has already established provider_choice ==
+    #     "bedrock_claude", and `gate_chat` now returns before Layer 3 for
+    #     trial_local owners, so this cannot reach the free tier.
+    #
+    #   ledger exists, Metronome unreachable -> stale row. A vendor outage must
+    #     never lock out a customer who has already paid.
+    if not await _has_complete_metronome_ledger(owner_id):
+        put_metric("metronome.gate.blocked_unprovisioned")
+        logger.warning(
+            "Owner %s is on bedrock_claude with no complete Metronome ledger — blocking. "
+            "ensure_user_ready provisions this BEFORE the gate, and the top-up path "
+            "re-ensures, so a persistent block here is a provisioning failure to chase.",
+            owner_id,
+        )
+        return True
     return _row_blocked(row)
+
+
+async def _has_complete_metronome_ledger(owner_id: str) -> bool:
+    """Whether the owner has a ledger that can actually hold credits.
+
+    Customer AND contract, not customer alone. When the Stripe-link step
+    fails, ``metronome_provisioning._provision`` deliberately persists ONLY
+    ``metronome_customer_id`` and defers the contract (its billing config is
+    create-time-only, so creating it unlinked would permanently strand the
+    owner's top-ups). Without a contract there are no prepaid commits, so no
+    balance can exist and ``grant_prepaid_credits`` refuses outright —
+    testing the customer id alone would admit an owner whose ledger cannot
+    hold the credits they are spending, in exactly the partial-provisioning
+    failure this predicate exists to catch.
+
+    Shares its DEFINITION of a complete ledger with the bedrock-gate Lambda's
+    ``paidReserve`` but deliberately NOT its evaluation order. ``paidReserve``
+    checks on every path, including when it has a cached projection, because
+    the billing row is already in hand there (core.mjs fetches it for
+    resolvePlan) so the check is free — and because it is the actual money
+    fence: cron- and channel-triggered runs reach Bedrock through it with no
+    backend involvement. Here the equivalent lookup is an extra DynamoDB read,
+    and ``is_owner_blocked`` runs on every chat message, so it stays on the
+    cold path only (stale row AND refresh unavailable). The consequence is
+    narrow and accepted: a FRESH positive projection whose ledger has since
+    been wiped would admit at this gate for up to
+    ``METRONOME_GATE_STALENESS_S``. It would still be denied at the Lambda,
+    which is where the spend actually happens.
+
+    Deliberately a separate read rather than a signal threaded out of
+    ``read_net_balance_microcents``: this runs only on the cold path (stale
+    row AND refresh unavailable), and for an owner in that state the answer
+    is about to block them, so the read is self-limiting. A DDB failure
+    reports "complete" so a transient blip degrades to the stale-row fallback
+    rather than locking out a paying customer.
+    """
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+    except Exception:
+        logger.exception("Billing read failed while checking Metronome provisioning for owner %s", owner_id)
+        return True
+    account = account or {}
+    return bool(account.get("metronome_customer_id") and account.get("metronome_contract_id"))
 
 
 def _row_blocked(row: dict | None) -> bool:

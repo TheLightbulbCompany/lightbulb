@@ -14,10 +14,15 @@ const AIP = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profil
 const NOW = Date.parse("2026-07-15T12:00:00Z");
 const TODAY = "2026-07-15";
 
-function seed({ denied = false, spent = 0, status = "trial_local" } = {}) {
+// `ledger` seeds the Metronome customer+contract ids. Default TRUE because
+// paidReserve now checks ledger completeness on every path, and any paid owner
+// exercising these flows has a ledger in reality — a trial owner never reaches
+// that check (resolvePlan sends them to trialReserve). Pass ledger:false to
+// exercise the unprovisioned deny.
+function seed({ denied = false, spent = 0, status = "trial_local", ledger = true } = {}) {
   const ddb = makeFakeDdb();
   ddb._store.tok = { [hashToken("t1")]: { token_hash: { S: hashToken("t1") }, owner_id: { S: "u" }, denied: { BOOL: denied }, aip_tiers: { M: { [AIP]: { S: "sonnet" } } } } };
-  ddb._store.bill = { u: { owner_id: { S: "u" }, subscription_status: { S: status }, trial_daily_spend_microcents: { M: { [TODAY]: { N: String(spent) } } }, reserved_microcents: { M: {} } } };
+  ddb._store.bill = { u: { owner_id: { S: "u" }, subscription_status: { S: status }, trial_daily_spend_microcents: { M: { [TODAY]: { N: String(spent) } } }, reserved_microcents: { M: {} }, ...(ledger ? { metronome_customer_id: { S: "mc-1" }, metronome_contract_id: { S: "ct-1" } } : {}) } };
   return ddb;
 }
 function makeResponder() {
@@ -113,4 +118,24 @@ test("paid owner streams + decrements fast-gate", async () => {
   await handleRequest(evt(), r, { ddb, env: ENV, nowMs: NOW, forwardImpl: fakeForward200({ inputTokens: 100000 }) });
   assert.equal(r._status, 200);
   assert.equal(Number(ddb._store.fg.u.remaining_microcents.N), 1_000_000 - 330000);
+});
+
+test("paid owner with NO ledger is denied end-to-end with ledger_unprovisioned", async () => {
+  // The unit tests cover paidReserve directly; this pins the whole request
+  // path — a paid owner whose Metronome ledger was never provisioned must be
+  // refused BEFORE anything is forwarded to Bedrock, and must be
+  // distinguishable from a customer who simply ran out of credits.
+  const ddb = seed({ status: "active", ledger: false });
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "0" } } };
+  const r = makeResponder();
+  let forwarded = false;
+  await handleRequest(evt(), r, {
+    ddb, env: ENV, nowMs: NOW,
+    forwardImpl: async () => { forwarded = true; return fakeForward200({ inputTokens: 1 })(); },
+  });
+  assert.equal(r._status, 429);
+  assert.equal(forwarded, false);
+  // A positive cached projection must NOT rescue an owner with no ledger —
+  // nothing deletes the row when the Metronome customer goes away.
+  assert.equal(Number(ddb._store.fg.u.remaining_microcents.N), 1_000_000);
 });

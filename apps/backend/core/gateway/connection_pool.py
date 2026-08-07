@@ -2691,6 +2691,24 @@ class GatewayConnectionPool:
                     "code": "trial_daily_cap",
                     "message": BUDGET_BLOCK_MESSAGES["trial_daily_cap"],
                 }
+            # Under the cap and inside the window: ADMIT. A trial owner's
+            # spend is governed by the $3/day meter cap, never by credits, so
+            # Layer 3 has no jurisdiction over them and this must not fall
+            # through to it.
+            #
+            # Falling through was survivable only while the credits layer
+            # failed OPEN on a missing ledger. It is about to fail CLOSED, and
+            # a trial owner can very easily carry provider_choice ==
+            # "bedrock_claude": /billing/trial-checkout writes it
+            # SYNCHRONOUSLY before redirecting to Stripe, so anyone who opens
+            # Checkout and closes the tab keeps it while staying trial_local.
+            # Trial owners are deliberately never given a Metronome ledger
+            # (ensure_metronome_customer short-circuits them), so Layer 3
+            # would find no ledger and block them out of a fully-funded free
+            # tier — permanently, since the midnight cap reset does not clear
+            # a credits verdict. `provision_gate` already returns here rather
+            # than falling through; this makes the chat gate agree.
+            return {"blocked": False}
 
         # --- Layer 3: card-3 credit balance --------------------------
         # provider_choice lives on the billing_accounts row (per owner);

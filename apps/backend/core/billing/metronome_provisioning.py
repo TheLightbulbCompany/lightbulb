@@ -14,10 +14,6 @@ order), and creates the per-customer low-balance alerts
 (warn + zero-crossing) that feed the fast-gate webhook. The Metronome customer UUID + contract id are persisted
 on the billing row so a re-call short-circuits all the HTTP calls.
 
-Gated on METRONOME_LIFECYCLE_ENABLED: until the runbook (API tokens + rate
-card + webhook secret) is done, the ~3s /container/status poll must not spam
-doomed calls against placeholder secrets.
-
 Crash-safety: the ids are persisted LAST, after the alerts exist. A retry
 after any partial failure re-enters via create_customer/create_contract,
 whose conflict responses are adopted (lookup by ingest alias / contract
@@ -49,6 +45,46 @@ class ProvisioningError(Exception):
     pass
 
 
+# Subscription statuses that get a Metronome ledger. THE definition of "who
+# gets a ledger" — `ensure_metronome_customer` enforces it and the backfill
+# script selects on it, so the live path and the one-shot can never disagree
+# about which owners are supposed to have one.
+#
+# Deliberately its own axis, not a reuse of provision_gate's predicates:
+#   is_subscription_active  {active, trialing, trial_local}  "may use the platform now"
+#   is_paid_subscription    {active, trialing}               "renders as subscribed"
+#   here                    {active, trialing, past_due, unpaid}
+#
+# trial_local is excluded because free-tier owners draw no prepaid credits —
+# a ledger for them is pollution AND (worse) gives them a zero balance the
+# low-balance enforcer reads as "out of credits" and revokes Bedrock on.
+# past_due/unpaid ARE included: those subscriptions are live and recoverable,
+# a ledger they cannot yet spend from blocks nothing, and having it ready
+# means recovery does not also need a provisioning round trip.
+# canceled/incomplete/incomplete_expired/paused are excluded — they cannot
+# convert without a fresh checkout, which re-enters this path anyway.
+LEDGER_ELIGIBLE_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid"})
+
+
+def is_ledger_eligible(account: dict | None) -> bool:
+    """Whether this owner should have a Metronome ledger at all.
+
+    The legacy fallback mirrors ``provision_gate.is_subscription_active``: a
+    row with ``subscription_status is None`` and a ``stripe_subscription_id``
+    is a real paid subscription whose status was never backfilled by
+    ``customer.subscription.updated``, and the gates treat it as active — so
+    it must get a ledger too, or the fences would lock out exactly the owners
+    they consider paid. Strict None guard, matching that function: an explicit
+    non-eligible status can never ride a stale subscription id into eligibility.
+    """
+    if not account:
+        return False
+    status = account.get("subscription_status")
+    if status in LEDGER_ELIGIBLE_STATUSES:
+        return True
+    return status is None and bool(account.get("stripe_subscription_id"))
+
+
 async def ensure_metronome_customer(
     *,
     owner_id: str,
@@ -56,11 +92,7 @@ async def ensure_metronome_customer(
 ) -> str | None:
     """Return the Metronome customer UUID, creating + contract-arming +
     Stripe-linking + alert-arming on first call. Idempotent on the billing
-    row's persisted metronome ids. Returns None (a pure no-op, no HTTP
-    client constructed) while the lifecycle switch is off."""
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        return None
-
+    row's persisted metronome ids."""
     # STRONGLY consistent: the subscription webhook dispatches this immediately
     # after ``set_subscription`` flips the owner off ``trial_local``, and an
     # eventually-consistent get_item can still observe the pre-write row. That
@@ -73,15 +105,22 @@ async def ensure_metronome_customer(
     if account is None:
         raise ProvisioningError(f"No billing row for owner_id={owner_id} — cannot provision Metronome customer")
 
-    # Free-tier owners have no business in Metronome. A ``trial_local`` owner has
-    # no Stripe customer and draws no prepaid credits — they run on the flat
-    # $3/day meter cap — so a Metronome customer for them is pure ledger
-    # pollution AND (worse) it gives them a balance of 0 that the low-balance
-    # enforcer reads as "out of credits" and revokes Bedrock on. On conversion to
-    # a paid bedrock_claude plan, subscription_status flips and this runs
-    # normally. This is the upstream half of the fix; enforce_on_low_balance's
-    # provider guard is the fence that holds even for a stray existing customer.
-    if account.get("subscription_status") == "trial_local":
+    # Only eligible owners get a ledger — see LEDGER_ELIGIBLE_STATUSES for why
+    # each status is in or out. This used to test ONLY `== "trial_local"`,
+    # which was sufficient while the sole caller sat BEHIND the provision gate:
+    # a canceled or paused owner never reached it, because the gate returned
+    # first. `ensure_user_ready` now calls this BEFORE the gate (the gate
+    # depends on the ledger existing, so it cannot also guard it), which
+    # removed that filter — and a canceled owner polling /container/status
+    # would have had a real customer + contract + two low-balance alerts
+    # created over live HTTP, for an account that can never spend from them.
+    # The guard belongs here rather than at the caller: this function owns
+    # "who gets a ledger", and every caller routes through it.
+    #
+    # On conversion to a paid plan, subscription_status flips and this runs
+    # normally. enforce_on_low_balance's provider guard remains the fence that
+    # holds even for a stray existing customer.
+    if not is_ledger_eligible(account):
         return None
 
     existing = account.get("metronome_customer_id")

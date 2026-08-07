@@ -59,7 +59,7 @@ describe("useCredits", () => {
       }
       return Promise.resolve(
         new Response(
-          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
@@ -124,7 +124,7 @@ describe("useCredits", () => {
       }
       return Promise.resolve(
         new Response(
-          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
@@ -157,7 +157,7 @@ describe("useCredits", () => {
       }
       return Promise.resolve(
         new Response(
-          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
@@ -182,7 +182,7 @@ describe("useCredits", () => {
     const fetchMock = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(
-          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00", lifecycle_enabled: true }),
+          JSON.stringify({ balance_microcents: 0, balance_dollars: "0.00" }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       ),

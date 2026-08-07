@@ -158,13 +158,6 @@ class Settings(BaseSettings):
     """HMAC-SHA256 key for verifying Metronome-Webhook-Signature on inbound webhooks."""
     METRONOME_FAST_GATE_TABLE: str = ""
     """DDB table backing the local fast-gate flag the synchronous chat gate reads."""
-    METRONOME_LIFECYCLE_ENABLED: bool = False
-    """Master switch for the Metronome customer lifecycle (provisioning,
-    top-up funding, balance display). When False the ~3s /container/status
-    poll never spams doomed calls while the API-key secrets are still
-    placeholders. Flipped per env once the runbook (tokens + rate card +
-    webhook secret) is done. Webhook HMAC verification is independent of
-    this flag (fail-closed on an empty secret)."""
     METRONOME_RATE_CARD_ID: str = ""
     """Rate card the per-customer contract references at provision time.
     Created once per env in the Metronome console (runbook step)."""

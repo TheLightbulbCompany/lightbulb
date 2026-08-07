@@ -1277,16 +1277,6 @@ export class ServiceStack extends cdk.Stack {
       // BEDROCK_AIP_OWNERS_TABLE above: the table is granted BY NAME in the
       // DynamoDbIntegrations statement, so no cross-stack export is created.
       METRONOME_FAST_GATE_TABLE: `isol8-${env}-metronome-fast-gate`,
-      // Master switch for the Metronome customer lifecycle (provisioning,
-      // funding, balance display). Dev went live 2026-06-10 (sandbox
-      // runbook); prod went live 2026-06-12 (prod token in Secrets
-      // Manager, prod rate card + credits product created via API,
-      // Stripe live product wired into the stripe_product_id custom
-      // field, webhook secret set). Any future env starts "false" until
-      // its console runbook completes — flipping earlier would spam
-      // doomed calls against placeholder secrets on every status poll.
-      METRONOME_LIFECYCLE_ENABLED:
-        env === "dev" || env === "prod" ? "true" : "false",
       // Per-env rate card the per-customer contract references at
       // provision. Dev = sandbox rate card (2026-06-10); prod =
       // isol8-bedrock-prod (2026-06-12). Both price AWS us. CRIS x 1.03

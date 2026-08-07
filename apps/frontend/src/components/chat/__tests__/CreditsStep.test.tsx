@@ -32,8 +32,6 @@ vi.mock("@/hooks/useCredits", async () => {
       const balance = mockBalance();
       return {
         balance,
-        // Mirrors the real hook: false only when the backend explicitly says so.
-        lifecycleEnabled: balance ? balance.lifecycle_enabled !== false : undefined,
         autoChargeEnabled: mockAutoChargeEnabled,
         startTopUp: mockStartTopUp,
         rotateRequestId: mockRotateRequestId,
@@ -153,33 +151,4 @@ describe("CreditsStep", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the credits-unavailable state instead of the form when the lifecycle is off", () => {
-    mockBalance.mockReturnValue({
-      balance_dollars: null,
-      balance_microcents: null,
-      lifecycle_enabled: false,
-    });
-    render(<CreditsStep onComplete={vi.fn()} />);
-    expect(screen.getByText(/not yet available in this environment/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^add \$/i })).not.toBeInTheDocument();
-  });
-
-  it("strips ?provider= when choosing a different provider, preserving other params", () => {
-    // Stripping the provider param is the stepper's exit mechanism — the
-    // wizard then falls back to the provider picker / normal flow. The strip
-    // commits through the History API (shellNav), not the router.
-    const replaceStateSpy = vi.spyOn(window.history, "replaceState");
-    searchParams = new URLSearchParams({ provider: "bedrock_claude", checkout: "success" });
-    mockBalance.mockReturnValue({
-      balance_dollars: null,
-      balance_microcents: null,
-      lifecycle_enabled: false,
-    });
-    render(<CreditsStep onComplete={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /choose a different provider/i }));
-    const target = replaceStateSpy.mock.calls.at(-1)?.[2] as string;
-    expect(target).not.toMatch(/provider=/);
-    expect(target).toMatch(/checkout=success/);
-    replaceStateSpy.mockRestore();
-  });
 });

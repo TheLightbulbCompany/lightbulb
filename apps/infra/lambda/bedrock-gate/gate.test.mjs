@@ -13,6 +13,16 @@ const ENV = {
   CAP_MICROCENTS: "3000000", RESERVE_ESTIMATE_MICROCENTS: "300000", DEDUP_TTL_SECONDS: "1296000",
 };
 const TODAY = "2026-07-15";
+// A paying owner with a COMPLETE ledger. paidReserve now checks ledger
+// completeness on EVERY path (a cached projection is not evidence the ledger
+// still exists — nothing deletes the row when the Metronome customer goes
+// away), so the balance-arithmetic cases below have to carry the state they
+// always implicitly assumed: an owner who reaches balance math has a ledger.
+const LEDGER = {
+  subscription_status: { S: "active" },
+  metronome_customer_id: { S: "mc-1" },
+  metronome_contract_id: { S: "ct-1" },
+};
 const AIP = "arn:aws:bedrock:us-east-1:877352799272:application-inference-profile/abc123";
 
 // ---- pricing: byte-equal to the meter's per-component truncation ----------
@@ -184,7 +194,7 @@ test("settle: no usage (abort) → hold released, nothing counted", async () => 
 test("paid reserve+settle: decrements remaining estimate then actual", async () => {
   const ddb = makeFakeDdb();
   ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "0" } } };
-  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
   assert.equal(readN(ddb._store.fg.u.reserved_microcents), 300000);
   await settle({ ddb, env: ENV, hold, tier: "sonnet", requestId: "r", usage: { inputTokens: 100000 } }); // $0.33 = 330000
   assert.equal(readN(ddb._store.fg.u.remaining_microcents), 1_000_000 - 330000);
@@ -194,20 +204,84 @@ test("paid reserve: zero balance → 429 credit_exhausted", async () => {
   const ddb = makeFakeDdb();
   ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "100" }, reserved_microcents: { N: "0" } } };
   await assert.rejects(
-    reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 }),
+    reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 }),
     (e) => e.code === "credit_exhausted"
   );
 });
-test("paid reserve: missing fast-gate row → allowed", async () => {
+test("paid reserve: missing fast-gate row + COMPLETE ledger → allowed", async () => {
+  // The projection is written by the low-balance webhook and the backend
+  // gate's refresh, so it legitimately lags a brand-new paying owner. A real
+  // ledger backs them and the meter counts every call.
   const ddb = makeFakeDdb();
-  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: null, today: TODAY, nowSec: 0 });
+  const { hold } = await reserveOrThrow({
+    ddb, env: ENV, ownerId: "u", plan: "paid",
+    billingRow: {
+      subscription_status: { S: "active" },
+      metronome_customer_id: { S: "mc-1" },
+      metronome_contract_id: { S: "ct-1" },
+    },
+    fastGateRow: null, today: TODAY, nowSec: 0,
+  });
   assert.equal(hold.paid, true);
+});
+test("paid reserve: customer WITHOUT contract → ledger_unprovisioned", async () => {
+  // The partial-provisioning state _provision persists deliberately when the
+  // Stripe link fails. No contract ⇒ no commits ⇒ no balance, and
+  // grant_prepaid_credits refuses it outright — so admitting here leaks
+  // unmetered spend in exactly the failure this fence contains.
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" } },
+      fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "ledger_unprovisioned"
+  );
+});
+test("paid reserve: no ledger at all → ledger_unprovisioned", async () => {
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" } },
+      fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "ledger_unprovisioned"
+  );
+});
+test("paid reserve: MISSING billing row → ledger_unprovisioned (weakest evidence must not be the one that passes)", async () => {
+  // resolvePlan treats an absent row as "paid". The previous guard skipped the
+  // deny when billingRow was falsy, leaving the case with no ledger
+  // information at all as the only one still admitted unmetered.
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: undefined, fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "ledger_unprovisioned"
+  );
+});
+test("paid reserve: a DRAINED balance still reports credit_exhausted, not ledger_unprovisioned", async () => {
+  // The two conditions must stay distinguishable: one is normal business, the
+  // other is our provisioning breaking.
+  const ddb = makeFakeDdb();
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "0" } } };
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" }, metronome_contract_id: { S: "ct-1" } },
+      fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "credit_exhausted"
+  );
 });
 test("paid reserve: stale hold (reserved_updated_at past TTL) is reclaimed, not accumulated", async () => {
   const ddb = makeFakeDdb();
   // A hold leaked by a crashed settle: stamped far in the past (epoch 1000).
   ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "300000" }, reserved_updated_at: { N: "1000" } } };
-  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
   assert.equal(hold.paid, true);
   // RESET to the new estimate (300000), not ADDed to 600000.
   assert.equal(readN(ddb._store.fg.u.reserved_microcents), 300000);
@@ -217,7 +291,7 @@ test("paid reserve: fresh hold → normal ADD behavior", async () => {
   const ddb = makeFakeDdb();
   const nowSec = Math.floor(Date.now() / 1000);
   ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "300000" }, reserved_updated_at: { N: String(nowSec) } } };
-  await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
   assert.equal(readN(ddb._store.fg.u.reserved_microcents), 600000); // accumulated, not reset
 });
 test("paid reserve: fresh hold still counts against balance → denial", async () => {
@@ -227,7 +301,7 @@ test("paid reserve: fresh hold still counts against balance → denial", async (
   // these numbers would be reclaimed and admit.)
   ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "500000" }, reserved_microcents: { N: "300000" }, reserved_updated_at: { N: String(nowSec) } } };
   await assert.rejects(
-    reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 }),
+    reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 }),
     (e) => e.code === "credit_exhausted"
   );
 });

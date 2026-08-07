@@ -473,19 +473,18 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
   });
 });
 
-describe("ServiceStack — Metronome lifecycle env split", () => {
-  test("dev runs the lifecycle live against the sandbox rate card", () => {
-    // Dev's runbook is done (sandbox token + rate card + webhook secret), so
-    // the lifecycle switch is on and the contract references the sandbox
-    // rate card created 2026-06-10.
+describe("ServiceStack — Metronome per-env wiring", () => {
+  // METRONOME_LIFECYCLE_ENABLED is GONE (it defaulted false and gated only the
+  // ledger-CREATING paths, never the ones that depend on a ledger, so any
+  // fail-closed credit check became unrecoverable wherever it was off). What
+  // still needs pinning is the per-env ids: they are console-created values
+  // with no schema to catch a mix-up, and swapping dev/prod would bill against
+  // the wrong rate card.
+  test("dev references the sandbox rate card", () => {
     SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            Match.objectLike({
-              Name: "METRONOME_LIFECYCLE_ENABLED",
-              Value: "true",
-            }),
             Match.objectLike({
               Name: "METRONOME_RATE_CARD_ID",
               Value: "99576f5a-37d2-4983-ba64-fea9bad96e08",
@@ -496,7 +495,7 @@ describe("ServiceStack — Metronome lifecycle env split", () => {
     });
   });
 
-  test("prod runs the lifecycle live against the prod rate card", () => {
+  test("prod references the prod rate card + credits product", () => {
     // Prod's runbook completed 2026-06-12: prod token in Secrets Manager,
     // rate card + credits product created via API (rates verified 12/12
     // against sandbox), Stripe live product wired, webhook secret set.
@@ -505,10 +504,6 @@ describe("ServiceStack — Metronome lifecycle env split", () => {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
           Environment: Match.arrayWith([
-            Match.objectLike({
-              Name: "METRONOME_LIFECYCLE_ENABLED",
-              Value: "true",
-            }),
             Match.objectLike({
               Name: "METRONOME_RATE_CARD_ID",
               Value: "fdac2edd-f207-4f11-b65b-01fad6fbbdbc",

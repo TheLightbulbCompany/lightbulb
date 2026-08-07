@@ -1,8 +1,7 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCredits, isCreditsExhausted } from "@/hooks/useCredits";
-import { replaceSearchParams } from "@/lib/shellNav";
 
 type Props = { onComplete: () => void };
 
@@ -44,7 +43,6 @@ const TEXT_INPUT =
 export function CreditsStep({ onComplete }: Props) {
   const {
     balance,
-    lifecycleEnabled,
     autoChargeEnabled,
     refresh,
     startTopUp,
@@ -112,44 +110,6 @@ export function CreditsStep({ onComplete }: Props) {
     }, REQUESTED_TIMEOUT_MS);
     return () => clearTimeout(t);
   }, [requested, rotateRequestId]);
-
-  // The stepper's only "go back" mechanism is the `?provider=` URL param:
-  // stripping it exits the provider step and re-enters the main flow (the
-  // provider picker for a not-yet-subscribed owner, normal provisioning
-  // otherwise). Mirrors the stepper's own strip-effect so other params
-  // (e.g. checkout=success) survive.
-  const chooseDifferentProvider = useCallback(() => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.delete("provider");
-    replaceSearchParams(params);
-  }, [searchParams]);
-
-  // Credits lifecycle not wired for this environment: every top-up request
-  // would 400, so the form is a dead end — offer the way back instead.
-  if (lifecycleEnabled === false) {
-    return (
-      <div
-        className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center"
-        style={SANS_FONT}
-      >
-        <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
-          Claude credits aren&apos;t available yet
-        </h3>
-        <p className="text-sm text-[var(--mute)]">
-          Claude credits are not yet available in this environment — choose a
-          different provider for now.
-        </p>
-        <button
-          type="button"
-          onClick={chooseDifferentProvider}
-          className={PRIMARY_BUTTON}
-          style={SANS_FONT}
-        >
-          Choose a different provider
-        </button>
-      </div>
-    );
-  }
 
   // One-click path (opted-in owners only): payment-gated commit against the
   // saved card, no redirect.

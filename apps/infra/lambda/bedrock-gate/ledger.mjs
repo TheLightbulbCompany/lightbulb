@@ -159,8 +159,64 @@ export async function trialSettle(ddb, env, hold, requestId, actual, ttlSeconds)
 // refresh periodically overwrites `remaining_microcents`. So paid needs no
 // dedup: a double-count is transient, erased on the next refresh.
 
-export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow) {
-  if (!fastGateRow) return { ok: true, hold: { ownerId, estimate, paid: true } }; // no row → allow (backstopped)
+export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow, billingRow) {
+  // Ledger completeness is checked FIRST, for BOTH paths — not just the
+  // missing-projection one.
+  //
+  // A cached projection is not evidence that a ledger still exists. The row is
+  // written by the low-balance webhook and the backend gate's refresh, and
+  // NOTHING deletes it when the Metronome customer/contract goes away (an
+  // account wipe archives the customer; the projection survives). A positive
+  // remaining_microcents left behind that way would otherwise take the
+  // cached-balance path below, skip this fence entirely, and keep admitting —
+  // AND keep decrementing a balance that no longer maps to anything billable.
+  // The stale-row path is no safer: it re-reads the same orphaned row.
+  //
+  // Free to hoist: core.mjs already fetches the billing row unconditionally
+  // for resolvePlan, so this costs no extra DynamoDB call on any request.
+  //
+  // Both halves are required. When the Stripe-link step fails,
+  // metronome_provisioning._provision deliberately persists ONLY
+  // metronome_customer_id and defers the contract (its billing config is
+  // create-time-only, so creating it unlinked would strand the owner's top-ups
+  // permanently). No contract means no prepaid commits, hence no balance —
+  // grant_prepaid_credits refuses that state outright.
+  //
+  // A MISSING billing row denies too: it is the weakest possible evidence of a
+  // ledger. Gate tokens are minted only at provision time, after the row
+  // exists (ecs_manager), so a token-holding owner with no row is anomalous,
+  // not a normal startup state.
+  //
+  // billingRow is the RAW DynamoDB item (core.mjs passes getItem's .Item
+  // straight through), so these are attribute-value wrappers — presence is the
+  // whole test and `{S: "..."}` is truthy. Do NOT "fix" this into readS(...):
+  // that changes behavior on an empty-string value.
+  //
+  // The backend gate (is_owner_blocked) shares this DEFINITION of a complete
+  // ledger but deliberately not this evaluation order: it checks only on its
+  // cold path, because its equivalent lookup is an extra DynamoDB read on
+  // every chat message and it is a UX gate, not the money fence. THIS is the
+  // fence — cron- and channel-triggered runs reach Bedrock through here with
+  // no backend involvement — so it pays the (zero) cost of checking always.
+  if (!(billingRow && billingRow.metronome_customer_id && billingRow.metronome_contract_id)) {
+    return { ok: false, unprovisioned: true };
+  }
+
+  if (!fastGateRow) {
+    // Ledger is complete (checked above) but the projection has not been
+    // written yet — it is created by the low-balance webhook and the backend
+    // gate's refresh, so it legitimately lags a brand-new paying owner. A real
+    // ledger backs them and the meter's Metronome ingestion counts every call,
+    // so denying here would hard-block their first request.
+    //
+    // This replaces "no row → allow (backstopped)", whose premise was false:
+    // the meter's backstop for a PAID owner IS Metronome ingestion, which
+    // cannot record without a ledger to record against. Every call was
+    // therefore admitted unmetered — Opus included, since the paid AIP map
+    // carries all three tiers.
+    return { ok: true, hold: { ownerId, estimate, paid: true } };
+  }
+
   const ttlSec = Number(env.RESERVE_TTL_SECONDS || 1200);
   let remaining = readN(fastGateRow.remaining_microcents) ?? 0;
   let reserved = readN(fastGateRow.reserved_microcents) ?? 0;

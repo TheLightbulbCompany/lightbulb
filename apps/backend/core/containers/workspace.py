@@ -722,6 +722,16 @@ class Workspace:
         sidecar.write_text(json.dumps(content))
         self._chown_for_access_point(sidecar, user_id)
 
+    def remove_template_sidecar(self, user_id: str, agent_id: str) -> None:
+        """Delete an agent's `.template` sidecar. Missing file is a no-op.
+
+        Its own method (rather than folding into ``cleanup_agent_dirs``) because
+        the unwind path needs it to run FIRST and INDEPENDENTLY: a single-file
+        unlink is the operation most likely to survive whatever broke the
+        deploy, and the sidecar's absence is what makes a retry safe.
+        """
+        (self.user_path(user_id) / f"workspace-{agent_id}" / ".template").unlink(missing_ok=True)
+
     def read_openclaw_config(self, user_id: str) -> dict | None:
         """Return parsed openclaw.json for a user, or None if missing/corrupt."""
         path = self.user_path(user_id) / "openclaw.json"

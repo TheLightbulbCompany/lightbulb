@@ -564,17 +564,22 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
 def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None) -> dict | None:
     """The owner's still-live install of ``slug``, or None.
 
-    A ``.template`` sidecar on its own isn't proof the agent exists: the Teams
-    REST delete (``routers/teams/agents.py``) removes only the Paperclip row,
-    so a deleted agent can leave its ``workspace-{id}/`` dir — and the sidecar
-    inside it — behind. Cross-check openclaw.json's ``agents.list``, which the
-    deploy file-merges the agent entry into, so a stale sidecar can't hand back
-    a dead agent id and permanently block a re-hire.
+    A ``.template`` sidecar on its own isn't proof the agent exists, so this
+    cross-checks openclaw.json's ``agents.list``, which the deploy file-merges
+    the agent entry into. That covers the case it was written for — a deploy
+    that died before its agent ever registered — and it is what lets the
+    sidecar be written EARLY (with the tarball extract) without a partial
+    install handing back a dead id. It does NOT cover the Teams REST delete
+    (``routers/teams/agents.py``), which removes only the Paperclip row and
+    leaves BOTH the sidecar and the ``agents.list`` entry standing; that agent
+    still reads as installed here. The unwind path closes its own half by
+    unlinking the sidecar first (see ``unwind_partial_deploy``).
 
-    SEQUENTIAL retries only — this is a read, not a lock. The sidecar is written
-    near the END of ``deploy_from_artifact``, so two deploys that OVERLAP both
-    see "not installed" here. That is exactly how prod grew "Pulse 2": deploy #2
-    started 35s before deploy #1 wrote its sidecar (a page reload cleared the
+    SEQUENTIAL retries only — this is a read, not a lock. Two deploys that
+    OVERLAP can still both see "not installed", since the second can start
+    before the first has extracted anything at all. That is how prod grew
+    "Pulse 2": deploy #2 started 35s before deploy #1 wrote its sidecar, back
+    when the sidecar landed at the END of the deploy (a page reload cleared the
     drawer's ``isHiring``, which is the only thing stopping a second submit).
     Overlap is fenced separately, by
     ``container_repo.try_claim_owner_deploy`` below — this read only has to
@@ -745,9 +750,10 @@ async def deploy_listing(
         }
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
-    # sidecar read above is a READ: the sidecar lands near the END of
-    # deploy_from_artifact, so two OVERLAPPING deploys both see "not installed"
-    # and both mint an agent — that grew "Pulse 2" for same-listing retries,
+    # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
+    # see "not installed" (the second starts before the first has extracted
+    # anything) and both mint an agent — that grew "Pulse 2" for same-listing
+    # retries,
     # and a per-listing claim only ever fenced that case. Three DIFFERENT
     # listings hired within seconds still wrote three different map keys and
     # all ran concurrently against the one OpenClaw container (two came back

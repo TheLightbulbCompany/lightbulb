@@ -988,10 +988,73 @@ async def test_unwind_partial_deploy_is_best_effort(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unwind_partial_deploy_removes_the_sidecar_first(monkeypatch):
+    """The ``.template`` sidecar is unlinked BEFORE the two removals that can
+    both fail. ``_live_install_of`` keys on sidecar + a live ``agents.list``
+    entry, so a sidecar removed last would survive a correlated EFS failure
+    alongside the config entry and make every later Hire of that slug return
+    ``already_installed`` for an agent whose Paperclip row the caller is about
+    to delete."""
+    order: list[str] = []
+    svc, ws, _aux, _pair, _gw = _make_service()
+    ws.remove_template_sidecar = MagicMock(side_effect=lambda *_a: order.append("sidecar"))
+    ws.cleanup_agent_dirs = MagicMock(side_effect=lambda *_a: order.append("dirs"))
+    monkeypatch.setattr(
+        "core.services.config_patcher.remove_from_openclaw_config_list",
+        AsyncMock(side_effect=lambda *_a: order.append("config")),
+    )
+
+    await svc.unwind_partial_deploy("user_buyer", "agent_ghost")
+
+    assert order == ["sidecar", "config", "dirs"]
+    ws.remove_template_sidecar.assert_called_once_with("user_buyer", "agent_ghost")
+
+
+@pytest.mark.asyncio
+async def test_unwind_removes_the_sidecar_even_when_both_other_legs_fail(tmp_path, monkeypatch):
+    """The case the ordering exists for, against a REAL workspace on disk.
+
+    An EFS stall breaks the config removal and the dir cleanup together, and
+    ``cleanup_deleted_agent`` swallows its own error so the caller cannot tell.
+    The sidecar must still be gone — it is the one thing standing between the
+    buyer's next Hire and a permanent ``already_installed`` pointing at an
+    agent Teams cannot show.
+    """
+    from core import config
+    from core.containers.workspace import Workspace
+
+    monkeypatch.setattr(config.settings, "ENVIRONMENT", "local")
+    ws = Workspace(mount_path=str(tmp_path))
+    ws.write_template_sidecar("user_buyer", "agent_ghost", {"template_slug": "demo"})
+    sidecar = tmp_path / "user_buyer" / "workspace-agent_ghost" / ".template"
+    assert sidecar.exists()
+
+    svc = CatalogService(
+        workspace=ws,
+        apply_deploy_aux_mutations=AsyncMock(return_value=None),
+        pair_fn=AsyncMock(return_value=None),
+        gateway_pool_factory=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "core.services.config_patcher.remove_from_openclaw_config_list",
+        AsyncMock(side_effect=RuntimeError("efs stalled")),
+    )
+    monkeypatch.setattr(
+        "core.containers.workspace.cleanup_deleted_agent",
+        AsyncMock(side_effect=RuntimeError("efs stalled")),
+    )
+
+    assert await svc.unwind_partial_deploy("user_buyer", "agent_ghost") is True
+
+    assert not sidecar.exists()
+
+
+@pytest.mark.asyncio
 async def test_unwind_partial_deploy_skips_unwind_on_timeout_cause(monkeypatch):
     """A TimeoutError cause means 'no answer yet', not 'failed' — the
     container may still be mid-write on the agent directory this would
-    rm -rf. Neither the openclaw.json edit nor the EFS cleanup may run."""
+    rm -rf. The sidecar stays too: it is what makes the surviving half-install
+    discoverable to the retry, which is the whole point of keeping it."""
     svc, ws, _aux, _pair, _gw = _make_service()
     removed = AsyncMock(return_value=None)
     monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", removed)
@@ -1000,6 +1063,7 @@ async def test_unwind_partial_deploy_skips_unwind_on_timeout_cause(monkeypatch):
 
     removed.assert_not_awaited()
     ws.cleanup_agent_dirs.assert_not_called()
+    ws.remove_template_sidecar.assert_not_called()
 
 
 @pytest.mark.asyncio

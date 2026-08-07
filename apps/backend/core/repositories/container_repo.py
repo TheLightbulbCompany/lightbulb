@@ -330,8 +330,8 @@ _DEPLOY_CLAIM_KEY = "__deploy__"
 async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str | None, str | None]:
     """Take an exclusive lease on "this owner has an agent install in flight".
 
-    FENCED — every path that installs a single agent into the owner's running
-    container takes this claim: the buyer-facing hire
+    FENCED — every path that installs a marketplace/built agent WORKSPACE into
+    the owner's running container takes this claim: the buyer-facing hire
     (``routers/marketplace_listings.deploy_listing``), the Friday-asks /
     owner-approves hire (``marketplace_hire.deploy_for_approval``, reached from
     the Teams approvals route — the "Needs Attention" band lists several at once,
@@ -346,6 +346,13 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
     (see the constant's comment). It is platform-admin-only behind
     COMPANY_MARKETPLACE_LAUNCH_GATE, so it cannot collide with a buyer hire in
     practice.
+
+    Also NOT fenced, and out of scope for this claim: the two BARE agent creates
+    (``routers/teams/agents.create_agent`` and ``routers/websocket_chat``), which
+    drive the same ``agents.create``/``agents.update`` pair against the same
+    container but install no workspace, no config merge and no artifact. The
+    lists above are the workspace-installing paths only — not an exhaustive
+    accounting of everything that talks to the container.
 
     Returns ``(token, held_listing_id)``:
 
@@ -382,10 +389,11 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
     the claim value for diagnostics.
 
     Why durable, and why here: the ``.template``-sidecar check in
-    ``routers/marketplace_listings`` is a read, and the sidecar is written near
-    the END of the deploy — so two OVERLAPPING deploys both see "not installed"
-    and both mint an agent. That is how prod grew "Pulse 2": the second deploy
-    started 35s before the first wrote its sidecar. The backend runs several ECS
+    ``routers/marketplace_listings`` is a read, not a lock — two OVERLAPPING
+    deploys can both see "not installed" (the second starts before the first has
+    extracted anything) and both mint an agent. That is how prod grew "Pulse 2":
+    the second deploy started 35s before the first wrote its sidecar, back when
+    the sidecar landed at the END of the deploy. The backend runs several ECS
     tasks behind an ALB (the two prod deploys landed on different ones), so the
     in-memory ``services/idempotency`` cache cannot fence this — it has to be a
     conditional write. It rides the existing per-owner ``containers`` row rather

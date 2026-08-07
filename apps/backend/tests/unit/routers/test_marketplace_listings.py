@@ -598,9 +598,9 @@ def test_deploy_409s_deploy_busy_when_a_different_listing_holds_the_claim(
 ):
     """Overlapping deploys must not both mint an agent.
 
-    The sidecar read can't catch this — the sidecar lands near the END of
-    deploy_from_artifact, so deploy #2 sees "not installed" while #1 is still
-    running. That is how prod grew "Pulse 2". A conditional write on the
+    The sidecar read can't catch this — it is a read, not a lock, and deploy #2
+    can start before #1 has extracted anything, so #2 sees "not installed" while
+    #1 is still running. That is how prod grew "Pulse 2". A conditional write on the
     per-owner containers row fences it across ECS tasks — owner-wide now, so
     this also covers the case that used to slip through: two DIFFERENT
     listings hired seconds apart.

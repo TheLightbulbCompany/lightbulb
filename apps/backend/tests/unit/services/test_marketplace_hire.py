@@ -406,14 +406,18 @@ async def test_approval_install_takes_and_releases_the_owner_deploy_claim(
 @patch("core.services.catalog_service.get_catalog_service")
 @patch("core.containers.get_ecs_manager")
 @patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-async def test_second_concurrent_approval_is_refused_fast_and_installs_nothing(
+async def test_second_concurrent_approval_is_refused_fast_and_rolls_the_agent_back(
     get_listing, get_ecs, get_catalog, rollback, claim, release
 ):
-    """A refusal is immediate — never a server-side wait — and destroys nothing.
+    """A refusal is immediate — never a server-side wait — and leaves no agent
+    that can never be installed.
 
-    The agent is ``idle`` in the roster with no workspace, so there is no partial
-    state to clean; deleting it would throw away an approval the owner already
-    granted because some unrelated install happened to be running.
+    The approval is already SPENT when this runs: the route flips the agent
+    ``pending_approval`` -> ``idle`` via Paperclip BEFORE calling here. So an
+    agent left standing on refusal is stranded — no route will ever install its
+    workspace, and the drawer re-hire mints a second agent beside it. Roll it
+    back instead; nothing is installed yet, so the rollback carries no ``cause``
+    and is a no-op on the container side.
     """
     get_listing.return_value = _PUBLISHED
     get_ecs.return_value = _ecs_double()
@@ -426,7 +430,8 @@ async def test_second_concurrent_approval_is_refused_fast_and_installs_nothing(
         await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
 
     catalog.deploy_from_artifact.assert_not_awaited()
-    rollback.assert_not_awaited()
+    rollback.assert_awaited_once()
+    assert rollback.await_args.kwargs == {"owner_id": "user_x", "agent_id": _AGENT_ID}
     release.assert_not_awaited()  # nothing to release — we never held it
 
 

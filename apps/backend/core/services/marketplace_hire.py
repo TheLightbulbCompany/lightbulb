@@ -236,12 +236,20 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
 
     claim_token, _held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing_id)
     if not claim_token:
-        # Fast refusal, never a server-side wait. The agent is left ALONE — it is
-        # ``idle`` in the roster with nothing installed, so there is no partial
-        # state to clean, and deleting it would throw away an approval the owner
-        # already granted because some unrelated install happened to be running.
-        # The owner re-runs the hire from the marketplace drawer, or removes the
-        # agent from Teams.
+        # Fast refusal, never a server-side wait: this runs INSIDE the approving
+        # user's HTTP request (POST /teams/approvals/{id}/approve), which must
+        # not hold a long server-side wait.
+        #
+        # The agent goes with it. The approval is already SPENT by the time we
+        # get here — the route calls Paperclip's approve first, flipping the
+        # agent ``pending_approval`` -> ``idle`` — so leaving the agent standing
+        # would strand it: no route will ever install its workspace again, and
+        # the re-hire from the marketplace drawer mints a SECOND agent beside
+        # permanent roster litter. Rolling back is safe and cheap here: nothing
+        # was installed, so ``_rollback_agent`` with no ``cause`` is a no-op on
+        # the container side and just drops the Paperclip row. The owner
+        # re-hires from the drawer onto a clean roster.
+        await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
         raise RuntimeError("another agent install is already running for this workspace — try again in a moment")
 
     try:

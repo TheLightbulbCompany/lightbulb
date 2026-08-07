@@ -797,6 +797,10 @@ async def deploy_listing(
             status_code=409,
             detail={"error": "deploy_in_progress"},
         )
+    # What the deploy failed with, threaded into the claim release below: a
+    # client-side TimeoutError HOLDS the claim instead of releasing it, because
+    # the container may still be writing (see release_owner_deploy_claim).
+    deploy_cause: BaseException | None = None
     try:
         tar_bytes, slice_ = _fetch_agent_artifact(listing)
 
@@ -934,17 +938,20 @@ async def deploy_listing(
             # Self-contained best-effort; never raises. ``unwind_partial_deploy``
             # itself skips the EFS/openclaw.json edit when ``cause`` is a
             # TimeoutError — see its docstring for why.
+            deploy_cause = exc
             unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
             if not unwound:
-                # The container-side install is still standing (and may still be
-                # mid-write). Deleting the Paperclip row here would strip the
-                # owner's only handle on it and leave an unownable ghost that the
-                # next Hire duplicates. Keep the row: the agent shows up in Teams,
-                # where the owner can use it or delete it, and the retry resolves
-                # to it via the sidecar + agents.list cross-check.
+                # The container-side install may still be standing (and on a
+                # timeout, still mid-write). Deleting the Paperclip row here
+                # would strip the owner's only handle on it and leave an
+                # unownable ghost that the next Hire duplicates. Keep the row:
+                # the agent shows up in Teams, where the owner can use it or
+                # delete it, and the retry resolves to it via the sidecar +
+                # agents.list cross-check.
                 logger.warning(
-                    "Marketplace deploy: keeping paperclip agent %s for owner=%s — the container-side "
-                    "install was NOT unwound (client-side timeout), so the half-install stays visible in Teams",
+                    "Marketplace deploy: keeping paperclip agent %s for owner=%s — the container-side install "
+                    "was NOT safely unwound (client-side timeout, or the sidecar unlink failed), so the "
+                    "half-install stays visible in Teams",
                     new_agent_id,
                     owner_id,
                 )
@@ -983,7 +990,9 @@ async def deploy_listing(
         # they let the buyer-facing UI tell the truth about what won't run.
         return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
     finally:
-        await container_repo.release_owner_deploy_claim(owner_id, listing_id=listing["listing_id"], token=claim_token)
+        await container_repo.release_owner_deploy_claim(
+            owner_id, listing_id=listing["listing_id"], token=claim_token, cause=deploy_cause
+        )
 
 
 @router.post("/listings")

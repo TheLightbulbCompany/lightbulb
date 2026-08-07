@@ -1132,6 +1132,87 @@ def test_deploy_timeout_keeps_both_sides_so_the_half_install_is_disposable(
     mock_delete_pc.assert_not_awaited()
 
 
+@patch("routers.marketplace_listings.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_timeout_holds_the_owner_claim_instead_of_freeing_it(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    mock_release,
+    client,
+):
+    """The claim must not become reusable while the timed-out RPC may still be
+    running. ``unwind_partial_deploy`` leaves the container-side install alone
+    on a timeout precisely because the container may still be writing it; a
+    ``finally`` that freed the owner-wide claim in the same breath let the
+    retry take it and run a SECOND install concurrently with the first — the
+    overlap the claim exists to prevent, reintroduced in the one case the
+    branch was written for. The cause rides into the release, which holds the
+    claim and lets the lease settle it (see the repo test for that half).
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-timeout", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
+    mock_get_catalog.return_value = catalog
+
+    assert client.post("/api/v1/marketplace/listings/lst_1/deploy").status_code == 500
+
+    mock_release.assert_awaited_once()
+    assert isinstance(mock_release.await_args.kwargs["cause"], TimeoutError)
+
+
+@patch("routers.marketplace_listings.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_non_timeout_failure_frees_the_owner_claim_at_once(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    mock_release,
+    client,
+):
+    """The other half, and the reason the hold is scoped to ``TimeoutError``:
+    an ordinary failed hire must free the owner immediately, or one 500 wedges
+    every hire they try for the lease's full 600s.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-failed", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("gateway rejected schema"))
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+
+    assert client.post("/api/v1/marketplace/listings/lst_1/deploy").status_code == 500
+
+    mock_release.assert_awaited_once()
+    assert not isinstance(mock_release.await_args.kwargs.get("cause"), TimeoutError)
+
+
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)

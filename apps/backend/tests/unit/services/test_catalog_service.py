@@ -1050,6 +1050,28 @@ async def test_unwind_removes_the_sidecar_even_when_both_other_legs_fail(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_unwind_reports_unsafe_when_the_sidecar_cannot_be_removed(monkeypatch):
+    """THE OTHER False. The sidecar unlink is what makes an unwind safe — it is
+    half of what ``_live_install_of`` keys on, and the other two removals fail
+    with it (one EFS fault breaks all three). Reporting True after it failed
+    sent every caller on to delete the Paperclip row, so once EFS recovered the
+    sidecar AND the ``agents.list`` entry were still there: every later Hire of
+    that slug resolved to an agent id Teams can no longer show.
+    """
+    svc, ws, _aux, _pair, _gw = _make_service()
+    ws.remove_template_sidecar = MagicMock(side_effect=OSError("efs gone"))
+    removed = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", removed)
+
+    assert await svc.unwind_partial_deploy("user_buyer", "agent_ghost") is False
+
+    # Still best-effort on the rest: they shrink the litter even though they
+    # cannot make the unwind safe on their own.
+    removed.assert_awaited_once()
+    ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_ghost")
+
+
+@pytest.mark.asyncio
 async def test_unwind_partial_deploy_skips_unwind_on_timeout_cause(monkeypatch):
     """A TimeoutError cause means 'no answer yet', not 'failed' — the
     container may still be mid-write on the agent directory this would

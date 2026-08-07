@@ -403,7 +403,8 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
         if not unwound:
             logger.warning(
                 "company_deploy rollback: keeping agent=%s (owner=%s) — container-side install was NOT "
-                "unwound (client-side timeout), so it stays visible + deletable in Teams",
+                "safely unwound (client-side timeout, or the sidecar unlink failed), so it stays visible "
+                "+ deletable in Teams",
                 pc_id,
                 owner_id,
             )

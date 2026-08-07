@@ -410,11 +410,19 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
     in the condition is a ValidationException, which the fail-open below would
     have quietly turned into "no fence at all".
 
-    **Fails OPEN.** A DynamoDB fault admits the deploy (returning a token that
-    fences nothing, since no claim was stored). Losing dedupe costs a duplicate
-    agent the owner can delete; failing closed would block a legitimate hire —
-    including a paid one — on a transient fault. Same reasoning as
-    ``try_consume_daily_email_send``.
+    **Fails OPEN, and never raises.** Any fault admits the deploy (returning a
+    token that fences nothing, since no claim was stored). Losing dedupe costs a
+    duplicate agent the owner can delete; failing closed would block a
+    legitimate hire — including a paid one — on a transient fault. Same
+    reasoning as ``try_consume_daily_email_send``. The handler is deliberately
+    ``Exception``-wide, not ``ClientError``: it briefly caught only the latter,
+    which left every ``BotoCoreError`` (``EndpointConnectionError``,
+    ``ConnectTimeoutError``, credential-resolution failures — none of which
+    carry an ``Error`` code) propagating out of a call whose docstring promised
+    they could not. That stranded ``marketplace_hire.deploy_for_approval``'s
+    already-approved agent: the raise escaped BEFORE its rollback envelope, so
+    an idle agent with no workspace stayed in the roster with no route left to
+    install it.
     """
     table = _get_table()
     now = int(time.time())
@@ -459,6 +467,15 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
             listing_id,
         )
         return token, None  # fail open — see docstring
+    except Exception as e:  # noqa: BLE001 — fail open on ANY fault; see docstring
+        logger.error(
+            "try_claim_owner_deploy: fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            type(e).__name__,
+            e,
+            owner_id,
+            listing_id,
+        )
+        return token, None
 
 
 def _held_listing_id(raw_item: dict | None) -> str | None:
@@ -480,13 +497,63 @@ def _held_listing_id(raw_item: dict | None) -> str | None:
         return None
 
 
-async def release_owner_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:
+def _has_timeout_cause(exc: BaseException | None) -> bool:
+    """True when ``exc`` is a ``TimeoutError`` or was raised ``from`` one.
+
+    Deploy callers wrap the failure before it reaches the claim release — the
+    marketplace router re-raises as ``HTTPException(500) from exc``, the
+    agent-builder as a 502 — so the timeout that matters usually sits one link
+    down the chain. Only ``__cause__`` is followed, never ``__context__``:
+    implicit chaining would pick up an unrelated exception that merely happened
+    to be in flight and wedge the owner's claim for nothing. Depth-capped so a
+    ``__cause__`` cycle cannot hang the ``finally`` this runs in.
+    """
+    for _ in range(10):
+        if exc is None:
+            return False
+        if isinstance(exc, TimeoutError):
+            return True
+        exc = exc.__cause__
+    return False
+
+
+async def release_owner_deploy_claim(
+    owner_id: str, *, listing_id: str, token: str, cause: BaseException | None = None
+) -> None:
     """Drop the owner's deploy claim, but only if ``token`` still holds it.
 
     ``listing_id`` is accepted for logging symmetry with the claim call and
     isn't part of the key — see ``try_claim_owner_deploy``.
 
-    The condition is the point: a deploy that hung past
+    ``cause`` — the exception the deploy is unwinding with, if any. **A
+    ``TimeoutError`` cause KEEPS the claim**, deliberately, and this is the
+    other half of ``catalog_service.unwind_partial_deploy``'s timeout
+    carve-out. That carve-out leaves the container-side install untouched
+    precisely because the container may still be mutating it; releasing the
+    claim in the same breath would hand the next hire a green light to run a
+    second install concurrently with the still-active first one — the exact
+    overlap the claim exists to prevent, reintroduced on the one path that
+    needs it most. So the timed-out deploy holds its claim and lets the LEASE
+    be the settling period: nothing else touches this owner's container until
+    ``DEPLOY_CLAIM_STALE_S`` (600s) has elapsed since the claim was taken.
+
+    That is a real bound, not a hope. The only step in a deploy that raises a
+    bare ``TimeoutError`` is the pairing RPC pair (``pair_with_openclaw``;
+    every later step — device pairing, integration reconcile, ACP — swallows
+    its own errors, and the Paperclip/httpx calls raise
+    ``httpx.TimeoutException``, which is NOT a builtin ``TimeoutError``).
+    Pairing can burn at most ``PAIR_WORST_CASE_S`` = 361s, and everything ahead
+    of it under the claim (S3 GET, the ~15s-timeout Paperclip mint, the
+    container resolve, the tar extract) is tens of seconds — so the timeout
+    lands around T+400s of a 600s lease, leaving ~200s of quiet before another
+    deploy can take it over. The container-side ``agents.create`` that provoked
+    the timeout measured 39-51s even under 3-way contention, so the settling
+    window is ~4x its worst observed run. The sidecar-plus-``agents.list``
+    cross-check in ``_live_install_of`` is the belt to this brace: if the
+    container did finish that create, the next hire resolves to it as
+    ``already_installed`` rather than minting a duplicate.
+
+    The condition on the write is the point: a deploy that hung past
     ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here
     would delete its successor's live claim — letting a third caller in and
     reopening the overlap window. A ConditionalCheckFailed means "not ours
@@ -495,8 +562,19 @@ async def release_owner_deploy_claim(owner_id: str, *, listing_id: str, token: s
     Best-effort otherwise: a lost release self-expires after
     ``DEPLOY_CLAIM_STALE_S``, so a fault delays a retry rather than wedging the
     owner's next hire. Never raises — it runs in the deploy's ``finally``,
-    where an exception would mask the real deploy error.
+    where an exception would mask the real deploy error — and that has to hold
+    for ``BotoCoreError`` (no ``Error`` code, so ``ClientError`` alone misses
+    it) as much as for a ``ClientError``.
     """
+    if _has_timeout_cause(cause):
+        logger.warning(
+            "release_owner_deploy_claim: HOLDING the claim for owner=%s listing=%s — the deploy failed with a "
+            "client-side timeout, so the container may still be writing; the lease settles it in %ss",
+            owner_id,
+            listing_id,
+            DEPLOY_CLAIM_STALE_S,
+        )
+        return
     try:
         await run_in_thread(
             _get_table().update_item,
@@ -516,6 +594,15 @@ async def release_owner_deploy_claim(owner_id: str, *, listing_id: str, token: s
             return
         logger.warning(
             "release_owner_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
+            owner_id,
+            listing_id,
+            DEPLOY_CLAIM_STALE_S,
+        )
+    except Exception as e:  # noqa: BLE001 — never raises; see docstring
+        logger.warning(
+            "release_owner_deploy_claim: fault (%s: %s) for owner=%s listing=%s — claim expires in %ss",
+            type(e).__name__,
+            e,
             owner_id,
             listing_id,
             DEPLOY_CLAIM_STALE_S,

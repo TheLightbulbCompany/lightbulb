@@ -644,10 +644,23 @@ class CatalogService:
     ) -> bool:
         """Reverse the container/EFS side effects of a failed deploy.
 
-        Returns True when the unwind ran, False when it was SKIPPED because
-        ``cause`` was a ``TimeoutError``. Callers must honour the answer: a
-        False means the container-side install is still standing, so the
-        Paperclip row must be kept too — see below.
+        Returns True only when the unwind is SAFE — i.e. this agent can no
+        longer read as installed. False means the container-side install may
+        still be standing, so the Paperclip row must be kept too (see below).
+        Two things return False, and callers must honour both:
+
+        1. The unwind was SKIPPED because ``cause`` was a ``TimeoutError``.
+        2. The ``.template`` sidecar could not be removed. The sidecar is half
+           of what ``_live_install_of`` keys on, and the other two removals are
+           correlated with it in failure (one EFS fault breaks all three) — so
+           a surviving sidecar plus a surviving ``agents.list`` entry means
+           every later Hire of that slug resolves to this agent id forever.
+           Reporting True there and letting the caller delete the Paperclip row
+           is what turns it into a ghost Teams cannot show OR delete; the whole
+           point of unlinking the sidecar first is lost if its failure isn't
+           reported. The other two removals are attempted regardless — they
+           still shrink the litter — but they cannot make the unwind safe on
+           their own.
 
         Called by every deploy-rollback site (marketplace deploy, the
         agent-builder bridge, company deploy) when a post-Paperclip step
@@ -716,13 +729,17 @@ class CatalogService:
             )
             return False
 
+        # FIRST — see the docstring. Unlinking one file is what stops a
+        # half-failed unwind from handing the next Hire a dead agent id, so its
+        # success is what makes the unwind safe to report as such.
+        sidecar_removed = True
         try:
-            # FIRST — see the docstring. Unlinking one file is what stops a
-            # half-failed unwind from handing the next Hire a dead agent id.
             self._workspace.remove_template_sidecar(owner_id, new_agent_id)
         except Exception:
+            sidecar_removed = False
             logger.exception(
-                "unwind_partial_deploy: failed to remove .template sidecar for agent %s owner %s",
+                "unwind_partial_deploy: failed to remove .template sidecar for agent %s owner %s "
+                "— reporting an UNSAFE unwind so the caller keeps the Paperclip row",
                 new_agent_id,
                 owner_id,
             )
@@ -758,7 +775,7 @@ class CatalogService:
                 owner_id,
             )
 
-        return True
+        return sidecar_removed
 
     async def _maybe_enable_acp(self, owner_id: str, manifest: dict) -> bool:
         """Turn on the buyer container's ACP coding-harness runtime when the

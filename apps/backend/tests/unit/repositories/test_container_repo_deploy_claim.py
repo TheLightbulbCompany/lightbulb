@@ -228,6 +228,98 @@ async def test_ddb_fault_fails_open_and_still_admits_the_deploy(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_a_non_clienterror_boto_fault_also_fails_open(dynamodb_table):
+    """``BotoCoreError`` is NOT a ``ClientError`` — it carries no ``Error`` code.
+
+    The handler used to catch only ``ClientError``, so an
+    ``EndpointConnectionError`` (credential resolution, DNS, connect timeout —
+    all ``BotoCoreError``) propagated out of a call whose docstring promises a
+    DDB fault fails open. That raise escaped ``deploy_for_approval`` BEFORE its
+    rollback envelope and stranded an already-approved agent with no workspace.
+    """
+    from botocore.exceptions import EndpointConnectionError
+
+    from core.repositories import container_repo
+
+    spy = MagicMock()
+    spy.update_item.side_effect = EndpointConnectionError(endpoint_url="https://dynamodb.us-east-1.amazonaws.com")
+    with patch.object(container_repo, "_get_table", return_value=spy):
+        token, held = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+
+    assert token is not None, "a BotoCoreError must fail OPEN like any other DDB fault, not raise"
+    assert held is None
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_deploy_holds_the_claim_until_the_lease_expires(dynamodb_table):
+    """THE FIX: a client-side timeout must NOT hand the claim to the next hire.
+
+    ``unwind_partial_deploy`` deliberately leaves the container-side install
+    alone on a ``TimeoutError`` because the container may still be writing it.
+    Releasing the claim in the same breath let a retry start a second install
+    concurrently with the still-live first one — defeating the fence in exactly
+    the case it exists for. The lease is the settling period instead.
+    """
+    from core.repositories import container_repo
+
+    token, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+
+    await container_repo.release_owner_deploy_claim(
+        "org_1", listing_id="lst_pulse", token=token, cause=TimeoutError("no response")
+    )
+    assert _claim(dynamodb_table) is not None, "a timed-out deploy must keep its claim"
+    retry, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    assert retry is None, "the retry must still be fenced while the timed-out deploy settles"
+
+    # But the lease is a lease, not a wedge: it ages out on its own.
+    dynamodb_table.update_item(
+        Key={"owner_id": "org_1"},
+        UpdateExpression="SET deploy_claims.#lid.claimed_at = :old",
+        ExpressionAttributeNames={"#lid": container_repo._DEPLOY_CLAIM_KEY},
+        ExpressionAttributeValues={":old": int(time.time()) - container_repo.DEPLOY_CLAIM_STALE_S - 1},
+    )
+    after_settling, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    assert after_settling is not None
+
+
+@pytest.mark.asyncio
+async def test_a_non_timeout_failure_releases_the_claim_immediately(dynamodb_table):
+    """The other half: only the timeout path holds. A normal failed hire must
+    free the owner at once, or one 500 wedges every hire for the lease's 600s.
+    """
+    from core.repositories import container_repo
+
+    token, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    await container_repo.release_owner_deploy_claim(
+        "org_1", listing_id="lst_pulse", token=token, cause=RuntimeError("deploy failed")
+    )
+
+    assert _claim(dynamodb_table) is None
+    assert (await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera"))[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_wrapped_in_an_http_error_still_holds_the_claim(dynamodb_table):
+    """Callers re-raise the failure wrapped (the marketplace router as a 500,
+    the agent-builder as a 502), so the timeout reaches the release one link
+    down the ``__cause__`` chain. Matching only the outermost type would let
+    every real deploy path release on timeout while the unit test passed.
+    """
+    from core.repositories import container_repo
+
+    token, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    try:
+        try:
+            raise TimeoutError("pair RPC")
+        except TimeoutError as exc:
+            raise RuntimeError("deploy failed") from exc
+    except RuntimeError as wrapped:
+        await container_repo.release_owner_deploy_claim("org_1", listing_id="lst_pulse", token=token, cause=wrapped)
+
+    assert _claim(dynamodb_table) is not None, "the wrapped timeout must still hold the claim"
+
+
+@pytest.mark.asyncio
 async def test_release_on_an_already_free_claim_is_a_noop(dynamodb_table):
     """Runs in a ``finally`` — it must never raise, whatever the row looks like."""
     from core.repositories import container_repo

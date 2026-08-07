@@ -234,7 +234,22 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
         raise RuntimeError(f"listing {listing_id} is no longer published")
 
-    claim_token, _held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing_id)
+    try:
+        claim_token, _held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing_id)
+    except Exception:
+        # ``try_claim_owner_deploy`` fails OPEN and is documented never to raise,
+        # so this is belt-and-braces — but the belt has to exist HERE, because
+        # this is the one call site where escaping the function before the
+        # rollback envelope strands something: the approval is already spent
+        # (see below), so an approved agent would sit in the roster with no
+        # workspace and no route left to install one.
+        logger.exception(
+            "deploy_for_approval: deploy claim raised for agent=%s listing=%s — rolling back",
+            agent_id,
+            listing_id,
+        )
+        await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
+        raise
     if not claim_token:
         # Fast refusal, never a server-side wait: this runs INSIDE the approving
         # user's HTTP request (POST /teams/approvals/{id}/approve), which must
@@ -252,6 +267,11 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
         raise RuntimeError("another agent install is already running for this workspace — try again in a moment")
 
+    # What the install failed with, threaded into the claim release: a
+    # client-side TimeoutError HOLDS the claim rather than releasing it, so the
+    # next install can't start while the container may still be writing (see
+    # ``container_repo.release_owner_deploy_claim``).
+    deploy_cause: BaseException | None = None
     try:
         try:
             ecs = get_ecs_manager()
@@ -276,6 +296,7 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 agent_id,
                 listing_id,
             )
+            deploy_cause = exc
             await _rollback_agent(owner_id=owner_id, agent_id=agent_id, cause=exc)
             raise
 
@@ -308,7 +329,9 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 agent_id,
             )
     finally:
-        await container_repo.release_owner_deploy_claim(owner_id, listing_id=listing_id, token=claim_token)
+        await container_repo.release_owner_deploy_claim(
+            owner_id, listing_id=listing_id, token=claim_token, cause=deploy_cause
+        )
 
 
 def _fetch_artifact(listing: dict) -> tuple[bytes, dict]:

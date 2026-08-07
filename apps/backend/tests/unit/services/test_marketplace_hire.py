@@ -481,6 +481,104 @@ async def test_rollback_keeps_both_sides_on_a_timeout(get_catalog, delete_pc):
 
 
 @pytest.mark.asyncio
+@patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_a_timed_out_install_hands_the_timeout_to_the_claim_release(
+    get_listing, get_ecs, get_catalog, fetch, _rollback, claim, release
+):
+    """The timeout must reach the release, which HOLDS the claim on it.
+
+    Releasing here would undo the whole point of the unwind's timeout
+    carve-out: the container may still be writing the install, and a freed
+    claim lets the next approval start a second one on top of it.
+    """
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError("pair RPC"))
+    get_catalog.return_value = catalog
+    claim.return_value = ("tok_1", None)
+
+    with pytest.raises(TimeoutError):
+        await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    assert isinstance(release.await_args.kwargs["cause"], TimeoutError)
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_a_raising_claim_does_not_strand_the_approved_agent(
+    get_listing, get_ecs, get_catalog, rollback, claim, release
+):
+    """The approval is already SPENT when this runs, so an exception that escapes
+    before the rollback envelope leaves an idle agent with no workspace and no
+    route left to install one. ``try_claim_owner_deploy`` now fails open on any
+    fault, but this call site must not depend on that to stay coherent.
+    """
+    from botocore.exceptions import EndpointConnectionError
+
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock()
+    get_catalog.return_value = catalog
+    claim.side_effect = EndpointConnectionError(endpoint_url="https://dynamodb.us-east-1.amazonaws.com")
+
+    with pytest.raises(EndpointConnectionError):
+        await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    catalog.deploy_from_artifact.assert_not_awaited()
+    rollback.assert_awaited_once()
+    assert rollback.await_args.kwargs == {"owner_id": "user_x", "agent_id": _AGENT_ID}
+    release.assert_not_awaited()  # never held it
+
+
+@pytest.mark.asyncio
+@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+async def test_a_failed_sidecar_unlink_keeps_the_paperclip_row(delete_pc, monkeypatch):
+    """An UNSAFE unwind is not only the timeout case. Driven through the REAL
+    ``CatalogService``, because the defect was in the boolean it returns: a
+    sidecar unlink that failed still reported True, so this caller went on to
+    delete the Paperclip row. If the same EFS fault also broke the config edit
+    and the dir cleanup — which the docstring treats as correlated — the
+    sidecar and the ``agents.list`` entry both survived, and once EFS recovered
+    every later Hire of that slug resolved to an agent Teams can no longer show
+    OR delete.
+    """
+    from core.services.catalog_service import CatalogService
+
+    workspace = MagicMock()
+    workspace.remove_template_sidecar = MagicMock(side_effect=OSError("efs gone"))
+    workspace.cleanup_agent_dirs = MagicMock(return_value=None)
+    catalog = CatalogService(
+        workspace=workspace,
+        apply_deploy_aux_mutations=AsyncMock(return_value=None),
+        pair_fn=AsyncMock(return_value=None),
+        gateway_pool_factory=MagicMock(),
+    )
+    monkeypatch.setattr("core.services.catalog_service.get_catalog_service", lambda: catalog)
+    monkeypatch.setattr(
+        "core.services.config_patcher.remove_from_openclaw_config_list",
+        AsyncMock(side_effect=RuntimeError("efs gone")),
+    )
+
+    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=RuntimeError("deploy failed"))
+
+    delete_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("core.services.catalog_service.get_catalog_service")
 async def test_rollback_unwinds_the_container_side_too(get_catalog, delete_pc):

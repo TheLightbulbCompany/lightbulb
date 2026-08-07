@@ -555,3 +555,52 @@ def test_claim_is_released_when_the_registration_fails(mock_get_container, mock_
     assert resp.status_code == 404
     release.assert_awaited_once()
     assert release.await_args.kwargs["token"] == "tok_b"
+
+
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.agent_builder.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_a_timed_out_registration_holds_the_claim_through_the_502_wrap(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_catalog,
+    _delete_pc,
+    _ceo,
+    claim,
+    release,
+    client,
+):
+    """Same defect as the marketplace route, one wrap deeper. A timed-out
+    registration leaves the container-side install standing (the unwind is
+    skipped), so freeing the claim would let the next install run on top of it.
+    This path reports the failure as a 502 raised ``from`` the timeout, so the
+    release has to see through the wrap to hold the claim.
+    """
+    from core.repositories.container_repo import _has_timeout_cause
+
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
+    mock_get_catalog.return_value = catalog
+    claim.return_value = ("tok_b", None)
+
+    assert client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 502
+
+    release.assert_awaited_once()
+    assert _has_timeout_cause(release.await_args.kwargs["cause"]), "the 502-wrapped timeout must still hold the claim"

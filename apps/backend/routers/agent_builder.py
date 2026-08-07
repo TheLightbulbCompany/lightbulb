@@ -142,10 +142,21 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
                 else {"error": "deploy_in_progress"}
             ),
         )
+    # A client-side TimeoutError HOLDS the claim rather than releasing it — the
+    # container may still be writing, and the release is what would let the next
+    # install start on top of it (see release_owner_deploy_claim).
+    # ``_register_built_agent`` wraps the failure in a 502, so the timeout rides
+    # down the ``__cause__`` chain the release walks.
+    deploy_cause: BaseException | None = None
     try:
         return await _register_built_agent(owner_id=owner_id, payload=payload, auth_container=auth_container)
+    except Exception as exc:
+        deploy_cause = exc
+        raise
     finally:
-        await container_repo.release_owner_deploy_claim(owner_id, listing_id=claim_label, token=claim_token)
+        await container_repo.release_owner_deploy_claim(
+            owner_id, listing_id=claim_label, token=claim_token, cause=deploy_cause
+        )
 
 
 async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentRequest, auth_container: dict) -> dict:
@@ -301,7 +312,8 @@ async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentReq
         else:
             logger.warning(
                 "register_built_agent: keeping paperclip agent %s for owner=%s — container-side install "
-                "was NOT unwound (client-side timeout), so it stays visible + deletable in Teams",
+                "was NOT safely unwound (client-side timeout, or the sidecar unlink failed), so it stays "
+                "visible + deletable in Teams",
                 new_agent_id,
                 owner_id,
             )

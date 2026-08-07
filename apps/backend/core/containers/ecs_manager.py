@@ -904,6 +904,17 @@ class EcsManager:
             await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
         await container_repo.upsert(user_id, upsert_fields)
 
+        # CHECKPOINT after the row write: the upsert only detects a takeover
+        # that lands inside its own read-to-write window (its CAS raises
+        # ProvisionSuperseded then). One landing after its put COMPLETES is
+        # invisible to it — and everything below here to the pre-create
+        # checkpoint is unfenced: the gate-pointer re-assert, the EFS access
+        # point, the task-definition revision. A superseded run reaching those
+        # deposits artifacts alongside the winner's and re-points the row at a
+        # token no task will ever present.
+        if claim_id is not None:
+            await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
+
         # The bedrock-gate token hash is NOT folded into that upsert. It moves
         # only through container_repo.swap_gate_token_hash — one atomic writer —
         # because the whole-item put has a read-to-write window a concurrent

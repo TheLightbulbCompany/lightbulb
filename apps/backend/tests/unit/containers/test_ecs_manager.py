@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from core.repositories import container_repo as _container_repo_module
 from core.containers.ecs_manager import (
     START_REFUSED_CAP,
     START_REFUSED_CONVERTING,
@@ -30,6 +31,12 @@ _TEST_AIP_ARNS = {
     "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
     "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
 }
+
+# Captured at import, BEFORE the autouse fixture below stubs them, so the one
+# test that needs the real lease primitives can put them back.
+_REAL_LEASED = _container_repo_module.update_container_leased
+_REAL_TAKEOVER = _container_repo_module.takeover_provision
+_REAL_GET_BY_OWNER = _container_repo_module.get_by_owner_id
 
 
 @pytest.fixture(autouse=True)
@@ -3800,6 +3807,94 @@ class TestProvisionLeaseFencing:
         access_point.assert_not_called()
         task_def.assert_not_called()
         manager._ecs.create_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_takeover_after_the_upsert_stops_the_loser_before_any_artifact(self, manager, monkeypatch):
+        """A REAL takeover, landing after the upsert's put has completed.
+
+        The upsert's own CAS only sees a takeover inside its read-to-write
+        window; one landing after it returns is invisible there. Everything from
+        that point to the pre-create checkpoint was unfenced — the gate-pointer
+        re-assert, the EFS access point, the task-definition revision — so the
+        loser deposited artifacts alongside the winner. Real moto row, real
+        try_claim_provision, real takeover_provision, real checkpoint: the
+        checkpoint is what has to catch this.
+        """
+        import boto3
+        from moto import mock_aws
+
+        from core.repositories import container_repo
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(
+                TableName="test-containers",
+                KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
+            monkeypatch.setattr("core.dynamodb._dynamodb_resource", ddb)
+            # Undo the module-level lease stubs: this test needs the real ones.
+            monkeypatch.setattr("core.repositories.container_repo.update_container_leased", _REAL_LEASED)
+            monkeypatch.setattr("core.repositories.container_repo.takeover_provision", _REAL_TAKEOVER)
+            # ...and the row read: _start_guards_clear stubs it to None, which
+            # would make the real upsert's CAS snapshot see an empty row.
+            monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _REAL_GET_BY_OWNER)
+
+            claim = await container_repo.try_claim_provision("user_race", claim_id="claim-loser")
+
+            real_upsert = container_repo.upsert
+            state: dict = {}
+
+            async def upsert_then_takeover(owner_id, fields):
+                # The put lands (fenced, and it succeeds), THEN a deliberate
+                # door takes the lease over. Exactly the window at issue.
+                row = await real_upsert(owner_id, fields)
+                state["winner"] = await container_repo.takeover_provision(owner_id)
+                return row
+
+            monkeypatch.setattr("core.repositories.container_repo.upsert", upsert_then_takeover)
+            persist = AsyncMock()
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", persist)
+            access_point = MagicMock(return_value="fsap-x")
+            task_def = MagicMock(return_value="arn:task-def")
+            monkeypatch.setattr(manager, "_create_access_point", access_point)
+            monkeypatch.setattr(manager, "_register_task_definition", task_def)
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.create_user_service(
+                    "user_race", "gw-token", claim_id=claim, bedrock_gate_token_hash="hash_loser"
+                )
+
+            persist.assert_not_awaited()
+            access_point.assert_not_called()
+            task_def.assert_not_called()
+            manager._ecs.create_service.assert_not_called()
+            # The winner still holds the lease, untouched by the loser.
+            row = await container_repo.get_by_owner_id("user_race")
+            assert row["provision_claim_id"] == state["winner"] != claim
+
+    @pytest.mark.asyncio
+    async def test_no_takeover_runs_straight_through_to_create_service(self, manager, monkeypatch):
+        """The guard against over-fencing: with the lease held throughout, the
+        new checkpoint is a no-op and the provision reaches create_service."""
+        monkeypatch.setattr("core.repositories.container_repo.upsert", AsyncMock())
+        monkeypatch.setattr("core.repositories.container_repo.update_fields", AsyncMock())
+        persist = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", persist)
+        monkeypatch.setattr(manager, "_create_access_point", MagicMock(return_value="fsap-x"))
+        monkeypatch.setattr(manager, "_register_task_definition", MagicMock(return_value="arn:task-def"))
+        manager._ecs.create_service = MagicMock()
+
+        await manager.create_user_service(
+            "user_ok", "gw-token", claim_id="claim-held", bedrock_gate_token_hash="hash_ok"
+        )
+
+        persist.assert_awaited_once()
+        manager._ecs.create_service.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_claimless_create_user_service_is_unfenced(self, manager, monkeypatch):

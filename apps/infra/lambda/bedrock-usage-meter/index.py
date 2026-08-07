@@ -813,6 +813,8 @@ def _deny_gate_token(owner_id):
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 continue  # already expired — nothing left to deny
             failure = failure or e
+        except Exception as e:  # noqa: BLE001 — try every hash, raise the first failure
+            failure = failure or e
     if failure is not None:
         raise failure
 

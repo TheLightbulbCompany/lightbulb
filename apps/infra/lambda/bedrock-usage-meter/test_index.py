@@ -47,7 +47,7 @@ from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1488,6 +1488,54 @@ def test_deny_gate_token_also_denies_the_superseded_rows():
     assert rows == {pointer: True, live: True}
     # A tracked hash whose row already expired is not resurrected as a partial row.
     assert ghost not in rows
+
+
+def test_deny_gate_token_boto_core_error_on_first_hash_still_tries_the_rest():
+    """A non-ClientError boto failure (e.g. a network timeout) on the FIRST
+    hash must not abort the loop before the superseded hash is attempted --
+    that's the hash the container is actually presenting in the incident
+    shape this whole branch exists for. Regression: an `except ClientError`
+    alone lets a BotoCoreError (ReadTimeout, EndpointConnectionError -- never
+    a ClientError) on the pointer skip every hash after it."""
+    import index
+
+    pointer = "hash-of-the-undelivered-new-token"
+    live = "hash-the-container-is-actually-presenting"
+
+    with _aws_world(gate_token_hash=pointer) as (ddb, _iam, _ecs):
+        ddb.update_item(
+            TableName=CONTAINERS_TABLE,
+            Key={"owner_id": {"S": "org_abc"}},
+            UpdateExpression="SET bedrock_gate_superseded_hashes = :h",
+            ExpressionAttributeValues={":h": {"L": [{"S": live}]}},
+        )
+        ddb.put_item(
+            TableName=GATE_TOKENS_TABLE,
+            Item={"token_hash": {"S": live}, "owner_id": {"S": "org_abc"}, "denied": {"BOOL": False}},
+        )
+
+        class _FlakyDDB:
+            """Forwards everything to the real (moto) client except
+            update_item on the pointer hash, which raises a non-ClientError
+            boto failure -- e.g. a network timeout mid-call."""
+
+            def __getattr__(self, name):
+                return getattr(ddb, name)
+
+            def update_item(self, **kwargs):
+                if kwargs["Key"]["token_hash"]["S"] == pointer:
+                    raise EndpointConnectionError(endpoint_url="https://dynamodb.us-east-1.amazonaws.com/")
+                return ddb.update_item(**kwargs)
+
+        with patch.object(index, "_ddb", return_value=_FlakyDDB()):
+            with pytest.raises(EndpointConnectionError):
+                index._deny_gate_token("org_abc")
+
+        live_row = ddb.get_item(TableName=GATE_TOKENS_TABLE, Key={"token_hash": {"S": live}})["Item"]
+
+    # The pointer's failure was re-raised, but only after the superseded hash
+    # -- the one actually presentable in this incident -- was still denied.
+    assert live_row["denied"]["BOOL"] is True
 
 
 def test_deny_gate_token_noop_when_containers_row_missing():

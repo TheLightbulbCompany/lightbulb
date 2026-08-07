@@ -113,8 +113,9 @@ _UPSERT_PRESERVED_FIELDS = (
     "provision_attempt_token",
     "provision_execution_name",
     # The bedrock-gate superseded-hash list (``bedrock_gate_tokens._SUPERSEDED_FIELD``
-    # — bound to that constant by test_container_repo_upsert_preserves.py, since
-    # importing it here would close an import cycle). It is the ONLY handle on an
+    # — bound to that constant by
+    # tests/unit/repositories/test_container_repo.py:144, since importing it
+    # here would close an import cycle). It is the ONLY handle on an
     # owner's old gate-token rows: that table is hash-keyed with no owner index,
     # so a hash dropped from this list can never be found, deleted, or denied
     # again — leaving a live bearer credential (its plaintext is still in the

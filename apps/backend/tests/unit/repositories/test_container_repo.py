@@ -664,6 +664,88 @@ def test_classify_provision_error_retryable_attr_beats_markers():
 
 
 @pytest.mark.asyncio
+async def test_swap_gate_token_hash_writes_on_a_matching_prior(dynamodb_table):
+    from core.billing import bedrock_gate_tokens
+    from core.repositories import container_repo
+
+    field = bedrock_gate_tokens._SUPERSEDED_FIELD
+    await container_repo.upsert("user_swap", {"status": "running", "bedrock_gate_token_hash": "hash_A"})
+
+    outcome = await container_repo.swap_gate_token_hash(
+        "user_swap", new_hash="hash_B", superseded=["hash_A"], expected_prior_hash="hash_A"
+    )
+
+    assert outcome == "written"
+    row = await container_repo.get_by_owner_id("user_swap")
+    assert row["bedrock_gate_token_hash"] == "hash_B"
+    assert row[field] == ["hash_A"]
+
+
+@pytest.mark.asyncio
+async def test_swap_gate_token_hash_writes_when_no_prior_hash_was_read(dynamodb_table):
+    """A row that exists but carries no hash yet: the condition is
+    attribute_not_exists, not equality with a null."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_swap_new", {"status": "provisioning"})
+
+    outcome = await container_repo.swap_gate_token_hash(
+        "user_swap_new", new_hash="hash_A", superseded=[], expected_prior_hash=None
+    )
+
+    assert outcome == "written"
+    row = await container_repo.get_by_owner_id("user_swap_new")
+    assert row["bedrock_gate_token_hash"] == "hash_A"
+
+
+@pytest.mark.asyncio
+async def test_swap_gate_token_hash_refuses_a_changed_prior(dynamodb_table):
+    """The concurrency fence: a hash moved out from under the caller means the
+    caller's superseded list is stale, so the write must be refused rather than
+    clobber the other mint's hash into unreachability."""
+    from core.billing import bedrock_gate_tokens
+    from core.repositories import container_repo
+
+    field = bedrock_gate_tokens._SUPERSEDED_FIELD
+    await container_repo.upsert(
+        "user_swap_race",
+        {"status": "running", "bedrock_gate_token_hash": "hash_B", field: ["hash_A"]},
+    )
+
+    # Caller read hash_A, but a concurrent mint already moved the row to hash_B.
+    outcome = await container_repo.swap_gate_token_hash(
+        "user_swap_race", new_hash="hash_C", superseded=["hash_A"], expected_prior_hash="hash_A"
+    )
+
+    assert outcome == "conflict"
+    row = await container_repo.get_by_owner_id("user_swap_race")
+    assert row["bedrock_gate_token_hash"] == "hash_B"
+    assert row[field] == ["hash_A"]
+
+    # Same for the no-prior form against a row that has since gained one.
+    assert (
+        await container_repo.swap_gate_token_hash(
+            "user_swap_race", new_hash="hash_C", superseded=[], expected_prior_hash=None
+        )
+        == "conflict"
+    )
+
+
+@pytest.mark.asyncio
+async def test_swap_gate_token_hash_no_ops_on_an_absent_row(dynamodb_table):
+    """Preserves update_fields' silent no-op: mint_gate_token runs on the
+    fresh-provision path before the row exists, and must NOT create one."""
+    from core.repositories import container_repo
+
+    outcome = await container_repo.swap_gate_token_hash(
+        "user_swap_missing", new_hash="hash_A", superseded=[], expected_prior_hash=None
+    )
+
+    assert outcome == "absent"
+    assert await container_repo.get_by_owner_id("user_swap_missing") is None
+
+
+@pytest.mark.asyncio
 async def test_stamp_stop_reason_trial_idle_sets_parked_at(dynamodb_table):
     from core.repositories import container_repo
 

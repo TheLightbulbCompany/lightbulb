@@ -77,7 +77,9 @@ logger = logging.getLogger(__name__)
 # Self-bounding, which is why it needs no cap or sweep: only ``mint_gate_token``
 # appends to it, and it appends the pruned survivor set — and a hash only
 # survives a prune while something can still present it, which is at most the
-# service's task definition plus whatever tasks are live.
+# service's task definition plus whatever tasks are live. (A mint that loses the
+# conditional swap adds the winner's hash on top of that, but the winner's own
+# list was pruned the same way, so the bound holds.)
 #
 # That holds only while the list SURVIVES every write to the containers row.
 # ``container_repo.upsert`` is a whole-item put, so the field is named in its
@@ -358,8 +360,10 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
       aip_tiers={arn: tier}, created_at}``. ``aip_tiers`` is the INVERSE of the
       owner's ``{tier: arn}`` map — the gateway keys authorization + pricing on
       the AIP ARN.
-    - Points the containers row's ``bedrock_gate_token_hash`` at the new hash.
-      (No-ops on a not-yet-created row: the fresh-provision path folds the hash
+    - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
+      through ``container_repo.swap_gate_token_hash`` — a conditional write, so
+      two concurrent mints cannot lose one another's hash (see below). (Still a
+      no-op on a not-yet-created row: the fresh-provision path folds the hash
       into ``create_user_service``'s row-creating upsert instead — see
       ``ecs_manager`` — mirroring how ``bedrock_role_arn`` / ``bedrock_aip_arns``
       are persisted.)
@@ -368,6 +372,16 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
       proves no task definition and no live task can present it. The mint first
       runs that drain as a backstop for a confirmation that never came, then
       writes the pruned survivors plus the outgoing hash in the SAME row update.
+
+    CONCURRENCY. The mint block in ``provision_user_container`` sits AHEAD of
+    the first ``_provision_checkpoint``, so the provision lease does not
+    serialize it: a poll provision and an escalating ``container_recover``
+    takeover can both reach here at once. The row write is therefore conditioned
+    on the hash this call read, and a lost race is RETRIED after re-reading and
+    folding the winner's hash into the superseded list — never dropped. Losing
+    it would strand a ``denied=False`` token row that nothing can reach:
+    unfindable (hash-keyed table, no owner index), unexpirable, and outside
+    ``deny_gate_token``'s reach.
 
     Only the hash is stored anywhere; the returned plaintext is the sole copy.
     """
@@ -401,10 +415,41 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
 
     if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
         superseded.append(prior_hash)
-    await container_repo.update_fields(
-        owner_id,
-        {"bedrock_gate_token_hash": token_hash, _SUPERSEDED_FIELD: superseded},
-    )
+
+    # Conditional swap, bounded retry. The token is minted ONCE, above — the
+    # loop re-runs the WRITE only, never the mint (a re-mint per attempt would
+    # leak an unreachable token row per attempt, the very thing this fixes).
+    # The drain is not re-run either: it makes ECS calls, and the next mint's
+    # backstop pass drains anyway.
+    expected = prior_hash
+    outcome = "conflict"
+    for _ in range(3):
+        outcome = await container_repo.swap_gate_token_hash(
+            owner_id,
+            new_hash=token_hash,
+            superseded=superseded,
+            expected_prior_hash=expected,
+        )
+        if outcome != "conflict":
+            break
+        # A concurrent mint got there first. Its hash is now the row's current
+        # one and NOTHING else records it, so carry it into our superseded list
+        # or it becomes unreachable. Order-preserving, de-duplicated, and never
+        # including our own new hash.
+        fresh = await container_repo.get_by_owner_id(owner_id) or {}
+        expected = fresh.get("bedrock_gate_token_hash")
+        merged = [*(fresh.get(_SUPERSEDED_FIELD) or []), expected]
+        superseded = [h for h in dict.fromkeys(merged) if h and h != token_hash]
+    if outcome == "conflict":
+        # Do NOT raise: provisioning must not fail over this. The failure mode
+        # is the tracking gap we already had before the retry existed.
+        logger.error(
+            "bedrock-gate token hash swap lost 3 races for owner %s: new=%s.. expected-prior=%s "
+            "— the row still points elsewhere and this token row is untracked",
+            owner_id,
+            token_hash[:_HASH_PREFIX_LEN],
+            (expected[:_HASH_PREFIX_LEN] + "..") if expected else "none",
+        )
 
     logger.info(
         "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",

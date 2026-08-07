@@ -336,6 +336,117 @@ class TestMint:
         assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(t2)]
 
 
+class TestConcurrentMints:
+    """Two mints for the same owner, both reading before either writes.
+
+    Reachable in production: the AIP/role/token mint block in
+    ``provision_user_container`` sits AHEAD of the first
+    ``_provision_checkpoint``, so the provision lease does not serialize it —
+    a poll provision and an escalating ``container_recover`` takeover can both
+    be inside it at once.
+    """
+
+    @staticmethod
+    def _interleave(monkeypatch, owner_id: str = "org_abc") -> dict:
+        """Force mint B to run to completion between mint A's read and its write.
+
+        No sleeps and no real concurrency: the wrapper runs the whole second
+        mint on the first entry to the row write, which is exactly the ordering
+        "A reads, B reads + writes, A writes".
+        """
+        from core.repositories import container_repo
+
+        real_swap = container_repo.swap_gate_token_hash
+        state: dict = {}
+
+        async def swap(*args, **kwargs):
+            if not state.get("started"):
+                state["started"] = True  # set BEFORE the await, or B recurses
+                state["token_b"] = await mod.mint_gate_token(owner_id, _AIPS)
+            return await real_swap(*args, **kwargs)
+
+        monkeypatch.setattr(container_repo, "swap_gate_token_hash", swap)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_both_minted_hashes_stay_reachable(self, gate_tables, fake_ecs, monkeypatch):
+        """Neither mint may erase the other's hash from the row.
+
+        The row is the ONLY handle on a gate-token row (hash-keyed table, no
+        owner index), so a hash dropped here is a denied=False credential that
+        can never be expired or denied again.
+        """
+        _put_container_row(gate_tables, "org_abc")
+        state = self._interleave(monkeypatch)
+
+        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+
+        hash_a, hash_b = mod.hash_token(token_a), mod.hash_token(state["token_b"])
+        assert hash_a != hash_b
+        row = _container_row(gate_tables)
+        reachable = {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)}
+        assert reachable == {hash_a, hash_b}
+        # Both token rows still exist — the loser was tracked, not orphaned.
+        assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {hash_a, hash_b}
+
+    @pytest.mark.asyncio
+    async def test_deny_reaches_the_race_loser(self, gate_tables, fake_ecs, monkeypatch):
+        """THE CONSEQUENCE. An untracked hash is a live bearer credential the
+        trial-cap backstop and admin revoke cannot kill."""
+        _put_container_row(gate_tables, "org_abc")
+        state = self._interleave(monkeypatch)
+
+        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+
+        await mod.deny_gate_token("org_abc", True)
+
+        denied = {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)}
+        assert denied == {mod.hash_token(token_a): True, mod.hash_token(state["token_b"]): True}
+
+    @pytest.mark.asyncio
+    async def test_retry_exhaustion_logs_and_does_not_raise_or_re_mint(
+        self, gate_tables, fake_ecs, monkeypatch, caplog
+    ):
+        """Provisioning must not fail over a tracking gap — and the retry must
+        re-run the WRITE only: a re-mint per attempt would leak exactly the
+        unreachable token row this fix exists to prevent."""
+        from core.repositories import container_repo
+
+        attempts = []
+
+        async def always_conflict(*args, **kwargs):
+            attempts.append(kwargs.get("expected_prior_hash"))
+            return "conflict"
+
+        _put_container_row(gate_tables, "org_abc")
+        monkeypatch.setattr(container_repo, "swap_gate_token_hash", always_conflict)
+
+        with caplog.at_level("ERROR", logger=mod.logger.name):
+            token = await mod.mint_gate_token("org_abc", _AIPS)
+
+        assert len(attempts) == 3  # bounded
+        # ONE token row: the mint happened once, ahead of the loop.
+        assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(token)]
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "org_abc" in errors[0].getMessage()
+        assert mod.hash_token(token)[: mod._HASH_PREFIX_LEN] in errors[0].getMessage()
+        assert mod.hash_token(token) not in errors[0].getMessage()
+        assert token not in errors[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_absent_row_stays_a_silent_no_op(self, gate_tables, fake_ecs, caplog):
+        """The fresh-provision path: no containers row yet. The swap must not
+        create one (create_user_service's upsert folds the hash in) and must not
+        look like a lost race."""
+        with caplog.at_level("ERROR", logger=mod.logger.name):
+            token = await mod.mint_gate_token("org_new", _AIPS)
+
+        assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(token)]
+        assert "Item" not in gate_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_new"}})
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+
 class TestExpireSuperseded:
     """The liveness predicate: a token row lives until nothing can present it.
 

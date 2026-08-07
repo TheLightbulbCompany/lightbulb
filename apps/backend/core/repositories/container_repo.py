@@ -1118,6 +1118,67 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return existing
 
 
+async def swap_gate_token_hash(
+    owner_id: str,
+    *,
+    new_hash: str,
+    superseded: list[str],
+    expected_prior_hash: str | None,
+) -> str:
+    """Point the row at a freshly minted gate-token hash, atomically.
+
+    A scoped conditional ``update_item`` — never the get→put ``update_fields``:
+    ``superseded`` is computed from a snapshot the caller read BEFORE minting,
+    and two concurrent mints for the same owner (a poll provision plus an
+    escalating ``container_recover`` takeover — the mint block sits ahead of
+    ``_provision_checkpoint``, so the provision lease does not serialize it)
+    would each put back their own snapshot. The loser's hash would vanish from
+    the row while its token row lives on with ``denied=False``. The gate-tokens
+    table is hash-keyed with no owner index, so that hash is then unreachable
+    FOREVER: nothing can expire it and ``deny_gate_token`` cannot cover it —
+    a live bearer credential the kill switch cannot revoke. ``list_append``
+    would not help; the loser's addition list is computed from the same stale
+    snapshot and never mentions the winner's hash either.
+
+    So the write is conditioned on the row still carrying the hash the caller
+    read (or on carrying none, when it read none) and the outcome is reported
+    back rather than swallowed:
+
+    - ``"written"`` — the swap landed.
+    - ``"conflict"`` — another mint moved the hash first. The caller must
+      re-read, fold the winner's hash into ``superseded``, and retry.
+    - ``"absent"`` — no row yet. A SILENT no-op, matching ``update_fields``:
+      ``mint_gate_token`` runs on the fresh-provision path before the row
+      exists, and ``create_user_service``'s row-creating upsert folds the hash
+      in instead.
+    """
+    table = _get_table()
+    values: dict = {":new": new_hash, ":superseded": superseded, ":iso": utc_now_iso()}
+    if expected_prior_hash is None:
+        condition = "attribute_exists(owner_id) AND attribute_not_exists(bedrock_gate_token_hash)"
+    else:
+        condition = "attribute_exists(owner_id) AND bedrock_gate_token_hash = :prior"
+        values[":prior"] = expected_prior_hash
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=(
+                "SET bedrock_gate_token_hash = :new, bedrock_gate_superseded_hashes = :superseded, updated_at = :iso"
+            ),
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # The condition is a conjunction, so the failure alone does not say
+        # which half missed. The re-read is not wasted work: on a conflict the
+        # caller needs the fresh row anyway to merge the winner's hash.
+        return "absent" if await get_by_owner_id(owner_id) is None else "conflict"
+    return "written"
+
+
 async def stamp_stop_reason(owner_id: str, reason: str) -> None:
     """Scoped write of stop provenance onto an existing row.
 

@@ -317,8 +317,9 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     """Single-flight under the accepted status-poll race: if a poll wake
     claims the exposed "stopped" row BEFORE the drain task runs, the drain
     task must neither clobber the claim (no second stop → no update_status
-    get→put over "provisioning") nor start a second executor — its own
-    dispatched dispatch_provision loses the lease and stands down."""
+    over "provisioning"; it is conditioned on the row existing, not on the
+    lease, so being scoped does not save it) nor start a second executor — its
+    own dispatched dispatch_provision loses the lease and stands down."""
     from core.repositories import container_repo
 
     env = cold_change_env

@@ -190,10 +190,10 @@ async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_tabl
 @pytest.mark.asyncio
 async def test_update_fields_preserves_provision_generation(dynamodb_table):
     """INV-2: restart/redeploy/hot-swap/revoke-restore/conversion all write
-    through update_fields's get->put merge, never through upsert -- so an
-    existing provision_generation must survive a field-scoped update_fields
-    write untouched, even though that write doesn't mention the field at
-    all."""
+    through update_fields, never through upsert -- which is the single mint
+    point for provision_generation. So an existing generation must survive any
+    update_fields write, and the returned item must still carry it (callers read
+    the generation back off this return, and ALL_NEW is what makes that hold)."""
     from core.repositories import container_repo
 
     await container_repo.upsert(
@@ -756,6 +756,81 @@ async def test_upsert_refuses_to_erase_an_unseen_gate_swap(dynamodb_table):
     row = await container_repo.get_by_owner_id("user_cas")
     assert row["bedrock_gate_token_hash"] == "hash_D"
     assert row["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_upsert_refuses_to_restore_a_lease_that_was_taken_over(dynamodb_table):
+    """The same lost update, on the OTHER preserved set — and worse.
+
+    `create_user_service` upserts mid-provision, so a `takeover_provision` (or a
+    `claim_attempt` re-stamp) landing between its read and its put would be
+    written back to the SNAPSHOT's claim. That re-authorizes the superseded run
+    at its next checkpoint and fences OUT the successor that legitimately holds
+    the lease: two provisions, one EFS workspace, which is how SQLite WAL has
+    been corrupted here before. A takeover does not move the gate pointer, so
+    the pointer CAS alone never sees it.
+    """
+    from core.repositories import container_repo
+
+    original = await container_repo.try_claim_provision("user_lease_cas", claim_id="claim-1")
+    assert original == "claim-1"
+
+    real_run_in_thread = container_repo.run_in_thread
+    state: dict = {}
+
+    async def racing_run_in_thread(fn, **kwargs):
+        # A deliberate-door takeover lands on the way INTO the put — i.e. after
+        # the read that fed it. takeover_provision issues update_item, so no
+        # recursion.
+        if getattr(fn, "__name__", "") == "put_item" and not state.get("fired"):
+            state["fired"] = True
+            state["winner"] = await container_repo.takeover_provision("user_lease_cas")
+        return await real_run_in_thread(fn, **kwargs)
+
+    with patch.object(container_repo, "run_in_thread", racing_run_in_thread):
+        row = await container_repo.upsert("user_lease_cas", {"status": "provisioning"})
+
+    assert state["fired"] and state["winner"] != original
+    # Rebuilt against the takeover rather than overwriting it. Both the returned
+    # item and the persisted row carry the WINNER's lease.
+    assert row["provision_claim_id"] == state["winner"]
+    persisted = await container_repo.get_by_owner_id("user_lease_cas")
+    assert persisted["provision_claim_id"] == state["winner"]
+    assert persisted["provision_attempt_token"] == state["winner"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_cas_pins_absent_fields_as_absent(dynamodb_table):
+    """The attribute_not_exists branch, for EVERY pinned field — a first
+    provision has no lease and no gate hash, and a non-Bedrock owner never gets
+    a gate hash at all. Skipping a field the snapshot did not see (rather than
+    pinning it absent) would both let a rival that CREATES it slip through and,
+    if inverted, wedge every one of those owners out of provisioning."""
+    from core.repositories import container_repo
+
+    # Nothing seen -> every clause is attribute_not_exists, and it must admit
+    # both the absent row and the row it just created.
+    assert container_repo._unchanged_since_read(None)["ConditionExpression"].count("attribute_not_exists") == len(
+        container_repo._UPSERT_CAS_FIELDS
+    )
+    created = await container_repo.upsert("user_nolease", {"status": "provisioning"})
+    assert "provision_claim_id" not in created
+    again = await container_repo.upsert("user_nolease", {"status": "running"})
+    assert again["status"] == "running"
+
+    # And a rival that CREATES a pinned field inside the window is caught.
+    real_run_in_thread = container_repo.run_in_thread
+    state: dict = {}
+
+    async def racing_run_in_thread(fn, **kwargs):
+        if getattr(fn, "__name__", "") == "put_item" and not state.get("fired"):
+            state["fired"] = True
+            state["winner"] = await container_repo.takeover_provision("user_nolease")
+        return await real_run_in_thread(fn, **kwargs)
+
+    with patch.object(container_repo, "run_in_thread", racing_run_in_thread):
+        row = await container_repo.upsert("user_nolease", {"status": "provisioning"})
+    assert row["provision_claim_id"] == state["winner"]
 
 
 @pytest.mark.asyncio

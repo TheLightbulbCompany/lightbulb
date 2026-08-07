@@ -1104,9 +1104,11 @@ class EcsManager:
         container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "stopped")
-            # Scoped stamp AFTER the status write: stamp_stop_reason is a
-            # conditioned update_item and can never resurrect a stale item over
-            # a concurrent wake's lease claim, unlike the get→put above.
+            # Separate call because stamp_stop_reason needs a conditional REMOVE
+            # of parked_at that a plain field merge cannot express. Order no
+            # longer matters for safety — both are scoped update_items now, so
+            # neither can resurrect a stale item over a concurrent wake's lease
+            # claim; it was the get→put update_status that once could.
             await container_repo.stamp_stop_reason(user_id, reason)
 
         logger.info("Stopped ECS service %s for user %s (reason=%s)", service_name, user_id, reason)
@@ -1591,12 +1593,14 @@ class EcsManager:
         been stopped by the caller. Deliberately does NOT re-issue the stop:
         a status-poll wake can legitimately claim the exposed "stopped" row
         before this runs, flipping it to "provisioning" — a second
-        stop_user_service here would clobber that back to "stopped" via
-        update_status's get→put, making the row claimable AGAIN and letting
-        this method's own dispatch start a second executor against the
-        poll's in-flight one. Skipping the stop keeps the single-flight
-        guarantee: if the poll's claim won, the dispatch below simply loses
-        the lease and stands down.
+        stop_user_service here would clobber that back to "stopped", making
+        the row claimable AGAIN and letting this method's own dispatch start a
+        second executor against the poll's in-flight one. Still true now that
+        ``update_status`` is a scoped update_item: it is conditioned on the row
+        EXISTING, not on the lease, so it writes ``status`` straight over a
+        freshly claimed provisioning row. Skipping the stop keeps the
+        single-flight guarantee: if the poll's claim won, the dispatch below
+        simply loses the lease and stands down.
 
         Block until the old task is fully stopped before provisioning the
         new one. stop_user_service only issues desiredCount=0 and returns at

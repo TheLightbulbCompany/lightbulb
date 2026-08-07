@@ -58,6 +58,28 @@ _BEDROCK_PROVIDER = "bedrock_claude"
 _PAID_STATUSES = {"active", "trialing", "past_due", "unpaid"}
 
 
+def _is_paying(account: dict) -> bool:
+    """Mirrors ``provision_gate.is_subscription_active``'s notion of "paying".
+
+    The status allowlist alone is NOT that notion. A LEGACY row carries
+    ``subscription_status is None`` with a ``stripe_subscription_id`` set —
+    a real paid subscription whose status was never backfilled by
+    ``customer.subscription.updated`` — and ``is_subscription_active``
+    deliberately treats it as active so those owners are not pushed back into
+    the payment phase. A backfill that skipped them would leave exactly the
+    owners the gates consider paid without a ledger, which is the lockout this
+    script exists to prevent.
+
+    The None guard is strict, matching that function: a NON-None status
+    outside the allowlist (canceled, incomplete) stays excluded even if a
+    stale ``stripe_subscription_id`` is still on the row.
+    """
+    status = account.get("subscription_status")
+    if status in _PAID_STATUSES:
+        return True
+    return status is None and bool(account.get("stripe_subscription_id"))
+
+
 def _needs_backfill(account: dict) -> bool:
     """A paid Bedrock owner whose ledger is absent OR half-built.
 
@@ -67,7 +89,7 @@ def _needs_backfill(account: dict) -> bool:
     there are no prepaid commits, so no balance can exist and the fences treat
     it as unprovisioned. Re-running ensure on that owner completes the link.
     """
-    if account.get("subscription_status") not in _PAID_STATUSES:
+    if not _is_paying(account):
         return False
     if account.get("provider_choice") != _BEDROCK_PROVIDER:
         return False
@@ -81,7 +103,17 @@ async def _scan_billing_accounts() -> list[dict]:
     directory."""
     from typing import Any
 
-    from core.dynamodb import get_table, run_in_thread
+    from core.dynamodb import get_table, run_in_thread, table_name
+
+    resolved = table_name("billing-accounts")
+    # Log the table we ACTUALLY read. Table naming comes from
+    # DYNAMODB_TABLE_PREFIX (default "isol8-dev-"), NOT from ENVIRONMENT, so an
+    # --env prod run that failed to set the prefix would quietly scan dev and
+    # report "0 need a ledger" — which reads as "prod is clean, safe to deploy
+    # the fences" and would lock out every real paid owner on the flip. main()
+    # sets the prefix from --env and asserts it; this line is the operator's
+    # own confirmation, so a zero is never ambiguous.
+    logger.info("Scanning table: %s", resolved)
 
     table = get_table("billing-accounts")
     items: list[dict] = []
@@ -150,7 +182,31 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    os.environ.setdefault("ENVIRONMENT", args.env)
+
+    # Table naming reads DYNAMODB_TABLE_PREFIX, which DEFAULTS TO "isol8-dev-"
+    # — ENVIRONMENT does not affect it. Setting only ENVIRONMENT made an
+    # `--env prod` run scan the DEV table and report "0 need a ledger", i.e. a
+    # clean bill of health for a prod fleet it never looked at. Set the prefix
+    # explicitly, and OVERWRITE rather than setdefault so an inherited dev
+    # value in the operator's shell cannot silently win.
+    #
+    # This must happen before core.config is imported (settings is built at
+    # import time and core.dynamodb snapshots the prefix at ITS import). Every
+    # import in this module is function-local for exactly that reason — do not
+    # hoist them to the top.
+    os.environ["ENVIRONMENT"] = args.env
+    os.environ["DYNAMODB_TABLE_PREFIX"] = f"isol8-{args.env}-"
+
+    from core.dynamodb import table_name
+
+    resolved = table_name("billing-accounts")
+    expected = f"isol8-{args.env}-billing-accounts"
+    if resolved != expected:
+        # Belt and braces: if the prefix did not take (a stale import order, a
+        # future refactor), refuse rather than report a confident zero about
+        # the wrong table.
+        logger.error("Table resolution mismatch: got %s, expected %s — refusing to run", resolved, expected)
+        return 2
 
     return asyncio.run(_run(args.dry_run))
 

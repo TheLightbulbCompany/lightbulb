@@ -6,7 +6,9 @@ ledgers for owners we never bill (which then feed the low-balance webhook as
 permanent zero-balance customers).
 """
 
-from scripts.backfill_metronome_ledgers import _needs_backfill
+from unittest.mock import patch
+
+from scripts.backfill_metronome_ledgers import _needs_backfill, main
 
 
 def _row(**over) -> dict:
@@ -57,3 +59,85 @@ class TestNeedsBackfill:
         means recovery does not also require a provisioning round trip."""
         for status in ("active", "trialing", "past_due", "unpaid"):
             assert _needs_backfill(_row(subscription_status=status)) is True, status
+
+
+class TestTableResolution:
+    """The script must scan the table for the env it was ASKED for.
+
+    Table naming reads DYNAMODB_TABLE_PREFIX, which defaults to "isol8-dev-";
+    ENVIRONMENT does not affect it. Setting only ENVIRONMENT made an
+    `--env prod` run scan the DEV table and report "0 need a ledger" — a clean
+    bill of health for a fleet it never looked at, which is precisely the
+    signal an operator uses to decide the fences are safe to deploy.
+
+    The prefix must be set before `core.dynamodb` is imported (it snapshots the
+    value at import time), which is why every import in the script is
+    function-local. These tests run in a WARM process where that module is
+    already imported, so `main()` correctly refuses with rc=2 — that refusal is
+    itself the property worth pinning.
+    """
+
+    def test_env_sets_the_dynamodb_table_prefix(self, monkeypatch):
+        import os
+
+        monkeypatch.delenv("DYNAMODB_TABLE_PREFIX", raising=False)
+        monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
+        with patch("scripts.backfill_metronome_ledgers.asyncio.run", return_value=0):
+            main()
+        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "isol8-prod-"
+
+    def test_inherited_dev_prefix_cannot_win(self, monkeypatch):
+        """OVERWRITE, not setdefault — a dev prefix already exported in the
+        operator's shell must not silently redirect a prod run."""
+        import os
+
+        monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "isol8-dev-")
+        monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
+        with patch("scripts.backfill_metronome_ledgers.asyncio.run", return_value=0):
+            main()
+        assert os.environ["DYNAMODB_TABLE_PREFIX"] == "isol8-prod-"
+
+    def test_refuses_to_run_on_a_table_mismatch(self, monkeypatch):
+        """If the prefix did not take, REFUSE rather than report a confident
+        zero about the wrong table — a zero is the signal that greenlights the
+        deploy."""
+        monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
+        with (
+            patch("core.dynamodb.table_name", return_value="isol8-dev-billing-accounts"),
+            patch("scripts.backfill_metronome_ledgers.asyncio.run") as run_mock,
+        ):
+            rc = main()
+        assert rc == 2
+        run_mock.assert_not_called()
+
+    def test_proceeds_when_the_table_resolves_correctly(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["backfill", "--env", "prod", "--dry-run"])
+        with (
+            patch("core.dynamodb.table_name", return_value="isol8-prod-billing-accounts"),
+            patch("scripts.backfill_metronome_ledgers.asyncio.run", return_value=0) as run_mock,
+        ):
+            rc = main()
+        assert rc == 0
+        run_mock.assert_called_once()
+
+
+class TestLegacyPaidRows:
+    """`provision_gate.is_subscription_active` treats `status is None` +
+    `stripe_subscription_id` as ACTIVE — a real paid subscription whose status
+    was never backfilled. A status allowlist alone skips them, leaving exactly
+    the owners the gates consider paid without a ledger."""
+
+    def test_legacy_paid_bedrock_row_is_selected(self):
+        assert _needs_backfill(_row(subscription_status=None, stripe_subscription_id="sub_legacy")) is True
+
+    def test_none_status_without_a_subscription_id_is_not_paying(self):
+        assert _needs_backfill(_row(subscription_status=None)) is False
+
+    def test_stale_subscription_id_does_not_revive_a_dead_status(self):
+        """The None guard is strict, matching is_subscription_active: a
+        non-None status outside the allowlist stays excluded even with a stale
+        stripe_subscription_id on the row."""
+        for status in ("canceled", "incomplete_expired"):
+            assert _needs_backfill(_row(subscription_status=status, stripe_subscription_id="sub_stale")) is False, (
+                status
+            )

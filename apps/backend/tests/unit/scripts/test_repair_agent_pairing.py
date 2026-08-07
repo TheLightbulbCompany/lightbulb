@@ -28,28 +28,65 @@ def _identity_json(agent_id, *, token="ppk-tok", company_id="co1", api_url="http
 
 
 def _fake_workspace(*, missing: set[str] | None = None, overrides: dict[str, str] | None = None):
-    """A ``get_workspace()`` stand-in for ``Workspace.read_file``.
+    """A ``get_workspace()`` stand-in for ``Workspace`` read/write/delete.
 
-    By default every path reads back a well-formed identity file for
-    whatever agent_id the ``workspace-{id}/...`` path names -- so every
-    existing "repair succeeded" test gets a healthy identity file for free
-    and only tests that care about the identity-verification failure modes
-    need to pass ``missing``/``overrides``.
+    Backed by a real in-memory dict (not a stateless path->content function)
+    so the healing path (``_reheal_stale_identity`` ->
+    ``stage_paperclip_identity_for_agent``) actually changes what a
+    subsequent ``read_file`` sees -- required for testing "stale file gets
+    deleted and re-staged with the canonical token" end to end.
+
+    By default every path lazily materializes a well-formed identity file
+    (token ``"ppk-tok"``, matching ``_fake_canonical_token_reader``'s
+    default) for whatever agent_id the ``workspace-{id}/...`` path names --
+    so every existing "repair succeeded" test gets a healthy identity file
+    for free and only tests that care about the identity-verification
+    failure modes need to pass ``missing``/``overrides``.
     """
     missing = missing or set()
     overrides = overrides or {}
+    store: dict[str, str] = {}
 
     def _read_file(owner_id, path):
-        if path in missing:
-            raise WorkspaceError(f"File not found: {path!r}", user_id=owner_id)
-        if path in overrides:
-            return overrides[path]
-        agent_id = path.split("/", 1)[0].removeprefix("workspace-")
-        return _identity_json(agent_id)
+        if path not in store:
+            if path in missing:
+                raise WorkspaceError(f"File not found: {path!r}", user_id=owner_id)
+            if path in overrides:
+                store[path] = overrides[path]
+            else:
+                agent_id = path.split("/", 1)[0].removeprefix("workspace-")
+                store[path] = _identity_json(agent_id)
+        return store[path]
+
+    def _delete_file(owner_id, path):
+        store.pop(path, None)  # idempotent, matches the real Workspace.delete_file
+
+    def _write_file_if_missing(owner_id, path, content):
+        if path in store:
+            return False
+        store[path] = content
+        return True
 
     ws = MagicMock()
     ws.read_file = MagicMock(side_effect=_read_file)
+    ws.delete_file = MagicMock(side_effect=_delete_file)
+    ws.write_file_if_missing = MagicMock(side_effect=_write_file_if_missing)
     return ws
+
+
+def _fake_canonical_token_reader(tokens: dict[str, str] | None):
+    """A ``core.services.paperclip_api_key._read_existing`` stand-in.
+
+    Defaults every agent to ``"ppk-tok"`` -- matching ``_identity_json``'s
+    default -- so the default-healthy fixtures compare as a match without
+    every test having to think about the canonical-token axis.
+    """
+    tokens = tokens or {}
+
+    async def _read(*, owner_id, paperclip_agent_id):
+        return tokens.get(paperclip_agent_id, "ppk-tok")
+
+    return AsyncMock(side_effect=_read)
 
 
 def _identity_path(agent_id: str) -> str:
@@ -87,6 +124,9 @@ def _patches(
     ensure_paired_mock=None,
     ip="10.0.0.5",
     workspace=None,
+    canonical_tokens=None,
+    canonical_mock=None,
+    resolve_company_id_mock=None,
 ):
     """Patch every collaborator ``main`` lazy-imports.
 
@@ -105,6 +145,17 @@ def _patches(
     verification read. Defaults to ``_fake_workspace()`` (every agent reads
     back a healthy identity file) so tests that don't care about this axis
     don't have to think about it.
+
+    ``canonical_tokens`` / ``canonical_mock``: the canonical-token axis (the
+    Secrets Manager comparison). ``canonical_mock`` (if given) is used
+    verbatim, letting a test keep a handle on it for assertions (e.g. "dry
+    run never awaits this"); otherwise ``canonical_tokens`` (agent_id ->
+    token, default ``"ppk-tok"`` for anything unlisted) builds one via
+    ``_fake_canonical_token_reader``.
+
+    ``resolve_company_id_mock``: patches
+    ``resolve_company_id_for_owner`` (only reached by the stale-file
+    re-stage path); defaults to always resolving ``"co1"``.
     """
     fetch_mock = AsyncMock(side_effect=[list(a.values()) for a in agents_by_fetch])
     rpc_mock = AsyncMock(side_effect=[{"paired": [{"deviceId": d} for d in s]} for s in trusted_by_call])
@@ -120,6 +171,14 @@ def _patches(
         patch(
             "core.services.paperclip_openclaw_pairing.ensure_operator_device_paired",
             ensure_paired_mock if ensure_paired_mock is not None else AsyncMock(),
+        ),
+        patch(
+            "core.services.paperclip_api_key._read_existing",
+            canonical_mock if canonical_mock is not None else _fake_canonical_token_reader(canonical_tokens),
+        ),
+        patch(
+            "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
+            resolve_company_id_mock if resolve_company_id_mock is not None else AsyncMock(return_value="co1"),
         ),
     ]
     return cms, fetch_mock, rpc_mock
@@ -413,6 +472,163 @@ async def test_apply_reports_err_when_identity_file_present_but_incomplete():
         _stop(cms)
 
     assert rc == 1
+
+
+# --------------------------------------------------------------------------- #
+# Stale token: the Codex P1 -- a well-formed file whose token predates a
+# completed key rotation must never be reported OK.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_apply_reports_ok_when_staged_token_matches_canonical():
+    """The canonical comparison itself: the staged file's token equals the
+    current Secrets Manager value -> "ok", rc 0, nothing is touched."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+    ws = _fake_workspace(overrides={_identity_path("a1"): _identity_json("a1", token="same-token")})
+
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}, {"a1": healthy}],
+        trusted_by_call=[set(), {ident.device_id}],
+        workspace=ws,
+        canonical_tokens={"a1": "same-token"},
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=True)
+    finally:
+        _stop(cms)
+
+    assert rc == 0
+    ws.delete_file.assert_not_called()
+    ws.write_file_if_missing.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_reports_err_when_staged_token_stale_and_reheal_cannot_resolve_company():
+    """The Codex P1 regression: adapterConfig is bound and the device is
+    trusted -- everything the OLD check looked at is fine -- but the staged
+    identity file's token predates a completed rotation. This must be ERR,
+    not OK. Here the re-stage attempt itself can't resolve a company id (no
+    canonical replacement available), so the stale file is correctly left in
+    place rather than silently reported as fixed."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+    ws = _fake_workspace(overrides={_identity_path("a1"): _identity_json("a1", token="old-stale-token")})
+
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}, {"a1": healthy}],
+        trusted_by_call=[set(), {ident.device_id}],
+        workspace=ws,
+        canonical_tokens={"a1": "new-canonical-token"},
+        resolve_company_id_mock=AsyncMock(return_value=None),
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=True)
+    finally:
+        _stop(cms)
+
+    assert rc == 1
+    ws.delete_file.assert_not_called()
+    # The file is untouched -- still carries the stale token, not silently OK.
+    assert json.loads(ws.read_file(OWNER, _identity_path("a1")))["token"] == "old-stale-token"
+
+
+@pytest.mark.asyncio
+async def test_apply_heals_stale_identity_file_by_deleting_and_restaging():
+    """When re-staging CAN resolve (canonical token + company id both
+    available), the script turns the detected staleness into an actual
+    repair: delete the write-once-stale file, re-stage it with the canonical
+    token, and only THEN report OK."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+    ws = _fake_workspace(overrides={_identity_path("a1"): _identity_json("a1", token="old-stale-token")})
+
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}, {"a1": healthy}],
+        trusted_by_call=[set(), {ident.device_id}],
+        workspace=ws,
+        canonical_tokens={"a1": "new-canonical-token"},
+        resolve_company_id_mock=AsyncMock(return_value="co1"),
+    )
+    # stage_paperclip_identity_for_agent (the real, unmocked helper the heal
+    # path calls) skips writing when api_url is falsy -- give it one, the
+    # same way a real deployment's env would.
+    cms.append(patch("core.config.settings.PAPERCLIP_INTERNAL_URL", "http://paperclip.internal"))
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=True)
+    finally:
+        _stop(cms)
+
+    assert rc == 0
+    ws.delete_file.assert_called_once()
+    ws.write_file_if_missing.assert_called_once()
+    healed = json.loads(ws.read_file(OWNER, _identity_path("a1")))
+    assert healed["token"] == "new-canonical-token"
+    assert healed["agentId"] == "a1"
+
+
+@pytest.mark.asyncio
+async def test_apply_reports_err_when_canonical_token_unreadable():
+    """Secrets Manager itself can't be read (or no secret was ever minted) --
+    staleness can't be ruled out, so this must be ERR, never OK, and no
+    re-stage is attempted (there is no canonical replacement to stage)."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+    ws = _fake_workspace()
+
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}, {"a1": healthy}],
+        trusted_by_call=[set(), {ident.device_id}],
+        workspace=ws,
+        canonical_mock=AsyncMock(return_value=None),
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=True)
+    finally:
+        _stop(cms)
+
+    assert rc == 1
+    ws.delete_file.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dry_run_never_reads_canonical_token_or_touches_identity_file():
+    """Identity verification -- including the canonical-token comparison and
+    any re-stage -- is an --apply-only step. Dry run must not even READ the
+    canonical Secrets Manager value, let alone delete/re-stage anything."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+    ws = _fake_workspace(overrides={_identity_path("a1"): _identity_json("a1", token="old-stale-token")})
+    canonical_mock = AsyncMock(return_value="new-canonical-token")
+
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}],
+        trusted_by_call=[{ident.device_id}],
+        workspace=ws,
+        canonical_mock=canonical_mock,
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=False)
+    finally:
+        _stop(cms)
+
+    assert rc == 0
+    canonical_mock.assert_not_awaited()
+    ws.delete_file.assert_not_called()
+    ws.write_file_if_missing.assert_not_called()
+    # Still the original stale content -- untouched.
+    assert json.loads(ws.read_file(OWNER, _identity_path("a1")))["token"] == "old-stale-token"
 
 
 # --------------------------------------------------------------------------- #

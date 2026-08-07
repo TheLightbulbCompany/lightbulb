@@ -33,10 +33,18 @@ three things back, all sourced fresh (never reused from before the repair):
    function *tried* to send.
 3. A direct EFS read of the file ``claimedApiKeyPath`` points at -- proves the
    identity-staging sub-step actually produced a usable credentials file, not
-   just that the config string naming it is correct. This does NOT catch a
-   pre-existing file left STALE by ``write_file_if_missing``'s write-once
-   semantics (see ``_verify_staged_identity``'s docstring) -- an ``OK`` here
-   means "well-formed file present," not "token guaranteed live."
+   just that the config string naming it is correct. Because
+   ``write_file_if_missing`` never overwrites an existing file, a file staged
+   before a since-completed key rotation would otherwise read back as
+   well-formed while carrying a dead token -- so this step ALSO re-reads the
+   CANONICAL token straight from Secrets Manager (the same store
+   ``ensure_paperclip_api_key`` reads/mints from -- see
+   ``core/services/paperclip_api_key.py``) and compares it against the staged
+   file's ``token`` field (see ``_verify_staged_identity``'s docstring). A
+   mismatch is reported ``stale``, and a canonical-read failure is reported
+   ``unverifiable`` -- neither is ever folded into ``ok``. Under ``--apply``
+   a ``stale`` file is deleted and re-staged with the canonical token before
+   the outcome is decided, turning a detected problem into an actual repair.
 
 Every sub-step of ``ensure_operator_device_paired`` is idempotent (see its
 docstring), so running this against an already-healthy agent is a no-op, and
@@ -136,15 +144,23 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
     from core.gateway.operator_rpc import gateway_rpc_oneshot
     from core.repositories import container_repo
     from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.friday_identity import stage_paperclip_identity_for_agent
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
         claimed_api_key_path,
         desired_agent_adapter_fields,
     )
     from core.services.paperclip_admin_client import PaperclipAdminClient
+
+    # Private, but it's exactly the read-only half of the canonical-token
+    # lookup: unlike the public `ensure_paperclip_api_key`, it never mints a
+    # new secret as a side effect of comparison -- see its docstring in
+    # core/services/paperclip_api_key.py.
+    from core.services.paperclip_api_key import _read_existing as _read_canonical_agent_key
     from core.services.paperclip_openclaw_pairing import (
         ensure_operator_device_paired,
         fetch_paperclip_agents_for_owner,
+        resolve_company_id_for_owner,
     )
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -168,7 +184,16 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
     workspace = get_workspace()
 
-    def _verify_staged_identity(agent_id: str) -> str:
+    def _identity_rel_path(agent_id: str) -> str:
+        # ``claimed_api_key_path`` returns the in-container path
+        # (``~/.openclaw/workspace-{id}/paperclip-claimed-api-key.json``);
+        # the backend's per-owner workspace root IS that same ``~/.openclaw``
+        # dir (see ``container-stack.ts`` HOME/EFS mount), so stripping the
+        # prefix gives the workspace-relative path ``Workspace.read_file``
+        # expects.
+        return claimed_api_key_path(agent_id).removeprefix("~/.openclaw/")
+
+    async def _verify_staged_identity(agent_id: str) -> str:
         """Read back the staged Paperclip identity file and classify it.
 
         The primitive's ``claimedApiKeyPath`` bookkeeping (checked by
@@ -176,27 +201,29 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
         not that the file it points at exists or has usable credentials.
         This reads the actual EFS artifact the container consumes, resolved
         the same way ``stage_paperclip_identity_for_agent`` writes it (see
-        ``core/services/friday_identity.py``): ``claimed_api_key_path``
-        returns the in-container path
-        (``~/.openclaw/workspace-{id}/paperclip-claimed-api-key.json``); the
-        backend's per-owner workspace root IS that same ``~/.openclaw`` dir
-        (see ``container-stack.ts`` HOME/EFS mount), so stripping the prefix
-        gives the workspace-relative path ``Workspace.read_file`` expects.
+        ``core/services/friday_identity.py``).
 
-        Returns "ok", "missing" (no such file), or "incomplete" (file exists
-        but isn't parseable JSON, is missing a required field, or names the
-        wrong agent -- never invents a schema beyond what the staging code
-        writes: ``token`` / ``agentId`` / ``companyId`` / ``apiUrl``).
-
-        Does NOT detect a STALE pre-existing token: ``write_file_if_missing``
-        never overwrites a file that already exists, so a file staged before
-        a key rotation reads back "ok" here even though its token may be
-        dead. Distinguishing that cheaply would need an extra Secrets
-        Manager round trip per agent to fetch the current canonical token;
-        this script does not attempt it -- treat "ok" as "the file is
-        present and well-formed," not "the token is guaranteed live."
+        Returns one of:
+          - "ok" -- file present, well-formed, names this agent, AND its
+            ``token`` matches the CANONICAL value in Secrets Manager right
+            now (``core/services/paperclip_api_key.py``'s
+            ``isol8/<env>/paperclip-agent-keys/<owner>/<agent_id>`` secret --
+            the same store ``ensure_paperclip_api_key`` reads/mints from).
+          - "missing" -- no such file.
+          - "incomplete" -- file exists but isn't parseable JSON, is missing
+            a required field, or names the wrong agent -- never invents a
+            schema beyond what the staging code writes: ``token`` /
+            ``agentId`` / ``companyId`` / ``apiUrl``.
+          - "stale" -- file is well-formed but its ``token`` does NOT match
+            the canonical Secrets Manager value. This is the case
+            ``write_file_if_missing``'s write-once semantics can produce: a
+            file staged before a since-completed key rotation reads back as
+            well-formed while carrying a dead token. Never reported as "ok".
+          - "unverifiable" -- the canonical secret itself could not be read
+            (Secrets Manager error, or no secret was ever minted), so
+            staleness cannot be ruled out. Never reported as "ok".
         """
-        rel_path = claimed_api_key_path(agent_id).removeprefix("~/.openclaw/")
+        rel_path = _identity_rel_path(agent_id)
         try:
             raw = workspace.read_file(owner_id, rel_path)
         except WorkspaceError:
@@ -212,7 +239,44 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
             return "incomplete"
         if data.get("agentId") != agent_id:
             return "incomplete"
+
+        canonical = await _read_canonical_agent_key(owner_id=owner_id, paperclip_agent_id=agent_id)
+        if canonical is None:
+            return "unverifiable"
+        if data["token"] != canonical:
+            return "stale"
         return "ok"
+
+    async def _reheal_stale_identity(agent_id: str) -> bool:
+        """Delete a STALE staged identity file and re-stage it with the
+        canonical token, mirroring exactly what
+        ``ensure_operator_device_paired``'s own staging step does (steps 3 of
+        its docstring) -- ``write_file_if_missing`` never overwrites, so the
+        only way to fix a stale file is to remove it first.
+
+        --apply only (the caller gates this); never invoked in dry-run.
+        Returns True if re-staging was attempted with a canonical token,
+        False if the canonical token or company id couldn't be resolved (in
+        which case the stale file is left in place for the next pass).
+        """
+        canonical = await _read_canonical_agent_key(owner_id=owner_id, paperclip_agent_id=agent_id)
+        if not canonical:
+            return False
+        company_id = await resolve_company_id_for_owner(
+            owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
+        )
+        if not company_id:
+            return False
+        workspace.delete_file(owner_id, _identity_rel_path(agent_id))
+        await stage_paperclip_identity_for_agent(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            token=canonical,
+            company_id=company_id,
+            api_url=settings.PAPERCLIP_INTERNAL_URL or None,
+            workspace=workspace,
+        )
+        return True
 
     async def _fetch_agents() -> dict[str, dict]:
         # Fresh, unredacted fetch every time this is called -- never reuse a
@@ -321,16 +385,31 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
             after_cfg = after_agent.get("adapterConfig") or {}
             drift_after = _needs_repair(after_cfg, desired=desired)
             trusted_after = device_id in (await _trusted_device_ids())
-            identity_status = _verify_staged_identity(aid)
+            identity_status = await _verify_staged_identity(aid)
+
+            healed = False
+            if identity_status == "stale":
+                # Turn a detected problem into an actual repair: delete the
+                # write-once file that can never self-correct and re-stage it
+                # with the canonical token, then re-verify.
+                healed = await _reheal_stale_identity(aid)
+                if healed:
+                    identity_status = await _verify_staged_identity(aid)
 
             if not drift_after and trusted_after and identity_status == "ok":
                 n_ok += 1
-                print(f"  OK   {aid} ({name}): device trusted + adapterConfig bound + identity file staged")
+                healed_note = " (re-staged after stale token was detected)" if healed else ""
+                print(
+                    f"  OK   {aid} ({name}): device trusted + adapterConfig bound + identity file staged{healed_note}"
+                )
             else:
                 n_err += 1
                 identity_reason = {
                     "missing": "identity file missing",
                     "incomplete": "identity file present but incomplete",
+                    "stale": "identity file token does not match canonical Secrets Manager value"
+                    + (" (re-stage attempted but did not resolve)" if healed else ""),
+                    "unverifiable": "canonical token could not be read from Secrets Manager for comparison",
                 }.get(identity_status)
                 extra = f" identity={identity_reason}" if identity_reason else ""
                 print(

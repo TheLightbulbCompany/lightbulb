@@ -5,12 +5,17 @@ import time
 import uuid
 
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
+
+# Deserializes the raw (low-level, AttributeValue-typed) ``Item`` DynamoDB
+# hands back on ReturnValuesOnConditionCheckFailure — see _held_listing_id.
+_DESERIALIZER = TypeDeserializer()
 
 # How long a provision lease (provision_claim_id + provision_claimed_at) stays
 # exclusive with no checkpoint refresh before it is considered abandoned. Every
@@ -309,16 +314,28 @@ DEPLOY_CLAIM_STALE_S = 300
 _DEPLOY_CLAIM_KEY = "__deploy__"
 
 
-async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> str | None:
+async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str | None, str | None]:
     """Take an exclusive lease on "this owner has a marketplace deploy in flight".
 
-    Returns a FENCING TOKEN when the caller owns the deploy, None when another
-    deploy — of ANY listing — is already in flight for this owner. Pass the
-    token back to ``release_owner_deploy_claim`` — an unconditional release
-    would let a caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was
-    therefore taken over) delete the live claim of whoever succeeded it,
-    reopening the exact overlap window this exists to close. Same fencing
-    discipline as ``try_claim_provision``'s ``provision_claim_id``.
+    Returns ``(token, held_listing_id)``:
+
+    - On success: ``(token, None)``. Pass ``token`` back to
+      ``release_owner_deploy_claim`` — an unconditional release would let a
+      caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was therefore taken
+      over) delete the live claim of whoever succeeded it, reopening the exact
+      overlap window this exists to close. Same fencing discipline as
+      ``try_claim_provision``'s ``provision_claim_id``.
+    - On refusal by a live claim: ``(None, held_listing_id)`` — the
+      ``listing_id`` of whoever currently holds it, read off the SAME
+      conditional write via ``ReturnValuesOnConditionCheckFailure="ALL_OLD"``
+      (no extra read, no race against a follow-up ``get_item``). The caller
+      needs this: "you already have THIS listing installing" (don't retry —
+      retrying is the Pulse-2 duplicate-mint bug) and "a DIFFERENT listing of
+      yours is installing" (retry after a beat) require OPPOSITE client
+      advice, and the claim being owner-wide means the caller can no longer
+      tell them apart just from getting refused.
+    - On refusal because the owner has no container row yet, or if the held
+      claim's listing_id can't be parsed for any reason: ``(None, None)``.
 
     OWNER-WIDE, not per-listing: this used to key the claim on ``listing_id``
     (``SET deploy_claims.#lid = :claim`` with ``#lid`` bound to the listing),
@@ -382,11 +399,17 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> str | Non
                 ":claim": {"claimed_at": now, "tok": token, "listing_id": listing_id},
                 ":cutoff": now - DEPLOY_CLAIM_STALE_S,
             },
+            # On refusal, hand back the row as it stood BEFORE this write so we
+            # can read who holds the claim without a second (racy) get_item.
+            # The condition can only fail when deploy_claims.#lid already
+            # exists (the other half of the OR), so the held claim is always
+            # present in the returned item on this specific failure.
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
-        return token
+        return token, None
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return None
+            return None, _held_listing_id(e.response.get("Item"))
         # ERROR, with the code: fail-open makes a MALFORMED expression look
         # exactly like a transient fault, and a ValidationException here means
         # the fence is off for every deploy until someone notices.
@@ -397,7 +420,26 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> str | Non
             owner_id,
             listing_id,
         )
-        return token  # fail open — see docstring
+        return token, None  # fail open — see docstring
+
+
+def _held_listing_id(raw_item: dict | None) -> str | None:
+    """Best-effort extraction of ``deploy_claims.__deploy__.listing_id`` from
+    the raw (low-level, AttributeValue-typed) ``Item`` DynamoDB returns on a
+    ``ReturnValuesOnConditionCheckFailure`` conditional-write failure.
+
+    Never raises: a malformed/missing item just means the caller falls back
+    to the conservative "treat as same listing" branch (see
+    ``routers/marketplace_listings``), not a crash.
+    """
+    if not raw_item:
+        return None
+    try:
+        item = {k: _DESERIALIZER.deserialize(v) for k, v in raw_item.items()}
+        return (item.get("deploy_claims") or {}).get(_DEPLOY_CLAIM_KEY, {}).get("listing_id")
+    except Exception:
+        logger.warning("_held_listing_id: failed to parse ALL_OLD item — falling back to unknown holder")
+        return None
 
 
 async def release_owner_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:

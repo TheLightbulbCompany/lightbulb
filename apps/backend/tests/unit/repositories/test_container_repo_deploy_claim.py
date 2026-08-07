@@ -15,6 +15,14 @@ concurrent callers only ever bought themselves queueing + retry churn, never
 real parallelism (``agents.create`` measured 4s idle vs. 39s/51s/31s under
 3-way concurrency).
 
+Being owner-wide costs the caller the ability to tell "you already have THIS
+listing installing" from "a DIFFERENT listing of yours is installing" just
+from getting refused — and those two cases need OPPOSITE client advice (see
+``routers/marketplace_listings``). ``try_claim_owner_deploy`` returns
+``(token, held_listing_id)`` so the router can still make that call, reading
+the held claim's listing_id off the SAME conditional write via
+``ReturnValuesOnConditionCheckFailure`` rather than a second, racy read.
+
 Exercised against a REAL DynamoDB engine (moto), not a hand mock: every
 primitive here is a conditional write over a NESTED map path, and a MagicMock
 would happily accept expressions DynamoDB rejects outright (a bare
@@ -66,12 +74,13 @@ async def test_same_listing_twice_the_second_is_refused(dynamodb_table):
     """No regression of the original Pulse-2 dedupe: same listing, overlapping calls."""
     from core.repositories import container_repo
 
-    first = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
-    second = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    first, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    second, held = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
 
     assert first is not None
     assert second is None, "an overlapping deploy of the same listing must not get the claim"
     assert _claim(dynamodb_table)["tok"] == first
+    assert held == "lst_pulse", "the refusal must surface which listing holds the claim"
 
 
 @pytest.mark.asyncio
@@ -84,14 +93,41 @@ async def test_two_different_listings_same_owner_the_second_is_refused(dynamodb_
     """
     from core.repositories import container_repo
 
-    a = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
-    b = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
+    a, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    b, held = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
 
     assert a is not None
     assert b is None, "a second, DIFFERENT listing must still be fenced by the owner-wide claim"
     # The claim value still names the listing that holds it, for diagnostics —
     # the map KEY is fixed, but listing_id is preserved in the value.
     assert _claim(dynamodb_table)["listing_id"] == "lst_pulse"
+    assert held == "lst_pulse", "the refusal must surface the HOLDER's listing, not the requester's"
+
+
+@pytest.mark.asyncio
+async def test_held_listing_id_lets_the_caller_distinguish_same_from_different(dynamodb_table):
+    """THE ACTUAL POINT of returning held_listing_id: the router needs to give
+    OPPOSITE advice for "same listing already deploying" (don't retry — that's
+    the Pulse-2 duplicate-mint bug) vs. "a different listing of yours is
+    deploying" (retry after a beat). Both look identical as a bare refusal;
+    only ``held_listing_id`` tells them apart.
+    """
+    from core.repositories import container_repo
+
+    _token, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+
+    _, held_same = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    _, held_different = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
+
+    assert held_same == "lst_pulse"
+    assert held_different == "lst_pulse"
+    # Both calls see the SAME holder (the live claim never changed) — the
+    # caller distinguishes "same vs. different" by comparing held_* against
+    # the listing_id IT requested, not by anything the repo itself branches on.
+    requested_same = "lst_pulse"
+    requested_different = "lst_vera"
+    assert held_same == requested_same, "same-listing case: holder equals requester's own listing"
+    assert held_different != requested_different, "different-listing case: holder is NOT the requester's listing"
 
 
 @pytest.mark.asyncio
@@ -103,12 +139,13 @@ async def test_different_owners_both_claims_succeed(dynamodb_table):
     """
     from core.repositories import container_repo
 
-    a = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
-    b = await container_repo.try_claim_owner_deploy("org_2", listing_id="lst_pulse")
+    a, held_a = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    b, held_b = await container_repo.try_claim_owner_deploy("org_2", listing_id="lst_pulse")
 
     assert a is not None
     assert b is not None, "a different owner's deploy must not be blocked by another owner's claim"
     assert a != b
+    assert held_a is None and held_b is None, "a WON claim carries no held_listing_id"
     assert _claim(dynamodb_table, "org_1")["tok"] == a
     assert _claim(dynamodb_table, "org_2")["tok"] == b
 
@@ -118,8 +155,9 @@ async def test_an_abandoned_claim_is_reclaimable_a_live_one_is_not(dynamodb_tabl
     """A task that dies mid-deploy must not wedge the owner's hires forever."""
     from core.repositories import container_repo
 
-    live = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
-    assert await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera") is None
+    live, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    blocked, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
+    assert blocked is None
 
     # Backdate past the staleness window, as a dead ECS task would leave it.
     dynamodb_table.update_item(
@@ -128,7 +166,7 @@ async def test_an_abandoned_claim_is_reclaimable_a_live_one_is_not(dynamodb_tabl
         ExpressionAttributeNames={"#lid": container_repo._DEPLOY_CLAIM_KEY},
         ExpressionAttributeValues={":old": int(time.time()) - container_repo.DEPLOY_CLAIM_STALE_S - 1},
     )
-    taken_over = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
+    taken_over, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
     assert taken_over is not None
     assert taken_over != live
 
@@ -144,25 +182,27 @@ async def test_release_only_releases_when_the_fencing_token_matches(dynamodb_tab
     """
     from core.repositories import container_repo
 
-    straggler = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    straggler, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
     dynamodb_table.update_item(
         Key={"owner_id": "org_1"},
         UpdateExpression="SET deploy_claims.#lid.claimed_at = :old",
         ExpressionAttributeNames={"#lid": container_repo._DEPLOY_CLAIM_KEY},
         ExpressionAttributeValues={":old": int(time.time()) - container_repo.DEPLOY_CLAIM_STALE_S - 1},
     )
-    successor = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
+    successor, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_vera")
 
     # The straggler finally finishes and runs its (stale) release — the
     # mismatched token must make this a no-op, not a delete of the live claim.
     await container_repo.release_owner_deploy_claim("org_1", listing_id="lst_pulse", token=straggler)
     assert _claim(dynamodb_table)["tok"] == successor, "the straggler's release clobbered its successor's live claim"
-    assert await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse") is None
+    blocked_again, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    assert blocked_again is None
 
     # The matching token DOES release it.
     await container_repo.release_owner_deploy_claim("org_1", listing_id="lst_vera", token=successor)
     assert _claim(dynamodb_table) is None
-    assert await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    freed, _ = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+    assert freed
 
 
 @pytest.mark.asyncio
@@ -181,9 +221,10 @@ async def test_ddb_fault_fails_open_and_still_admits_the_deploy(dynamodb_table):
         {"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"
     )
     with patch.object(container_repo, "_get_table", return_value=spy):
-        token = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
+        token, held = await container_repo.try_claim_owner_deploy("org_1", listing_id="lst_pulse")
 
     assert token is not None, "a DDB fault must still admit the deploy, unfenced"
+    assert held is None
 
 
 @pytest.mark.asyncio
@@ -201,8 +242,12 @@ async def test_claim_on_an_owner_with_no_container_row_is_refused(dynamodb_table
 
     A deploy already requires a running container downstream; creating a bare
     row here would confuse the provision lease that lives on the same item.
+    This condition fails on the FIRST write (no ``ReturnValuesOnConditionCheckFailure``
+    requested there), so held_listing_id is None too — there's no claim to report.
     """
     from core.repositories import container_repo
 
-    assert await container_repo.try_claim_owner_deploy("org_none", listing_id="lst") is None
+    token, held = await container_repo.try_claim_owner_deploy("org_none", listing_id="lst")
+    assert token is None
+    assert held is None
     assert dynamodb_table.get_item(Key={"owner_id": "org_none"}).get("Item") is None

@@ -39,7 +39,9 @@ export function useHire() {
   const [isHiring, setIsHiring] = useState(false);
 
   const hire = useCallback(
-    async (listing: Listing, reportsTo?: string | null) => {
+    // `isRetry` is internal — set only by this hook's own deploy_busy
+    // auto-retry below, never by a caller. Bounds the retry to one attempt.
+    async (listing: Listing, reportsTo?: string | null, isRetry = false) => {
       setIsHiring(true);
       try {
         // Sellers can install their own listing without paying. The
@@ -105,21 +107,41 @@ export function useHire() {
         // can retry — the backend leaves no orphan on failure, so a retry is
         // clean. The drawer is NOT closed here (only the success path closes).
         //
-        // 409 deploy_in_progress is NOT a failure: the backend fenced this
-        // click because the buyer's first deploy is still running and will
-        // install the agent. "Couldn't hire… try again" would be the same lie
-        // this change exists to remove — and "try again" is the worst possible
+        // The backend's deploy claim is owner-wide (one marketplace deploy in
+        // flight per owner) and returns TWO distinct 409 shapes for it that
+        // need OPPOSITE handling here — see marketplace_listings.py's
+        // deploy_listing docstring:
+        const detail =
+          err instanceof ApiError && err.status === 409
+            ? (err.body as { detail?: { error?: string; retry_after_s?: number } } | null)?.detail
+            : undefined;
+
+        // deploy_in_progress: the buyer's OWN hire of THIS listing is still
+        // running. "Couldn't hire… try again" would be the same lie this
+        // branch exists to remove — and "try again" is the worst possible
         // advice, since retrying is what produced a duplicate agent on prod.
-        const inFlight =
-          err instanceof ApiError &&
-          err.status === 409 &&
-          (err.body as { detail?: { error?: string } } | null)?.detail?.error ===
-            "deploy_in_progress";
-        showErrorToast(
-          inFlight
-            ? `${listing.name} is already installing — give it a moment.`
-            : `Couldn't hire ${listing.name}. Please try again.`,
-        );
+        if (detail?.error === "deploy_in_progress") {
+          showErrorToast(`${listing.name} is already installing — give it a moment.`);
+          return;
+        }
+
+        // deploy_busy: a DIFFERENT listing of the buyer's is installing.
+        // Retrying IS correct here — otherwise this hire never happens — but
+        // a manual re-click just gets refused again while the fence is held,
+        // so auto-retry once after the server's retry_after_s instead of
+        // leaving the buyer at a dead end. `isRetry` bounds it to one attempt;
+        // a second refusal falls through to the generic message below rather
+        // than retrying forever.
+        if (detail?.error === "deploy_busy" && !isRetry) {
+          const retryAfterS = typeof detail.retry_after_s === "number" ? detail.retry_after_s : 20;
+          showErrorToast(`${listing.name}: your container is busy — retrying shortly…`);
+          setTimeout(() => {
+            void hire(listing, reportsTo, true);
+          }, retryAfterS * 1000);
+          return;
+        }
+
+        showErrorToast(`Couldn't hire ${listing.name}. Please try again.`);
       } finally {
         setIsHiring(false);
       }

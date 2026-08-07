@@ -36,7 +36,7 @@ def _stub_deploy_claim():
         patch(
             "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
             new_callable=AsyncMock,
-            return_value="test-claim-token",
+            return_value=("test-claim-token", None),
         ),
         patch(
             "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
@@ -585,7 +585,7 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
+def test_deploy_409s_deploy_busy_when_a_different_listing_holds_the_claim(
     mock_get_published,
     mock_get_catalog,
     mock_boto,
@@ -604,6 +604,11 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
     per-owner containers row fences it across ECS tasks — owner-wide now, so
     this also covers the case that used to slip through: two DIFFERENT
     listings hired seconds apart.
+
+    DIFFERENT listing holds the claim here (held_listing_id != the requested
+    lst_1) — retrying after a beat is the correct, necessary advice, so this
+    is the RETRYABLE deploy_busy shape, not deploy_in_progress (see the
+    same-listing test below for the opposite case).
     """
     mock_get_published.return_value = _published_listing(price_cents=0)
     catalog = MagicMock()
@@ -612,16 +617,65 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
     mock_get_catalog.return_value = catalog
     mock_get_workspace.return_value = _workspace_with_agents()
     mock_boto.return_value = _stub_s3_get_object()
-    mock_claim.return_value = None  # another deploy holds it
+    mock_claim.return_value = (None, "lst_other")  # a DIFFERENT listing holds it
     mock_get_container.return_value = {"owner_id": "user_test"}  # container exists
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 409, resp.text
-    # The claim is owner-wide now, so the router can no longer tell "this
-    # exact listing is installing" apart from "some other listing of yours
-    # is" — it reports the retryable busy shape instead of the old
-    # deploy_in_progress (see the comment at the raise site).
     assert resp.json()["detail"] == {"error": "deploy_busy", "retry_after_s": 20}
+    # Refused BEFORE the mint — that's the whole point.
+    mock_create_pc.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_not_awaited()
+    # Never took the claim, so it must not release someone else's.
+    mock_release.assert_not_awaited()
+
+
+@patch(
+    "routers.marketplace_listings.container_repo.get_by_owner_id",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
+    new_callable=AsyncMock,
+)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_409s_deploy_in_progress_when_the_same_listing_holds_the_claim(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_workspace,
+    mock_claim,
+    mock_release,
+    mock_get_container,
+    client,
+):
+    """THE INVERSE case, and the one that matters most: the buyer's OWN hire of
+    THIS listing is still running. Retrying is exactly what mints a duplicate
+    agent — the original "Pulse 2" bug. This must be the non-retryable
+    deploy_in_progress shape, never deploy_busy + retry_after_s.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents()
+    mock_boto.return_value = _stub_s3_get_object()
+    mock_claim.return_value = (None, "lst_1")  # the SAME listing holds it
+    mock_get_container.return_value = {"owner_id": "user_test"}  # container exists
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"error": "deploy_in_progress"}
     # Refused BEFORE the mint — that's the whole point.
     mock_create_pc.assert_not_awaited()
     catalog.deploy_from_artifact.assert_not_awaited()

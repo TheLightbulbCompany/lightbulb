@@ -756,7 +756,9 @@ async def deploy_listing(
     # at a time per owner, any listing. Taken BEFORE the S3 artifact fetch (a
     # loser shouldn't pay for the GET) and held across the Paperclip mint, so
     # a mint failure can't leak the claim.
-    claim_token = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing["listing_id"])
+    claim_token, held_listing_id = await container_repo.try_claim_owner_deploy(
+        owner_id, listing_id=listing["listing_id"]
+    )
     if not claim_token:
         # Two ways to lose the claim, and they are different errors. The claim
         # is conditioned on ``attribute_exists(owner_id)`` — it never conjures a
@@ -769,16 +771,25 @@ async def deploy_listing(
                 status_code=503,
                 detail="container starting — retry in a moment",
             )
-        # The claim is now owner-wide, so this branch can no longer tell
-        # "you already have THIS listing installing" (the old
-        # deploy_in_progress case) apart from "a DIFFERENT listing of yours is
-        # installing" — both just see the owner's claim held. Rather than
-        # guess, report the retryable shape: a busy fence, not a terminal
-        # state, with a concrete backoff so the client can auto-retry instead
-        # of treating this as a failure to surface to the buyer.
+        # The claim is owner-wide now, but ``held_listing_id`` (read off the
+        # SAME conditional write, see try_claim_owner_deploy) still lets us
+        # tell the two refusal cases apart — and they need OPPOSITE client
+        # advice. Same listing: this exact hire is already running, and
+        # retrying is precisely what minted "Pulse 2" (see the idempotency
+        # comment above) — no retry advice. Different listing: retrying after
+        # a beat is correct, otherwise the second hire never happens.
+        # ``held_listing_id`` is None when it couldn't be determined (no
+        # container row — handled above — or an unparseable claim); default
+        # to the SAFE branch (no retry advice) rather than risk a duplicate
+        # mint on an unconfirmed "it's a different listing" guess.
+        if held_listing_id is not None and held_listing_id != listing["listing_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "deploy_busy", "retry_after_s": 20},
+            )
         raise HTTPException(
             status_code=409,
-            detail={"error": "deploy_busy", "retry_after_s": 20},
+            detail={"error": "deploy_in_progress"},
         )
     try:
         tar_bytes, slice_ = _fetch_agent_artifact(listing)

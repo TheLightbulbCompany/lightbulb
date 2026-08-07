@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 
 import { useHire } from "../useHire";
@@ -176,9 +176,9 @@ describe("useHire — reliability", () => {
     );
   });
 
-  it("keeps the retry message for a 409 that is NOT deploy_in_progress", async () => {
+  it("keeps the retry message for a 409 that is NOT deploy_in_progress or deploy_busy", async () => {
     // 409 is also missing_credentials / Requires Ultra Pro — those must not be
-    // relabelled as "installing".
+    // relabelled as "installing" or auto-retried.
     mockDeploy.mockRejectedValue(
       new ApiError(409, { detail: { error: "missing_credentials" } }, "conflict"),
     );
@@ -187,5 +187,74 @@ describe("useHire — reliability", () => {
       await result.current.hire(listing({ name: "Atlas" }));
     });
     expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("try again"));
+  });
+
+  describe("409 deploy_busy — a DIFFERENT listing of the buyer's is installing", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("tells the buyer their container is busy, and does NOT say 'try again'", async () => {
+      mockDeploy.mockRejectedValue(
+        new ApiError(409, { detail: { error: "deploy_busy", retry_after_s: 20 } }, "conflict"),
+      );
+      const { result } = renderHook(() => useHire());
+      await act(async () => {
+        await result.current.hire(listing({ name: "Atlas" }));
+      });
+      expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("busy"));
+      expect(mockShowErrorToast).not.toHaveBeenCalledWith(expect.stringContaining("try again"));
+    });
+
+    it("auto-retries once after retry_after_s, and the retry can succeed", async () => {
+      // First call: owner-busy refusal. Second call (the auto-retry): succeeds.
+      mockDeploy
+        .mockRejectedValueOnce(
+          new ApiError(409, { detail: { error: "deploy_busy", retry_after_s: 20 } }, "conflict"),
+        )
+        .mockResolvedValueOnce(deployResult());
+
+      const { result } = renderHook(() => useHire());
+      await act(async () => {
+        await result.current.hire(listing({ name: "Atlas", slug: "atlas" }));
+      });
+      expect(mockDeploy).toHaveBeenCalledTimes(1);
+      expect(mockShowInstallToast).not.toHaveBeenCalled();
+
+      // Advance past the server-supplied retry_after_s.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(mockDeploy).toHaveBeenCalledTimes(2);
+      // Already inside `act` above, which flushes the retried hire()'s state
+      // updates — no `waitFor` needed (and `waitFor`'s own internal polling
+      // timer doesn't advance under fake timers, which just hangs the test).
+      expect(mockShowInstallToast).toHaveBeenCalled();
+    });
+
+    it("does not retry a second time — a repeat deploy_busy falls through to the generic message", async () => {
+      mockDeploy.mockRejectedValue(
+        new ApiError(409, { detail: { error: "deploy_busy", retry_after_s: 20 } }, "conflict"),
+      );
+      const { result } = renderHook(() => useHire());
+      await act(async () => {
+        await result.current.hire(listing({ name: "Atlas" }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(mockDeploy).toHaveBeenCalledTimes(2);
+      // No THIRD call was scheduled off the retry's own failure.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(mockDeploy).toHaveBeenCalledTimes(2);
+      expect(mockShowErrorToast).toHaveBeenLastCalledWith(expect.stringContaining("try again"));
+    });
   });
 });

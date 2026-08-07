@@ -101,6 +101,15 @@ class NodeUpstreamConnection:
         # map can match the response. Without this, hello-ok would be
         # keyed to a wake-up id and the subprocess would silently time out.
         self.signed_req_id: str | None = None
+        # rejection_error carries the container's structured error object
+        # (e.g. {"code": "NOT_PAIRED", "details": {"requestId": ..., "deviceId": ...}})
+        # when connect() raises on a handshake rejection. None on any other
+        # failure (challenge timeout, client signing timeout, etc.) or on
+        # success. Callers that want to act on a specific rejection code
+        # (self-healing NOT_PAIRED) should inspect this instead of parsing
+        # the raised RuntimeError's message, which is JSON truncated to 500
+        # chars for logging and not meant to round-trip.
+        self.rejection_error: dict | None = None
         self._ws = None
         self._connected = False
         self._reader_task: asyncio.Task | None = None
@@ -213,6 +222,15 @@ class NodeUpstreamConnection:
         if isinstance(signed_id, str) and signed_id:
             self.signed_req_id = signed_id
 
+        # Record device_id from the SIGNED connect (client owns the key, so
+        # this is the authoritative source) NOW, before the connect can still
+        # fail. A NOT_PAIRED rejection from the container below is exactly the
+        # case a caller needs device_id for (to approve the pending pairing
+        # request) -- assigning it only after a successful handshake left it
+        # None on every rejection path. Used by node_proxy for session-binding
+        # and force_close_device on the success path.
+        self.device_id = (signed.get("params") or {}).get("device", {}).get("id")
+
         # Step 4: forward signed connect upstream verbatim. The container's
         # connect handler verifies device.id against paired.json and the
         # signature against the registered public key.
@@ -243,13 +261,10 @@ class NodeUpstreamConnection:
                 )
             except Exception:  # noqa: BLE001 — best-effort on an already-failing path
                 logger.debug("Node handshake rejection push failed", exc_info=True)
+            error_obj = msg.get("error")
+            self.rejection_error = error_obj if isinstance(error_obj, dict) else None
             error_detail = json.dumps(msg.get("error", msg), default=str)[:500]
             raise RuntimeError(f"Node handshake rejected: {error_detail}")
-
-        # Record device_id from the SIGNED connect (client owns the key, so
-        # this is the authoritative source). Used by node_proxy for
-        # session-binding and force_close_device.
-        self.device_id = (signed.get("params") or {}).get("device", {}).get("id")
 
         self._connected = True
         logger.info(

@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { useApi, ApiError } from "@/lib/api";
+import type { ProviderChoiceId } from "@/lib/providerCards";
 
 // =============================================================================
 // Flat-fee billing hook. Backend response shapes match
@@ -122,13 +123,21 @@ export function useBilling() {
   // Flat-fee subscribe for a free-tier (trial_local) owner. POST
   // /billing/trial-checkout is the flat $50/mo checkout despite the legacy
   // path name (billed immediately, no Stripe trial) — the same route the
-  // ProviderPicker cards hit at signup. The free tier already runs
-  // Bedrock-managed Claude, so the upgrade keeps that path
-  // (provider_choice: bedrock_claude); POST /billing/provider handles any
-  // later switch.
-  const startTrialCheckout = useCallback(async () => {
+  // ProviderPicker cards hit at signup.
+  //
+  // The provider is a REQUIRED argument. It used to be hardcoded to
+  // `bedrock_claude` on the reasoning that the free tier already runs
+  // Bedrock-managed Claude, so conversion should keep that path. Two things
+  // were wrong with that. The owner never got to choose — the other two
+  // provider paths cost us nothing in inference, and nobody was ever offered
+  // them at the one moment they are deciding to pay. And Checkout's
+  // success_url carries `?provider=<id>` into the wizard's provider step, so
+  // a hardcoded choice made server-side rather than picked client-side ALSO
+  // skipped CreditsStep — leaving converted owners on Bedrock-managed
+  // inference with a zero credit balance they were never asked to fund.
+  const startTrialCheckout = useCallback(async (providerChoice: ProviderChoiceId) => {
     const { checkout_url } = (await api.post("/billing/trial-checkout", {
-      provider_choice: "bedrock_claude",
+      provider_choice: providerChoice,
     })) as { checkout_url?: string };
     if (!checkout_url) throw new Error("No checkout_url returned");
     window.location.href = checkout_url;

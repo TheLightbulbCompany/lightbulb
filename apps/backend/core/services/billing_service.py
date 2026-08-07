@@ -716,10 +716,48 @@ async def create_credit_top_up_checkout(
     # the billing row, credits product configured) BEFORE creating a payable
     # session. Without this, a not-yet-provisioned owner pays on Stripe and
     # the grant then 500s/retries until provisioning lands — collected money
-    # in limbo. Provisioning re-runs on every status poll, so the right
-    # answer here is "not ready yet, retry shortly", not a paid checkout.
+    # in limbo.
     if not settings.METRONOME_CREDITS_PRODUCT_ID:
         raise BillingServiceError("Credits are not configured for this environment")
+
+    # Provision on demand rather than assuming something else already did.
+    # This block used to just assert the ids were present, on the reasoning
+    # that "provisioning re-runs on every status poll" — which is FALSE for a
+    # personal owner with a running container: ``ensure_user_ready`` (the only
+    # other caller of ensure_metronome_customer) is re-dispatched on a running
+    # box only for org context or a failed Teams seat. A trial→paid converted
+    # owner therefore sat permanently un-provisioned and got "try again in a
+    # moment" forever — on the exact screen the credits gate sends them to.
+    # Ensuring here makes buying credits self-healing, so a missed webhook
+    # provision can never strand a paying customer with no way to pay us.
+    # Idempotent and a no-op once the ids are on the row.
+    if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
+        from core.billing.metronome_provisioning import ensure_metronome_customer
+
+        provisioning_failed = False
+        try:
+            await ensure_metronome_customer(owner_id=owner_id)
+        except Exception:
+            provisioning_failed = True
+            put_metric("metronome.provision.error", dimensions={"source": "credit_top_up"})
+            logger.exception("On-demand Metronome provisioning failed for owner %s", owner_id)
+        # Strongly consistent: we just wrote these ids and are about to decide
+        # whether to take the customer's money on the strength of them.
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or account
+        if provisioning_failed and (
+            not account.get("metronome_customer_id") or not account.get("metronome_contract_id")
+        ):
+            # Do NOT tell the buyer "try again in a moment" here. Provisioning
+            # raised, so retrying hits the same failure every time — the old
+            # message sent them into an infinite retry loop with nothing
+            # surfaced to them or to support saying it could never work. The
+            # transient wording below is reserved for the case where
+            # provisioning ran WITHOUT raising and the ids still aren't
+            # visible, which a moment genuinely can fix.
+            raise BillingServiceError(
+                "We couldn't finish setting up billing for this account. "
+                "Please contact support@isol8.co — retrying won't clear this."
+            )
     if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
         raise BillingServiceError("Credits aren't ready for this account yet — try again in a moment")
 

@@ -447,6 +447,63 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
   });
 
+  it.each([["trial_daily_cap"], ["trial_expired"]])(
+    "renders the provider picker in place (not a link to settings) for %s",
+    (code) => {
+      // A capped/expired free-tier owner converts RIGHT HERE. The generic
+      // blocked card's action is a link out to /settings?panel=billing, which
+      // landed on a lone Subscribe button posting a HARDCODED
+      // `provider_choice: "bedrock_claude"` — so the owner never chose a
+      // provider, and (because no `?provider=` came back from Checkout) never
+      // reached CreditsStep either. They ended up on Bedrock-managed inference
+      // having chosen nothing and bought nothing.
+      useProvMock.mockReturnValue({
+        phase: "blocked",
+        container: null,
+        blocked: {
+          code,
+          title: "Daily free limit reached",
+          message: "You've used today's free allowance — resets tomorrow.",
+          action: {
+            kind: "link",
+            label: "Upgrade",
+            href: "/settings?panel=billing",
+            admin_only: false,
+          },
+          owner_role: "admin",
+        },
+        refreshInterval: 5000,
+        refresh: vi.fn(),
+      });
+
+      render(
+        <ProvisioningStepper>
+          <div>children</div>
+        </ProvisioningStepper>,
+      );
+
+      // All three paths offered — including buying Claude credits, which is
+      // what the bedrock_claude card threads through to CreditsStep.
+      expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
+      expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
+      expect(screen.getByText("Bring your own API key")).toBeInTheDocument();
+
+      // The gate's message is the heading, rendered EXACTLY ONCE. It used to
+      // also be concatenated into the subheading under a heading derived from
+      // the same text, so the paywall showed the sentence twice — at the exact
+      // moment someone is deciding to pay.
+      expect(screen.getAllByText(/You've used today's free allowance/)).toHaveLength(1);
+      expect(
+        screen.getByText(/Pick how you want to power your agents/),
+      ).toBeInTheDocument();
+
+      // And emphatically NOT the send-them-to-settings card.
+      expect(
+        screen.queryByRole("link", { name: /Upgrade/ }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("hides the team CTA for a member when the gate says the action is admin_only", () => {
     billingMockAccount = { provider_choice: null, seat_count: 4, team_seat_price_usd: 20 };
     useProvMock.mockReturnValue({

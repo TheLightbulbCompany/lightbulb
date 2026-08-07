@@ -72,6 +72,18 @@ def mock_container_repo():
 
 
 @pytest.fixture(autouse=True)
+def metronome_provisioning(monkeypatch):
+    """Entering a live paid status dispatches Metronome customer provisioning in
+    the background. Stub the DISPATCHER (not the coroutine) for every test here
+    so it neither reaches Metronome nor adds a second entry to the
+    ``create_task`` captures the reprovision tests count. The dedicated tests
+    below assert on this mock."""
+    dispatch = MagicMock()
+    monkeypatch.setattr(handlers, "dispatch_metronome_provisioning", dispatch)
+    return dispatch
+
+
+@pytest.fixture(autouse=True)
 def conversion_entry(monkeypatch):
     """Single-flight conversion-entry CAS (#1428). Default every test to
     WINNING the entry claim; individual tests flip the mock to ALREADY_SEEN
@@ -1436,3 +1448,142 @@ async def test_facts_skip_team_seat_fields_when_write_fails(mock_repo, facts_moc
     overrides = facts_mock.await_args.kwargs["account_overrides"]
     assert "subscription_item_id" not in overrides
     assert "seat_count" not in overrides
+
+
+# --- Metronome customer provisioning on entering_live ----------------------
+#
+# ``ensure_metronome_customer`` has exactly one other call site,
+# ``user_provision.ensure_user_ready`` — and ``routers/container.py``
+# re-dispatches THAT on a running container only for org-context callers or a
+# failed Teams seed. A personal owner converting off trial_local always has a
+# running container, so before this dispatch no converted personal owner ever
+# got a Metronome customer, contract, or low-balance alerts. The credits gate
+# then failed open forever (no customer => not blocked) and the owner ran
+# uncredited Bedrock — Opus-tier for the CEO agent — on our account. Verified
+# on prod 2026-08-06: the only owner carrying a metronome_customer_id was the
+# org, because org context is the one shape that re-enters ensure_user_ready.
+
+
+async def _run_state(mock_repo, prior_status, new_status, **event_overrides):
+    """Drive handle_subscription_state across a status transition, swallowing
+    any background dispatch. Returns nothing — assert on the mocks."""
+    mock_repo.get_by_owner_id = AsyncMock(
+        return_value={
+            "owner_id": "org_x",
+            "owner_type": "org",
+            "stripe_customer_id": "cus_x",
+            "subscription_status": prior_status,
+        }
+    )
+    event = _subscription_event(default_payment_method=None, status=new_status, **event_overrides)
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioning"})
+    with (
+        patch("core.containers.get_ecs_manager", return_value=mgr),
+        patch.object(handlers.asyncio, "create_task", side_effect=lambda coro: coro.close() or MagicMock()),
+    ):
+        await handlers.handle_subscription_state(event, MagicMock())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_status", ["active", "trialing"])
+async def test_trial_conversion_provisions_the_metronome_customer(mock_repo, metronome_provisioning, new_status):
+    """The regression this ships for: trial_local -> paid must provision the
+    owner's Metronome ledger. ensure_metronome_customer deliberately no-ops for
+    trial_local owners, so this transition is the FIRST moment the owner is
+    eligible — and nothing else was ever going to call it for them."""
+    await _run_state(mock_repo, "trial_local", new_status)
+
+    metronome_provisioning.assert_called_once_with("org_x")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_status", ["incomplete", "canceled", None])
+async def test_every_entry_into_paid_provisions_the_metronome_customer(mock_repo, metronome_provisioning, prior_status):
+    """Not just the trial path. A checkout-born sub whose .created surfaced as
+    `incomplete`, and a re-subscribe after cancel, both enter paid on a later
+    .updated(active) — and a re-subscriber can have a running container too, so
+    they share the trial path's blind spot."""
+    await _run_state(mock_repo, prior_status, "active")
+
+    metronome_provisioning.assert_called_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_renewal_does_not_reprovision_the_metronome_customer(mock_repo, metronome_provisioning):
+    """An ordinary renewal on an established subscription is not an entry into
+    paid. ensure_metronome_customer is idempotent, but firing a background task
+    (and its Metronome round trips) on every renewal webhook is pure waste."""
+    await _run_state(mock_repo, "active", "active")
+
+    metronome_provisioning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_metronome_provisioning_failure_never_breaks_the_webhook(mock_repo, caplog):
+    """The dispatch is best-effort. A Metronome outage must not 500 the webhook:
+    Stripe would retry with the status already persisted off trial_local, which
+    silently skips the conversion branches for good."""
+    with patch(
+        "core.billing.metronome_provisioning.ensure_metronome_customer",
+        new=AsyncMock(side_effect=RuntimeError("metronome down")),
+    ):
+        await handlers._provision_metronome_customer("org_x")
+
+    assert "Metronome customer provisioning failed" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["chatgpt_oauth", "byo_key"])
+async def test_non_bedrock_conversions_skip_metronome_provisioning(mock_repo, metronome_provisioning, provider):
+    """Only Bedrock-managed owners draw prepaid credits. Provisioning an OAuth
+    or BYO-key owner mints a customer, a contract and two low-balance alerts for
+    inference we never bill — and those alerts feed the fast-gate webhook, so
+    the ledger fills with zero-balance customers the enforcement path then has
+    to keep ignoring."""
+    await _run_state(mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": provider})
+
+    metronome_provisioning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_provider_still_provisions(mock_repo, metronome_provisioning):
+    """Skip only on a POSITIVE non-Bedrock signal. Under-provisioning re-opens
+    the uncredited-spend hole; over-provisioning only wastes a few API calls, so
+    an unknown provider is provisioned anyway."""
+    await _run_state(mock_repo, "trial_local", "active", metadata={"owner_id": "org_x"})
+
+    metronome_provisioning.assert_called_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_successful_conversion_clears_the_guard_timestamp(mock_repo, mock_container_repo):
+    """`conversion_guard_active` is a TIMESTAMP window, so clearing only
+    `conversion_pending` leaves every door the guard covers shut for the
+    remainder of the 300s window after the work is done. Since the guard was
+    hoisted above /recover's status split it also owns the MANUAL "Restart
+    Gateway" action, so a stale stamp means a user clicking Restart on a wedged
+    gateway gets `already_recovering` for minutes."""
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(return_value={"status": "ok"})
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    fields = mock_container_repo.update_conversion_fields.await_args.args[1]
+    assert fields["conversion_pending"] is False
+    assert fields["conversion_started_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_container_repo):
+    """The failure path deliberately retains both markers — they are the only
+    record that this owner is paying for a trial-shaped container, and what
+    `maybe_resume_stuck_conversion` re-fires off."""
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(side_effect=RuntimeError("ecs down"))
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    fields = mock_container_repo.update_conversion_fields.await_args.args[1]
+    assert "conversion_pending" not in fields
+    assert "conversion_started_at" not in fields

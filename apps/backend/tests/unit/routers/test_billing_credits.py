@@ -680,6 +680,17 @@ async def test_top_up_checkout_refuses_unprovisioned_owner(async_client, monkeyp
             "routers.billing.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"owner_id": "user_test_123", "stripe_customer_id": "cus_test_1"}),
         ),
+        # The checkout now PROVISIONS on demand before asserting readiness (an
+        # unprovisioned owner used to be told "try again in a moment" forever,
+        # on the very screen the credits gate sends them to). Stub it to a
+        # clean no-op so this test still exercises what it is about: the money
+        # guard when the ids are STILL absent afterwards. A raising stub would
+        # exercise the permanent-failure message instead — covered separately
+        # in test_billing_service.py.
+        patch(
+            "core.billing.metronome_provisioning.ensure_metronome_customer",
+            new=AsyncMock(return_value=None),
+        ),
         patch("core.services.billing_service.stripe.checkout.Session.create", new=create),
     ):
         resp = await async_client.post(

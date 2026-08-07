@@ -33,6 +33,12 @@ async def test_blocked_owner_returns_credits_required_gate():
     assert gate is not None
     assert gate.code == "credits_required"
     blocked.assert_awaited_once_with("org_Y")
+    # The CTA must land somewhere credits are actually sold. CreditsSection is
+    # embedded in LLMPanel (the "providers" panel) and there is no credits UI on
+    # the billing panel at all — so the old /settings/billing#credits target was
+    # a dead end, made worse by /settings/billing being a redirect that drops
+    # the fragment. This is the one action on a "you have no credits" card.
+    assert gate.action_href == "/settings?panel=providers"
 
 
 @pytest.mark.asyncio

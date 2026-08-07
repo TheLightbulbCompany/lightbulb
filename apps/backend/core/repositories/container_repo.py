@@ -183,21 +183,28 @@ _UPSERT_CAS_ATTEMPTS = 3
 #   hazard: two tasks writing one EFS workspace, which is how SQLite WAL has
 #   been corrupted here before.
 #
-# Deliberately NOT pinned, because both ride along on a field that is:
-# - ``provision_execution_name`` — only ``try_claim_provision`` writes it, always
-#   in the same atomic write as a fresh ``provision_claim_id``. It cannot change
-#   without the claim changing.
+# Deliberately NOT pinned, because both ride along on a field that is (verified
+# by grepping every writer of each; re-verify if you add one):
+# - ``provision_execution_name`` — written only by ``try_claim_provision``, in
+#   the same atomic write as a fresh ``provision_claim_id``, and removed only by
+#   ``update_container_leased(release_lease=True)``, which removes the claim and
+#   the attempt token with it. It cannot change without a pinned field changing.
 # - ``provision_claimed_at`` — the lease heartbeat. The one writer that moves it
-#   ALONE is ``update_container_leased``, conditioned on the claim we also saw,
-#   i.e. a checkpoint by the holder we already agree with; restoring a stamp a
+#   ALONE is ``update_container_leased``'s checkpoint, conditioned on the claim
+#   we also saw, i.e. the holder we already agree with; restoring a stamp a
 #   round-trip old is invisible against PROVISION_CLAIM_STALE_S (300s) and the
-#   next checkpoint refreshes it. Every change that MATTERS (takeover, attempt
-#   bump, lease release) moves the claim or the attempt token with it.
-_UPSERT_CAS_FIELDS = (
-    "bedrock_gate_token_hash",
-    "provision_claim_id",
-    "provision_attempt_token",
-)
+#   next checkpoint refreshes it. Every change that MATTERS (try_claim,
+#   takeover, attempt bump, lease release) moves the claim or the attempt token
+#   in the same atomic write.
+#
+# So the set is COMPLETE: every preserved field is either pinned here or cannot
+# change without one that is.
+#
+# The two groups are pinned for the same reason but a refusal on each means the
+# OPPOSITE thing, which is why they are named separately — see
+# ``_raise_if_superseded``.
+_LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
+_UPSERT_CAS_FIELDS = ("bedrock_gate_token_hash", *_LEASE_CAS_FIELDS)
 
 
 def _unchanged_since_read(existing: dict | None) -> dict:
@@ -239,10 +246,56 @@ def _unchanged_since_read(existing: dict | None) -> dict:
         else:
             clauses.append(f"{alias} = :c{i}")
             values[f":c{i}"] = seen
-    kwargs: dict = {"ConditionExpression": " AND ".join(clauses), "ExpressionAttributeNames": names}
+    kwargs: dict = {
+        "ConditionExpression": " AND ".join(clauses),
+        "ExpressionAttributeNames": names,
+        # DynamoDB will not say WHICH clause failed, but it hands back the row
+        # as it stood before the refused write — which is enough to tell a
+        # benign rival mint from a lease takeover. See _raise_if_superseded.
+        "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+    }
     if values:
         kwargs["ExpressionAttributeValues"] = values
     return kwargs
+
+
+def _raise_if_superseded(owner_id: str, existing: dict | None, raw_item: dict | None) -> None:
+    """Refusal triage: retryable conflict, or ``ProvisionSuperseded``?
+
+    A refused CAS means SOMETHING pinned moved, and the right response depends
+    entirely on which — the two are opposites:
+
+    - **Gate pointer moved.** A rival mint. Benign: rebuilding against the newer
+      row and writing is exactly what should happen, and it is the whole point
+      of the retry.
+    - **Lease moved.** This caller has been SUPERSEDED. Rebuilding here would
+      re-read the successor's claim and write it back out under the old
+      holder's own execution — converting a correctly failed lease check into a
+      successful write by the loser, which then returns and goes on to create
+      an EFS access point and register a task definition alongside the winner.
+      That is the double-provision hazard the lease exists to prevent, arriving
+      through the fence meant to close it. So: stop, before the next side
+      effect. Exactly what ``update_container_leased`` does at every checkpoint;
+      this makes ``upsert`` honour the same contract.
+
+    Both moved → superseded wins; the successor's mint is not ours to merge.
+
+    An ALL_OLD that will not parse (or a row deleted out from under us) is
+    treated as an absent lease, so a caller whose snapshot HELD one stops —
+    the safe direction, since the alternative is writing over an owner we
+    cannot see.
+    """
+    try:
+        current = {k: _DESERIALIZER.deserialize(v) for k, v in (raw_item or {}).items()}
+    except Exception:
+        logger.warning("upsert: failed to parse the ALL_OLD item for owner=%s — assuming the lease moved", owner_id)
+        current = {}
+    for field in _LEASE_CAS_FIELDS:
+        if (existing or {}).get(field) != current.get(field):
+            raise ProvisionSuperseded(
+                f"provision lease for {owner_id} moved during upsert ({field}) — "
+                "a newer run owns the row; this one must write nothing further"
+            )
 
 
 async def upsert(owner_id: str, fields: dict) -> dict:
@@ -277,7 +330,10 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     Preserving is not enough on its own: writing back a value another writer
     moved between this read and this put is a LOST UPDATE, not a preserve. So
     the put is conditional on the fields in ``_UPSERT_CAS_FIELDS`` still holding
-    what the read saw, and a refusal rebuilds against the newer row.
+    what the read saw. A refusal caused by a rival MINT rebuilds against the
+    newer row; one caused by a lease TAKEOVER raises ``ProvisionSuperseded``
+    and the caller must stop before its next side effect — see
+    ``_raise_if_superseded`` for why those must not be treated alike.
     """
     _reject_gate_owned_fields("upsert", fields)
     table = _get_table()
@@ -313,9 +369,12 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
+            # Raises ProvisionSuperseded when it was the LEASE that moved: that
+            # refusal is not a conflict to merge, it is a stop signal.
+            _raise_if_superseded(owner_id, existing, e.response.get("Item"))
             if attempt + 1 == _UPSERT_CAS_ATTEMPTS:
                 raise
-            continue  # a mint or a lease takeover landed inside the window
+            continue  # a rival mint landed inside the window — rebuild on it
         break
     publish_status_changed(owner_id)
     return item

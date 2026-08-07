@@ -3769,6 +3769,39 @@ class TestProvisionLeaseFencing:
         upsert.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_superseded_upsert_stops_before_every_later_side_effect(self, manager, monkeypatch):
+        """The upsert ITSELF can now detect supersession — a takeover landing
+        after the pre-upsert checkpoint but before the put — and when it does,
+        this run must stop dead. Its own CAS retry used to rebuild against the
+        successor's claim and write it back out, letting the loser return and
+        go on to mint an EFS access point and a task definition alongside the
+        winner: the double-provision hazard, arriving through the fence."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        monkeypatch.setattr("core.repositories.container_repo.update_container_leased", AsyncMock())
+        monkeypatch.setattr(
+            "core.repositories.container_repo.upsert",
+            AsyncMock(side_effect=ProvisionSuperseded("lease moved during upsert")),
+        )
+        persist = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", persist)
+        access_point = MagicMock(return_value="fsap-x")
+        task_def = MagicMock(return_value="arn:task-def")
+        monkeypatch.setattr(manager, "_create_access_point", access_point)
+        monkeypatch.setattr(manager, "_register_task_definition", task_def)
+        manager._ecs.create_service = MagicMock()
+
+        with pytest.raises(ProvisionSuperseded):
+            await manager.create_user_service(
+                "user_sup", "gw-token", claim_id="stale-claim", bedrock_gate_token_hash="hash_loser"
+            )
+
+        persist.assert_not_awaited()
+        access_point.assert_not_called()
+        task_def.assert_not_called()
+        manager._ecs.create_service.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_claimless_create_user_service_is_unfenced(self, manager, monkeypatch):
         """debug.py calls create_user_service directly with no lease — the
         checkpoint must no-op, not blow up."""

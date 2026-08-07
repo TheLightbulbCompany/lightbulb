@@ -759,21 +759,30 @@ async def test_upsert_refuses_to_erase_an_unseen_gate_swap(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_upsert_refuses_to_restore_a_lease_that_was_taken_over(dynamodb_table):
+async def test_upsert_raises_superseded_when_the_lease_was_taken_over(dynamodb_table):
     """The same lost update, on the OTHER preserved set — and worse.
 
     `create_user_service` upserts mid-provision, so a `takeover_provision` (or a
     `claim_attempt` re-stamp) landing between its read and its put would be
-    written back to the SNAPSHOT's claim. That re-authorizes the superseded run
-    at its next checkpoint and fences OUT the successor that legitimately holds
-    the lease: two provisions, one EFS workspace, which is how SQLite WAL has
-    been corrupted here before. A takeover does not move the gate pointer, so
-    the pointer CAS alone never sees it.
+    written back to the SNAPSHOT's claim. A takeover does not move the gate
+    pointer, so the pointer CAS alone never sees it.
+
+    And REBUILDING is not the answer either — that was the first shape of this
+    fix. The retry re-reads the successor's claim and writes it back out under
+    the loser's own execution, converting a correctly failed lease check into a
+    successful write by the superseded run, which then returns and goes on to
+    create an EFS access point and register a task definition alongside the
+    winner. The refusal has to STOP this caller, which is the contract every
+    other lease-fenced write in this module already keeps.
     """
     from core.repositories import container_repo
 
     original = await container_repo.try_claim_provision("user_lease_cas", claim_id="claim-1")
     assert original == "claim-1"
+    # A gate pointer too, so we can prove the winner's row survives whole.
+    await container_repo.swap_gate_token_hash(
+        "user_lease_cas", new_hash="hash_A", superseded=[], expected_prior_hash=None
+    )
 
     real_run_in_thread = container_repo.run_in_thread
     state: dict = {}
@@ -787,16 +796,54 @@ async def test_upsert_refuses_to_restore_a_lease_that_was_taken_over(dynamodb_ta
             state["winner"] = await container_repo.takeover_provision("user_lease_cas")
         return await real_run_in_thread(fn, **kwargs)
 
-    with patch.object(container_repo, "run_in_thread", racing_run_in_thread):
-        row = await container_repo.upsert("user_lease_cas", {"status": "provisioning"})
+    with (
+        patch.object(container_repo, "run_in_thread", racing_run_in_thread),
+        pytest.raises(container_repo.ProvisionSuperseded, match="provision_claim_id"),
+    ):
+        await container_repo.upsert("user_lease_cas", {"status": "provisioning", "service_name": "loser-svc"})
 
     assert state["fired"] and state["winner"] != original
-    # Rebuilt against the takeover rather than overwriting it. Both the returned
-    # item and the persisted row carry the WINNER's lease.
-    assert row["provision_claim_id"] == state["winner"]
+    # The winner's row is untouched: its claim, its attempt token, its gate
+    # pointer — and none of the loser's fields landed.
     persisted = await container_repo.get_by_owner_id("user_lease_cas")
     assert persisted["provision_claim_id"] == state["winner"]
     assert persisted["provision_attempt_token"] == state["winner"]
+    assert persisted["bedrock_gate_token_hash"] == "hash_A"
+    assert "service_name" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_upsert_still_merges_a_gate_only_conflict(dynamodb_table):
+    """The guard against over-tightening. A rival MINT is benign — rebuild and
+    write, exactly as before. Only a moved LEASE is a stop signal, and this row
+    has no lease at all to move."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_gate_only", {"status": "running"})
+    await container_repo.swap_gate_token_hash(
+        "user_gate_only", new_hash="hash_A", superseded=[], expected_prior_hash=None
+    )
+
+    real_run_in_thread = container_repo.run_in_thread
+    state: dict = {}
+
+    async def racing_run_in_thread(fn, **kwargs):
+        if getattr(fn, "__name__", "") == "put_item" and not state.get("fired"):
+            state["fired"] = True
+            await container_repo.swap_gate_token_hash(
+                "user_gate_only", new_hash="hash_B", superseded=["hash_A"], expected_prior_hash="hash_A"
+            )
+        return await real_run_in_thread(fn, **kwargs)
+
+    with patch.object(container_repo, "run_in_thread", racing_run_in_thread):
+        row = await container_repo.upsert("user_gate_only", {"status": "provisioning"})
+
+    assert state["fired"]
+    assert row["status"] == "provisioning"  # the write landed, on the second try
+    persisted = await container_repo.get_by_owner_id("user_gate_only")
+    assert persisted["status"] == "provisioning"
+    assert persisted["bedrock_gate_token_hash"] == "hash_B"  # the rival's, merged not erased
+    assert persisted["bedrock_gate_superseded_hashes"] == ["hash_A"]
 
 
 @pytest.mark.asyncio
@@ -818,7 +865,10 @@ async def test_upsert_cas_pins_absent_fields_as_absent(dynamodb_table):
     again = await container_repo.upsert("user_nolease", {"status": "running"})
     assert again["status"] == "running"
 
-    # And a rival that CREATES a pinned field inside the window is caught.
+    # And a rival that CREATES a lease inside the window is caught — the
+    # snapshot saw none, so "absent" is itself the pinned value. A claim-less
+    # caller (routers/debug.py) is superseded by a real provision taking the
+    # lease just as surely as a lease-holder is.
     real_run_in_thread = container_repo.run_in_thread
     state: dict = {}
 
@@ -828,9 +878,12 @@ async def test_upsert_cas_pins_absent_fields_as_absent(dynamodb_table):
             state["winner"] = await container_repo.takeover_provision("user_nolease")
         return await real_run_in_thread(fn, **kwargs)
 
-    with patch.object(container_repo, "run_in_thread", racing_run_in_thread):
-        row = await container_repo.upsert("user_nolease", {"status": "provisioning"})
-    assert row["provision_claim_id"] == state["winner"]
+    with (
+        patch.object(container_repo, "run_in_thread", racing_run_in_thread),
+        pytest.raises(container_repo.ProvisionSuperseded),
+    ):
+        await container_repo.upsert("user_nolease", {"status": "provisioning"})
+    assert (await container_repo.get_by_owner_id("user_nolease"))["provision_claim_id"] == state["winner"]
 
 
 @pytest.mark.asyncio

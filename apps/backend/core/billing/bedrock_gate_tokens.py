@@ -370,12 +370,12 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
 async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: str | None) -> list[str]:
     """Delete each tracked hash nothing can present; return the survivors.
 
-    Deliberately does NOT write the survivors back to the containers row.
-    ``container_repo.update_fields`` is a get→put of the whole item, and this
-    runs immediately after the claim-fenced ``status="running"`` write — a full
-    put there could resurrect stale fields over it. ``mint_gate_token`` prunes
-    the list instead, inside the row write it already makes; until then a
-    hash that has already been deleted just re-resolves to a no-op delete.
+    Deliberately does NOT write the survivors back to the containers row: that
+    list is ``swap_gate_token_hash``'s alone (``container_repo`` refuses it from
+    any other writer), and a survivor set computed here would be stale by the
+    time it landed anyway. ``mint_gate_token`` prunes the list instead, inside
+    the conditional swap it already makes; until then a hash that has already
+    been deleted just re-resolves to a no-op delete.
     """
     candidates = [h for h in tracked if h and h != current_hash]
     if not candidates:
@@ -574,13 +574,12 @@ async def _swap_hash_pointer(
     sleeping would just widen that window.
 
     Why three: every interfering write to ``bedrock_gate_token_hash`` costs at
-    most one attempt, and a rival provision makes at most two of them — its own
-    ``mint_gate_token`` swap plus its ``persist_gate_token_hash`` re-assert.
-    Rivals beyond the first cannot reach the latter: it is past
-    ``_provision_checkpoint``, which the provision lease lets only one run
-    through. So the shape this path actually has — a poll provision racing a
-    ``container_recover`` takeover — tops out at two interfering writes, and
-    2 + 1 = 3. N concurrent minters would want N + 1, but nothing produces them
+    most one attempt, and a rival provision makes exactly ONE — its own
+    ``mint_gate_token`` swap. Its later ``persist_gate_token_hash`` re-assert
+    does not write at all, since the pointer already equals the hash that swap
+    wrote. The shape this path actually has is a poll provision racing a
+    ``container_recover`` takeover, so 1 + 1 = 2 suffices and the third is
+    spare. N concurrent minters would want N + 1, but nothing produces them
     today, and exhaustion is a LOGGED leak, not a lockout.
     """
     expected = expected_prior_hash

@@ -365,12 +365,24 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
 
     ``cause`` is threaded into ``unwind_partial_deploy`` so it can skip the
     EFS/openclaw.json edit on a client-side TimeoutError — see its docstring.
+    It applies to the LAST created agent ONLY. ``created`` is appended to right
+    after ``create_agent`` and before that agent is paired/materialized, so the
+    only agent the container can still be mid-write on is ``created[-1]``;
+    everything before it finished its RPCs. Applying one agent's TimeoutError to
+    the whole list is what turned a 10-agent deploy whose 10th agent timed out
+    into nine permanently-stranded EFS workspaces + openclaw.json entries, while
+    their Paperclip rows were deleted anyway — nine unreachable ghosts where the
+    pre-branch behaviour unwound all ten.
     """
     catalog = get_catalog_service()
+    last_id = next((pc.get("id") if isinstance(pc, dict) else pc for pc in reversed(created)), None)
     for pc in created:
         pc_id = pc.get("id") if isinstance(pc, dict) else pc
         if not pc_id:
             continue
+        # Only the agent the failure landed on gets the timeout carve-out; the
+        # rest are known-complete and must be unwound normally.
+        agent_cause = cause if pc_id == last_id else None
         try:
             if await is_seeded_agent(owner_id=owner_id, agent_id=pc_id):
                 logger.warning(
@@ -380,11 +392,23 @@ async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException 
         except Exception:
             logger.exception("company_deploy rollback: is_seeded_agent check failed for agent=%s — skipping", pc_id)
             continue
+        # Container side first: when the unwind is SKIPPED (timeout) the install
+        # is still standing, so the Paperclip row has to stay with it — deleting
+        # it alone leaves an agent nobody can see or remove from Teams.
+        try:
+            unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=pc_id, cause=agent_cause)
+        except Exception:
+            logger.exception("company_deploy rollback: unwind failed for agent=%s", pc_id)
+            unwound = True  # container side unknown; still drop the Paperclip row
+        if not unwound:
+            logger.warning(
+                "company_deploy rollback: keeping agent=%s (owner=%s) — container-side install was NOT "
+                "unwound (client-side timeout), so it stays visible + deletable in Teams",
+                pc_id,
+                owner_id,
+            )
+            continue
         try:
             await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=pc_id)
         except Exception:
             logger.exception("company_deploy rollback: delete failed for agent=%s", pc_id)
-        try:
-            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=pc_id, cause=cause)
-        except Exception:
-            logger.exception("company_deploy rollback: unwind failed for agent=%s", pc_id)

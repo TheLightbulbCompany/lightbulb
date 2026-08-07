@@ -65,6 +65,16 @@ _PAIR_RETRY_BACKOFF_S = 0.5
 # from under the still-running write.
 _PAIR_RPC_TIMEOUT_S = 90
 
+# Worst-case wall clock for ONE ``pair_with_openclaw`` call: every attempt can
+# burn the full timeout on BOTH RPCs (create, then update) before the backoff.
+# Exported because the marketplace deploy claim's lease
+# (``container_repo.DEPLOY_CLAIM_STALE_S``) has to outlive it — a lease shorter
+# than the pairing it fences goes stale WHILE the deploy is still running, which
+# lets a second deploy take it over and reopens the exact concurrent-write
+# window the claim exists to close. The two constants are pinned in lockstep by
+# ``tests/unit/repositories/test_container_repo_deploy_claim.py``.
+PAIR_WORST_CASE_S = _PAIR_MAX_ATTEMPTS * (2 * _PAIR_RPC_TIMEOUT_S + _PAIR_RETRY_BACKOFF_S)
+
 
 def _is_org_owner_id(owner_id: str) -> bool:
     """Delegates to core.auth.is_org_owner_id — single edit point for the prefix convention."""

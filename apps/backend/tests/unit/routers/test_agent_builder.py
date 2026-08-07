@@ -429,15 +429,17 @@ def test_deploy_failure_rolls_back_paperclip(
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
 @patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
-def test_deploy_timeout_passes_cause_but_still_rolls_back_paperclip(
+def test_deploy_timeout_passes_cause_and_keeps_both_sides_of_the_install(
     mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, mock_delete_pc, _mock_ceo, client
 ):
     """deploy_from_artifact's pair RPC can raise TimeoutError (no answer
     yet, not necessarily a failure). The router still calls
     unwind_partial_deploy unconditionally — the skip decision lives in
-    that shared function (see test_catalog_service.py) — but must still
-    pass the TimeoutError as ``cause`` and still delete the orphan
-    Paperclip agent."""
+    that shared function (see test_catalog_service.py) — and passes the
+    TimeoutError as ``cause``. When that function reports it SKIPPED the
+    unwind, the container-side install is still standing, so the Paperclip
+    row is kept with it: deleting it alone leaves an agent in the container
+    that nobody can see or remove from Teams."""
     mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
     mock_export.return_value = _pkg()
     mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
@@ -446,7 +448,8 @@ def test_deploy_timeout_passes_cause_but_still_rolls_back_paperclip(
     mock_get_ecs.return_value = ecs
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
-    catalog.unwind_partial_deploy = AsyncMock()
+    # The real one returns False when it SKIPS the unwind on a timeout.
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
     mock_get_catalog.return_value = catalog
 
     resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
@@ -456,5 +459,99 @@ def test_deploy_timeout_passes_cause_but_still_rolls_back_paperclip(
     unwind_kwargs = catalog.unwind_partial_deploy.await_args.kwargs
     assert unwind_kwargs["new_agent_id"] == "new-agent-uuid"
     assert isinstance(unwind_kwargs["cause"], TimeoutError)
-    mock_delete_pc.assert_awaited_once()
-    assert mock_delete_pc.await_args.kwargs["agent_id"] == "new-agent-uuid"
+    mock_delete_pc.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Owner-wide deploy claim — this path calls deploy_from_artifact (and through
+# it pair_with_openclaw) against the one running container, so an Atlas
+# registration racing a marketplace Hire is the 2026-08-06 incident with a
+# different second caller.
+# ---------------------------------------------------------------------------
+
+
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.agent_builder.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_register_takes_and_releases_the_owner_deploy_claim(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, _ceo, claim, release, client
+):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
+    mock_get_catalog.return_value = catalog
+    claim.return_value = ("tok_b", None)
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert resp.status_code == 200, resp.text
+    claim.assert_awaited_once()
+    # Released with the fencing token — a leaked claim wedges every install this
+    # owner attempts for the whole lease.
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["token"] == "tok_b"
+
+
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.agent_builder.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_second_concurrent_register_is_refused_409_before_minting(
+    mock_get_container, mock_export, mock_create_pc, claim, release, client
+):
+    """Fast 409, never a server-side wait — and the claim is taken BEFORE the
+    Paperclip mint, so a refusal has nothing to undo."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    claim.return_value = (None, "lst_other")
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "deploy_busy"
+    mock_export.assert_not_called()
+    mock_create_pc.assert_not_awaited()
+    release.assert_not_awaited()
+
+
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.agent_builder.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_refusal_by_this_same_build_says_do_not_retry(mock_get_container, claim, _release, client):
+    """Retrying THIS build registers a second copy — there is no idempotency
+    check on this path — so the same-build refusal carries no retry advice."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    claim.return_value = (None, f"builder:{BODY['staging_agent_id']}")
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {"error": "deploy_in_progress"}
+
+
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.agent_builder.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_claim_is_released_when_the_registration_fails(mock_get_container, mock_export, claim, release, client):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.side_effect = agent_export.AgentNotFoundError("no such staging dir")
+    claim.return_value = ("tok_b", None)
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert resp.status_code == 404
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["token"] == "tok_b"

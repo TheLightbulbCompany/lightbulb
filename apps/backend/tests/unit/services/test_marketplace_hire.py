@@ -361,3 +361,131 @@ async def test_owner_with_no_paperclip_company_degrades_instead_of_raising(resol
     a missing Paperclip company returns None rather than raising."""
     resolve_company.return_value = None
     assert await marketplace_hire.create_hire_approval(owner_id="user_x", issue_id="iss_1", listing=_LISTING) is None
+
+
+# ---------------------------------------------------------------------------
+# Owner-wide deploy claim — this IS a marketplace install and must serialize
+# against every other one. The Teams "Needs Attention" band lists several
+# approvals at once, so approving three in a row otherwise reproduces the
+# 2026-08-06 incident (three concurrent installs on one container, two 500s).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_approval_install_takes_and_releases_the_owner_deploy_claim(
+    get_listing, get_ecs, get_catalog, fetch, _pair, claim, release, monkeypatch
+):
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    claim.return_value = ("tok_1", None)
+    _admin_double(monkeypatch)
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    assert claim.await_args.kwargs["listing_id"] == _LISTING["listing_id"]
+    # Released with the fencing token, and only AFTER the device pairing — that
+    # talks to the same container.
+    assert release.await_args.kwargs["token"] == "tok_1"
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_second_concurrent_approval_is_refused_fast_and_installs_nothing(
+    get_listing, get_ecs, get_catalog, rollback, claim, release
+):
+    """A refusal is immediate — never a server-side wait — and destroys nothing.
+
+    The agent is ``idle`` in the roster with no workspace, so there is no partial
+    state to clean; deleting it would throw away an approval the owner already
+    granted because some unrelated install happened to be running.
+    """
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock()
+    get_catalog.return_value = catalog
+    claim.return_value = (None, "lst_other")
+
+    with pytest.raises(RuntimeError, match="already running"):
+        await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    catalog.deploy_from_artifact.assert_not_awaited()
+    rollback.assert_not_awaited()
+    release.assert_not_awaited()  # nothing to release — we never held it
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("core.repositories.container_repo.try_claim_owner_deploy", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_claim_is_released_when_the_install_fails(
+    get_listing, get_ecs, get_catalog, fetch, _rollback, claim, release
+):
+    """A leaked claim would wedge every hire this owner tries for the whole lease."""
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("efs exploded"))
+    get_catalog.return_value = catalog
+    claim.return_value = ("tok_1", None)
+
+    with pytest.raises(RuntimeError, match="efs exploded"):
+        await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["token"] == "tok_1"
+
+
+@pytest.mark.asyncio
+@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("core.services.catalog_service.get_catalog_service")
+async def test_rollback_keeps_both_sides_on_a_timeout(get_catalog, delete_pc):
+    """A pair timeout leaves the container-side install standing, so the
+    Paperclip row stays with it — otherwise the owner is left with an agent in
+    their container that Teams cannot show or delete, and the next Hire mints a
+    duplicate beside it."""
+    catalog = MagicMock()
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
+    get_catalog.return_value = catalog
+
+    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=TimeoutError())
+
+    assert isinstance(catalog.unwind_partial_deploy.await_args.kwargs["cause"], TimeoutError)
+    delete_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("core.services.paperclip_agent_lifecycle.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("core.services.catalog_service.get_catalog_service")
+async def test_rollback_unwinds_the_container_side_too(get_catalog, delete_pc):
+    """This path used to delete only the Paperclip row, stranding the extracted
+    workspace (sidecar included) and any half-created container-side agent."""
+    catalog = MagicMock()
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    get_catalog.return_value = catalog
+
+    await marketplace_hire._rollback_agent(owner_id="user_x", agent_id=_AGENT_ID, cause=RuntimeError("boom"))
+
+    assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == _AGENT_ID
+    delete_pc.assert_awaited_once()

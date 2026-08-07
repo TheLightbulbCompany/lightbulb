@@ -1077,7 +1077,7 @@ def test_deploy_rolls_back_paperclip_on_catalog_failure(
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_deploy_timeout_passes_cause_so_unwind_can_skip_but_still_rolls_back_paperclip(
+def test_deploy_timeout_keeps_both_sides_so_the_half_install_is_disposable(
     mock_get_published,
     mock_get_catalog,
     mock_boto,
@@ -1094,9 +1094,16 @@ def test_deploy_timeout_passes_cause_so_unwind_can_skip_but_still_rolls_back_pap
     ``test_catalog_service.py`` for the skip behavior itself. On
     2026-08-06 the un-skipped unwind fired 4.3s before that same agent's
     still-running ``agents.create`` finished writing, corrupting the
-    deploy with an ``unsafe workspace file`` error. The orphan Paperclip
-    agent is still real and harmless to remove, so that rollback still
-    runs.
+    deploy with an ``unsafe workspace file`` error.
+
+    And because the container-side install is left standing, the Paperclip row
+    is left standing WITH it. Deleting only the Paperclip row is what produced
+    an unownable ghost: EFS dirs plus (when ``agents.create`` landed and only
+    ``agents.update`` timed out) a container-side ``name=<uuid>`` agent, with no
+    row left for the owner to see or delete it by, and nothing that would ever
+    clean it up. Keeping the row makes it an ordinary agent in Teams — usable or
+    deletable — and the retry resolves to it through the sidecar +
+    ``agents.list`` cross-check instead of minting a duplicate beside it.
     """
     mock_get_published.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "paperclip-uuid-timeout", "name": "Echo"}
@@ -1106,7 +1113,8 @@ def test_deploy_timeout_passes_cause_so_unwind_can_skip_but_still_rolls_back_pap
     )
     catalog = MagicMock()
     catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
-    catalog.unwind_partial_deploy = AsyncMock()
+    # The real one returns False when it SKIPS the unwind on a timeout.
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
     mock_get_catalog.return_value = catalog
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
@@ -1119,9 +1127,9 @@ def test_deploy_timeout_passes_cause_so_unwind_can_skip_but_still_rolls_back_pap
     unwind_kwargs = catalog.unwind_partial_deploy.await_args.kwargs
     assert unwind_kwargs["new_agent_id"] == "paperclip-uuid-timeout"
     assert isinstance(unwind_kwargs["cause"], TimeoutError)
-    # The orphan Paperclip row is still cleaned up.
-    mock_delete_pc.assert_awaited_once()
-    assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-timeout"
+    # ...and the router HONOURS the "skipped" answer: the Paperclip row stays,
+    # so the half-install has an owner and a disposal story.
+    mock_delete_pc.assert_not_awaited()
 
 
 @patch("routers.marketplace_listings.get_ecs_manager")

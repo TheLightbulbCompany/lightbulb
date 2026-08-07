@@ -76,6 +76,11 @@ async def test_deploy_calls_pair_before_aux_merge():
     that's the whole point of the refactor. If aux runs first (or the only
     path), the runtime would see plugins/mcp/skills for an agent it doesn't
     know about yet.
+
+    The ``.template`` sidecar goes down FIRST, with the tarball extract: it is
+    what ``_live_install_of`` keys on, and a deploy that dies after the extract
+    used to leave EFS dirs (plus a possible container-side agent) that no retry
+    could see, so the retry minted a duplicate beside the ghost.
     """
     order: list[str] = []
     svc, _ws, _aux, _pair, _gw = _make_service(call_order=order)
@@ -91,7 +96,7 @@ async def test_deploy_calls_pair_before_aux_merge():
         new_agent_id="agent_abc",
     )
 
-    assert order == ["extract", "pair", "aux", "sidecar"], order
+    assert order == ["extract", "sidecar", "pair", "aux"], order
 
 
 @pytest.mark.asyncio
@@ -1008,3 +1013,42 @@ async def test_unwind_partial_deploy_runs_for_non_timeout_cause(monkeypatch):
 
     removed.assert_awaited_once()
     ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_ghost")
+
+
+@pytest.mark.asyncio
+async def test_sidecar_survives_a_pair_timeout_so_the_retry_can_see_the_install():
+    """The disposal story for a timed-out deploy.
+
+    A pair timeout leaves the extracted EFS workspace (and possibly a
+    container-side ``name=<uuid>`` agent, when ``agents.create`` landed and only
+    ``agents.update`` timed out) in place — ``unwind_partial_deploy`` must NOT
+    rm -rf a directory the container may still be writing into. With the sidecar
+    written at the END, that half-install was invisible: ``_live_install_of``
+    keys on the sidecar, so the buyer's retry saw "not installed", minted a
+    fresh agent, and left the first one as a permanent ghost with no Paperclip
+    row, no sidecar, and nothing to clean it up.
+
+    Writing the sidecar with the extract makes the half-install discoverable.
+    It cannot hand back a DEAD id — ``_live_install_of`` cross-checks the
+    sidecar against openclaw.json's ``agents.list``.
+    """
+    svc, ws, _aux, pair_fn, _gw = _make_service()
+    pair_fn.side_effect = TimeoutError()
+
+    with pytest.raises(TimeoutError):
+        await svc.deploy_from_artifact(
+            owner_id="user_buyer",
+            slug="demo",
+            manifest={"name": "Demo", "version": 3},
+            slice_=_slice_with_agent(),
+            tar_bytes=b"<gz>",
+            container_ip="10.0.0.1",
+            container_token="tok",
+            new_agent_id="agent_abc",
+        )
+
+    ws.write_template_sidecar.assert_called_once()
+    kwargs = ws.write_template_sidecar.call_args.kwargs
+    assert kwargs["agent_id"] == "agent_abc"
+    assert kwargs["content"]["template_slug"] == "demo"
+    assert kwargs["content"]["template_version"] == 3

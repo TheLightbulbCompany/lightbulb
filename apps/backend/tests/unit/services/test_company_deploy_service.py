@@ -205,6 +205,10 @@ def _install(monkeypatch, h: Harness, plan=None):
         async def unwind_partial_deploy(self, *, owner_id, new_agent_id, cause=None):
             h.unwound.append(new_agent_id)
             h.unwind_causes.append(cause)
+            # Mirrors the real return contract: False iff the unwind was SKIPPED
+            # because the cause was a client-side timeout. The rollback keys the
+            # Paperclip delete off this.
+            return not isinstance(cause, TimeoutError)
 
     monkeypatch.setattr(svc, "is_seeded_agent", fake_is_seeded)
     monkeypatch.setattr(svc, "delete_paperclip_for_marketplace", fake_delete)
@@ -240,6 +244,20 @@ def _simple_plan(routines=None):
             _agent("worker", name="Worker", reports_to_slug="cto"),
         ],
         routines=routines or [],
+    )
+
+
+def _plan_of(n: int):
+    """A flat ``n``-agent company: a CEO plus ``n-1`` direct reports.
+
+    Ids mint as ``pc_1``..``pc_n`` in creation order (see ``FakeAdmin``).
+    """
+    return DeployPlan(
+        slug="acme",
+        ceo_slug="ceo",
+        agents=[_agent("ceo", name="CEO", role="ceo", reports_to_slug=None)]
+        + [_agent(f"a{i}", name=f"A{i}", reports_to_slug="ceo") for i in range(2, n + 1)],
+        routines=[],
     )
 
 
@@ -478,13 +496,14 @@ async def test_run_company_deploy_never_raises_and_rolls_back(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_company_deploy_timeout_threads_cause_but_still_deletes_paperclip(monkeypatch):
+async def test_run_company_deploy_timeout_keeps_both_sides_of_the_install(monkeypatch):
     """pair_with_openclaw can raise TimeoutError after exhausting its
     bounded retry — a client-side 'no answer yet', not a failure. The
-    rollback must still thread that exception through to
-    unwind_partial_deploy as ``cause`` (so it can skip the EFS/openclaw.json
-    edit — see test_catalog_service.py for that decision) and must still
-    delete the orphan Paperclip agent."""
+    rollback threads that exception through to unwind_partial_deploy as
+    ``cause`` so it can skip the EFS/openclaw.json edit, and because the
+    container-side install is therefore still standing the Paperclip row is
+    KEPT with it. Deleting only the Paperclip row is what left an agent in the
+    container that nobody could see or remove from Teams."""
     plan = _simple_plan()
     h = Harness()
     _install(monkeypatch, h, plan=plan)
@@ -498,13 +517,50 @@ async def test_run_company_deploy_timeout_threads_cause_but_still_deletes_paperc
     await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
 
     assert [c["name"] for c in h.admin.create_calls] == ["CEO"]
-    # The orphan Paperclip agent is still deleted on a timeout.
-    assert h.deleted == ["pc_1"]
     # unwind_partial_deploy was still called (it makes the skip decision
     # itself); the TimeoutError was threaded through as its cause.
     assert h.unwound == ["pc_1"]
     assert len(h.unwind_causes) == 1
     assert isinstance(h.unwind_causes[0], TimeoutError)
+    # ...and it reported "skipped", so the Paperclip row stays put.
+    assert h.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_on_the_last_agent_still_unwinds_the_earlier_ones(monkeypatch):
+    """A 10-agent deploy whose LAST agent times out must unwind the other nine.
+
+    ``created`` is appended to right after ``create_agent`` and before that
+    agent is paired, so only ``created[-1]`` can still be mid-write; every
+    earlier agent finished its RPCs. Applying the one TimeoutError to the whole
+    list skipped the unwind for all ten — stranding nine EFS workspaces and
+    openclaw.json entries forever while their Paperclip rows were deleted
+    anyway, i.e. nine unreachable ghosts.
+    """
+    plan = _plan_of(10)
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+
+    real_pair = svc.pair_with_openclaw
+
+    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+        if paperclip_agent["id"] == "pc_10":
+            raise TimeoutError()
+        return await real_pair(
+            owner_id=owner_id, paperclip_agent=paperclip_agent, gateway_pool=gateway_pool, ip=ip, token=token
+        )
+
+    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
+
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert h.unwound == [f"pc_{i}" for i in range(1, 11)]
+    # Only the agent the timeout landed on carries the cause.
+    assert [c is None for c in h.unwind_causes[:9]] == [True] * 9
+    assert isinstance(h.unwind_causes[9], TimeoutError)
+    # The nine completed agents are fully rolled back; the timed-out one is
+    # kept on BOTH sides so it stays visible + deletable in Teams.
+    assert h.deleted == [f"pc_{i}" for i in range(1, 10)]
 
 
 # ---------------------------------------------------------------------------

@@ -710,7 +710,7 @@ async def deploy_listing(
     owner_id = resolve_owner_id(auth)
 
     # Idempotency. A deploy can take a minute-plus when the buyer's container
-    # is busy (pair_with_openclaw eats a 30s gateway-RPC timeout, then the
+    # is busy (pair_with_openclaw can eat its full 90s gateway-RPC timeout, then the
     # retry succeeds) — long enough that the browser can lose the response and
     # report "Couldn't hire". The buyer then clicks Hire again and mints a
     # SECOND agent from the same listing: prod grew a "Pulse" and a "Pulse 2"
@@ -928,16 +928,30 @@ async def deploy_listing(
             # Self-contained best-effort; never raises. ``unwind_partial_deploy``
             # itself skips the EFS/openclaw.json edit when ``cause`` is a
             # TimeoutError — see its docstring for why.
-            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
-            try:
-                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-            except Exception:
-                # Roll-back is best-effort; the original exception is what
-                # the caller needs to see.
-                logger.exception(
-                    "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+            unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
+            if not unwound:
+                # The container-side install is still standing (and may still be
+                # mid-write). Deleting the Paperclip row here would strip the
+                # owner's only handle on it and leave an unownable ghost that the
+                # next Hire duplicates. Keep the row: the agent shows up in Teams,
+                # where the owner can use it or delete it, and the retry resolves
+                # to it via the sidecar + agents.list cross-check.
+                logger.warning(
+                    "Marketplace deploy: keeping paperclip agent %s for owner=%s — the container-side "
+                    "install was NOT unwound (client-side timeout), so the half-install stays visible in Teams",
                     new_agent_id,
+                    owner_id,
                 )
+            else:
+                try:
+                    await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+                except Exception:
+                    # Roll-back is best-effort; the original exception is what
+                    # the caller needs to see.
+                    logger.exception(
+                        "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                        new_agent_id,
+                    )
             # Preserve the original HTTP status — the 503 short-circuit
             # already carries the right code; only unexpected errors get
             # mapped to 500.

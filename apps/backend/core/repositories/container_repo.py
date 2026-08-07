@@ -301,12 +301,25 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 # How long a marketplace-deploy claim stays exclusive before another deploy may
 # take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
 # a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so
-# a wedged claim blocks every hire the owner tries, not just one listing's. A
-# deploy runs ~85s on a busy container (pair_with_openclaw burns a 30s
-# gateway-RPC timeout, then its retry succeeds); the route's ``finally``
-# releases on every normal path, so only a dead ECS task leaks the claim.
-# 300s comfortably exceeds the real deploy while capping the worst-case wedge.
-DEPLOY_CLAIM_STALE_S = 300
+# a wedged claim blocks every hire the owner tries, not just one listing's.
+#
+# **The lease MUST outlive the deploy it fences.** It briefly did not: a 300s
+# lease was sized against a measured ~85s deploy, then the pairing RPC timeout
+# was raised to 90s, putting ``pair_with_openclaw``'s own worst case
+# (``PAIR_WORST_CASE_S`` = 2 attempts x 2 RPCs x 90s ≈ 361s) ABOVE the lease.
+# A lease that expires mid-deploy is worse than no lease: the second hire takes
+# it over and runs concurrently, the first hire's ``finally`` release is
+# correctly no-op'd by the fencing token, and nothing logs the overlap.
+#
+# 600 = PAIR_WORST_CASE_S (~361s) + headroom for everything stacked on top of
+# pairing in one deploy: the S3 GET, the tar extract to EFS, the Paperclip mint,
+# ``ensure_operator_device_paired``, routine recreation, integration reconcile
+# and the ACP enable. Kept a literal rather than importing the pairing module
+# (a repository must not import a service that drags in the gateway/websockets);
+# ``tests/unit/repositories/test_container_repo_deploy_claim.py`` asserts the
+# ``DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S`` relationship so the two can never
+# drift apart silently again.
+DEPLOY_CLAIM_STALE_S = 600
 
 # Fixed map key for the owner-wide deploy claim. The listing that triggered a
 # claim is still recorded in the claim VALUE (for diagnostics) but no longer
@@ -315,7 +328,24 @@ _DEPLOY_CLAIM_KEY = "__deploy__"
 
 
 async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str | None, str | None]:
-    """Take an exclusive lease on "this owner has a marketplace deploy in flight".
+    """Take an exclusive lease on "this owner has an agent install in flight".
+
+    FENCED — every path that installs a single agent into the owner's running
+    container takes this claim: the buyer-facing hire
+    (``routers/marketplace_listings.deploy_listing``), the Friday-asks /
+    owner-approves hire (``marketplace_hire.deploy_for_approval``, reached from
+    the Teams approvals route — the "Needs Attention" band lists several at once,
+    so approving three in a row is the same three-in-nine-seconds shape as the
+    incident), and Atlas registering an agent it built
+    (``routers/agent_builder.register_built_agent``).
+
+    NOT FENCED — ``company_deploy_service.run_company_deploy``, deliberately. It
+    creates and pairs N agents in one background run, so its wall clock is N x a
+    single deploy's; no single lease can cover it without a wedge far longer than
+    ``DEPLOY_CLAIM_STALE_S``, and a lease that expires mid-run is worse than none
+    (see the constant's comment). It is platform-admin-only behind
+    COMPANY_MARKETPLACE_LAUNCH_GATE, so it cannot collide with a buyer hire in
+    practice.
 
     Returns ``(token, held_listing_id)``:
 

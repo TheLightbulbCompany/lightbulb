@@ -341,10 +341,10 @@ class TestExpireSuperseded:
 
     The container gets its token ONLY as an inline env var in an ECS task
     definition, frozen at task start, so the authoritative question is what the
-    SERVICE's task definition carries — what will launch next. Live tasks are
-    the second half, and under SINGLE_WRITER_DEPLOYMENT_CONFIG that half cannot
-    currently fire; the one case that exercises it says so in its docstring.
-    Every other case here is a scenario per-user containers really produce.
+    SERVICE's task definition carries — what will launch next. Not-yet-stopped
+    tasks are the second half; at the points this is actually evaluated they
+    only ever re-contribute the service's own definition, so that half decides
+    nothing today. Every case here is a scenario per-user containers produce.
     """
 
     OLD_PLAINTEXT = "token-A"
@@ -427,14 +427,15 @@ class TestExpireSuperseded:
 
     @pytest.mark.asyncio
     async def test_overlapping_deployment_keeps_the_token_while_the_old_task_drains(self, gate_tables, fake_ecs):
-        """HYPOTHETICAL, not current prod behaviour. Two tasks coexisting — an
-        old one draining (desiredStatus=STOPPED, lastStatus=RUNNING) while the
-        new one runs — requires ``maximumPercent`` above 100. Today's
-        SINGLE_WRITER_DEPLOYMENT_CONFIG forbids it: 1437 prod task-state events
-        contain zero RUNNING-with-desiredStatus-STOPPED tasks, so this branch of
-        the predicate never fires. Pinned so that raising maximumPercent (for a
-        zero-downtime deploy, say) does not silently start expiring the token of
-        a container that is still serving."""
+        """An old task on its way out (desiredStatus=STOPPED) while the new one
+        runs. SINGLE_WRITER_DEPLOYMENT_CONFIG bars the two from RUNNING
+        together, but not from being LISTED together — a STOPPING/DEPROVISIONING
+        task has desiredStatus=STOPPED by definition and is not counted by
+        runningCount, so ECS can start the replacement while it tears down. What
+        makes the branch inert is that the roll confirmation fires after the old
+        task is gone. Pinned so that raising maximumPercent (for a zero-downtime
+        deploy, say), or evaluating mid-teardown, does not silently start
+        expiring the token of a container that is still serving."""
         old_hash, new_hash = self._arrange(
             gate_tables,
             fake_ecs,
@@ -563,16 +564,18 @@ class TestExpireSuperseded:
         assert "service task definition still references it" in kept[0]
 
     @pytest.mark.asyncio
-    async def test_kept_verdict_names_the_running_task_reason(self, gate_tables, fake_ecs, caplog):
-        """The other reason string. Reached only via the overlapping-deployment
-        branch, which SINGLE_WRITER_DEPLOYMENT_CONFIG makes unreachable today —
-        see test_overlapping_deployment_keeps_the_token_while_the_old_task_drains."""
+    async def test_kept_verdict_names_the_unstopped_task_reason(self, gate_tables, fake_ecs, caplog):
+        """The other reason string. It must NOT claim the task is "still
+        running": the live half admits DEACTIVATING/STOPPING/DEPROVISIONING, and
+        at mint time (seconds after the service is stopped in the conversion
+        flow) the outgoing task is routinely mid-teardown."""
         old_hash, _ = self._arrange(
             gate_tables,
             fake_ecs,
             service_def=_NEW_DEF,
             tasks=[
-                {"taskDefinitionArn": _OLD_DEF, "desiredStatus": "STOPPED", "lastStatus": "RUNNING"},
+                # DEACTIVATING, not RUNNING: this is what the branch really sees.
+                {"taskDefinitionArn": _OLD_DEF, "desiredStatus": "STOPPED", "lastStatus": "DEACTIVATING"},
                 {"taskDefinitionArn": _NEW_DEF, "desiredStatus": "RUNNING", "lastStatus": "RUNNING"},
             ],
         )
@@ -584,7 +587,9 @@ class TestExpireSuperseded:
             r.message for r in caplog.records if "kept" in r.message and old_hash[: mod._HASH_PREFIX_LEN] in r.message
         ]
         assert len(kept) == 1
-        assert "a task is still running with it" in kept[0]
+        assert "a task launched from it has not stopped yet" in kept[0]
+        # Must not assert "running" about a task that is shutting down.
+        assert "still running" not in kept[0]
 
     @pytest.mark.asyncio
     async def test_expired_verdict_logs_its_reason(self, gate_tables, fake_ecs, caplog):
@@ -603,7 +608,44 @@ class TestExpireSuperseded:
         assert "org_abc" in expired[0]
         assert old_hash[: mod._HASH_PREFIX_LEN] in expired[0]
         assert old_hash not in expired[0]
-        assert "no task definition or running task presents it" in expired[0]
+        assert "no task definition or unstopped task presents it" in expired[0]
+
+    @pytest.mark.asyncio
+    async def test_expiry_logs_once_not_on_every_later_evaluation(self, gate_tables, fake_ecs, caplog):
+        """MINOR 4. The survivor list is deliberately not written back, so the
+        hash stays tracked until the next mint and every later wake re-runs the
+        predicate and re-issues the delete. Only the evaluation that actually
+        REMOVED the row may log 'expired' — otherwise N re-confirmations are
+        indistinguishable from N expiries in the logs."""
+        self._arrange(
+            gate_tables,
+            fake_ecs,
+            service_def=_NEW_DEF,
+            tasks=[{"taskDefinitionArn": _NEW_DEF, "desiredStatus": "RUNNING", "lastStatus": "RUNNING"}],
+        )
+
+        with caplog.at_level("INFO", logger=mod.logger.name):
+            await mod.expire_superseded_gate_tokens("org_abc")
+            await mod.expire_superseded_gate_tokens("org_abc")
+            await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert len([r for r in caplog.records if "expired" in r.message]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_live_service_with_no_task_definition_keeps_the_rows(self, gate_tables, fake_ecs):
+        """MINOR 3. The one branch where missing data used to mean DELETE.
+
+        DescribeServices on a live service always carries taskDefinition, so its
+        absence is incomplete information, not 'this service launches nothing'.
+        Every other unknown here fails safe (ECS error -> keep; unrecognised
+        service status -> treated as live), and this one must too: the container
+        may well be running on a definition we simply failed to read."""
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=None)
+        fake_ecs.service_missing = False  # the service EXISTS; only the field is absent
+
+        await mod.expire_superseded_gate_tokens("org_abc")  # must not raise
+
+        assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {old_hash, new_hash}
 
     @pytest.mark.asyncio
     async def test_reads_the_bedrock_bearer_env_not_the_acp_harness_one(self, gate_tables, fake_ecs, monkeypatch):
@@ -633,6 +675,36 @@ class TestExpireSuperseded:
         assert old_hash in {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
 
 
+class TestOwnerServiceView:
+    """MINOR 6. Every other test monkeypatches ``_owner_service_view`` whole, so
+    the three ``EcsManager`` privates it reaches into go unexercised. A rename
+    there raises AttributeError, which ``_drain_superseded`` swallows into "keep
+    the row" — safe, but the expiry mechanism is then permanently dead behind a
+    warning line. Run against a REAL EcsManager (boto3 stubbed) so the three
+    names are bound to the class, not to a hand-written double."""
+
+    def test_reads_the_ecs_client_cluster_and_derived_service_name(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from core.containers.ecs_manager import EcsManager
+
+        monkeypatch.setattr(
+            mod.settings, "ECS_CLUSTER_ARN", "arn:aws:ecs:us-east-1:1:cluster/isol8-test", raising=False
+        )
+        with patch("core.containers.ecs_manager.boto3") as mock_boto3:
+            mock_boto3.client.return_value = MagicMock()
+            manager = EcsManager()
+        monkeypatch.setattr("core.containers.get_ecs_manager", lambda: manager)
+
+        ecs, cluster, service_name = mod._owner_service_view("org_abc")
+
+        assert ecs is manager._ecs
+        assert cluster == manager._cluster
+        # The derivation is EcsManager's, not a reimplementation here.
+        assert service_name == manager._service_name("org_abc")
+        assert service_name.startswith("openclaw-")
+
+
 class TestDeny:
     @pytest.mark.asyncio
     async def test_toggles_denied_flag_on_the_current_token_row(self, gate_tables):
@@ -647,6 +719,58 @@ class TestDeny:
         await mod.deny_gate_token("org_abc", False)
         row = gate_tables.get_item(TableName="test-gate-tokens", Key={"token_hash": {"S": h}})["Item"]
         assert row["denied"]["BOOL"] is False
+
+    @pytest.mark.asyncio
+    async def test_denies_the_superseded_rows_too(self, gate_tables):
+        """IMPORTANT 2. THE INCIDENT'S OWN SHAPE: mint B, the roll never lands,
+        the service's task definition still carries A — so the container does
+        ALL of its inference with A while the containers row points at B.
+
+        Denying only the rotation pointer would flip a row nothing presents and
+        leave the live credential untouched. Under the TTL this branch replaced,
+        A died within an hour anyway; this design keeps it alive indefinitely
+        precisely BECAUSE it is presentable, so the kill switch has to follow."""
+        live_hash = mod.hash_token("token-A")  # what the container actually holds
+        pointer_hash = mod.hash_token("token-B")  # the undelivered new token
+        _put_container_row(
+            gate_tables,
+            "org_abc",
+            bedrock_gate_token_hash=pointer_hash,
+            superseded=[live_hash],
+        )
+        _put_token_row(gate_tables, live_hash)
+        _put_token_row(gate_tables, pointer_hash)
+
+        await mod.deny_gate_token("org_abc", True)
+
+        denied = {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)}
+        assert denied == {live_hash: True, pointer_hash: True}
+
+        # And the restore is symmetric — an un-revoke must not leave the token
+        # the container is holding permanently dead.
+        await mod.deny_gate_token("org_abc", False)
+        restored = {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)}
+        assert restored == {live_hash: False, pointer_hash: False}
+
+    @pytest.mark.asyncio
+    async def test_a_tracked_hash_whose_row_is_gone_is_not_resurrected(self, gate_tables):
+        """A tracked hash can outlive its row (deleted by an expiry that ran
+        before the containers row was next written). The write is conditioned on
+        the row existing, so the kill must not put a partial ``denied`` row back
+        — and a restore must not recreate one with ``denied=false``."""
+        pointer_hash = mod.hash_token("token-B")
+        ghost = "9" * 64
+        _put_container_row(
+            gate_tables,
+            "org_abc",
+            bedrock_gate_token_hash=pointer_hash,
+            superseded=[ghost],
+        )
+        _put_token_row(gate_tables, pointer_hash)
+
+        await mod.deny_gate_token("org_abc", True)
+
+        assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {pointer_hash}
 
     @pytest.mark.asyncio
     async def test_noop_when_owner_has_no_token_hash(self, gate_tables):

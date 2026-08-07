@@ -1454,6 +1454,42 @@ def test_kill_without_gate_token_hash_is_a_noop_and_other_steps_still_run():
     assert gate_rows == 0
 
 
+def test_deny_gate_token_also_denies_the_superseded_rows():
+    """The backstop kill must reach the token the container is ACTUALLY using.
+
+    Backend-side, a gate-token row now survives until neither the owner's ECS
+    service task definition nor any unstopped task can present it — so when a
+    rotation's redeploy never lands, the container keeps invoking with the
+    SUPERSEDED token while the rotation pointer names the undelivered new one.
+    Denying only the pointer would leave a capped trial owner invoking Bedrock
+    past the cap indefinitely, which is the runaway this kill exists to stop."""
+    import index
+
+    pointer = "hash-of-the-undelivered-new-token"
+    live = "hash-the-container-is-actually-presenting"
+    ghost = "hash-whose-row-already-expired"
+
+    with _aws_world(gate_token_hash=pointer) as (ddb, _iam, _ecs):
+        ddb.update_item(
+            TableName=CONTAINERS_TABLE,
+            Key={"owner_id": {"S": "org_abc"}},
+            UpdateExpression="SET bedrock_gate_superseded_hashes = :h",
+            ExpressionAttributeValues={":h": {"L": [{"S": live}, {"S": ghost}]}},
+        )
+        ddb.put_item(
+            TableName=GATE_TOKENS_TABLE,
+            Item={"token_hash": {"S": live}, "owner_id": {"S": "org_abc"}, "denied": {"BOOL": False}},
+        )
+
+        index._deny_gate_token("org_abc")
+
+        rows = {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in ddb.scan(TableName=GATE_TOKENS_TABLE)["Items"]}
+
+    assert rows == {pointer: True, live: True}
+    # A tracked hash whose row already expired is not resurrected as a partial row.
+    assert ghost not in rows
+
+
 def test_deny_gate_token_noop_when_containers_row_missing():
     """No containers row at all (a provisioning gap) → the deny step reads no
     hash and no-ops, never raising and never writing a gate-token row."""

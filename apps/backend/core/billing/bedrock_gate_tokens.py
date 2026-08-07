@@ -32,11 +32,16 @@ start, so the DDB side and the container side are coupled only by a redeploy
 that actually lands. Minting therefore schedules nothing; a superseded row is
 deleted only once ``_presentable_gate_token_hashes`` confirms that neither the
 owner's ECS **service task definition** (what will launch next — this covers
-scale-to-zero, crash/restart, and a roll that never landed) nor any **live
-task** still carries it. The service-task-definition half is what actually
-holds tokens alive here; the live-task half is a correctness guard for an
-overlapping deployment that ``SINGLE_WRITER_DEPLOYMENT_CONFIG`` does not
-currently allow — see that function's docstring before assuming it fires.
+scale-to-zero, crash/restart, and a roll that never landed) nor any **task ECS
+has not finished stopping** still carries it. The service-task-definition half
+is what actually decides things here; the live-task half is a correctness guard
+that the evaluation points make inert in practice — see that function's
+docstring before assuming it fires.
+
+``deny_gate_token`` (the kill switch) covers the SAME set, current hash plus
+tracked superseded hashes. It has to: a superseded token now outlives the mint
+indefinitely *because* something can still present it, so denying only the
+current hash would leave the presentable one live.
 
 This replaced a flat one-hour TTL set at mint time, which killed a prod
 container for good: the reprovision minted a new token, put the old one on a
@@ -56,6 +61,7 @@ import secrets
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.dynamodb import run_in_thread, utc_now_iso
@@ -65,12 +71,20 @@ logger = logging.getLogger(__name__)
 
 # Containers-row attribute holding the hashes this owner has superseded but not
 # yet proven dead. The gate-tokens table is keyed on the hash and has no
-# owner-side index, so nothing else can find an owner's old rows.
+# owner-side index, so nothing else can find an owner's old rows — this list is
+# the ONLY handle on them, for deletion AND for ``deny_gate_token``.
 #
 # Self-bounding, which is why it needs no cap or sweep: only ``mint_gate_token``
 # appends to it, and it appends the pruned survivor set — and a hash only
 # survives a prune while something can still present it, which is at most the
 # service's task definition plus whatever tasks are live.
+#
+# That holds only while the list SURVIVES every write to the containers row.
+# ``container_repo.upsert`` is a whole-item put, so the field is named in its
+# ``_UPSERT_PRESERVED_FIELDS`` — without that, a reprovision through
+# ``create_user_service`` would silently drop the list and strand its rows
+# forever (they are live bearer credentials: the plaintext is still in the
+# retained task-definition revision).
 _SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
 
 # The env var whose value the predicate hashes. ``ecs_manager`` injects the same
@@ -135,13 +149,18 @@ async def _task_def_gate_token(ecs: Any, task_def_arn: str) -> str | None:
 async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) -> list[str]:
     """Task-definition ARNs of the service's tasks that have not stopped yet.
 
-    Both desired states are listed because a task being drained by an
-    overlapping deployment would show ``desiredStatus=STOPPED`` with
-    ``lastStatus`` still RUNNING. **No per-user container does this today** —
-    ``SINGLE_WRITER_DEPLOYMENT_CONFIG`` allows only one task at a time, and
-    prod task-state events show tasks going STOPPING -> STOPPED, never RUNNING
-    with a STOPPED desired status. Listed anyway so the predicate stays correct
-    if that config ever permits overlap; see ``_presentable_gate_token_hashes``.
+    Both desired states are listed because a task on its way out shows
+    ``desiredStatus=STOPPED`` before ``lastStatus`` reaches STOPPED. The filter
+    is ``lastStatus != "STOPPED"``, so it admits DEACTIVATING / STOPPING /
+    DEPROVISIONING as well as RUNNING — a terminating task is kept because it
+    may still be mid-request, and keeping is the safe direction.
+
+    This is NOT a dead branch (an earlier comment claimed it was, reading
+    "no RUNNING task with desiredStatus=STOPPED in prod" as "nothing is ever
+    listed here"). A STOPPING task has ``desiredStatus=STOPPED`` by definition,
+    and ``runningCount``/``pendingCount`` do not count a DEPROVISIONING task, so
+    ECS can start the replacement while the old one tears down. What makes it
+    inert is WHEN we evaluate — see ``_presentable_gate_token_hashes``.
     """
     task_arns: list[str] = []
     for desired_status in ("RUNNING", "STOPPED"):
@@ -172,30 +191,36 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     mapped to WHY -- which half of the predicate holds it alive. That reason
     is what makes the expiry decision log a diagnosis instead of a verdict.
 
-    THE PREDICATE. Two sources, and in this fleet only the first one ever fires:
+    THE PREDICATE. Two sources, and in this fleet only the first one decides
+    anything:
 
     1. the ECS **service's current task definition** — what the service will
        launch next. A drained service running nothing still points at it, so
        this is what keeps a token alive across scale-to-zero, a crash/restart,
        and (the incident) a redeploy that never landed. **This is the half that
        does the work today.**
-    2. **live tasks** — an old task still serving on the old definition after
-       the service has moved on. Under ``SINGLE_WRITER_DEPLOYMENT_CONFIG``
-       (``ecs_manager.py``: ``minimumHealthyPercent: 0, maximumPercent: 100``,
-       the EFS double-writer guard) at most one task exists at a time, so old
-       and new can never coexist and this half is **currently unreachable** —
-       confirmed against 1437 prod task-state events, which contain zero
-       RUNNING-with-desiredStatus-STOPPED tasks. It is kept because it is
-       correct and cheap, and it becomes load-bearing the moment anyone raises
-       ``maximumPercent`` above 100. Do not read it as a live scenario.
+    2. **live tasks** — anything ECS has not finished stopping, on whatever
+       definition it launched from. Reachable (see
+       ``_live_task_definition_arns``), but inert AT THE EVALUATION POINTS: the
+       roll-confirmation call fires once the NEW task is RUNNING, by which time
+       single-writer has long since stopped the old one, and the mint-time
+       backstop runs when the service is scaled to zero. So in practice every
+       ARN it contributes is already the service's own definition. It is not
+       "forbidden by ``SINGLE_WRITER_DEPLOYMENT_CONFIG``" — that config bars
+       old and new tasks from RUNNING together, not a terminating task from
+       being listed — and it becomes load-bearing the moment anyone raises
+       ``maximumPercent`` above 100 or evaluates mid-teardown.
 
-    Answering from running tasks alone would be WORSE than the TTL it replaces
-    — and, given (2) is inert, would expire every token immediately. During the
-    incident's reprovision the service was already drained to zero when the new
-    token was minted, so that rule would have deleted the live token on the spot
-    instead of an hour later.
+    Answering from running tasks alone would be WORSE than the TTL it replaces.
+    During the incident's reprovision the service was already drained to zero
+    when the new token was minted, so that rule would have deleted the live
+    token on the spot instead of an hour later.
 
     Raises on any ECS failure — the caller turns that into "keep the row".
+
+    Returning ``{}`` DELETES every tracked row, so it is only ever returned
+    from a positive finding ("this owner has no service"), never from missing
+    data — a live service that reports no ``taskDefinition`` raises instead.
     """
     ecs, cluster, service_name = _owner_service_view(owner_id)
 
@@ -207,10 +232,15 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
         return {}
 
     service = live_services[0]
-    service_def_arns: list[str] = []
     service_task_def = service.get("taskDefinition")
-    if service_task_def:
-        service_def_arns.append(service_task_def)
+    if not service_task_def:
+        # DescribeServices on a live service ALWAYS carries taskDefinition, so
+        # this is incomplete data, not "the service launches nothing". Treating
+        # it as the latter is the one shape that would delete a token the
+        # container is holding — the exact class the liveness predicate exists
+        # to eliminate. Raise; the caller keeps the rows.
+        raise RuntimeError(f"ECS service {service_name} is {service.get('status')} but reports no task definition")
+    service_def_arns: list[str] = [service_task_def]
     live_arns = await _live_task_definition_arns(ecs, cluster, service_name)
 
     hashes: dict[str, str] = {}
@@ -221,10 +251,14 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
         token = await _task_def_gate_token(ecs, arn)
         if not token:
             continue
+        # NOT "a task is still running with it": the live half admits
+        # DEACTIVATING/STOPPING/DEPROVISIONING too, and asserting "running"
+        # about a task that is shutting down is exactly the kind of overclaim
+        # these reason strings exist to avoid.
         reason = (
             "service task definition still references it"
             if arn in service_def_arns
-            else "a task is still running with it"
+            else "a task launched from it has not stopped yet"
         )
         hashes.setdefault(hash_token(token), reason)
     return hashes
@@ -270,7 +304,14 @@ async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: 
             survivors.append(token_hash)
             continue
         try:
-            await run_in_thread(table.delete_item, Key={"token_hash": token_hash})
+            # ALL_OLD so the "expired" line fires exactly ONCE, on the
+            # evaluation that actually removed the row. The survivor list is not
+            # written back (see the docstring), so a hash stays tracked until
+            # the next mint and every wake in between re-evaluates it and
+            # re-issues this no-op delete — logging each of those as an expiry
+            # would make N re-confirmations indistinguishable from N expiries,
+            # which is the one question these logs exist to answer.
+            deleted = await run_in_thread(table.delete_item, Key={"token_hash": token_hash}, ReturnValues="ALL_OLD")
         except Exception:
             logger.warning(
                 "failed to delete superseded bedrock-gate token row for owner %s",
@@ -279,11 +320,12 @@ async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: 
             )
             survivors.append(token_hash)
             continue
-        logger.info(
-            "bedrock-gate token %s.. expired for owner %s: no task definition or running task presents it",
-            token_hash[:_HASH_PREFIX_LEN],
-            owner_id,
-        )
+        if deleted.get("Attributes"):
+            logger.info(
+                "bedrock-gate token %s.. expired for owner %s: no task definition or unstopped task presents it",
+                token_hash[:_HASH_PREFIX_LEN],
+                owner_id,
+            )
     return survivors
 
 
@@ -375,23 +417,54 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
 
 
 async def deny_gate_token(owner_id: str, denied: bool) -> None:
-    """Flip the ``denied`` flag on the owner's current gate-token row (kill switch).
+    """Flip the ``denied`` flag on EVERY gate-token row the owner can present.
 
-    Looks up the containers row's ``bedrock_gate_token_hash`` and UpdateItems that
-    token row's ``denied``. NO-OP when the owner has no token hash (nothing to
-    deny) — callers (``revoke_owner_bedrock`` / ``restore_owner_bedrock`` and the
-    meter Lambda kill path) treat this as a best-effort backstop alongside the
-    IAM revoke, so the absence of a token must be silent, not an error.
+    That is the current hash (``bedrock_gate_token_hash``) **plus every hash
+    still tracked in** ``_SUPERSEDED_FIELD`` — not the current one alone. Since
+    a superseded row now lives exactly as long as something can still present
+    it, denying only the current hash would defeat the kill switch in precisely
+    the state this module preserves: mint B, the roll never lands, the service's
+    task definition still carries A, the container does all its inference with
+    A — and the deny lands on B, a row nothing presents. Under the TTL this
+    replaced, A was reaped within an hour; here it lives indefinitely, so the
+    coverage has to follow it.
+
+    The set is the same one ``_drain_superseded`` judges, so a denied token can
+    never outlive its tracking: expiry deletes the row outright.
+
+    NO-OP when the owner has no hashes at all (nothing to deny) — callers
+    (``revoke_owner_bedrock`` / ``restore_owner_bedrock``, ``ecs_manager``'s
+    revoked-owner re-assert) treat this as a best-effort backstop alongside the
+    IAM revoke, so the absence of a token must be silent, not an error. A hash
+    whose row has already been deleted is likewise silent: the write is
+    conditioned on the row existing, so a kill never RESURRECTS a dead token as
+    a partial row (and a restore never resurrects one as ``denied=false``).
+
+    Every hash is attempted even if one write fails — a kill switch must not
+    skip the rest of the set — and the first failure is re-raised afterwards so
+    callers still see it.
     """
-    row = await container_repo.get_by_owner_id(owner_id)
-    token_hash = row.get("bedrock_gate_token_hash") if row else None
-    if not token_hash:
+    row = await container_repo.get_by_owner_id(owner_id) or {}
+    hashes = [h for h in [row.get("bedrock_gate_token_hash"), *(row.get(_SUPERSEDED_FIELD) or [])] if h]
+    if not hashes:
         return
     table = _tokens_table()
-    await run_in_thread(
-        table.update_item,
-        Key={"token_hash": token_hash},
-        UpdateExpression="SET #d = :d",
-        ExpressionAttributeNames={"#d": "denied"},
-        ExpressionAttributeValues={":d": bool(denied)},
-    )
+    failure: Exception | None = None
+    for token_hash in dict.fromkeys(hashes):
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"token_hash": token_hash},
+                UpdateExpression="SET #d = :d",
+                ConditionExpression="attribute_exists(token_hash)",
+                ExpressionAttributeNames={"#d": "denied"},
+                ExpressionAttributeValues={":d": bool(denied)},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # already expired — nothing left to deny
+            failure = failure or e
+        except Exception as e:  # noqa: BLE001 — try every hash, raise the first failure
+            failure = failure or e
+    if failure is not None:
+        raise failure

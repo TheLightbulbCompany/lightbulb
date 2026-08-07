@@ -105,21 +105,46 @@ async def scan_all() -> list[dict]:
     return items
 
 
+# Fields this whole-item put_item must carry over from the existing row when the
+# caller did not supply them. See ``upsert``'s docstring for why each is here.
+_UPSERT_PRESERVED_FIELDS = (
+    "provision_claim_id",
+    "provision_claimed_at",
+    "provision_attempt_token",
+    "provision_execution_name",
+    # The bedrock-gate superseded-hash list (``bedrock_gate_tokens._SUPERSEDED_FIELD``
+    # — bound to that constant by test_container_repo_upsert_preserves.py, since
+    # importing it here would close an import cycle). It is the ONLY handle on an
+    # owner's old gate-token rows: that table is hash-keyed with no owner index,
+    # so a hash dropped from this list can never be found, deleted, or denied
+    # again — leaving a live bearer credential (its plaintext is still in the
+    # retained task-definition revision) that nothing can kill.
+    "bedrock_gate_superseded_hashes",
+)
+
+
 async def upsert(owner_id: str, fields: dict) -> dict:
     """Create or update a container record. Preserves id and created_at on existing items.
 
-    Also preserves the FULL provision lease (``provision_claim_id`` +
-    ``provision_claimed_at`` + ``provision_attempt_token`` +
-    ``provision_execution_name``): this put_item REPLACES the whole item, and
-    create_user_service upserts mid-provision — dropping the lease here would
-    make the in-flight provision look stale/unowned and re-claimable while it
-    is still running. The SFN fields matter just as much as the claim:
-    dropping ``provision_execution_name`` blinds Branch-A redispatch to the
-    live execution, and dropping ``provision_attempt_token`` makes every
-    attempt-token fence permissive (they all allow
-    ``attribute_not_exists``), letting a superseded straggler pass its next
-    checkpoint. (PR 2 replaces this whole-item write with a scoped
-    UpdateItem, which removes the need to preserve anything.)
+    Also preserves everything in ``_UPSERT_PRESERVED_FIELDS`` that the caller
+    did not pass, because this put_item REPLACES the whole item and
+    create_user_service upserts mid-provision:
+
+    - the FULL provision lease (``provision_claim_id`` +
+      ``provision_claimed_at`` + ``provision_attempt_token`` +
+      ``provision_execution_name``) — dropping it would make the in-flight
+      provision look stale/unowned and re-claimable while it is still running.
+      The SFN fields matter just as much as the claim: dropping
+      ``provision_execution_name`` blinds Branch-A redispatch to the live
+      execution, and dropping ``provision_attempt_token`` makes every
+      attempt-token fence permissive (they all allow
+      ``attribute_not_exists``), letting a superseded straggler pass its next
+      checkpoint.
+    - ``bedrock_gate_superseded_hashes`` — dropping it orphans gate-token rows
+      permanently (see the constant's comment).
+
+    (PR 2 replaces this whole-item write with a scoped UpdateItem, which
+    removes the need to preserve anything.)
     """
     table = _get_table()
     existing = await get_by_owner_id(owner_id)
@@ -132,12 +157,7 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         "updated_at": now,
         **fields,
     }
-    for lease_field in (
-        "provision_claim_id",
-        "provision_claimed_at",
-        "provision_attempt_token",
-        "provision_execution_name",
-    ):
+    for lease_field in _UPSERT_PRESERVED_FIELDS:
         if existing and lease_field in existing and lease_field not in fields:
             item[lease_field] = existing[lease_field]
     # Ensure owner_id is not overridden by fields

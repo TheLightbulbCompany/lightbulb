@@ -124,6 +124,64 @@ async def test_upsert_preserves_full_sfn_provision_lease(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_upsert_preserves_the_bedrock_gate_superseded_hashes(dynamodb_table):
+    """The gate-tokens table is hash-keyed with no owner index, so this list is
+    the ONLY handle on an owner's superseded token rows — for deletion AND for
+    deny_gate_token. Wiping it here strands those rows forever: nothing can find
+    them, nothing can delete them, and the kill switch cannot reach them, while
+    their plaintext still sits in the retained task-definition revision.
+
+    The shape: an owner whose row exists in status="error" with no ECS service
+    reprovisions. mint_gate_token writes {hash: B, superseded: [A]}, then
+    create_user_service's row-creating upsert writes a fresh whole item. Without
+    the preserve, that upsert drops [A] on the floor — a REGRESSION versus the
+    one-hour TTL this branch deleted, which at least bounded the leak."""
+    from core.billing import bedrock_gate_tokens
+    from core.repositories import container_repo
+
+    # The repo names the field as a literal (importing the constant would close
+    # an import cycle); bind the two so they cannot drift apart silently.
+    assert bedrock_gate_tokens._SUPERSEDED_FIELD in container_repo._UPSERT_PRESERVED_FIELDS
+
+    await container_repo.upsert(
+        "user_gate",
+        {"status": "error", "bedrock_gate_token_hash": "hash_A"},
+    )
+    # mint_gate_token: point the row at B, track A as superseded.
+    await container_repo.update_fields(
+        "user_gate",
+        {"bedrock_gate_token_hash": "hash_B", bedrock_gate_tokens._SUPERSEDED_FIELD: ["hash_A"]},
+    )
+
+    # create_user_service's row-creating upsert. It folds in the new hash but
+    # knows nothing about the superseded list.
+    row = await container_repo.upsert(
+        "user_gate",
+        {"gateway_token": "tok", "status": "provisioning", "bedrock_gate_token_hash": "hash_B"},
+    )
+
+    assert row[bedrock_gate_tokens._SUPERSEDED_FIELD] == ["hash_A"]
+    fetched = await container_repo.get_by_owner_id("user_gate")
+    assert fetched[bedrock_gate_tokens._SUPERSEDED_FIELD] == ["hash_A"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_lets_an_explicit_superseded_list_win(dynamodb_table):
+    """The preserve is a fallback, not an override: a caller that passes the
+    field explicitly still writes what it passed (same rule as the lease
+    fields)."""
+    from core.billing import bedrock_gate_tokens
+    from core.repositories import container_repo
+
+    field = bedrock_gate_tokens._SUPERSEDED_FIELD
+    await container_repo.upsert("user_gate2", {"status": "running", field: ["hash_A"]})
+
+    row = await container_repo.upsert("user_gate2", {"status": "running", field: []})
+
+    assert row[field] == []
+
+
+@pytest.mark.asyncio
 async def test_upsert_mints_distinct_provision_generation_per_call(dynamodb_table):
     """create_user_service (the sole caller of upsert) mints a fresh
     provision_generation on every row-creating write -- this repo function

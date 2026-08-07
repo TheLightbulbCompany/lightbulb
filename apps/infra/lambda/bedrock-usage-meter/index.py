@@ -758,8 +758,8 @@ def _stamp_bedrock_revoked(owner_id):
 
 
 def _deny_gate_token(owner_id):
-    """Flip denied=true on the owner's bedrock-gate token row — the gateway's
-    kill switch. Idempotent; a re-set is harmless.
+    """Flip denied=true on EVERY bedrock-gate token row the owner can present —
+    the gateway's kill switch. Idempotent; a re-set is harmless.
 
     The gateway authenticates every request against its token row and 403s when
     denied=true, so this is the gateway-path equivalent of the IAM revoke: it
@@ -768,27 +768,53 @@ def _deny_gate_token(owner_id):
     may still hold owner-role Invoke too, so this runs INDEPENDENTLY alongside
     (never instead of) iam_revoke + ecs_stop.
 
-    The token_hash to key by is the rotation pointer the backend writes on the
-    containers row at provision (``bedrock_gate_token_hash``). An owner with no
-    such pointer was never cut over to the gateway — there is nothing to deny,
-    so this is a clean no-op (NOT an error).
+    TWO pointers, not one, and both are load-bearing:
+
+    - ``bedrock_gate_token_hash`` — the rotation pointer, i.e. the token the
+      backend minted MOST RECENTLY.
+    - ``bedrock_gate_superseded_hashes`` — tokens rotated away from whose rows
+      the backend has not yet been able to prove dead. A superseded row is kept
+      alive precisely BECAUSE the owner's service task definition (or a task
+      still stopping) can still present it, so a container mid-failed-roll is
+      doing all of its inference with one of these while the rotation pointer
+      names a token nothing holds. Denying only the pointer would leave that
+      container invoking past the cap — the exact runaway this kill exists to
+      stop. Mirrors ``core.billing.bedrock_gate_tokens.deny_gate_token``.
+
+    An owner with no pointers at all was never cut over to the gateway — there
+    is nothing to deny, so this is a clean no-op (NOT an error).
     """
     resp = _ddb().get_item(
         TableName=os.environ["CONTAINERS_TABLE"],
         Key={"owner_id": {"S": owner_id}},
     )
-    token_hash = (resp.get("Item", {}).get("bedrock_gate_token_hash") or {}).get("S")
-    if not token_hash:
-        return
-    _ddb().update_item(
-        TableName=os.environ["GATE_TOKENS_TABLE"],
-        Key={"token_hash": {"S": token_hash}},
-        # `denied` aliased defensively — kept off the reserved-word list either
-        # way, but the alias makes the write immune to it (this IS a kill step).
-        UpdateExpression="SET #denied = :t",
-        ExpressionAttributeNames={"#denied": "denied"},
-        ExpressionAttributeValues={":t": {"BOOL": True}},
-    )
+    item = resp.get("Item", {})
+    hashes = [(item.get("bedrock_gate_token_hash") or {}).get("S")]
+    hashes += [h.get("S") for h in (item.get("bedrock_gate_superseded_hashes") or {}).get("L", [])]
+    # Every hash is attempted even if one write raises: a kill switch must not
+    # skip the rest of the set. The first failure is re-raised so the caller's
+    # per-step metric still fires (see _kill_owner_bedrock).
+    failure = None
+    for token_hash in dict.fromkeys(h for h in hashes if h):
+        try:
+            _ddb().update_item(
+                TableName=os.environ["GATE_TOKENS_TABLE"],
+                Key={"token_hash": {"S": token_hash}},
+                # `denied` aliased defensively — kept off the reserved-word list
+                # either way, but the alias makes the write immune to it (this
+                # IS a kill step). Conditioned on the row existing so denying an
+                # already-expired hash cannot resurrect it as a partial row.
+                UpdateExpression="SET #denied = :t",
+                ConditionExpression="attribute_exists(token_hash)",
+                ExpressionAttributeNames={"#denied": "denied"},
+                ExpressionAttributeValues={":t": {"BOOL": True}},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # already expired — nothing left to deny
+            failure = failure or e
+    if failure is not None:
+        raise failure
 
 
 def _kill_owner_bedrock(owner_id, *, crossed=True):

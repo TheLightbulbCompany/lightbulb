@@ -367,7 +367,44 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     return hashes
 
 
-async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: str | None) -> list[str]:
+async def _disarm_ttl(table, token_hash: str) -> None:
+    """REMOVE any legacy ``ttl`` from a token row we are about to protect.
+
+    THE INVARIANT: no token row anything can present may carry a clock-based
+    expiry. This module replaced a flat one-hour TTL with a liveness predicate,
+    but deleting the constant does not delete the ``ttl`` attributes already
+    written onto rows — each is a live clock still counting down, and DynamoDB
+    will reap the row out from under the container presenting it. That is the
+    exact lockout this branch exists to prevent, and without this the branch
+    could REPRODUCE it on deploy.
+
+    It also makes the rolling deploy safe: an old backend task keeps minting
+    with the old behaviour and TTLs the outgoing row, the new code tracks that
+    hash, and tracking it disarms it.
+
+    Conditional on the attribute existing, so a row without one takes no write.
+    Never raises: the caller is protecting a token, and failing to disarm is
+    the state we were already in.
+    """
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"token_hash": token_hash},
+            UpdateExpression="REMOVE #ttl",
+            ConditionExpression="attribute_exists(token_hash) AND attribute_exists(#ttl)",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+        )
+        logger.info("bedrock-gate token %s.. legacy ttl disarmed", token_hash[:_HASH_PREFIX_LEN])
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("failed to disarm ttl on gate-token row %s..", token_hash[:_HASH_PREFIX_LEN], exc_info=True)
+    except Exception:  # noqa: BLE001 — never break a mint over bookkeeping
+        logger.warning("failed to disarm ttl on gate-token row %s..", token_hash[:_HASH_PREFIX_LEN], exc_info=True)
+
+
+async def _drain_superseded(
+    owner_id: str, tracked: list[str], *, current_hash: str | None, adopt_orphans: bool = False
+) -> list[str]:
     """Delete each tracked hash nothing can present; return the survivors.
 
     Deliberately does NOT write the survivors back to the containers row: that
@@ -376,9 +413,23 @@ async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: 
     time it landed anyway. ``mint_gate_token`` prunes the list instead, inside
     the conditional swap it already makes; until then a hash that has already
     been deleted just re-resolves to a no-op delete.
+
+    ``adopt_orphans`` — also return any hash the PREDICATE says is presentable
+    that is neither the current pointer nor already tracked. That is the legacy
+    failed-roll state this whole module was written about: the service's task
+    definition presents A, the row points at B, and nothing records A, so
+    nothing protects it or disarms its one-hour ``ttl``. Adopting it makes it an
+    ordinary tracked hash — protected by the predicate, covered by
+    ``deny_gate_token``, expired only when nothing can present it.
+
+    OFF by default, and that is a COST decision, not a correctness one: adopting
+    requires the ECS view, so it cannot share the empty-list early return below.
+    ``expire_superseded_gate_tokens`` runs on every wake for every owner and
+    must keep that early return; ``mint_gate_token`` runs once per provision, a
+    path already making far more AWS calls than this, so it adopts.
     """
     candidates = [h for h in tracked if h and h != current_hash]
-    if not candidates:
+    if not candidates and not adopt_orphans:
         return []
 
     try:
@@ -395,6 +446,18 @@ async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: 
 
     table = _tokens_table()
     survivors: list[str] = []
+    if adopt_orphans:
+        known = {current_hash, *candidates}
+        for orphan in presentable:
+            if orphan not in known:
+                logger.warning(
+                    "bedrock-gate token %s.. ADOPTED for owner %s: the service presents it but nothing tracked it "
+                    "(legacy failed-roll state) — %s",
+                    orphan[:_HASH_PREFIX_LEN],
+                    owner_id,
+                    presentable[orphan],
+                )
+                survivors.append(orphan)
     for token_hash in candidates:
         reason = presentable.get(token_hash)
         if reason is not None:
@@ -494,7 +557,12 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     # confirmed. At this point the service still references the pre-mint task
     # definition, so the token the container is actually holding is presentable
     # and survives — only genuinely orphaned rows go.
-    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash)
+    #
+    # ADOPTING here too (the once-per-provision path, which already makes the
+    # ECS calls this needs) is what heals an owner deployed into from the legacy
+    # state: task definition presents A, pointer is B, nothing tracks A, and A's
+    # row still carries the one-hour ttl the old code wrote.
+    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash, adopt_orphans=True)
 
     token = secrets.token_urlsafe(32)
     token_hash = hash_token(token)
@@ -516,6 +584,15 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
 
     if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
         superseded.append(prior_hash)
+
+    # DISARM everything about to be recorded as tracked. A tracked hash is one
+    # this module has undertaken to keep alive until the predicate proves it
+    # dead, and a row carrying a legacy ``ttl`` is one DynamoDB will reap on a
+    # clock regardless — the two cannot both be true. Covers the adopted legacy
+    # orphan, the outgoing pointer (which an old backend task mid-rollout may
+    # have just TTL'd), and any survivor of the drain above.
+    for tracked_hash in superseded:
+        await _disarm_ttl(table, tracked_hash)
 
     await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
 

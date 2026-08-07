@@ -65,15 +65,21 @@ def _token_rows(client) -> list[dict]:
     return client.scan(TableName="test-gate-tokens")["Items"]
 
 
-def _put_token_row(client, token_hash: str, owner_id: str = "org_abc") -> None:
-    client.put_item(
-        TableName="test-gate-tokens",
-        Item={
-            "token_hash": {"S": token_hash},
-            "owner_id": {"S": owner_id},
-            "denied": {"BOOL": False},
-        },
-    )
+def _put_token_row(client, token_hash: str, owner_id: str = "org_abc", *, ttl: int | None = None) -> None:
+    item = {
+        "token_hash": {"S": token_hash},
+        "owner_id": {"S": owner_id},
+        "denied": {"BOOL": False},
+    }
+    if ttl is not None:
+        # The legacy one-hour rotation grace. Deleting the constant that wrote
+        # these does not delete the attributes already on rows.
+        item["ttl"] = {"N": str(ttl)}
+    client.put_item(TableName="test-gate-tokens", Item=item)
+
+
+def _token_row(client, token_hash: str) -> dict:
+    return client.get_item(TableName="test-gate-tokens", Key={"token_hash": {"S": token_hash}}).get("Item") or {}
 
 
 def _container_row(client, owner_id: str = "org_abc") -> dict:
@@ -765,6 +771,98 @@ class TestConcurrentMints:
         assert _container_row(gate_tables, "org_new")["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
         await mod.deny_gate_token("org_new", True)
         assert [r["denied"]["BOOL"] for r in _token_rows(gate_tables)] == [True]
+
+
+class TestLegacyTtlDisarm:
+    """Deploying this branch must not REPRODUCE the incident it fixes.
+
+    The module replaced a flat one-hour TTL with a liveness predicate, but
+    deleting the constant does not delete the ``ttl`` attributes already written
+    onto rows. Each is a live clock: DynamoDB reaps the row out from under the
+    container presenting it, and its next inference call gets
+    UnrecognizedClientException. THE INVARIANT: no token row anything can
+    present may carry a clock-based expiry.
+    """
+
+    _FUTURE_TTL = 4102444800  # 2100-01-01; a clock that has NOT yet fired
+
+    @pytest.mark.asyncio
+    async def test_the_legacy_failed_roll_state_is_adopted_and_disarmed(self, gate_tables, fake_ecs):
+        """THE STATE WE KNOW IS IN PROD — it is what this PR was written about.
+
+        The service's task definition presents A, the containers pointer is B,
+        nothing tracks A, and A's row still carries the old ttl. The new list is
+        built from the containers row, so A is invisible to it: never
+        considered, never disarmed, and reaped on the old clock.
+        """
+        a_plaintext = "legacy-token-A"
+        hash_a = mod.hash_token(a_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash="hash_B")
+        _put_token_row(gate_tables, "hash_B")
+        _put_token_row(gate_tables, hash_a, ttl=self._FUTURE_TTL)
+        fake_ecs.task_def_tokens = {_OLD_DEF: a_plaintext}  # the service presents A
+
+        await mod.mint_gate_token("org_abc", _AIPS)
+
+        # Adopted: tracked, so the predicate protects it and deny reaches it.
+        assert hash_a in _tracked(gate_tables)
+        row_a = _token_row(gate_tables, hash_a)
+        assert row_a, "the adopted row must survive the drain"
+        assert "ttl" not in row_a, "the legacy clock is still armed on a row we now promise to keep"
+
+    @pytest.mark.asyncio
+    async def test_a_rolling_deploy_ttl_is_disarmed_as_the_hash_is_tracked(self, gate_tables, fake_ecs):
+        """The rollout window: an OLD backend task mints and TTLs the outgoing
+        row, then a NEW task tracks that hash. Tracking must disarm it, or the
+        hash is protected by the predicate and reaped by DynamoDB at once."""
+        old_plaintext = "outgoing-token"
+        old_hash = mod.hash_token(old_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash, ttl=self._FUTURE_TTL)  # the old task's grace clock
+        fake_ecs.task_def_tokens = {_OLD_DEF: old_plaintext}
+
+        await mod.mint_gate_token("org_abc", _AIPS)
+
+        assert _tracked(gate_tables) == [old_hash]
+        assert "ttl" not in _token_row(gate_tables, old_hash)
+
+    @pytest.mark.asyncio
+    async def test_a_row_without_a_ttl_is_left_exactly_as_it_was(self, gate_tables, fake_ecs):
+        """No spurious writes: the disarm is conditional on the attribute
+        existing, so the ordinary post-cutover row takes none."""
+        old_plaintext = "outgoing-token"
+        old_hash = mod.hash_token(old_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash)
+        fake_ecs.task_def_tokens = {_OLD_DEF: old_plaintext}
+        before = _token_row(gate_tables, old_hash)
+
+        await mod.mint_gate_token("org_abc", _AIPS)
+
+        assert _token_row(gate_tables, old_hash) == before
+
+    @pytest.mark.asyncio
+    async def test_an_adopted_hash_is_an_ORDINARY_tracked_hash(self, gate_tables, fake_ecs):
+        """Adopt + disarm is all it needs: the predicate keeps it while the
+        service presents it, deny_gate_token reaches it, and it expires the
+        moment nothing can present it — exactly like a natively-tracked hash."""
+        a_plaintext = "legacy-token-A"
+        hash_a = mod.hash_token(a_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash="hash_B")
+        _put_token_row(gate_tables, "hash_B")
+        _put_token_row(gate_tables, hash_a, ttl=self._FUTURE_TTL)
+        fake_ecs.task_def_tokens = {_OLD_DEF: a_plaintext}
+
+        await mod.mint_gate_token("org_abc", _AIPS)
+
+        # The kill switch reaches it.
+        await mod.deny_gate_token("org_abc", True)
+        assert _token_row(gate_tables, hash_a)["denied"]["BOOL"] is True
+
+        # And it expires once nothing presents it — no clock needed.
+        fake_ecs.service_missing = True
+        await mod.expire_superseded_gate_tokens("org_abc")
+        assert _token_row(gate_tables, hash_a) == {}
 
 
 class TestExpireSuperseded:

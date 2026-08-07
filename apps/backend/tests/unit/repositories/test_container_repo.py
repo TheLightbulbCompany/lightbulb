@@ -857,9 +857,12 @@ async def test_upsert_cas_pins_absent_fields_as_absent(dynamodb_table):
 
     # Nothing seen -> every clause is attribute_not_exists, and it must admit
     # both the absent row and the row it just created.
-    assert container_repo._unchanged_since_read(None)["ConditionExpression"].count("attribute_not_exists") == len(
-        container_repo._UPSERT_CAS_FIELDS
-    )
+    kwargs, lease_expected = container_repo._unchanged_since_read(None)
+    assert kwargs["ConditionExpression"].count("attribute_not_exists") == len(container_repo._UPSERT_CAS_FIELDS)
+    # The pinned-lease set comes back from the SAME builder that wrote the
+    # condition, and pins both fields — as absent here. A comparator that
+    # rebuilt this itself is how the condition and its triage drift apart.
+    assert lease_expected == dict.fromkeys(container_repo._LEASE_CAS_FIELDS, None)
     created = await container_repo.upsert("user_nolease", {"status": "provisioning"})
     assert "provision_claim_id" not in created
     again = await container_repo.upsert("user_nolease", {"status": "running"})

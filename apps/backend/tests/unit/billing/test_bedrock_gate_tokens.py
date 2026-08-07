@@ -646,6 +646,81 @@ class TestConcurrentMints:
         assert row["bedrock_gate_token_hash"]["S"] == "hash_mine"
         assert _tracked(gate_tables) == ["hash_rival"]  # merged, not erased
 
+    @staticmethod
+    def _stale_hash_snapshot(monkeypatch, owner_id: str, stale_hash: str):
+        """Make persist read a pointer the row has already moved past, so its
+        swap is refused SOLELY by the hash clause."""
+        from core.repositories import container_repo
+
+        real_get = container_repo.get_by_owner_id
+
+        async def stale_get(oid, **kw):
+            row = dict(await real_get(oid, **kw) or {})
+            if oid == owner_id and row:
+                row["bedrock_gate_token_hash"] = stale_hash
+            return row or None
+
+        monkeypatch.setattr(container_repo, "get_by_owner_id", stale_get)
+
+    @pytest.mark.asyncio
+    async def test_a_hash_only_refusal_never_blames_an_unpinned_attempt_token(self, gate_tables, fake_ecs, monkeypatch):
+        """LOCKOUT DIRECTION: the triage must compare only what the condition pinned.
+
+        A deliberate takeover mints its claim internally and passes NO attempt
+        token — a live production shape (the SFN runner passes both; every other
+        caller defaults to None). The condition then pins the claim alone, but
+        the row still CARRIES an attempt token, stamped atomically by
+        takeover_provision. Comparing that against the expected value the
+        condition never pinned turns an ordinary hash-only conflict into a
+        ProvisionSuperseded and aborts a perfectly valid lease holder.
+        """
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc", status="stopped")
+        claim = await container_repo.takeover_provision("org_abc")
+        await container_repo.swap_gate_token_hash(
+            "org_abc", new_hash="hash_rival", superseded=[], expected_prior_hash=None
+        )
+        # The row carries an attempt token; the caller holds none.
+        assert _container_row(gate_tables)["provision_attempt_token"]["S"] == claim
+        self._stale_hash_snapshot(monkeypatch, "org_abc", "hash_stale")
+
+        await mod.persist_gate_token_hash("org_abc", "hash_mine", claim_id=claim)
+
+        row = _container_row(gate_tables)
+        assert row["bedrock_gate_token_hash"]["S"] == "hash_mine"
+        assert _tracked(gate_tables) == ["hash_rival"]  # merged on the retry
+
+    @pytest.mark.asyncio
+    async def test_the_same_caller_shape_still_stops_when_the_claim_itself_moves(
+        self, gate_tables, fake_ecs, monkeypatch
+    ):
+        """The other half: pinning fewer fields must not blunt the fence. Same
+        no-attempt-token caller, but the CLAIM moved — still superseded."""
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc", status="stopped")
+        loser = await container_repo.takeover_provision("org_abc")
+        winner = await container_repo.takeover_provision("org_abc")
+        assert winner != loser
+        self._stale_hash_snapshot(monkeypatch, "org_abc", "hash_stale")
+
+        with pytest.raises(container_repo.ProvisionSuperseded, match="provision_claim_id"):
+            await mod.persist_gate_token_hash("org_abc", "hash_loser", claim_id=loser)
+
+    @pytest.mark.asyncio
+    async def test_both_lease_fields_supplied_and_both_moved_is_superseded(self, gate_tables, fake_ecs):
+        """The SFN runner's shape: both pinned, both moved."""
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc", status="stopped")
+        loser = await container_repo.try_claim_provision("org_abc", claim_id="claim-loser")
+        assert loser == "claim-loser"
+        await container_repo.takeover_provision("org_abc")
+
+        with pytest.raises(container_repo.ProvisionSuperseded):
+            await mod.persist_gate_token_hash("org_abc", "hash_loser", claim_id=loser, attempt_token=loser)
+
     @pytest.mark.asyncio
     async def test_a_claimless_caller_needs_no_lease(self, gate_tables, fake_ecs):
         """routers/debug.create_user_service(owner_id, gateway_token) passes no

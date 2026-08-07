@@ -207,8 +207,15 @@ _LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
 _UPSERT_CAS_FIELDS = ("bedrock_gate_token_hash", *_LEASE_CAS_FIELDS)
 
 
-def _unchanged_since_read(existing: dict | None) -> dict:
-    """``put_item`` kwargs that refuse the write if any pinned field has moved.
+def _unchanged_since_read(existing: dict | None) -> tuple[dict, dict]:
+    """``put_item`` kwargs that refuse the write if any pinned field has moved,
+    plus the LEASE subset those kwargs pinned, in the shape
+    ``_raise_if_superseded`` compares.
+
+    Both come out of the one builder deliberately. A condition and the triage of
+    its failure have to agree about which fields are in play, and when they are
+    assembled in two places they drift: the triage then blames a field the
+    condition never pinned and aborts a valid lease holder.
 
     ``upsert`` rebuilds the row from a read and puts it back, so it REWRITES
     every field it means only to preserve — and a rewrite from a snapshot taken
@@ -237,10 +244,15 @@ def _unchanged_since_read(existing: dict | None) -> dict:
     names: dict[str, str] = {}
     values: dict = {}
     clauses: list[str] = []
+    lease_expected: dict = {}
     for i, field in enumerate(_UPSERT_CAS_FIELDS):
         alias = f"#c{i}"
         names[alias] = field
         seen = (existing or {}).get(field)
+        if field in _LEASE_CAS_FIELDS:
+            # Recorded whatever it is, INCLUDING None: this condition pins every
+            # field unconditionally, and a None means it pinned it as absent.
+            lease_expected[field] = seen
         if seen is None:
             clauses.append(f"attribute_not_exists({alias})")
         else:
@@ -256,7 +268,7 @@ def _unchanged_since_read(existing: dict | None) -> dict:
     }
     if values:
         kwargs["ExpressionAttributeValues"] = values
-    return kwargs
+    return kwargs, lease_expected
 
 
 def _deserialize_item(raw_item: dict | None) -> dict:
@@ -292,17 +304,24 @@ def _raise_if_superseded(owner_id: str, expected: dict, current: dict, *, where:
 
     Both moved → superseded wins; the successor's mint is not ours to merge.
 
-    ``expected`` is whatever the caller pinned in its ConditionExpression —
-    ``upsert`` pins the row snapshot it read, ``swap_gate_token_hash`` pins the
-    caller's own claim. Either way the comparison must MIRROR the condition that
-    was built, or it will name the wrong culprit.
+    ``expected`` IS THE PINNED SET, and only it is compared. A key present means
+    the condition pinned that field; a value of ``None`` means it pinned it as
+    ABSENT. Comparing a field the condition did NOT pin is a bug in the
+    lockout direction — ``swap_gate_token_hash`` pins the attempt token only
+    when the caller supplied one, and a deliberate takeover mints its claim with
+    none, so blaming the attempt token there aborts a valid lease holder on a
+    refusal that was only ever about the hash.
+
+    Which is why neither call site builds this by hand: ``upsert`` gets it back
+    from ``_unchanged_since_read`` (the same function that writes the condition)
+    and the swap builds it in the same block that appends its lease clauses.
 
     A row deleted out from under us (or an item that would not parse) arrives as
     an empty ``current``, so a caller that pinned a lease stops — the safe
     direction, since the alternative is writing over an owner we cannot see.
     """
-    for field in _LEASE_CAS_FIELDS:
-        if expected.get(field) != current.get(field):
+    for field, want in expected.items():
+        if want != current.get(field):
             raise ProvisionSuperseded(
                 f"provision lease for {owner_id} moved during {where} ({field}) — "
                 "a newer run owns the row; this one must write nothing further"
@@ -375,14 +394,16 @@ async def upsert(owner_id: str, fields: dict) -> dict:
         # Ensure owner_id is not overridden by fields
         item["owner_id"] = owner_id
 
+        put_kwargs, lease_expected = _unchanged_since_read(existing)
         try:
-            await run_in_thread(table.put_item, Item=item, **_unchanged_since_read(existing))
+            await run_in_thread(table.put_item, Item=item, **put_kwargs)
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
             # Raises ProvisionSuperseded when it was the LEASE that moved: that
-            # refusal is not a conflict to merge, it is a stop signal.
-            _raise_if_superseded(owner_id, existing or {}, _deserialize_item(e.response.get("Item")), where="upsert")
+            # refusal is not a conflict to merge, it is a stop signal. The
+            # pinned set comes from the builder above, never rebuilt here.
+            _raise_if_superseded(owner_id, lease_expected, _deserialize_item(e.response.get("Item")), where="upsert")
             if attempt + 1 == _UPSERT_CAS_ATTEMPTS:
                 raise
             continue  # a rival mint landed inside the window — rebuild on it

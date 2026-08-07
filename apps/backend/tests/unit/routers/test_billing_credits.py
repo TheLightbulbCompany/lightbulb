@@ -64,7 +64,6 @@ def _fake_metronome_client(balance=12.34):
 @pytest.mark.asyncio
 async def test_get_balance_returns_metronome_balance(async_client, monkeypatch):
     """1234 cents (Metronome's USD credit type) -> 12_340_000 microcents."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client(balance=1234)
     with (
         patch(
@@ -79,7 +78,6 @@ async def test_get_balance_returns_metronome_balance(async_client, monkeypatch):
     assert resp.json() == {
         "balance_microcents": 12_340_000,
         "balance_dollars": "12.34",
-        "lifecycle_enabled": True,
         "auto_charge_enabled": False,
         # 12_340_000 is well above RESERVE_ESTIMATE_MICROCENTS (300_000) —
         # the gate would admit a request against this balance.
@@ -97,7 +95,6 @@ async def test_get_balance_write_through_restores_revoked_owner(async_client, mo
     """End-to-end through the real apply_fresh_balance: a revoked owner whose
     live read (and confirming re-read) comes back positive gets the fast-gate
     row rewritten AND the Bedrock IAM grant restored from the balance poll."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client(balance=1234)
     restore = AsyncMock()
     with (
@@ -126,7 +123,6 @@ async def test_get_balance_org_member_reads_owner_id(async_client_org_member, mo
     Without this, every org member sees no balance because their personal
     user_id has no Metronome customer — the bug that blocked org members at
     chat with code=out_of_credits in prod."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client(balance=988)
     row_mock = AsyncMock(return_value={"owner_id": "org_test_456", "metronome_customer_id": "cust-org-1"})
     with (
@@ -168,7 +164,6 @@ async def test_top_up_refreshes_gate_after_success(async_client, monkeypatch):
     the gate (read + apply_fresh_balance) so a depleted+revoked owner's
     just-bought credits restore Bedrock immediately instead of racing the
     first post-top-up send (which otherwise fails AccessDenied)."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     read_balance = AsyncMock(return_value=20_000_000)
     apply_fresh = AsyncMock()
     with (
@@ -190,7 +185,6 @@ async def test_top_up_refresh_skipped_when_no_balance(async_client, monkeypatch)
     """A None balance read (owner has no Metronome customer / outage) means
     nothing to apply — the endpoint must not call apply_fresh_balance with
     None."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     apply_fresh = AsyncMock()
     with (
         patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
@@ -212,7 +206,6 @@ async def test_top_up_does_not_revoke_on_unreleased_balance(async_client, monkey
     (async Stripe collection), NOT a depleted owner. The top-up path must NOT
     feed it to apply_fresh_balance, which would RE-REVOKE someone who just
     paid — restore-only here, the lazy refresh handles the unreleased case."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     apply_fresh = AsyncMock()
     with (
         patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
@@ -234,7 +227,6 @@ async def test_top_up_does_not_revoke_on_unreleased_balance(async_client, monkey
 async def test_top_up_refresh_failure_does_not_break_response(async_client, monkeypatch):
     """The post-top-up refresh is best-effort: a getNetBalance blip must not
     turn a SUCCESSFUL purchase into an error response."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     with (
         patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
         patch(
@@ -248,24 +240,6 @@ async def test_top_up_refresh_failure_does_not_break_response(async_client, monk
         )
     assert resp.status_code == 200
     assert resp.json()["status"] == "requested"
-
-
-@pytest.mark.asyncio
-async def test_top_up_skips_refresh_when_lifecycle_disabled(async_client, monkeypatch):
-    """Lifecycle off ⇒ the endpoint must not attempt a Metronome balance read
-    (mirrors the same guard the balance endpoint uses)."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
-    read_balance = AsyncMock(return_value=0)
-    with (
-        patch("core.billing.metronome_funding.request_top_up", new=AsyncMock()),
-        patch("core.services.metronome_gate.read_net_balance_microcents", new=read_balance),
-    ):
-        resp = await async_client.post(
-            "/api/v1/billing/credits/top_up",
-            json={"amount_cents": 2000},
-        )
-    assert resp.status_code == 200
-    read_balance.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -463,40 +437,9 @@ async def test_top_up_org_admin_uses_org_owner_id(async_client_org_admin):
 
 
 @pytest.mark.asyncio
-async def test_get_balance_null_when_lifecycle_disabled(async_client, monkeypatch):
-    """With the lifecycle switch off, the balance degrades to null without
-    constructing a Metronome client (no doomed calls against placeholder
-    secrets). The billing row is still read — it carries the auto-charge
-    consent flag the response exposes."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
-    with (
-        patch(
-            "routers.billing.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"owner_id": "user_test_123", "metronome_customer_id": "cust-uuid-1"}),
-        ),
-        patch("core.billing.metronome_client.for_settings") as for_settings_mock,
-    ):
-        resp = await async_client.get("/api/v1/billing/credits/balance")
-    assert resp.status_code == 200
-    # lifecycle_enabled lets the frontend distinguish "credits product not
-    # wired in this environment" from a transient balance outage.
-    assert resp.json() == {
-        "balance_microcents": None,
-        "balance_dollars": None,
-        "lifecycle_enabled": False,
-        "auto_charge_enabled": False,
-        # A null balance is INDETERMINATE (lifecycle off here), never
-        # exhausted — a false banner is worse than a late one.
-        "is_exhausted": False,
-    }
-    for_settings_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch):
     """A Metronome outage must never 500 the balance endpoint — both fields
     degrade to null and the panel shows the unavailable state."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client()
     fake.get_net_balance = AsyncMock(side_effect=RuntimeError("metronome down"))
     with (
@@ -511,7 +454,6 @@ async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch
     assert resp.json() == {
         "balance_microcents": None,
         "balance_dollars": None,
-        "lifecycle_enabled": True,
         "auto_charge_enabled": False,
         # A null balance (Metronome outage here) is INDETERMINATE, never
         # exhausted — a false banner is worse than a late one.
@@ -522,7 +464,6 @@ async def test_get_balance_metronome_error_yields_null(async_client, monkeypatch
 @pytest.mark.asyncio
 async def test_get_balance_no_metronome_customer_yields_null(async_client, monkeypatch):
     """Owners not yet provisioned in Metronome get null without any HTTP call."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     fake = _fake_metronome_client()
     with (
         patch(
@@ -536,7 +477,6 @@ async def test_get_balance_no_metronome_customer_yields_null(async_client, monke
     assert resp.json() == {
         "balance_microcents": None,
         "balance_dollars": None,
-        "lifecycle_enabled": True,
         "auto_charge_enabled": False,
         # A null balance (no Metronome customer here) is INDETERMINATE, never
         # exhausted — a false banner is worse than a late one.
@@ -579,7 +519,6 @@ async def test_top_up_checkout_creates_session(async_client, monkeypatch):
     """The default purchase path: a Stripe Checkout session for the amount,
     metadata carrying the grant inputs the webhook needs, and NO off-session
     card consent unless the customer opted in."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-test-1")
     create = MagicMock(return_value=_fake_checkout_session())
     with patch("core.services.billing_service.stripe.checkout.Session.create", new=create):
@@ -608,7 +547,6 @@ async def test_top_up_checkout_opt_in_captures_off_session_consent(async_client,
     documented consent artifact for charging the saved card later — and as
     session metadata so the webhook only flips the flag after THIS payment
     succeeds."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-test-1")
     create = MagicMock(return_value=_fake_checkout_session())
     with patch("core.services.billing_service.stripe.checkout.Session.create", new=create):
@@ -626,7 +564,6 @@ async def test_top_up_checkout_opt_in_captures_off_session_consent(async_client,
 async def test_top_up_checkout_requires_lifecycle(async_client, monkeypatch):
     """Without the Metronome lifecycle the completion webhook has nowhere to
     grant the credits — refuse before taking money that would strand."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
     resp = await async_client.post(
         "/api/v1/billing/credits/top_up_checkout",
         json={"amount_cents": 2000},
@@ -672,7 +609,6 @@ async def test_top_up_checkout_refuses_unprovisioned_owner(async_client, monkeyp
     customer/contract hasn't been provisioned yet must get a 400 BEFORE a
     payable session exists — otherwise Stripe collects and the grant
     500s/retries until provisioning lands (collected money in limbo)."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-test-1")
     create = MagicMock()
     with (

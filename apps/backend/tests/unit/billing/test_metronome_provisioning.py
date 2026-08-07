@@ -33,7 +33,6 @@ def _billing_row(**overrides):
 
 @pytest.fixture(autouse=True)
 def lifecycle_enabled(monkeypatch):
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     monkeypatch.setattr("core.config.settings.METRONOME_RATE_CARD_ID", "rc-1")
     monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 
@@ -160,22 +159,6 @@ async def test_persisted_customer_without_contract_creates_only_the_contract(bil
         metronome_customer_id="existing-uuid",
         metronome_contract_id="contract-new",
     )
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_disabled_is_a_pure_noop(billing_repo_mock, monkeypatch):
-    """With the master switch off, the ~3s /container/status poll must not
-    spam doomed calls against placeholder secrets — no billing-row read, no
-    HTTP client construction."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
-    get_mock, set_mock, _ = billing_repo_mock
-    with patch("core.billing.metronome_provisioning.httpx.AsyncClient") as client_cls:
-        result = await ensure_metronome_customer(owner_id="org_abc")
-
-    assert result is None
-    client_cls.assert_not_called()
-    get_mock.assert_not_awaited()
-    set_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

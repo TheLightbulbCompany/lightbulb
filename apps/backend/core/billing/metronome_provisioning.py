@@ -14,10 +14,6 @@ order), and creates the per-customer low-balance alerts
 (warn + zero-crossing) that feed the fast-gate webhook. The Metronome customer UUID + contract id are persisted
 on the billing row so a re-call short-circuits all the HTTP calls.
 
-Gated on METRONOME_LIFECYCLE_ENABLED: until the runbook (API tokens + rate
-card + webhook secret) is done, the ~3s /container/status poll must not spam
-doomed calls against placeholder secrets.
-
 Crash-safety: the ids are persisted LAST, after the alerts exist. A retry
 after any partial failure re-enters via create_customer/create_contract,
 whose conflict responses are adopted (lookup by ingest alias / contract
@@ -56,11 +52,7 @@ async def ensure_metronome_customer(
 ) -> str | None:
     """Return the Metronome customer UUID, creating + contract-arming +
     Stripe-linking + alert-arming on first call. Idempotent on the billing
-    row's persisted metronome ids. Returns None (a pure no-op, no HTTP
-    client constructed) while the lifecycle switch is off."""
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        return None
-
+    row's persisted metronome ids."""
     # STRONGLY consistent: the subscription webhook dispatches this immediately
     # after ``set_subscription`` flips the owner off ``trial_local``, and an
     # eventually-consistent get_item can still observe the pre-write row. That

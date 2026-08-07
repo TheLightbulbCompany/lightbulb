@@ -104,9 +104,6 @@ async def get_billed_month_spend(owner_id: str) -> BilledSpend | None:
     None exactly like a Metronome error, per this module's "display-only,
     never blocks" contract.
     """
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        return None
-
     cached = _spend_cache.get(owner_id)
     if cached and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
         return cached[1]

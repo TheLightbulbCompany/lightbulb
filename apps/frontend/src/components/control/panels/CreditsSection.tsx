@@ -19,7 +19,6 @@ const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 export function CreditsSection() {
   const {
     balance,
-    lifecycleEnabled,
     autoChargeEnabled,
     refresh,
     startTopUp,
@@ -152,7 +151,6 @@ export function CreditsSection() {
             disabled={
               topUpSubmitting ||
               topUpRequested !== null ||
-              lifecycleEnabled === false ||
               topUpAmount < 500
             }
             className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
@@ -166,18 +164,16 @@ export function CreditsSection() {
         ) : (
           <button
             onClick={handleCheckout}
-            disabled={topUpSubmitting || lifecycleEnabled === false || topUpAmount < 500}
+            disabled={topUpSubmitting || topUpAmount < 500}
             className="rounded-full bg-[var(--forest)] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
           >
             {topUpSubmitting ? "Redirecting…" : `Continue to payment — $${topUpAmount / 100}`}
           </button>
         )}
         <p className="text-xs text-[var(--mute)]">
-          {lifecycleEnabled === false
-            ? "Claude credits are not yet available in this environment — choose a different provider for now."
-            : autoChargeEnabled
-              ? "Charged automatically to your card on file — no checkout page."
-              : "You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
+          {autoChargeEnabled
+            ? "Charged automatically to your card on file — no checkout page."
+            : "You'll confirm the payment on a secure Stripe page — nothing is charged until you do."}
         </p>
         {autoChargeEnabled && (
           <button

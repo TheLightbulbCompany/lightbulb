@@ -15,7 +15,6 @@ from core.billing.metronome_funding import FundingError, request_top_up
 
 @pytest.fixture(autouse=True)
 def lifecycle_enabled(monkeypatch):
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", True)
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
     monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 
@@ -131,17 +130,6 @@ async def test_request_writes_no_local_balance(provisioned_billing_row):
     with patch("core.billing.metronome_fast_gate.MetronomeFastGate") as gate_cls:
         await request_top_up("org_abc", 2500, client=fake)
     gate_cls.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_request_raises_when_lifecycle_disabled(provisioned_billing_row, monkeypatch):
-    """A purchase request must fail loudly (the endpoint surfaces a 400),
-    never silently drop, when Metronome isn't wired for the env yet."""
-    monkeypatch.setattr("core.config.settings.METRONOME_LIFECYCLE_ENABLED", False)
-    fake = _fake_client()
-    with pytest.raises(FundingError, match="lifecycle is disabled"):
-        await request_top_up("org_abc", 2500, client=fake)
-    fake.create_gated_prepaid_commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

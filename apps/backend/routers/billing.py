@@ -904,8 +904,6 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
     endpoint into an error state. The synchronous gates never read this
     (they use the fast-gate projection — core/services/metronome_gate.py).
     """
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        return None
     try:
         # Shared with the gate's lazy refresh — one place owns the
         # live-verified getNetBalance response shape and the cents →
@@ -925,8 +923,7 @@ async def _metronome_balance_microcents(owner_id: str) -> int | None:
         "Returns the owner's Metronome prepaid balance in microcents and "
         "dollars (formatted). Both fields are null when the balance is "
         "unavailable (Metronome outage, or the owner has no Metronome "
-        "customer yet). lifecycle_enabled reflects whether the Metronome "
-        "credits lifecycle is wired for this environment at all."
+        "customer yet)."
     ),
 )
 async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
@@ -949,7 +946,6 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
     return {
         "balance_microcents": balance_uc,
         "balance_dollars": f"{balance_uc / 1_000_000:.2f}" if balance_uc is not None else None,
-        "lifecycle_enabled": settings.METRONOME_LIFECYCLE_ENABLED,
         # Drives the frontend's top-up fork: opted-in owners get one-click
         # (card on file), everyone else routes through Stripe Checkout.
         "auto_charge_enabled": bool(account.get("credits_auto_charge")),
@@ -975,11 +971,6 @@ async def top_up_credits_checkout(
     ctx: AuthContext = Depends(get_current_user),
 ):
     from core.services.billing_service import BillingServiceError, create_credit_top_up_checkout
-
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        # Without the Metronome lifecycle the completion webhook has nowhere
-        # to grant the credits — taking the money first would strand it.
-        raise HTTPException(status_code=400, detail="Credit top-ups are unavailable in this environment")
 
     owner_id = resolve_owner_id(ctx)
     try:
@@ -1080,15 +1071,14 @@ async def top_up_credits(
     # paid. A top-up never depletes, so there is nothing to enforce here; the
     # normal lazy refresh (chat / balance poll) re-arms once the credits land.
     # Best-effort: apply_fresh_balance never raises.
-    if settings.METRONOME_LIFECYCLE_ENABLED:
-        try:
-            from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
+    try:
+        from core.services.metronome_gate import apply_fresh_balance, read_net_balance_microcents
 
-            balance_uc = await read_net_balance_microcents(owner_id)
-            if balance_uc is not None and balance_uc > 0:
-                await apply_fresh_balance(owner_id, balance_uc)
-        except Exception:
-            logger.warning("Post-top-up balance refresh failed for owner %s", owner_id, exc_info=True)
+        balance_uc = await read_net_balance_microcents(owner_id)
+        if balance_uc is not None and balance_uc > 0:
+            await apply_fresh_balance(owner_id, balance_uc)
+    except Exception:
+        logger.warning("Post-top-up balance refresh failed for owner %s", owner_id, exc_info=True)
 
     return {"status": "requested", "amount_cents": body.amount_cents}
 

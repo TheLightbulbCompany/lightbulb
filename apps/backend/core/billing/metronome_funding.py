@@ -58,8 +58,6 @@ async def request_top_up(
     per env) — Metronome builds the Stripe invoice line item from it, and
     the payment attempt fails without it.
     """
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        raise FundingError("Metronome lifecycle is disabled — top-ups are unavailable")
     if not settings.METRONOME_CREDITS_PRODUCT_ID:
         # An empty product id would reach Metronome as an invalid commit body
         # and surface as an opaque 4xx. Fail loudly at the source instead —
@@ -169,8 +167,6 @@ async def grant_prepaid_credits(
     webhook surfaces as a metric + retryable failure rather than silently
     swallowing paid-for credits.
     """
-    if not settings.METRONOME_LIFECYCLE_ENABLED:
-        raise FundingError("Metronome lifecycle is disabled — credit grants are unavailable")
     if not settings.METRONOME_CREDITS_PRODUCT_ID:
         raise FundingError("Metronome credits product is not configured for this environment")
     if amount_cents <= 0:

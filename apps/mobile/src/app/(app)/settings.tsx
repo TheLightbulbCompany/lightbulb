@@ -40,7 +40,6 @@ interface CreditsBalance {
   balance_microcents: number | null;
   /** Pre-formatted "%.2f" without "$", null when balance unavailable. */
   balance_dollars: string | null;
-  lifecycle_enabled?: boolean;
 }
 
 interface ChatGPTStatus {
@@ -453,11 +452,7 @@ export default function Settings() {
             </Text>
             <Text style={styles.captionText}>
               {credits?.balance_dollars != null
-                ? // lifecycle_enabled === false ⇒ top-ups unavailable in this
-                  // env; absent/undefined = enabled (contract §2).
-                  credits.lifecycle_enabled === false
-                  ? "Prepaid balance for Bedrock inference."
-                  : "Prepaid balance for Bedrock inference. Top up on isol8.co."
+                ? "Prepaid balance for Bedrock inference. Top up on isol8.co."
                 : "Balance unavailable right now."}
             </Text>
           </Card>

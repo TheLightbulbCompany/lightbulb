@@ -6,7 +6,8 @@ ledgers for owners we never bill (which then feed the low-balance webhook as
 permanent zero-balance customers).
 """
 
-from unittest.mock import patch
+import pytest
+from unittest.mock import AsyncMock, patch
 
 from scripts.backfill_metronome_ledgers import _needs_backfill, main
 
@@ -141,3 +142,76 @@ class TestLegacyPaidRows:
             assert _needs_backfill(_row(subscription_status=status, stripe_subscription_id="sub_stale")) is False, (
                 status
             )
+
+
+class TestRunVerifiesCompleteness:
+    """`ensure_metronome_customer` returns NORMALLY on the deferred-contract
+    path, so "no exception" is not "provisioned". Trusting it would exit 0 on a
+    half-built ledger — a clean bill of health for an owner both fences still
+    treat as unprovisioned, who is then locked out on deploy."""
+
+    @staticmethod
+    def _target() -> dict:
+        return {
+            "owner_id": "user_x",
+            "subscription_status": "active",
+            "provider_choice": "bedrock_claude",
+        }
+
+    @pytest.mark.asyncio
+    async def test_half_built_ledger_counts_as_failed(self):
+        from scripts import backfill_metronome_ledgers as mod
+
+        with (
+            patch.object(mod, "_scan_billing_accounts", new=AsyncMock(return_value=[self._target()])),
+            patch(
+                "core.billing.metronome_provisioning.ensure_metronome_customer",
+                new=AsyncMock(return_value="mc-1"),
+            ),
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                # Contract deferred — exactly what _provision persists when the
+                # Stripe link is unavailable.
+                new=AsyncMock(return_value={"metronome_customer_id": "mc-1"}),
+            ),
+        ):
+            rc = await mod._run(dry_run=False)
+
+        assert rc == 1, "a half-built ledger must not report success"
+
+    @pytest.mark.asyncio
+    async def test_complete_ledger_succeeds(self):
+        from scripts import backfill_metronome_ledgers as mod
+
+        with (
+            patch.object(mod, "_scan_billing_accounts", new=AsyncMock(return_value=[self._target()])),
+            patch(
+                "core.billing.metronome_provisioning.ensure_metronome_customer",
+                new=AsyncMock(return_value="mc-1"),
+            ),
+            patch(
+                "core.repositories.billing_repo.get_by_owner_id",
+                new=AsyncMock(return_value={"metronome_customer_id": "mc-1", "metronome_contract_id": "ct-1"}),
+            ),
+        ):
+            rc = await mod._run(dry_run=False)
+
+        assert rc == 0
+
+    @pytest.mark.asyncio
+    async def test_raising_provision_counts_as_failed_without_a_reread(self):
+        from scripts import backfill_metronome_ledgers as mod
+
+        reread = AsyncMock()
+        with (
+            patch.object(mod, "_scan_billing_accounts", new=AsyncMock(return_value=[self._target()])),
+            patch(
+                "core.billing.metronome_provisioning.ensure_metronome_customer",
+                new=AsyncMock(side_effect=RuntimeError("metronome down")),
+            ),
+            patch("core.repositories.billing_repo.get_by_owner_id", new=reread),
+        ):
+            rc = await mod._run(dry_run=False)
+
+        assert rc == 1
+        reread.assert_not_awaited()

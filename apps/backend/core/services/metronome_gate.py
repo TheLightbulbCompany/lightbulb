@@ -98,8 +98,21 @@ async def _has_complete_metronome_ledger(owner_id: str) -> bool:
     balance can exist and ``grant_prepaid_credits`` refuses outright —
     testing the customer id alone would admit an owner whose ledger cannot
     hold the credits they are spending, in exactly the partial-provisioning
-    failure this predicate exists to catch. Kept in lockstep with the
-    bedrock-gate Lambda's ``paidReserve``, the fence on the inference path.
+    failure this predicate exists to catch.
+
+    Shares its DEFINITION of a complete ledger with the bedrock-gate Lambda's
+    ``paidReserve`` but deliberately NOT its evaluation order. ``paidReserve``
+    checks on every path, including when it has a cached projection, because
+    the billing row is already in hand there (core.mjs fetches it for
+    resolvePlan) so the check is free — and because it is the actual money
+    fence: cron- and channel-triggered runs reach Bedrock through it with no
+    backend involvement. Here the equivalent lookup is an extra DynamoDB read,
+    and ``is_owner_blocked`` runs on every chat message, so it stays on the
+    cold path only (stale row AND refresh unavailable). The consequence is
+    narrow and accepted: a FRESH positive projection whose ledger has since
+    been wiped would admit at this gate for up to
+    ``METRONOME_GATE_STALENESS_S``. It would still be denied at the Lambda,
+    which is where the spend actually happens.
 
     Deliberately a separate read rather than a signal threaded out of
     ``read_net_balance_microcents``: this runs only on the cold path (stale

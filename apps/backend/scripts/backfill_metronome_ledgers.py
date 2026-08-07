@@ -165,17 +165,52 @@ async def _run(dry_run: bool) -> int:
         logger.info("DRY RUN — nothing written")
         return 0
 
+    from core.repositories import billing_repo
+
     failed: list[str] = []
     for a in targets:
         owner_id = a["owner_id"]
         try:
-            customer_id = await ensure_metronome_customer(owner_id=owner_id)
-            logger.info("provisioned owner=%s customer=%s", owner_id, customer_id)
+            await ensure_metronome_customer(owner_id=owner_id)
         except Exception:
             # Keep going: one owner's Metronome failure must not strand the
             # rest of the fleet behind it. Re-run to retry just these.
             failed.append(owner_id)
             logger.exception("FAILED owner=%s", owner_id)
+            continue
+
+        # VERIFY, do not assume. `ensure_metronome_customer` returns NORMALLY
+        # on the deferred-contract path: when the Stripe link is unavailable
+        # (or the row has no stripe_customer_id) `_provision` persists only
+        # metronome_customer_id and returns the id, because a contract's
+        # billing config is create-time-only and creating it unlinked would
+        # strand the owner's top-ups permanently.
+        #
+        # So "no exception" is NOT "provisioned". Trusting it would log a
+        # success, exit 0, and hand the operator a clean bill of health for an
+        # owner both fences still classify as unprovisioned — who is then
+        # locked out the moment the fences deploy, which is the exact outcome
+        # this script exists to prevent. Same silent-success shape as the
+        # table-prefix bug: the dangerous failure is the one that looks fine.
+        #
+        # Strongly consistent: we are re-reading ids written moments ago and
+        # deciding a deploy-gating exit code on them.
+        after = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or {}
+        customer_id = after.get("metronome_customer_id")
+        contract_id = after.get("metronome_contract_id")
+        if not (customer_id and contract_id):
+            failed.append(owner_id)
+            logger.error(
+                "INCOMPLETE owner=%s customer=%s contract=%s — ensure returned without raising, "
+                "but the ledger is half-built (deferred contract). Re-run after fixing the "
+                "Stripe link; both fences treat this owner as unprovisioned.",
+                owner_id,
+                customer_id or "-",
+                contract_id or "-",
+            )
+            continue
+
+        logger.info("provisioned owner=%s customer=%s contract=%s", owner_id, customer_id, contract_id)
 
     logger.info("Done: %d provisioned, %d failed", len(targets) - len(failed), len(failed))
     if failed:

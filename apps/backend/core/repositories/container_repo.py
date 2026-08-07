@@ -294,23 +294,45 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 
 
 # How long a marketplace-deploy claim stays exclusive before another deploy may
-# take it over. A deploy runs ~85s on a busy container (pair_with_openclaw burns
-# a 30s gateway-RPC timeout, then its retry succeeds), so this is deliberately
-# far above the slow case: the only thing it needs to survive is an ECS task
-# dying mid-deploy, which would otherwise wedge that listing forever.
-DEPLOY_CLAIM_STALE_S = 900
+# take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
+# a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so
+# a wedged claim blocks every hire the owner tries, not just one listing's. A
+# deploy runs ~85s on a busy container (pair_with_openclaw burns a 30s
+# gateway-RPC timeout, then its retry succeeds); the route's ``finally``
+# releases on every normal path, so only a dead ECS task leaks the claim.
+# 300s comfortably exceeds the real deploy while capping the worst-case wedge.
+DEPLOY_CLAIM_STALE_S = 300
+
+# Fixed map key for the owner-wide deploy claim. The listing that triggered a
+# claim is still recorded in the claim VALUE (for diagnostics) but no longer
+# part of the key — see try_claim_owner_deploy for why.
+_DEPLOY_CLAIM_KEY = "__deploy__"
 
 
-async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | None:
-    """Take an exclusive lease on "this owner is deploying this listing".
+async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> str | None:
+    """Take an exclusive lease on "this owner has a marketplace deploy in flight".
 
     Returns a FENCING TOKEN when the caller owns the deploy, None when another
-    one is already in flight for the same listing. Pass the token back to
-    ``release_listing_deploy_claim`` — an unconditional release would let a
-    caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was therefore taken
-    over) delete the live claim of whoever succeeded it, reopening the exact
-    overlap window this exists to close. Same fencing discipline as
-    ``try_claim_provision``'s ``provision_claim_id``.
+    deploy — of ANY listing — is already in flight for this owner. Pass the
+    token back to ``release_owner_deploy_claim`` — an unconditional release
+    would let a caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was
+    therefore taken over) delete the live claim of whoever succeeded it,
+    reopening the exact overlap window this exists to close. Same fencing
+    discipline as ``try_claim_provision``'s ``provision_claim_id``.
+
+    OWNER-WIDE, not per-listing: this used to key the claim on ``listing_id``
+    (``SET deploy_claims.#lid = :claim`` with ``#lid`` bound to the listing),
+    which only ever fenced two deploys of the SAME listing. Three different
+    listings hired within seconds of each other wrote three different map
+    keys, so all three conditions passed and all three deploys ran
+    concurrently against the one OpenClaw container — two came back 500 and
+    rolled back. The container already serializes config mutations internally
+    (a ``KeyedAsyncQueue`` wrapped in ``withFileLock``), so concurrent callers
+    only bought themselves queueing + retry churn, never real parallelism:
+    ``agents.create`` measured 4s idle vs. 39s/51s/31s under 3-way concurrency.
+    Serializing per owner costs nothing and closes that hole; the map key is
+    now the constant ``_DEPLOY_CLAIM_KEY`` and ``listing_id`` is kept only in
+    the claim value for diagnostics.
 
     Why durable, and why here: the ``.template``-sidecar check in
     ``routers/marketplace_listings`` is a read, and the sidecar is written near
@@ -326,12 +348,12 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | N
     Two writes: the first materializes the ``deploy_claims`` map (DynamoDB
     rejects a nested SET when the parent path is absent) and is unconditional +
     idempotent; the second is the actual claim, admitted only when no live claim
-    exists for this listing. Each claim is stored as
-    ``{"claimed_at": epoch, "tok": …}`` — ``claimed_at`` drives takeover of an
-    abandoned claim, ``tok`` fences the release. NOT ``at``: that is a reserved
-    DynamoDB keyword, and an unaliased ``deploy_claims.#lid.at`` in the
-    condition is a ValidationException, which the fail-open below would have
-    quietly turned into "no fence at all".
+    exists for this owner. Each claim is stored as
+    ``{"claimed_at": epoch, "tok": …, "listing_id": …}`` — ``claimed_at`` drives
+    takeover of an abandoned claim, ``tok`` fences the release. NOT ``at``: that
+    is a reserved DynamoDB keyword, and an unaliased ``deploy_claims.#lid.at``
+    in the condition is a ValidationException, which the fail-open below would
+    have quietly turned into "no fence at all".
 
     **Fails OPEN.** A DynamoDB fault admits the deploy (returning a token that
     fences nothing, since no claim was stored). Losing dedupe costs a duplicate
@@ -355,9 +377,9 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | N
             Key={"owner_id": owner_id},
             UpdateExpression="SET deploy_claims.#lid = :claim",
             ConditionExpression=("attribute_not_exists(deploy_claims.#lid) OR deploy_claims.#lid.claimed_at < :cutoff"),
-            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeNames={"#lid": _DEPLOY_CLAIM_KEY},
             ExpressionAttributeValues={
-                ":claim": {"claimed_at": now, "tok": token},
+                ":claim": {"claimed_at": now, "tok": token, "listing_id": listing_id},
                 ":cutoff": now - DEPLOY_CLAIM_STALE_S,
             },
         )
@@ -369,7 +391,7 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | N
         # exactly like a transient fault, and a ValidationException here means
         # the fence is off for every deploy until someone notices.
         logger.error(
-            "try_claim_listing_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            "try_claim_owner_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
             e.response["Error"].get("Code"),
             e.response["Error"].get("Message"),
             owner_id,
@@ -378,8 +400,11 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | N
         return token  # fail open — see docstring
 
 
-async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:
-    """Drop the deploy claim, but only if ``token`` still holds it.
+async def release_owner_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:
+    """Drop the owner's deploy claim, but only if ``token`` still holds it.
+
+    ``listing_id`` is accepted for logging symmetry with the claim call and
+    isn't part of the key — see ``try_claim_owner_deploy``.
 
     The condition is the point: a deploy that hung past
     ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here
@@ -389,8 +414,8 @@ async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token:
 
     Best-effort otherwise: a lost release self-expires after
     ``DEPLOY_CLAIM_STALE_S``, so a fault delays a retry rather than wedging the
-    listing. Never raises — it runs in the deploy's ``finally``, where an
-    exception would mask the real deploy error.
+    owner's next hire. Never raises — it runs in the deploy's ``finally``,
+    where an exception would mask the real deploy error.
     """
     try:
         await run_in_thread(
@@ -398,19 +423,19 @@ async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token:
             Key={"owner_id": owner_id},
             UpdateExpression="REMOVE deploy_claims.#lid",
             ConditionExpression="deploy_claims.#lid.tok = :tok",
-            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeNames={"#lid": _DEPLOY_CLAIM_KEY},
             ExpressionAttributeValues={":tok": token},
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             logger.info(
-                "release_listing_deploy_claim: claim for owner=%s listing=%s is no longer ours — leaving it",
+                "release_owner_deploy_claim: claim for owner=%s listing=%s is no longer ours — leaving it",
                 owner_id,
                 listing_id,
             )
             return
         logger.warning(
-            "release_listing_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
+            "release_owner_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
             owner_id,
             listing_id,
             DEPLOY_CLAIM_STALE_S,

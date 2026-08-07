@@ -20,7 +20,7 @@ def _stub_deploy_claim():
     ``container_repo`` resolves its table through ``core.dynamodb.get_table`` —
     a DIFFERENT boto3 handle from the ``boto3.client`` these tests patch — so a
     test that drives ``/deploy`` without stubbing the claim makes a REAL
-    DynamoDB call and only "passes" by riding ``try_claim_listing_deploy``'s
+    DynamoDB call and only "passes" by riding ``try_claim_owner_deploy``'s
     fail-open branch (verified: it logs ``DDB fault
     (ResourceNotFoundException) … admitting the deploy UNFENCED``). That made
     two tests quietly depend on outbound AWS access, and meant neither was
@@ -34,12 +34,12 @@ def _stub_deploy_claim():
     """
     with (
         patch(
-            "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+            "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
             new_callable=AsyncMock,
             return_value="test-claim-token",
         ),
         patch(
-            "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+            "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
             new_callable=AsyncMock,
         ),
     ):
@@ -573,11 +573,11 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     new_callable=AsyncMock,
 )
 @patch(
-    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
     new_callable=AsyncMock,
 )
 @patch(
-    "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+    "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
     new_callable=AsyncMock,
 )
 @patch("routers.marketplace_listings.get_workspace")
@@ -601,7 +601,9 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
     The sidecar read can't catch this — the sidecar lands near the END of
     deploy_from_artifact, so deploy #2 sees "not installed" while #1 is still
     running. That is how prod grew "Pulse 2". A conditional write on the
-    per-owner containers row fences it across ECS tasks.
+    per-owner containers row fences it across ECS tasks — owner-wide now, so
+    this also covers the case that used to slip through: two DIFFERENT
+    listings hired seconds apart.
     """
     mock_get_published.return_value = _published_listing(price_cents=0)
     catalog = MagicMock()
@@ -615,7 +617,11 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
     assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"] == {"error": "deploy_in_progress"}
+    # The claim is owner-wide now, so the router can no longer tell "this
+    # exact listing is installing" apart from "some other listing of yours
+    # is" — it reports the retryable busy shape instead of the old
+    # deploy_in_progress (see the comment at the raise site).
+    assert resp.json()["detail"] == {"error": "deploy_busy", "retry_after_s": 20}
     # Refused BEFORE the mint — that's the whole point.
     mock_create_pc.assert_not_awaited()
     catalog.deploy_from_artifact.assert_not_awaited()
@@ -624,7 +630,7 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
 
 
 @patch(
-    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
     new_callable=AsyncMock,
 )
 @patch("routers.marketplace_listings.get_ecs_manager")

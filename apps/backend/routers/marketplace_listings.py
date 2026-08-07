@@ -577,16 +577,16 @@ def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None
     started 35s before deploy #1 wrote its sidecar (a page reload cleared the
     drawer's ``isHiring``, which is the only thing stopping a second submit).
     Overlap is fenced separately, by
-    ``container_repo.try_claim_listing_deploy`` below — this read only has to
+    ``container_repo.try_claim_owner_deploy`` below — this read only has to
     catch the retry that arrives AFTER the first deploy finished, which is the
     case the claim has already released.
 
-    Keyed on ``slug`` while the claim is keyed on ``listing_id``, deliberately:
-    a republish mints a new listing_id for the same slug, so this read still
-    recognises "already installed" across versions. The flip side is that two
-    OVERLAPPING deploys of different listing_ids for the same slug (one tab
-    holding a pre-republish listing page) are not fenced — a live
-    republish-during-hire race, left uncovered.
+    Keyed on ``slug`` while the claim is owner-wide (any listing, not just this
+    one), so a republish minting a new listing_id for the same slug still reads
+    as "already installed" across versions here. The claim being owner-wide
+    also closes what used to be a gap: two OVERLAPPING deploys of DIFFERENT
+    listing_ids for the same slug (one tab holding a pre-republish listing
+    page) now contend on the same claim too, not just same-listing retries.
     """
     sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
     if not sidecars:
@@ -744,13 +744,19 @@ async def deploy_listing(
             "already_installed": True,
         }
 
-    # Exclusive claim for the whole deploy. The sidecar read above is a READ:
-    # the sidecar lands near the END of deploy_from_artifact, so two OVERLAPPING
-    # deploys both see "not installed" and both mint an agent — exactly how prod
-    # grew "Pulse 2" (deploy #2 started 35s before deploy #1 wrote its sidecar).
-    # Taken BEFORE the S3 artifact fetch (a loser shouldn't pay for the GET) and
-    # held across the Paperclip mint, so a mint failure can't leak the claim.
-    claim_token = await container_repo.try_claim_listing_deploy(owner_id, listing_id=listing["listing_id"])
+    # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
+    # sidecar read above is a READ: the sidecar lands near the END of
+    # deploy_from_artifact, so two OVERLAPPING deploys both see "not installed"
+    # and both mint an agent — that grew "Pulse 2" for same-listing retries,
+    # and a per-listing claim only ever fenced that case. Three DIFFERENT
+    # listings hired within seconds still wrote three different map keys and
+    # all ran concurrently against the one OpenClaw container (two came back
+    # 500). Serializing per owner costs nothing — the container already
+    # queues config mutations internally — so the claim now fences one deploy
+    # at a time per owner, any listing. Taken BEFORE the S3 artifact fetch (a
+    # loser shouldn't pay for the GET) and held across the Paperclip mint, so
+    # a mint failure can't leak the claim.
+    claim_token = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing["listing_id"])
     if not claim_token:
         # Two ways to lose the claim, and they are different errors. The claim
         # is conditioned on ``attribute_exists(owner_id)`` — it never conjures a
@@ -763,9 +769,16 @@ async def deploy_listing(
                 status_code=503,
                 detail="container starting — retry in a moment",
             )
+        # The claim is now owner-wide, so this branch can no longer tell
+        # "you already have THIS listing installing" (the old
+        # deploy_in_progress case) apart from "a DIFFERENT listing of yours is
+        # installing" — both just see the owner's claim held. Rather than
+        # guess, report the retryable shape: a busy fence, not a terminal
+        # state, with a concrete backoff so the client can auto-retry instead
+        # of treating this as a failure to surface to the buyer.
         raise HTTPException(
             status_code=409,
-            detail={"error": "deploy_in_progress"},
+            detail={"error": "deploy_busy", "retry_after_s": 20},
         )
     try:
         tar_bytes, slice_ = _fetch_agent_artifact(listing)
@@ -937,7 +950,7 @@ async def deploy_listing(
         # they let the buyer-facing UI tell the truth about what won't run.
         return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
     finally:
-        await container_repo.release_listing_deploy_claim(owner_id, listing_id=listing["listing_id"], token=claim_token)
+        await container_repo.release_owner_deploy_claim(owner_id, listing_id=listing["listing_id"], token=claim_token)
 
 
 @router.post("/listings")

@@ -700,6 +700,15 @@ async def test_upsert_reads_the_existing_row_consistently(dynamodb_table):
         await container_repo.upsert("user_cr", {"status": "running"})
         assert reads == [True]
 
+        # update_fields too, and for a sharper reason: its read ARMS the
+        # gate-pointer CAS, which DynamoDB then evaluates strongly on the
+        # leader. A replica read there fails the condition with NO concurrent
+        # writer at all — every retry re-reads the same replica inside one
+        # replication window — and the raise fails the provision.
+        reads.clear()
+        await container_repo.update_fields("user_cr", {"status": "provisioning"})
+        assert reads == [True]
+
         reads.clear()
         await container_repo.get_by_owner_id("user_cr")
         assert reads == [False]

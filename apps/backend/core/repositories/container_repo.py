@@ -1194,7 +1194,16 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     """
     table = _get_table()
     for attempt in range(_GATE_CAS_ATTEMPTS):
-        existing = await get_by_owner_id(owner_id)
+        # CONSISTENT, and load-bearing: this read arms a condition DynamoDB then
+        # evaluates STRONGLY on the leader, so an eventually-consistent read here
+        # fails the CAS with no concurrent writer at all. The provision path is
+        # exactly that shape — mint_gate_token swaps the pointer A->B, and the
+        # very next update_fields ("status": "provisioning") reads a replica
+        # still reporting A, arms `= A`, and is refused against B. The retries
+        # re-read the same replica within tens of milliseconds, well inside one
+        # replication window, so all three lose and the provision FAILS over
+        # nothing.
+        existing = await get_by_owner_id(owner_id, consistent=True)
         if existing is None:
             return None
 

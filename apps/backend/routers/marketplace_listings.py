@@ -925,21 +925,10 @@ async def deploy_listing(
             # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
             # leaves no orphan in the buyer's container — the half-installed
             # ``name=<uuid>`` ghost the incomplete rollback used to strand.
-            # Self-contained best-effort; never raises.
-            #
-            # EXCEPT on a TimeoutError. A client-side RPC timeout means "no
-            # answer yet", not "failed" — the container may still be mid-write
-            # on the very agent directory this would rm -rf. That's exactly what
-            # happened in production on 2026-08-06: this branch's unwind fired
-            # at 17:31:26 for a contended "Echo" deploy, and at 17:31:30 — 4.3s
-            # later — that agent's STILL-RUNNING ``agents.create`` failed with
-            # ``unsafe workspace file "IDENTITY.md"`` because the directory it
-            # was writing into had just been deleted out from under it. Skip the
-            # EFS/openclaw.json unwind here so the in-flight RPC can finish;
-            # only the orphan Paperclip row (real, but harmless to remove) gets
-            # rolled back below.
-            if not isinstance(exc, TimeoutError):
-                await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
+            # Self-contained best-effort; never raises. ``unwind_partial_deploy``
+            # itself skips the EFS/openclaw.json edit when ``cause`` is a
+            # TimeoutError — see its docstring for why.
+            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
             try:
                 await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
             except Exception:

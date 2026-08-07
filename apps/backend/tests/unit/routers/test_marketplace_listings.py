@@ -1077,7 +1077,7 @@ def test_deploy_rolls_back_paperclip_on_catalog_failure(
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_deploy_timeout_skips_unwind_but_still_rolls_back_paperclip(
+def test_deploy_timeout_passes_cause_so_unwind_can_skip_but_still_rolls_back_paperclip(
     mock_get_published,
     mock_get_catalog,
     mock_boto,
@@ -1088,12 +1088,15 @@ def test_deploy_timeout_skips_unwind_but_still_rolls_back_paperclip(
 ):
     """A TimeoutError from the pair step means 'no answer yet', not
     'failed' — the container may still be mid-write on the agent's own
-    directory. ``unwind_partial_deploy`` (which rm -rf's that directory)
-    must NOT run in this case: on 2026-08-06 it fired 4.3s before that
-    same agent's still-running ``agents.create`` finished writing,
-    corrupting the deploy with an ``unsafe workspace file`` error. The
-    orphan Paperclip agent is still real and harmless to remove, so that
-    rollback still runs.
+    directory. The router always calls ``unwind_partial_deploy`` now, but
+    passes the exception as ``cause`` so THAT function (not this call site)
+    decides to skip the EFS/openclaw.json edit on a TimeoutError — see
+    ``test_catalog_service.py`` for the skip behavior itself. On
+    2026-08-06 the un-skipped unwind fired 4.3s before that same agent's
+    still-running ``agents.create`` finished writing, corrupting the
+    deploy with an ``unsafe workspace file`` error. The orphan Paperclip
+    agent is still real and harmless to remove, so that rollback still
+    runs.
     """
     mock_get_published.return_value = _published_listing(price_cents=0)
     mock_create_pc.return_value = {"id": "paperclip-uuid-timeout", "name": "Echo"}
@@ -1110,8 +1113,12 @@ def test_deploy_timeout_skips_unwind_but_still_rolls_back_paperclip(
 
     # Still surfaced as an error to the caller — a timeout is not success.
     assert resp.status_code == 500, resp.text
-    # The load-bearing assertion: EFS/openclaw.json state is left alone.
-    catalog.unwind_partial_deploy.assert_not_awaited()
+    # The load-bearing assertion: the cause is threaded through so
+    # unwind_partial_deploy can make the skip decision itself.
+    catalog.unwind_partial_deploy.assert_awaited_once()
+    unwind_kwargs = catalog.unwind_partial_deploy.await_args.kwargs
+    assert unwind_kwargs["new_agent_id"] == "paperclip-uuid-timeout"
+    assert isinstance(unwind_kwargs["cause"], TimeoutError)
     # The orphan Paperclip row is still cleaned up.
     mock_delete_pc.assert_awaited_once()
     assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-timeout"

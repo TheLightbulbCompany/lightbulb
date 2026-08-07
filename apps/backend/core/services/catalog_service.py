@@ -621,22 +621,52 @@ class CatalogService:
             "agent_entry_keys_dropped": dropped_keys,
         }
 
-    async def unwind_partial_deploy(self, owner_id: str, new_agent_id: str) -> None:
+    async def unwind_partial_deploy(
+        self, owner_id: str, new_agent_id: str, *, cause: BaseException | None = None
+    ) -> None:
         """Reverse the container/EFS side effects of a failed deploy.
 
-        Called by the marketplace deploy router when any post-Paperclip step
+        Called by every deploy-rollback site (marketplace deploy, the
+        agent-builder bridge, company deploy) when a post-Paperclip step
         raises, so a failed Hire leaves no orphan agent in the buyer's
         container. Removes the ``agents.list`` entry the deploy added to
         openclaw.json (the container's ``agents.create`` may persist it even
         when its RPC response is lost) and the on-EFS agent dirs the tarball
         extract created.
 
-        Both operations are idempotent and best-effort: a missing entry / dir
-        is a no-op, and a failure here is logged but never raised — the
-        caller must surface the ORIGINAL deploy error, not a cleanup error.
-        Removing the openclaw.json entry lets the container's file watcher
-        drop the now-orphaned agent from memory on its next reload.
+        ``cause`` — the exception that triggered the rollback, if the caller
+        has one. When it's a ``TimeoutError`` this unwind is skipped
+        entirely (both the openclaw.json edit and the EFS rmtree). A
+        client-side RPC timeout means "no answer yet", not "failed" — the
+        container may still be mid-write on the very agent directory this
+        would rm -rf. That's exactly what happened in production on
+        2026-08-06: a rollback's unwind fired at 17:31:26 for a contended
+        "Echo" deploy, and at 17:31:30 — 4.3s later — that agent's
+        STILL-RUNNING ``agents.create`` failed with ``unsafe workspace file
+        "IDENTITY.md"`` because the directory it was writing into had just
+        been deleted out from under it. Two other creates in that same batch
+        returned success afterward, after their state had already been torn
+        down. Callers must still roll back the orphan Paperclip row on a
+        timeout — only this EFS/openclaw.json side is skipped. Omitting
+        ``cause`` (or passing a non-timeout exception) keeps the unwind
+        unconditional, as before this carve-out existed.
+
+        Otherwise, both operations below are idempotent and best-effort: a
+        missing entry / dir is a no-op, and a failure here is logged but
+        never raised — the caller must surface the ORIGINAL deploy error,
+        not a cleanup error. Removing the openclaw.json entry lets the
+        container's file watcher drop the now-orphaned agent from memory on
+        its next reload.
         """
+        if isinstance(cause, TimeoutError):
+            logger.info(
+                "unwind_partial_deploy: skipping EFS/openclaw.json unwind for agent %s owner %s "
+                "— cause was a client-side TimeoutError, the container may still be mid-write",
+                new_agent_id,
+                owner_id,
+            )
+            return
+
         from core.services.config_patcher import remove_from_openclaw_config_list
 
         try:

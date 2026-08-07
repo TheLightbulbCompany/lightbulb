@@ -127,6 +127,7 @@ class Harness:
         self.seeded_ids: set[str] = set()
         self.deleted: list[str] = []
         self.unwound: list[str] = []
+        self.unwind_causes: list[BaseException | None] = []
         self.container = {"gateway_token": "gw_token"}
         self.ip = "10.0.0.5"
 
@@ -201,8 +202,9 @@ def _install(monkeypatch, h: Harness, plan=None):
         h.deleted.append(agent_id)
 
     class FakeCatalog:
-        async def unwind_partial_deploy(self, *, owner_id, new_agent_id):
+        async def unwind_partial_deploy(self, *, owner_id, new_agent_id, cause=None):
             h.unwound.append(new_agent_id)
+            h.unwind_causes.append(cause)
 
     monkeypatch.setattr(svc, "is_seeded_agent", fake_is_seeded)
     monkeypatch.setattr(svc, "delete_paperclip_for_marketplace", fake_delete)
@@ -471,6 +473,38 @@ async def test_run_company_deploy_never_raises_and_rolls_back(monkeypatch):
     assert [c["name"] for c in h.admin.create_calls] == ["CEO"]
     assert h.deleted == ["pc_1"]
     assert h.unwound == ["pc_1"]
+    assert len(h.unwind_causes) == 1
+    assert isinstance(h.unwind_causes[0], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_run_company_deploy_timeout_threads_cause_but_still_deletes_paperclip(monkeypatch):
+    """pair_with_openclaw can raise TimeoutError after exhausting its
+    bounded retry — a client-side 'no answer yet', not a failure. The
+    rollback must still thread that exception through to
+    unwind_partial_deploy as ``cause`` (so it can skip the EFS/openclaw.json
+    edit — see test_catalog_service.py for that decision) and must still
+    delete the orphan Paperclip agent."""
+    plan = _simple_plan()
+    h = Harness()
+    _install(monkeypatch, h, plan=plan)
+
+    async def boom(*, owner_id, paperclip_agent, gateway_pool, ip, token):
+        raise TimeoutError()
+
+    monkeypatch.setattr(svc, "pair_with_openclaw", boom)
+
+    # Must NOT raise.
+    await svc.run_company_deploy(owner_id=OWNER, listing={}, tar_bytes=b"")
+
+    assert [c["name"] for c in h.admin.create_calls] == ["CEO"]
+    # The orphan Paperclip agent is still deleted on a timeout.
+    assert h.deleted == ["pc_1"]
+    # unwind_partial_deploy was still called (it makes the skip decision
+    # itself); the TimeoutError was threaded through as its cause.
+    assert h.unwound == ["pc_1"]
+    assert len(h.unwind_causes) == 1
+    assert isinstance(h.unwind_causes[0], TimeoutError)
 
 
 # ---------------------------------------------------------------------------

@@ -209,9 +209,12 @@ async def run_company_deploy(*, owner_id: str, listing: dict, tar_bytes: bytes) 
     created: list[dict] = []
     try:
         await _run_company_deploy(owner_id=owner_id, tar_bytes=tar_bytes, created=created)
-    except Exception:  # noqa: BLE001 — background target must never escape
+    except Exception as exc:  # noqa: BLE001 — background target must never escape
         logger.exception("company_deploy: owner=%s failed — rolling back %d created agent(s)", owner_id, len(created))
-        await _rollback(owner_id, created)
+        # cause=exc lets unwind_partial_deploy skip the EFS/openclaw.json edit
+        # on a client-side TimeoutError (pair_with_openclaw can time out) —
+        # see its docstring.
+        await _rollback(owner_id, created, cause=exc)
 
 
 async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[dict]) -> None:
@@ -351,7 +354,7 @@ async def _create_routines(
         )
 
 
-async def _rollback(owner_id: str, created: list[dict]) -> None:
+async def _rollback(owner_id: str, created: list[dict], *, cause: BaseException | None = None) -> None:
     """Best-effort teardown of exactly the agents this run created.
 
     For each created agent: guard ``is_seeded_agent`` (fails CLOSED — a seeded
@@ -359,6 +362,9 @@ async def _rollback(owner_id: str, created: list[dict]) -> None:
     risk deleting a seed), then delete the Paperclip agent and unwind its
     container/EFS side effects. Each step is in its own try/except so one stuck
     delete can't strand the rest. Never raises.
+
+    ``cause`` is threaded into ``unwind_partial_deploy`` so it can skip the
+    EFS/openclaw.json edit on a client-side TimeoutError — see its docstring.
     """
     catalog = get_catalog_service()
     for pc in created:
@@ -379,6 +385,6 @@ async def _rollback(owner_id: str, created: list[dict]) -> None:
         except Exception:
             logger.exception("company_deploy rollback: delete failed for agent=%s", pc_id)
         try:
-            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=pc_id)
+            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=pc_id, cause=cause)
         except Exception:
             logger.exception("company_deploy rollback: unwind failed for agent=%s", pc_id)

@@ -255,7 +255,9 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         # ``name=<uuid>`` ghost in the owner's config — and if the entry is the
         # thing that failed validation, it keeps the whole config invalid until
         # an admin regenerates it. Self-contained best-effort; never raises.
-        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
+        # ``cause=exc`` lets it skip the unwind on a client-side TimeoutError
+        # (deploy_from_artifact's pair RPC can time out) — see its docstring.
+        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
         try:
             await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
         except Exception:

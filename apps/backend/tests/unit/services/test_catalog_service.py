@@ -980,3 +980,31 @@ async def test_unwind_partial_deploy_is_best_effort(monkeypatch):
 
     # EFS cleanup is still attempted even after the config removal raised.
     ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_ghost")
+
+
+@pytest.mark.asyncio
+async def test_unwind_partial_deploy_skips_unwind_on_timeout_cause(monkeypatch):
+    """A TimeoutError cause means 'no answer yet', not 'failed' — the
+    container may still be mid-write on the agent directory this would
+    rm -rf. Neither the openclaw.json edit nor the EFS cleanup may run."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    removed = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", removed)
+
+    await svc.unwind_partial_deploy("user_buyer", "agent_ghost", cause=TimeoutError())
+
+    removed.assert_not_awaited()
+    ws.cleanup_agent_dirs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unwind_partial_deploy_runs_for_non_timeout_cause(monkeypatch):
+    """A non-timeout cause is a genuine failure — the unwind still runs."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    removed = AsyncMock(return_value=None)
+    monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", removed)
+
+    await svc.unwind_partial_deploy("user_buyer", "agent_ghost", cause=RuntimeError("boom"))
+
+    removed.assert_awaited_once()
+    ws.cleanup_agent_dirs.assert_called_once_with("user_buyer", "agent_ghost")

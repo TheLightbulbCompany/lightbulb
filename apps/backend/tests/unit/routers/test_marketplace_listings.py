@@ -20,7 +20,7 @@ def _stub_deploy_claim():
     ``container_repo`` resolves its table through ``core.dynamodb.get_table`` —
     a DIFFERENT boto3 handle from the ``boto3.client`` these tests patch — so a
     test that drives ``/deploy`` without stubbing the claim makes a REAL
-    DynamoDB call and only "passes" by riding ``try_claim_listing_deploy``'s
+    DynamoDB call and only "passes" by riding ``try_claim_owner_deploy``'s
     fail-open branch (verified: it logs ``DDB fault
     (ResourceNotFoundException) … admitting the deploy UNFENCED``). That made
     two tests quietly depend on outbound AWS access, and meant neither was
@@ -34,12 +34,12 @@ def _stub_deploy_claim():
     """
     with (
         patch(
-            "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+            "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
             new_callable=AsyncMock,
-            return_value="test-claim-token",
+            return_value=("test-claim-token", None),
         ),
         patch(
-            "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+            "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
             new_callable=AsyncMock,
         ),
     ):
@@ -573,11 +573,11 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     new_callable=AsyncMock,
 )
 @patch(
-    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
     new_callable=AsyncMock,
 )
 @patch(
-    "routers.marketplace_listings.container_repo.try_claim_listing_deploy",
+    "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
     new_callable=AsyncMock,
 )
 @patch("routers.marketplace_listings.get_workspace")
@@ -585,7 +585,7 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
+def test_deploy_409s_deploy_busy_when_a_different_listing_holds_the_claim(
     mock_get_published,
     mock_get_catalog,
     mock_boto,
@@ -598,10 +598,17 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
 ):
     """Overlapping deploys must not both mint an agent.
 
-    The sidecar read can't catch this — the sidecar lands near the END of
-    deploy_from_artifact, so deploy #2 sees "not installed" while #1 is still
-    running. That is how prod grew "Pulse 2". A conditional write on the
-    per-owner containers row fences it across ECS tasks.
+    The sidecar read can't catch this — it is a read, not a lock, and deploy #2
+    can start before #1 has extracted anything, so #2 sees "not installed" while
+    #1 is still running. That is how prod grew "Pulse 2". A conditional write on the
+    per-owner containers row fences it across ECS tasks — owner-wide now, so
+    this also covers the case that used to slip through: two DIFFERENT
+    listings hired seconds apart.
+
+    DIFFERENT listing holds the claim here (held_listing_id != the requested
+    lst_1) — retrying after a beat is the correct, necessary advice, so this
+    is the RETRYABLE deploy_busy shape, not deploy_in_progress (see the
+    same-listing test below for the opposite case).
     """
     mock_get_published.return_value = _published_listing(price_cents=0)
     catalog = MagicMock()
@@ -610,7 +617,60 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
     mock_get_catalog.return_value = catalog
     mock_get_workspace.return_value = _workspace_with_agents()
     mock_boto.return_value = _stub_s3_get_object()
-    mock_claim.return_value = None  # another deploy holds it
+    mock_claim.return_value = (None, "lst_other")  # a DIFFERENT listing holds it
+    mock_get_container.return_value = {"owner_id": "user_test"}  # container exists
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"error": "deploy_busy", "retry_after_s": 20}
+    # Refused BEFORE the mint — that's the whole point.
+    mock_create_pc.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_not_awaited()
+    # Never took the claim, so it must not release someone else's.
+    mock_release.assert_not_awaited()
+
+
+@patch(
+    "routers.marketplace_listings.container_repo.get_by_owner_id",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
+    new_callable=AsyncMock,
+)
+@patch(
+    "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
+    new_callable=AsyncMock,
+)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_409s_deploy_in_progress_when_the_same_listing_holds_the_claim(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_workspace,
+    mock_claim,
+    mock_release,
+    mock_get_container,
+    client,
+):
+    """THE INVERSE case, and the one that matters most: the buyer's OWN hire of
+    THIS listing is still running. Retrying is exactly what mints a duplicate
+    agent — the original "Pulse 2" bug. This must be the non-retryable
+    deploy_in_progress shape, never deploy_busy + retry_after_s.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock()
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents()
+    mock_boto.return_value = _stub_s3_get_object()
+    mock_claim.return_value = (None, "lst_1")  # the SAME listing holds it
     mock_get_container.return_value = {"owner_id": "user_test"}  # container exists
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
@@ -624,7 +684,7 @@ def test_deploy_409s_when_an_overlapping_deploy_holds_the_claim(
 
 
 @patch(
-    "routers.marketplace_listings.container_repo.release_listing_deploy_claim",
+    "routers.marketplace_listings.container_repo.release_owner_deploy_claim",
     new_callable=AsyncMock,
 )
 @patch("routers.marketplace_listings.get_ecs_manager")
@@ -1009,6 +1069,185 @@ def test_deploy_rolls_back_paperclip_on_catalog_failure(
     mock_delete_pc.assert_awaited_once()
     delete_kwargs = mock_delete_pc.await_args.kwargs
     assert delete_kwargs["agent_id"] == "paperclip-uuid-1234"
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_timeout_keeps_both_sides_so_the_half_install_is_disposable(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """A TimeoutError from the pair step means 'no answer yet', not
+    'failed' — the container may still be mid-write on the agent's own
+    directory. The router always calls ``unwind_partial_deploy`` now, but
+    passes the exception as ``cause`` so THAT function (not this call site)
+    decides to skip the EFS/openclaw.json edit on a TimeoutError — see
+    ``test_catalog_service.py`` for the skip behavior itself. On
+    2026-08-06 the un-skipped unwind fired 4.3s before that same agent's
+    still-running ``agents.create`` finished writing, corrupting the
+    deploy with an ``unsafe workspace file`` error.
+
+    And because the container-side install is left standing, the Paperclip row
+    is left standing WITH it. Deleting only the Paperclip row is what produced
+    an unownable ghost: EFS dirs plus (when ``agents.create`` landed and only
+    ``agents.update`` timed out) a container-side ``name=<uuid>`` agent, with no
+    row left for the owner to see or delete it by, and nothing that would ever
+    clean it up. Keeping the row makes it an ordinary agent in Teams — usable or
+    deletable — and the retry resolves to it through the sidecar +
+    ``agents.list`` cross-check instead of minting a duplicate beside it.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-timeout", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
+    # The real one returns False when it SKIPS the unwind on a timeout.
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+
+    # Still surfaced as an error to the caller — a timeout is not success.
+    assert resp.status_code == 500, resp.text
+    # The load-bearing assertion: the cause is threaded through so
+    # unwind_partial_deploy can make the skip decision itself.
+    catalog.unwind_partial_deploy.assert_awaited_once()
+    unwind_kwargs = catalog.unwind_partial_deploy.await_args.kwargs
+    assert unwind_kwargs["new_agent_id"] == "paperclip-uuid-timeout"
+    assert isinstance(unwind_kwargs["cause"], TimeoutError)
+    # ...and the router HONOURS the "skipped" answer: the Paperclip row stays,
+    # so the half-install has an owner and a disposal story.
+    mock_delete_pc.assert_not_awaited()
+
+
+@patch("routers.marketplace_listings.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_timeout_holds_the_owner_claim_instead_of_freeing_it(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    mock_release,
+    client,
+):
+    """The claim must not become reusable while the timed-out RPC may still be
+    running. ``unwind_partial_deploy`` leaves the container-side install alone
+    on a timeout precisely because the container may still be writing it; a
+    ``finally`` that freed the owner-wide claim in the same breath let the
+    retry take it and run a SECOND install concurrently with the first — the
+    overlap the claim exists to prevent, reintroduced in the one case the
+    branch was written for. The cause rides into the release, which holds the
+    claim and lets the lease settle it (see the repo test for that half).
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-timeout", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
+    catalog.unwind_partial_deploy = AsyncMock(return_value=False)
+    mock_get_catalog.return_value = catalog
+
+    assert client.post("/api/v1/marketplace/listings/lst_1/deploy").status_code == 500
+
+    mock_release.assert_awaited_once()
+    assert isinstance(mock_release.await_args.kwargs["cause"], TimeoutError)
+
+
+@patch("routers.marketplace_listings.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_non_timeout_failure_frees_the_owner_claim_at_once(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    mock_release,
+    client,
+):
+    """The other half, and the reason the hold is scoped to ``TimeoutError``:
+    an ordinary failed hire must free the owner immediately, or one 500 wedges
+    every hire they try for the lease's full 600s.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-failed", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("gateway rejected schema"))
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+
+    assert client.post("/api/v1/marketplace/listings/lst_1/deploy").status_code == 500
+
+    mock_release.assert_awaited_once()
+    assert not isinstance(mock_release.await_args.kwargs.get("cause"), TimeoutError)
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_non_timeout_error_still_calls_unwind(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """No regression: a non-timeout exception from the pair step still
+    unwinds the partial container/EFS state, same as before the
+    TimeoutError carve-out was added."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-nontimeout", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("gateway rejected schema"))
+    catalog.unwind_partial_deploy = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+
+    assert resp.status_code == 500, resp.text
+    catalog.unwind_partial_deploy.assert_awaited_once()
+    assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == "paperclip-uuid-nontimeout"
+    mock_delete_pc.assert_awaited_once()
 
 
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)

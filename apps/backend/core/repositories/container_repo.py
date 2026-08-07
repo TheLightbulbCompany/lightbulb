@@ -5,12 +5,17 @@ import time
 import uuid
 
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 from core.services.status_events import publish_status_changed
 
 logger = logging.getLogger(__name__)
+
+# Deserializes the raw (low-level, AttributeValue-typed) ``Item`` DynamoDB
+# hands back on ReturnValuesOnConditionCheckFailure — see _held_listing_id.
+_DESERIALIZER = TypeDeserializer()
 
 # How long a provision lease (provision_claim_id + provision_claimed_at) stays
 # exclusive with no checkpoint refresh before it is considered abandoned. Every
@@ -294,29 +299,101 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 
 
 # How long a marketplace-deploy claim stays exclusive before another deploy may
-# take it over. A deploy runs ~85s on a busy container (pair_with_openclaw burns
-# a 30s gateway-RPC timeout, then its retry succeeds), so this is deliberately
-# far above the slow case: the only thing it needs to survive is an ECS task
-# dying mid-deploy, which would otherwise wedge that listing forever.
-DEPLOY_CLAIM_STALE_S = 900
+# take it over. Was 900 (15m) when the claim was keyed per-listing — sized for
+# a single lease. Now the claim is OWNER-WIDE (see try_claim_owner_deploy), so
+# a wedged claim blocks every hire the owner tries, not just one listing's.
+#
+# **The lease MUST outlive the deploy it fences.** It briefly did not: a 300s
+# lease was sized against a measured ~85s deploy, then the pairing RPC timeout
+# was raised to 90s, putting ``pair_with_openclaw``'s own worst case
+# (``PAIR_WORST_CASE_S`` = 2 attempts x 2 RPCs x 90s ≈ 361s) ABOVE the lease.
+# A lease that expires mid-deploy is worse than no lease: the second hire takes
+# it over and runs concurrently, the first hire's ``finally`` release is
+# correctly no-op'd by the fencing token, and nothing logs the overlap.
+#
+# 600 = PAIR_WORST_CASE_S (~361s) + headroom for everything stacked on top of
+# pairing in one deploy: the S3 GET, the tar extract to EFS, the Paperclip mint,
+# ``ensure_operator_device_paired``, routine recreation, integration reconcile
+# and the ACP enable. Kept a literal rather than importing the pairing module
+# (a repository must not import a service that drags in the gateway/websockets);
+# ``tests/unit/repositories/test_container_repo_deploy_claim.py`` asserts the
+# ``DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S`` relationship so the two can never
+# drift apart silently again.
+DEPLOY_CLAIM_STALE_S = 600
+
+# Fixed map key for the owner-wide deploy claim. The listing that triggered a
+# claim is still recorded in the claim VALUE (for diagnostics) but no longer
+# part of the key — see try_claim_owner_deploy for why.
+_DEPLOY_CLAIM_KEY = "__deploy__"
 
 
-async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | None:
-    """Take an exclusive lease on "this owner is deploying this listing".
+async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str | None, str | None]:
+    """Take an exclusive lease on "this owner has an agent install in flight".
 
-    Returns a FENCING TOKEN when the caller owns the deploy, None when another
-    one is already in flight for the same listing. Pass the token back to
-    ``release_listing_deploy_claim`` — an unconditional release would let a
-    caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was therefore taken
-    over) delete the live claim of whoever succeeded it, reopening the exact
-    overlap window this exists to close. Same fencing discipline as
-    ``try_claim_provision``'s ``provision_claim_id``.
+    FENCED — every path that installs a marketplace/built agent WORKSPACE into
+    the owner's running container takes this claim: the buyer-facing hire
+    (``routers/marketplace_listings.deploy_listing``), the Friday-asks /
+    owner-approves hire (``marketplace_hire.deploy_for_approval``, reached from
+    the Teams approvals route — the "Needs Attention" band lists several at once,
+    so approving three in a row is the same three-in-nine-seconds shape as the
+    incident), and Atlas registering an agent it built
+    (``routers/agent_builder.register_built_agent``).
+
+    NOT FENCED — ``company_deploy_service.run_company_deploy``, deliberately. It
+    creates and pairs N agents in one background run, so its wall clock is N x a
+    single deploy's; no single lease can cover it without a wedge far longer than
+    ``DEPLOY_CLAIM_STALE_S``, and a lease that expires mid-run is worse than none
+    (see the constant's comment). It is platform-admin-only behind
+    COMPANY_MARKETPLACE_LAUNCH_GATE, so it cannot collide with a buyer hire in
+    practice.
+
+    Also NOT fenced, and out of scope for this claim: the two BARE agent creates
+    (``routers/teams/agents.create_agent`` and ``routers/websocket_chat``), which
+    drive the same ``agents.create``/``agents.update`` pair against the same
+    container but install no workspace, no config merge and no artifact. The
+    lists above are the workspace-installing paths only — not an exhaustive
+    accounting of everything that talks to the container.
+
+    Returns ``(token, held_listing_id)``:
+
+    - On success: ``(token, None)``. Pass ``token`` back to
+      ``release_owner_deploy_claim`` — an unconditional release would let a
+      caller that hung past ``DEPLOY_CLAIM_STALE_S`` (and was therefore taken
+      over) delete the live claim of whoever succeeded it, reopening the exact
+      overlap window this exists to close. Same fencing discipline as
+      ``try_claim_provision``'s ``provision_claim_id``.
+    - On refusal by a live claim: ``(None, held_listing_id)`` — the
+      ``listing_id`` of whoever currently holds it, read off the SAME
+      conditional write via ``ReturnValuesOnConditionCheckFailure="ALL_OLD"``
+      (no extra read, no race against a follow-up ``get_item``). The caller
+      needs this: "you already have THIS listing installing" (don't retry —
+      retrying is the Pulse-2 duplicate-mint bug) and "a DIFFERENT listing of
+      yours is installing" (retry after a beat) require OPPOSITE client
+      advice, and the claim being owner-wide means the caller can no longer
+      tell them apart just from getting refused.
+    - On refusal because the owner has no container row yet, or if the held
+      claim's listing_id can't be parsed for any reason: ``(None, None)``.
+
+    OWNER-WIDE, not per-listing: this used to key the claim on ``listing_id``
+    (``SET deploy_claims.#lid = :claim`` with ``#lid`` bound to the listing),
+    which only ever fenced two deploys of the SAME listing. Three different
+    listings hired within seconds of each other wrote three different map
+    keys, so all three conditions passed and all three deploys ran
+    concurrently against the one OpenClaw container — two came back 500 and
+    rolled back. The container already serializes config mutations internally
+    (a ``KeyedAsyncQueue`` wrapped in ``withFileLock``), so concurrent callers
+    only bought themselves queueing + retry churn, never real parallelism:
+    ``agents.create`` measured 4s idle vs. 39s/51s/31s under 3-way concurrency.
+    Serializing per owner costs nothing and closes that hole; the map key is
+    now the constant ``_DEPLOY_CLAIM_KEY`` and ``listing_id`` is kept only in
+    the claim value for diagnostics.
 
     Why durable, and why here: the ``.template``-sidecar check in
-    ``routers/marketplace_listings`` is a read, and the sidecar is written near
-    the END of the deploy — so two OVERLAPPING deploys both see "not installed"
-    and both mint an agent. That is how prod grew "Pulse 2": the second deploy
-    started 35s before the first wrote its sidecar. The backend runs several ECS
+    ``routers/marketplace_listings`` is a read, not a lock — two OVERLAPPING
+    deploys can both see "not installed" (the second starts before the first has
+    extracted anything) and both mint an agent. That is how prod grew "Pulse 2":
+    the second deploy started 35s before the first wrote its sidecar, back when
+    the sidecar landed at the END of the deploy. The backend runs several ECS
     tasks behind an ALB (the two prod deploys landed on different ones), so the
     in-memory ``services/idempotency`` cache cannot fence this — it has to be a
     conditional write. It rides the existing per-owner ``containers`` row rather
@@ -326,18 +403,26 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | N
     Two writes: the first materializes the ``deploy_claims`` map (DynamoDB
     rejects a nested SET when the parent path is absent) and is unconditional +
     idempotent; the second is the actual claim, admitted only when no live claim
-    exists for this listing. Each claim is stored as
-    ``{"claimed_at": epoch, "tok": …}`` — ``claimed_at`` drives takeover of an
-    abandoned claim, ``tok`` fences the release. NOT ``at``: that is a reserved
-    DynamoDB keyword, and an unaliased ``deploy_claims.#lid.at`` in the
-    condition is a ValidationException, which the fail-open below would have
-    quietly turned into "no fence at all".
+    exists for this owner. Each claim is stored as
+    ``{"claimed_at": epoch, "tok": …, "listing_id": …}`` — ``claimed_at`` drives
+    takeover of an abandoned claim, ``tok`` fences the release. NOT ``at``: that
+    is a reserved DynamoDB keyword, and an unaliased ``deploy_claims.#lid.at``
+    in the condition is a ValidationException, which the fail-open below would
+    have quietly turned into "no fence at all".
 
-    **Fails OPEN.** A DynamoDB fault admits the deploy (returning a token that
-    fences nothing, since no claim was stored). Losing dedupe costs a duplicate
-    agent the owner can delete; failing closed would block a legitimate hire —
-    including a paid one — on a transient fault. Same reasoning as
-    ``try_consume_daily_email_send``.
+    **Fails OPEN, and never raises.** Any fault admits the deploy (returning a
+    token that fences nothing, since no claim was stored). Losing dedupe costs a
+    duplicate agent the owner can delete; failing closed would block a
+    legitimate hire — including a paid one — on a transient fault. Same
+    reasoning as ``try_consume_daily_email_send``. The handler is deliberately
+    ``Exception``-wide, not ``ClientError``: it briefly caught only the latter,
+    which left every ``BotoCoreError`` (``EndpointConnectionError``,
+    ``ConnectTimeoutError``, credential-resolution failures — none of which
+    carry an ``Error`` code) propagating out of a call whose docstring promised
+    they could not. That stranded ``marketplace_hire.deploy_for_approval``'s
+    already-approved agent: the raise escaped BEFORE its rollback envelope, so
+    an idle agent with no workspace stayed in the roster with no route left to
+    install it.
     """
     table = _get_table()
     now = int(time.time())
@@ -355,33 +440,120 @@ async def try_claim_listing_deploy(owner_id: str, *, listing_id: str) -> str | N
             Key={"owner_id": owner_id},
             UpdateExpression="SET deploy_claims.#lid = :claim",
             ConditionExpression=("attribute_not_exists(deploy_claims.#lid) OR deploy_claims.#lid.claimed_at < :cutoff"),
-            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeNames={"#lid": _DEPLOY_CLAIM_KEY},
             ExpressionAttributeValues={
-                ":claim": {"claimed_at": now, "tok": token},
+                ":claim": {"claimed_at": now, "tok": token, "listing_id": listing_id},
                 ":cutoff": now - DEPLOY_CLAIM_STALE_S,
             },
+            # On refusal, hand back the row as it stood BEFORE this write so we
+            # can read who holds the claim without a second (racy) get_item.
+            # The condition can only fail when deploy_claims.#lid already
+            # exists (the other half of the OR), so the held claim is always
+            # present in the returned item on this specific failure.
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
-        return token
+        return token, None
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return None
+            return None, _held_listing_id(e.response.get("Item"))
         # ERROR, with the code: fail-open makes a MALFORMED expression look
         # exactly like a transient fault, and a ValidationException here means
         # the fence is off for every deploy until someone notices.
         logger.error(
-            "try_claim_listing_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            "try_claim_owner_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
             e.response["Error"].get("Code"),
             e.response["Error"].get("Message"),
             owner_id,
             listing_id,
         )
-        return token  # fail open — see docstring
+        return token, None  # fail open — see docstring
+    except Exception as e:  # noqa: BLE001 — fail open on ANY fault; see docstring
+        logger.error(
+            "try_claim_owner_deploy: fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            type(e).__name__,
+            e,
+            owner_id,
+            listing_id,
+        )
+        return token, None
 
 
-async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token: str) -> None:
-    """Drop the deploy claim, but only if ``token`` still holds it.
+def _held_listing_id(raw_item: dict | None) -> str | None:
+    """Best-effort extraction of ``deploy_claims.__deploy__.listing_id`` from
+    the raw (low-level, AttributeValue-typed) ``Item`` DynamoDB returns on a
+    ``ReturnValuesOnConditionCheckFailure`` conditional-write failure.
 
-    The condition is the point: a deploy that hung past
+    Never raises: a malformed/missing item just means the caller falls back
+    to the conservative "treat as same listing" branch (see
+    ``routers/marketplace_listings``), not a crash.
+    """
+    if not raw_item:
+        return None
+    try:
+        item = {k: _DESERIALIZER.deserialize(v) for k, v in raw_item.items()}
+        return (item.get("deploy_claims") or {}).get(_DEPLOY_CLAIM_KEY, {}).get("listing_id")
+    except Exception:
+        logger.warning("_held_listing_id: failed to parse ALL_OLD item — falling back to unknown holder")
+        return None
+
+
+def _has_timeout_cause(exc: BaseException | None) -> bool:
+    """True when ``exc`` is a ``TimeoutError`` or was raised ``from`` one.
+
+    Deploy callers wrap the failure before it reaches the claim release — the
+    marketplace router re-raises as ``HTTPException(500) from exc``, the
+    agent-builder as a 502 — so the timeout that matters usually sits one link
+    down the chain. Only ``__cause__`` is followed, never ``__context__``:
+    implicit chaining would pick up an unrelated exception that merely happened
+    to be in flight and wedge the owner's claim for nothing. Depth-capped so a
+    ``__cause__`` cycle cannot hang the ``finally`` this runs in.
+    """
+    for _ in range(10):
+        if exc is None:
+            return False
+        if isinstance(exc, TimeoutError):
+            return True
+        exc = exc.__cause__
+    return False
+
+
+async def release_owner_deploy_claim(
+    owner_id: str, *, listing_id: str, token: str, cause: BaseException | None = None
+) -> None:
+    """Drop the owner's deploy claim, but only if ``token`` still holds it.
+
+    ``listing_id`` is accepted for logging symmetry with the claim call and
+    isn't part of the key — see ``try_claim_owner_deploy``.
+
+    ``cause`` — the exception the deploy is unwinding with, if any. **A
+    ``TimeoutError`` cause KEEPS the claim**, deliberately, and this is the
+    other half of ``catalog_service.unwind_partial_deploy``'s timeout
+    carve-out. That carve-out leaves the container-side install untouched
+    precisely because the container may still be mutating it; releasing the
+    claim in the same breath would hand the next hire a green light to run a
+    second install concurrently with the still-active first one — the exact
+    overlap the claim exists to prevent, reintroduced on the one path that
+    needs it most. So the timed-out deploy holds its claim and lets the LEASE
+    be the settling period: nothing else touches this owner's container until
+    ``DEPLOY_CLAIM_STALE_S`` (600s) has elapsed since the claim was taken.
+
+    That is a real bound, not a hope. The only step in a deploy that raises a
+    bare ``TimeoutError`` is the pairing RPC pair (``pair_with_openclaw``;
+    every later step — device pairing, integration reconcile, ACP — swallows
+    its own errors, and the Paperclip/httpx calls raise
+    ``httpx.TimeoutException``, which is NOT a builtin ``TimeoutError``).
+    Pairing can burn at most ``PAIR_WORST_CASE_S`` = 361s, and everything ahead
+    of it under the claim (S3 GET, the ~15s-timeout Paperclip mint, the
+    container resolve, the tar extract) is tens of seconds — so the timeout
+    lands around T+400s of a 600s lease, leaving ~200s of quiet before another
+    deploy can take it over. The container-side ``agents.create`` that provoked
+    the timeout measured 39-51s even under 3-way contention, so the settling
+    window is ~4x its worst observed run. The sidecar-plus-``agents.list``
+    cross-check in ``_live_install_of`` is the belt to this brace: if the
+    container did finish that create, the next hire resolves to it as
+    ``already_installed`` rather than minting a duplicate.
+
+    The condition on the write is the point: a deploy that hung past
     ``DEPLOY_CLAIM_STALE_S`` was taken over, and an unconditional REMOVE here
     would delete its successor's live claim — letting a third caller in and
     reopening the overlap window. A ConditionalCheckFailed means "not ours
@@ -389,28 +561,48 @@ async def release_listing_deploy_claim(owner_id: str, *, listing_id: str, token:
 
     Best-effort otherwise: a lost release self-expires after
     ``DEPLOY_CLAIM_STALE_S``, so a fault delays a retry rather than wedging the
-    listing. Never raises — it runs in the deploy's ``finally``, where an
-    exception would mask the real deploy error.
+    owner's next hire. Never raises — it runs in the deploy's ``finally``,
+    where an exception would mask the real deploy error — and that has to hold
+    for ``BotoCoreError`` (no ``Error`` code, so ``ClientError`` alone misses
+    it) as much as for a ``ClientError``.
     """
+    if _has_timeout_cause(cause):
+        logger.warning(
+            "release_owner_deploy_claim: HOLDING the claim for owner=%s listing=%s — the deploy failed with a "
+            "client-side timeout, so the container may still be writing; the lease settles it in %ss",
+            owner_id,
+            listing_id,
+            DEPLOY_CLAIM_STALE_S,
+        )
+        return
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"owner_id": owner_id},
             UpdateExpression="REMOVE deploy_claims.#lid",
             ConditionExpression="deploy_claims.#lid.tok = :tok",
-            ExpressionAttributeNames={"#lid": listing_id},
+            ExpressionAttributeNames={"#lid": _DEPLOY_CLAIM_KEY},
             ExpressionAttributeValues={":tok": token},
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             logger.info(
-                "release_listing_deploy_claim: claim for owner=%s listing=%s is no longer ours — leaving it",
+                "release_owner_deploy_claim: claim for owner=%s listing=%s is no longer ours — leaving it",
                 owner_id,
                 listing_id,
             )
             return
         logger.warning(
-            "release_listing_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
+            "release_owner_deploy_claim: failed for owner=%s listing=%s — claim expires in %ss",
+            owner_id,
+            listing_id,
+            DEPLOY_CLAIM_STALE_S,
+        )
+    except Exception as e:  # noqa: BLE001 — never raises; see docstring
+        logger.warning(
+            "release_owner_deploy_claim: fault (%s: %s) for owner=%s listing=%s — claim expires in %ss",
+            type(e).__name__,
+            e,
             owner_id,
             listing_id,
             DEPLOY_CLAIM_STALE_S,

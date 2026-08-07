@@ -335,15 +335,17 @@ class CatalogService:
 
         Steps:
           1. Extract ``tar_bytes`` into EFS at ``workspace-{new_agent_id}/``.
-          2. If the slice carries an agent, register it LIVE via
+          2. Write the ``.template`` sidecar — with the extract, NOT at the
+             end, so every partial install is discoverable by the retry (see
+             the comment at the write itself).
+          3. If the slice carries an agent, register it LIVE via
              ``pair_with_openclaw`` over the gateway — bypassing the
              chokidar reload lag that plagued the file-merge path. The
              slice's agent dict (minus ``id`` / ``workspace``) rides
              along on the ``agents.update`` RPC as ``extra_update_fields``.
-          3. Deep-merge plugins/mcp/skills into the owner's openclaw.json
+          4. Deep-merge plugins/mcp/skills into the owner's openclaw.json
              via ``apply_deploy_aux_mutations`` (no agent_entry write —
-             the agent is already in memory from step 2).
-          4. Write the ``.template`` sidecar.
+             the agent is already in memory from step 3).
           5. Append cron jobs.
 
         Args:
@@ -379,6 +381,45 @@ class CatalogService:
             user_id=owner_id,
             agent_id=new_agent_id,
             tar_bytes=_strip_plugin_boot_vectors(tar_bytes, slug=slug),
+        )
+
+        # Sidecar goes down with the FIRST durable side effect, not at the end.
+        # It is what ``_live_install_of`` keys on, and a deploy that dies after
+        # the tarball extract used to leave EFS dirs (plus, on a pair timeout, a
+        # container-side agents.list entry) with NO sidecar — invisible to the
+        # retry, which then minted a second agent and stranded the first as a
+        # permanent ghost. Writing it first makes every partial install
+        # discoverable. Two things keep it from handing back a DEAD id:
+        # ``_live_install_of`` cross-checks the sidecar against openclaw.json's
+        # ``agents.list`` (so a sidecar whose agent never registered reads as
+        # "not installed"), and a non-timeout failure runs
+        # ``unwind_partial_deploy``, which unlinks the sidecar FIRST — before
+        # the two correlated, best-effort removals that can both fail and leave
+        # the ``agents.list`` entry standing. Neither covers the Teams REST
+        # delete (``routers/teams/agents.py``), which drops only the Paperclip
+        # row and leaves both the sidecar and the config entry behind; that
+        # predates this ordering and is not fixed by it.
+        #
+        # ``manifest["version"]`` is sourced from the listing row's
+        # ``manifest_json`` column (boto3 returns DDB Numbers as ``Decimal``), or
+        # from ``listing["version"]`` setdefaulted in the marketplace router.
+        # Either way it can be ``Decimal``, which the sidecar's ``json.dumps``
+        # refuses to serialize and blows up the deploy with TypeError. Coerce to
+        # int at the write boundary — the field is always a small positive
+        # integer in practice (listing version starts at 1).
+        raw_version = manifest.get("version", 1)
+        try:
+            template_version = int(raw_version) if raw_version is not None else 1
+        except (TypeError, ValueError):
+            template_version = 1
+        self._workspace.write_template_sidecar(
+            user_id=owner_id,
+            agent_id=new_agent_id,
+            content={
+                "template_slug": slug,
+                "template_version": template_version,
+                "deployed_at": utc_now_iso(),
+            },
         )
 
         slice_ = slice_ or {}
@@ -538,29 +579,6 @@ class CatalogService:
                     owner_id,
                 )
 
-        # ``manifest["version"]`` is sourced from the listing row's
-        # ``manifest_json`` column (boto3 returns DDB Numbers as
-        # ``Decimal``), or from ``listing["version"]`` setdefaulted in
-        # the marketplace router. Either way it can be ``Decimal``,
-        # which the sidecar's ``json.dumps`` refuses to serialize and
-        # blows up the deploy with TypeError. Coerce to int at the
-        # write boundary — the field is always a small positive
-        # integer in practice (listing version starts at 1).
-        raw_version = manifest.get("version", 1)
-        try:
-            template_version = int(raw_version) if raw_version is not None else 1
-        except (TypeError, ValueError):
-            template_version = 1
-        self._workspace.write_template_sidecar(
-            user_id=owner_id,
-            agent_id=new_agent_id,
-            content={
-                "template_slug": slug,
-                "template_version": template_version,
-                "deployed_at": utc_now_iso(),
-            },
-        )
-
         # Carry the publisher's cron jobs (filtered + stripped at publish
         # time) over to the deployer's cron/jobs.json with regenerated
         # ids and the new agent_id wired in. Done AFTER the agent is
@@ -621,22 +639,111 @@ class CatalogService:
             "agent_entry_keys_dropped": dropped_keys,
         }
 
-    async def unwind_partial_deploy(self, owner_id: str, new_agent_id: str) -> None:
+    async def unwind_partial_deploy(
+        self, owner_id: str, new_agent_id: str, *, cause: BaseException | None = None
+    ) -> bool:
         """Reverse the container/EFS side effects of a failed deploy.
 
-        Called by the marketplace deploy router when any post-Paperclip step
-        raises, so a failed Hire leaves no orphan agent in the buyer's
-        container. Removes the ``agents.list`` entry the deploy added to
-        openclaw.json (the container's ``agents.create`` may persist it even
-        when its RPC response is lost) and the on-EFS agent dirs the tarball
-        extract created.
+        Returns True only when the unwind is SAFE — i.e. this agent can no
+        longer read as installed. False means the container-side install may
+        still be standing, so the Paperclip row must be kept too (see below).
+        Two things return False, and callers must honour both:
 
-        Both operations are idempotent and best-effort: a missing entry / dir
-        is a no-op, and a failure here is logged but never raised — the
-        caller must surface the ORIGINAL deploy error, not a cleanup error.
-        Removing the openclaw.json entry lets the container's file watcher
-        drop the now-orphaned agent from memory on its next reload.
+        1. The unwind was SKIPPED because ``cause`` was a ``TimeoutError``.
+        2. The ``.template`` sidecar could not be removed. The sidecar is half
+           of what ``_live_install_of`` keys on, and the other two removals are
+           correlated with it in failure (one EFS fault breaks all three) — so
+           a surviving sidecar plus a surviving ``agents.list`` entry means
+           every later Hire of that slug resolves to this agent id forever.
+           Reporting True there and letting the caller delete the Paperclip row
+           is what turns it into a ghost Teams cannot show OR delete; the whole
+           point of unlinking the sidecar first is lost if its failure isn't
+           reported. The other two removals are attempted regardless — they
+           still shrink the litter — but they cannot make the unwind safe on
+           their own.
+
+        Called by every deploy-rollback site (marketplace deploy, the
+        agent-builder bridge, company deploy) when a post-Paperclip step
+        raises, so a failed Hire leaves no orphan agent in the buyer's
+        container. Removes, in this order: the ``.template`` sidecar, the
+        ``agents.list`` entry the deploy added to openclaw.json (the
+        container's ``agents.create`` may persist it even when its RPC
+        response is lost), and the on-EFS agent dirs the tarball extract
+        created.
+
+        **The sidecar goes FIRST, and that ordering is load-bearing.** The
+        sidecar is written with the tarball extract now, and
+        ``_live_install_of`` treats sidecar + a live ``agents.list`` entry as
+        "already installed". The other two removals are independently
+        best-effort and correlated in failure — one EFS stall breaks both, and
+        ``cleanup_deleted_agent`` swallows its own error — so if the sidecar
+        were removed last, an unwind whose first two steps failed would leave
+        the sidecar AND the ``agents.list`` entry standing while the caller
+        went on to delete the Paperclip row, and every later Hire of that slug
+        would return ``already_installed`` pointing at an agent Teams cannot
+        show, forever. A single-file unlink is the operation most likely to
+        succeed regardless, and its absence is exactly what makes the retry
+        safe.
+
+        ``cause`` — the exception that triggered the rollback, if the caller
+        has one. When it's a ``TimeoutError`` this unwind is skipped
+        entirely (both the openclaw.json edit and the EFS rmtree). A
+        client-side RPC timeout means "no answer yet", not "failed" — the
+        container may still be mid-write on the very agent directory this
+        would rm -rf. That's exactly what happened in production on
+        2026-08-06: a rollback's unwind fired at 17:31:26 for a contended
+        "Echo" deploy, and at 17:31:30 — 4.3s later — that agent's
+        STILL-RUNNING ``agents.create`` failed with ``unsafe workspace file
+        "IDENTITY.md"`` because the directory it was writing into had just
+        been deleted out from under it. Two other creates in that same batch
+        returned success afterward, after their state had already been torn
+        down. Omitting ``cause`` (or passing a non-timeout exception) keeps the
+        unwind unconditional, as before this carve-out existed.
+
+        **The Paperclip row goes with it.** Skipping only this half is what
+        created an unownable ghost: EFS dirs and (when ``agents.create`` landed
+        but ``agents.update`` timed out) a container-side ``name=<uuid>`` agent
+        survived, while the Paperclip row — the only handle the owner has to see
+        or delete an agent from Teams — was deleted anyway. Nothing was left to
+        clean it up, and the buyer's retry minted a duplicate beside it. So the
+        two sides move together: the ``False`` return tells every caller to leave
+        the Paperclip row standing, which makes the half-install a visible,
+        deletable agent in Teams rather than a ghost. Paired with the
+        sidecar-written-before-pairing above, the retry either resolves to that
+        same live install or mints cleanly once the agents.list cross-check
+        proves the id dead.
+
+        Otherwise, both operations below are idempotent and best-effort: a
+        missing entry / dir is a no-op, and a failure here is logged but
+        never raised — the caller must surface the ORIGINAL deploy error,
+        not a cleanup error. Removing the openclaw.json entry lets the
+        container's file watcher drop the now-orphaned agent from memory on
+        its next reload.
         """
+        if isinstance(cause, TimeoutError):
+            logger.info(
+                "unwind_partial_deploy: skipping EFS/openclaw.json unwind for agent %s owner %s "
+                "— cause was a client-side TimeoutError, the container may still be mid-write",
+                new_agent_id,
+                owner_id,
+            )
+            return False
+
+        # FIRST — see the docstring. Unlinking one file is what stops a
+        # half-failed unwind from handing the next Hire a dead agent id, so its
+        # success is what makes the unwind safe to report as such.
+        sidecar_removed = True
+        try:
+            self._workspace.remove_template_sidecar(owner_id, new_agent_id)
+        except Exception:
+            sidecar_removed = False
+            logger.exception(
+                "unwind_partial_deploy: failed to remove .template sidecar for agent %s owner %s "
+                "— reporting an UNSAFE unwind so the caller keeps the Paperclip row",
+                new_agent_id,
+                owner_id,
+            )
+
         from core.services.config_patcher import remove_from_openclaw_config_list
 
         try:
@@ -667,6 +774,8 @@ class CatalogService:
                 new_agent_id,
                 owner_id,
             )
+
+        return sidecar_removed
 
     async def _maybe_enable_acp(self, owner_id: str, manifest: dict) -> bool:
         """Turn on the buyer container's ACP coding-harness runtime when the

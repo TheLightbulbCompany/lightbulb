@@ -2740,6 +2740,7 @@ class GatewayConnectionPool:
         params: dict,
         ip: str,
         token: str,
+        timeout: float | None = None,
     ) -> Any:
         """Send RPC via persistent connection (create / reopen as needed).
 
@@ -2754,10 +2755,19 @@ class GatewayConnectionPool:
         The reconnect floor only gates the parked + stale repair paths,
         not first-time creates — a fresh user landing on /chat shouldn't
         wait 5s for the first connection.
+
+        ``timeout`` — optional override for how long to wait for the RPC
+        response, forwarded to ``GatewayConnection.wait_for_response``.
+        Default ``None`` preserves that method's own ``_RPC_TIMEOUT``
+        default for every existing caller; pass explicitly when a
+        particular RPC is known to run long under contention (e.g. the
+        pairing ``agents.create``/``agents.update`` calls).
         """
         conn = await self.ensure_connection(user_id, ip, token)
         await conn.send_rpc(req_id, method, params)
         try:
+            if timeout is not None:
+                return await conn.wait_for_response(req_id, timeout=timeout)
             return await conn.wait_for_response(req_id)
         except Exception:
             put_metric("gateway.rpc.error", dimensions={"method": method})

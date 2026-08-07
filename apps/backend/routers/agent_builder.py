@@ -115,9 +115,52 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     Snapshot the staging workspace → mint a Paperclip agent (sharing the UUID) →
     deploy the snapshot into the container (files + openclaw.json registration).
     Returns the new ``agent_id`` so Atlas can report it and the owner can publish it.
+
+    Serialized against every other agent install for this owner by the SAME
+    owner-wide deploy claim the marketplace hire takes. This path calls
+    ``deploy_from_artifact`` (and through it ``pair_with_openclaw``) against the
+    one running container, so an Atlas registration racing a marketplace Hire is
+    the 2026-08-06 incident with a different second caller. The claim is taken
+    before the Paperclip mint, so a refusal costs nothing to undo.
     """
     auth_container = await _require_hook_token(owner_id, request)
 
+    # ``listing_id`` is a diagnostics label on this claim, not a key (the claim
+    # is owner-wide) — tag it so a held claim reads as an Atlas build in the log.
+    claim_label = f"builder:{payload.staging_agent_id}"
+    claim_token, held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=claim_label)
+    if not claim_token:
+        # Same split as the marketplace route: a refusal by THIS build is
+        # "already running, don't retry" (retrying registers a second copy —
+        # there is no idempotency check on this path); a refusal by a different
+        # install is "retry after a beat".
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                {"error": "deploy_busy", "retry_after_s": 20}
+                if held is not None and held != claim_label
+                else {"error": "deploy_in_progress"}
+            ),
+        )
+    # A client-side TimeoutError HOLDS the claim rather than releasing it — the
+    # container may still be writing, and the release is what would let the next
+    # install start on top of it (see release_owner_deploy_claim).
+    # ``_register_built_agent`` wraps the failure in a 502, so the timeout rides
+    # down the ``__cause__`` chain the release walks.
+    deploy_cause: BaseException | None = None
+    try:
+        return await _register_built_agent(owner_id=owner_id, payload=payload, auth_container=auth_container)
+    except Exception as exc:
+        deploy_cause = exc
+        raise
+    finally:
+        await container_repo.release_owner_deploy_claim(
+            owner_id, listing_id=claim_label, token=claim_token, cause=deploy_cause
+        )
+
+
+async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentRequest, auth_container: dict) -> dict:
+    """The registration itself, run under the caller's deploy claim."""
     # 1. Snapshot the staging workspace Atlas built. The built agent is
     #    self-describing — its slice comes from the staging dir's OWN
     #    openclaw.json (under workspace/), not the owner's root config (which
@@ -255,11 +298,25 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         # ``name=<uuid>`` ghost in the owner's config — and if the entry is the
         # thing that failed validation, it keeps the whole config invalid until
         # an admin regenerates it. Self-contained best-effort; never raises.
-        await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
-        try:
-            await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-        except Exception:
-            logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
+        # ``cause=exc`` lets it skip the unwind on a client-side TimeoutError
+        # (deploy_from_artifact's pair RPC can time out) — see its docstring.
+        # A skipped unwind means the container-side install is still standing, so
+        # the Paperclip row stays too: deleting it would leave an agent in the
+        # container that nobody can see or remove from Teams.
+        unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
+        if unwound:
+            try:
+                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+            except Exception:
+                logger.exception("register_built_agent: rollback failed for agent %s", new_agent_id)
+        else:
+            logger.warning(
+                "register_built_agent: keeping paperclip agent %s for owner=%s — container-side install "
+                "was NOT safely unwound (client-side timeout, or the sidecar unlink failed), so it stays "
+                "visible + deletable in Teams",
+                new_agent_id,
+                owner_id,
+            )
         if isinstance(exc, HTTPException):
             raise
         # Carry the failure class + message in the detail. The caller is the

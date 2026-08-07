@@ -8,6 +8,7 @@ import pytest
 from core.containers.config import build_device_paired_json
 from core.crypto.operator_device import generate_operator_device, private_key_pem
 from core.services.paperclip_openclaw_pairing import (
+    _PAIR_RPC_TIMEOUT_S,
     approve_pending_device_from_rejection,
     ensure_operator_device_paired,
     fetch_paperclip_agents_for_owner,
@@ -534,6 +535,29 @@ async def test_pair_calls_agents_create_with_uuid_then_update_for_display_name()
     assert update_call.kwargs["method"] == "agents.update"
     assert update_call.kwargs["params"]["agentId"] == pc_uuid
     assert update_call.kwargs["params"]["name"] == "Code Reviewer"
+
+
+@pytest.mark.asyncio
+async def test_pair_passes_longer_timeout_on_both_rpcs():
+    """Both the agents.create and agents.update RPCs must carry the pairing
+    module's longer timeout (~90s), not the gateway pool's default 30s —
+    the 2026-08-06 incident measured contended agents.create calls taking
+    39-51s, well past the default."""
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(return_value={"ok": True, "agentId": pc_uuid})
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    assert pool.send_rpc.await_count == 2
+    for call in pool.send_rpc.await_args_list:
+        assert call.kwargs["timeout"] == _PAIR_RPC_TIMEOUT_S == 90
 
 
 @pytest.mark.asyncio

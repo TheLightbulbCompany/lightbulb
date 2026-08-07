@@ -564,29 +564,34 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
 def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None) -> dict | None:
     """The owner's still-live install of ``slug``, or None.
 
-    A ``.template`` sidecar on its own isn't proof the agent exists: the Teams
-    REST delete (``routers/teams/agents.py``) removes only the Paperclip row,
-    so a deleted agent can leave its ``workspace-{id}/`` dir — and the sidecar
-    inside it — behind. Cross-check openclaw.json's ``agents.list``, which the
-    deploy file-merges the agent entry into, so a stale sidecar can't hand back
-    a dead agent id and permanently block a re-hire.
+    A ``.template`` sidecar on its own isn't proof the agent exists, so this
+    cross-checks openclaw.json's ``agents.list``, which the deploy file-merges
+    the agent entry into. That covers the case it was written for — a deploy
+    that died before its agent ever registered — and it is what lets the
+    sidecar be written EARLY (with the tarball extract) without a partial
+    install handing back a dead id. It does NOT cover the Teams REST delete
+    (``routers/teams/agents.py``), which removes only the Paperclip row and
+    leaves BOTH the sidecar and the ``agents.list`` entry standing; that agent
+    still reads as installed here. The unwind path closes its own half by
+    unlinking the sidecar first (see ``unwind_partial_deploy``).
 
-    SEQUENTIAL retries only — this is a read, not a lock. The sidecar is written
-    near the END of ``deploy_from_artifact``, so two deploys that OVERLAP both
-    see "not installed" here. That is exactly how prod grew "Pulse 2": deploy #2
-    started 35s before deploy #1 wrote its sidecar (a page reload cleared the
+    SEQUENTIAL retries only — this is a read, not a lock. Two deploys that
+    OVERLAP can still both see "not installed", since the second can start
+    before the first has extracted anything at all. That is how prod grew
+    "Pulse 2": deploy #2 started 35s before deploy #1 wrote its sidecar, back
+    when the sidecar landed at the END of the deploy (a page reload cleared the
     drawer's ``isHiring``, which is the only thing stopping a second submit).
     Overlap is fenced separately, by
-    ``container_repo.try_claim_listing_deploy`` below — this read only has to
+    ``container_repo.try_claim_owner_deploy`` below — this read only has to
     catch the retry that arrives AFTER the first deploy finished, which is the
     case the claim has already released.
 
-    Keyed on ``slug`` while the claim is keyed on ``listing_id``, deliberately:
-    a republish mints a new listing_id for the same slug, so this read still
-    recognises "already installed" across versions. The flip side is that two
-    OVERLAPPING deploys of different listing_ids for the same slug (one tab
-    holding a pre-republish listing page) are not fenced — a live
-    republish-during-hire race, left uncovered.
+    Keyed on ``slug`` while the claim is owner-wide (any listing, not just this
+    one), so a republish minting a new listing_id for the same slug still reads
+    as "already installed" across versions here. The claim being owner-wide
+    also closes what used to be a gap: two OVERLAPPING deploys of DIFFERENT
+    listing_ids for the same slug (one tab holding a pre-republish listing
+    page) now contend on the same claim too, not just same-listing retries.
     """
     sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
     if not sidecars:
@@ -710,7 +715,7 @@ async def deploy_listing(
     owner_id = resolve_owner_id(auth)
 
     # Idempotency. A deploy can take a minute-plus when the buyer's container
-    # is busy (pair_with_openclaw eats a 30s gateway-RPC timeout, then the
+    # is busy (pair_with_openclaw can eat its full 90s gateway-RPC timeout, then the
     # retry succeeds) — long enough that the browser can lose the response and
     # report "Couldn't hire". The buyer then clicks Hire again and mints a
     # SECOND agent from the same listing: prod grew a "Pulse" and a "Pulse 2"
@@ -744,13 +749,22 @@ async def deploy_listing(
             "already_installed": True,
         }
 
-    # Exclusive claim for the whole deploy. The sidecar read above is a READ:
-    # the sidecar lands near the END of deploy_from_artifact, so two OVERLAPPING
-    # deploys both see "not installed" and both mint an agent — exactly how prod
-    # grew "Pulse 2" (deploy #2 started 35s before deploy #1 wrote its sidecar).
-    # Taken BEFORE the S3 artifact fetch (a loser shouldn't pay for the GET) and
-    # held across the Paperclip mint, so a mint failure can't leak the claim.
-    claim_token = await container_repo.try_claim_listing_deploy(owner_id, listing_id=listing["listing_id"])
+    # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
+    # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
+    # see "not installed" (the second starts before the first has extracted
+    # anything) and both mint an agent — that grew "Pulse 2" for same-listing
+    # retries,
+    # and a per-listing claim only ever fenced that case. Three DIFFERENT
+    # listings hired within seconds still wrote three different map keys and
+    # all ran concurrently against the one OpenClaw container (two came back
+    # 500). Serializing per owner costs nothing — the container already
+    # queues config mutations internally — so the claim now fences one deploy
+    # at a time per owner, any listing. Taken BEFORE the S3 artifact fetch (a
+    # loser shouldn't pay for the GET) and held across the Paperclip mint, so
+    # a mint failure can't leak the claim.
+    claim_token, held_listing_id = await container_repo.try_claim_owner_deploy(
+        owner_id, listing_id=listing["listing_id"]
+    )
     if not claim_token:
         # Two ways to lose the claim, and they are different errors. The claim
         # is conditioned on ``attribute_exists(owner_id)`` — it never conjures a
@@ -763,10 +777,30 @@ async def deploy_listing(
                 status_code=503,
                 detail="container starting — retry in a moment",
             )
+        # The claim is owner-wide now, but ``held_listing_id`` (read off the
+        # SAME conditional write, see try_claim_owner_deploy) still lets us
+        # tell the two refusal cases apart — and they need OPPOSITE client
+        # advice. Same listing: this exact hire is already running, and
+        # retrying is precisely what minted "Pulse 2" (see the idempotency
+        # comment above) — no retry advice. Different listing: retrying after
+        # a beat is correct, otherwise the second hire never happens.
+        # ``held_listing_id`` is None when it couldn't be determined (no
+        # container row — handled above — or an unparseable claim); default
+        # to the SAFE branch (no retry advice) rather than risk a duplicate
+        # mint on an unconfirmed "it's a different listing" guess.
+        if held_listing_id is not None and held_listing_id != listing["listing_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "deploy_busy", "retry_after_s": 20},
+            )
         raise HTTPException(
             status_code=409,
             detail={"error": "deploy_in_progress"},
         )
+    # What the deploy failed with, threaded into the claim release below: a
+    # client-side TimeoutError HOLDS the claim instead of releasing it, because
+    # the container may still be writing (see release_owner_deploy_claim).
+    deploy_cause: BaseException | None = None
     try:
         tar_bytes, slice_ = _fetch_agent_artifact(listing)
 
@@ -901,17 +935,36 @@ async def deploy_listing(
             # on-EFS dirs) before deleting the Paperclip agent, so a failed Hire
             # leaves no orphan in the buyer's container — the half-installed
             # ``name=<uuid>`` ghost the incomplete rollback used to strand.
-            # Self-contained best-effort; never raises.
-            await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id)
-            try:
-                await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
-            except Exception:
-                # Roll-back is best-effort; the original exception is what
-                # the caller needs to see.
-                logger.exception(
-                    "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+            # Self-contained best-effort; never raises. ``unwind_partial_deploy``
+            # itself skips the EFS/openclaw.json edit when ``cause`` is a
+            # TimeoutError — see its docstring for why.
+            deploy_cause = exc
+            unwound = await catalog.unwind_partial_deploy(owner_id=owner_id, new_agent_id=new_agent_id, cause=exc)
+            if not unwound:
+                # The container-side install may still be standing (and on a
+                # timeout, still mid-write). Deleting the Paperclip row here
+                # would strip the owner's only handle on it and leave an
+                # unownable ghost that the next Hire duplicates. Keep the row:
+                # the agent shows up in Teams, where the owner can use it or
+                # delete it, and the retry resolves to it via the sidecar +
+                # agents.list cross-check.
+                logger.warning(
+                    "Marketplace deploy: keeping paperclip agent %s for owner=%s — the container-side install "
+                    "was NOT safely unwound (client-side timeout, or the sidecar unlink failed), so the "
+                    "half-install stays visible in Teams",
                     new_agent_id,
+                    owner_id,
                 )
+            else:
+                try:
+                    await delete_paperclip_for_marketplace(owner_id=owner_id, agent_id=new_agent_id)
+                except Exception:
+                    # Roll-back is best-effort; the original exception is what
+                    # the caller needs to see.
+                    logger.exception(
+                        "Marketplace deploy: rollback delete_paperclip_for_marketplace failed for agent %s",
+                        new_agent_id,
+                    )
             # Preserve the original HTTP status — the 503 short-circuit
             # already carries the right code; only unexpected errors get
             # mapped to 500.
@@ -937,7 +990,9 @@ async def deploy_listing(
         # they let the buyer-facing UI tell the truth about what won't run.
         return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
     finally:
-        await container_repo.release_listing_deploy_claim(owner_id, listing_id=listing["listing_id"], token=claim_token)
+        await container_repo.release_owner_deploy_claim(
+            owner_id, listing_id=listing["listing_id"], token=claim_token, cause=deploy_cause
+        )
 
 
 @router.post("/listings")

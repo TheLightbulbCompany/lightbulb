@@ -1,8 +1,9 @@
 """Shared fixtures for container unit tests.
 
 Bedrock provisioning now mints a per-owner bedrock-gate bearer token (a real
-DDB PutItem + containers-row write) on every Bedrock-path provision. Stub the
-DDB-touching mint/deny by default so the existing provisioning tests keep
+DDB PutItem + containers-row write) on every Bedrock-path provision, and a
+confirmed roll expires the superseded one (real DDB + ECS reads). Stub the
+DDB-touching mint/deny/expire by default so the existing provisioning tests keep
 exercising provisioning logic without a live gate-tokens table — the token
 module has its own moto-backed suite (tests/unit/billing/test_bedrock_gate_tokens.py).
 
@@ -36,5 +37,16 @@ def _stub_bedrock_gate_tokens(monkeypatch, stub_gate_token):
     )
     monkeypatch.setattr(
         "core.billing.bedrock_gate_tokens.deny_gate_token",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens",
+        AsyncMock(),
+    )
+    # create_user_service re-asserts the minted hash onto the row it just
+    # created, through container_repo.swap_gate_token_hash — another live DDB
+    # write on every Bedrock provision.
+    monkeypatch.setattr(
+        "core.billing.bedrock_gate_tokens.persist_gate_token_hash",
         AsyncMock(),
     )

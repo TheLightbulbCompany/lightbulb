@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.billing.bedrock_gate_tokens import persist_gate_token_hash as _REAL_PERSIST
 from core.containers.ecs_manager import EcsManager
 
 
@@ -192,9 +193,27 @@ class TestBedrockProvisionMint:
             store[owner_id] = row
             return row
 
+        # claim_id/attempt_token are accepted and IGNORED: this fake stands in
+        # for the whole repo, and its store never carries a lease (takeover is
+        # stubbed too). The swap's lease clause has its own moto-backed suite in
+        # tests/unit/billing/test_bedrock_gate_tokens.py.
+        async def fake_swap(owner_id, *, new_hash, superseded, expected_prior_hash, claim_id=None, attempt_token=None):
+            row = store.get(owner_id)
+            if row is None:
+                return "absent", None
+            if row.get("bedrock_gate_token_hash") != expected_prior_hash:
+                return "conflict", dict(row)
+            row["bedrock_gate_token_hash"] = new_hash
+            row["bedrock_gate_superseded_hashes"] = superseded
+            return "written", None
+
         monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", fake_get_by_owner_id)
         monkeypatch.setattr("core.repositories.container_repo.upsert", fake_upsert)
         monkeypatch.setattr("core.repositories.container_repo.update_fields", fake_update_fields)
+        monkeypatch.setattr("core.repositories.container_repo.swap_gate_token_hash", fake_swap)
+        # Put the REAL persist back over conftest's blanket stub: this test
+        # asserts the hash actually lands on the row, so the swap has to run.
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", _REAL_PERSIST)
 
         # The mint returns the arns/role; its own update_fields calls no-op
         # because the row does not exist yet (the bug surface).
@@ -218,9 +237,11 @@ class TestBedrockProvisionMint:
         row = store["org_new"]
         assert row.get("bedrock_role_arn") == role_arn
         assert row.get("bedrock_aip_arns") == arns
-        # Same C-1 fold-in for the gate-token hash: mint's own update_fields
-        # no-opped on the absent row, so create_user_service's upsert must carry
-        # it (else deny_gate_token / rotation silently no-op until reprovision).
+        # The gate-token hash lands the same way, but NOT through the upsert:
+        # mint's own swap no-opped on the absent row, so create_user_service
+        # re-asserts it through container_repo.swap_gate_token_hash once the
+        # upsert has created the row (else deny_gate_token / rotation silently
+        # no-op until the next reprovision).
         from core.billing.bedrock_gate_tokens import hash_token
         from tests.unit.containers.conftest import STUB_GATE_TOKEN
 

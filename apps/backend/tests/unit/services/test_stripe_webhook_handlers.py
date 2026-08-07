@@ -61,9 +61,9 @@ def mock_repo():
 def mock_container_repo():
     """The trial-conversion branch stamps the container row before it dispatches
     the reprovision. Stub the repo for EVERY test in this module so no handler
-    path reaches real DynamoDB. Marker writes go through the SCOPED
-    ``update_conversion_fields`` (never the get→put ``update_fields`` — that
-    was the lease-erasing clobber, see the repo helper's docstring)."""
+    path reaches real DynamoDB. Marker writes go through the ALLOWLISTED
+    ``update_conversion_fields``, which cannot reach status or the lease — see
+    the repo helper's docstring for the clobber that closed."""
     with patch.object(handlers, "container_repo") as repo:
         repo.update_conversion_fields = AsyncMock(return_value=None)
         repo.update_fields = AsyncMock(return_value=None)

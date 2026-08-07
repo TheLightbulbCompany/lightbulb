@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from core.billing import bedrock_gate_tokens as _bedrock_gate_tokens_module
+from core.repositories import container_repo as _container_repo_module
 from core.containers.ecs_manager import (
     START_REFUSED_CAP,
     START_REFUSED_CONVERTING,
@@ -30,6 +32,13 @@ _TEST_AIP_ARNS = {
     "sonnet": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/s",
     "haiku": "arn:aws:bedrock:us-east-1:123456789:application-inference-profile/h",
 }
+
+# Captured at import, BEFORE the autouse fixture below stubs them, so the one
+# test that needs the real lease primitives can put them back.
+_REAL_LEASED = _container_repo_module.update_container_leased
+_REAL_TAKEOVER = _container_repo_module.takeover_provision
+_REAL_GET_BY_OWNER = _container_repo_module.get_by_owner_id
+_REAL_PERSIST_HASH = _bedrock_gate_tokens_module.persist_gate_token_hash
 
 
 @pytest.fixture(autouse=True)
@@ -2199,6 +2208,99 @@ class TestWaitForRunningFencedWrites:
 
 
 # ---------------------------------------------------------------------------
+# Gate-token expiry is scheduled off the ROLL CONFIRMATION, not off a clock.
+# _await_running_transition is the sole confirmation point: wait_for_running
+# (the SFN runner's foreground wait) is a thin delegate to it, and the detached
+# poller enters the same loop.
+# ---------------------------------------------------------------------------
+
+
+def _healthy_task_ecs(mock_ecs_client):
+    mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+    mock_ecs_client.describe_tasks.return_value = {
+        "tasks": [
+            {
+                "lastStatus": "RUNNING",
+                "startedBy": "ecs-svc/primary",
+                "attachments": [
+                    {
+                        "type": "ElasticNetworkInterface",
+                        "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+class TestGateTokenExpiryOnRollConfirmation:
+    @pytest.mark.asyncio
+    async def test_confirmed_roll_expires_superseded_tokens(self, manager, mock_ecs_client, monkeypatch):
+        """The container is up and healthy on whatever def the service points
+        at, so the superseded row can finally be judged."""
+        expire = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", expire)
+        _healthy_task_ecs(mock_ecs_client)
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.wait_for_running("user_test_123")
+
+        expire.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_superseded_fenced_write_expires_nothing(self, manager, mock_ecs_client, monkeypatch):
+        """A straggler's observation is not authoritative: its fenced write
+        loses the race, so it must not judge the winner's tokens."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        expire = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", expire)
+        _healthy_task_ecs(mock_ecs_client)
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_container_leased = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.wait_for_running("user_test_123", claim_id="claim-1")
+
+        expire.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_rollout_expires_nothing(self, manager, mock_ecs_client, monkeypatch):
+        """THE INCIDENT's shape: the roll never landed. Nothing was confirmed,
+        so nothing may be expired — the container is still on the old def."""
+        expire = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", expire)
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+            manager._get_primary_deployment = AsyncMock(
+                return_value={"id": "ecs-svc/primary", "rolloutState": "FAILED"}
+            )
+
+            await manager._await_running_transition("user_test_123", interval_s=0)
+
+        expire.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # _service_exists — L2 fix: a describe_services API failure must SURFACE
 # (EcsManagerError), never silently divert to the full-provision branch.
 # ---------------------------------------------------------------------------
@@ -3674,6 +3776,204 @@ class TestProvisionLeaseFencing:
             await manager.create_user_service("user_z", "gw-token", claim_id="stale-claim")
 
         upsert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_superseded_upsert_stops_before_every_later_side_effect(self, manager, monkeypatch):
+        """The upsert ITSELF can now detect supersession — a takeover landing
+        after the pre-upsert checkpoint but before the put — and when it does,
+        this run must stop dead. Its own CAS retry used to rebuild against the
+        successor's claim and write it back out, letting the loser return and
+        go on to mint an EFS access point and a task definition alongside the
+        winner: the double-provision hazard, arriving through the fence."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        monkeypatch.setattr("core.repositories.container_repo.update_container_leased", AsyncMock())
+        monkeypatch.setattr(
+            "core.repositories.container_repo.upsert",
+            AsyncMock(side_effect=ProvisionSuperseded("lease moved during upsert")),
+        )
+        persist = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", persist)
+        access_point = MagicMock(return_value="fsap-x")
+        task_def = MagicMock(return_value="arn:task-def")
+        monkeypatch.setattr(manager, "_create_access_point", access_point)
+        monkeypatch.setattr(manager, "_register_task_definition", task_def)
+        manager._ecs.create_service = MagicMock()
+
+        with pytest.raises(ProvisionSuperseded):
+            await manager.create_user_service(
+                "user_sup", "gw-token", claim_id="stale-claim", bedrock_gate_token_hash="hash_loser"
+            )
+
+        persist.assert_not_awaited()
+        access_point.assert_not_called()
+        task_def.assert_not_called()
+        manager._ecs.create_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_takeover_after_the_upsert_stops_the_loser_before_any_artifact(self, manager, monkeypatch):
+        """A REAL takeover, landing after the upsert's put has completed.
+
+        The upsert's own CAS only sees a takeover inside its read-to-write
+        window; one landing after it returns is invisible there. Everything from
+        that point to the pre-create checkpoint was unfenced — the gate-pointer
+        re-assert, the EFS access point, the task-definition revision — so the
+        loser deposited artifacts alongside the winner. Real moto row, real
+        try_claim_provision, real takeover_provision, real checkpoint: the
+        checkpoint is what has to catch this.
+        """
+        import boto3
+        from moto import mock_aws
+
+        from core.repositories import container_repo
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(
+                TableName="test-containers",
+                KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
+            monkeypatch.setattr("core.dynamodb._dynamodb_resource", ddb)
+            # Undo the module-level lease stubs: this test needs the real ones.
+            monkeypatch.setattr("core.repositories.container_repo.update_container_leased", _REAL_LEASED)
+            monkeypatch.setattr("core.repositories.container_repo.takeover_provision", _REAL_TAKEOVER)
+            # ...and the row read: _start_guards_clear stubs it to None, which
+            # would make the real upsert's CAS snapshot see an empty row.
+            monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _REAL_GET_BY_OWNER)
+
+            claim = await container_repo.try_claim_provision("user_race", claim_id="claim-loser")
+
+            real_upsert = container_repo.upsert
+            state: dict = {}
+
+            async def upsert_then_takeover(owner_id, fields):
+                # The put lands (fenced, and it succeeds), THEN a deliberate
+                # door takes the lease over. Exactly the window at issue.
+                row = await real_upsert(owner_id, fields)
+                state["winner"] = await container_repo.takeover_provision(owner_id)
+                return row
+
+            monkeypatch.setattr("core.repositories.container_repo.upsert", upsert_then_takeover)
+            # The REAL persist: with the hash DIFFERING from the row's, its swap
+            # runs and its own lease clause is what refuses. (The sibling test
+            # covers the other branch, where the hash already matches and the
+            # swap never runs.)
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", _REAL_PERSIST_HASH)
+            access_point = MagicMock(return_value="fsap-x")
+            task_def = MagicMock(return_value="arn:task-def")
+            monkeypatch.setattr(manager, "_create_access_point", access_point)
+            monkeypatch.setattr(manager, "_register_task_definition", task_def)
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.create_user_service(
+                    "user_race", "gw-token", claim_id=claim, bedrock_gate_token_hash="hash_loser"
+                )
+
+            access_point.assert_not_called()
+            task_def.assert_not_called()
+            manager._ecs.create_service.assert_not_called()
+            # The winner still holds the lease, and the loser's hash never
+            # reached the row — the swap refused it.
+            row = await container_repo.get_by_owner_id("user_race")
+            assert row["provision_claim_id"] == state["winner"] != claim
+            assert "bedrock_gate_token_hash" not in row
+
+    @pytest.mark.asyncio
+    async def test_takeover_during_persist_is_caught_when_the_hash_is_already_current(self, manager, monkeypatch):
+        """The gap the swap's own lease clause cannot see.
+
+        persist_gate_token_hash short-circuits when the row already points at
+        this run's hash — the ordinary case, since mint_gate_token's own swap
+        usually landed it. That fast path writes NOTHING, so the lease clause
+        added to the swap never runs, and a takeover landing between the last
+        checkpoint and it went undetected all the way into _create_access_point
+        and _register_task_definition.
+
+        The fix is not a second lease check inside persist (it has nothing to
+        validate — it writes nothing); it is that the checkpoint sits AFTER
+        persist, at the last moment before the first call that cannot carry a
+        condition of its own.
+        """
+        import boto3
+        from moto import mock_aws
+
+        from core.repositories import container_repo
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(
+                TableName="test-containers",
+                KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
+            monkeypatch.setattr("core.dynamodb._dynamodb_resource", ddb)
+            monkeypatch.setattr("core.repositories.container_repo.update_container_leased", _REAL_LEASED)
+            monkeypatch.setattr("core.repositories.container_repo.takeover_provision", _REAL_TAKEOVER)
+            monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _REAL_GET_BY_OWNER)
+
+            claim = await container_repo.try_claim_provision("user_fast", claim_id="claim-loser")
+            # The row ALREADY points at this run's hash, so persist will
+            # short-circuit — the branch the swap's lease clause cannot reach.
+            await container_repo.swap_gate_token_hash(
+                "user_fast", new_hash="hash_same", superseded=[], expected_prior_hash=None
+            )
+
+            state: dict = {}
+
+            async def takeover_then_persist(owner_id, token_hash, **kw):
+                # A deliberate door takes the lease over AFTER the upsert (and
+                # after where the checkpoint used to sit), then the REAL persist
+                # runs and writes nothing.
+                state["winner"] = await container_repo.takeover_provision(owner_id)
+                return await _REAL_PERSIST_HASH(owner_id, token_hash, **kw)
+
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", takeover_then_persist)
+            access_point = MagicMock(return_value="fsap-x")
+            task_def = MagicMock(return_value="arn:task-def")
+            monkeypatch.setattr(manager, "_create_access_point", access_point)
+            monkeypatch.setattr(manager, "_register_task_definition", task_def)
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.create_user_service(
+                    "user_fast", "gw-token", claim_id=claim, bedrock_gate_token_hash="hash_same"
+                )
+
+            assert state["winner"] != claim
+            access_point.assert_not_called()
+            task_def.assert_not_called()
+            manager._ecs.create_service.assert_not_called()
+            # The fast path wrote nothing, so the pointer is untouched.
+            row = await container_repo.get_by_owner_id("user_fast")
+            assert row["bedrock_gate_token_hash"] == "hash_same"
+            assert row["provision_claim_id"] == state["winner"]
+
+    @pytest.mark.asyncio
+    async def test_no_takeover_runs_straight_through_to_create_service(self, manager, monkeypatch):
+        """The guard against over-fencing: with the lease held throughout, the
+        new checkpoint is a no-op and the provision reaches create_service."""
+        monkeypatch.setattr("core.repositories.container_repo.upsert", AsyncMock())
+        monkeypatch.setattr("core.repositories.container_repo.update_fields", AsyncMock())
+        persist = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", persist)
+        monkeypatch.setattr(manager, "_create_access_point", MagicMock(return_value="fsap-x"))
+        monkeypatch.setattr(manager, "_register_task_definition", MagicMock(return_value="arn:task-def"))
+        manager._ecs.create_service = MagicMock()
+
+        await manager.create_user_service(
+            "user_ok", "gw-token", claim_id="claim-held", bedrock_gate_token_hash="hash_ok"
+        )
+
+        persist.assert_awaited_once()
+        manager._ecs.create_service.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_claimless_create_user_service_is_unfenced(self, manager, monkeypatch):

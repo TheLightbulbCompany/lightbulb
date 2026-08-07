@@ -896,13 +896,6 @@ class EcsManager:
             upsert_fields["bedrock_role_arn"] = task_role_arn
         if bedrock_aip_arns:
             upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
-        # Same fold-in for the bedrock-gate token hash: mint_gate_token ran before
-        # this row exists, so its own bedrock_gate_token_hash update_fields no-op'd
-        # (writes nothing on an absent row). Persist it here so the row carries the
-        # rotation pointer + deny-flag lookup key from first boot; without it,
-        # deny_gate_token/rotation would silently no-op until the next reprovision.
-        if bedrock_gate_token_hash:
-            upsert_fields["bedrock_gate_token_hash"] = bedrock_gate_token_hash
         # CHECKPOINT before the row write: a run superseded during the mint must
         # not deposit its gateway_token / AIP map / role onto the row — the
         # upsert deliberately preserves the NEW owner's lease fields, so without
@@ -910,6 +903,38 @@ class EcsManager:
         if claim_id is not None:
             await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
         await container_repo.upsert(user_id, upsert_fields)
+
+        # The bedrock-gate token hash is NOT folded into that upsert. It moves
+        # only through container_repo.swap_gate_token_hash — one atomic writer —
+        # because the whole-item put has a read-to-write window a concurrent
+        # mint can slip through, orphaning a denied=False credential the kill
+        # switch can then never reach. mint_gate_token already ran its own swap;
+        # this re-asserts it for the case where the row did not exist yet, now
+        # that the upsert above has created it. Placed HERE, before the task
+        # definition carrying the plaintext is registered, so no task can ever
+        # start holding a token the row does not know about. It needs no
+        # checkpoint in front of it: when it writes, it carries the lease in its
+        # own condition and refuses a superseded run atomically; when it does
+        # not write (the row already points at this hash) there is nothing to
+        # fence — the checkpoint below catches that run before any artifact.
+        if bedrock_gate_token_hash:
+            from core.billing.bedrock_gate_tokens import persist_gate_token_hash
+
+            await persist_gate_token_hash(
+                user_id, bedrock_gate_token_hash, claim_id=claim_id, attempt_token=attempt_token
+            )
+
+        # CHECKPOINT at the last moment before the first thing that CANNOT carry
+        # a condition. Everything above here is a conditional DynamoDB write
+        # that fences itself; the EFS access point and the task-definition
+        # revision below are AWS calls with no such option, so this is the only
+        # fence they can have. Deliberately AFTER the swap rather than before:
+        # the swap's no-op branch writes nothing and so needs no guard, and
+        # guarding it there would leave the branch that matters — a superseded
+        # run whose hash is already current — sailing straight into the artifact
+        # calls, which is exactly the window this closes.
+        if claim_id is not None:
+            await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
 
         try:
             # Step 1: Create per-user EFS access point
@@ -1097,9 +1122,11 @@ class EcsManager:
         container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "stopped")
-            # Scoped stamp AFTER the status write: stamp_stop_reason is a
-            # conditioned update_item and can never resurrect a stale item over
-            # a concurrent wake's lease claim, unlike the get→put above.
+            # Separate call because stamp_stop_reason needs a conditional REMOVE
+            # of parked_at that a plain field merge cannot express. Order no
+            # longer matters for safety — both are scoped update_items now, so
+            # neither can resurrect a stale item over a concurrent wake's lease
+            # claim; it was the get→put update_status that once could.
             await container_repo.stamp_stop_reason(user_id, reason)
 
         logger.info("Stopped ECS service %s for user %s (reason=%s)", service_name, user_id, reason)
@@ -1584,12 +1611,14 @@ class EcsManager:
         been stopped by the caller. Deliberately does NOT re-issue the stop:
         a status-poll wake can legitimately claim the exposed "stopped" row
         before this runs, flipping it to "provisioning" — a second
-        stop_user_service here would clobber that back to "stopped" via
-        update_status's get→put, making the row claimable AGAIN and letting
-        this method's own dispatch start a second executor against the
-        poll's in-flight one. Skipping the stop keeps the single-flight
-        guarantee: if the poll's claim won, the dispatch below simply loses
-        the lease and stands down.
+        stop_user_service here would clobber that back to "stopped", making
+        the row claimable AGAIN and letting this method's own dispatch start a
+        second executor against the poll's in-flight one. Still true now that
+        ``update_status`` is a scoped update_item: it is conditioned on the row
+        EXISTING, not on the lease, so it writes ``status`` straight over a
+        freshly claimed provisioning row. Skipping the stop keeps the
+        single-flight guarantee: if the poll's claim won, the dispatch below
+        simply loses the lease and stands down.
 
         Block until the old task is fully stopped before provisioning the
         new one. stop_user_service only issues desiredCount=0 and returns at
@@ -2308,8 +2337,10 @@ class EcsManager:
             # Mint (rotate) the per-owner bedrock-gate bearer token for EVERY
             # Bedrock owner — trial AND paid. The gate is the standard Bedrock
             # path, and the token row's deny flag is the kill switch
-            # (revoke_owner_bedrock). mint_gate_token rotates: it grace-expires
-            # any prior token row this owner pointed at. Lazy import keeps
+            # (revoke_owner_bedrock). mint_gate_token rotates, but it EXPIRES
+            # NOTHING on a clock: the superseded hash is tracked on the row and
+            # its token stays valid until a confirmed roll proves no task
+            # definition and no live task can present it. Lazy import keeps
             # boto3 out of module load.
             from core.billing.bedrock_gate_tokens import (
                 deny_gate_token,
@@ -2318,10 +2349,10 @@ class EcsManager:
             )
 
             gate_token = await mint_gate_token(user_id, bedrock_aip_arns)
-            # First-provision persistence: mint_gate_token's own update_fields
-            # no-ops against a not-yet-created row, so carry the hash to
-            # create_user_service's row-creating upsert (same C-1 fold-in as
-            # bedrock_role_arn / bedrock_aip_arns).
+            # First-provision persistence: mint_gate_token's own conditional
+            # row write no-ops against a not-yet-created row, so hand the hash
+            # to create_user_service, which re-asserts it through the same
+            # conditional swap once its upsert has created the row.
             bedrock_gate_token_hash = hash_token(gate_token)
             # Keep a revoked owner DENIED across the reprovision: mint wrote a
             # fresh row with denied=False, so re-assert the kill switch (mirrors
@@ -2941,6 +2972,18 @@ class EcsManager:
                         user_id,
                         task_arn.split("/")[-1],
                     )
+                    # THE ROLL IS CONFIRMED — the live task is healthy, so it
+                    # holds whatever token its definition carries and any
+                    # superseded row nothing can present is finally safe to
+                    # delete. This is the sole confirmation point for BOTH
+                    # paths: the detached poller, and the SFN runner's
+                    # foreground wait_for_running, which just delegates here.
+                    # Never raises; a missed call only leaves a stale row.
+                    from core.billing.bedrock_gate_tokens import (
+                        expire_superseded_gate_tokens,
+                    )
+
+                    await expire_superseded_gate_tokens(user_id)
                     return
                 if task_arn and ip and container.get("substatus") != "task_running":
                     # Task is RUNNING with an IP but the gateway port isn't

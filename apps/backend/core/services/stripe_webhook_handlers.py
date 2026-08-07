@@ -133,11 +133,10 @@ async def _stamp_conversion_dispatch(owner_id: str) -> None:
     fire-and-forget task never gets to run, and so the rate-limit anchor is
     already on the row when the next ~3s poll reads it.
 
-    A SCOPED write (``update_conversion_fields``), never the get→put
-    ``update_fields``: every conversion-marker write can race a concurrent
-    provision claim, and a full-item put built from a pre-claim read
-    resurrects the stale status and erases the lease — see that helper's
-    docstring for the live incident this closed."""
+    ``update_conversion_fields``, whose ALLOWLIST is the point: every
+    conversion-marker write can race a concurrent provision claim, and pinning
+    this to the marker fields means it can never reach ``status`` or the lease —
+    see that helper's docstring for the live incident this closed."""
     await container_repo.update_conversion_fields(
         owner_id,
         {
@@ -302,9 +301,10 @@ async def run_conversion_reprovision(owner_id: str) -> None:
         dimensions={"outcome": "ok" if succeeded else "error"},
     )
 
-    # SCOPED release (``update_conversion_fields``), never the get→put
-    # ``update_fields``. This write races the provision claim of the dispatch
-    # task ``reprovision_for_user`` just created: the old full-item put here,
+    # ALLOWLISTED release (``update_conversion_fields``) — pinned to the marker
+    # fields, so it can never reach status or the lease. This write races the
+    # provision claim of the dispatch task ``reprovision_for_user`` just
+    # created: the old full-item put here,
     # built from a read taken before that claim landed, resurrected
     # status="stopped" over the fresh "provisioning" and erased the lease —
     # superseding the conversion's OWN SFN execution at its first checkpoint

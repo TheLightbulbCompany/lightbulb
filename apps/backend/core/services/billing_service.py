@@ -1348,8 +1348,9 @@ async def change_provider(
         # row there is nothing to stop, and issuing the stop anyway opens a
         # TOCTOU: a concurrent /container/status poll can win a first-time
         # provision (creating the row) between this check and the stop, and
-        # stop_user_service's unconditional update_status get→put would then
-        # stamp that freshly-claimed row "stopped" with no lease fence —
+        # stop_user_service's update_status would then stamp that
+        # freshly-claimed row "stopped" — it is conditioned on the row EXISTING,
+        # not on the lease, so being a scoped write does not save it here —
         # resurrecting the double-provision class this path exists to prevent.
         # The no-row case falls straight through to the drain-only dispatch,
         # whose try_claim_provision creates-from-scratch (or stands down behind

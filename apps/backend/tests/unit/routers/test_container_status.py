@@ -1366,8 +1366,8 @@ class TestContainerStatusTrialConversion:
     @staticmethod
     def _repo(row):
         """container_repo double whose writes land on ``row``. The conversion
-        marker rides the SCOPED update_conversion_fields (never the get→put
-        update_fields — the lease-erasing clobber, #1428)."""
+        marker rides the ALLOWLISTED update_conversion_fields, which cannot
+        reach status or the lease (the clobber that stranded #1428)."""
 
         async def update_fields(owner_id, fields):
             row.update(fields)

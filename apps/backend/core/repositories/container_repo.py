@@ -42,9 +42,18 @@ def _get_table():
     return get_table("containers")
 
 
-async def get_by_owner_id(owner_id: str) -> dict | None:
+async def get_by_owner_id(owner_id: str, *, consistent: bool = False) -> dict | None:
+    """Read the owner's container row. Eventually consistent BY DEFAULT.
+
+    ``consistent=True`` is opt-in per call, never the default: this is the
+    hottest read in the system (``GET /container/status`` polls it every ~3s
+    per signed-in user), and a strongly consistent GetItem costs double the
+    RCUs. Ask for it only where a stale answer is a correctness bug rather than
+    a slightly old status — today that is ``upsert``'s read-modify-write, whose
+    whole-item put drops any field the read failed to see.
+    """
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id})
+    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id}, ConsistentRead=consistent)
     return response.get("Item")
 
 
@@ -105,45 +114,300 @@ async def scan_all() -> list[dict]:
     return items
 
 
+# Fields this whole-item put_item must carry over from the existing row when the
+# caller did not supply them. See ``upsert``'s docstring for why each is here.
+_UPSERT_PRESERVED_FIELDS = (
+    "provision_claim_id",
+    "provision_claimed_at",
+    "provision_attempt_token",
+    "provision_execution_name",
+    # The bedrock-gate superseded-hash list (``bedrock_gate_tokens._SUPERSEDED_FIELD``
+    # — bound to that constant by
+    # test_container_repo.test_upsert_preserves_the_bedrock_gate_superseded_hashes,
+    # since importing it here would close an import cycle). It is the ONLY
+    # handle on an owner's old gate-token rows: that table is hash-keyed with no
+    # owner index, so a hash dropped from this list can never be found, deleted,
+    # or denied again — leaving a live bearer credential (its plaintext is still
+    # in the retained task-definition revision) that nothing can kill.
+    "bedrock_gate_superseded_hashes",
+    # The pointer to the owner's CURRENT gate token, for the same reason. Both
+    # gate fields move ONLY through ``swap_gate_token_hash``, so no caller
+    # passes either one here and this put can only ever PRESERVE them — but
+    # preserve it must: a reprovision through ``create_user_service`` (that is
+    # ``routers/debug.create_user_service(owner_id, gateway_token)``, and a
+    # Bedrock -> chatgpt_oauth provider-swap reprovision through the no-service
+    # branch) would otherwise strand the token the LIVE container is presenting.
+    "bedrock_gate_token_hash",
+)
+
+
+# The two fields ``swap_gate_token_hash`` owns outright. Enforced, not merely
+# documented: the CAS below conditions on the POINTER, so a caller naming only
+# the superseded list would slip past it and silently replace the list with the
+# pointer unchanged — and every hash dropped from it is a live bearer credential
+# nothing can find, expire, or deny again.
+_GATE_OWNED_FIELDS = frozenset({"bedrock_gate_token_hash", "bedrock_gate_superseded_hashes"})
+
+
+def _reject_gate_owned_fields(caller: str, fields: dict) -> None:
+    named = sorted(_GATE_OWNED_FIELDS & fields.keys())
+    if named:
+        raise ValueError(
+            f"{caller}: {named} may only be written by swap_gate_token_hash — a write from "
+            "anywhere else can erase a hash the bedrock-gate kill switch still needs to reach"
+        )
+
+
+# How many times ``upsert``'s whole-item put re-reads and rebuilds after losing
+# the CAS below. One rival run lands at most TWO writes this condition can
+# notice — its ``takeover_provision`` (moving the claim) and its
+# ``mint_gate_token`` swap (moving the gate pointer) — so 2 + 1 = 3. Its
+# ``claim_attempt`` re-stamp and its ``persist_gate_token_hash`` re-assert both
+# write values that are already there, which the condition compares by VALUE and
+# so does not see. Exhaustion RAISES rather than forcing the write: a failed
+# provision is retried by the status poll, an orphaned bearer token and a
+# resurrected lease are not self-healing.
+_UPSERT_CAS_ATTEMPTS = 3
+
+# The fields ``upsert``'s put pins to the values its read saw. Every one is
+# owned by ANOTHER writer and merely preserved here, so writing one back from a
+# stale snapshot is a lost update with no self-healing:
+#
+# - ``bedrock_gate_token_hash`` — resurrecting it drops the hash a concurrent
+#   mint wrote. The gate-tokens table is hash-keyed with no owner index, so a
+#   hash the row no longer names can never be found, expired, or denied again,
+#   while its plaintext is still live in a retained task-definition revision.
+# - ``provision_claim_id`` / ``provision_attempt_token`` — resurrecting either
+#   re-authorizes a superseded run at its next checkpoint while fencing OUT the
+#   successor that legitimately took the lease. That is the double-provision
+#   hazard: two tasks writing one EFS workspace, which is how SQLite WAL has
+#   been corrupted here before.
+#
+# Deliberately NOT pinned, because both ride along on a field that is (verified
+# by grepping every writer of each; re-verify if you add one):
+# - ``provision_execution_name`` — written only by ``try_claim_provision``, in
+#   the same atomic write as a fresh ``provision_claim_id``, and removed only by
+#   ``update_container_leased(release_lease=True)``, which removes the claim and
+#   the attempt token with it. It cannot change without a pinned field changing.
+# - ``provision_claimed_at`` — the lease heartbeat. The one writer that moves it
+#   ALONE is ``update_container_leased``'s checkpoint, conditioned on the claim
+#   we also saw, i.e. the holder we already agree with; restoring a stamp a
+#   round-trip old is invisible against PROVISION_CLAIM_STALE_S (300s) and the
+#   next checkpoint refreshes it. Every change that MATTERS (try_claim,
+#   takeover, attempt bump, lease release) moves the claim or the attempt token
+#   in the same atomic write.
+#
+# So the set is COMPLETE: every preserved field is either pinned here or cannot
+# change without one that is.
+#
+# The two groups are pinned for the same reason but a refusal on each means the
+# OPPOSITE thing, which is why they are named separately — see
+# ``_raise_if_superseded``.
+_LEASE_CAS_FIELDS = ("provision_claim_id", "provision_attempt_token")
+_UPSERT_CAS_FIELDS = ("bedrock_gate_token_hash", *_LEASE_CAS_FIELDS)
+
+
+def _unchanged_since_read(existing: dict | None) -> tuple[dict, dict]:
+    """``put_item`` kwargs that refuse the write if any pinned field has moved,
+    plus the LEASE subset those kwargs pinned, in the shape
+    ``_raise_if_superseded`` compares.
+
+    Both come out of the one builder deliberately. A condition and the triage of
+    its failure have to agree about which fields are in play, and when they are
+    assembled in two places they drift: the triage then blames a field the
+    condition never pinned and aborts a valid lease holder.
+
+    ``upsert`` rebuilds the row from a read and puts it back, so it REWRITES
+    every field it means only to preserve — and a rewrite from a snapshot taken
+    before a concurrent writer DELETES whatever that writer landed.
+
+    No amount of care in the caller closes that. Three attempts tried, and each
+    was a guard computed from the same stale snapshot: by the time the snapshot
+    is examined it can already be wrong, whatever it is examined FOR. So the
+    write carries the proof instead — it lands only while the row still holds
+    what this read saw, and a refusal sends the caller back to re-read.
+
+    ``bedrock_gate_superseded_hashes`` is pinned transitively by the pointer, and
+    the argument is NOT "the swap always mints a fresh hash" (it does not —
+    ``persist_gate_token_hash`` re-asserts an existing one). It is that the list
+    has exactly ONE writer, ``swap_gate_token_hash``, enforced by
+    ``_reject_gate_owned_fields``; every write it makes is itself conditioned on
+    the pointer it read; and in every reachable call the hash it writes differs
+    from that pinned value. So no reachable write changes the list while leaving
+    the pointer where we saw it.
+
+    A field the snapshot did NOT see is pinned as ``attribute_not_exists``, not
+    skipped — otherwise a rival that CREATES it slips through. That branch is
+    also every first provision (no lease, no gate hash yet) and every
+    non-Bedrock owner (no gate hash ever), so getting it wrong wedges them all.
+    """
+    names: dict[str, str] = {}
+    values: dict = {}
+    clauses: list[str] = []
+    lease_expected: dict = {}
+    for i, field in enumerate(_UPSERT_CAS_FIELDS):
+        alias = f"#c{i}"
+        names[alias] = field
+        seen = (existing or {}).get(field)
+        if field in _LEASE_CAS_FIELDS:
+            # Recorded whatever it is, INCLUDING None: this condition pins every
+            # field unconditionally, and a None means it pinned it as absent.
+            lease_expected[field] = seen
+        if seen is None:
+            clauses.append(f"attribute_not_exists({alias})")
+        else:
+            clauses.append(f"{alias} = :c{i}")
+            values[f":c{i}"] = seen
+    kwargs: dict = {
+        "ConditionExpression": " AND ".join(clauses),
+        "ExpressionAttributeNames": names,
+        # DynamoDB will not say WHICH clause failed, but it hands back the row
+        # as it stood before the refused write — which is enough to tell a
+        # benign rival mint from a lease takeover. See _raise_if_superseded.
+        "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+    }
+    if values:
+        kwargs["ExpressionAttributeValues"] = values
+    return kwargs, lease_expected
+
+
+def _deserialize_item(raw_item: dict | None) -> dict:
+    """The raw (low-level, AttributeValue-typed) ``Item`` DynamoDB returns on a
+    ``ReturnValuesOnConditionCheckFailure``, as a plain dict. Never raises: an
+    unparseable item degrades to ``{}``, which every caller reads as "the
+    pinned state is not what we expected" — the safe direction."""
+    try:
+        return {k: _DESERIALIZER.deserialize(v) for k, v in (raw_item or {}).items()}
+    except Exception:
+        logger.warning("failed to parse a conditional-check-failure item — treating it as unrecognisable")
+        return {}
+
+
+def _raise_if_superseded(owner_id: str, expected: dict, current: dict, *, where: str) -> None:
+    """Refusal triage: retryable conflict, or ``ProvisionSuperseded``?
+
+    A refused CAS means SOMETHING pinned moved, and the right response depends
+    entirely on which — the two are opposites:
+
+    - **Gate pointer moved.** A rival mint. Benign: rebuilding against the newer
+      row and writing is exactly what should happen, and it is the whole point
+      of the retry.
+    - **Lease moved.** This caller has been SUPERSEDED. Rebuilding here would
+      re-read the successor's claim and write it back out under the old
+      holder's own execution — converting a correctly failed lease check into a
+      successful write by the loser, which then returns and goes on to create
+      an EFS access point and register a task definition alongside the winner.
+      That is the double-provision hazard the lease exists to prevent, arriving
+      through the fence meant to close it. So: stop, before the next side
+      effect. Exactly what ``update_container_leased`` does at every checkpoint;
+      this makes the conditional writes here honour the same contract.
+
+    Both moved → superseded wins; the successor's mint is not ours to merge.
+
+    ``expected`` IS THE PINNED SET, and only it is compared. A key present means
+    the condition pinned that field; a value of ``None`` means it pinned it as
+    ABSENT. Comparing a field the condition did NOT pin is a bug in the
+    lockout direction — ``swap_gate_token_hash`` pins the attempt token only
+    when the caller supplied one, and a deliberate takeover mints its claim with
+    none, so blaming the attempt token there aborts a valid lease holder on a
+    refusal that was only ever about the hash.
+
+    Which is why neither call site builds this by hand: ``upsert`` gets it back
+    from ``_unchanged_since_read`` (the same function that writes the condition)
+    and the swap builds it in the same block that appends its lease clauses.
+
+    A row deleted out from under us (or an item that would not parse) arrives as
+    an empty ``current``, so a caller that pinned a lease stops — the safe
+    direction, since the alternative is writing over an owner we cannot see.
+    """
+    for field, want in expected.items():
+        if want != current.get(field):
+            raise ProvisionSuperseded(
+                f"provision lease for {owner_id} moved during {where} ({field}) — "
+                "a newer run owns the row; this one must write nothing further"
+            )
+
+
 async def upsert(owner_id: str, fields: dict) -> dict:
     """Create or update a container record. Preserves id and created_at on existing items.
 
-    Also preserves the FULL provision lease (``provision_claim_id`` +
-    ``provision_claimed_at`` + ``provision_attempt_token`` +
-    ``provision_execution_name``): this put_item REPLACES the whole item, and
-    create_user_service upserts mid-provision — dropping the lease here would
-    make the in-flight provision look stale/unowned and re-claimable while it
-    is still running. The SFN fields matter just as much as the claim:
-    dropping ``provision_execution_name`` blinds Branch-A redispatch to the
-    live execution, and dropping ``provision_attempt_token`` makes every
-    attempt-token fence permissive (they all allow
-    ``attribute_not_exists``), letting a superseded straggler pass its next
-    checkpoint. (PR 2 replaces this whole-item write with a scoped
-    UpdateItem, which removes the need to preserve anything.)
+    Still a whole-item put, deliberately — unlike ``update_fields``, which became
+    a scoped write. Its callers rely on the REPLACE: a reprovision through
+    ``create_user_service`` is meant to clear ``access_point_id``,
+    ``task_definition_arn``, ``last_error``, ``stop_reason``/``parked_at``,
+    ``deploy_claims`` and the rest of the previous incarnation's state. Scoping
+    it would leave, among others, ``stop_reason="trial_idle"`` on a freshly
+    running container, which the wake-suppression predicate keys on.
+
+    Also preserves everything in ``_UPSERT_PRESERVED_FIELDS`` that the caller
+    did not pass, because this put_item REPLACES the whole item and
+    create_user_service upserts mid-provision:
+
+    - the FULL provision lease (``provision_claim_id`` +
+      ``provision_claimed_at`` + ``provision_attempt_token`` +
+      ``provision_execution_name``) — dropping it would make the in-flight
+      provision look stale/unowned and re-claimable while it is still running.
+      The SFN fields matter just as much as the claim: dropping
+      ``provision_execution_name`` blinds Branch-A redispatch to the live
+      execution, and dropping ``provision_attempt_token`` makes every
+      attempt-token fence permissive (they all allow
+      ``attribute_not_exists``), letting a superseded straggler pass its next
+      checkpoint.
+    - ``bedrock_gate_superseded_hashes`` and ``bedrock_gate_token_hash`` —
+      dropping either orphans gate-token rows permanently (see the constant's
+      comment). No caller MAY pass them — ``_reject_gate_owned_fields`` refuses.
+
+    Preserving is not enough on its own: writing back a value another writer
+    moved between this read and this put is a LOST UPDATE, not a preserve. So
+    the put is conditional on the fields in ``_UPSERT_CAS_FIELDS`` still holding
+    what the read saw. A refusal caused by a rival MINT rebuilds against the
+    newer row; one caused by a lease TAKEOVER raises ``ProvisionSuperseded``
+    and the caller must stop before its next side effect — see
+    ``_raise_if_superseded`` for why those must not be treated alike.
     """
+    _reject_gate_owned_fields("upsert", fields)
     table = _get_table()
-    existing = await get_by_owner_id(owner_id)
+    for attempt in range(_UPSERT_CAS_ATTEMPTS):
+        # CONSISTENT: this read is the ONLY source of the fields the whole-item
+        # put below must carry over, and the lease ones were written moments
+        # earlier by try_claim_provision / takeover_provision on this same
+        # provision. A replica that has not caught up reports them absent and
+        # the put then DROPS them — making an in-flight provision look unowned
+        # and re-claimable, or minting a second id/created_at for a row that
+        # already had them. One strongly consistent GetItem per provision; the
+        # ~3s /container/status poll keeps reading the eventually-consistent
+        # default.
+        existing = await get_by_owner_id(owner_id, consistent=True)
 
-    now = utc_now_iso()
-    item = {
-        "owner_id": owner_id,
-        "id": existing["id"] if existing else str(uuid.uuid4()),
-        "created_at": existing["created_at"] if existing else now,
-        "updated_at": now,
-        **fields,
-    }
-    for lease_field in (
-        "provision_claim_id",
-        "provision_claimed_at",
-        "provision_attempt_token",
-        "provision_execution_name",
-    ):
-        if existing and lease_field in existing and lease_field not in fields:
-            item[lease_field] = existing[lease_field]
-    # Ensure owner_id is not overridden by fields
-    item["owner_id"] = owner_id
+        now = utc_now_iso()
+        item = {
+            "owner_id": owner_id,
+            "id": existing["id"] if existing else str(uuid.uuid4()),
+            "created_at": existing["created_at"] if existing else now,
+            "updated_at": now,
+            **fields,
+        }
+        for lease_field in _UPSERT_PRESERVED_FIELDS:
+            if existing and lease_field in existing and lease_field not in fields:
+                item[lease_field] = existing[lease_field]
 
-    await run_in_thread(table.put_item, Item=item)
+        # Ensure owner_id is not overridden by fields
+        item["owner_id"] = owner_id
+
+        put_kwargs, lease_expected = _unchanged_since_read(existing)
+        try:
+            await run_in_thread(table.put_item, Item=item, **put_kwargs)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            # Raises ProvisionSuperseded when it was the LEASE that moved: that
+            # refusal is not a conflict to merge, it is a stop signal. The
+            # pinned set comes from the builder above, never rebuilt here.
+            _raise_if_superseded(owner_id, lease_expected, _deserialize_item(e.response.get("Item")), where="upsert")
+            if attempt + 1 == _UPSERT_CAS_ATTEMPTS:
+                raise
+            continue  # a rival mint landed inside the window — rebuild on it
+        break
     publish_status_changed(owner_id)
     return item
 
@@ -737,6 +1001,11 @@ async def update_container_leased(
     the stamped claim/execution-name, which dispatch Branch A needs intact
     to re-issue the same execution.
     """
+    # The third caller-supplied `fields` door. Its lease condition says nothing
+    # about the gate pointer, so a caller naming the superseded list here would
+    # replace it with no fence at all — the same shape _GATE_OWNED_FIELDS closes
+    # on the other two.
+    _reject_gate_owned_fields("update_container_leased", fields or {})
     table = _get_table()
     names: dict[str, str] = {}
     set_parts: list[str] = []
@@ -877,56 +1146,35 @@ async def update_conversion_fields(owner_id: str, fields: dict) -> None:
     """Scoped, lease-safe write of the trial->paid conversion marker fields
     onto an EXISTING containers row.
 
-    NEVER the get→put ``update_fields`` — that was a live incident: the
-    conversion's release write (``run_conversion_reprovision``) read the row
-    BEFORE its own freshly dispatched provision won ``try_claim_provision``,
-    then put the whole stale item back — resurrecting ``status="stopped"``
-    over the just-claimed "provisioning" AND erasing every lease field
-    (``provision_claim_id`` / ``provision_attempt_token`` /
-    ``provision_execution_name``). The already-started SFN runner then hit
-    ``ProvisionSuperseded`` at its first checkpoint and stood down, leaving a
-    PAYING owner stopped with nothing running and nothing scheduled. A scoped
-    ``update_item`` on exactly the marker fields cannot touch ``status`` or
-    the lease, so the race collapses to a cosmetic substatus overwrite at
-    worst (the claim's "claimed" label may be nulled for one poll; the next
-    checkpoint/status write refreshes it).
+    THE ALLOWLIST is what this adds over a bare ``update_fields`` (itself now a
+    scoped write): it pins the write to the marker fields FOREVER, so no future
+    caller can quietly grow this into a status/lease writer.
+
+    That distinction was a live incident, back when ``update_fields`` was a
+    get→put of the whole item: the conversion's release write
+    (``run_conversion_reprovision``) read the row BEFORE its own freshly
+    dispatched provision won ``try_claim_provision``, then put the whole stale
+    item back — resurrecting ``status="stopped"`` over the just-claimed
+    "provisioning" AND erasing every lease field (``provision_claim_id`` /
+    ``provision_attempt_token`` / ``provision_execution_name``). The
+    already-started SFN runner then hit ``ProvisionSuperseded`` at its first
+    checkpoint and stood down, leaving a PAYING owner stopped with nothing
+    running and nothing scheduled. A scoped write on exactly the marker fields
+    cannot touch ``status`` or the lease, so the race collapses to a cosmetic
+    substatus overwrite at worst (the claim's "claimed" label may be nulled for
+    one poll; the next checkpoint/status write refreshes it).
 
     ``fields`` may only contain conversion marker keys (allowlist above);
     anything else raises ``ValueError`` — this helper must never become a
-    general row writer. ``None`` values are written as DynamoDB NULL,
-    matching what the old put-based path stored (readers ``.get(...)`` both
-    shapes identically).
-
-    Conditioned on the row existing; a concurrently deleted row makes this a
-    silent no-op (nothing left to mark), mirroring ``stamp_stop_reason``.
+    general row writer. The write itself is ``update_fields``, so the rest of
+    the contract (``None`` -> NULL, missing row -> silent no-op, the
+    ``updated_at`` stamp, the status event) is that function's, once, rather
+    than a second copy of its expression builder drifting alongside it.
     """
     unknown = set(fields) - _CONVERSION_MARKER_FIELDS
     if unknown:
         raise ValueError(f"update_conversion_fields: disallowed fields {sorted(unknown)}")
-    table = _get_table()
-    names: dict[str, str] = {}
-    set_parts: list[str] = []
-    values: dict = {":iso": utc_now_iso()}
-    for i, (key, value) in enumerate(fields.items()):
-        alias = f"#f{i}"
-        names[alias] = key
-        set_parts.append(f"{alias} = :v{i}")
-        values[f":v{i}"] = value
-    set_parts.append("updated_at = :iso")
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET " + ", ".join(set_parts),
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        return
-    publish_status_changed(owner_id)
+    await update_fields(owner_id, fields)
 
 
 async def release_stranded_stop_to_error(owner_id: str, *, last_error: str) -> bool:
@@ -1084,17 +1332,195 @@ async def update_status(owner_id: str, status: str, substatus: str | None = None
 
 
 async def update_fields(owner_id: str, fields: dict) -> dict | None:
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
+    """Merge ``fields`` into an EXISTING row. Returns the updated item, ``None``
+    when there is no row.
 
-    existing.update(fields)
-    existing["updated_at"] = utc_now_iso()
+    A SCOPED ``update_item`` — it writes the caller's fields and nothing else,
+    which is what the name always promised. It used to be a get→put of the whole
+    item, the pattern half the scoped writers below warn against by name: every
+    attribute the snapshot carried was written back, so a concurrent writer's
+    ``status``, lease, ``stop_reason`` or gate-token pointer could be resurrected
+    from a read milliseconds old — the documented double-provision hazard, on all
+    ~20 callers. Nothing is read now; ``ALL_NEW`` returns the merged item.
 
-    table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
+    EVERY attribute name is aliased, uniformly. Not tidiness: ``status`` is a
+    DynamoDB reserved word and the commonest field written here, an unaliased one
+    is a ValidationException, and this codebase has shipped that as a silently
+    dead fence before. A ``None`` value is written as NULL exactly as the get→put
+    did, never REMOVE'd. The condition's refusal IS the missing-row answer.
+    """
+    _reject_gate_owned_fields("update_fields", fields)
+    names: dict[str, str] = {}
+    set_parts: list[str] = []
+    values: dict = {":iso": utc_now_iso()}
+    for i, (key, value) in enumerate(fields.items()):
+        alias = f"#f{i}"
+        names[alias] = key
+        set_parts.append(f"{alias} = :v{i}")
+        values[f":v{i}"] = value
+    set_parts.append("updated_at = :iso")
+    kwargs: dict = {
+        "Key": {"owner_id": owner_id},
+        "UpdateExpression": "SET " + ", ".join(set_parts),
+        "ConditionExpression": "attribute_exists(owner_id)",
+        "ExpressionAttributeValues": values,
+        "ReturnValues": "ALL_NEW",
+    }
+    if names:  # DDB rejects an empty map; an empty `fields` still stamps updated_at
+        kwargs["ExpressionAttributeNames"] = names
+    try:
+        response = await run_in_thread(_get_table().update_item, **kwargs)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return None  # no row — nothing to merge into
+        raise
     publish_status_changed(owner_id)
-    return existing
+    return response.get("Attributes")
+
+
+async def swap_gate_token_hash(
+    owner_id: str,
+    *,
+    new_hash: str,
+    superseded: list[str],
+    expected_prior_hash: str | None,
+    claim_id: str | None = None,
+    attempt_token: str | None = None,
+) -> tuple[str, dict | None]:
+    """Point the row at a freshly minted gate-token hash, atomically.
+
+    THE ONLY WRITER of ``bedrock_gate_token_hash`` and
+    ``bedrock_gate_superseded_hashes``, enforced rather than asserted:
+    ``_reject_gate_owned_fields`` refuses either name from ``upsert`` and
+    ``update_fields``, and ``upsert``'s whole-item put — which rewrites both
+    whether it means to or not — is CAS'd on the pointer to prove it is
+    preserving, not overwriting a swap it never saw (``_gate_pointer_unchanged``).
+    The pointer used to move inside ``upsert`` too, and no amount of guarding
+    made that safe: a mint landing between that read and its unconditional put
+    left the snapshot stale whatever the snapshot was read for.
+
+    CONDITIONAL, not merely scoped — which is what it needs over ``update_fields``:
+    ``superseded`` is computed from a snapshot the caller read BEFORE minting,
+    and two concurrent mints for the same owner (a poll provision plus an
+    escalating ``container_recover`` takeover — the mint block sits ahead of
+    ``_provision_checkpoint``, so the provision lease does not serialize it)
+    would each put back their own snapshot. The loser's hash would vanish from
+    the row while its token row lives on with ``denied=False``. The gate-tokens
+    table is hash-keyed with no owner index, so that hash is then unreachable
+    FOREVER: nothing can expire it and ``deny_gate_token`` cannot cover it —
+    a live bearer credential the kill switch cannot revoke. ``list_append``
+    would not help; the loser's addition list is computed from the same stale
+    snapshot and never mentions the winner's hash either.
+
+    So the write is conditioned on the row still carrying the hash the caller
+    read (or on carrying none, when it read none) and the outcome is reported
+    back rather than swallowed:
+
+    Returns ``(outcome, item)``, where the conflict state is read off the SAME
+    conditional write via ``ReturnValuesOnConditionCheckFailure="ALL_OLD"`` (as
+    ``try_claim_owner_deploy`` does) — NOT a follow-up ``get_item``. That is
+    load-bearing twice over, because ``get_by_owner_id`` is eventually
+    consistent while the condition was evaluated strongly on the leader:
+
+    - Classification. On the ``expected_prior_hash is None`` branch a conflict
+      means someone JUST created the row — precisely when a replica read can
+      still answer "no row". A follow-up read would call that ``"absent"``, the
+      caller would treat it as the benign fresh-provision no-op and never
+      retry, and the hash would be orphaned SILENTLY (no error to detect it by).
+    - The merge. A stale replica would hand the caller back the pre-swap hash,
+      so its retry would fail the identical condition again and burn the budget
+      on replication lag rather than on a real race.
+
+    Outcomes:
+
+    - ``("written", None)`` — the swap landed.
+    - ``("conflict", item)`` — another writer moved the hash first. ``item`` is
+      the authoritative pre-write row: the caller folds its
+      ``bedrock_gate_token_hash`` into ``superseded`` and retries against it.
+    - ``("absent", None)`` — no row yet. A SILENT no-op, matching
+      ``update_fields``: ``mint_gate_token`` can run before the row exists, and
+      ``bedrock_gate_tokens.persist_gate_token_hash`` re-points the row through
+      this same call once ``create_user_service``'s upsert has created it.
+
+    ``claim_id`` / ``attempt_token`` — optional, and they make this write carry
+    the provision lease in its OWN condition rather than behind a checkpoint. A
+    checkpoint is "verify, then act", which is inherently non-atomic: a takeover
+    landing between the two still let a superseded run move the pointer to its
+    own token, leaving a hash no task will ever present as the row's current one
+    indefinitely (the drain only ever judges the superseded list). This write is
+    a DynamoDB conditional update, so unlike the EFS and task-definition calls
+    that follow it, it does not need a checkpoint at all — it can simply refuse.
+    A refusal caused by the LEASE clause raises ``ProvisionSuperseded``; one
+    caused by the hash clause stays a benign ``"conflict"`` to merge and retry.
+
+    Omitted (the default) means NO lease clause — which is not a weaker mode but
+    the correct one for callers that hold no lease: ``mint_gate_token``'s own
+    swap, which runs before the row exists on a fresh provision and has no lease
+    context, and ``routers/debug.create_user_service(owner_id, gateway_token)``.
+    """
+    table = _get_table()
+    values: dict = {":new": new_hash, ":superseded": superseded, ":iso": utc_now_iso()}
+    if expected_prior_hash is None:
+        condition = "attribute_exists(owner_id) AND attribute_not_exists(bedrock_gate_token_hash)"
+    else:
+        condition = "attribute_exists(owner_id) AND bedrock_gate_token_hash = :prior"
+        values[":prior"] = expected_prior_hash
+    # Strict equality on both, matching what upsert's CAS pins rather than
+    # update_container_leased's permissive attempt-token clause: every path that
+    # hands a caller an attempt_token (try_claim_provision, takeover_provision,
+    # claim_attempt) stamps it on the row in the SAME atomic write, so a row
+    # that lacks one while the caller holds one is unreachable — and if it ever
+    # happened, refusing fails a provision the poll retries rather than leaving
+    # a pointer nothing presents. It also keeps the condition and the failure
+    # comparison below mirror images, which is what stops them drifting apart.
+    lease_expected: dict = {}
+    if claim_id is not None:
+        lease_expected["provision_claim_id"] = claim_id
+        condition += " AND provision_claim_id = :lease_cid"
+        values[":lease_cid"] = claim_id
+        if attempt_token is not None:
+            lease_expected["provision_attempt_token"] = attempt_token
+            condition += " AND provision_attempt_token = :lease_atok"
+            values[":lease_atok"] = attempt_token
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression=(
+                "SET bedrock_gate_token_hash = :new, bedrock_gate_superseded_hashes = :superseded, updated_at = :iso"
+            ),
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+            # The condition is a conjunction, so the failure alone does not say
+            # which half missed. DynamoDB answers that here: it returns the row
+            # as it stood before the refused write, or nothing at all when
+            # there was no row. See the docstring for why this cannot be a
+            # follow-up get_item.
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raw = e.response.get("Item")
+        if not raw:
+            # No row at all. A caller holding a lease has just lost it to a
+            # delete; one that holds none is on the benign fresh-provision path.
+            if lease_expected:
+                _raise_if_superseded(owner_id, lease_expected, {}, where="gate-token swap")
+            return "absent", None
+        current = _deserialize_item(raw)
+        # LEASE FIRST: a moved claim is not a conflict to merge, it is a stop
+        # signal — merging would let the superseded run point the row at a token
+        # no task of its will ever present. Mirrors upsert's triage exactly.
+        if lease_expected:
+            _raise_if_superseded(owner_id, lease_expected, current, where="gate-token swap")
+        if not current:
+            # Unparseable: degrade to "retry against an unknown prior", which
+            # fails the condition again and lands in the caller's ERROR log —
+            # never a TypeError escaping mint_gate_token, which has no try.
+            return "conflict", None
+        return "conflict", current
+    return "written", None
 
 
 async def stamp_stop_reason(owner_id: str, reason: str) -> None:
@@ -1107,12 +1533,11 @@ async def stamp_stop_reason(owner_id: str, reason: str) -> None:
     admin-stopped container can never be mistaken for parked and lose its
     poll-driven self-heal.
 
-    A scoped ``update_item`` SET — never the get→put ``update_fields``: this
-    stamp can race a concurrent wake's ``try_claim_provision``, and a full-item
-    put here could resurrect ``status="stopped"`` over a freshly claimed lease
-    (the documented double-provision class). Condition on the row existing so a
-    concurrent delete never turns the stamp into a ghost row; that miss is
-    swallowed (nothing left to stamp).
+    Its own ``update_item`` rather than ``update_fields`` because it needs a
+    conditional REMOVE of ``parked_at`` on the non-trial branch, which a plain
+    field merge cannot express. Condition on the row existing so a concurrent
+    delete never turns the stamp into a ghost row; that miss is swallowed
+    (nothing left to stamp).
     """
     table = _get_table()
     expr = "SET stop_reason = :r, updated_at = :iso"
@@ -1140,9 +1565,9 @@ async def record_wake_debit(owner_id: str, date: str) -> int:
     Two scoped ``update_item`` steps (ensure the parent map, then increment the
     day key via ``SET ... if_not_exists(...) + :one``) — the same shape as the
     bedrock-gate ledger's ``reserved_microcents``/``spent`` nested-map
-    accounting, and never the get→put ``update_fields``, which racing
-    ``try_claim_provision`` could resurrect a stale ``status`` over a claimed
-    lease. The increment is a nested SET, NOT ``ADD``: DynamoDB's ADD action
+    accounting. Not ``update_fields``, which merges values the CALLER computed
+    and so could not make this read-modify-write atomic. The increment is a
+    nested SET, NOT ``ADD``: DynamoDB's ADD action
     only targets top-level Number/Set attributes, so ``ADD wake_debits.#d``
     would raise ValidationException and fail the debit open. Both steps
     condition on the row existing; a missing row returns 0 debits (nothing to

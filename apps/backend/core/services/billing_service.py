@@ -734,11 +734,30 @@ async def create_credit_top_up_checkout(
     if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
         from core.billing.metronome_provisioning import ensure_metronome_customer
 
+        provisioning_failed = False
         try:
             await ensure_metronome_customer(owner_id=owner_id)
         except Exception:
+            provisioning_failed = True
+            put_metric("metronome.provision.error", dimensions={"source": "credit_top_up"})
             logger.exception("On-demand Metronome provisioning failed for owner %s", owner_id)
-        account = await billing_repo.get_by_owner_id(owner_id) or account
+        # Strongly consistent: we just wrote these ids and are about to decide
+        # whether to take the customer's money on the strength of them.
+        account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True) or account
+        if provisioning_failed and (
+            not account.get("metronome_customer_id") or not account.get("metronome_contract_id")
+        ):
+            # Do NOT tell the buyer "try again in a moment" here. Provisioning
+            # raised, so retrying hits the same failure every time — the old
+            # message sent them into an infinite retry loop with nothing
+            # surfaced to them or to support saying it could never work. The
+            # transient wording below is reserved for the case where
+            # provisioning ran WITHOUT raising and the ids still aren't
+            # visible, which a moment genuinely can fix.
+            raise BillingServiceError(
+                "We couldn't finish setting up billing for this account. "
+                "Please contact support@isol8.co — retrying won't clear this."
+            )
     if not account.get("metronome_customer_id") or not account.get("metronome_contract_id"):
         raise BillingServiceError("Credits aren't ready for this account yet — try again in a moment")
 

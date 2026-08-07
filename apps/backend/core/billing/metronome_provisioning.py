@@ -61,7 +61,15 @@ async def ensure_metronome_customer(
     if not settings.METRONOME_LIFECYCLE_ENABLED:
         return None
 
-    account = await billing_repo.get_by_owner_id(owner_id)
+    # STRONGLY consistent: the subscription webhook dispatches this immediately
+    # after ``set_subscription`` flips the owner off ``trial_local``, and an
+    # eventually-consistent get_item can still observe the pre-write row. That
+    # would hit the free-tier short-circuit below and return None with no
+    # customer, no exception and no metric — and the webhook never re-enters
+    # that branch on redelivery (old_status is already the new status), so the
+    # converted owner would be left without a ledger permanently. This is a
+    # read-back-after-write caller; the repo supports exactly that.
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     if account is None:
         raise ProvisioningError(f"No billing row for owner_id={owner_id} — cannot provision Metronome customer")
 

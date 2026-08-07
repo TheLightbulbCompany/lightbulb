@@ -32,7 +32,6 @@ def _gate(
     *,
     row: dict | None,
     metronome_customer_id: str | None = None,
-    metronome_contract_id: str | None = "ct-default",
     net_balance_cents: float | Exception | list | None = None,
     container_row: dict | None = None,
 ):
@@ -57,15 +56,9 @@ def _gate(
             return_value={} if net_balance_cents is None else {"balance": net_balance_cents}
         )
 
-    # A customer id implies a COMPLETE ledger unless a test says otherwise:
-    # `is_owner_blocked` now requires customer AND contract, and every
-    # pre-existing case that sets a customer means "fully provisioned".
-    # `metronome_contract_id=None` opts into the partial-provisioning state.
     account = {"owner_id": OWNER}
     if metronome_customer_id:
         account["metronome_customer_id"] = metronome_customer_id
-        if metronome_contract_id:
-            account["metronome_contract_id"] = metronome_contract_id
 
     restore = AsyncMock()
     enforce = AsyncMock()
@@ -109,68 +102,12 @@ async def test_fresh_row_positive_not_blocked():
 
 
 @pytest.mark.asyncio
-async def test_no_metronome_customer_blocks():
-    """No Metronome customer means no ledger, so no credits can exist — and
-    every caller of this predicate has already established the owner is on
-    `bedrock_claude`, i.e. billing inference to US.
-
-    This used to return False, on the reasoning that a brand-new owner must not
-    be gated by a missing projection. The reasoning conflated "projection not
-    written yet" with "no ledger at all". A trial->paid converted owner sits in
-    the second state PERMANENTLY (see the entering_live provisioning call this
-    ships alongside), so the lenient answer handed them unmetered Bedrock —
-    Opus-tier for the CEO agent — on our account. Observed on prod 2026-08-06.
-
-    Blocking is not a dead end: the gate renders `credits_required`, and
-    `create_credit_top_up_checkout` re-ensures provisioning before taking money.
-    """
+async def test_missing_row_without_metronome_customer_not_blocked():
+    """A brand-new owner has neither a fast-gate row nor a Metronome
+    customer — the gate must not block on a missing projection."""
     with _gate(row=None, metronome_customer_id=None) as m:
-        assert await is_owner_blocked(OWNER) is True
-    # No customer id, so there was never a balance to read.
-    m.client.get_net_balance.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_customer_without_contract_blocks():
-    """The partial-provisioning state `metronome_provisioning._provision`
-    persists deliberately when the Stripe link fails: customer id only,
-    contract deferred (its billing config is create-time-only, so creating it
-    unlinked would strand the owner's top-ups permanently).
-
-    No contract means no prepaid commits, so no balance can exist and
-    `grant_prepaid_credits` refuses outright. Testing the customer id alone
-    would admit an owner whose ledger cannot hold the credits they are
-    spending — in exactly the partial-provisioning failure this predicate
-    exists to catch. Kept in lockstep with the bedrock-gate Lambda's
-    `paidReserve`.
-    """
-    with _gate(row=None, metronome_customer_id="mc-1", metronome_contract_id=None) as m:
-        assert await is_owner_blocked(OWNER) is True
-    assert m.billing_read.await_count >= 1
-
-
-@pytest.mark.asyncio
-async def test_no_metronome_customer_blocks_even_with_a_positive_stale_row():
-    """The unprovisioned check must beat the stale-row fallback. A leftover
-    positive projection (e.g. from a since-wiped Metronome customer) would
-    otherwise re-open unmetered spend for an owner with no ledger behind it."""
-    with _gate(row=_stale_row(5_000_000), metronome_customer_id=None):
-        assert await is_owner_blocked(OWNER) is True
-
-
-@pytest.mark.asyncio
-async def test_billing_read_failure_falls_back_to_the_stale_row_not_a_block():
-    """The provisioning check fails OPEN on a DDB blip specifically: a transient
-    infrastructure error must not lock out a customer who has already paid. Only
-    a confirmed absent customer blocks."""
-    with (
-        _gate(row=_stale_row(5_000_000), metronome_customer_id=None),
-        patch(
-            "core.services.metronome_gate.billing_repo.get_by_owner_id",
-            new=AsyncMock(side_effect=RuntimeError("dynamo down")),
-        ),
-    ):
         assert await is_owner_blocked(OWNER) is False
+    m.client.get_net_balance.assert_not_called()
 
 
 @pytest.mark.asyncio

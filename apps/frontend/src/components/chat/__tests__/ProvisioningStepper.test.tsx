@@ -447,12 +447,9 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     expect(screen.getByRole("button", { name: /Check again/ })).toBeInTheDocument();
   });
 
-  it.each([
-    ["trial_daily_cap", "You've used today's free allowance."],
-    ["trial_expired", "Your free trial has ended."],
-  ])(
+  it.each([["trial_daily_cap"], ["trial_expired"]])(
     "renders the provider picker in place (not a link to settings) for %s",
-    (code, expectedHeading) => {
+    (code) => {
       // A capped/expired free-tier owner converts RIGHT HERE. The generic
       // blocked card's action is a link out to /settings?panel=billing, which
       // landed on a lone Subscribe button posting a HARDCODED
@@ -490,7 +487,15 @@ describe("ProvisioningStepper blocked-state rendering", () => {
       expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
       expect(screen.getByText("Sign in with ChatGPT")).toBeInTheDocument();
       expect(screen.getByText("Bring your own API key")).toBeInTheDocument();
-      expect(screen.getByText(expectedHeading)).toBeInTheDocument();
+
+      // The gate's message is the heading, rendered EXACTLY ONCE. It used to
+      // also be concatenated into the subheading under a heading derived from
+      // the same text, so the paywall showed the sentence twice — at the exact
+      // moment someone is deciding to pay.
+      expect(screen.getAllByText(/You've used today's free allowance/)).toHaveLength(1);
+      expect(
+        screen.getByText(/Pick how you want to power your agents/),
+      ).toBeInTheDocument();
 
       // And emphatically NOT the send-them-to-settings card.
       expect(

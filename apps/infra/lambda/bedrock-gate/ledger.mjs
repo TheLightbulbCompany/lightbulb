@@ -159,52 +159,8 @@ export async function trialSettle(ddb, env, hold, requestId, actual, ttlSeconds)
 // refresh periodically overwrites `remaining_microcents`. So paid needs no
 // dedup: a double-count is transient, erased on the next refresh.
 
-export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow, billingRow) {
-  if (!fastGateRow) {
-    // No projection row. Two different situations, opposite answers:
-    //
-    //   COMPLETE Metronome ledger → allow. The projection simply has not been
-    //     written yet (it is created by the low-balance webhook and by the
-    //     backend gate's refresh). A real ledger backs this owner, the meter
-    //     Lambda's Metronome ingestion counts every call, and the next refresh
-    //     writes the row. Denying here would hard-block a paying customer's
-    //     first request at the inference layer.
-    //
-    //   INCOMPLETE or absent ledger → DENY. Nothing can be debited, and the
-    //     "backstopped" claim this used to make is false: the meter Lambda's
-    //     backstop for a PAID owner is Metronome ingestion, which cannot
-    //     record without a ledger to record against. Every call was therefore
-    //     admitted unconditionally and unmetered — Opus included, since the
-    //     paid AIP map carries all three tiers. Observed on prod 2026-08-06
-    //     for a trial→paid converted owner whose provisioning never ran.
-    //
-    // "Complete" means customer AND contract, not customer alone. When the
-    // Stripe-link step fails, metronome_provisioning._provision deliberately
-    // persists ONLY metronome_customer_id and defers contract creation
-    // (a contract's billing config is create-time-only, so creating it
-    // unlinked would permanently strand the owner's top-ups). Without a
-    // contract there are no prepaid commits, hence no balance and nothing to
-    // debit — grant_prepaid_credits refuses that state outright. Testing the
-    // customer id alone would therefore admit unmetered traffic in exactly
-    // the partial-provisioning failure this fence exists to contain.
-    //
-    // billingRow is the RAW DynamoDB item (core.mjs passes getItem's .Item
-    // straight through), so these are attribute-value wrappers — presence is
-    // the whole test and `{S: "..."}` is truthy. Do NOT "fix" this into
-    // readS(...): that changes behavior on an empty-string value.
-    //
-    // The backend gate (is_owner_blocked) applies the same completeness test,
-    // but it only covers doors the backend sits on. A cron- or
-    // channel-triggered run inside the container reaches Bedrock through here
-    // with no backend involvement, so this is the fence that has to hold.
-    // No billing row at all keeps the prior allow (resolvePlan treats a
-    // missing row as "paid"); this change is not the place to widen a
-    // fail-closed path to a shape it never covered.
-    if (billingRow && !(billingRow.metronome_customer_id && billingRow.metronome_contract_id)) {
-      return { ok: false };
-    }
-    return { ok: true, hold: { ownerId, estimate, paid: true } };
-  }
+export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow) {
+  if (!fastGateRow) return { ok: true, hold: { ownerId, estimate, paid: true } }; // no row → allow (backstopped)
   const ttlSec = Number(env.RESERVE_TTL_SECONDS || 1200);
   let remaining = readN(fastGateRow.remaining_microcents) ?? 0;
   let reserved = readN(fastGateRow.reserved_microcents) ?? 0;

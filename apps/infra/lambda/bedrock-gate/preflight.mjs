@@ -56,7 +56,7 @@ export async function reserveOrThrow({ ddb, env, ownerId, plan, billingRow, fast
     if (!r.ok) throw trialCap();
     return { hold: { ...r.hold, plan: "trial" } };
   }
-  const r = await paidReserve(ddb, env, ownerId, estimate, fastGateRow, billingRow);
+  const r = await paidReserve(ddb, env, ownerId, estimate, fastGateRow);
   if (!r.ok) throw creditExhausted();
   return { hold: { ...r.hold, plan: "paid" } };
 }

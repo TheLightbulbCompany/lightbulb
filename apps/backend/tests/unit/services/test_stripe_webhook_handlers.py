@@ -1531,3 +1531,59 @@ async def test_metronome_provisioning_failure_never_breaks_the_webhook(mock_repo
         await handlers._provision_metronome_customer("org_x")
 
     assert "Metronome customer provisioning failed" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["chatgpt_oauth", "byo_key"])
+async def test_non_bedrock_conversions_skip_metronome_provisioning(mock_repo, metronome_provisioning, provider):
+    """Only Bedrock-managed owners draw prepaid credits. Provisioning an OAuth
+    or BYO-key owner mints a customer, a contract and two low-balance alerts for
+    inference we never bill — and those alerts feed the fast-gate webhook, so
+    the ledger fills with zero-balance customers the enforcement path then has
+    to keep ignoring."""
+    await _run_state(mock_repo, "trial_local", "active", metadata={"owner_id": "org_x", "provider_choice": provider})
+
+    metronome_provisioning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_provider_still_provisions(mock_repo, metronome_provisioning):
+    """Skip only on a POSITIVE non-Bedrock signal. Under-provisioning re-opens
+    the uncredited-spend hole; over-provisioning only wastes a few API calls, so
+    an unknown provider is provisioned anyway."""
+    await _run_state(mock_repo, "trial_local", "active", metadata={"owner_id": "org_x"})
+
+    metronome_provisioning.assert_called_once_with("org_x")
+
+
+@pytest.mark.asyncio
+async def test_successful_conversion_clears_the_guard_timestamp(mock_repo, mock_container_repo):
+    """`conversion_guard_active` is a TIMESTAMP window, so clearing only
+    `conversion_pending` leaves every door the guard covers shut for the
+    remainder of the 300s window after the work is done. Since the guard was
+    hoisted above /recover's status split it also owns the MANUAL "Restart
+    Gateway" action, so a stale stamp means a user clicking Restart on a wedged
+    gateway gets `already_recovering` for minutes."""
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(return_value={"status": "ok"})
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    fields = mock_container_repo.update_conversion_fields.await_args.args[1]
+    assert fields["conversion_pending"] is False
+    assert fields["conversion_started_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_failed_conversion_keeps_the_guard_markers(mock_repo, mock_container_repo):
+    """The failure path deliberately retains both markers — they are the only
+    record that this owner is paying for a trial-shaped container, and what
+    `maybe_resume_stuck_conversion` re-fires off."""
+    mgr = MagicMock()
+    mgr.reprovision_for_user = AsyncMock(side_effect=RuntimeError("ecs down"))
+    with patch("core.containers.get_ecs_manager", return_value=mgr):
+        await handlers.run_conversion_reprovision("org_x")
+
+    fields = mock_container_repo.update_conversion_fields.await_args.args[1]
+    assert "conversion_pending" not in fields
+    assert "conversion_started_at" not in fields

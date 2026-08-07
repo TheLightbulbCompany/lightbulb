@@ -1111,12 +1111,15 @@ export function ProvisioningStepper({
       <ProviderPicker
         isOrg={false}
         source="trial_conversion"
-        heading={
-          blocked.code === "trial_expired"
-            ? "Your free trial has ended."
-            : "You've used today's free allowance."
-        }
-        subheading={`${blocked.message} Pick how you want to power your agents — $50/month covers your always-on infrastructure.`}
+        // The gate's own `message` is the heading, not a prefix to the
+        // subheading. Concatenating it under a heading derived from the same
+        // text rendered the sentence twice ("You've used today's free
+        // allowance." above "You've used today's free allowance — resets
+        // tomorrow…") — a duplicated-copy bug on the paywall, at the exact
+        // moment someone is deciding to pay. Backend owns the what-happened
+        // half (it knows cap vs expiry); this owns the what-now half.
+        heading={blocked.message}
+        subheading="Pick how you want to power your agents — $50/month covers your always-on infrastructure."
       />
     );
   }

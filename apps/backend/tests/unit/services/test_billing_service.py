@@ -1017,10 +1017,41 @@ class TestCreditTopUpProvisionsOnDemand:
             ),
             patch("stripe.checkout.Session.create", new=create),
         ):
-            with pytest.raises(BillingServiceError, match="aren't ready"):
+            with pytest.raises(BillingServiceError, match="contact support"):
                 await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
 
         create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_permanent_failure_is_not_reported_as_transient(self, _account, monkeypatch):
+        """A provisioning call that RAISED will raise again on every retry, so
+        "try again in a moment" sends the buyer into an infinite loop with
+        nothing surfaced to them or support saying it can never work. The
+        transient wording is reserved for the non-raising case."""
+        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
+        with (
+            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=dict(_account))),
+            patch(
+                "core.billing.metronome_provisioning.ensure_metronome_customer",
+                new=AsyncMock(side_effect=RuntimeError("metronome down")),
+            ),
+        ):
+            with pytest.raises(BillingServiceError) as exc:
+                await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
+        assert "try again in a moment" not in str(exc.value)
+        assert "support@isol8.co" in str(exc.value)
+
+    @pytest.mark.asyncio
+    async def test_silent_no_op_still_reports_transient(self, _account, monkeypatch):
+        """Provisioning returned without raising but the ids still aren't
+        visible — a moment genuinely can fix that, so keep the retry wording."""
+        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
+        with (
+            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=dict(_account))),
+            patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value=None)),
+        ):
+            with pytest.raises(BillingServiceError, match="try again in a moment"):
+                await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
 
     @pytest.mark.asyncio
     async def test_no_op_when_already_provisioned(self, _account, monkeypatch):

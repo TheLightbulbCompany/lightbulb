@@ -223,6 +223,12 @@ async def _rollback_conversion_entry(owner_id: str, subscription_id: str) -> Non
         )
 
 
+"""Strong refs for fire-and-forget provisioning tasks — see
+``dispatch_metronome_provisioning``. Module-level because the tasks outlive
+the request that spawned them."""
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
 async def _provision_metronome_customer(owner_id: str) -> None:
     """Best-effort Metronome customer provisioning. Never raises."""
     from core.billing.metronome_provisioning import ensure_metronome_customer
@@ -255,7 +261,17 @@ def dispatch_metronome_provisioning(owner_id: str) -> None:
     bedrock_claude owner with no customer (so a stranded owner is blocked
     rather than silently spending our Bedrock budget).
     """
-    asyncio.create_task(_provision_metronome_customer(owner_id))
+    # Hold a strong reference until the task finishes. asyncio keeps only a
+    # WEAK reference to a running task, so a bare fire-and-forget
+    # `create_task(...)` whose result nobody stores can be garbage-collected
+    # mid-await — the documented footgun in the asyncio docs. That would drop
+    # provisioning silently: `_provision_metronome_customer`'s except clause
+    # only catches failures the coroutine actually reaches, so a collected
+    # task emits no metric and no log, and nothing re-attempts it for a
+    # personal owner.
+    task = asyncio.create_task(_provision_metronome_customer(owner_id))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 async def run_conversion_reprovision(owner_id: str) -> None:
@@ -299,6 +315,19 @@ async def run_conversion_reprovision(owner_id: str) -> None:
     fields: dict[str, Any] = {"substatus": None}
     if succeeded:
         fields["conversion_pending"] = False
+        # Clear the TIMESTAMP too, not just the flag. ``conversion_guard_active``
+        # is defined as "the TIMESTAMP is the guard, not the substatus", so
+        # leaving it behind keeps every door the guard covers shut for the
+        # remainder of the 300s window even though the conversion is finished —
+        # a conversion that completes in 90s used to disarm nothing for another
+        # 210s. That was survivable while the guard only covered the
+        # stopped/error branch of /recover; now that it is hoisted above the
+        # status split it also owns the MANUAL "Restart Gateway" action, so a
+        # stale stamp means the user clicks Restart on a genuinely wedged
+        # gateway and gets `already_recovering` for minutes. Clearing on
+        # success costs nothing: the failure path deliberately keeps both
+        # markers so `maybe_resume_stuck_conversion` can still self-heal.
+        fields["conversion_started_at"] = None
     try:
         await container_repo.update_conversion_fields(owner_id, fields)
     except Exception:
@@ -802,7 +831,22 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         # running uncredited Bedrock — Opus-tier for Friday — on our account.
         # Verified on prod 2026-08-06: the only owner carrying a
         # metronome_customer_id was the org (org context always re-dispatches).
-        dispatch_metronome_provisioning(account["owner_id"])
+        #
+        # Only Bedrock-managed owners draw prepaid credits. Provisioning a
+        # ChatGPT-OAuth or BYO-key owner would mint a Metronome customer, a
+        # contract and two low-balance alerts for inference we never bill, and
+        # those alerts feed the fast-gate webhook — filling the ledger with
+        # zero-balance customers the enforcement path then has to keep ignoring.
+        #
+        # Skip only on a POSITIVE non-Bedrock signal, never on absence: a
+        # provider we failed to resolve is provisioned anyway, because
+        # under-provisioning re-opens the uncredited-spend hole this whole
+        # change exists to close, while over-provisioning only wastes a few
+        # API calls. Same resolution the trial_converted telemetry uses —
+        # metadata is only trusted when its row write actually committed.
+        resolved_provider = (metadata_provider if provider_persisted else None) or account.get("provider_choice")
+        if resolved_provider not in ("chatgpt_oauth", "byo_key"):
+            dispatch_metronome_provisioning(account["owner_id"])
 
     # Teams per-seat subscriptions additionally record the subscription item
     # id + seat quantity so sync_team_seat_quantity has an item to modify.

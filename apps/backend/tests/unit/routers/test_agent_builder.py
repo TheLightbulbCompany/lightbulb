@@ -173,6 +173,131 @@ def test_degradations_surface_as_warnings(
     assert mock_create_pc.await_args.kwargs["reports_to"] is None
 
 
+@patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_register_happy_path_pairs_operator_device(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, _mock_ceo, mock_pair, client
+):
+    """The full Paperclip mint response — carrying adapterConfig.devicePrivateKeyPem
+    — must reach ensure_operator_device_paired verbatim. A stub dict or bare id
+    would early-return inside the pairing helper and leave the agent dead
+    (unauthorized: gateway token mismatch on its first run)."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    full_paperclip_agent = {
+        "id": "new-agent-uuid",
+        "name": "Lex the Legal Bot",
+        "adapterType": "openclaw_gateway",
+        "adapterConfig": {"devicePrivateKeyPem": "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----"},
+    }
+    mock_create_pc.return_value = full_paperclip_agent
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200, resp.text
+
+    mock_pair.assert_awaited_once()
+    kwargs = mock_pair.await_args.kwargs
+    assert kwargs["owner_id"] == OWNER
+    # The full mint dict (identity, not equality) — not the slice, not just an id.
+    assert kwargs["paperclip_agent"] is full_paperclip_agent
+    assert kwargs["paperclip_agent"]["adapterConfig"]["devicePrivateKeyPem"]
+    assert kwargs["gateway_token"] == "gw-token"
+    assert kwargs["ip"] == "10.0.0.1"
+
+
+@patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_pairing_happens_after_deploy_not_before(
+    mock_get_container, mock_export, mock_create_pc, mock_get_ecs, mock_get_catalog, _mock_ceo, mock_pair, client
+):
+    call_order: list[str] = []
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {
+        "id": "new-agent-uuid",
+        "adapterType": "openclaw_gateway",
+        "adapterConfig": {"devicePrivateKeyPem": "pem"},
+    }
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+
+    async def _deploy(**_kwargs):
+        call_order.append("deploy")
+        return {"agent_id": "new-agent-uuid"}
+
+    async def _pair(**_kwargs):
+        call_order.append("pair")
+
+    catalog.deploy_from_artifact = AsyncMock(side_effect=_deploy)
+    mock_pair.side_effect = _pair
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200, resp.text
+    assert call_order == ["deploy", "pair"]
+
+
+@patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_deploy_failure_skips_operator_pairing(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_catalog,
+    mock_delete_pc,
+    _mock_ceo,
+    mock_pair,
+    client,
+):
+    """A deploy failure never reaches the pairing call — it's gated on a
+    successful deploy, inside the same try the rollback below unwinds."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("untar failed"))
+    catalog.unwind_partial_deploy = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 502
+    mock_pair.assert_not_awaited()
+
+
 @patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.agent_builder.get_ecs_manager")
 @patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)

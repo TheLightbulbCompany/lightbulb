@@ -2308,8 +2308,10 @@ class EcsManager:
             # Mint (rotate) the per-owner bedrock-gate bearer token for EVERY
             # Bedrock owner — trial AND paid. The gate is the standard Bedrock
             # path, and the token row's deny flag is the kill switch
-            # (revoke_owner_bedrock). mint_gate_token rotates: it grace-expires
-            # any prior token row this owner pointed at. Lazy import keeps
+            # (revoke_owner_bedrock). mint_gate_token rotates, but it EXPIRES
+            # NOTHING on a clock: the superseded hash is tracked on the row and
+            # its token stays valid until a confirmed roll proves no task
+            # definition and no live task can present it. Lazy import keeps
             # boto3 out of module load.
             from core.billing.bedrock_gate_tokens import (
                 deny_gate_token,
@@ -2941,6 +2943,18 @@ class EcsManager:
                         user_id,
                         task_arn.split("/")[-1],
                     )
+                    # THE ROLL IS CONFIRMED — the live task is healthy, so it
+                    # holds whatever token its definition carries and any
+                    # superseded row nothing can present is finally safe to
+                    # delete. This is the sole confirmation point for BOTH
+                    # paths: the detached poller, and the SFN runner's
+                    # foreground wait_for_running, which just delegates here.
+                    # Never raises; a missed call only leaves a stale row.
+                    from core.billing.bedrock_gate_tokens import (
+                        expire_superseded_gate_tokens,
+                    )
+
+                    await expire_superseded_gate_tokens(user_id)
                     return
                 if task_arn and ip and container.get("substatus") != "task_running":
                     # Task is RUNNING with an IP but the gateway port isn't

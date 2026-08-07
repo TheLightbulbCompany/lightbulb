@@ -1,4 +1,4 @@
-"""Per-owner bedrock-gate bearer tokens — mint / rotate / deny.
+"""Per-owner bedrock-gate bearer tokens — mint / expire / deny.
 
 The bedrock-gate Lambda authenticates every inbound Bedrock request by
 SHA-256-hashing the caller's ``Authorization: Bearer <token>`` and GetItem-ing a
@@ -25,6 +25,23 @@ the backend constructs it by convention from the env name, matching the gateway
 Lambda's own ``TOKENS_TABLE`` and ``bedrock_aip._aip_name``'s ``isol8-{env}-``
 scheme. An explicit ``BEDROCK_GATE_TOKENS_TABLE`` override wins (tests / manual
 wiring).
+
+Lifetime: a token row lives until NOTHING CAN PRESENT IT. The token reaches a
+container only as an inline env var in its ECS task definition, frozen at task
+start, so the DDB side and the container side are coupled only by a redeploy
+that actually lands. Minting therefore schedules nothing; a superseded row is
+deleted only once ``_presentable_gate_token_hashes`` confirms that neither the
+owner's ECS **service task definition** (what will launch next — this covers
+scale-to-zero, crash/restart, and a roll that never landed) nor any **live
+task** (the rolling-deploy drain window) still carries it.
+
+This replaced a flat one-hour TTL set at mint time, which killed a prod
+container for good: the reprovision minted a new token, put the old one on a
+60-minute fuse, and then the service never rolled onto the new task definition —
+so the live container kept presenting a credential that DynamoDB reaped out from
+under it an hour later. Every evaluation here therefore fails toward
+AVAILABILITY: any error leaves the row alone. A stale row is a token nobody
+holds; a deleted live row is a customer with zero inference.
 """
 
 from __future__ import annotations
@@ -33,7 +50,7 @@ import hashlib
 import logging
 import os
 import secrets
-import time
+from typing import Any
 
 import boto3
 
@@ -43,13 +60,23 @@ from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
-# On rotation the PRIOR token row is not deleted outright — the currently-running
-# ECS task still carries the old bearer token in its env and keeps serving during
-# the reprovision's deploy window. Deleting immediately would 401 that live task
-# until the replacement is up. Instead the old row gets a short TTL so it stays
-# valid through the roll, then DynamoDB auto-reaps it. One hour comfortably
-# outlives any task roll while bounding how long a superseded token lingers.
-_ROTATION_GRACE_SECONDS = 3600
+# Containers-row attribute holding the hashes this owner has superseded but not
+# yet proven dead. The gate-tokens table is keyed on the hash and has no
+# owner-side index, so nothing else can find an owner's old rows.
+#
+# Self-bounding, which is why it needs no cap or sweep: only ``mint_gate_token``
+# appends to it, and it appends the pruned survivor set — and a hash only
+# survives a prune while something can still present it, which is at most the
+# service's task definition plus whatever tasks are live.
+_SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
+
+# The env var whose value the predicate hashes. ``ecs_manager`` injects the same
+# token twice — here and as ``ANTHROPIC_AUTH_TOKEN`` for the Claude Code ACP
+# harness — but the harness pair is PAID-ONLY (skipped for bedrock_trial and for
+# revoked owners), so reading it would make a free-tier task definition look
+# tokenless and expire a token its container is actively using. This one is
+# injected for every Bedrock owner whenever a gate URL resolves.
+_GATE_TOKEN_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 
 
 def _tokens_table_name() -> str:
@@ -73,6 +100,175 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _owner_service_view(owner_id: str) -> tuple[Any, str, str]:
+    """``(ecs client, cluster arn, service name)`` for the owner's container.
+
+    Goes through the ``EcsManager`` singleton so the ECS wiring and the
+    service-name derivation keep exactly one definition. Imported lazily —
+    ``ecs_manager`` imports this module (also lazily) and a module-scope import
+    here would close the cycle.
+    """
+    from core.containers import get_ecs_manager
+
+    mgr = get_ecs_manager()
+    return mgr._ecs, mgr._cluster, mgr._service_name(owner_id)
+
+
+async def _task_def_gate_token(ecs: Any, task_def_arn: str) -> str | None:
+    """The gate bearer token baked into a task definition's env, if any."""
+    resp = await run_in_thread(ecs.describe_task_definition, taskDefinition=task_def_arn)
+    for container in resp.get("taskDefinition", {}).get("containerDefinitions", []):
+        for env in container.get("environment", []):
+            if env.get("name") == _GATE_TOKEN_ENV:
+                return env.get("value")
+    return None
+
+
+async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) -> list[str]:
+    """Task-definition ARNs of the service's tasks that have not stopped yet.
+
+    Both desired states are listed: a task being drained by a rolling deploy has
+    ``desiredStatus=STOPPED`` while ``lastStatus`` is still RUNNING, and it is
+    still making inference calls with the token its definition carries.
+    """
+    task_arns: list[str] = []
+    for desired_status in ("RUNNING", "STOPPED"):
+        resp = await run_in_thread(
+            ecs.list_tasks,
+            cluster=cluster,
+            serviceName=service_name,
+            desiredStatus=desired_status,
+        )
+        task_arns.extend(resp.get("taskArns", []))
+
+    arns: list[str] = []
+    # DescribeTasks caps at 100 ids per call. Chunk rather than truncate: the
+    # STOPPED-desired list is mostly stopped history, and a truncation that
+    # dropped the one draining task would expire a token still in use.
+    for offset in range(0, len(task_arns), 100):
+        resp = await run_in_thread(ecs.describe_tasks, cluster=cluster, tasks=task_arns[offset : offset + 100])
+        arns.extend(
+            task["taskDefinitionArn"]
+            for task in resp.get("tasks", [])
+            if task.get("lastStatus") != "STOPPED" and task.get("taskDefinitionArn")
+        )
+    return arns
+
+
+async def _presentable_gate_token_hashes(owner_id: str) -> set[str]:
+    """Hashes of every gate token the owner's container can still present.
+
+    THE PREDICATE. Two sources, and the first one is the authoritative half:
+
+    1. the ECS **service's current task definition** — what the service will
+       launch next. A drained service running nothing still points at it, so
+       this is what keeps a token alive across scale-to-zero, a crash/restart,
+       and (the incident) a redeploy that never landed.
+    2. **the drain window** — where the old task is still serving on the old
+       definition after the service has moved on. Read twice, from the still-
+       listed superseded deployment and from the tasks themselves, because
+       expiring a token mid-drain would 401 a container that is still working.
+
+    Answering from running tasks alone would be WORSE than the TTL it replaces:
+    during the incident's reprovision the service was already drained to zero
+    when the new token was minted, so that rule would have deleted the live
+    token immediately instead of an hour later.
+
+    Raises on any ECS failure — the caller turns that into "keep the row".
+    """
+    ecs, cluster, service_name = _owner_service_view(owner_id)
+
+    resp = await run_in_thread(ecs.describe_services, cluster=cluster, services=[service_name])
+    live_services = [s for s in resp.get("services", []) if s.get("status") != "INACTIVE"]
+    if not live_services:
+        # No service (deleted owner, or never created). Nothing will launch, and
+        # there is no service left to enumerate tasks for.
+        return set()
+
+    service = live_services[0]
+    arns: list[str] = []
+    service_task_def = service.get("taskDefinition")
+    if service_task_def:
+        arns.append(service_task_def)
+    # Free from the call just made: during a rolling deploy the superseded
+    # deployment stays listed alongside PRIMARY until its tasks are gone, so its
+    # definition is a second, cheap read on the same drain window.
+    arns.extend(d["taskDefinition"] for d in service.get("deployments", []) if d.get("taskDefinition"))
+    arns.extend(await _live_task_definition_arns(ecs, cluster, service_name))
+
+    hashes: set[str] = set()
+    for arn in dict.fromkeys(arns):  # de-dupe, preserving the service def first
+        token = await _task_def_gate_token(ecs, arn)
+        if token:
+            hashes.add(hash_token(token))
+    return hashes
+
+
+async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: str | None) -> list[str]:
+    """Delete each tracked hash nothing can present; return the survivors.
+
+    Deliberately does NOT write the survivors back to the containers row.
+    ``container_repo.update_fields`` is a get→put of the whole item, and this
+    runs immediately after the claim-fenced ``status="running"`` write — a full
+    put there could resurrect stale fields over it. ``mint_gate_token`` prunes
+    the list instead, inside the row write it already makes; until then a
+    hash that has already been deleted just re-resolves to a no-op delete.
+    """
+    candidates = [h for h in tracked if h and h != current_hash]
+    if not candidates:
+        return []
+
+    try:
+        presentable = await _presentable_gate_token_hashes(owner_id)
+    except Exception:
+        # Fail toward availability: if we cannot prove the token is dead, it lives.
+        logger.warning(
+            "bedrock-gate token liveness check failed for owner %s; keeping %d superseded row(s)",
+            owner_id,
+            len(candidates),
+            exc_info=True,
+        )
+        return candidates
+
+    table = _tokens_table()
+    survivors: list[str] = []
+    for token_hash in candidates:
+        if token_hash in presentable:
+            survivors.append(token_hash)
+            continue
+        try:
+            await run_in_thread(table.delete_item, Key={"token_hash": token_hash})
+        except Exception:
+            logger.warning(
+                "failed to delete superseded bedrock-gate token row for owner %s",
+                owner_id,
+                exc_info=True,
+            )
+            survivors.append(token_hash)
+    return survivors
+
+
+async def expire_superseded_gate_tokens(owner_id: str) -> None:
+    """Delete the owner's superseded gate-token rows IFF nothing can present them.
+
+    Call this wherever a redeploy is CONFIRMED to have landed (the container now
+    holds the current token) and as a backstop at mint time. The predicate is the
+    correctness; the call site is only scheduling — a skipped call leaves a stale
+    row, which is safe, and an extra call is a no-op.
+
+    NEVER RAISES. Non-Bedrock owners (``chatgpt_oauth`` / ``byo_key``) have no
+    token and no tracked hashes, so this returns before touching ECS at all.
+    """
+    try:
+        row = await container_repo.get_by_owner_id(owner_id)
+        tracked = list((row or {}).get(_SUPERSEDED_FIELD) or [])
+        if not tracked:
+            return
+        await _drain_superseded(owner_id, tracked, current_hash=(row or {}).get("bedrock_gate_token_hash"))
+    except Exception:
+        logger.warning("expire_superseded_gate_tokens failed for owner %s", owner_id, exc_info=True)
+
+
 async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     """Mint (rotating) a per-owner bedrock-gate bearer token; return the PLAINTEXT.
 
@@ -86,15 +282,23 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
       into ``create_user_service``'s row-creating upsert instead — see
       ``ecs_manager`` — mirroring how ``bedrock_role_arn`` / ``bedrock_aip_arns``
       are persisted.)
-    - ROTATION: if the containers row already pointed at a prior hash, that old
-      token row is given a short TTL (``_ROTATION_GRACE_SECONDS``) rather than
-      deleted outright — the still-running ECS task keeps its old token valid
-      through the reprovision's deploy window, then DynamoDB reaps the row.
+    - ROTATION SCHEDULES NOTHING. The superseded hash is recorded in
+      ``_SUPERSEDED_FIELD`` and its row survives until the liveness predicate
+      proves no task definition and no live task can present it. The mint first
+      runs that drain as a backstop for a confirmation that never came, then
+      writes the pruned survivors plus the outgoing hash in the SAME row update.
 
     Only the hash is stored anywhere; the returned plaintext is the sole copy.
     """
     prior = await container_repo.get_by_owner_id(owner_id)
     prior_hash = prior.get("bedrock_gate_token_hash") if prior else None
+    tracked = list(prior.get(_SUPERSEDED_FIELD) or []) if prior else []
+
+    # Backstop pass: anything superseded by an EARLIER mint whose roll was never
+    # confirmed. At this point the service still references the pre-mint task
+    # definition, so the token the container is actually holding is presentable
+    # and survives — only genuinely orphaned rows go.
+    superseded = await _drain_superseded(owner_id, tracked, current_hash=prior_hash)
 
     token = secrets.token_urlsafe(32)
     token_hash = hash_token(token)
@@ -113,18 +317,13 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
             "created_at": utc_now_iso(),
         },
     )
-    await container_repo.update_fields(owner_id, {"bedrock_gate_token_hash": token_hash})
 
-    if prior_hash and prior_hash != token_hash:
-        # Grace-expire the superseded token instead of deleting it now, so the
-        # still-running task it belongs to keeps working until the roll finishes.
-        await run_in_thread(
-            table.update_item,
-            Key={"token_hash": prior_hash},
-            UpdateExpression="SET #ttl = :exp",
-            ExpressionAttributeNames={"#ttl": "ttl"},
-            ExpressionAttributeValues={":exp": int(time.time()) + _ROTATION_GRACE_SECONDS},
-        )
+    if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
+        superseded.append(prior_hash)
+    await container_repo.update_fields(
+        owner_id,
+        {"bedrock_gate_token_hash": token_hash, _SUPERSEDED_FIELD: superseded},
+    )
 
     return token
 

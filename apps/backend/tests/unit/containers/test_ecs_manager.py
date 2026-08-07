@@ -2199,6 +2199,99 @@ class TestWaitForRunningFencedWrites:
 
 
 # ---------------------------------------------------------------------------
+# Gate-token expiry is scheduled off the ROLL CONFIRMATION, not off a clock.
+# _await_running_transition is the sole confirmation point: wait_for_running
+# (the SFN runner's foreground wait) is a thin delegate to it, and the detached
+# poller enters the same loop.
+# ---------------------------------------------------------------------------
+
+
+def _healthy_task_ecs(mock_ecs_client):
+    mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+    mock_ecs_client.describe_tasks.return_value = {
+        "tasks": [
+            {
+                "lastStatus": "RUNNING",
+                "startedBy": "ecs-svc/primary",
+                "attachments": [
+                    {
+                        "type": "ElasticNetworkInterface",
+                        "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+class TestGateTokenExpiryOnRollConfirmation:
+    @pytest.mark.asyncio
+    async def test_confirmed_roll_expires_superseded_tokens(self, manager, mock_ecs_client, monkeypatch):
+        """The container is up and healthy on whatever def the service points
+        at, so the superseded row can finally be judged."""
+        expire = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", expire)
+        _healthy_task_ecs(mock_ecs_client)
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.wait_for_running("user_test_123")
+
+        expire.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_superseded_fenced_write_expires_nothing(self, manager, mock_ecs_client, monkeypatch):
+        """A straggler's observation is not authoritative: its fenced write
+        loses the race, so it must not judge the winner's tokens."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        expire = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", expire)
+        _healthy_task_ecs(mock_ecs_client)
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_container_leased = AsyncMock(side_effect=ProvisionSuperseded("taken over"))
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.wait_for_running("user_test_123", claim_id="claim-1")
+
+        expire.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failed_rollout_expires_nothing(self, manager, mock_ecs_client, monkeypatch):
+        """THE INCIDENT's shape: the roll never landed. Nothing was confirmed,
+        so nothing may be expired — the container is still on the old def."""
+        expire = AsyncMock()
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", expire)
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+            manager._get_primary_deployment = AsyncMock(
+                return_value={"id": "ecs-svc/primary", "rolloutState": "FAILED"}
+            )
+
+            await manager._await_running_transition("user_test_123", interval_s=0)
+
+        expire.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # _service_exists — L2 fix: a describe_services API failure must SURFACE
 # (EcsManagerError), never silently divert to the full-provision branch.
 # ---------------------------------------------------------------------------

@@ -176,6 +176,40 @@ async def test_not_paired_rejection_triggers_self_heal_approval(mock_ecs, mock_u
 
 
 @pytest.mark.asyncio
+async def test_self_heal_cancellation_still_closes_upstream_and_propagates(mock_ecs, mock_upstream):
+    """asyncio.CancelledError from the self-heal await (e.g. task cancelled
+    during service shutdown) derives from BaseException, so it bypasses
+    approve_pending_device_from_rejection's own `except Exception`. The
+    upstream must still be closed (finally), and the CancelledError must
+    propagate rather than being swallowed or replaced by the trailing raise."""
+    mgmt = MagicMock()
+    mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected: NOT_PAIRED"))
+    mock_upstream.device_id = "dev_stranded"
+    mock_upstream.rejection_error = {
+        "code": "NOT_PAIRED",
+        "message": "device not paired",
+        "details": {"requestId": "req-99", "deviceId": "dev_stranded"},
+    }
+
+    with patch(
+        "core.services.operator_proxy.approve_pending_device_from_rejection",
+        new_callable=AsyncMock,
+    ) as heal:
+        heal.side_effect = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            await handle_operator_connect(
+                owner_id="owner_z",
+                user_id="owner_z",
+                connection_id="conn_cancelled",
+                connect_params={},
+                management_api=mgmt,
+            )
+
+    mock_upstream.close.assert_awaited()
+    assert is_operator_connection("conn_cancelled") is False
+
+
+@pytest.mark.asyncio
 async def test_non_not_paired_rejection_does_not_trigger_self_heal(mock_ecs, mock_upstream):
     """A rejection that is NOT NOT_PAIRED (e.g. an auth failure / token
     mismatch) must NOT trigger an approval attempt -- this is the lockout

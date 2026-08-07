@@ -172,33 +172,41 @@ async def handle_operator_connect(
         # other rejection code (bad signature, AUTH_FAILED/lockout, protocol
         # mismatch) is left alone -- retrying an auth failure only feeds the
         # gateway's 10-failed-auths-in-60s lockout.
-        rejection = upstream.rejection_error
-        if isinstance(rejection, dict) and rejection.get("code") == "NOT_PAIRED":
-            details = rejection.get("details")
-            if not isinstance(details, dict):
-                details = {}
-            request_id = details.get("requestId")
-            logger.warning(
-                "Operator relay connect NOT_PAIRED for owner=%s conn=%s device=%s -- attempting self-heal approval",
-                owner_id,
-                connection_id,
-                (upstream.device_id or "?")[:16],
-            )
-            healed = await approve_pending_device_from_rejection(
-                owner_id=owner_id,
-                ip=ip,
-                gateway_token=container["gateway_token"],
-                device_id=upstream.device_id,
-                request_id=request_id if isinstance(request_id, str) and request_id else None,
-            )
-            put_metric(
-                "operator.connect.not_paired_selfheal" if healed else "operator.connect.not_paired_selfheal_failed"
-            )
-
+        # The self-heal await below can be cancelled (e.g. service shutdown).
+        # asyncio.CancelledError derives from BaseException, so it bypasses
+        # approve_pending_device_from_rejection's own `except Exception` and
+        # would otherwise skip the upstream.close() below entirely, leaving
+        # the rejected socket open. The `finally` guarantees close() still
+        # runs; a CancelledError here is left to propagate on its own (never
+        # swallowed) instead of falling through to the trailing `raise`.
         try:
-            await upstream.close()
-        except Exception:
-            pass
+            rejection = upstream.rejection_error
+            if isinstance(rejection, dict) and rejection.get("code") == "NOT_PAIRED":
+                details = rejection.get("details")
+                if not isinstance(details, dict):
+                    details = {}
+                request_id = details.get("requestId")
+                logger.warning(
+                    "Operator relay connect NOT_PAIRED for owner=%s conn=%s device=%s -- attempting self-heal approval",
+                    owner_id,
+                    connection_id,
+                    (upstream.device_id or "?")[:16],
+                )
+                healed = await approve_pending_device_from_rejection(
+                    owner_id=owner_id,
+                    ip=ip,
+                    gateway_token=container["gateway_token"],
+                    device_id=upstream.device_id,
+                    request_id=request_id if isinstance(request_id, str) and request_id else None,
+                )
+                put_metric(
+                    "operator.connect.not_paired_selfheal" if healed else "operator.connect.not_paired_selfheal_failed"
+                )
+        finally:
+            try:
+                await upstream.close()
+            except Exception:
+                pass
         raise
 
     # Forward hello-ok DOWN keyed to the adapter's OWN connect request id. The

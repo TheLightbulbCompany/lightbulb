@@ -16,10 +16,11 @@ Read model:
   owner actually has a Metronome customer, the gate lazily refreshes from
   ``getNetBalance`` and rewrites the row. Metronome-down ⇒ the stale row is
   used as-is — the gate must never 500 (or block) on a vendor outage.
-- An owner with NO Metronome customer ⇒ BLOCK. "No ledger" and "vendor
-  unreachable" both surface as an unavailable refresh but mean opposite
-  things, and treating the first as "not blocked" is unmetered spend on our
-  account, not leniency. See ``is_owner_blocked`` for the full argument.
+- An owner with no COMPLETE Metronome ledger (customer AND contract) ⇒ BLOCK.
+  "No ledger" and "vendor unreachable" both surface as an unavailable refresh
+  but mean opposite things, and treating the first as "not blocked" is
+  unmetered spend on our account, not leniency. See ``is_owner_blocked`` and
+  ``_has_complete_metronome_ledger`` for the full argument.
 - A refresh that comes back POSITIVE for an owner whose containers row says
   ``bedrock_revoked`` un-revokes (``restore_owner_bedrock``) after ONE
   confirming re-read. This is the pull-based re-arm: Metronome's
@@ -80,10 +81,10 @@ async def is_owner_blocked(owner_id: str) -> bool:
     #   customer exists, Metronome unreachable -> fall back to the stale row.
     #     A vendor outage must never lock out a customer who has already paid;
     #     their real balance is whatever the cache last saw.
-    if not await _has_metronome_customer(owner_id):
+    if not await _has_complete_metronome_ledger(owner_id):
         put_metric("metronome.gate.blocked_unprovisioned")
         logger.warning(
-            "Owner %s is on bedrock_claude with no Metronome customer — blocking. "
+            "Owner %s is on bedrock_claude with no complete Metronome ledger — blocking. "
             "Provisioning should have run on the entering_live webhook; the top-up "
             "path re-ensures it.",
             owner_id,
@@ -92,22 +93,35 @@ async def is_owner_blocked(owner_id: str) -> bool:
     return _row_blocked(row)
 
 
-async def _has_metronome_customer(owner_id: str) -> bool:
-    """Whether the owner has a Metronome ledger at all.
+async def _has_complete_metronome_ledger(owner_id: str) -> bool:
+    """Whether the owner has a ledger that can actually hold credits.
+
+    Customer AND contract, not customer alone. When the Stripe-link step
+    fails, ``metronome_provisioning._provision`` deliberately persists ONLY
+    ``metronome_customer_id`` and defers the contract (its billing config is
+    create-time-only, so creating it unlinked would permanently strand the
+    owner's top-ups). Without a contract there are no prepaid commits, so no
+    balance can exist and ``grant_prepaid_credits`` refuses that state
+    outright — testing the customer id alone would admit an owner whose
+    ledger cannot hold the credits they are spending, in exactly the
+    partial-provisioning failure this predicate exists to catch. Kept in
+    lockstep with the bedrock-gate Lambda's ``paidReserve``, the fence on the
+    inference path.
 
     Deliberately a separate read rather than a signal threaded out of
     ``read_net_balance_microcents``: this runs only on the cold path (stale
     row AND refresh unavailable), and for an owner in that state the answer
     is about to block them, so the read is self-limiting. A DDB failure
-    reports "has a customer" so a transient blip degrades to the stale-row
-    fallback rather than locking out a paying customer.
+    reports "complete" so a transient blip degrades to the stale-row fallback
+    rather than locking out a paying customer.
     """
     try:
         account = await billing_repo.get_by_owner_id(owner_id)
     except Exception:
         logger.exception("Billing read failed while checking Metronome provisioning for owner %s", owner_id)
         return True
-    return bool((account or {}).get("metronome_customer_id"))
+    account = account or {}
+    return bool(account.get("metronome_customer_id") and account.get("metronome_contract_id"))
 
 
 def _row_blocked(row: dict | None) -> bool:

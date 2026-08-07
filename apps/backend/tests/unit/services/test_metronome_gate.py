@@ -32,6 +32,7 @@ def _gate(
     *,
     row: dict | None,
     metronome_customer_id: str | None = None,
+    metronome_contract_id: str | None = "ct-default",
     net_balance_cents: float | Exception | list | None = None,
     container_row: dict | None = None,
 ):
@@ -56,9 +57,15 @@ def _gate(
             return_value={} if net_balance_cents is None else {"balance": net_balance_cents}
         )
 
+    # A customer id implies a COMPLETE ledger unless a test says otherwise:
+    # `is_owner_blocked` now requires customer AND contract, and every
+    # pre-existing case that sets a customer means "fully provisioned".
+    # `metronome_contract_id=None` opts into the partial-provisioning state.
     account = {"owner_id": OWNER}
     if metronome_customer_id:
         account["metronome_customer_id"] = metronome_customer_id
+        if metronome_contract_id:
+            account["metronome_contract_id"] = metronome_contract_id
 
     restore = AsyncMock()
     enforce = AsyncMock()
@@ -121,6 +128,25 @@ async def test_no_metronome_customer_blocks():
         assert await is_owner_blocked(OWNER) is True
     # No customer id, so there was never a balance to read.
     m.client.get_net_balance.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_customer_without_contract_blocks():
+    """The partial-provisioning state `metronome_provisioning._provision`
+    persists deliberately when the Stripe link fails: customer id only,
+    contract deferred (its billing config is create-time-only, so creating it
+    unlinked would strand the owner's top-ups permanently).
+
+    No contract means no prepaid commits, so no balance can exist and
+    `grant_prepaid_credits` refuses outright. Testing the customer id alone
+    would admit an owner whose ledger cannot hold the credits they are
+    spending — in exactly the partial-provisioning failure this predicate
+    exists to catch. Kept in lockstep with the bedrock-gate Lambda's
+    `paidReserve`.
+    """
+    with _gate(row=None, metronome_customer_id="mc-1", metronome_contract_id=None) as m:
+        assert await is_owner_blocked(OWNER) is True
+    assert m.billing_read.await_count >= 1
 
 
 @pytest.mark.asyncio

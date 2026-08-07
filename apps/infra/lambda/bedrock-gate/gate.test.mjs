@@ -198,6 +198,33 @@ test("paid reserve: zero balance → 429 credit_exhausted", async () => {
     (e) => e.code === "credit_exhausted"
   );
 });
+test("paid reserve: missing fast-gate row + customer WITHOUT contract → DENIED", async () => {
+  // The partial-provisioning state metronome_provisioning._provision persists
+  // deliberately when the Stripe link fails: customer id only, contract
+  // deferred. No contract means no prepaid commits, so no balance can exist
+  // and grant_prepaid_credits refuses outright — admitting here would leak
+  // unmetered spend in exactly the failure this fence exists to contain.
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" } },
+      fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "credit_exhausted"
+  );
+});
+test("paid reserve: missing fast-gate row and NO billing row at all → allowed (unchanged)", async () => {
+  // resolvePlan treats a missing billing row as "paid". This fence is not the
+  // place to widen a fail-closed path to a shape it never covered, and reading
+  // fields off undefined would throw inside the request path.
+  const ddb = makeFakeDdb();
+  const { hold } = await reserveOrThrow({
+    ddb, env: ENV, ownerId: "u", plan: "paid",
+    billingRow: undefined, fastGateRow: null, today: TODAY, nowSec: 0,
+  });
+  assert.equal(hold.paid, true);
+});
 test("paid reserve: missing fast-gate row but a Metronome customer exists → allowed", async () => {
   // The projection has not been written yet (webhook / backend refresh writes
   // it). A real ledger backs this owner and the meter counts every call, so
@@ -205,7 +232,7 @@ test("paid reserve: missing fast-gate row but a Metronome customer exists → al
   const ddb = makeFakeDdb();
   const { hold } = await reserveOrThrow({
     ddb, env: ENV, ownerId: "u", plan: "paid",
-    billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" } },
+    billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" }, metronome_contract_id: { S: "ct-1" } },
     fastGateRow: null, today: TODAY, nowSec: 0,
   });
   assert.equal(hold.paid, true);

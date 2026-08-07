@@ -1088,19 +1088,28 @@ export function ProvisioningStepper({
   // credits is part of converting rather than a thing to discover later.
   //
   // Same shape as the team_billing_required interception above: keep the gate's
-  // canvas, swap the card in the middle. Org owners are excluded — a trial is
-  // personal-only (see provision_gate), so an org here would be a mismatch, and
-  // their paywall is the per-seat card above.
+  // canvas, swap the card in the middle.
+  //
+  // `!isOrg` is checked explicitly rather than left to the backend. These two
+  // codes can only come from a `trial_local` row, which is personal-only, so
+  // an org cannot reach here today — but that is an invariant of a different
+  // layer, and this picker posts to /billing/trial-checkout, which an org
+  // admin must NOT use (orgs pay per-seat via startTeamCheckout). If the
+  // free tier ever opens to orgs, the silent failure would be an org admin
+  // buying a personal flat subscription. Enforce it where the consequence is.
   if (
     gatePhase === "blocked" &&
     blocked &&
     providerChoice === null &&
+    !isOrg &&
     (blocked.code === "trial_daily_cap" || blocked.code === "trial_expired")
   ) {
     return (
+      // `isOrg={false}` literally, not the narrowed `isOrg`: the guard above
+      // has already excluded orgs, and TS narrows `organization` to `never`
+      // here — so there is no org name to pass and no org copy to render.
       <ProviderPicker
-        isOrg={isOrg}
-        orgName={organization?.name}
+        isOrg={false}
         source="trial_conversion"
         heading={
           blocked.code === "trial_expired"

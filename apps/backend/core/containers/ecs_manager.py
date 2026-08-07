@@ -896,17 +896,6 @@ class EcsManager:
             upsert_fields["bedrock_role_arn"] = task_role_arn
         if bedrock_aip_arns:
             upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
-        # Same fold-in for the bedrock-gate token hash: mint_gate_token ran before
-        # this row exists, so its own conditional swap
-        # (container_repo.swap_gate_token_hash) reported "absent" and wrote
-        # nothing. Persist it here so the row carries the rotation pointer +
-        # deny-flag lookup key from first boot; without it, deny_gate_token/
-        # rotation would silently no-op until the next reprovision. If the row
-        # DOES already carry a different hash by now (a concurrent mint that
-        # won), upsert folds that one into the superseded list rather than
-        # dropping it — see container_repo.upsert.
-        if bedrock_gate_token_hash:
-            upsert_fields["bedrock_gate_token_hash"] = bedrock_gate_token_hash
         # CHECKPOINT before the row write: a run superseded during the mint must
         # not deposit its gateway_token / AIP map / role onto the row — the
         # upsert deliberately preserves the NEW owner's lease fields, so without
@@ -914,6 +903,20 @@ class EcsManager:
         if claim_id is not None:
             await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
         await container_repo.upsert(user_id, upsert_fields)
+
+        # The bedrock-gate token hash is NOT folded into that upsert. It moves
+        # only through container_repo.swap_gate_token_hash — one atomic writer —
+        # because the whole-item put has a read-to-write window a concurrent
+        # mint can slip through, orphaning a denied=False credential the kill
+        # switch can then never reach. mint_gate_token already ran its own swap;
+        # this re-asserts it for the case where the row did not exist yet, now
+        # that the upsert above has created it. Placed HERE, before the task
+        # definition carrying the plaintext is registered, so no task can ever
+        # start holding a token the row does not know about.
+        if bedrock_gate_token_hash:
+            from core.billing.bedrock_gate_tokens import persist_gate_token_hash
+
+            await persist_gate_token_hash(user_id, bedrock_gate_token_hash)
 
         try:
             # Step 1: Create per-user EFS access point
@@ -2325,9 +2328,9 @@ class EcsManager:
 
             gate_token = await mint_gate_token(user_id, bedrock_aip_arns)
             # First-provision persistence: mint_gate_token's own conditional
-            # row write no-ops against a not-yet-created row, so carry the hash
-            # to create_user_service's row-creating upsert (same C-1 fold-in as
-            # bedrock_role_arn / bedrock_aip_arns).
+            # row write no-ops against a not-yet-created row, so hand the hash
+            # to create_user_service, which re-asserts it through the same
+            # conditional swap once its upsert has created the row.
             bedrock_gate_token_hash = hash_token(gate_token)
             # Keep a revoked owner DENIED across the reprovision: mint wrote a
             # fresh row with denied=False, so re-assert the kill switch (mirrors

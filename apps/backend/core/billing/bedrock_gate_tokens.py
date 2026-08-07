@@ -74,11 +74,11 @@ logger = logging.getLogger(__name__)
 # owner-side index, so nothing else can find an owner's old rows — this list is
 # the ONLY handle on them, for deletion AND for ``deny_gate_token``.
 #
-# Self-bounding, which is why it needs no cap or sweep: only ``mint_gate_token``
-# appends to it, and it appends the pruned survivor set — and a hash only
-# survives a prune while something can still present it, which is at most the
-# service's task definition plus whatever tasks are live. (A mint that loses the
-# conditional swap adds the winner's hash on top of that, but the winner's own
+# Self-bounding, which is why it needs no cap or sweep: it is only ever written
+# through ``_swap_hash_pointer``, which writes the pruned survivor set — and a
+# hash only survives a prune while something can still present it, which is at
+# most the service's task definition plus whatever tasks are live. (A swap that
+# loses the race adds the winner's hash on top of that, but the winner's own
 # list was pruned the same way, so the bound holds.)
 #
 # That holds only while the list SURVIVES every write to the containers row.
@@ -464,11 +464,9 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
       through ``container_repo.swap_gate_token_hash`` — a conditional write, so
       a concurrent mint cannot silently overwrite this one's hash; it is either
-      merged or reported (see below). (Still a
-      no-op on a not-yet-created row: the fresh-provision path folds the hash
-      into ``create_user_service``'s row-creating upsert instead — see
-      ``ecs_manager`` — mirroring how ``bedrock_role_arn`` / ``bedrock_aip_arns``
-      are persisted.)
+      merged or reported (see ``_swap_hash_pointer``). Still a no-op on a
+      not-yet-created row; ``persist_gate_token_hash`` re-runs the same swap
+      once ``create_user_service``'s upsert has created it.
     - ROTATION SCHEDULES NOTHING. The superseded hash is recorded in
       ``_SUPERSEDED_FIELD`` and its row survives until the liveness predicate
       proves no task definition and no live task can present it. The mint first
@@ -479,9 +477,9 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     the first ``_provision_checkpoint``, so the provision lease does not
     serialize it: a poll provision and an escalating ``container_recover``
     takeover can both reach here at once. The row write is therefore conditioned
-    on the hash this call read, and a lost race is RETRIED (bounded — see the
-    loop) after folding the winner's hash, read off the refused write itself,
-    into the superseded list. Dropping a hash would strand a ``denied=False``
+    on the hash this call read, and a lost race is RETRIED (bounded — see
+    ``_swap_hash_pointer``) after folding the winner's hash, read off the
+    refused write itself, into the superseded list. Dropping a hash would strand a ``denied=False``
     token row that nothing can reach: unfindable (hash-keyed table, no owner
     index), unexpirable, and outside ``deny_gate_token``'s reach. Exhausting
     the bound leaves exactly that gap, so it logs at ERROR.
@@ -519,30 +517,73 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
         superseded.append(prior_hash)
 
-    # Conditional swap, bounded retry. The token is minted ONCE, above — the
-    # loop re-runs the WRITE only, never the mint (a re-mint per attempt would
-    # leak an unreachable token row per attempt, the very thing this fixes).
-    # The drain is not re-run either: it makes ECS calls, and the next mint's
-    # backstop pass drains anyway.
-    #
-    # THREE attempts, and no backoff. Each retry is one UpdateItem against a
-    # strongly-consistent condition, re-armed from the state DynamoDB itself
-    # returned for the refused write — so an attempt can only fail again if
-    # ANOTHER write moved the hash in between, never because a replica was
-    # stale. Sleeping would just widen that window.
-    #
-    # Why three: every interfering write to ``bedrock_gate_token_hash`` costs at
-    # most one attempt, and a rival provision makes at most two of them — its
-    # own ``mint_gate_token`` swap, plus its ``create_user_service`` upsert
-    # (which is NOT a swap: it is an unconditional whole-item put, so it never
-    # competes for the condition, it invalidates the ``expected`` we armed
-    # from ``conflicting``). Rivals beyond the first cannot reach the upsert:
-    # it is past ``_provision_checkpoint``, which the provision lease lets only
-    # one run through. So the shape this path actually has — a poll provision
-    # racing a ``container_recover`` takeover — tops out at two interfering
-    # writes, and 2 + 1 = 3. N concurrent minters would want N + 1, but nothing
-    # produces them today, and exhaustion is a LOGGED leak, not a lockout.
-    expected = prior_hash
+    await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
+
+    logger.info(
+        "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",
+        owner_id,
+        token_hash[:_HASH_PREFIX_LEN],
+        (prior_hash[:_HASH_PREFIX_LEN] + "..") if prior_hash else "none",
+        ",".join(sorted(aip_arns)) if aip_arns else "none",
+    )
+    return token
+
+
+async def persist_gate_token_hash(owner_id: str, token_hash: str) -> None:
+    """Re-assert the row's pointer at ``token_hash`` once the row exists.
+
+    ``mint_gate_token`` runs BEFORE ``create_user_service``, so on any path
+    where the containers row is not there yet its swap answers ``"absent"`` and
+    writes nothing — leaving a ``denied=False`` token row reachable from
+    nowhere. ``create_user_service`` calls this immediately after its
+    row-creating upsert, which is the first moment there is a row to condition
+    on. Through the SAME conditional swap, deliberately: a whole-item put here
+    is precisely the read-to-write race that made the row's pointer clobberable
+    in the first place.
+
+    A no-op in the ordinary case, where the row already existed at mint time
+    (``try_claim_provision``/``takeover_provision`` create it before the
+    provision runs) and the mint's own swap already landed this hash.
+    """
+    row = await container_repo.get_by_owner_id(owner_id) or {}
+    prior_hash = row.get("bedrock_gate_token_hash")
+    if prior_hash == token_hash:
+        return
+    tracked = [*(row.get(_SUPERSEDED_FIELD) or []), prior_hash]
+    superseded = [h for h in dict.fromkeys(tracked) if h and h != token_hash]
+    await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
+
+
+async def _swap_hash_pointer(
+    owner_id: str,
+    token_hash: str,
+    *,
+    superseded: list[str],
+    expected_prior_hash: str | None,
+) -> None:
+    """Conditional swap of the row's gate-token pointer, with bounded retry.
+
+    Never mints, and a lost race is logged rather than raised: provisioning must
+    not fail over a bookkeeping write. Each retry re-runs the WRITE only (a
+    re-mint per attempt would leak exactly the unreachable token row this exists
+    to prevent), re-armed from the state DynamoDB returned for the refused write.
+
+    THREE attempts, no backoff. Each is one UpdateItem against a
+    strongly-consistent condition, so an attempt can only fail again if ANOTHER
+    write moved the hash in between, never because a replica was stale —
+    sleeping would just widen that window.
+
+    Why three: every interfering write to ``bedrock_gate_token_hash`` costs at
+    most one attempt, and a rival provision makes at most two of them — its own
+    ``mint_gate_token`` swap plus its ``persist_gate_token_hash`` re-assert.
+    Rivals beyond the first cannot reach the latter: it is past
+    ``_provision_checkpoint``, which the provision lease lets only one run
+    through. So the shape this path actually has — a poll provision racing a
+    ``container_recover`` takeover — tops out at two interfering writes, and
+    2 + 1 = 3. N concurrent minters would want N + 1, but nothing produces them
+    today, and exhaustion is a LOGGED leak, not a lockout.
+    """
+    expected = expected_prior_hash
     outcome, conflicting = "conflict", None
     for _ in range(3):
         outcome, conflicting = await container_repo.swap_gate_token_hash(
@@ -576,15 +617,6 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
             token_hash[:_HASH_PREFIX_LEN],
             (expected[:_HASH_PREFIX_LEN] + "..") if expected else "none",
         )
-
-    logger.info(
-        "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",
-        owner_id,
-        token_hash[:_HASH_PREFIX_LEN],
-        (prior_hash[:_HASH_PREFIX_LEN] + "..") if prior_hash else "none",
-        ",".join(sorted(aip_arns)) if aip_arns else "none",
-    )
-    return token
 
 
 async def deny_gate_token(owner_id: str, denied: bool) -> None:

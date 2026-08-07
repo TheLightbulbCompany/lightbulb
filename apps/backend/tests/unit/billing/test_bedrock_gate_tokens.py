@@ -503,15 +503,15 @@ class TestConcurrentMints:
         }
 
     @pytest.mark.asyncio
-    async def test_a_later_fold_in_upsert_cannot_drop_a_swapped_hash(self, gate_tables, fake_ecs):
-        """The composition, one function later. The conditional swap is not the
-        last write to the pointer: create_user_service folds the caller's own
-        minted hash into a whole-item upsert.
+    async def test_a_later_upsert_cannot_drop_a_swapped_hash(self, gate_tables, fake_ecs):
+        """The composition, one function later. create_user_service upserts the
+        row MID-provision, and that upsert is a whole-item put — it rewrites
+        both gate fields whether it means to or not.
 
         Shape: a container_recover takeover mints HB and swaps; the superseded
         poll provision mints HA and swaps (correctly merging HB); it then dies
-        at its next _provision_checkpoint, and the survivor's fold-in writes HB
-        back over the top. HA must survive that as a tracked hash.
+        at its next _provision_checkpoint, and the survivor's upsert lands.
+        Nothing may drop out of the reachable set.
         """
         h0_plaintext = "h0-token"
         h0 = mod.hash_token(h0_plaintext)
@@ -523,13 +523,11 @@ class TestConcurrentMints:
         token_a = await mod.mint_gate_token("org_abc", _AIPS)
         assert _tracked(gate_tables) == [h0, mod.hash_token(token_b)]
 
-        # The survivor's create_user_service fold-in.
+        # The survivor's create_user_service upsert. It names NEITHER gate
+        # field — swap_gate_token_hash is their only writer.
         from core.repositories import container_repo
 
-        await container_repo.upsert(
-            "org_abc",
-            {"status": "provisioning", "bedrock_gate_token_hash": mod.hash_token(token_b)},
-        )
+        await container_repo.upsert("org_abc", {"status": "provisioning"})
 
         row = _container_row(gate_tables)
         reachable = {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)}
@@ -543,16 +541,85 @@ class TestConcurrentMints:
         }
 
     @pytest.mark.asyncio
+    async def test_a_mint_inside_the_upserts_write_window_is_not_orphaned(self, gate_tables, fake_ecs, monkeypatch):
+        """THE RACE NO GUARD ON upsert COULD CLOSE (Codex P1 on the fold).
+
+        ``upsert`` reads the row, then writes the whole item back. A rival mint
+        that lands BETWEEN those two makes the snapshot stale — the fold that
+        used to live there was computed from that same snapshot, so it could
+        never see the newly minted hash, and the put restored the caller's own.
+
+        Here the rival mint is forced into exactly that window. Both hashes must
+        stay reachable, because the pointer is not the upsert's to move: the run
+        re-asserts its own hash afterwards through the conditional swap.
+        """
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc")
+        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+
+        real_run_in_thread = container_repo.run_in_thread
+        state: dict = {}
+
+        async def racing_run_in_thread(fn, **kwargs):
+            # Fire the rival mint on the way INTO upsert's put_item — after its
+            # read has already been taken.
+            if getattr(fn, "__name__", "") == "put_item" and not state.get("fired"):
+                state["fired"] = True  # set BEFORE the await, or the rival recurses
+                state["token_b"] = await mod.mint_gate_token("org_abc", _AIPS)
+            return await real_run_in_thread(fn, **kwargs)
+
+        monkeypatch.setattr(container_repo, "run_in_thread", racing_run_in_thread)
+        await container_repo.upsert("org_abc", {"status": "provisioning"})
+        monkeypatch.setattr(container_repo, "run_in_thread", real_run_in_thread)
+        assert state.get("fired"), "the rival mint never landed in the window"
+
+        # create_user_service's re-assert, straight after its upsert.
+        await mod.persist_gate_token_hash("org_abc", mod.hash_token(token_a))
+
+        hash_a, hash_b = mod.hash_token(token_a), mod.hash_token(state["token_b"])
+        row = _container_row(gate_tables)
+        assert row["bedrock_gate_token_hash"]["S"] == hash_a
+        assert {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)} == {hash_a, hash_b}
+
+        # THE CONSEQUENCE: an unreachable hash is a live bearer credential the
+        # trial-cap backstop and admin revoke cannot kill.
+        await mod.deny_gate_token("org_abc", True)
+        assert {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)} == {
+            hash_a: True,
+            hash_b: True,
+        }
+
+    @pytest.mark.asyncio
     async def test_absent_row_stays_a_silent_no_op(self, gate_tables, fake_ecs, caplog):
         """The fresh-provision path: no containers row yet. The swap must not
-        create one (create_user_service's upsert folds the hash in) and must not
-        look like a lost race."""
+        create one (create_user_service's upsert does that) and must not look
+        like a lost race."""
         with caplog.at_level("ERROR", logger=mod.logger.name):
             token = await mod.mint_gate_token("org_new", _AIPS)
 
         assert [r["token_hash"]["S"] for r in _token_rows(gate_tables)] == [mod.hash_token(token)]
         assert "Item" not in gate_tables.get_item(TableName="test-containers", Key={"owner_id": {"S": "org_new"}})
         assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_fresh_provision_path_ends_with_the_row_pointing_at_the_mint(self, gate_tables, fake_ecs):
+        """Row absent at mint, created by the upsert, pointed by the swap.
+
+        The mint's own swap answers "absent" and writes nothing, so without the
+        re-assert the token row would live on with denied=False and NOTHING
+        would reference it — unfindable (hash-keyed table, no owner index),
+        unexpirable, and outside deny_gate_token's reach.
+        """
+        from core.repositories import container_repo
+
+        token = await mod.mint_gate_token("org_new", _AIPS)
+        await container_repo.upsert("org_new", {"status": "provisioning"})
+        await mod.persist_gate_token_hash("org_new", mod.hash_token(token))
+
+        assert _container_row(gate_tables, "org_new")["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
+        await mod.deny_gate_token("org_new", True)
+        assert [r["denied"]["BOOL"] for r in _token_rows(gate_tables)] == [True]
 
 
 class TestExpireSuperseded:

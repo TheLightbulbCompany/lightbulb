@@ -43,3 +43,10 @@ def _stub_bedrock_gate_tokens(monkeypatch, stub_gate_token):
         "core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens",
         AsyncMock(),
     )
+    # create_user_service re-asserts the minted hash onto the row it just
+    # created, through container_repo.swap_gate_token_hash — another live DDB
+    # write on every Bedrock provision.
+    monkeypatch.setattr(
+        "core.billing.bedrock_gate_tokens.persist_gate_token_hash",
+        AsyncMock(),
+    )

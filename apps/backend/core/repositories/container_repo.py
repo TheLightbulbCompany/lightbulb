@@ -49,8 +49,8 @@ async def get_by_owner_id(owner_id: str, *, consistent: bool = False) -> dict | 
     hottest read in the system (``GET /container/status`` polls it every ~3s
     per signed-in user), and a strongly consistent GetItem costs double the
     RCUs. Ask for it only where a stale answer is a correctness bug rather than
-    a slightly old status — today that is ``upsert``'s read-modify-write, which
-    decides whether it is displacing a live gate-token hash.
+    a slightly old status — today that is ``upsert``'s read-modify-write, whose
+    whole-item put drops any field the read failed to see.
     """
     table = _get_table()
     response = await run_in_thread(table.get_item, Key={"owner_id": owner_id}, ConsistentRead=consistent)
@@ -123,22 +123,66 @@ _UPSERT_PRESERVED_FIELDS = (
     "provision_execution_name",
     # The bedrock-gate superseded-hash list (``bedrock_gate_tokens._SUPERSEDED_FIELD``
     # — bound to that constant by
-    # tests/unit/repositories/test_container_repo.py:144, since importing it
-    # here would close an import cycle). It is the ONLY handle on an
-    # owner's old gate-token rows: that table is hash-keyed with no owner index,
-    # so a hash dropped from this list can never be found, deleted, or denied
-    # again — leaving a live bearer credential (its plaintext is still in the
-    # retained task-definition revision) that nothing can kill.
+    # test_container_repo.test_upsert_preserves_the_bedrock_gate_superseded_hashes,
+    # since importing it here would close an import cycle). It is the ONLY
+    # handle on an owner's old gate-token rows: that table is hash-keyed with no
+    # owner index, so a hash dropped from this list can never be found, deleted,
+    # or denied again — leaving a live bearer credential (its plaintext is still
+    # in the retained task-definition revision) that nothing can kill.
     "bedrock_gate_superseded_hashes",
-    # The pointer to the owner's CURRENT gate token, for the same reason. An
-    # explicit value still wins (create_user_service's fold-in), which is
-    # correct — but a caller that passes NONE must not delete it. Two do:
+    # The pointer to the owner's CURRENT gate token, for the same reason. Both
+    # gate fields move ONLY through ``swap_gate_token_hash``, so no caller
+    # passes either one here and this put can only ever PRESERVE them — but
+    # preserve it must: a reprovision through ``create_user_service`` (that is
     # ``routers/debug.create_user_service(owner_id, gateway_token)``, and a
-    # Bedrock -> chatgpt_oauth provider-swap reprovision through the
-    # no-service branch. Without this entry the whole-item put strands the
-    # token the LIVE container is presenting.
+    # Bedrock -> chatgpt_oauth provider-swap reprovision through the no-service
+    # branch) would otherwise strand the token the LIVE container is presenting.
     "bedrock_gate_token_hash",
 )
+
+
+# How many times a whole-item put re-reads and rebuilds after losing the
+# gate-pointer CAS below. Three: only a mint moves the pointer, a rival
+# provision mints once, and it writes the pointer at most twice doing so (its
+# ``mint_gate_token`` swap, then its ``persist_gate_token_hash`` re-assert).
+# Rivals beyond the first cannot exist — the second write is past
+# ``_provision_checkpoint``, which the provision lease lets a single run
+# through. Exhaustion RAISES rather than forcing the write: a failed provision
+# is retried by the status poll, an orphaned bearer token is forever.
+_GATE_CAS_ATTEMPTS = 3
+
+
+def _gate_pointer_unchanged(existing: dict | None) -> dict:
+    """``put_item`` kwargs that refuse the write if the gate-token pointer moved.
+
+    Both whole-item writers here (``upsert``, ``update_fields``) rebuild the row
+    from a read and put it back, so they REWRITE ``bedrock_gate_token_hash`` and
+    ``bedrock_gate_superseded_hashes`` even when all they mean to do is preserve
+    them — and rewriting from a snapshot taken before a concurrent
+    ``swap_gate_token_hash`` DELETES whatever that swap wrote. The loss is
+    permanent: the gate-tokens table is hash-keyed with no owner index, so a
+    hash the row no longer names can never be found, expired, or denied again,
+    while its plaintext is still live in a retained task-definition revision.
+
+    No amount of care in the caller closes that. Three attempts tried, and each
+    was a guard computed from the same stale snapshot: by the time the snapshot
+    is examined it can already be wrong, whatever it is examined FOR. So the
+    write carries the proof instead — it lands only while the row still holds
+    the pointer this read saw, and a refusal sends the caller back to re-read.
+
+    Conditioning on the pointer covers BOTH fields: ``swap_gate_token_hash`` is
+    their only writer and always moves the pointer to a freshly minted hash in
+    the same UpdateItem that rewrites the superseded list, so the pointer is a
+    valid version stamp for the pair.
+    """
+    seen = (existing or {}).get("bedrock_gate_token_hash")
+    if seen is None:
+        # Covers the absent row too — nothing to displace either way.
+        return {"ConditionExpression": "attribute_not_exists(bedrock_gate_token_hash)"}
+    return {
+        "ConditionExpression": "bedrock_gate_token_hash = :seen_gate_hash",
+        "ExpressionAttributeValues": {":seen_gate_hash": seen},
+    }
 
 
 async def upsert(owner_id: str, fields: dict) -> dict:
@@ -160,55 +204,47 @@ async def upsert(owner_id: str, fields: dict) -> dict:
       checkpoint.
     - ``bedrock_gate_superseded_hashes`` and ``bedrock_gate_token_hash`` —
       dropping either orphans gate-token rows permanently (see the constant's
-      comment). A caller that passes a DIFFERENT ``bedrock_gate_token_hash``
-      still wins, but the displaced hash is folded into the superseded list
-      rather than dropped.
-
-    (PR 2 replaces this whole-item write with a scoped UpdateItem, which
-    removes the need to preserve anything.)
+      comment). No caller passes them: ``swap_gate_token_hash`` is their only
+      writer, and ``_gate_pointer_unchanged`` makes this put prove it is
+      preserving them rather than overwriting a swap it never saw.
     """
     table = _get_table()
-    # CONSISTENT: this read decides whether the write below displaces a live
-    # gate-token hash (see the fold further down). A replica that has not caught
-    # up to a concurrent mint's swap reports the hash we are about to write as
-    # already current, the fold sees nothing displaced, and the whole-item put
-    # then erases the other hash — orphaning a denied=False token row that
-    # nothing can find, expire, or deny. Same reasoning as
-    # swap_gate_token_hash's, which is why that one reads its conflict state off
-    # the conditional write instead of re-reading at all.
-    existing = await get_by_owner_id(owner_id, consistent=True)
+    for attempt in range(_GATE_CAS_ATTEMPTS):
+        # CONSISTENT: this read is the ONLY source of the fields the whole-item
+        # put below must carry over, and the lease ones were written moments
+        # earlier by try_claim_provision / takeover_provision on this same
+        # provision. A replica that has not caught up reports them absent and
+        # the put then DROPS them — making an in-flight provision look unowned
+        # and re-claimable, or minting a second id/created_at for a row that
+        # already had them. One strongly consistent GetItem per provision; the
+        # ~3s /container/status poll keeps reading the eventually-consistent
+        # default.
+        existing = await get_by_owner_id(owner_id, consistent=True)
 
-    now = utc_now_iso()
-    item = {
-        "owner_id": owner_id,
-        "id": existing["id"] if existing else str(uuid.uuid4()),
-        "created_at": existing["created_at"] if existing else now,
-        "updated_at": now,
-        **fields,
-    }
-    for lease_field in _UPSERT_PRESERVED_FIELDS:
-        if existing and lease_field in existing and lease_field not in fields:
-            item[lease_field] = existing[lease_field]
+        now = utc_now_iso()
+        item = {
+            "owner_id": owner_id,
+            "id": existing["id"] if existing else str(uuid.uuid4()),
+            "created_at": existing["created_at"] if existing else now,
+            "updated_at": now,
+            **fields,
+        }
+        for lease_field in _UPSERT_PRESERVED_FIELDS:
+            if existing and lease_field in existing and lease_field not in fields:
+                item[lease_field] = existing[lease_field]
 
-    # A caller that writes a DIFFERENT gate-token hash displaces the one on the
-    # row — and that row is the only handle on the displaced token (hash-keyed
-    # table, no owner index), so dropping it orphans a denied=False credential
-    # forever. Track it instead, the same invariant swap_gate_token_hash
-    # enforces. The shape this closes: a superseded provision wins the
-    # conditional swap with its hash, dies at its next checkpoint, and the
-    # surviving run's create_user_service fold-in then puts its own hash over
-    # the top. Runs after the preserve loop so it sees the effective list.
-    displaced = (existing or {}).get("bedrock_gate_token_hash")
-    if displaced and item.get("bedrock_gate_token_hash") not in (None, displaced):
-        tracked = [*(item.get("bedrock_gate_superseded_hashes") or []), displaced]
-        item["bedrock_gate_superseded_hashes"] = [
-            h for h in dict.fromkeys(tracked) if h and h != item["bedrock_gate_token_hash"]
-        ]
+        # Ensure owner_id is not overridden by fields
+        item["owner_id"] = owner_id
 
-    # Ensure owner_id is not overridden by fields
-    item["owner_id"] = owner_id
-
-    await run_in_thread(table.put_item, Item=item)
+        try:
+            await run_in_thread(table.put_item, Item=item, **_gate_pointer_unchanged(existing))
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            if attempt + 1 == _GATE_CAS_ATTEMPTS:
+                raise
+            continue  # a mint landed inside the window — rebuild against it
+        break
     publish_status_changed(owner_id)
     return item
 
@@ -1149,15 +1185,34 @@ async def update_status(owner_id: str, status: str, substatus: str | None = None
 
 
 async def update_fields(owner_id: str, fields: dict) -> dict | None:
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
+    """Merge ``fields`` into an existing row via a whole-item put. None if absent.
 
-    existing.update(fields)
-    existing["updated_at"] = utc_now_iso()
-
+    The put is CAS'd on the bedrock-gate pointer for the same reason ``upsert``'s
+    is — see ``_gate_pointer_unchanged``. This is the writer that runs several
+    times per provision (every substatus step), so it is the likelier of the two
+    to have a concurrent mint's swap land inside its read-to-write window.
+    """
     table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
+    for attempt in range(_GATE_CAS_ATTEMPTS):
+        existing = await get_by_owner_id(owner_id)
+        if existing is None:
+            return None
+
+        # Off the PRE-merge snapshot: a caller that legitimately moves the
+        # pointer still has to prove it read the value it is moving from.
+        guard = _gate_pointer_unchanged(existing)
+        existing.update(fields)
+        existing["updated_at"] = utc_now_iso()
+
+        try:
+            await run_in_thread(table.put_item, Item=existing, **guard)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            if attempt + 1 == _GATE_CAS_ATTEMPTS:
+                raise
+            continue  # a mint landed inside the window — rebuild against it
+        break
     publish_status_changed(owner_id)
     return existing
 
@@ -1170,6 +1225,14 @@ async def swap_gate_token_hash(
     expected_prior_hash: str | None,
 ) -> tuple[str, dict | None]:
     """Point the row at a freshly minted gate-token hash, atomically.
+
+    THE ONLY WRITER of ``bedrock_gate_token_hash`` and
+    ``bedrock_gate_superseded_hashes``. The two whole-item writers (``upsert``,
+    ``update_fields``) only ever preserve them, and their puts are CAS'd on the
+    pointer to prove it (see ``_gate_pointer_unchanged``) — so it cannot move
+    outside a conditional write. It used to move inside ``upsert`` too, and no
+    amount of guarding made that safe: a mint landing between that read and its
+    unconditional put left the snapshot stale whatever the snapshot was read for.
 
     A scoped conditional ``update_item`` — never the get→put ``update_fields``:
     ``superseded`` is computed from a snapshot the caller read BEFORE minting,
@@ -1210,9 +1273,9 @@ async def swap_gate_token_hash(
       the authoritative pre-write row: the caller folds its
       ``bedrock_gate_token_hash`` into ``superseded`` and retries against it.
     - ``("absent", None)`` — no row yet. A SILENT no-op, matching
-      ``update_fields``: ``mint_gate_token`` runs on the fresh-provision path
-      before the row exists, and ``create_user_service``'s row-creating upsert
-      folds the hash in instead.
+      ``update_fields``: ``mint_gate_token`` can run before the row exists, and
+      ``bedrock_gate_tokens.persist_gate_token_hash`` re-points the row through
+      this same call once ``create_user_service``'s upsert has created it.
     """
     table = _get_table()
     values: dict = {":new": new_hash, ":superseded": superseded, ":iso": utc_now_iso()}

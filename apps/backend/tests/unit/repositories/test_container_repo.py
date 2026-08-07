@@ -133,9 +133,10 @@ async def test_upsert_preserves_the_bedrock_gate_superseded_hashes(dynamodb_tabl
 
     The shape: an owner whose row exists in status="error" with no ECS service
     reprovisions. mint_gate_token writes {hash: B, superseded: [A]}, then
-    create_user_service's row-creating upsert writes a fresh whole item. Without
-    the preserve, that upsert drops [A] on the floor — a REGRESSION versus the
-    one-hour TTL this branch deleted, which at least bounded the leak."""
+    create_user_service's mid-provision upsert writes a fresh whole item.
+    Without the preserve, that upsert drops [A] on the floor — a REGRESSION
+    versus the one-hour TTL this branch deleted, which at least bounded the
+    leak."""
     from core.billing import bedrock_gate_tokens
     from core.repositories import container_repo
 
@@ -153,32 +154,17 @@ async def test_upsert_preserves_the_bedrock_gate_superseded_hashes(dynamodb_tabl
         {"bedrock_gate_token_hash": "hash_B", bedrock_gate_tokens._SUPERSEDED_FIELD: ["hash_A"]},
     )
 
-    # create_user_service's row-creating upsert. It folds in the new hash but
-    # knows nothing about the superseded list.
+    # create_user_service's mid-provision upsert. It knows nothing about either
+    # gate field — swap_gate_token_hash owns both — so both must survive it.
     row = await container_repo.upsert(
         "user_gate",
-        {"gateway_token": "tok", "status": "provisioning", "bedrock_gate_token_hash": "hash_B"},
+        {"gateway_token": "tok", "status": "provisioning"},
     )
 
+    assert row["bedrock_gate_token_hash"] == "hash_B"
     assert row[bedrock_gate_tokens._SUPERSEDED_FIELD] == ["hash_A"]
     fetched = await container_repo.get_by_owner_id("user_gate")
     assert fetched[bedrock_gate_tokens._SUPERSEDED_FIELD] == ["hash_A"]
-
-
-@pytest.mark.asyncio
-async def test_upsert_lets_an_explicit_superseded_list_win(dynamodb_table):
-    """The preserve is a fallback, not an override: a caller that passes the
-    field explicitly still writes what it passed (same rule as the lease
-    fields)."""
-    from core.billing import bedrock_gate_tokens
-    from core.repositories import container_repo
-
-    field = bedrock_gate_tokens._SUPERSEDED_FIELD
-    await container_repo.upsert("user_gate2", {"status": "running", field: ["hash_A"]})
-
-    row = await container_repo.upsert("user_gate2", {"status": "running", field: []})
-
-    assert row[field] == []
 
 
 @pytest.mark.asyncio
@@ -684,18 +670,18 @@ async def test_upsert_without_a_gate_hash_does_not_delete_it(dynamodb_table):
 async def test_upsert_reads_the_existing_row_consistently(dynamodb_table):
     """ASSERTS THE REQUEST PARAMETER, deliberately — the one place that is right.
 
-    The displacement fold below decides whether the hash it is about to write
-    replaces a DIFFERENT live one. A stale replica reports the hash being
-    written as already current, so nothing looks displaced, the fold does not
-    run, and the whole-item put erases the other hash — orphaning a
-    denied=False token row nothing can find, expire, or deny.
+    This read is the sole source of everything the whole-item put has to carry
+    over. The lease fields were written moments earlier by try_claim_provision /
+    takeover_provision on this same provision, so a replica that has not caught
+    up reports them absent and the put DROPS them — leaving a live provision
+    looking unowned and re-claimable.
 
     moto is always strongly consistent, so no observable state can distinguish
     the two reads. The guarantee lives entirely in ConsistentRead, which is why
     that is what gets asserted. Also asserted: the default read is NOT
     consistent — get_by_owner_id is the ~3s /container/status poll on every
-    signed-in user, and doubling its RCUs to fix a write path would be the
-    wrong trade.
+    signed-in user, and doubling its RCUs to fix a once-per-provision write path
+    would be the wrong trade.
     """
     from core.repositories import container_repo
 
@@ -720,28 +706,51 @@ async def test_upsert_reads_the_existing_row_consistently(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_upsert_tracks_the_hash_it_displaces(dynamodb_table):
-    """An explicit hash still wins — but the one it replaces must be folded
-    into the superseded list, not dropped: the row is the only handle on it."""
-    from core.billing import bedrock_gate_tokens
+@pytest.mark.parametrize("writer", ["upsert", "update_fields"])
+async def test_a_whole_item_put_refuses_to_erase_an_unseen_gate_swap(dynamodb_table, writer):
+    """THE RACE NO GUARD ON THE READ COULD CLOSE.
+
+    Both whole-item writers rebuild the row from a read and put it back, so both
+    REWRITE the gate pointer they only meant to preserve — and a swap landing
+    inside that read-to-write window is erased by it. That erasure is forever:
+    the gate-tokens table is hash-keyed with no owner index, so the hash can
+    never be found, expired, or denied again while its plaintext is still live
+    in a retained task-definition revision.
+
+    Here every attempt loses the race, so the write must give up rather than
+    force itself through: a failed provision is retried by the status poll, an
+    orphaned bearer token is not.
+    """
+    from botocore.exceptions import ClientError
+
     from core.repositories import container_repo
 
-    field = bedrock_gate_tokens._SUPERSEDED_FIELD
-    await container_repo.upsert(
-        "user_fold",
-        {"status": "running", "bedrock_gate_token_hash": "hash_B", field: ["hash_A"]},
-    )
+    await container_repo.upsert("user_cas", {"status": "running"})
+    await container_repo.swap_gate_token_hash("user_cas", new_hash="hash_A", superseded=[], expected_prior_hash=None)
 
-    row = await container_repo.upsert("user_fold", {"status": "provisioning", "bedrock_gate_token_hash": "hash_C"})
+    real_run_in_thread = container_repo.run_in_thread
+    rival_hashes = iter(["hash_B", "hash_C", "hash_D", "hash_E"])
 
-    assert row["bedrock_gate_token_hash"] == "hash_C"
-    assert row[field] == ["hash_A", "hash_B"]
+    async def racing_run_in_thread(fn, **kwargs):
+        # Move the pointer on the way INTO each put — i.e. always after the read
+        # that fed it. swap_gate_token_hash issues update_item, so no recursion.
+        if getattr(fn, "__name__", "") == "put_item":
+            row = await container_repo.get_by_owner_id("user_cas")
+            await container_repo.swap_gate_token_hash(
+                "user_cas",
+                new_hash=next(rival_hashes),
+                superseded=[],
+                expected_prior_hash=row.get("bedrock_gate_token_hash"),
+            )
+        return await real_run_in_thread(fn, **kwargs)
 
-    # Re-writing the SAME hash changes nothing, and a hash may never appear as
-    # both current and superseded.
-    row = await container_repo.upsert("user_fold", {"status": "running", "bedrock_gate_token_hash": "hash_A"})
-    assert row["bedrock_gate_token_hash"] == "hash_A"
-    assert row[field] == ["hash_B", "hash_C"]
+    with patch.object(container_repo, "run_in_thread", racing_run_in_thread), pytest.raises(ClientError):
+        await getattr(container_repo, writer)("user_cas", {"status": "provisioning"})
+
+    # Three rebuild attempts, three refused puts — and nothing was overwritten.
+    row = await container_repo.get_by_owner_id("user_cas")
+    assert row["bedrock_gate_token_hash"] == "hash_D"
+    assert row["status"] == "running"
 
 
 @pytest.mark.asyncio

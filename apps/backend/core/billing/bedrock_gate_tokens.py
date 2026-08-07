@@ -340,7 +340,9 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
         # it as the latter is the one shape that would delete a token the
         # container is holding — the exact class the liveness predicate exists
         # to eliminate. Raise; the caller keeps the rows.
-        raise RuntimeError(f"ECS service {service_name} is {service.get('status')} but reports no task definition")
+        raise RuntimeError(
+            f"ECS service {service_name} is {service.get('status')} but reports no task definition{_INCOMPLETE_NOTE}"
+        )
     service_def_arns: list[str] = [service_task_def]
     live_arns = await _live_task_definition_arns(ecs, cluster, service_name)
 
@@ -461,7 +463,8 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
       the AIP ARN.
     - Points the containers row's ``bedrock_gate_token_hash`` at the new hash,
       through ``container_repo.swap_gate_token_hash`` — a conditional write, so
-      two concurrent mints cannot lose one another's hash (see below). (Still a
+      a concurrent mint cannot silently overwrite this one's hash; it is either
+      merged or reported (see below). (Still a
       no-op on a not-yet-created row: the fresh-provision path folds the hash
       into ``create_user_service``'s row-creating upsert instead — see
       ``ecs_manager`` — mirroring how ``bedrock_role_arn`` / ``bedrock_aip_arns``
@@ -525,10 +528,20 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     # THREE attempts, and no backoff. Each retry is one UpdateItem against a
     # strongly-consistent condition, re-armed from the state DynamoDB itself
     # returned for the refused write — so an attempt can only fail again if
-    # ANOTHER writer moved the hash in between, never because a replica was
-    # stale. Sleeping would just widen that window. Three covers every
-    # concurrent gate-hash writer this owner has (a poll provision, a
-    # ``container_recover`` takeover, and ``create_user_service``'s fold-in).
+    # ANOTHER write moved the hash in between, never because a replica was
+    # stale. Sleeping would just widen that window.
+    #
+    # Why three: every interfering write to ``bedrock_gate_token_hash`` costs at
+    # most one attempt, and a rival provision makes at most two of them — its
+    # own ``mint_gate_token`` swap, plus its ``create_user_service`` upsert
+    # (which is NOT a swap: it is an unconditional whole-item put, so it never
+    # competes for the condition, it invalidates the ``expected`` we armed
+    # from ``conflicting``). Rivals beyond the first cannot reach the upsert:
+    # it is past ``_provision_checkpoint``, which the provision lease lets only
+    # one run through. So the shape this path actually has — a poll provision
+    # racing a ``container_recover`` takeover — tops out at two interfering
+    # writes, and 2 + 1 = 3. N concurrent minters would want N + 1, but nothing
+    # produces them today, and exhaustion is a LOGGED leak, not a lockout.
     expected = prior_hash
     outcome, conflicting = "conflict", None
     for _ in range(3):
@@ -540,12 +553,18 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
         )
         if outcome != "conflict":
             break
+        if not conflicting:
+            # Conflicted but the prior row could not be parsed (see
+            # swap_gate_token_hash's guard). Re-arming from nothing would ask
+            # to write an EMPTY superseded list, dropping every tracked hash.
+            # Stop here instead and fall into the ERROR log below.
+            break
         # A concurrent mint got there first. Its hash is now the row's current
         # one and NOTHING else records it, so carry it into our superseded list
         # or it becomes unreachable. Order-preserving, de-duplicated, and never
         # including our own new hash.
-        expected = (conflicting or {}).get("bedrock_gate_token_hash")
-        merged = [*((conflicting or {}).get(_SUPERSEDED_FIELD) or []), expected]
+        expected = conflicting.get("bedrock_gate_token_hash")
+        merged = [*(conflicting.get(_SUPERSEDED_FIELD) or []), expected]
         superseded = [h for h in dict.fromkeys(merged) if h and h != token_hash]
     if outcome == "conflict":
         # Do NOT raise: provisioning must not fail over this. The failure mode

@@ -681,6 +681,45 @@ async def test_upsert_without_a_gate_hash_does_not_delete_it(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_upsert_reads_the_existing_row_consistently(dynamodb_table):
+    """ASSERTS THE REQUEST PARAMETER, deliberately — the one place that is right.
+
+    The displacement fold below decides whether the hash it is about to write
+    replaces a DIFFERENT live one. A stale replica reports the hash being
+    written as already current, so nothing looks displaced, the fold does not
+    run, and the whole-item put erases the other hash — orphaning a
+    denied=False token row nothing can find, expire, or deny.
+
+    moto is always strongly consistent, so no observable state can distinguish
+    the two reads. The guarantee lives entirely in ConsistentRead, which is why
+    that is what gets asserted. Also asserted: the default read is NOT
+    consistent — get_by_owner_id is the ~3s /container/status poll on every
+    signed-in user, and doubling its RCUs to fix a write path would be the
+    wrong trade.
+    """
+    from core.repositories import container_repo
+
+    real_table = container_repo._get_table()
+    reads: list[bool] = []
+
+    class RecordingTable:
+        def __getattr__(self, name):
+            return getattr(real_table, name)
+
+        def get_item(self, **kwargs):
+            reads.append(kwargs.get("ConsistentRead"))
+            return real_table.get_item(**kwargs)
+
+    with patch.object(container_repo, "_get_table", return_value=RecordingTable()):
+        await container_repo.upsert("user_cr", {"status": "running"})
+        assert reads == [True]
+
+        reads.clear()
+        await container_repo.get_by_owner_id("user_cr")
+        assert reads == [False]
+
+
+@pytest.mark.asyncio
 async def test_upsert_tracks_the_hash_it_displaces(dynamodb_table):
     """An explicit hash still wins — but the one it replaces must be folded
     into the superseded list, not dropped: the row is the only handle on it."""

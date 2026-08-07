@@ -42,9 +42,18 @@ def _get_table():
     return get_table("containers")
 
 
-async def get_by_owner_id(owner_id: str) -> dict | None:
+async def get_by_owner_id(owner_id: str, *, consistent: bool = False) -> dict | None:
+    """Read the owner's container row. Eventually consistent BY DEFAULT.
+
+    ``consistent=True`` is opt-in per call, never the default: this is the
+    hottest read in the system (``GET /container/status`` polls it every ~3s
+    per signed-in user), and a strongly consistent GetItem costs double the
+    RCUs. Ask for it only where a stale answer is a correctness bug rather than
+    a slightly old status — today that is ``upsert``'s read-modify-write, which
+    decides whether it is displacing a live gate-token hash.
+    """
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id})
+    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id}, ConsistentRead=consistent)
     return response.get("Item")
 
 
@@ -159,7 +168,15 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     removes the need to preserve anything.)
     """
     table = _get_table()
-    existing = await get_by_owner_id(owner_id)
+    # CONSISTENT: this read decides whether the write below displaces a live
+    # gate-token hash (see the fold further down). A replica that has not caught
+    # up to a concurrent mint's swap reports the hash we are about to write as
+    # already current, the fold sees nothing displaced, and the whole-item put
+    # then erases the other hash — orphaning a denied=False token row that
+    # nothing can find, expire, or deny. Same reasoning as
+    # swap_gate_token_hash's, which is why that one reads its conflict state off
+    # the conditional write instead of re-reading at all.
+    existing = await get_by_owner_id(owner_id, consistent=True)
 
     now = utc_now_iso()
     item = {
@@ -1226,7 +1243,19 @@ async def swap_gate_token_hash(
         raw = e.response.get("Item")
         if not raw:
             return "absent", None
-        return "conflict", {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()}
+        try:
+            return "conflict", {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()}
+        except Exception:
+            # Same guard as _held_listing_id's, for the same reason: this parse
+            # is of a raw AttributeValue map on the ERROR shape (boto3's
+            # resource-layer transform only covers the output shape, so it
+            # arrives untransformed and _DESERIALIZER is correct) — but it sits
+            # on the provisioning path, where a TypeError would escape
+            # mint_gate_token, which has no try, and fail the whole provision.
+            # An unparseable item degrades to "retry against an unknown prior",
+            # which fails the condition and lands in the caller's ERROR log.
+            logger.warning("swap_gate_token_hash: failed to parse the ALL_OLD item for owner=%s", owner_id)
+            return "conflict", None
     return "written", None
 
 

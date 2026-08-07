@@ -906,10 +906,9 @@ class TestPartialEcsResponses:
     not allowed to fail in, so incomplete must mean unknown must mean keep.
     """
 
-    OLD_PLAINTEXT = "old-token"
-    NEW_PLAINTEXT = "new-token"
-
     def _arrange(self, client, fake_ecs, **kwargs) -> tuple[str, str]:
+        """Same owner-mid-rotation fixture the expiry suite uses — including its
+        plaintexts, so there is nothing to keep in sync here."""
         return TestExpireSuperseded()._arrange(client, fake_ecs, **kwargs)
 
     def _hashes(self, client) -> set[str]:

@@ -382,9 +382,16 @@ async def _disarm_ttl(table, token_hash: str) -> None:
     with the old behaviour and TTLs the outgoing row, the new code tracks that
     hash, and tracking it disarms it.
 
-    Conditional on the attribute existing, so a row without one takes no write.
-    Never raises: the caller is protecting a token, and failing to disarm is
-    the state we were already in.
+    Conditional on the attribute existing, so a row without one takes no write —
+    which matters because ``_retain`` calls this on a REPEATED path.
+
+    Never raises, and the caller does not check an outcome: a throttle or 5xx
+    here is retried by the next retention, so aborting the mint would fail a
+    provision over a condition that fixes itself. But a failure must never read
+    as a success — the WARNING says the clock is STILL ARMED, and only a write
+    that actually landed logs "disarmed". WARNING rather than ERROR because the
+    next liveness evaluation re-attempts it; a sustained DynamoDB fault is
+    alarmed on its own.
     """
     try:
         await run_in_thread(
@@ -396,10 +403,21 @@ async def _disarm_ttl(table, token_hash: str) -> None:
         )
         logger.info("bedrock-gate token %s.. legacy ttl disarmed", token_hash[:_HASH_PREFIX_LEN])
     except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            logger.warning("failed to disarm ttl on gate-token row %s..", token_hash[:_HASH_PREFIX_LEN], exc_info=True)
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # no ttl (or no row) — the invariant already holds
+        _log_still_armed(token_hash)
     except Exception:  # noqa: BLE001 — never break a mint over bookkeeping
-        logger.warning("failed to disarm ttl on gate-token row %s..", token_hash[:_HASH_PREFIX_LEN], exc_info=True)
+        _log_still_armed(token_hash)
+
+
+def _log_still_armed(token_hash: str) -> None:
+    logger.warning(
+        "bedrock-gate token %s.. ttl removal FAILED — the legacy clock is STILL ARMED on a row we are "
+        "retaining; DynamoDB may reap it out from under the container presenting it. Re-attempted on the "
+        "next liveness evaluation.",
+        token_hash[:_HASH_PREFIX_LEN],
+        exc_info=True,
+    )
 
 
 async def _drain_superseded(
@@ -413,6 +431,10 @@ async def _drain_superseded(
     time it landed anyway. ``mint_gate_token`` prunes the list instead, inside
     the conditional swap it already makes; until then a hash that has already
     been deleted just re-resolves to a no-op delete.
+
+    Every hash it RETAINS — kept, adopted, or held because the liveness check
+    itself failed — has any legacy ``ttl`` re-asserted away first; see
+    ``_retain`` for why that has to happen on retention and not on adoption.
 
     ``adopt_orphans`` — also return any hash the PREDICATE says is presentable
     that is neither the current pointer nor already tracked. That is the legacy
@@ -432,6 +454,7 @@ async def _drain_superseded(
     if not candidates and not adopt_orphans:
         return []
 
+    table = _tokens_table()
     try:
         presentable = await _presentable_gate_token_hashes(owner_id)
     except Exception:
@@ -442,9 +465,8 @@ async def _drain_superseded(
             len(candidates),
             exc_info=True,
         )
-        return candidates
+        return await _retain(table, candidates)
 
-    table = _tokens_table()
     survivors: list[str] = []
     if adopt_orphans:
         known = {current_hash, *candidates}
@@ -492,7 +514,29 @@ async def _drain_superseded(
                 token_hash[:_HASH_PREFIX_LEN],
                 owner_id,
             )
-    return survivors
+    return await _retain(table, survivors)
+
+
+async def _retain(table, hashes: list[str]) -> list[str]:
+    """Record these hashes as still-live, re-asserting that none carries a ``ttl``.
+
+    THE INVARIANT, stated the way it has to be enforced: *a ``ttl`` on a row we
+    are RETAINING is never legitimate, so every retention re-asserts its
+    absence.* Not "remove it when we adopt" — adoption happens once, and a
+    one-shot write loses to anything that arms the clock afterwards:
+
+    - a rolling deploy where an old task moves the pointer, pauses, and only
+      then issues its unconditional ``SET ttl`` on the outgoing hash — after
+      the new task has already looked and found nothing to remove;
+    - a disarm that was throttled or 5xx'd, which no amount of care at the
+      moment of adoption can retry.
+
+    Retention is evaluated on every drain, so making it the place the invariant
+    is asserted heals both without having to tell them apart.
+    """
+    for token_hash in hashes:
+        await _disarm_ttl(table, token_hash)
+    return hashes
 
 
 async def expire_superseded_gate_tokens(owner_id: str) -> None:
@@ -585,14 +629,16 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     if prior_hash and prior_hash != token_hash and prior_hash not in superseded:
         superseded.append(prior_hash)
 
-    # DISARM everything about to be recorded as tracked. A tracked hash is one
-    # this module has undertaken to keep alive until the predicate proves it
-    # dead, and a row carrying a legacy ``ttl`` is one DynamoDB will reap on a
-    # clock regardless — the two cannot both be true. Covers the adopted legacy
-    # orphan, the outgoing pointer (which an old backend task mid-rollout may
-    # have just TTL'd), and any survivor of the drain above.
-    for tracked_hash in superseded:
-        await _disarm_ttl(table, tracked_hash)
+    # Disarm the OUTGOING pointer specifically. Everything else in `superseded`
+    # came through the drain, which disarms what it retains; this one cannot
+    # have, because at drain time it was still `current_hash` and the drain
+    # excludes that by construction (you must never expire the live token). It
+    # is also the hash a mid-rollout old task is most likely to have just
+    # TTL'd, since superseding it is exactly what the old code TTL'd on.
+    # One-shot, and it does not need to be more: from here on it is tracked, so
+    # every later retention re-asserts it.
+    if prior_hash and prior_hash in superseded:
+        await _disarm_ttl(table, prior_hash)
 
     await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
 

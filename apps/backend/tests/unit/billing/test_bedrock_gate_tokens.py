@@ -10,6 +10,7 @@ import hashlib
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from core.billing import bedrock_gate_tokens as mod
@@ -829,7 +830,8 @@ class TestLegacyTtlDisarm:
     @pytest.mark.asyncio
     async def test_a_row_without_a_ttl_is_left_exactly_as_it_was(self, gate_tables, fake_ecs):
         """No spurious writes: the disarm is conditional on the attribute
-        existing, so the ordinary post-cutover row takes none."""
+        existing, so the ordinary post-cutover row takes none. Matters more now
+        the disarm rides the REPEATED retention path, not a one-shot."""
         old_plaintext = "outgoing-token"
         old_hash = mod.hash_token(old_plaintext)
         _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
@@ -838,8 +840,79 @@ class TestLegacyTtlDisarm:
         before = _token_row(gate_tables, old_hash)
 
         await mod.mint_gate_token("org_abc", _AIPS)
+        for _ in range(3):  # every wake re-evaluates retention
+            await mod.expire_superseded_gate_tokens("org_abc")
 
         assert _token_row(gate_tables, old_hash) == before
+
+    @pytest.mark.asyncio
+    async def test_a_ttl_armed_after_adoption_is_still_removed(self, gate_tables, fake_ecs):
+        """P1a — THE LATE WRITE. A one-shot disarm loses to anything that arms
+        the clock afterwards.
+
+        Mid-rollout an old task moves the pointer off A, pauses, and only THEN
+        issues its unconditional `SET ttl` on A — after the new task has already
+        adopted A and looked for a ttl that was not yet there. Retention is
+        evaluated every drain, so the next one takes it off.
+        """
+        a_plaintext = "legacy-token-A"
+        hash_a = mod.hash_token(a_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash="hash_B")
+        _put_token_row(gate_tables, "hash_B")
+        _put_token_row(gate_tables, hash_a)  # NO ttl yet — nothing to disarm
+        fake_ecs.task_def_tokens = {_OLD_DEF: a_plaintext}
+
+        await mod.mint_gate_token("org_abc", _AIPS)
+        assert hash_a in _tracked(gate_tables)
+        assert "ttl" not in _token_row(gate_tables, hash_a)
+
+        # The old task resumes and arms the clock on a hash we now protect.
+        _put_token_row(gate_tables, hash_a, ttl=self._FUTURE_TTL)
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert "ttl" not in _token_row(gate_tables, hash_a), "a late-armed clock survived the retention"
+        assert _token_row(gate_tables, hash_a), "and the row itself must still be there"
+
+    @pytest.mark.asyncio
+    async def test_a_disarm_that_failed_is_retried_and_not_reported_as_done(
+        self, gate_tables, fake_ecs, monkeypatch, caplog
+    ):
+        """P1b — A THROTTLED DISARM. The mint must not record the hash as
+        protected while quietly leaving its clock armed, and must not abort the
+        provision either: the next retention retries it."""
+        old_plaintext = "outgoing-token"
+        old_hash = mod.hash_token(old_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash, ttl=self._FUTURE_TTL)
+        fake_ecs.task_def_tokens = {_OLD_DEF: old_plaintext}
+
+        # Throttle the REMOVE itself, so the real _disarm_ttl's own handling is
+        # what runs — the point is that it swallows without claiming success.
+        real_run_in_thread = mod.run_in_thread
+        throttled: list[str] = []
+
+        async def throttle_first_update(fn, *args, **kwargs):
+            if getattr(fn, "__name__", "") == "update_item" and not throttled:
+                throttled.append("x")
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow down"}}, "UpdateItem"
+                )
+            return await real_run_in_thread(fn, *args, **kwargs)
+
+        monkeypatch.setattr(mod, "run_in_thread", throttle_first_update)
+        with caplog.at_level("WARNING", logger=mod.logger.name):
+            await mod.mint_gate_token("org_abc", _AIPS)  # completes despite the failure
+
+        assert throttled, "the disarm never ran"
+        assert _tracked(gate_tables) == [old_hash]
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "STILL ARMED" in messages
+        assert "disarmed" not in messages, "a failure must never read as a success"
+        assert "ttl" in _token_row(gate_tables, old_hash), "precondition: the failed disarm left it armed"
+
+        monkeypatch.setattr(mod, "run_in_thread", real_run_in_thread)
+        await mod.expire_superseded_gate_tokens("org_abc")
+        assert "ttl" not in _token_row(gate_tables, old_hash)
 
     @pytest.mark.asyncio
     async def test_an_adopted_hash_is_an_ORDINARY_tracked_hash(self, gate_tables, fake_ecs):

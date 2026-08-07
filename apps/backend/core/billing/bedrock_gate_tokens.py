@@ -102,6 +102,19 @@ _GATE_TOKEN_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 # reader can never reconstruct or brute-force the plaintext from it.
 _HASH_PREFIX_LEN = 12
 
+# Appended to every "the ECS answer was incomplete" RuntimeError. The predicate
+# has exactly ONE failure direction it is allowed to take (a token outlives its
+# usefulness) and one it must never take (a live container locked out), and the
+# whole class of bugs here is ECS reporting per-resource failures INSIDE a 200 —
+# partial data that no `except` sees and that reads as positive proof of
+# absence. Every such path raises with this suffix so the log says which.
+_INCOMPLETE_NOTE = " — incomplete ECS data, keeping the rows"
+
+# Page cap for the ListTasks enumeration (100 ARNs/page). ECS bounds a service's
+# stopped-task history far below this; blowing through it means the enumeration
+# is not terminating, which is unknown, not empty.
+_MAX_TASK_PAGES = 50
+
 
 def _tokens_table_name() -> str:
     override = os.environ.get("BEDROCK_GATE_TOKENS_TABLE")
@@ -138,10 +151,33 @@ def _owner_service_view(owner_id: str) -> tuple[Any, str, str]:
     return mgr._ecs, mgr._cluster, mgr._service_name(owner_id)
 
 
+def _refers_to(identifier: str | None, service_name: str) -> bool:
+    """True when an ECS-returned identifier names the service we asked about.
+
+    DescribeServices echoes back either the bare name we passed (``serviceName``,
+    and the ``arn`` of a MISSING failure when it could not resolve one) or a
+    full ARN, so compare on the last path segment.
+    """
+    return bool(identifier) and identifier.rsplit("/", 1)[-1] == service_name
+
+
 async def _task_def_gate_token(ecs: Any, task_def_arn: str) -> str | None:
-    """The gate bearer token baked into a task definition's env, if any."""
+    """The gate bearer token baked into a task definition's env, or None.
+
+    None means "this definition carries no gate token" — a real answer for a
+    non-Bedrock owner, or for break-glass direct mode where no gate URL
+    resolves. An INCOMPLETE response is not that answer: every registered task
+    definition has at least one container definition, so a reply missing them
+    is missing data, and reading it as "no token" would help delete a live row.
+    Raise instead — the caller keeps the rows (see ``_INCOMPLETE_NOTE``).
+    """
     resp = await run_in_thread(ecs.describe_task_definition, taskDefinition=task_def_arn)
-    for container in resp.get("taskDefinition", {}).get("containerDefinitions", []):
+    containers = (resp.get("taskDefinition") or {}).get("containerDefinitions")
+    if not containers:
+        raise RuntimeError(
+            f"DescribeTaskDefinition returned no container definitions for {task_def_arn}{_INCOMPLETE_NOTE}"
+        )
+    for container in containers:
         for env in container.get("environment", []):
             if env.get("name") == _GATE_TOKEN_ENV:
                 return env.get("value")
@@ -163,26 +199,55 @@ async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) 
     and ``runningCount``/``pendingCount`` do not count a DEPROVISIONING task, so
     ECS can start the replacement while the old one tears down. What makes it
     inert is WHEN we evaluate — see ``_presentable_gate_token_hashes``.
+
+    An INCOMPLETE enumeration raises rather than returning a short list, on both
+    halves — a missing ARN here reads downstream as "no task presents that
+    token", which is the deletion decision.
     """
     task_arns: list[str] = []
     for desired_status in ("RUNNING", "STOPPED"):
-        resp = await run_in_thread(
-            ecs.list_tasks,
-            cluster=cluster,
-            serviceName=service_name,
-            desiredStatus=desired_status,
-        )
-        task_arns.extend(resp.get("taskArns", []))
+        # PAGINATE. ListTasks returns at most 100 ARNs plus a nextToken, in NO
+        # guaranteed order, so a crash-looping service with a long stopped-task
+        # history can push the one still-terminating task that proves the token
+        # presentable onto a later page. Reading page 1 as the whole answer
+        # deletes it.
+        next_token: str | None = None
+        for _ in range(_MAX_TASK_PAGES):
+            kwargs = {"cluster": cluster, "serviceName": service_name, "desiredStatus": desired_status}
+            if next_token:
+                kwargs["nextToken"] = next_token
+            resp = await run_in_thread(ecs.list_tasks, **kwargs)
+            task_arns.extend(resp.get("taskArns") or [])
+            next_token = resp.get("nextToken")
+            if not next_token:
+                break
+        else:
+            # Still paging past the cap: the enumeration is unfinished, and an
+            # unfinished list is unknown, not empty.
+            raise RuntimeError(
+                f"ListTasks for {service_name} ({desired_status}) exceeded {_MAX_TASK_PAGES} pages{_INCOMPLETE_NOTE}"
+            )
 
     arns: list[str] = []
     # DescribeTasks caps at 100 ids per call. Chunk rather than truncate — the
     # STOPPED-desired list is mostly stopped history, and ListTasks promises no
     # ordering, so an arbitrary cap would silently decide which tasks count.
     for offset in range(0, len(task_arns), 100):
-        resp = await run_in_thread(ecs.describe_tasks, cluster=cluster, tasks=task_arns[offset : offset + 100])
+        chunk = task_arns[offset : offset + 100]
+        resp = await run_in_thread(ecs.describe_tasks, cluster=cluster, tasks=chunk)
+        tasks = resp.get("tasks") or []
+        # ECS reports per-resource problems in `failures` INSIDE a 200, so a
+        # short `tasks` list is not an exception and not an answer. If the
+        # dropped ARN was an unstopped task on the superseded definition, the
+        # comprehension below would quietly conclude nothing presents that
+        # token.
+        if resp.get("failures") or {t.get("taskArn") for t in tasks} != set(chunk):
+            raise RuntimeError(
+                f"DescribeTasks returned {len(tasks)} of {len(chunk)} tasks for {service_name}{_INCOMPLETE_NOTE}"
+            )
         arns.extend(
             task["taskDefinitionArn"]
-            for task in resp.get("tasks", [])
+            for task in tasks
             if task.get("lastStatus") != "STOPPED" and task.get("taskDefinitionArn")
         )
     return arns
@@ -221,19 +286,53 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     Raises on any ECS failure — the caller turns that into "keep the row".
 
     Returning ``{}`` DELETES every tracked row, so it is only ever returned
-    from a positive finding ("this owner has no service"), never from missing
-    data — a live service that reports no ``taskDefinition`` raises instead.
+    from a POSITIVE finding that this owner has no service: an ``INACTIVE``
+    status, or an explicit ``MISSING`` failure for the identifier we asked
+    about. Never from missing data.
+
+    That distinction is the whole safety property, and it is easy to lose
+    because **ECS reports per-resource failures inside a SUCCESSFUL response**,
+    not as an exception — so a broad ``except`` cannot be the fail-open
+    mechanism. Partial data must be turned into a raise explicitly, on every
+    call: a service neither described nor reported MISSING, a live service with
+    no ``taskDefinition``, an unfinished ``ListTasks`` pagination, a
+    ``DescribeTasks`` chunk that came back short or with failures, and a
+    ``DescribeTaskDefinition`` with no container definitions. Each of those
+    otherwise reads as "nothing presents this token" and permanently deletes a
+    credential the running container is using — ``UnrecognizedClientException``
+    on its next inference call, the incident this module exists to prevent.
     """
     ecs, cluster, service_name = _owner_service_view(owner_id)
 
     resp = await run_in_thread(ecs.describe_services, cluster=cluster, services=[service_name])
-    live_services = [s for s in resp.get("services", []) if s.get("status") != "INACTIVE"]
-    if not live_services:
-        # No service (deleted owner, or never created). Nothing will launch, and
-        # there is no service left to enumerate tasks for.
+    service = next(
+        (
+            s
+            for s in resp.get("services") or []
+            if _refers_to(s.get("serviceName") or s.get("serviceArn"), service_name)
+        ),
+        None,
+    )
+    if service is None:
+        # ECS did not describe our service. Only an explicit MISSING failure for
+        # the identifier we asked about PROVES it is gone — that is the genuine
+        # deleted-owner case, and it must still expire. A failure with any other
+        # reason, or a response carrying neither our service nor a failure for
+        # it, is unknown: ECS reports per-resource problems in `failures` inside
+        # a 200, so no exception fires and the broad except never runs.
+        if any(
+            f.get("reason") == "MISSING" and _refers_to(f.get("arn"), service_name) for f in resp.get("failures") or []
+        ):
+            # Nothing will launch, and there is no service left to enumerate
+            # tasks for.
+            return {}
+        raise RuntimeError(
+            f"DescribeServices did not resolve {service_name}: failures={resp.get('failures')}{_INCOMPLETE_NOTE}"
+        )
+    if service.get("status") == "INACTIVE":
+        # Deleted but still described for a while. Also positive absence.
         return {}
 
-    service = live_services[0]
     service_task_def = service.get("taskDefinition")
     if not service_task_def:
         # DescribeServices on a live service ALWAYS carries taskDefinition, so

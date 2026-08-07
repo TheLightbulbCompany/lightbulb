@@ -116,11 +116,22 @@ class FakeEcs:
         self.task_def_tokens = task_def_tokens or {}
         self.raises = raises
         self.calls: list[str] = []
+        # --- partial-response knobs. ECS reports per-resource problems INSIDE a
+        # 200, so these are the shapes no `except` can see.
+        self.service_failures: list[dict] | None = None  # overrides the MISSING failure
+        self.list_tasks_page_size: int | None = None  # paginate ListTasks at this size
+        self.describe_tasks_failures: list[dict] = []  # non-empty failures on DescribeTasks
+        self.describe_tasks_drop: set[str] = set()  # ARNs silently omitted from `tasks`
+
+    def _task_arn(self, index: int) -> str:
+        return f"arn:aws:ecs:us-east-1:1:task/{index}"
 
     def describe_services(self, *, cluster, services):
         self.calls.append("describe_services")
         if self.raises:
             raise self.raises
+        if self.service_failures is not None:
+            return {"services": [], "failures": self.service_failures}
         if self.service_missing:
             return {"services": [], "failures": [{"arn": services[0], "reason": "MISSING"}]}
         svc = {"serviceName": services[0], "status": self.service_status}
@@ -128,26 +139,33 @@ class FakeEcs:
             svc["taskDefinition"] = self.service_task_def
         return {"services": [svc], "failures": []}
 
-    def list_tasks(self, *, cluster, serviceName, desiredStatus):
-        self.calls.append(f"list_tasks:{desiredStatus}")
-        arns = [
-            f"arn:aws:ecs:us-east-1:1:task/{i}" for i, t in enumerate(self.tasks) if t["desiredStatus"] == desiredStatus
-        ]
-        return {"taskArns": arns}
+    def list_tasks(self, *, cluster, serviceName, desiredStatus, nextToken=None):
+        self.calls.append(f"list_tasks:{desiredStatus}:{nextToken or 'p0'}")
+        arns = [self._task_arn(i) for i, t in enumerate(self.tasks) if t["desiredStatus"] == desiredStatus]
+        if not self.list_tasks_page_size:
+            return {"taskArns": arns}
+        # ECS returns at most maxResults ARNs plus a nextToken, in no order.
+        offset = int(nextToken.split(":")[-1]) if nextToken else 0
+        page = arns[offset : offset + self.list_tasks_page_size]
+        resp = {"taskArns": page}
+        if offset + self.list_tasks_page_size < len(arns):
+            resp["nextToken"] = f"{desiredStatus}:{offset + self.list_tasks_page_size}"
+        return resp
 
     def describe_tasks(self, *, cluster, tasks):
         self.calls.append("describe_tasks")
-        wanted = set(tasks)
+        wanted = set(tasks) - self.describe_tasks_drop
         return {
             "tasks": [
                 {
-                    "taskArn": f"arn:aws:ecs:us-east-1:1:task/{i}",
+                    "taskArn": self._task_arn(i),
                     "taskDefinitionArn": t["taskDefinitionArn"],
                     "lastStatus": t["lastStatus"],
                 }
                 for i, t in enumerate(self.tasks)
-                if f"arn:aws:ecs:us-east-1:1:task/{i}" in wanted
-            ]
+                if self._task_arn(i) in wanted
+            ],
+            "failures": list(self.describe_tasks_failures),
         }
 
     def describe_task_definition(self, *, taskDefinition):
@@ -874,6 +892,150 @@ class TestExpireSuperseded:
         await mod.expire_superseded_gate_tokens("org_abc")
 
         assert old_hash in {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
+
+
+class TestPartialEcsResponses:
+    """ECS reports per-resource failures INSIDE a successful response.
+
+    So the module's fail-open posture — a broad ``except`` around the predicate
+    — does not cover any of these: nothing raises, the code just gets less data
+    than it asked for. Read as complete, every shape below resolves to "nothing
+    can present this token" and PERMANENTLY deletes a credential the running
+    container is using; its next inference call dies with
+    ``UnrecognizedClientException``. That is the lockout direction the module is
+    not allowed to fail in, so incomplete must mean unknown must mean keep.
+    """
+
+    OLD_PLAINTEXT = "old-token"
+    NEW_PLAINTEXT = "new-token"
+
+    def _arrange(self, client, fake_ecs, **kwargs) -> tuple[str, str]:
+        return TestExpireSuperseded()._arrange(client, fake_ecs, **kwargs)
+
+    def _hashes(self, client) -> set[str]:
+        return {r["token_hash"]["S"] for r in _token_rows(client)}
+
+    @pytest.mark.asyncio
+    async def test_a_service_failure_that_is_not_missing_keeps_the_rows(self, gate_tables, fake_ecs):
+        """Only MISSING proves absence. Any other reason is a fault reported in
+        the response body — throttling, an access denial, a cluster we cannot
+        read — and says nothing about whether the service exists."""
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF)
+        fake_ecs.service_failures = [{"arn": "openclaw-svc", "reason": "ACCESS_DENIED"}]
+
+        await mod.expire_superseded_gate_tokens("org_abc")  # must not raise
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
+
+    @pytest.mark.asyncio
+    async def test_a_response_naming_neither_our_service_nor_a_failure_keeps_the_rows(self, gate_tables, fake_ecs):
+        """Neither described nor reported missing: we simply do not know."""
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF)
+        fake_ecs.service_failures = []  # empty services AND empty failures
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
+
+    @pytest.mark.asyncio
+    async def test_a_failure_about_a_different_service_keeps_the_rows(self, gate_tables, fake_ecs):
+        """A MISSING failure is only proof when it is about the service we
+        asked for."""
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF)
+        fake_ecs.service_failures = [{"arn": "openclaw-somebody-else", "reason": "MISSING"}]
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
+
+    @pytest.mark.asyncio
+    async def test_positive_absence_still_expires(self, gate_tables, fake_ecs):
+        """THE GUARD ON THE GUARD. Tightening absence must not stop the genuine
+        deleted-owner path from expiring — an explicit MISSING for our ARN, and
+        an INACTIVE service, are both positive proof."""
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF)
+        fake_ecs.service_failures = [
+            {"arn": "arn:aws:ecs:us-east-1:1:service/cluster/openclaw-svc", "reason": "MISSING"}
+        ]
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {new_hash}
+
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF)
+        fake_ecs.service_failures = None
+        fake_ecs.service_status = "INACTIVE"
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {new_hash}
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_is_paginated_before_any_deletion_decision(self, gate_tables, fake_ecs):
+        """ListTasks returns <=100 ARNs plus a nextToken, in NO guaranteed
+        order. A crash-looping service leaves a long stopped-task history, so
+        the one still-terminating task on the SUPERSEDED definition can sit on
+        page 2 while page 1 is all new-definition churn. Reading page 1 as the
+        whole answer deletes the token that task is presenting."""
+        # Service already rolled to the new def; the old token is held only by a
+        # task that has not finished stopping — and it is listed last.
+        tasks = [
+            {"taskDefinitionArn": _NEW_DEF, "desiredStatus": "STOPPED", "lastStatus": "STOPPED"},
+            {"taskDefinitionArn": _NEW_DEF, "desiredStatus": "STOPPED", "lastStatus": "STOPPED"},
+            {"taskDefinitionArn": _OLD_DEF, "desiredStatus": "STOPPED", "lastStatus": "DEPROVISIONING"},
+        ]
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_NEW_DEF, tasks=tasks)
+        fake_ecs.list_tasks_page_size = 2
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
+        # Every page consumed, not just the first.
+        assert [c for c in fake_ecs.calls if c.startswith("list_tasks:STOPPED")] == [
+            "list_tasks:STOPPED:p0",
+            "list_tasks:STOPPED:STOPPED:2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_describe_tasks_failures_keep_the_rows(self, gate_tables, fake_ecs):
+        old_hash, new_hash = self._arrange(
+            gate_tables,
+            fake_ecs,
+            service_def=_NEW_DEF,
+            tasks=[{"taskDefinitionArn": _NEW_DEF, "desiredStatus": "RUNNING", "lastStatus": "RUNNING"}],
+        )
+        fake_ecs.describe_tasks_failures = [{"arn": "arn:aws:ecs:us-east-1:1:task/9", "reason": "MISSING"}]
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
+
+    @pytest.mark.asyncio
+    async def test_a_silently_dropped_task_keeps_the_rows(self, gate_tables, fake_ecs):
+        """The worst shape: the omitted ARN was the unstopped task on the
+        superseded definition, so the short list reads as 'nothing holds it'."""
+        tasks = [
+            {"taskDefinitionArn": _NEW_DEF, "desiredStatus": "RUNNING", "lastStatus": "RUNNING"},
+            {"taskDefinitionArn": _OLD_DEF, "desiredStatus": "STOPPED", "lastStatus": "DEPROVISIONING"},
+        ]
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_NEW_DEF, tasks=tasks)
+        fake_ecs.describe_tasks_drop = {"arn:aws:ecs:us-east-1:1:task/1"}
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
+
+    @pytest.mark.asyncio
+    async def test_a_task_definition_with_no_container_definitions_keeps_the_rows(self, gate_tables, fake_ecs):
+        """Every registered task definition has at least one container
+        definition, so a reply without them is missing data — not 'this
+        definition carries no gate token'."""
+        old_hash, new_hash = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF)
+        fake_ecs.describe_task_definition = lambda *, taskDefinition: {"taskDefinition": {}}
+
+        await mod.expire_superseded_gate_tokens("org_abc")
+
+        assert self._hashes(gate_tables) == {old_hash, new_hash}
 
 
 class TestOwnerServiceView:

@@ -664,6 +664,48 @@ def test_classify_provision_error_retryable_attr_beats_markers():
 
 
 @pytest.mark.asyncio
+async def test_upsert_without_a_gate_hash_does_not_delete_it(dynamodb_table):
+    """``routers/debug.py`` calls ``create_user_service(owner_id, gateway_token)``
+    with no hash, and a Bedrock -> chatgpt_oauth provider swap reprovisions
+    through the same no-service branch. The whole-item put used to DELETE the
+    pointer to the token the LIVE container is still presenting — stranding it
+    exactly as a dropped superseded hash would."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_keep", {"status": "running", "bedrock_gate_token_hash": "hash_A"})
+
+    row = await container_repo.upsert("user_keep", {"gateway_token": "tok", "status": "provisioning"})
+
+    assert row["bedrock_gate_token_hash"] == "hash_A"
+    assert (await container_repo.get_by_owner_id("user_keep"))["bedrock_gate_token_hash"] == "hash_A"
+
+
+@pytest.mark.asyncio
+async def test_upsert_tracks_the_hash_it_displaces(dynamodb_table):
+    """An explicit hash still wins — but the one it replaces must be folded
+    into the superseded list, not dropped: the row is the only handle on it."""
+    from core.billing import bedrock_gate_tokens
+    from core.repositories import container_repo
+
+    field = bedrock_gate_tokens._SUPERSEDED_FIELD
+    await container_repo.upsert(
+        "user_fold",
+        {"status": "running", "bedrock_gate_token_hash": "hash_B", field: ["hash_A"]},
+    )
+
+    row = await container_repo.upsert("user_fold", {"status": "provisioning", "bedrock_gate_token_hash": "hash_C"})
+
+    assert row["bedrock_gate_token_hash"] == "hash_C"
+    assert row[field] == ["hash_A", "hash_B"]
+
+    # Re-writing the SAME hash changes nothing, and a hash may never appear as
+    # both current and superseded.
+    row = await container_repo.upsert("user_fold", {"status": "running", "bedrock_gate_token_hash": "hash_A"})
+    assert row["bedrock_gate_token_hash"] == "hash_A"
+    assert row[field] == ["hash_B", "hash_C"]
+
+
+@pytest.mark.asyncio
 async def test_swap_gate_token_hash_writes_on_a_matching_prior(dynamodb_table):
     from core.billing import bedrock_gate_tokens
     from core.repositories import container_repo
@@ -671,11 +713,11 @@ async def test_swap_gate_token_hash_writes_on_a_matching_prior(dynamodb_table):
     field = bedrock_gate_tokens._SUPERSEDED_FIELD
     await container_repo.upsert("user_swap", {"status": "running", "bedrock_gate_token_hash": "hash_A"})
 
-    outcome = await container_repo.swap_gate_token_hash(
+    outcome, conflicting = await container_repo.swap_gate_token_hash(
         "user_swap", new_hash="hash_B", superseded=["hash_A"], expected_prior_hash="hash_A"
     )
 
-    assert outcome == "written"
+    assert (outcome, conflicting) == ("written", None)
     row = await container_repo.get_by_owner_id("user_swap")
     assert row["bedrock_gate_token_hash"] == "hash_B"
     assert row[field] == ["hash_A"]
@@ -689,11 +731,11 @@ async def test_swap_gate_token_hash_writes_when_no_prior_hash_was_read(dynamodb_
 
     await container_repo.upsert("user_swap_new", {"status": "provisioning"})
 
-    outcome = await container_repo.swap_gate_token_hash(
+    outcome, conflicting = await container_repo.swap_gate_token_hash(
         "user_swap_new", new_hash="hash_A", superseded=[], expected_prior_hash=None
     )
 
-    assert outcome == "written"
+    assert (outcome, conflicting) == ("written", None)
     row = await container_repo.get_by_owner_id("user_swap_new")
     assert row["bedrock_gate_token_hash"] == "hash_A"
 
@@ -713,22 +755,26 @@ async def test_swap_gate_token_hash_refuses_a_changed_prior(dynamodb_table):
     )
 
     # Caller read hash_A, but a concurrent mint already moved the row to hash_B.
-    outcome = await container_repo.swap_gate_token_hash(
+    outcome, conflicting = await container_repo.swap_gate_token_hash(
         "user_swap_race", new_hash="hash_C", superseded=["hash_A"], expected_prior_hash="hash_A"
     )
 
     assert outcome == "conflict"
+    # The conflict state comes from the refused write itself, not a follow-up
+    # (eventually consistent) read: it is the authoritative pre-write row, and
+    # it carries everything the caller needs to re-arm.
+    assert conflicting["bedrock_gate_token_hash"] == "hash_B"
+    assert conflicting[field] == ["hash_A"]
     row = await container_repo.get_by_owner_id("user_swap_race")
     assert row["bedrock_gate_token_hash"] == "hash_B"
     assert row[field] == ["hash_A"]
 
     # Same for the no-prior form against a row that has since gained one.
-    assert (
-        await container_repo.swap_gate_token_hash(
-            "user_swap_race", new_hash="hash_C", superseded=[], expected_prior_hash=None
-        )
-        == "conflict"
+    outcome, conflicting = await container_repo.swap_gate_token_hash(
+        "user_swap_race", new_hash="hash_C", superseded=[], expected_prior_hash=None
     )
+    assert outcome == "conflict"
+    assert conflicting["bedrock_gate_token_hash"] == "hash_B"
 
 
 @pytest.mark.asyncio
@@ -737,11 +783,11 @@ async def test_swap_gate_token_hash_no_ops_on_an_absent_row(dynamodb_table):
     fresh-provision path before the row exists, and must NOT create one."""
     from core.repositories import container_repo
 
-    outcome = await container_repo.swap_gate_token_hash(
+    outcome, conflicting = await container_repo.swap_gate_token_hash(
         "user_swap_missing", new_hash="hash_A", superseded=[], expected_prior_hash=None
     )
 
-    assert outcome == "absent"
+    assert (outcome, conflicting) == ("absent", None)
     assert await container_repo.get_by_owner_id("user_swap_missing") is None
 
 

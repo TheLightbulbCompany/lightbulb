@@ -416,7 +416,7 @@ class TestConcurrentMints:
 
         async def always_conflict(*args, **kwargs):
             attempts.append(kwargs.get("expected_prior_hash"))
-            return "conflict"
+            return "conflict", {"owner_id": "org_abc", "bedrock_gate_token_hash": "1" * 64}
 
         _put_container_row(gate_tables, "org_abc")
         monkeypatch.setattr(container_repo, "swap_gate_token_hash", always_conflict)
@@ -433,6 +433,96 @@ class TestConcurrentMints:
         assert mod.hash_token(token)[: mod._HASH_PREFIX_LEN] in errors[0].getMessage()
         assert mod.hash_token(token) not in errors[0].getMessage()
         assert token not in errors[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_is_never_misread_as_absent_by_a_stale_replica(self, gate_tables, fake_ecs, monkeypatch):
+        """The fresh-provision shape, with the two preconditions CORRELATED.
+
+        The mint reads no row, so its swap condition is
+        attribute_not_exists(bedrock_gate_token_hash). A concurrent run's
+        create_user_service upsert then creates the row, and the swap is refused
+        on the leader — a genuine conflict. But classifying it with a follow-up
+        get_item is an eventually-consistent read of a seconds-old creation, so
+        it can answer "no row": the conflict would be reported as the benign
+        fresh-provision no-op, the mint would break out WITHOUT retrying and
+        WITHOUT an error, and its hash would be orphaned silently.
+
+        Here get_by_owner_id is made permanently blind from the moment the row
+        appears. The mint must still land, because the conflict state comes off
+        the refused write itself.
+        """
+        from core.repositories import container_repo
+
+        rival_plaintext = "rival-token"
+        rival_hash = mod.hash_token(rival_plaintext)
+        real_get = container_repo.get_by_owner_id
+        real_swap = container_repo.swap_gate_token_hash
+        state: dict = {}
+
+        async def stale_get(owner_id):
+            return None if state.get("created") else await real_get(owner_id)
+
+        async def swap(*args, **kwargs):
+            if not state.get("created"):
+                state["created"] = True
+                _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=rival_hash)
+                _put_token_row(gate_tables, rival_hash)
+            return await real_swap(*args, **kwargs)
+
+        monkeypatch.setattr(container_repo, "get_by_owner_id", stale_get)
+        monkeypatch.setattr(container_repo, "swap_gate_token_hash", swap)
+
+        token = await mod.mint_gate_token("org_abc", _AIPS)
+
+        row = _container_row(gate_tables)
+        assert row["bedrock_gate_token_hash"]["S"] == mod.hash_token(token)
+        assert _tracked(gate_tables) == [rival_hash]
+        monkeypatch.setattr(container_repo, "get_by_owner_id", real_get)  # replica catches up
+        await mod.deny_gate_token("org_abc", True)
+        assert {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)} == {
+            mod.hash_token(token): True,
+            rival_hash: True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_later_fold_in_upsert_cannot_drop_a_swapped_hash(self, gate_tables, fake_ecs):
+        """The composition, one function later. The conditional swap is not the
+        last write to the pointer: create_user_service folds the caller's own
+        minted hash into a whole-item upsert.
+
+        Shape: a container_recover takeover mints HB and swaps; the superseded
+        poll provision mints HA and swaps (correctly merging HB); it then dies
+        at its next _provision_checkpoint, and the survivor's fold-in writes HB
+        back over the top. HA must survive that as a tracked hash.
+        """
+        h0_plaintext = "h0-token"
+        h0 = mod.hash_token(h0_plaintext)
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=h0)
+        _put_token_row(gate_tables, h0)
+        fake_ecs.task_def_tokens = {_OLD_DEF: h0_plaintext}  # H0 is live: the drain must keep it
+
+        token_b = await mod.mint_gate_token("org_abc", _AIPS)
+        token_a = await mod.mint_gate_token("org_abc", _AIPS)
+        assert _tracked(gate_tables) == [h0, mod.hash_token(token_b)]
+
+        # The survivor's create_user_service fold-in.
+        from core.repositories import container_repo
+
+        await container_repo.upsert(
+            "org_abc",
+            {"status": "provisioning", "bedrock_gate_token_hash": mod.hash_token(token_b)},
+        )
+
+        row = _container_row(gate_tables)
+        reachable = {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)}
+        assert reachable == {h0, mod.hash_token(token_a), mod.hash_token(token_b)}
+
+        await mod.deny_gate_token("org_abc", True)
+        assert {r["token_hash"]["S"]: r["denied"]["BOOL"] for r in _token_rows(gate_tables)} == {
+            h0: True,
+            mod.hash_token(token_a): True,
+            mod.hash_token(token_b): True,
+        }
 
     @pytest.mark.asyncio
     async def test_absent_row_stays_a_silent_no_op(self, gate_tables, fake_ecs, caplog):

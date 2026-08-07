@@ -121,6 +121,14 @@ _UPSERT_PRESERVED_FIELDS = (
     # again — leaving a live bearer credential (its plaintext is still in the
     # retained task-definition revision) that nothing can kill.
     "bedrock_gate_superseded_hashes",
+    # The pointer to the owner's CURRENT gate token, for the same reason. An
+    # explicit value still wins (create_user_service's fold-in), which is
+    # correct — but a caller that passes NONE must not delete it. Two do:
+    # ``routers/debug.create_user_service(owner_id, gateway_token)``, and a
+    # Bedrock -> chatgpt_oauth provider-swap reprovision through the
+    # no-service branch. Without this entry the whole-item put strands the
+    # token the LIVE container is presenting.
+    "bedrock_gate_token_hash",
 )
 
 
@@ -141,8 +149,11 @@ async def upsert(owner_id: str, fields: dict) -> dict:
       attempt-token fence permissive (they all allow
       ``attribute_not_exists``), letting a superseded straggler pass its next
       checkpoint.
-    - ``bedrock_gate_superseded_hashes`` — dropping it orphans gate-token rows
-      permanently (see the constant's comment).
+    - ``bedrock_gate_superseded_hashes`` and ``bedrock_gate_token_hash`` —
+      dropping either orphans gate-token rows permanently (see the constant's
+      comment). A caller that passes a DIFFERENT ``bedrock_gate_token_hash``
+      still wins, but the displaced hash is folded into the superseded list
+      rather than dropped.
 
     (PR 2 replaces this whole-item write with a scoped UpdateItem, which
     removes the need to preserve anything.)
@@ -161,6 +172,22 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     for lease_field in _UPSERT_PRESERVED_FIELDS:
         if existing and lease_field in existing and lease_field not in fields:
             item[lease_field] = existing[lease_field]
+
+    # A caller that writes a DIFFERENT gate-token hash displaces the one on the
+    # row — and that row is the only handle on the displaced token (hash-keyed
+    # table, no owner index), so dropping it orphans a denied=False credential
+    # forever. Track it instead, the same invariant swap_gate_token_hash
+    # enforces. The shape this closes: a superseded provision wins the
+    # conditional swap with its hash, dies at its next checkpoint, and the
+    # surviving run's create_user_service fold-in then puts its own hash over
+    # the top. Runs after the preserve loop so it sees the effective list.
+    displaced = (existing or {}).get("bedrock_gate_token_hash")
+    if displaced and item.get("bedrock_gate_token_hash") not in (None, displaced):
+        tracked = [*(item.get("bedrock_gate_superseded_hashes") or []), displaced]
+        item["bedrock_gate_superseded_hashes"] = [
+            h for h in dict.fromkeys(tracked) if h and h != item["bedrock_gate_token_hash"]
+        ]
+
     # Ensure owner_id is not overridden by fields
     item["owner_id"] = owner_id
 
@@ -1124,7 +1151,7 @@ async def swap_gate_token_hash(
     new_hash: str,
     superseded: list[str],
     expected_prior_hash: str | None,
-) -> str:
+) -> tuple[str, dict | None]:
     """Point the row at a freshly minted gate-token hash, atomically.
 
     A scoped conditional ``update_item`` — never the get→put ``update_fields``:
@@ -1144,13 +1171,31 @@ async def swap_gate_token_hash(
     read (or on carrying none, when it read none) and the outcome is reported
     back rather than swallowed:
 
-    - ``"written"`` — the swap landed.
-    - ``"conflict"`` — another mint moved the hash first. The caller must
-      re-read, fold the winner's hash into ``superseded``, and retry.
-    - ``"absent"`` — no row yet. A SILENT no-op, matching ``update_fields``:
-      ``mint_gate_token`` runs on the fresh-provision path before the row
-      exists, and ``create_user_service``'s row-creating upsert folds the hash
-      in instead.
+    Returns ``(outcome, item)``, where the conflict state is read off the SAME
+    conditional write via ``ReturnValuesOnConditionCheckFailure="ALL_OLD"`` (as
+    ``try_claim_owner_deploy`` does) — NOT a follow-up ``get_item``. That is
+    load-bearing twice over, because ``get_by_owner_id`` is eventually
+    consistent while the condition was evaluated strongly on the leader:
+
+    - Classification. On the ``expected_prior_hash is None`` branch a conflict
+      means someone JUST created the row — precisely when a replica read can
+      still answer "no row". A follow-up read would call that ``"absent"``, the
+      caller would treat it as the benign fresh-provision no-op and never
+      retry, and the hash would be orphaned SILENTLY (no error to detect it by).
+    - The merge. A stale replica would hand the caller back the pre-swap hash,
+      so its retry would fail the identical condition again and burn the budget
+      on replication lag rather than on a real race.
+
+    Outcomes:
+
+    - ``("written", None)`` — the swap landed.
+    - ``("conflict", item)`` — another writer moved the hash first. ``item`` is
+      the authoritative pre-write row: the caller folds its
+      ``bedrock_gate_token_hash`` into ``superseded`` and retries against it.
+    - ``("absent", None)`` — no row yet. A SILENT no-op, matching
+      ``update_fields``: ``mint_gate_token`` runs on the fresh-provision path
+      before the row exists, and ``create_user_service``'s row-creating upsert
+      folds the hash in instead.
     """
     table = _get_table()
     values: dict = {":new": new_hash, ":superseded": superseded, ":iso": utc_now_iso()}
@@ -1168,15 +1213,21 @@ async def swap_gate_token_hash(
             ),
             ConditionExpression=condition,
             ExpressionAttributeValues=values,
+            # The condition is a conjunction, so the failure alone does not say
+            # which half missed. DynamoDB answers that here: it returns the row
+            # as it stood before the refused write, or nothing at all when
+            # there was no row. See the docstring for why this cannot be a
+            # follow-up get_item.
+            ReturnValuesOnConditionCheckFailure="ALL_OLD",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        # The condition is a conjunction, so the failure alone does not say
-        # which half missed. The re-read is not wasted work: on a conflict the
-        # caller needs the fresh row anyway to merge the winner's hash.
-        return "absent" if await get_by_owner_id(owner_id) is None else "conflict"
-    return "written"
+        raw = e.response.get("Item")
+        if not raw:
+            return "absent", None
+        return "conflict", {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()}
+    return "written", None
 
 
 async def stamp_stop_reason(owner_id: str, reason: str) -> None:

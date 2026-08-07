@@ -897,10 +897,14 @@ class EcsManager:
         if bedrock_aip_arns:
             upsert_fields["bedrock_aip_arns"] = bedrock_aip_arns
         # Same fold-in for the bedrock-gate token hash: mint_gate_token ran before
-        # this row exists, so its own bedrock_gate_token_hash update_fields no-op'd
-        # (writes nothing on an absent row). Persist it here so the row carries the
-        # rotation pointer + deny-flag lookup key from first boot; without it,
-        # deny_gate_token/rotation would silently no-op until the next reprovision.
+        # this row exists, so its own conditional swap
+        # (container_repo.swap_gate_token_hash) reported "absent" and wrote
+        # nothing. Persist it here so the row carries the rotation pointer +
+        # deny-flag lookup key from first boot; without it, deny_gate_token/
+        # rotation would silently no-op until the next reprovision. If the row
+        # DOES already carry a different hash by now (a concurrent mint that
+        # won), upsert folds that one into the superseded list rather than
+        # dropping it — see container_repo.upsert.
         if bedrock_gate_token_hash:
             upsert_fields["bedrock_gate_token_hash"] = bedrock_gate_token_hash
         # CHECKPOINT before the row write: a run superseded during the mint must
@@ -2320,9 +2324,9 @@ class EcsManager:
             )
 
             gate_token = await mint_gate_token(user_id, bedrock_aip_arns)
-            # First-provision persistence: mint_gate_token's own update_fields
-            # no-ops against a not-yet-created row, so carry the hash to
-            # create_user_service's row-creating upsert (same C-1 fold-in as
+            # First-provision persistence: mint_gate_token's own conditional
+            # row write no-ops against a not-yet-created row, so carry the hash
+            # to create_user_service's row-creating upsert (same C-1 fold-in as
             # bedrock_role_arn / bedrock_aip_arns).
             bedrock_gate_token_hash = hash_token(gate_token)
             # Keep a revoked owner DENIED across the reprovision: mint wrote a

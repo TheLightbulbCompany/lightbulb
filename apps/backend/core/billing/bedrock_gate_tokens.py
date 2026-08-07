@@ -377,11 +377,12 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     the first ``_provision_checkpoint``, so the provision lease does not
     serialize it: a poll provision and an escalating ``container_recover``
     takeover can both reach here at once. The row write is therefore conditioned
-    on the hash this call read, and a lost race is RETRIED after re-reading and
-    folding the winner's hash into the superseded list — never dropped. Losing
-    it would strand a ``denied=False`` token row that nothing can reach:
-    unfindable (hash-keyed table, no owner index), unexpirable, and outside
-    ``deny_gate_token``'s reach.
+    on the hash this call read, and a lost race is RETRIED (bounded — see the
+    loop) after folding the winner's hash, read off the refused write itself,
+    into the superseded list. Dropping a hash would strand a ``denied=False``
+    token row that nothing can reach: unfindable (hash-keyed table, no owner
+    index), unexpirable, and outside ``deny_gate_token``'s reach. Exhausting
+    the bound leaves exactly that gap, so it logs at ERROR.
 
     Only the hash is stored anywhere; the returned plaintext is the sole copy.
     """
@@ -421,10 +422,18 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     # leak an unreachable token row per attempt, the very thing this fixes).
     # The drain is not re-run either: it makes ECS calls, and the next mint's
     # backstop pass drains anyway.
+    #
+    # THREE attempts, and no backoff. Each retry is one UpdateItem against a
+    # strongly-consistent condition, re-armed from the state DynamoDB itself
+    # returned for the refused write — so an attempt can only fail again if
+    # ANOTHER writer moved the hash in between, never because a replica was
+    # stale. Sleeping would just widen that window. Three covers every
+    # concurrent gate-hash writer this owner has (a poll provision, a
+    # ``container_recover`` takeover, and ``create_user_service``'s fold-in).
     expected = prior_hash
-    outcome = "conflict"
+    outcome, conflicting = "conflict", None
     for _ in range(3):
-        outcome = await container_repo.swap_gate_token_hash(
+        outcome, conflicting = await container_repo.swap_gate_token_hash(
             owner_id,
             new_hash=token_hash,
             superseded=superseded,
@@ -436,9 +445,8 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
         # one and NOTHING else records it, so carry it into our superseded list
         # or it becomes unreachable. Order-preserving, de-duplicated, and never
         # including our own new hash.
-        fresh = await container_repo.get_by_owner_id(owner_id) or {}
-        expected = fresh.get("bedrock_gate_token_hash")
-        merged = [*(fresh.get(_SUPERSEDED_FIELD) or []), expected]
+        expected = (conflicting or {}).get("bedrock_gate_token_hash")
+        merged = [*((conflicting or {}).get(_SUPERSEDED_FIELD) or []), expected]
         superseded = [h for h in dict.fromkeys(merged) if h and h != token_hash]
     if outcome == "conflict":
         # Do NOT raise: provisioning must not fail over this. The failure mode

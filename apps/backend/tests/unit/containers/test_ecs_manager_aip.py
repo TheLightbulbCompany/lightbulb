@@ -193,7 +193,11 @@ class TestBedrockProvisionMint:
             store[owner_id] = row
             return row
 
-        async def fake_swap(owner_id, *, new_hash, superseded, expected_prior_hash):
+        # claim_id/attempt_token are accepted and IGNORED: this fake stands in
+        # for the whole repo, and its store never carries a lease (takeover is
+        # stubbed too). The swap's lease clause has its own moto-backed suite in
+        # tests/unit/billing/test_bedrock_gate_tokens.py.
+        async def fake_swap(owner_id, *, new_hash, superseded, expected_prior_hash, claim_id=None, attempt_token=None):
             row = store.get(owner_id)
             if row is None:
                 return "absent", None

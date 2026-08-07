@@ -591,6 +591,76 @@ class TestConcurrentMints:
         }
 
     @pytest.mark.asyncio
+    async def test_a_superseded_run_cannot_point_the_row_at_its_own_dead_token(self, gate_tables, fake_ecs):
+        """THE LAST NON-ATOMIC GAP ON THIS PATH.
+
+        create_user_service checkpoints, then re-asserts its hash. A takeover
+        landing between the two used to sail through, because the swap
+        conditioned only on the prior HASH: the loser moved the pointer to its
+        own token AFTER the winner had asserted theirs. Nothing presents that
+        token — the loser never gets to register a task definition — and the
+        drain only ever judges the superseded list, so it stayed current
+        indefinitely while the winner's LIVE hash sat as merely superseded.
+
+        A checkpoint cannot close this (verify-then-act is not atomic), but the
+        swap is a conditional write, so it carries the lease itself.
+        """
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc", status="stopped")
+        loser = await container_repo.try_claim_provision("org_abc", claim_id="claim-loser")
+        assert loser == "claim-loser"  # or the lease clause below is silently absent
+        # The winner takes over and asserts ITS hash, exactly as a real rival
+        # provision's own mint would.
+        winner = await container_repo.takeover_provision("org_abc")
+        await container_repo.swap_gate_token_hash(
+            "org_abc", new_hash="hash_winner", superseded=[], expected_prior_hash=None
+        )
+
+        with pytest.raises(container_repo.ProvisionSuperseded, match="provision_claim_id"):
+            await mod.persist_gate_token_hash("org_abc", "hash_loser", claim_id=loser, attempt_token=loser)
+
+        assert winner != loser
+        row = _container_row(gate_tables)
+        assert row["bedrock_gate_token_hash"]["S"] == "hash_winner"
+        assert "hash_loser" not in {row["bedrock_gate_token_hash"]["S"], *_tracked(gate_tables)}
+
+    @pytest.mark.asyncio
+    async def test_a_lease_holder_still_re_asserts_and_a_hash_conflict_still_merges(self, gate_tables, fake_ecs):
+        """The over-tightening guard, both halves: the lease clause must admit
+        the run that still HOLDS the lease, and a hash-only conflict under a
+        held lease is still the benign merge-and-retry."""
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc", status="stopped")
+        claim = await container_repo.try_claim_provision("org_abc", claim_id="claim-held")
+        assert claim == "claim-held"
+        await container_repo.swap_gate_token_hash(
+            "org_abc", new_hash="hash_rival", superseded=[], expected_prior_hash=None
+        )
+
+        # Lease held throughout; only the hash moved. Merge, don't stop.
+        await mod.persist_gate_token_hash("org_abc", "hash_mine", claim_id=claim, attempt_token=claim)
+
+        row = _container_row(gate_tables)
+        assert row["bedrock_gate_token_hash"]["S"] == "hash_mine"
+        assert _tracked(gate_tables) == ["hash_rival"]  # merged, not erased
+
+    @pytest.mark.asyncio
+    async def test_a_claimless_caller_needs_no_lease(self, gate_tables, fake_ecs):
+        """routers/debug.create_user_service(owner_id, gateway_token) passes no
+        claim. An unconditional lease clause would fail every such call — and
+        mint_gate_token's own swap has no lease context either."""
+        from core.repositories import container_repo
+
+        _put_container_row(gate_tables, "org_abc", status="stopped")
+        assert await container_repo.takeover_provision("org_abc")  # someone else holds it
+
+        await mod.persist_gate_token_hash("org_abc", "hash_nolease")
+
+        assert _container_row(gate_tables)["bedrock_gate_token_hash"]["S"] == "hash_nolease"
+
+    @pytest.mark.asyncio
     async def test_absent_row_stays_a_silent_no_op(self, gate_tables, fake_ecs, caplog):
         """The fresh-provision path: no containers row yet. The swap must not
         create one (create_user_service's upsert does that) and must not look

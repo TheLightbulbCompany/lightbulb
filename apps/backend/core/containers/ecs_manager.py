@@ -907,11 +907,11 @@ class EcsManager:
         # CHECKPOINT after the row write: the upsert only detects a takeover
         # that lands inside its own read-to-write window (its CAS raises
         # ProvisionSuperseded then). One landing after its put COMPLETES is
-        # invisible to it — and everything below here to the pre-create
-        # checkpoint is unfenced: the gate-pointer re-assert, the EFS access
-        # point, the task-definition revision. A superseded run reaching those
-        # deposits artifacts alongside the winner's and re-points the row at a
-        # token no task will ever present.
+        # invisible to it, and the EFS access point and task-definition
+        # revision below are AWS calls that cannot carry a condition — a
+        # checkpoint is the only fence they can have. (The gate-pointer swap
+        # between here and them needs no checkpoint: it carries the lease in
+        # its own ConditionExpression.)
         if claim_id is not None:
             await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
 
@@ -923,11 +923,16 @@ class EcsManager:
         # this re-asserts it for the case where the row did not exist yet, now
         # that the upsert above has created it. Placed HERE, before the task
         # definition carrying the plaintext is registered, so no task can ever
-        # start holding a token the row does not know about.
+        # start holding a token the row does not know about. It carries the
+        # lease in its own condition, so a takeover landing after the checkpoint
+        # above is refused by the write itself (ProvisionSuperseded) rather than
+        # pointing the row at this run's now-dead token.
         if bedrock_gate_token_hash:
             from core.billing.bedrock_gate_tokens import persist_gate_token_hash
 
-            await persist_gate_token_hash(user_id, bedrock_gate_token_hash)
+            await persist_gate_token_hash(
+                user_id, bedrock_gate_token_hash, claim_id=claim_id, attempt_token=attempt_token
+            )
 
         try:
             # Step 1: Create per-user EFS access point

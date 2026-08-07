@@ -259,7 +259,19 @@ def _unchanged_since_read(existing: dict | None) -> dict:
     return kwargs
 
 
-def _raise_if_superseded(owner_id: str, existing: dict | None, raw_item: dict | None) -> None:
+def _deserialize_item(raw_item: dict | None) -> dict:
+    """The raw (low-level, AttributeValue-typed) ``Item`` DynamoDB returns on a
+    ``ReturnValuesOnConditionCheckFailure``, as a plain dict. Never raises: an
+    unparseable item degrades to ``{}``, which every caller reads as "the
+    pinned state is not what we expected" — the safe direction."""
+    try:
+        return {k: _DESERIALIZER.deserialize(v) for k, v in (raw_item or {}).items()}
+    except Exception:
+        logger.warning("failed to parse a conditional-check-failure item — treating it as unrecognisable")
+        return {}
+
+
+def _raise_if_superseded(owner_id: str, expected: dict, current: dict, *, where: str) -> None:
     """Refusal triage: retryable conflict, or ``ProvisionSuperseded``?
 
     A refused CAS means SOMETHING pinned moved, and the right response depends
@@ -276,24 +288,23 @@ def _raise_if_superseded(owner_id: str, existing: dict | None, raw_item: dict | 
       That is the double-provision hazard the lease exists to prevent, arriving
       through the fence meant to close it. So: stop, before the next side
       effect. Exactly what ``update_container_leased`` does at every checkpoint;
-      this makes ``upsert`` honour the same contract.
+      this makes the conditional writes here honour the same contract.
 
     Both moved → superseded wins; the successor's mint is not ours to merge.
 
-    An ALL_OLD that will not parse (or a row deleted out from under us) is
-    treated as an absent lease, so a caller whose snapshot HELD one stops —
-    the safe direction, since the alternative is writing over an owner we
-    cannot see.
+    ``expected`` is whatever the caller pinned in its ConditionExpression —
+    ``upsert`` pins the row snapshot it read, ``swap_gate_token_hash`` pins the
+    caller's own claim. Either way the comparison must MIRROR the condition that
+    was built, or it will name the wrong culprit.
+
+    A row deleted out from under us (or an item that would not parse) arrives as
+    an empty ``current``, so a caller that pinned a lease stops — the safe
+    direction, since the alternative is writing over an owner we cannot see.
     """
-    try:
-        current = {k: _DESERIALIZER.deserialize(v) for k, v in (raw_item or {}).items()}
-    except Exception:
-        logger.warning("upsert: failed to parse the ALL_OLD item for owner=%s — assuming the lease moved", owner_id)
-        current = {}
     for field in _LEASE_CAS_FIELDS:
-        if (existing or {}).get(field) != current.get(field):
+        if expected.get(field) != current.get(field):
             raise ProvisionSuperseded(
-                f"provision lease for {owner_id} moved during upsert ({field}) — "
+                f"provision lease for {owner_id} moved during {where} ({field}) — "
                 "a newer run owns the row; this one must write nothing further"
             )
 
@@ -371,7 +382,7 @@ async def upsert(owner_id: str, fields: dict) -> dict:
                 raise
             # Raises ProvisionSuperseded when it was the LEASE that moved: that
             # refusal is not a conflict to merge, it is a stop signal.
-            _raise_if_superseded(owner_id, existing, e.response.get("Item"))
+            _raise_if_superseded(owner_id, existing or {}, _deserialize_item(e.response.get("Item")), where="upsert")
             if attempt + 1 == _UPSERT_CAS_ATTEMPTS:
                 raise
             continue  # a rival mint landed inside the window — rebuild on it
@@ -1352,6 +1363,8 @@ async def swap_gate_token_hash(
     new_hash: str,
     superseded: list[str],
     expected_prior_hash: str | None,
+    claim_id: str | None = None,
+    attempt_token: str | None = None,
 ) -> tuple[str, dict | None]:
     """Point the row at a freshly minted gate-token hash, atomically.
 
@@ -1407,6 +1420,22 @@ async def swap_gate_token_hash(
       ``update_fields``: ``mint_gate_token`` can run before the row exists, and
       ``bedrock_gate_tokens.persist_gate_token_hash`` re-points the row through
       this same call once ``create_user_service``'s upsert has created it.
+
+    ``claim_id`` / ``attempt_token`` — optional, and they make this write carry
+    the provision lease in its OWN condition rather than behind a checkpoint. A
+    checkpoint is "verify, then act", which is inherently non-atomic: a takeover
+    landing between the two still let a superseded run move the pointer to its
+    own token, leaving a hash no task will ever present as the row's current one
+    indefinitely (the drain only ever judges the superseded list). This write is
+    a DynamoDB conditional update, so unlike the EFS and task-definition calls
+    that follow it, it does not need a checkpoint at all — it can simply refuse.
+    A refusal caused by the LEASE clause raises ``ProvisionSuperseded``; one
+    caused by the hash clause stays a benign ``"conflict"`` to merge and retry.
+
+    Omitted (the default) means NO lease clause — which is not a weaker mode but
+    the correct one for callers that hold no lease: ``mint_gate_token``'s own
+    swap, which runs before the row exists on a fresh provision and has no lease
+    context, and ``routers/debug.create_user_service(owner_id, gateway_token)``.
     """
     table = _get_table()
     values: dict = {":new": new_hash, ":superseded": superseded, ":iso": utc_now_iso()}
@@ -1415,6 +1444,23 @@ async def swap_gate_token_hash(
     else:
         condition = "attribute_exists(owner_id) AND bedrock_gate_token_hash = :prior"
         values[":prior"] = expected_prior_hash
+    # Strict equality on both, matching what upsert's CAS pins rather than
+    # update_container_leased's permissive attempt-token clause: every path that
+    # hands a caller an attempt_token (try_claim_provision, takeover_provision,
+    # claim_attempt) stamps it on the row in the SAME atomic write, so a row
+    # that lacks one while the caller holds one is unreachable — and if it ever
+    # happened, refusing fails a provision the poll retries rather than leaving
+    # a pointer nothing presents. It also keeps the condition and the failure
+    # comparison below mirror images, which is what stops them drifting apart.
+    lease_expected: dict = {}
+    if claim_id is not None:
+        lease_expected["provision_claim_id"] = claim_id
+        condition += " AND provision_claim_id = :lease_cid"
+        values[":lease_cid"] = claim_id
+        if attempt_token is not None:
+            lease_expected["provision_attempt_token"] = attempt_token
+            condition += " AND provision_attempt_token = :lease_atok"
+            values[":lease_atok"] = attempt_token
     try:
         await run_in_thread(
             table.update_item,
@@ -1436,20 +1482,23 @@ async def swap_gate_token_hash(
             raise
         raw = e.response.get("Item")
         if not raw:
+            # No row at all. A caller holding a lease has just lost it to a
+            # delete; one that holds none is on the benign fresh-provision path.
+            if lease_expected:
+                _raise_if_superseded(owner_id, lease_expected, {}, where="gate-token swap")
             return "absent", None
-        try:
-            return "conflict", {k: _DESERIALIZER.deserialize(v) for k, v in raw.items()}
-        except Exception:
-            # Same guard as _held_listing_id's, for the same reason: this parse
-            # is of a raw AttributeValue map on the ERROR shape (boto3's
-            # resource-layer transform only covers the output shape, so it
-            # arrives untransformed and _DESERIALIZER is correct) — but it sits
-            # on the provisioning path, where a TypeError would escape
-            # mint_gate_token, which has no try, and fail the whole provision.
-            # An unparseable item degrades to "retry against an unknown prior",
-            # which fails the condition and lands in the caller's ERROR log.
-            logger.warning("swap_gate_token_hash: failed to parse the ALL_OLD item for owner=%s", owner_id)
+        current = _deserialize_item(raw)
+        # LEASE FIRST: a moved claim is not a conflict to merge, it is a stop
+        # signal — merging would let the superseded run point the row at a token
+        # no task of its will ever present. Mirrors upsert's triage exactly.
+        if lease_expected:
+            _raise_if_superseded(owner_id, lease_expected, current, where="gate-token swap")
+        if not current:
+            # Unparseable: degrade to "retry against an unknown prior", which
+            # fails the condition again and lands in the caller's ERROR log —
+            # never a TypeError escaping mint_gate_token, which has no try.
             return "conflict", None
+        return "conflict", current
     return "written", None
 
 

@@ -529,7 +529,13 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
     return token
 
 
-async def persist_gate_token_hash(owner_id: str, token_hash: str) -> None:
+async def persist_gate_token_hash(
+    owner_id: str,
+    token_hash: str,
+    *,
+    claim_id: str | None = None,
+    attempt_token: str | None = None,
+) -> None:
     """Re-assert the row's pointer at ``token_hash`` once the row exists.
 
     ``mint_gate_token`` runs BEFORE ``create_user_service``, so on any path
@@ -544,6 +550,12 @@ async def persist_gate_token_hash(owner_id: str, token_hash: str) -> None:
     A no-op in the ordinary case, where the row already existed at mint time
     (``try_claim_provision``/``takeover_provision`` create it before the
     provision runs) and the mint's own swap already landed this hash.
+
+    ``claim_id``/``attempt_token`` put the caller's provision lease INTO the
+    swap's condition, so a run superseded between its last checkpoint and this
+    write is refused atomically rather than pointing the row at a token no task
+    of its will ever present. Raises ``ProvisionSuperseded`` when that happens;
+    the caller must stop. Omitted for callers that hold no lease.
     """
     row = await container_repo.get_by_owner_id(owner_id) or {}
     prior_hash = row.get("bedrock_gate_token_hash")
@@ -551,7 +563,14 @@ async def persist_gate_token_hash(owner_id: str, token_hash: str) -> None:
         return
     tracked = [*(row.get(_SUPERSEDED_FIELD) or []), prior_hash]
     superseded = [h for h in dict.fromkeys(tracked) if h and h != token_hash]
-    await _swap_hash_pointer(owner_id, token_hash, superseded=superseded, expected_prior_hash=prior_hash)
+    await _swap_hash_pointer(
+        owner_id,
+        token_hash,
+        superseded=superseded,
+        expected_prior_hash=prior_hash,
+        claim_id=claim_id,
+        attempt_token=attempt_token,
+    )
 
 
 async def _swap_hash_pointer(
@@ -560,6 +579,8 @@ async def _swap_hash_pointer(
     *,
     superseded: list[str],
     expected_prior_hash: str | None,
+    claim_id: str | None = None,
+    attempt_token: str | None = None,
 ) -> None:
     """Conditional swap of the row's gate-token pointer, with bounded retry.
 
@@ -581,6 +602,10 @@ async def _swap_hash_pointer(
     ``container_recover`` takeover, so 1 + 1 = 2 suffices and the third is
     spare. N concurrent minters would want N + 1, but nothing produces them
     today, and exhaustion is a LOGGED leak, not a lockout.
+
+    A lease that moves is NOT retried — ``swap_gate_token_hash`` raises
+    ``ProvisionSuperseded`` straight through this loop, because retrying would
+    be the loser re-arming against the winner's row and writing anyway.
     """
     expected = expected_prior_hash
     outcome, conflicting = "conflict", None
@@ -590,6 +615,8 @@ async def _swap_hash_pointer(
             new_hash=token_hash,
             superseded=superseded,
             expected_prior_hash=expected,
+            claim_id=claim_id,
+            attempt_token=attempt_token,
         )
         if outcome != "conflict":
             break

@@ -105,7 +105,6 @@ class FakeEcs:
         service_status: str = "ACTIVE",
         service_missing: bool = False,
         tasks: list[dict] | None = None,
-        deployment_defs: list[str] | None = None,
         task_def_tokens: dict[str, str | None] | None = None,
         raises: Exception | None = None,
     ):
@@ -114,9 +113,6 @@ class FakeEcs:
         self.service_missing = service_missing
         # Each task: {"taskDefinitionArn", "desiredStatus", "lastStatus"}
         self.tasks = tasks or []
-        # Task defs of the service's listed deployments (PRIMARY + any
-        # superseded one still draining). Defaults to just the service's own.
-        self.deployment_defs = deployment_defs
         self.task_def_tokens = task_def_tokens or {}
         self.raises = raises
         self.calls: list[str] = []
@@ -130,12 +126,6 @@ class FakeEcs:
         svc = {"serviceName": services[0], "status": self.service_status}
         if self.service_task_def:
             svc["taskDefinition"] = self.service_task_def
-        defs = self.deployment_defs if self.deployment_defs is not None else [self.service_task_def]
-        svc["deployments"] = [
-            {"id": f"ecs-svc/{i}", "status": "PRIMARY" if i == 0 else "ACTIVE", "taskDefinition": d}
-            for i, d in enumerate(defs)
-            if d
-        ]
         return {"services": [svc], "failures": []}
 
     def list_tasks(self, *, cluster, serviceName, desiredStatus):
@@ -349,10 +339,12 @@ class TestMint:
 class TestExpireSuperseded:
     """The liveness predicate: a token row lives until nothing can present it.
 
-    Every case is a real scenario. The container gets its token ONLY as an
-    inline env var in an ECS task definition, frozen at task start, so the
-    authoritative question is what the SERVICE's task definition carries — what
-    will launch next — with live tasks as the second half for the drain window.
+    The container gets its token ONLY as an inline env var in an ECS task
+    definition, frozen at task start, so the authoritative question is what the
+    SERVICE's task definition carries — what will launch next. Live tasks are
+    the second half, and under SINGLE_WRITER_DEPLOYMENT_CONFIG that half cannot
+    currently fire; the one case that exercises it says so in its docstring.
+    Every other case here is a scenario per-user containers really produce.
     """
 
     OLD_PLAINTEXT = "token-A"
@@ -434,10 +426,15 @@ class TestExpireSuperseded:
         assert old_hash in {r["token_hash"]["S"] for r in _token_rows(gate_tables)}
 
     @pytest.mark.asyncio
-    async def test_rolling_deploy_keeps_the_token_while_the_old_task_drains(self, gate_tables, fake_ecs):
-        """The service has moved to the new def, but the old task is still
-        RUNNING while ECS drains it (desiredStatus=STOPPED, lastStatus=RUNNING)
-        and is still making inference calls with token A."""
+    async def test_overlapping_deployment_keeps_the_token_while_the_old_task_drains(self, gate_tables, fake_ecs):
+        """HYPOTHETICAL, not current prod behaviour. Two tasks coexisting — an
+        old one draining (desiredStatus=STOPPED, lastStatus=RUNNING) while the
+        new one runs — requires ``maximumPercent`` above 100. Today's
+        SINGLE_WRITER_DEPLOYMENT_CONFIG forbids it: 1437 prod task-state events
+        contain zero RUNNING-with-desiredStatus-STOPPED tasks, so this branch of
+        the predicate never fires. Pinned so that raising maximumPercent (for a
+        zero-downtime deploy, say) does not silently start expiring the token of
+        a container that is still serving."""
         old_hash, new_hash = self._arrange(
             gate_tables,
             fake_ecs,
@@ -453,27 +450,10 @@ class TestExpireSuperseded:
         assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {old_hash, new_hash}
 
     @pytest.mark.asyncio
-    async def test_superseded_deployment_alone_keeps_the_token(self, gate_tables, fake_ecs):
-        """Second read on the same drain window, free from describe_services:
-        ECS still lists the superseded deployment while its tasks wind down, so
-        the token survives even if the task listing shows nothing (a page of
-        stopped history could otherwise crowd the draining task out)."""
-        old_hash, new_hash = self._arrange(
-            gate_tables,
-            fake_ecs,
-            service_def=_NEW_DEF,
-            tasks=[],
-        )
-        fake_ecs.deployment_defs = [_NEW_DEF, _OLD_DEF]  # PRIMARY + draining ACTIVE
-
-        await mod.expire_superseded_gate_tokens("org_abc")
-
-        assert {r["token_hash"]["S"] for r in _token_rows(gate_tables)} == {old_hash, new_hash}
-
-    @pytest.mark.asyncio
-    async def test_rolling_deploy_expires_once_the_old_task_has_stopped(self, gate_tables, fake_ecs):
-        """Same shape, one moment later: the drained task reached STOPPED, so
-        nothing can present A any more."""
+    async def test_redeploy_expires_once_the_old_task_has_stopped(self, gate_tables, fake_ecs):
+        """What a real per-user redeploy looks like: single-writer stops the old
+        task before the new one starts, so by the time the new task is RUNNING
+        nothing can present A."""
         old_hash, new_hash = self._arrange(
             gate_tables,
             fake_ecs,
@@ -583,7 +563,10 @@ class TestExpireSuperseded:
         assert "service task definition still references it" in kept[0]
 
     @pytest.mark.asyncio
-    async def test_kept_verdict_during_drain_names_the_running_task_reason(self, gate_tables, fake_ecs, caplog):
+    async def test_kept_verdict_names_the_running_task_reason(self, gate_tables, fake_ecs, caplog):
+        """The other reason string. Reached only via the overlapping-deployment
+        branch, which SINGLE_WRITER_DEPLOYMENT_CONFIG makes unreachable today —
+        see test_overlapping_deployment_keeps_the_token_while_the_old_task_drains."""
         old_hash, _ = self._arrange(
             gate_tables,
             fake_ecs,

@@ -33,7 +33,10 @@ that actually lands. Minting therefore schedules nothing; a superseded row is
 deleted only once ``_presentable_gate_token_hashes`` confirms that neither the
 owner's ECS **service task definition** (what will launch next — this covers
 scale-to-zero, crash/restart, and a roll that never landed) nor any **live
-task** (the rolling-deploy drain window) still carries it.
+task** still carries it. The service-task-definition half is what actually
+holds tokens alive here; the live-task half is a correctness guard for an
+overlapping deployment that ``SINGLE_WRITER_DEPLOYMENT_CONFIG`` does not
+currently allow — see that function's docstring before assuming it fires.
 
 This replaced a flat one-hour TTL set at mint time, which killed a prod
 container for good: the reprovision minted a new token, put the old one on a
@@ -132,9 +135,13 @@ async def _task_def_gate_token(ecs: Any, task_def_arn: str) -> str | None:
 async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) -> list[str]:
     """Task-definition ARNs of the service's tasks that have not stopped yet.
 
-    Both desired states are listed: a task being drained by a rolling deploy has
-    ``desiredStatus=STOPPED`` while ``lastStatus`` is still RUNNING, and it is
-    still making inference calls with the token its definition carries.
+    Both desired states are listed because a task being drained by an
+    overlapping deployment would show ``desiredStatus=STOPPED`` with
+    ``lastStatus`` still RUNNING. **No per-user container does this today** —
+    ``SINGLE_WRITER_DEPLOYMENT_CONFIG`` allows only one task at a time, and
+    prod task-state events show tasks going STOPPING -> STOPPED, never RUNNING
+    with a STOPPED desired status. Listed anyway so the predicate stays correct
+    if that config ever permits overlap; see ``_presentable_gate_token_hashes``.
     """
     task_arns: list[str] = []
     for desired_status in ("RUNNING", "STOPPED"):
@@ -147,9 +154,9 @@ async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) 
         task_arns.extend(resp.get("taskArns", []))
 
     arns: list[str] = []
-    # DescribeTasks caps at 100 ids per call. Chunk rather than truncate: the
-    # STOPPED-desired list is mostly stopped history, and a truncation that
-    # dropped the one draining task would expire a token still in use.
+    # DescribeTasks caps at 100 ids per call. Chunk rather than truncate — the
+    # STOPPED-desired list is mostly stopped history, and ListTasks promises no
+    # ordering, so an arbitrary cap would silently decide which tasks count.
     for offset in range(0, len(task_arns), 100):
         resp = await run_in_thread(ecs.describe_tasks, cluster=cluster, tasks=task_arns[offset : offset + 100])
         arns.extend(
@@ -165,21 +172,28 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     mapped to WHY -- which half of the predicate holds it alive. That reason
     is what makes the expiry decision log a diagnosis instead of a verdict.
 
-    THE PREDICATE. Two sources, and the first one is the authoritative half:
+    THE PREDICATE. Two sources, and in this fleet only the first one ever fires:
 
     1. the ECS **service's current task definition** — what the service will
        launch next. A drained service running nothing still points at it, so
        this is what keeps a token alive across scale-to-zero, a crash/restart,
-       and (the incident) a redeploy that never landed.
-    2. **the drain window** — where the old task is still serving on the old
-       definition after the service has moved on. Read twice, from the still-
-       listed superseded deployment and from the tasks themselves, because
-       expiring a token mid-drain would 401 a container that is still working.
+       and (the incident) a redeploy that never landed. **This is the half that
+       does the work today.**
+    2. **live tasks** — an old task still serving on the old definition after
+       the service has moved on. Under ``SINGLE_WRITER_DEPLOYMENT_CONFIG``
+       (``ecs_manager.py``: ``minimumHealthyPercent: 0, maximumPercent: 100``,
+       the EFS double-writer guard) at most one task exists at a time, so old
+       and new can never coexist and this half is **currently unreachable** —
+       confirmed against 1437 prod task-state events, which contain zero
+       RUNNING-with-desiredStatus-STOPPED tasks. It is kept because it is
+       correct and cheap, and it becomes load-bearing the moment anyone raises
+       ``maximumPercent`` above 100. Do not read it as a live scenario.
 
-    Answering from running tasks alone would be WORSE than the TTL it replaces:
-    during the incident's reprovision the service was already drained to zero
-    when the new token was minted, so that rule would have deleted the live
-    token immediately instead of an hour later.
+    Answering from running tasks alone would be WORSE than the TTL it replaces
+    — and, given (2) is inert, would expire every token immediately. During the
+    incident's reprovision the service was already drained to zero when the new
+    token was minted, so that rule would have deleted the live token on the spot
+    instead of an hour later.
 
     Raises on any ECS failure — the caller turns that into "keep the row".
     """
@@ -197,10 +211,6 @@ async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
     service_task_def = service.get("taskDefinition")
     if service_task_def:
         service_def_arns.append(service_task_def)
-    # Free from the call just made: during a rolling deploy the superseded
-    # deployment stays listed alongside PRIMARY until its tasks are gone, so its
-    # definition is a second, cheap read on the same drain window.
-    service_def_arns.extend(d["taskDefinition"] for d in service.get("deployments", []) if d.get("taskDefinition"))
     live_arns = await _live_task_definition_arns(ecs, cluster, service_name)
 
     hashes: dict[str, str] = {}

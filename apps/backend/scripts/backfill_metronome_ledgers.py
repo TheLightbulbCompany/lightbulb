@@ -59,20 +59,31 @@ _PAID_STATUSES = {"active", "trialing", "past_due", "unpaid"}
 
 
 def _is_paying(account: dict) -> bool:
-    """Mirrors ``provision_gate.is_subscription_active``'s notion of "paying".
+    """Whether this owner has a live or recoverable subscription.
 
-    The status allowlist alone is NOT that notion. A LEGACY row carries
-    ``subscription_status is None`` with a ``stripe_subscription_id`` set —
-    a real paid subscription whose status was never backfilled by
-    ``customer.subscription.updated`` — and ``is_subscription_active``
-    deliberately treats it as active so those owners are not pushed back into
-    the payment phase. A backfill that skipped them would leave exactly the
-    owners the gates consider paid without a ledger, which is the lockout this
-    script exists to prevent.
+    NOT the same set as ``provision_gate.is_subscription_active`` — do not
+    "restore" parity between them, they answer different questions:
 
-    The None guard is strict, matching that function: a NON-None status
-    outside the allowlist (canceled, incomplete) stays excluded even if a
-    stale ``stripe_subscription_id`` is still on the row.
+      is_subscription_active  {active, trialing, trial_local}
+          "may use the platform right now"
+      _PAID_STATUSES          {active, trialing, past_due, unpaid}
+          "has a live or recoverable subscription"
+
+    The differences are deliberate. ``trial_local`` is excluded because
+    free-tier owners must never get a ledger at all. ``past_due``/``unpaid``
+    are included because they still have a live subscription and can recover
+    — a ledger they cannot yet spend from blocks nothing, and having it ready
+    means recovery does not also need a provisioning round trip.
+
+    What IS borrowed from ``is_subscription_active`` is the legacy fallback: a
+    row with ``subscription_status is None`` and a ``stripe_subscription_id``
+    is a real paid subscription whose status was never backfilled by
+    ``customer.subscription.updated``, and that function treats it as active.
+    Skipping those here would leave exactly the owners the gates consider paid
+    without a ledger — the lockout this script exists to prevent. The None
+    guard is strict, matching it: a NON-None status outside the allowlist
+    (canceled, incomplete) stays excluded even with a stale
+    ``stripe_subscription_id`` on the row.
     """
     status = account.get("subscription_status")
     if status in _PAID_STATUSES:

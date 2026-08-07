@@ -1071,6 +1071,89 @@ def test_deploy_rolls_back_paperclip_on_catalog_failure(
     assert delete_kwargs["agent_id"] == "paperclip-uuid-1234"
 
 
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_timeout_skips_unwind_but_still_rolls_back_paperclip(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """A TimeoutError from the pair step means 'no answer yet', not
+    'failed' — the container may still be mid-write on the agent's own
+    directory. ``unwind_partial_deploy`` (which rm -rf's that directory)
+    must NOT run in this case: on 2026-08-06 it fired 4.3s before that
+    same agent's still-running ``agents.create`` finished writing,
+    corrupting the deploy with an ``unsafe workspace file`` error. The
+    orphan Paperclip agent is still real and harmless to remove, so that
+    rollback still runs.
+    """
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-timeout", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=TimeoutError())
+    catalog.unwind_partial_deploy = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+
+    # Still surfaced as an error to the caller — a timeout is not success.
+    assert resp.status_code == 500, resp.text
+    # The load-bearing assertion: EFS/openclaw.json state is left alone.
+    catalog.unwind_partial_deploy.assert_not_awaited()
+    # The orphan Paperclip row is still cleaned up.
+    mock_delete_pc.assert_awaited_once()
+    assert mock_delete_pc.await_args.kwargs["agent_id"] == "paperclip-uuid-timeout"
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_non_timeout_error_still_calls_unwind(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+):
+    """No regression: a non-timeout exception from the pair step still
+    unwinds the partial container/EFS state, same as before the
+    TimeoutError carve-out was added."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-nontimeout", "name": "Echo"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(
+        _slice={"agent": {"name": "Echo"}, "plugins": {}, "tools": {}, "cron_jobs": []}
+    )
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("gateway rejected schema"))
+    catalog.unwind_partial_deploy = AsyncMock()
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+
+    assert resp.status_code == 500, resp.text
+    catalog.unwind_partial_deploy.assert_awaited_once()
+    assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == "paperclip-uuid-nontimeout"
+    mock_delete_pc.assert_awaited_once()
+
+
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")

@@ -55,6 +55,16 @@ logger = logging.getLogger(__name__)
 _PAIR_MAX_ATTEMPTS = 2
 _PAIR_RETRY_BACKOFF_S = 0.5
 
+# The default gateway RPC timeout (``_RPC_TIMEOUT`` = 30s in
+# connection_pool.py) is too short for these two RPCs specifically: the
+# 2026-08-06 incident measured contended ``agents.create`` calls completing
+# in 39-51s when three marketplace hires landed on one container at once.
+# A client-side timeout there does NOT mean the container gave up — it means
+# "no answer yet" — so give pairing RPCs real headroom instead of a false
+# failure signal that (at the time) triggered a destructive EFS rollback out
+# from under the still-running write.
+_PAIR_RPC_TIMEOUT_S = 90
+
 
 def _is_org_owner_id(owner_id: str) -> bool:
     """Delegates to core.auth.is_org_owner_id — single edit point for the prefix convention."""
@@ -360,7 +370,11 @@ async def _probe_pairing_request(
     """
     uri = f"ws://{ip}:{GATEWAY_PORT}"
     try:
-        async with websockets.connect(uri, open_timeout=5, close_timeout=2) as ws:
+        # open_timeout=10 matches _DEFAULT_TIMEOUT in core/gateway/operator_rpc.py
+        # (was 5) — a contended container can take longer than 5s just to accept
+        # the TCP/WS handshake, and a probe that times out here looks identical
+        # to a container that's actually down.
+        async with websockets.connect(uri, open_timeout=10, close_timeout=2) as ws:
             await perform_signed_connect(
                 ws,
                 owner_id=owner_id,
@@ -853,6 +867,7 @@ async def pair_with_openclaw(
                     params=create_params,
                     ip=ip,
                     token=token,
+                    timeout=_PAIR_RPC_TIMEOUT_S,
                 )
             except RuntimeError as e:
                 # OpenClaw returns INVALID_REQUEST with "already exists" when the
@@ -875,6 +890,7 @@ async def pair_with_openclaw(
                 params=update_params,
                 ip=ip,
                 token=token,
+                timeout=_PAIR_RPC_TIMEOUT_S,
             )
             return
         except TimeoutError:

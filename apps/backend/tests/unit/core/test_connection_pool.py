@@ -216,6 +216,42 @@ class TestGatewayConnectionPool:
         mock_conn.send_rpc.assert_called_once_with("req-2", "agents.list", {})
 
     @pytest.mark.asyncio
+    async def test_send_rpc_forwards_explicit_timeout(self, pool):
+        """An explicit ``timeout`` on the pool's send_rpc must reach
+        ``wait_for_response`` — the pairing RPCs rely on this to get real
+        headroom (90s) instead of the default ``_RPC_TIMEOUT`` (30s)."""
+        mock_conn = AsyncMock(spec=GatewayConnection)
+        mock_conn.ip = "10.0.0.1"
+        mock_conn.is_connected = True
+        mock_conn._parked = False
+        mock_conn.wait_for_response = AsyncMock(return_value={"ok": True})
+        mock_conn._frontend_connections = set()
+        pool._connections["user-1"] = mock_conn
+
+        result = await pool.send_rpc("user-1", "req-t", "agents.create", {}, "10.0.0.1", "tok", timeout=90)
+
+        assert result == {"ok": True}
+        mock_conn.wait_for_response.assert_called_once_with("req-t", timeout=90)
+
+    @pytest.mark.asyncio
+    async def test_send_rpc_omits_timeout_by_default(self, pool):
+        """Without an explicit ``timeout``, send_rpc must call
+        ``wait_for_response`` with no timeout kwarg at all, so that method's
+        own ``_RPC_TIMEOUT`` default keeps applying to every existing caller."""
+        mock_conn = AsyncMock(spec=GatewayConnection)
+        mock_conn.ip = "10.0.0.1"
+        mock_conn.is_connected = True
+        mock_conn._parked = False
+        mock_conn.wait_for_response = AsyncMock(return_value={"ok": True})
+        mock_conn._frontend_connections = set()
+        pool._connections["user-1"] = mock_conn
+
+        result = await pool.send_rpc("user-1", "req-d", "agents.list", {}, "10.0.0.1", "tok")
+
+        assert result == {"ok": True}
+        mock_conn.wait_for_response.assert_called_once_with("req-d")
+
+    @pytest.mark.asyncio
     async def test_send_rpc_adopts_fresh_ip_on_parked_reopen(self, pool):
         """A parked connection must adopt the freshly-resolved IP before reopen,
         so a container task replacement (new IP) can't wedge it on the dead old IP."""

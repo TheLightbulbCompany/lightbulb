@@ -249,14 +249,35 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
 
     // No portal button — a trial_local row has no Stripe customer, so the
-    // portal would fail. A real Subscribe CTA renders instead, wired to
-    // the flat-fee checkout client path.
+    // portal would fail. One Subscribe CTA PER PROVIDER PATH renders instead,
+    // each wired to the flat-fee checkout with its own provider.
+    //
+    // This was a single button posting a hardcoded `provider_choice:
+    // "bedrock_claude"`. The owner never chose, and since Checkout echoes
+    // `?provider=<id>` into the wizard's provider step, the hardcode also
+    // skipped CreditsStep — so converted owners landed on Bedrock-managed
+    // inference with a zero credit balance nobody had asked them to fund.
     expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    const subscribeBtn = screen.getByRole("button", { name: /subscribe — \$50\/mo/i });
+    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
+
     await act(async () => {
-      fireEvent.click(subscribeBtn);
+      fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
+    });
+    // The clicked provider must reach the hook — asserting the ARGUMENT is the
+    // point, since a reintroduced hardcode still satisfies a bare call count.
+    expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude");
+
+    // Once a checkout is in flight every path disables — the browser is
+    // leaving for Stripe, and two completable sessions means two charged
+    // subscriptions (the backend refuses the second, but the UI must not
+    // invite it).
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /sign in with chatgpt/i }));
     });
     expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeDisabled();
   });
 
   it("non-expired trial_local with a future trial_end keeps the unchanged Free-tier copy", () => {
@@ -285,7 +306,7 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(screen.getByText(/\$3\/day of included usage/)).toBeInTheDocument();
     // The expired framing must NOT appear while the window is open.
     expect(screen.queryByText(/free tier ended/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /subscribe — \$50\/mo/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
   });
 
   it("EXPIRED trial_local swaps the $3/day promise for a paused state but keeps the Subscribe CTA", () => {
@@ -325,7 +346,11 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     // The Subscribe CTA remains the path forward (no Manage Payment — no
     // Stripe customer exists for a trial_local row).
     expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /subscribe — \$50\/mo/i })).toBeInTheDocument();
+    // All three paths stay on offer after expiry — an owner whose window ran
+    // out is exactly who should get the full choice, not a silent default.
+    expect(screen.getByRole("button", { name: /powered by claude/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
   });
 
   it("active personal subscription keeps the unchanged paid card", () => {

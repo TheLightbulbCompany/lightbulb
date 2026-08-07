@@ -9,6 +9,7 @@ import { capture } from "@/lib/analytics";
 import { planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
+import { PROVIDER_SWITCH_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
@@ -189,7 +190,10 @@ function BillingPanel() {
   const { membership } = useOrganization();
 
   const [portalLoading, setPortalLoading] = useState(false);
-  const [subscribeLoading, setSubscribeLoading] = useState(false);
+  // Which provider's Subscribe button is in flight, not a bare boolean — the
+  // free-tier card renders one per provider path and only the clicked one
+  // should spin.
+  const [subscribeLoading, setSubscribeLoading] = useState<ProviderChoiceId | null>(null);
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
   // Mount-time snapshot for the trial-expired check below: render must stay
   // pure (the react-compiler lint rejects Date.now() during render), and the
@@ -210,15 +214,15 @@ function BillingPanel() {
   // /billing/trial-checkout client path the signup ProviderPicker uses.
   // On success the browser leaves for Stripe, so loading only clears on
   // failure.
-  const handleSubscribe = useCallback(async () => {
-    capture("subscription_checkout_started", { source: "settings_billing" });
+  const handleSubscribe = useCallback(async (choice: ProviderChoiceId) => {
+    capture("subscription_checkout_started", { source: "settings_billing", provider_choice: choice });
     setSubscribeError(null);
-    setSubscribeLoading(true);
+    setSubscribeLoading(choice);
     try {
-      await startTrialCheckout();
+      await startTrialCheckout(choice);
     } catch {
       setSubscribeError("Couldn't start checkout. Please try again.");
-      setSubscribeLoading(false);
+      setSubscribeLoading(null);
     }
   }, [startTrialCheckout]);
 
@@ -422,13 +426,33 @@ function BillingPanel() {
               Manage Payment
             </button>
           ) : isTrialLocal ? (
-            // Free-tier upgrade CTA — starts the flat-fee Stripe Checkout
-            // and redirects to it. No Manage Payment here: a trial_local
-            // row has no Stripe customer, so the portal would fail.
-            <button type="button" className="settings-btn-save" onClick={handleSubscribe} disabled={subscribeLoading}>
-              {subscribeLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-              Subscribe — $50/mo
-            </button>
+            // Free-tier upgrade — one Subscribe button per provider path, so
+            // the choice is made BEFORE Checkout and rides its success_url
+            // (`?provider=<id>`) into the wizard's provider step. This used to
+            // be a single button posting a hardcoded `bedrock_claude`: the
+            // owner was silently put on Bedrock-managed inference, never saw
+            // the alternatives, and never hit CreditsStep to buy the credits
+            // that path spends. No Manage Payment here — a trial_local row has
+            // no Stripe customer, so the portal would fail.
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+              {/* The $50/mo is the same on all three — it buys the always-on
+                  infrastructure. What differs is who pays for inference, so
+                  price it once here instead of on every button. */}
+              <div style={{ fontSize: 12, color: "var(--mute)" }}>Subscribe — $50/mo. Pick how to power it:</div>
+              {PROVIDER_SWITCH_CARDS.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  className={card.id === "bedrock_claude" ? "settings-btn-save" : "settings-btn-outline"}
+                  onClick={() => handleSubscribe(card.id)}
+                  disabled={subscribeLoading !== null}
+                  title={card.subtitle}
+                >
+                  {subscribeLoading === card.id && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+                  {card.title}
+                </button>
+              ))}
+            </div>
           ) : (
             <Link href="/chat" className="settings-btn-save">
               Sign up

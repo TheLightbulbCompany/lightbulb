@@ -100,31 +100,39 @@ describe("useBilling", () => {
     Object.defineProperty(window, "location", { value: orig, writable: true });
   });
 
-  it("startTrialCheckout POSTs /billing/trial-checkout with bedrock_claude and redirects", async () => {
-    const orig = window.location;
-    Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
-    global.fetch = vi.fn().mockImplementation(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ checkout_url: "https://checkout/flat" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-    const { result } = renderHook(() => useBilling(), { wrapper });
-    await result.current.startTrialCheckout();
-    const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
-      String(c[0]).includes("/billing/trial-checkout"),
-    );
-    expect(call).toBeTruthy();
-    // The free tier already runs Bedrock-managed Claude — the upgrade keeps
-    // that provider path.
-    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
-      provider_choice: "bedrock_claude",
-    });
-    expect(window.location.href).toBe("https://checkout/flat");
-    Object.defineProperty(window, "location", { value: orig, writable: true });
-  });
+  // The caller's choice must reach the wire verbatim. This used to be
+  // hardcoded to `bedrock_claude`, which put every converting free-tier owner
+  // on Bedrock-managed inference without asking and — because Checkout's
+  // success_url echoes `?provider=<id>` into the wizard's provider step —
+  // skipped CreditsStep, so they arrived with a zero credit balance. Asserting
+  // a NON-Bedrock choice is the point: a reintroduced hardcode still passes a
+  // bedrock_claude-only assertion.
+  it.each(["chatgpt_oauth", "byo_key", "bedrock_claude"] as const)(
+    "startTrialCheckout POSTs /billing/trial-checkout with the caller's provider (%s) and redirects",
+    async (choice) => {
+      const orig = window.location;
+      Object.defineProperty(window, "location", { value: { href: "" }, writable: true });
+      global.fetch = vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ checkout_url: "https://checkout/flat" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+      const { result } = renderHook(() => useBilling(), { wrapper });
+      await result.current.startTrialCheckout(choice);
+      const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+        String(c[0]).includes("/billing/trial-checkout"),
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({
+        provider_choice: choice,
+      });
+      expect(window.location.href).toBe("https://checkout/flat");
+      Object.defineProperty(window, "location", { value: orig, writable: true });
+    },
+  );
 
   it("upgradeToUltra POSTs /billing/ultra-checkout and redirects when a checkout_url is returned", async () => {
     // Fresh-checkout path (free-tier / no live sub): the endpoint returns a

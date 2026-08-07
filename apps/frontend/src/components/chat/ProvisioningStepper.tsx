@@ -1073,6 +1073,45 @@ export function ProvisioningStepper({
     );
   }
 
+  // Free-tier conversion: a trial owner who hit the daily cap or ran out the
+  // window. Render the provider picker RIGHT HERE instead of the generic
+  // blocked card, whose action is a link out to /settings?panel=billing.
+  //
+  // That link was the whole problem. It landed on a lone Subscribe button
+  // wired to a HARDCODED `provider_choice: "bedrock_claude"`, so a converting
+  // owner never saw the three-way choice and — because they never carried a
+  // `?provider=` back from Checkout — never reached CreditsStep either. They
+  // came out the far side on Bedrock-managed inference having chosen nothing
+  // and bought nothing. Picking here threads the choice through Checkout's
+  // success_url (`?checkout=success&provider=<id>`), which is exactly what
+  // drives the provider step above — CreditsStep for bedrock_claude, so buying
+  // credits is part of converting rather than a thing to discover later.
+  //
+  // Same shape as the team_billing_required interception above: keep the gate's
+  // canvas, swap the card in the middle. Org owners are excluded — a trial is
+  // personal-only (see provision_gate), so an org here would be a mismatch, and
+  // their paywall is the per-seat card above.
+  if (
+    gatePhase === "blocked" &&
+    blocked &&
+    providerChoice === null &&
+    (blocked.code === "trial_daily_cap" || blocked.code === "trial_expired")
+  ) {
+    return (
+      <ProviderPicker
+        isOrg={isOrg}
+        orgName={organization?.name}
+        source="trial_conversion"
+        heading={
+          blocked.code === "trial_expired"
+            ? "Your free trial has ended."
+            : "You've used today's free allowance."
+        }
+        subheading={`${blocked.message} Pick how you want to power your agents — $50/month covers your always-on infrastructure.`}
+      />
+    );
+  }
+
   if (gatePhase === "blocked" && blocked && providerChoice === null) {
     const showAction = !(blocked.action.admin_only && blocked.owner_role !== "admin");
     return (
@@ -1773,7 +1812,38 @@ function StepperDisplay({
   );
 }
 
-export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }) {
+/**
+ * The three-way provider choice + Stripe Checkout hand-off.
+ *
+ * Two surfaces render it, and they are the ONLY two paths that create a
+ * billing row via POST /billing/trial-checkout:
+ *   - fresh signup (`gatePhase === "needs-signup"`), and
+ *   - free-tier conversion, when a trial owner hits the cap or the window.
+ *
+ * The conversion surface passes `heading`/`subheading` to say why the picker
+ * appeared; everything below the copy is identical, deliberately. A converting
+ * owner used to be sent to /settings, where a single Subscribe button posted a
+ * HARDCODED `provider_choice: "bedrock_claude"` — so they never chose a
+ * provider and never reached CreditsStep, landing on Bedrock-managed inference
+ * with no credits and no prompt to buy any. Routing both surfaces through this
+ * one picker is what keeps "picked a provider" and "paid" inseparable.
+ *
+ * `source` on the analytics event distinguishes them; keep it accurate, the
+ * signup-vs-conversion split is the conversion funnel.
+ */
+export function ProviderPicker({
+  isOrg,
+  orgName,
+  heading,
+  subheading,
+  source = "provider_picker",
+}: {
+  isOrg: boolean;
+  orgName?: string;
+  heading?: string;
+  subheading?: string;
+  source?: string;
+}) {
   const api = useApi();
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1784,7 +1854,7 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
     capture("subscription_checkout_started", {
       provider_choice: id,
       owner_type: isOrg ? "org" : "personal",
-      source: "provider_picker",
+      source,
     });
     try {
       const resp = (await api.post("/billing/trial-checkout", {
@@ -1805,13 +1875,13 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
       capture("subscription_checkout_failed", {
         provider_choice: id,
         owner_type: isOrg ? "org" : "personal",
-        source: "provider_picker",
+        source,
         error: err instanceof Error ? err.message : "unknown",
       });
       setLoading(null);
       setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
     }
-  }, [api, isOrg]);
+  }, [api, isOrg, source]);
 
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-[var(--cream)]">
@@ -1822,12 +1892,13 @@ export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: s
             <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
           </svg>
           <h2 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
-            One price. Three ways to power it.
+            {heading ?? "One price. Three ways to power it."}
           </h2>
           <p className="text-[var(--mute)] text-sm max-w-md mx-auto">
-            {isOrg
-              ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
-              : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure."}
+            {subheading ??
+              (isOrg
+                ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
+                : "Pick how you want to pay for inference. The $50/month covers your always-on agent infrastructure.")}
           </p>
         </div>
 

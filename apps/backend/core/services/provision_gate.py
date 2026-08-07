@@ -621,7 +621,15 @@ async def _evaluate_provision_gate_inner(
                 title="Top up Claude credits to start your container",
                 message="Top up some Claude credits to start your Bedrock container.",
                 action_label="Top up now",
-                action_href="/settings/billing#credits",
+                # The PROVIDERS panel, not billing. Credits are sold by
+                # CreditsSection, which LLMPanel embeds (see
+                # settings-nav-config: "there is NO separate Credits row").
+                # This pointed at /settings/billing#credits — but that route
+                # only `router.replace`s to /settings?panel=billing, dropping
+                # the fragment, and the billing panel has no credits UI at all.
+                # The one CTA on the "you have no credits" card led somewhere
+                # you cannot buy credits.
+                action_href="/settings?panel=providers",
                 action_admin_only=False,
                 owner_role=owner_role,
             )

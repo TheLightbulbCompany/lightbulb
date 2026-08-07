@@ -16,6 +16,10 @@ Read model:
   owner actually has a Metronome customer, the gate lazily refreshes from
   ``getNetBalance`` and rewrites the row. Metronome-down ⇒ the stale row is
   used as-is — the gate must never 500 (or block) on a vendor outage.
+- An owner with NO Metronome customer ⇒ BLOCK. "No ledger" and "vendor
+  unreachable" both surface as an unavailable refresh but mean opposite
+  things, and treating the first as "not blocked" is unmetered spend on our
+  account, not leniency. See ``is_owner_blocked`` for the full argument.
 - A refresh that comes back POSITIVE for an owner whose containers row says
   ``bedrock_revoked`` un-revokes (``restore_owner_bedrock``) after ONE
   confirming re-read. This is the pull-based re-arm: Metronome's
@@ -58,9 +62,52 @@ async def is_owner_blocked(owner_id: str) -> bool:
     refreshed = await _refresh_from_metronome(owner_id, gate)
     if refreshed is not None:
         return refreshed <= RESERVE_ESTIMATE_MICROCENTS
-    # Refresh unavailable (no Metronome customer, or Metronome down): use
-    # the stale row as-is. A missing row stays NOT blocked.
+
+    # Refresh unavailable. That is TWO different situations and they get
+    # opposite answers — conflating them is what let a paid Bedrock owner run
+    # uncredited:
+    #
+    #   no Metronome customer -> BLOCK. The owner has no ledger, so no credits
+    #     can exist and none can ever be spent down to zero. Every caller of
+    #     this predicate has already established provider_choice ==
+    #     "bedrock_claude" (see the three call sites), so this is an owner
+    #     billing inference to US with nothing backing it. Answering "not
+    #     blocked" here handed them unmetered Bedrock — Opus-tier for the CEO
+    #     agent — on our account, indefinitely. Observed on prod 2026-08-06.
+    #     They see the `credits_required` card, and the top-up path re-ensures
+    #     provisioning, so this is a prompt to pay rather than a dead end.
+    #
+    #   customer exists, Metronome unreachable -> fall back to the stale row.
+    #     A vendor outage must never lock out a customer who has already paid;
+    #     their real balance is whatever the cache last saw.
+    if not await _has_metronome_customer(owner_id):
+        put_metric("metronome.gate.blocked_unprovisioned")
+        logger.warning(
+            "Owner %s is on bedrock_claude with no Metronome customer — blocking. "
+            "Provisioning should have run on the entering_live webhook; the top-up "
+            "path re-ensures it.",
+            owner_id,
+        )
+        return True
     return _row_blocked(row)
+
+
+async def _has_metronome_customer(owner_id: str) -> bool:
+    """Whether the owner has a Metronome ledger at all.
+
+    Deliberately a separate read rather than a signal threaded out of
+    ``read_net_balance_microcents``: this runs only on the cold path (stale
+    row AND refresh unavailable), and for an owner in that state the answer
+    is about to block them, so the read is self-limiting. A DDB failure
+    reports "has a customer" so a transient blip degrades to the stale-row
+    fallback rather than locking out a paying customer.
+    """
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+    except Exception:
+        logger.exception("Billing read failed while checking Metronome provisioning for owner %s", owner_id)
+        return True
+    return bool((account or {}).get("metronome_customer_id"))
 
 
 def _row_blocked(row: dict | None) -> bool:

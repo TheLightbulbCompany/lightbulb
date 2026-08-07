@@ -956,3 +956,84 @@ class TestCheckoutSlotClaim:
         ):
             await billing_service.create_flat_fee_checkout(owner_id="u_1")
         mock_release.assert_awaited_once_with("u_1")
+
+
+class TestCreditTopUpProvisionsOnDemand:
+    """`create_credit_top_up_checkout` must PROVISION the owner's Metronome
+    ledger, not merely assert someone else already did.
+
+    It used to just check the ids were on the billing row and raise "try again
+    in a moment" otherwise, on the stated reasoning that "provisioning re-runs
+    on every status poll". That is false for a personal owner with a running
+    container: `ensure_metronome_customer`'s only other call site is
+    `ensure_user_ready`, which `routers/container.py` re-dispatches on a running
+    box solely for org context or a failed Teams seat. A trial->paid converted
+    owner therefore sat un-provisioned forever and got "try again in a moment"
+    on every attempt — on the exact screen the credits gate sends them to, so
+    the one action that would fix their account was the one action they could
+    not complete.
+    """
+
+    @pytest.fixture
+    def _account(self):
+        return {
+            "owner_id": "user_x",
+            "stripe_customer_id": "cus_x",
+        }
+
+    @pytest.mark.asyncio
+    async def test_provisions_then_proceeds_when_ids_are_missing(self, _account, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
+        provisioned = {
+            **_account,
+            "metronome_customer_id": "mc-1",
+            "metronome_contract_id": "ct-1",
+        }
+        # First read: un-provisioned. Second read (after ensuring): provisioned.
+        reads = [dict(_account), provisioned]
+        ensure = AsyncMock(return_value="mc-1")
+        with (
+            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(side_effect=reads)),
+            patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=ensure),
+            patch("stripe.checkout.Session.create", return_value=MagicMock(url="https://checkout/credits")),
+        ):
+            session = await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
+
+        ensure.assert_awaited_once_with(owner_id="user_x")
+        assert session.url == "https://checkout/credits"
+
+    @pytest.mark.asyncio
+    async def test_still_refuses_to_take_money_when_provisioning_fails(self, _account, monkeypatch):
+        """The money guard survives: if provisioning can't complete, no payable
+        session is created. Collecting first and failing the grant afterwards
+        strands the customer's money — the original reason this check exists."""
+        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
+        create = MagicMock()
+        with (
+            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=dict(_account))),
+            patch(
+                "core.billing.metronome_provisioning.ensure_metronome_customer",
+                new=AsyncMock(side_effect=RuntimeError("metronome down")),
+            ),
+            patch("stripe.checkout.Session.create", new=create),
+        ):
+            with pytest.raises(BillingServiceError, match="aren't ready"):
+                await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
+
+        create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_already_provisioned(self, _account, monkeypatch):
+        """Idempotent and cheap on the common path — an already-provisioned
+        owner must not pay for a Metronome round trip per top-up."""
+        monkeypatch.setattr(billing_service.settings, "METRONOME_CREDITS_PRODUCT_ID", "prod_x")
+        account = {**_account, "metronome_customer_id": "mc-1", "metronome_contract_id": "ct-1"}
+        ensure = AsyncMock()
+        with (
+            patch.object(billing_service.billing_repo, "get_by_owner_id", new=AsyncMock(return_value=account)),
+            patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=ensure),
+            patch("stripe.checkout.Session.create", return_value=MagicMock(url="https://checkout/credits")),
+        ):
+            await billing_service.create_credit_top_up_checkout(owner_id="user_x", amount_cents=2000)
+
+        ensure.assert_not_awaited()

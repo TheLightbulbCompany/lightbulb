@@ -159,8 +159,33 @@ export async function trialSettle(ddb, env, hold, requestId, actual, ttlSeconds)
 // refresh periodically overwrites `remaining_microcents`. So paid needs no
 // dedup: a double-count is transient, erased on the next refresh.
 
-export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow) {
-  if (!fastGateRow) return { ok: true, hold: { ownerId, estimate, paid: true } }; // no row → allow (backstopped)
+export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow, billingRow) {
+  if (!fastGateRow) {
+    // No projection row. Two different situations, opposite answers:
+    //
+    //   Metronome customer EXISTS → allow. The projection simply has not been
+    //     written yet (it is created by the low-balance webhook and by the
+    //     backend gate's refresh). A real ledger backs this owner, the meter
+    //     Lambda's Metronome ingestion counts every call, and the next refresh
+    //     writes the row. Denying here would hard-block a paying customer's
+    //     first request at the inference layer.
+    //
+    //   NO Metronome customer → DENY. There is no ledger at all, so nothing
+    //     can be debited and the "backstopped" claim this used to make is
+    //     false: the meter Lambda's backstop for a PAID owner is Metronome
+    //     ingestion, which cannot record against a customer that does not
+    //     exist. Every call was therefore admitted unconditionally and
+    //     unmetered — Opus included, since the paid AIP map carries all three
+    //     tiers. Observed on prod 2026-08-06 for a trial→paid converted owner
+    //     whose Metronome provisioning never ran.
+    //
+    // The backend gates (is_owner_blocked) refuse this owner too, but they
+    // only cover doors the backend sits on. A cron- or channel-triggered run
+    // inside the container reaches Bedrock through here with no backend
+    // involvement, so this is the fence that actually has to hold.
+    if (billingRow && !billingRow.metronome_customer_id) return { ok: false };
+    return { ok: true, hold: { ownerId, estimate, paid: true } };
+  }
   const ttlSec = Number(env.RESERVE_TTL_SECONDS || 1200);
   let remaining = readN(fastGateRow.remaining_microcents) ?? 0;
   let reserved = readN(fastGateRow.reserved_microcents) ?? 0;

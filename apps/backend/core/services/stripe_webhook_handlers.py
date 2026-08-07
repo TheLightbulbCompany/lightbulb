@@ -223,6 +223,41 @@ async def _rollback_conversion_entry(owner_id: str, subscription_id: str) -> Non
         )
 
 
+async def _provision_metronome_customer(owner_id: str) -> None:
+    """Best-effort Metronome customer provisioning. Never raises."""
+    from core.billing.metronome_provisioning import ensure_metronome_customer
+
+    try:
+        await ensure_metronome_customer(owner_id=owner_id)
+    except Exception:
+        put_metric("metronome.provision.error")
+        logger.exception(
+            "Metronome customer provisioning failed for owner %s on entering_live — "
+            "the credits gate fails closed and the top-up path re-ensures",
+            owner_id,
+        )
+
+
+def dispatch_metronome_provisioning(owner_id: str) -> None:
+    """Fire the Metronome provisioning in the background.
+
+    Its own function rather than an inline ``create_task`` for two reasons: it
+    is the seam tests patch to isolate the webhook's other dispatches, and the
+    fire-and-forget is a deliberate choice worth naming. Provisioning is
+    several Metronome round trips; awaiting them inside a Stripe webhook risks
+    a timeout, and a retried webhook re-enters with the status ALREADY flipped
+    off ``trial_local`` — which silently skips the transition branches
+    entirely (the same hazard the conversion branch documents).
+
+    Failure is covered twice over, so dropping it is survivable:
+    ``create_credit_top_up_checkout`` re-ensures before taking money (so "buy
+    credits" self-heals), and ``is_owner_blocked`` fails CLOSED for a
+    bedrock_claude owner with no customer (so a stranded owner is blocked
+    rather than silently spending our Bedrock budget).
+    """
+    asyncio.create_task(_provision_metronome_customer(owner_id))
+
+
 async def run_conversion_reprovision(owner_id: str) -> None:
     """Reprovision a converted owner's container off the trial shape, then
     release the row. asyncio.create_task target — never raises.
@@ -748,6 +783,27 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 "Failed to persist provider_choice for owner %s",
                 account["owner_id"],
             )
+
+    if entering_live:
+        # Metronome customer lifecycle. THIS transition is what makes the owner
+        # Metronome-eligible: ``ensure_metronome_customer`` deliberately
+        # short-circuits for ``trial_local`` (free-tier owners draw no prepaid
+        # credits — see its docstring), so a converting owner only becomes
+        # eligible the moment the status flips here.
+        #
+        # It cannot be left to the status poll. Its only other call site is
+        # ``ensure_user_ready``, and ``routers/container.py`` re-dispatches that
+        # on a RUNNING container solely for org-context callers or a failed
+        # Teams seed — a healthy PERSONAL owner never re-enters it. A trial→paid
+        # conversion always has a running container, so before this call no
+        # converted personal owner ever got a Metronome customer, contract, or
+        # low-balance alerts. That left ``metronome_gate.is_owner_blocked``
+        # failing open forever (no customer => not blocked) and the owner
+        # running uncredited Bedrock — Opus-tier for Friday — on our account.
+        # Verified on prod 2026-08-06: the only owner carrying a
+        # metronome_customer_id was the org (org context always re-dispatches).
+        dispatch_metronome_provisioning(account["owner_id"])
+
     # Teams per-seat subscriptions additionally record the subscription item
     # id + seat quantity so sync_team_seat_quantity has an item to modify.
     # Detect by explicit metadata purpose OR by the seat price id. Personal

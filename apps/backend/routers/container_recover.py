@@ -89,6 +89,30 @@ async def container_recover(
 
     status = container.get("status", "unknown")
 
+    # A trial->paid conversion owns this row and is mid-drain. Its reprovision
+    # is already in flight; a second one from here would put a task on the
+    # EFS-WAL SQLite next to the draining one — the documented corruption mode.
+    #
+    # Checked BEFORE the status split, not inside the stopped/error branch,
+    # because the drain is not instantaneous: ``reprovision_for_user`` scales
+    # the service to zero while the row still reads "running", so a poll
+    # landing in that window fell through to the gateway branches below —
+    # which probe a gateway that is *supposed* to be gone, fail, and write
+    # ``status="error"`` + "Gateway restart failed — reprovisioning" over a row
+    # the conversion owns. That write is not just noise: it renders the
+    # terminal "Setup failed" card to a customer who just paid, and it
+    # dispatches a provision competing with the conversion's own. Observed on
+    # prod 2026-08-06 (conversion 16:53:46 -> recover-written error 17:09:03 ->
+    # self-healed 17:32). The guard is status-agnostic (a timestamp window), so
+    # hoisting it costs nothing and closes all three branches at once.
+    if conversion_guard_active(container):
+        logger.info("Recover for owner %s stood down: conversion reprovision in flight", owner_id)
+        return {
+            "action": "already_recovering",
+            "state": "RECOVERING",
+            "reason": "A subscription upgrade is reprovisioning this container",
+        }
+
     # 2. Container is stopped or error -> full re-provision
     if status in ("stopped", "error"):
         # This is a WAKE, and it is customer-reachable, so it passes the same
@@ -98,17 +122,7 @@ async def container_recover(
         # force=True (that call IS a provision — the trial->paid conversion's
         # reprovision runs through it and would otherwise deadlock against its
         # own marker). So the third door checks the same predicates here.
-        if conversion_guard_active(container):
-            # A trial->paid conversion owns this row and is mid-drain. Its
-            # reprovision is already in flight; a second one from here would
-            # put a task on the EFS-WAL SQLite next to the draining one —
-            # the documented corruption mode. It is already recovering.
-            logger.info("Recover for owner %s stood down: conversion reprovision in flight", owner_id)
-            return {
-                "action": "already_recovering",
-                "state": "RECOVERING",
-                "reason": "A subscription upgrade is reprovisioning this container",
-            }
+        #
         # The FULL trial predicate, not just the cap. An owner whose trial
         # window has expired but who is under today's $3 would otherwise
         # fall through to the executor -- whose runner starts with

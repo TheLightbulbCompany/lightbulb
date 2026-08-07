@@ -78,6 +78,11 @@ _SUPERSEDED_FIELD = "bedrock_gate_superseded_hashes"
 # injected for every Bedrock owner whenever a gate URL resolves.
 _GATE_TOKEN_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 
+# Hash chars logged for correlation against a `describe-task-definition` byte
+# comparison -- long enough to be useful for that, short enough that a log
+# reader can never reconstruct or brute-force the plaintext from it.
+_HASH_PREFIX_LEN = 12
+
 
 def _tokens_table_name() -> str:
     override = os.environ.get("BEDROCK_GATE_TOKENS_TABLE")
@@ -155,8 +160,10 @@ async def _live_task_definition_arns(ecs: Any, cluster: str, service_name: str) 
     return arns
 
 
-async def _presentable_gate_token_hashes(owner_id: str) -> set[str]:
-    """Hashes of every gate token the owner's container can still present.
+async def _presentable_gate_token_hashes(owner_id: str) -> dict[str, str]:
+    """Hashes of every gate token the owner's container can still present,
+    mapped to WHY -- which half of the predicate holds it alive. That reason
+    is what makes the expiry decision log a diagnosis instead of a verdict.
 
     THE PREDICATE. Two sources, and the first one is the authoritative half:
 
@@ -183,24 +190,33 @@ async def _presentable_gate_token_hashes(owner_id: str) -> set[str]:
     if not live_services:
         # No service (deleted owner, or never created). Nothing will launch, and
         # there is no service left to enumerate tasks for.
-        return set()
+        return {}
 
     service = live_services[0]
-    arns: list[str] = []
+    service_def_arns: list[str] = []
     service_task_def = service.get("taskDefinition")
     if service_task_def:
-        arns.append(service_task_def)
+        service_def_arns.append(service_task_def)
     # Free from the call just made: during a rolling deploy the superseded
     # deployment stays listed alongside PRIMARY until its tasks are gone, so its
     # definition is a second, cheap read on the same drain window.
-    arns.extend(d["taskDefinition"] for d in service.get("deployments", []) if d.get("taskDefinition"))
-    arns.extend(await _live_task_definition_arns(ecs, cluster, service_name))
+    service_def_arns.extend(d["taskDefinition"] for d in service.get("deployments", []) if d.get("taskDefinition"))
+    live_arns = await _live_task_definition_arns(ecs, cluster, service_name)
 
-    hashes: set[str] = set()
-    for arn in dict.fromkeys(arns):  # de-dupe, preserving the service def first
+    hashes: dict[str, str] = {}
+    # de-dupe, preserving the service def first -- an arn that is both the
+    # service's def and a live task's def is resolved once, and gets the
+    # authoritative reason.
+    for arn in dict.fromkeys(service_def_arns + live_arns):
         token = await _task_def_gate_token(ecs, arn)
-        if token:
-            hashes.add(hash_token(token))
+        if not token:
+            continue
+        reason = (
+            "service task definition still references it"
+            if arn in service_def_arns
+            else "a task is still running with it"
+        )
+        hashes.setdefault(hash_token(token), reason)
     return hashes
 
 
@@ -233,7 +249,14 @@ async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: 
     table = _tokens_table()
     survivors: list[str] = []
     for token_hash in candidates:
-        if token_hash in presentable:
+        reason = presentable.get(token_hash)
+        if reason is not None:
+            logger.info(
+                "bedrock-gate token %s.. kept for owner %s: %s",
+                token_hash[:_HASH_PREFIX_LEN],
+                owner_id,
+                reason,
+            )
             survivors.append(token_hash)
             continue
         try:
@@ -245,6 +268,12 @@ async def _drain_superseded(owner_id: str, tracked: list[str], *, current_hash: 
                 exc_info=True,
             )
             survivors.append(token_hash)
+            continue
+        logger.info(
+            "bedrock-gate token %s.. expired for owner %s: no task definition or running task presents it",
+            token_hash[:_HASH_PREFIX_LEN],
+            owner_id,
+        )
     return survivors
 
 
@@ -325,6 +354,13 @@ async def mint_gate_token(owner_id: str, aip_arns: dict[str, str]) -> str:
         {"bedrock_gate_token_hash": token_hash, _SUPERSEDED_FIELD: superseded},
     )
 
+    logger.info(
+        "bedrock-gate token minted for owner %s: new=%s.. prior=%s tiers=%s",
+        owner_id,
+        token_hash[:_HASH_PREFIX_LEN],
+        (prior_hash[:_HASH_PREFIX_LEN] + "..") if prior_hash else "none",
+        ",".join(sorted(aip_arns)) if aip_arns else "none",
+    )
     return token
 
 

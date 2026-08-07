@@ -179,6 +179,59 @@ def fake_ecs(monkeypatch):
 
 class TestMint:
     @pytest.mark.asyncio
+    async def test_logs_owner_and_both_hash_prefixes(self, gate_tables, fake_ecs, caplog):
+        """The mint log line is the whole point of this module: it must carry
+        enough to correlate against a `describe-task-definition` without
+        logging anything a reader could turn back into a working credential."""
+        old_hash = mod.hash_token("old-plaintext")
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash)
+        fake_ecs.task_def_tokens = {_OLD_DEF: "old-plaintext"}
+
+        with caplog.at_level("INFO", logger=mod.logger.name):
+            token = await mod.mint_gate_token("org_abc", _AIPS)
+
+        new_hash = mod.hash_token(token)
+        mint_records = [r for r in caplog.records if "minted" in r.message]
+        assert len(mint_records) == 1
+        message = mint_records[0].message
+        assert "org_abc" in message
+        assert new_hash[: mod._HASH_PREFIX_LEN] in message
+        assert old_hash[: mod._HASH_PREFIX_LEN] in message
+        # Full hashes and the plaintext must never appear.
+        assert new_hash not in message
+        assert old_hash not in message
+        assert token not in message
+
+    @pytest.mark.asyncio
+    async def test_logs_none_for_a_first_mint_with_no_prior_token(self, gate_tables, fake_ecs, caplog):
+        _put_container_row(gate_tables, "org_abc")
+
+        with caplog.at_level("INFO", logger=mod.logger.name):
+            await mod.mint_gate_token("org_abc", _AIPS)
+
+        mint_records = [r for r in caplog.records if "minted" in r.message]
+        assert len(mint_records) == 1
+        assert "prior=none" in mint_records[0].message
+
+    @pytest.mark.asyncio
+    async def test_no_captured_log_output_contains_the_plaintext_token(self, gate_tables, fake_ecs, caplog):
+        """The constraint most likely to regress: assert it explicitly rather
+        than trust review to catch a future `logger.debug(token)`."""
+        old_hash = mod.hash_token("old-plaintext")
+        _put_container_row(gate_tables, "org_abc", bedrock_gate_token_hash=old_hash)
+        _put_token_row(gate_tables, old_hash)
+        fake_ecs.task_def_tokens = {_OLD_DEF: "old-plaintext"}
+
+        with caplog.at_level("DEBUG"):
+            token = await mod.mint_gate_token("org_abc", _AIPS)
+            await mod.expire_superseded_gate_tokens("org_abc")
+
+        for record in caplog.records:
+            assert token not in record.getMessage()
+            assert "old-plaintext" not in record.getMessage()
+
+    @pytest.mark.asyncio
     async def test_writes_hash_only_row_with_inverted_aip_tiers(self, gate_tables):
         _put_container_row(gate_tables, "org_abc")
 
@@ -512,6 +565,62 @@ class TestExpireSuperseded:
     async def test_missing_container_row_is_a_noop(self, gate_tables, fake_ecs):
         await mod.expire_superseded_gate_tokens("ghost")
         assert fake_ecs.calls == []
+
+    @pytest.mark.asyncio
+    async def test_kept_verdict_logs_which_half_of_the_predicate_held_it(self, gate_tables, fake_ecs, caplog):
+        """THE INCIDENT scenario again, but asserting the log line this time:
+        a bare 'kept' would have left the same blind spot the incident did."""
+        old_hash, _ = self._arrange(gate_tables, fake_ecs, service_def=_OLD_DEF, tasks=[])
+
+        with caplog.at_level("INFO", logger=mod.logger.name):
+            await mod.expire_superseded_gate_tokens("org_abc")
+
+        kept = [r.message for r in caplog.records if "kept" in r.message]
+        assert len(kept) == 1
+        assert "org_abc" in kept[0]
+        assert old_hash[: mod._HASH_PREFIX_LEN] in kept[0]
+        assert old_hash not in kept[0]
+        assert "service task definition still references it" in kept[0]
+
+    @pytest.mark.asyncio
+    async def test_kept_verdict_during_drain_names_the_running_task_reason(self, gate_tables, fake_ecs, caplog):
+        old_hash, _ = self._arrange(
+            gate_tables,
+            fake_ecs,
+            service_def=_NEW_DEF,
+            tasks=[
+                {"taskDefinitionArn": _OLD_DEF, "desiredStatus": "STOPPED", "lastStatus": "RUNNING"},
+                {"taskDefinitionArn": _NEW_DEF, "desiredStatus": "RUNNING", "lastStatus": "RUNNING"},
+            ],
+        )
+
+        with caplog.at_level("INFO", logger=mod.logger.name):
+            await mod.expire_superseded_gate_tokens("org_abc")
+
+        kept = [
+            r.message for r in caplog.records if "kept" in r.message and old_hash[: mod._HASH_PREFIX_LEN] in r.message
+        ]
+        assert len(kept) == 1
+        assert "a task is still running with it" in kept[0]
+
+    @pytest.mark.asyncio
+    async def test_expired_verdict_logs_its_reason(self, gate_tables, fake_ecs, caplog):
+        old_hash, _ = self._arrange(
+            gate_tables,
+            fake_ecs,
+            service_def=_NEW_DEF,
+            tasks=[{"taskDefinitionArn": _NEW_DEF, "desiredStatus": "RUNNING", "lastStatus": "RUNNING"}],
+        )
+
+        with caplog.at_level("INFO", logger=mod.logger.name):
+            await mod.expire_superseded_gate_tokens("org_abc")
+
+        expired = [r.message for r in caplog.records if "expired" in r.message]
+        assert len(expired) == 1
+        assert "org_abc" in expired[0]
+        assert old_hash[: mod._HASH_PREFIX_LEN] in expired[0]
+        assert old_hash not in expired[0]
+        assert "no task definition or running task presents it" in expired[0]
 
     @pytest.mark.asyncio
     async def test_reads_the_bedrock_bearer_env_not_the_acp_harness_one(self, gate_tables, fake_ecs, monkeypatch):

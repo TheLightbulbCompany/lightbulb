@@ -32,6 +32,7 @@ def _gate(
     *,
     row: dict | None,
     metronome_customer_id: str | None = None,
+    metronome_contract_id: str | None = "ct-default",
     net_balance_cents: float | Exception | list | None = None,
     container_row: dict | None = None,
 ):
@@ -56,9 +57,15 @@ def _gate(
             return_value={} if net_balance_cents is None else {"balance": net_balance_cents}
         )
 
+    # A customer id implies a COMPLETE ledger unless a test says otherwise:
+    # is_owner_blocked requires customer AND contract, and every pre-existing
+    # case that sets a customer means "fully provisioned". Pass
+    # metronome_contract_id=None to opt into the partial-provisioning state.
     account = {"owner_id": OWNER}
     if metronome_customer_id:
         account["metronome_customer_id"] = metronome_customer_id
+        if metronome_contract_id:
+            account["metronome_contract_id"] = metronome_contract_id
 
     restore = AsyncMock()
     enforce = AsyncMock()
@@ -102,12 +109,54 @@ async def test_fresh_row_positive_not_blocked():
 
 
 @pytest.mark.asyncio
-async def test_missing_row_without_metronome_customer_not_blocked():
-    """A brand-new owner has neither a fast-gate row nor a Metronome
-    customer — the gate must not block on a missing projection."""
+async def test_no_metronome_ledger_blocks():
+    """No ledger means no credits can exist, and every caller has already
+    established the owner is on bedrock_claude — i.e. billing inference to US.
+
+    This used to return False, reasoning that a brand-new owner must not be
+    gated by a missing projection. That conflated "projection not written yet"
+    with "no ledger at all"; the second state handed owners unmetered
+    Bedrock — Opus-tier for the CEO agent — on our account.
+
+    Not a dead end: the gate renders credits_required, ensure_user_ready
+    provisions BEFORE the gate, and create_credit_top_up_checkout re-ensures.
+    """
     with _gate(row=None, metronome_customer_id=None) as m:
-        assert await is_owner_blocked(OWNER) is False
+        assert await is_owner_blocked(OWNER) is True
     m.client.get_net_balance.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_customer_without_contract_blocks():
+    """The partial-provisioning state _provision persists when the Stripe link
+    fails: customer only, contract deferred. No contract ⇒ no commits ⇒ no
+    balance, and grant_prepaid_credits refuses it — so the customer id alone is
+    not evidence of a spendable ledger. Lockstep with paidReserve."""
+    with _gate(row=None, metronome_customer_id="mc-1", metronome_contract_id=None):
+        assert await is_owner_blocked(OWNER) is True
+
+
+@pytest.mark.asyncio
+async def test_no_ledger_beats_a_positive_stale_row():
+    """A leftover positive projection (e.g. from a since-wiped Metronome
+    customer) must not re-open unmetered spend for an owner with no ledger."""
+    with _gate(row=_stale_row(5_000_000), metronome_customer_id=None):
+        assert await is_owner_blocked(OWNER) is True
+
+
+@pytest.mark.asyncio
+async def test_billing_read_failure_falls_back_to_the_stale_row():
+    """The provisioning check fails OPEN on a DDB blip specifically: a
+    transient infra error must not lock out a customer who already paid. Only
+    a CONFIRMED absent ledger blocks."""
+    with (
+        _gate(row=_stale_row(5_000_000), metronome_customer_id=None),
+        patch(
+            "core.services.metronome_gate.billing_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=RuntimeError("dynamo down")),
+        ),
+    ):
+        assert await is_owner_blocked(OWNER) is False
 
 
 @pytest.mark.asyncio

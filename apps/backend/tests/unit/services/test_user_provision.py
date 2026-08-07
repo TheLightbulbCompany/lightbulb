@@ -1981,3 +1981,46 @@ async def test_running_container_seed_failure_is_swallowed_and_metered(_stub_tri
     ):
         await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
     mock_metric.assert_any_call("paperclip.seed.error")
+
+
+@pytest.mark.asyncio
+async def test_metronome_provisioning_runs_even_when_the_gate_is_up(
+    _mock_ensure_metronome_customer, _stub_trial_default
+):
+    """Provisioning must happen BEFORE the gate, not behind it.
+
+    The credits gate fails closed on a missing ledger, and this call is what
+    creates the ledger. While it sat below the `if gate is not None: return`,
+    the two formed a deadlock: no ledger -> gate returns credits_required ->
+    ensure_user_ready returns early -> provisioning never runs -> still no
+    ledger, identically on every poll, with no self-heal. A gate that DEPENDS
+    on this having run cannot also guard it.
+
+    Asserting it is awaited on the GATED path is the whole point — the
+    pre-existing test only covers the gate-clear path, which passed either way.
+    """
+    gate = MagicMock()
+    gate.code = "credits_required"
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=gate)),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_personal_auth("user_p", "p@example.com"))
+
+    _mock_ensure_metronome_customer.assert_awaited_once_with(owner_id="user_p")
+
+
+@pytest.mark.asyncio
+async def test_org_members_never_provision_a_metronome_customer(_mock_ensure_metronome_customer, _stub_trial_default):
+    """The org's ledger belongs to the org owner_id and an ADMIN poll creates
+    it. A member polling must not mint a second customer keyed to the org."""
+    gate = MagicMock()
+    gate.code = "credits_required"
+    with (
+        patch("core.services.user_provision.evaluate_provision_gate", new=AsyncMock(return_value=gate)),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.user_provision.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        await ensure_user_ready(_org_member_auth())
+
+    _mock_ensure_metronome_customer.assert_not_awaited()

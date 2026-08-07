@@ -198,10 +198,74 @@ test("paid reserve: zero balance → 429 credit_exhausted", async () => {
     (e) => e.code === "credit_exhausted"
   );
 });
-test("paid reserve: missing fast-gate row → allowed", async () => {
+test("paid reserve: missing fast-gate row + COMPLETE ledger → allowed", async () => {
+  // The projection is written by the low-balance webhook and the backend
+  // gate's refresh, so it legitimately lags a brand-new paying owner. A real
+  // ledger backs them and the meter counts every call.
   const ddb = makeFakeDdb();
-  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: { subscription_status: { S: "active" } }, fastGateRow: null, today: TODAY, nowSec: 0 });
+  const { hold } = await reserveOrThrow({
+    ddb, env: ENV, ownerId: "u", plan: "paid",
+    billingRow: {
+      subscription_status: { S: "active" },
+      metronome_customer_id: { S: "mc-1" },
+      metronome_contract_id: { S: "ct-1" },
+    },
+    fastGateRow: null, today: TODAY, nowSec: 0,
+  });
   assert.equal(hold.paid, true);
+});
+test("paid reserve: customer WITHOUT contract → ledger_unprovisioned", async () => {
+  // The partial-provisioning state _provision persists deliberately when the
+  // Stripe link fails. No contract ⇒ no commits ⇒ no balance, and
+  // grant_prepaid_credits refuses it outright — so admitting here leaks
+  // unmetered spend in exactly the failure this fence contains.
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" } },
+      fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "ledger_unprovisioned"
+  );
+});
+test("paid reserve: no ledger at all → ledger_unprovisioned", async () => {
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" } },
+      fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "ledger_unprovisioned"
+  );
+});
+test("paid reserve: MISSING billing row → ledger_unprovisioned (weakest evidence must not be the one that passes)", async () => {
+  // resolvePlan treats an absent row as "paid". The previous guard skipped the
+  // deny when billingRow was falsy, leaving the case with no ledger
+  // information at all as the only one still admitted unmetered.
+  const ddb = makeFakeDdb();
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: undefined, fastGateRow: null, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "ledger_unprovisioned"
+  );
+});
+test("paid reserve: a DRAINED balance still reports credit_exhausted, not ledger_unprovisioned", async () => {
+  // The two conditions must stay distinguishable: one is normal business, the
+  // other is our provisioning breaking.
+  const ddb = makeFakeDdb();
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "0" } } };
+  await assert.rejects(
+    reserveOrThrow({
+      ddb, env: ENV, ownerId: "u", plan: "paid",
+      billingRow: { subscription_status: { S: "active" }, metronome_customer_id: { S: "mc-1" }, metronome_contract_id: { S: "ct-1" } },
+      fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0,
+    }),
+    (e) => e.code === "credit_exhausted"
+  );
 });
 test("paid reserve: stale hold (reserved_updated_at past TTL) is reclaimed, not accumulated", async () => {
   const ddb = makeFakeDdb();

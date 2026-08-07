@@ -2,7 +2,7 @@
 // orchestration. Budget enforcement itself lives in ledger.mjs.
 import { readS, readN } from "./ddb.mjs";
 import { trialReserve, paidReserve } from "./ledger.mjs";
-import { trialCap, trialExpired, creditExhausted } from "./errors.mjs";
+import { trialCap, trialExpired, creditExhausted, ledgerUnprovisioned } from "./errors.mjs";
 
 export const resolvePlan = (billingRow) =>
   readS(billingRow?.subscription_status) === "trial_local" ? "trial" : "paid";
@@ -56,7 +56,10 @@ export async function reserveOrThrow({ ddb, env, ownerId, plan, billingRow, fast
     if (!r.ok) throw trialCap();
     return { hold: { ...r.hold, plan: "trial" } };
   }
-  const r = await paidReserve(ddb, env, ownerId, estimate, fastGateRow);
-  if (!r.ok) throw creditExhausted();
+  const r = await paidReserve(ddb, env, ownerId, estimate, fastGateRow, billingRow);
+  // "No ledger provisioned" and "balance drained" are both 429s to the caller
+  // but opposite operational conditions — the first is our bug, the second is
+  // normal business. Distinct codes so the metric distinguishes them.
+  if (!r.ok) throw r.unprovisioned ? ledgerUnprovisioned() : creditExhausted();
   return { hold: { ...r.hold, plan: "paid" } };
 }

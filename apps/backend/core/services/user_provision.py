@@ -141,6 +141,35 @@ async def ensure_user_ready(auth: AuthContext) -> None:
     # calls the SAME helper before its own gate.
     await ensure_personal_trial_default(auth, owner_id)
 
+    # Metronome customer lifecycle, BEFORE the gate — not after it.
+    #
+    # This used to sit ~50 lines below, past the ``if gate is not None: return``.
+    # That ordering is a deadlock the moment the credits gate fails closed on a
+    # missing ledger: no ledger => gate returns credits_required => this
+    # function returns early => provisioning never runs => still no ledger.
+    # Every subsequent poll repeats it identically, so the owner's container is
+    # never provisioned and nothing self-heals. The gate DEPENDS on this having
+    # run, so it cannot also guard it.
+    #
+    # Safe to hoist: ``ensure_metronome_customer`` owns its own preconditions —
+    # it short-circuits trial_local owners (who must never get a ledger) and
+    # raises when no billing row exists, which the except below swallows. So a
+    # gated-for-any-other-reason owner (no subscription, pending invitation)
+    # costs one DDB read and no Metronome traffic. Org members never run it:
+    # the org's customer belongs to the org owner_id and an admin poll creates
+    # it. Best-effort — a Metronome outage must never block provisioning; the
+    # next poll retries, and the short-circuit on the persisted id makes the
+    # steady state a single read.
+    if not auth.is_org_context or auth.is_org_admin:
+        try:
+            await ensure_metronome_customer(owner_id=owner_id)
+        except Exception:
+            put_metric("metronome.provision.error")
+            logger.exception(
+                "Metronome customer provisioning failed for owner %s — will retry on next status poll",
+                owner_id,
+            )
+
     # The gate check uses the same predicate as /container/status so
     # the helper and the endpoint can never disagree.
     gate = await evaluate_provision_gate(
@@ -184,24 +213,6 @@ async def ensure_user_ready(auth: AuthContext) -> None:
             gate.code,
         )
         return
-
-    # Metronome customer lifecycle rides the owner path: once the gate
-    # clears, the billing row (Stripe customer + active subscription) exists,
-    # which is all ensure_metronome_customer needs. Best-effort — a Metronome
-    # outage must never block provisioning. The short-circuit keys on the
-    # persisted metronome_customer_id, so the next /container/status poll
-    # simply retries until it lands. Org members never run this: the org's
-    # Metronome customer belongs to the org owner_id and an admin poll
-    # creates it.
-    if not auth.is_org_context or auth.is_org_admin:
-        try:
-            await ensure_metronome_customer(owner_id=owner_id)
-        except Exception:
-            put_metric("metronome.provision.error")
-            logger.exception(
-                "Metronome customer provisioning failed for owner %s — will retry on next status poll",
-                owner_id,
-            )
 
     # Paperclip (Teams) seed is a SEPARATE concern from the container (ECS)
     # dispatch below. A seed/join failure must NOT abort provisioning: the box

@@ -260,3 +260,41 @@ async def test_usage_path_never_writes_the_cap_counter(session_key):
 
     record_mock.assert_awaited_once()  # analytics still recorded
     add_mock.assert_not_awaited()  # but nothing lands on the cap counter
+
+
+@pytest.mark.asyncio
+async def test_trial_owner_under_cap_never_reaches_the_credits_layer():
+    """A trial owner under the cap is ADMITTED, and Layer 3 is never consulted.
+
+    This is the free-tier lockout guard. `/billing/trial-checkout` writes
+    provider_choice="bedrock_claude" SYNCHRONOUSLY before redirecting to
+    Stripe, so anyone who opens Checkout and closes the tab keeps that value
+    while staying trial_local. Trial owners are deliberately never given a
+    Metronome ledger (ensure_metronome_customer short-circuits them), so if
+    Layer 2 fell through, the now-fail-closed credits layer would find no
+    ledger and block them out of a fully-funded free tier — permanently, since
+    the midnight cap reset does not clear a credits verdict.
+
+    Asserting `is_owner_blocked` is NEVER AWAITED is the point: a return value
+    assertion alone would still pass if the layer ran and happened to admit.
+    """
+    pool = GatewayConnectionPool(management_api=None)
+    blocked_mock = AsyncMock(return_value=True)  # would block if ever consulted
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(
+                return_value={
+                    "subscription_status": "trial_local",
+                    # The abandoned-checkout residue.
+                    "provider_choice": "bedrock_claude",
+                }
+            ),
+        ),
+        patch("core.services.trial_cap.reason_for_account", new=AsyncMock(return_value=None)),
+        patch("core.services.metronome_gate.is_owner_blocked", new=blocked_mock),
+    ):
+        gate = await pool.gate_chat(user_id="u", owner_id="u", session_key="sk1")
+
+    assert gate["blocked"] is False
+    blocked_mock.assert_not_awaited()

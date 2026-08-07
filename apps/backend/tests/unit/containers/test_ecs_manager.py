@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from core.billing import bedrock_gate_tokens as _bedrock_gate_tokens_module
 from core.repositories import container_repo as _container_repo_module
 from core.containers.ecs_manager import (
     START_REFUSED_CAP,
@@ -37,6 +38,7 @@ _TEST_AIP_ARNS = {
 _REAL_LEASED = _container_repo_module.update_container_leased
 _REAL_TAKEOVER = _container_repo_module.takeover_provision
 _REAL_GET_BY_OWNER = _container_repo_module.get_by_owner_id
+_REAL_PERSIST_HASH = _bedrock_gate_tokens_module.persist_gate_token_hash
 
 
 @pytest.fixture(autouse=True)
@@ -3856,8 +3858,11 @@ class TestProvisionLeaseFencing:
                 return row
 
             monkeypatch.setattr("core.repositories.container_repo.upsert", upsert_then_takeover)
-            persist = AsyncMock()
-            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", persist)
+            # The REAL persist: with the hash DIFFERING from the row's, its swap
+            # runs and its own lease clause is what refuses. (The sibling test
+            # covers the other branch, where the hash already matches and the
+            # swap never runs.)
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", _REAL_PERSIST_HASH)
             access_point = MagicMock(return_value="fsap-x")
             task_def = MagicMock(return_value="arn:task-def")
             monkeypatch.setattr(manager, "_create_access_point", access_point)
@@ -3869,13 +3874,87 @@ class TestProvisionLeaseFencing:
                     "user_race", "gw-token", claim_id=claim, bedrock_gate_token_hash="hash_loser"
                 )
 
-            persist.assert_not_awaited()
             access_point.assert_not_called()
             task_def.assert_not_called()
             manager._ecs.create_service.assert_not_called()
-            # The winner still holds the lease, untouched by the loser.
+            # The winner still holds the lease, and the loser's hash never
+            # reached the row — the swap refused it.
             row = await container_repo.get_by_owner_id("user_race")
             assert row["provision_claim_id"] == state["winner"] != claim
+            assert "bedrock_gate_token_hash" not in row
+
+    @pytest.mark.asyncio
+    async def test_takeover_during_persist_is_caught_when_the_hash_is_already_current(self, manager, monkeypatch):
+        """The gap the swap's own lease clause cannot see.
+
+        persist_gate_token_hash short-circuits when the row already points at
+        this run's hash — the ordinary case, since mint_gate_token's own swap
+        usually landed it. That fast path writes NOTHING, so the lease clause
+        added to the swap never runs, and a takeover landing between the last
+        checkpoint and it went undetected all the way into _create_access_point
+        and _register_task_definition.
+
+        The fix is not a second lease check inside persist (it has nothing to
+        validate — it writes nothing); it is that the checkpoint sits AFTER
+        persist, at the last moment before the first call that cannot carry a
+        condition of its own.
+        """
+        import boto3
+        from moto import mock_aws
+
+        from core.repositories import container_repo
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with mock_aws():
+            ddb = boto3.resource("dynamodb", region_name="us-east-1")
+            ddb.create_table(
+                TableName="test-containers",
+                KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+            monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
+            monkeypatch.setattr("core.dynamodb._dynamodb_resource", ddb)
+            monkeypatch.setattr("core.repositories.container_repo.update_container_leased", _REAL_LEASED)
+            monkeypatch.setattr("core.repositories.container_repo.takeover_provision", _REAL_TAKEOVER)
+            monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _REAL_GET_BY_OWNER)
+
+            claim = await container_repo.try_claim_provision("user_fast", claim_id="claim-loser")
+            # The row ALREADY points at this run's hash, so persist will
+            # short-circuit — the branch the swap's lease clause cannot reach.
+            await container_repo.swap_gate_token_hash(
+                "user_fast", new_hash="hash_same", superseded=[], expected_prior_hash=None
+            )
+
+            state: dict = {}
+
+            async def takeover_then_persist(owner_id, token_hash, **kw):
+                # A deliberate door takes the lease over AFTER the upsert (and
+                # after where the checkpoint used to sit), then the REAL persist
+                # runs and writes nothing.
+                state["winner"] = await container_repo.takeover_provision(owner_id)
+                return await _REAL_PERSIST_HASH(owner_id, token_hash, **kw)
+
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", takeover_then_persist)
+            access_point = MagicMock(return_value="fsap-x")
+            task_def = MagicMock(return_value="arn:task-def")
+            monkeypatch.setattr(manager, "_create_access_point", access_point)
+            monkeypatch.setattr(manager, "_register_task_definition", task_def)
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.create_user_service(
+                    "user_fast", "gw-token", claim_id=claim, bedrock_gate_token_hash="hash_same"
+                )
+
+            assert state["winner"] != claim
+            access_point.assert_not_called()
+            task_def.assert_not_called()
+            manager._ecs.create_service.assert_not_called()
+            # The fast path wrote nothing, so the pointer is untouched.
+            row = await container_repo.get_by_owner_id("user_fast")
+            assert row["bedrock_gate_token_hash"] == "hash_same"
+            assert row["provision_claim_id"] == state["winner"]
 
     @pytest.mark.asyncio
     async def test_no_takeover_runs_straight_through_to_create_service(self, manager, monkeypatch):

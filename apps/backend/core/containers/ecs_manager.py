@@ -904,17 +904,6 @@ class EcsManager:
             await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
         await container_repo.upsert(user_id, upsert_fields)
 
-        # CHECKPOINT after the row write: the upsert only detects a takeover
-        # that lands inside its own read-to-write window (its CAS raises
-        # ProvisionSuperseded then). One landing after its put COMPLETES is
-        # invisible to it, and the EFS access point and task-definition
-        # revision below are AWS calls that cannot carry a condition — a
-        # checkpoint is the only fence they can have. (The gate-pointer swap
-        # between here and them needs no checkpoint: it carries the lease in
-        # its own ConditionExpression.)
-        if claim_id is not None:
-            await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
-
         # The bedrock-gate token hash is NOT folded into that upsert. It moves
         # only through container_repo.swap_gate_token_hash — one atomic writer —
         # because the whole-item put has a read-to-write window a concurrent
@@ -923,16 +912,29 @@ class EcsManager:
         # this re-asserts it for the case where the row did not exist yet, now
         # that the upsert above has created it. Placed HERE, before the task
         # definition carrying the plaintext is registered, so no task can ever
-        # start holding a token the row does not know about. It carries the
-        # lease in its own condition, so a takeover landing after the checkpoint
-        # above is refused by the write itself (ProvisionSuperseded) rather than
-        # pointing the row at this run's now-dead token.
+        # start holding a token the row does not know about. It needs no
+        # checkpoint in front of it: when it writes, it carries the lease in its
+        # own condition and refuses a superseded run atomically; when it does
+        # not write (the row already points at this hash) there is nothing to
+        # fence — the checkpoint below catches that run before any artifact.
         if bedrock_gate_token_hash:
             from core.billing.bedrock_gate_tokens import persist_gate_token_hash
 
             await persist_gate_token_hash(
                 user_id, bedrock_gate_token_hash, claim_id=claim_id, attempt_token=attempt_token
             )
+
+        # CHECKPOINT at the last moment before the first thing that CANNOT carry
+        # a condition. Everything above here is a conditional DynamoDB write
+        # that fences itself; the EFS access point and the task-definition
+        # revision below are AWS calls with no such option, so this is the only
+        # fence they can have. Deliberately AFTER the swap rather than before:
+        # the swap's no-op branch writes nothing and so needs no guard, and
+        # guarding it there would leave the branch that matters — a superseded
+        # run whose hash is already current — sailing straight into the artifact
+        # calls, which is exactly the window this closes.
+        if claim_id is not None:
+            await self._provision_checkpoint(user_id, claim_id, attempt_token=attempt_token)
 
         try:
             # Step 1: Create per-user EFS access point

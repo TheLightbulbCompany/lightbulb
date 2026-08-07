@@ -21,7 +21,7 @@ Friday's claimed key (see ``core/services/paperclip_adapter_config.py:107``).
 This script re-runs ``ensure_operator_device_paired`` against EXISTING agents
 and then INDEPENDENTLY VERIFIES the repair -- never trusting "it returned" as
 "it worked", because the primitive swallows every failure. Verification reads
-two things back, both sourced fresh (never reused from before the repair):
+three things back, all sourced fresh (never reused from before the repair):
 
 1. The container's own device trust list (``device.pair.list``, admin-signed,
    fully read-only -- it creates no pending request) -- proves the device
@@ -31,6 +31,12 @@ two things back, both sourced fresh (never reused from before the repair):
    ``claimedApiKeyPath``, and ``authToken`` (== the container's gateway_token)
    actually landed in Paperclip, not just in the PATCH body the pairing
    function *tried* to send.
+3. A direct EFS read of the file ``claimedApiKeyPath`` points at -- proves the
+   identity-staging sub-step actually produced a usable credentials file, not
+   just that the config string naming it is correct. This does NOT catch a
+   pre-existing file left STALE by ``write_file_if_missing``'s write-once
+   semantics (see ``_verify_staged_identity``'s docstring) -- an ``OK`` here
+   means "well-formed file present," not "token guaranteed live."
 
 Every sub-step of ``ensure_operator_device_paired`` is idempotent (see its
 docstring), so running this against an already-healthy agent is a no-op, and
@@ -82,6 +88,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -123,13 +130,15 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
     import httpx
 
     from core.config import settings
-    from core.containers import get_ecs_manager
+    from core.containers import get_ecs_manager, get_workspace
+    from core.containers.workspace import WorkspaceError
     from core.crypto.operator_device import device_identity_from_pem
     from core.gateway.operator_rpc import gateway_rpc_oneshot
     from core.repositories import container_repo
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.paperclip_adapter_config import (
         OPENCLAW_GATEWAY_TYPE,
+        claimed_api_key_path,
         desired_agent_adapter_fields,
     )
     from core.services.paperclip_admin_client import PaperclipAdminClient
@@ -157,6 +166,53 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
         return 1
 
     http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    workspace = get_workspace()
+
+    def _verify_staged_identity(agent_id: str) -> str:
+        """Read back the staged Paperclip identity file and classify it.
+
+        The primitive's ``claimedApiKeyPath`` bookkeeping (checked by
+        ``_needs_repair`` above) only proves the CONFIG STRING is right --
+        not that the file it points at exists or has usable credentials.
+        This reads the actual EFS artifact the container consumes, resolved
+        the same way ``stage_paperclip_identity_for_agent`` writes it (see
+        ``core/services/friday_identity.py``): ``claimed_api_key_path``
+        returns the in-container path
+        (``~/.openclaw/workspace-{id}/paperclip-claimed-api-key.json``); the
+        backend's per-owner workspace root IS that same ``~/.openclaw`` dir
+        (see ``container-stack.ts`` HOME/EFS mount), so stripping the prefix
+        gives the workspace-relative path ``Workspace.read_file`` expects.
+
+        Returns "ok", "missing" (no such file), or "incomplete" (file exists
+        but isn't parseable JSON, is missing a required field, or names the
+        wrong agent -- never invents a schema beyond what the staging code
+        writes: ``token`` / ``agentId`` / ``companyId`` / ``apiUrl``).
+
+        Does NOT detect a STALE pre-existing token: ``write_file_if_missing``
+        never overwrites a file that already exists, so a file staged before
+        a key rotation reads back "ok" here even though its token may be
+        dead. Distinguishing that cheaply would need an extra Secrets
+        Manager round trip per agent to fetch the current canonical token;
+        this script does not attempt it -- treat "ok" as "the file is
+        present and well-formed," not "the token is guaranteed live."
+        """
+        rel_path = claimed_api_key_path(agent_id).removeprefix("~/.openclaw/")
+        try:
+            raw = workspace.read_file(owner_id, rel_path)
+        except WorkspaceError:
+            return "missing"
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return "incomplete"
+        if not isinstance(data, dict):
+            return "incomplete"
+        required = ("token", "agentId", "companyId", "apiUrl")
+        if any(not isinstance(data.get(f), str) or not data.get(f) for f in required):
+            return "incomplete"
+        if data.get("agentId") != agent_id:
+            return "incomplete"
+        return "ok"
 
     async def _fetch_agents() -> dict[str, dict]:
         # Fresh, unredacted fetch every time this is called -- never reuse a
@@ -234,7 +290,12 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
 
             desired = desired_agent_adapter_fields(agent_id=aid, gateway_token=gateway_token)
             drift_before = _needs_repair(cfg, desired=desired)
-            device_id = device_identity_from_pem(pem).device_id
+            try:
+                device_id = device_identity_from_pem(pem).device_id
+            except Exception as e:  # noqa: BLE001 -- match ensure_operator_device_paired's own guard
+                n_err += 1
+                print(f"  ERR  {aid} ({name}): bad device PEM -- {e}")
+                continue
             trusted_before = device_id in trusted
             # Never print token/PEM material -- key names + booleans only.
             print(
@@ -260,15 +321,21 @@ async def main(*, env: str, owner_id: str, agent_ids: list[str], apply: bool) ->
             after_cfg = after_agent.get("adapterConfig") or {}
             drift_after = _needs_repair(after_cfg, desired=desired)
             trusted_after = device_id in (await _trusted_device_ids())
+            identity_status = _verify_staged_identity(aid)
 
-            if not drift_after and trusted_after:
+            if not drift_after and trusted_after and identity_status == "ok":
                 n_ok += 1
-                print(f"  OK   {aid} ({name}): device trusted + adapterConfig bound")
+                print(f"  OK   {aid} ({name}): device trusted + adapterConfig bound + identity file staged")
             else:
                 n_err += 1
+                identity_reason = {
+                    "missing": "identity file missing",
+                    "incomplete": "identity file present but incomplete",
+                }.get(identity_status)
+                extra = f" identity={identity_reason}" if identity_reason else ""
                 print(
-                    f"  ERR  {aid} ({name}): trusted={trusted_after} remaining_adapter_drift={drift_after or 'none'} "
-                    "-- see CloudWatch for the swallowed warning from ensure_operator_device_paired"
+                    f"  ERR  {aid} ({name}): trusted={trusted_after} remaining_adapter_drift={drift_after or 'none'}"
+                    f"{extra} -- see CloudWatch for the swallowed warning from ensure_operator_device_paired"
                 )
 
         print(f"[{env}] Done: repaired={n_ok} skipped={n_skip} failed={n_err}")

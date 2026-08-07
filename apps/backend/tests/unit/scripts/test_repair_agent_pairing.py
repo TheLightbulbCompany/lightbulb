@@ -9,16 +9,52 @@ auto-selection finds exactly the drifted agents, and that dry-run never
 mutates anything.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import scripts.repair_agent_pairing as mod
+from core.containers.workspace import WorkspaceError
 from core.crypto.operator_device import generate_operator_device, private_key_pem
 from core.services.paperclip_adapter_config import claimed_api_key_path
 
 GW_TOKEN = "gw-tok"
 OWNER = "org_x"
+
+
+def _identity_json(agent_id, *, token="ppk-tok", company_id="co1", api_url="http://paperclip.internal"):
+    return json.dumps({"token": token, "agentId": agent_id, "companyId": company_id, "apiUrl": api_url})
+
+
+def _fake_workspace(*, missing: set[str] | None = None, overrides: dict[str, str] | None = None):
+    """A ``get_workspace()`` stand-in for ``Workspace.read_file``.
+
+    By default every path reads back a well-formed identity file for
+    whatever agent_id the ``workspace-{id}/...`` path names -- so every
+    existing "repair succeeded" test gets a healthy identity file for free
+    and only tests that care about the identity-verification failure modes
+    need to pass ``missing``/``overrides``.
+    """
+    missing = missing or set()
+    overrides = overrides or {}
+
+    def _read_file(owner_id, path):
+        if path in missing:
+            raise WorkspaceError(f"File not found: {path!r}", user_id=owner_id)
+        if path in overrides:
+            return overrides[path]
+        agent_id = path.split("/", 1)[0].removeprefix("workspace-")
+        return _identity_json(agent_id)
+
+    ws = MagicMock()
+    ws.read_file = MagicMock(side_effect=_read_file)
+    return ws
+
+
+def _identity_path(agent_id: str) -> str:
+    """Workspace-relative path matching what ``_verify_staged_identity`` reads."""
+    return claimed_api_key_path(agent_id).removeprefix("~/.openclaw/")
 
 
 def _agent(
@@ -50,6 +86,7 @@ def _patches(
     trusted_by_call,
     ensure_paired_mock=None,
     ip="10.0.0.5",
+    workspace=None,
 ):
     """Patch every collaborator ``main`` lazy-imports.
 
@@ -63,6 +100,11 @@ def _patches(
 
     ``ip``: what Cloud Map "discovers" for this owner's task. ``None``
     simulates no reachable running task.
+
+    ``workspace``: what ``get_workspace()`` returns for the identity-file
+    verification read. Defaults to ``_fake_workspace()`` (every agent reads
+    back a healthy identity file) so tests that don't care about this axis
+    don't have to think about it.
     """
     fetch_mock = AsyncMock(side_effect=[list(a.values()) for a in agents_by_fetch])
     rpc_mock = AsyncMock(side_effect=[{"paired": [{"deviceId": d} for d in s]} for s in trusted_by_call])
@@ -72,6 +114,7 @@ def _patches(
     cms = [
         patch("core.repositories.container_repo.get_by_owner_id", AsyncMock(return_value=container)),
         patch("core.containers.get_ecs_manager", MagicMock(return_value=ecs_manager)),
+        patch("core.containers.get_workspace", MagicMock(return_value=workspace or _fake_workspace())),
         patch("core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner", fetch_mock),
         patch("core.gateway.operator_rpc.gateway_rpc_oneshot", rpc_mock),
         patch(
@@ -321,6 +364,91 @@ async def test_apply_reports_err_when_device_still_not_trusted_after_repair():
         _stop(cms)
 
     assert rc == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_reports_err_when_identity_file_missing_despite_correct_adapter_config():
+    """The P1 regression: adapterConfig.claimedApiKeyPath is already correct
+    and the device ends up trusted, but the file that path names was never
+    actually staged on EFS. The old success check (drift + trust only) would
+    report OK here -- it must now report ERR, because nothing has verified
+    the file the agent will actually try to read at wake exists."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+
+    ws = _fake_workspace(missing={_identity_path("a1")})
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}, {"a1": healthy}],
+        trusted_by_call=[set(), {ident.device_id}],
+        workspace=ws,
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=True)
+    finally:
+        _stop(cms)
+
+    assert rc == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_reports_err_when_identity_file_present_but_incomplete():
+    """Same shape, but the file exists and is JSON -- just missing a
+    required field (e.g. a partial write). Must still be ERR, not OK."""
+    ident = generate_operator_device()
+    healthy = _healthy_agent("a1", private_key_pem(ident))
+
+    ws = _fake_workspace(overrides={_identity_path("a1"): json.dumps({"agentId": "a1", "token": ""})})
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        agents_by_fetch=[{"a1": healthy}, {"a1": healthy}],
+        trusted_by_call=[set(), {ident.device_id}],
+        workspace=ws,
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["a1"], apply=True)
+    finally:
+        _stop(cms)
+
+    assert rc == 1
+
+
+# --------------------------------------------------------------------------- #
+# Malformed PEM: one bad agent must not abort the batch
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_malformed_pem_records_error_and_continues_batch():
+    """A nonempty but malformed devicePrivateKeyPem on one target must not
+    raise and abort the run -- it's recorded as ERR for that agent, and the
+    remaining targets are still processed (and can still succeed)."""
+    ident = generate_operator_device()
+    bad = _agent("bad1", pem="not-a-real-pem", auth_token="stale")
+    broken_good = _agent("good1", pem=private_key_pem(ident), auth_token="stale")
+    fixed_good = _healthy_agent("good1", private_key_pem(ident))
+
+    cms, fetch_mock, rpc_mock = _patches(
+        container={"service_name": "svc", "gateway_token": GW_TOKEN},
+        # Up-front fetch sees both broken. bad1 errors out before any
+        # per-agent re-fetch, so the only post-repair re-fetch is good1's.
+        agents_by_fetch=[{"bad1": bad, "good1": broken_good}, {"bad1": bad, "good1": fixed_good}],
+        trusted_by_call=[set(), {ident.device_id}],
+    )
+    _start(cms)
+    try:
+        rc = await mod.main(env="prod", owner_id=OWNER, agent_ids=["bad1", "good1"], apply=True)
+    finally:
+        _stop(cms)
+
+    # bad1 failed -> batch overall reports failure, but it did NOT abort:
+    # good1 was still processed through to a successful repair (proven by
+    # the second fetch/RPC round trip actually happening).
+    assert rc == 1
+    assert fetch_mock.await_count == 2
+    assert rpc_mock.await_count == 2
 
 
 # --------------------------------------------------------------------------- #

@@ -34,6 +34,15 @@ It intentionally skips the node-host machinery (cli/mac device buckets,
 exec/execNode session pinning, ``node_status`` UI broadcasts, ref-counted
 ``tools`` config patching): a Paperclip operator is a headless agent runner,
 not a user's local tool host.
+
+If the container rejects the handshake with ``NOT_PAIRED`` (the adapter's
+operator device is not in the container's trust store — the trust store is
+only seeded from ``paired.json`` at gateway process start, and a paid
+always-on container never restarts on its own, so this is otherwise a
+permanent break), ``handle_operator_connect`` approves the pending device
+right there via ``approve_pending_device_from_rejection`` and lets it go.
+It does NOT re-drive the connect inline — the adapter has its own reconnect
+loop, and the next attempt lands paired.
 """
 
 import asyncio
@@ -42,6 +51,7 @@ import logging
 from core.containers import get_ecs_manager
 from core.gateway.node_connection import NodeUpstreamConnection
 from core.observability.metrics import put_metric
+from core.services.paperclip_openclaw_pairing import approve_pending_device_from_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +161,40 @@ async def handle_operator_connect(
         # mismatch, dead container). This is the connect-time counterpart to
         # operator.upstream.closed.
         put_metric("operator.connect.failed")
+
+        # Self-heal: a NOT_PAIRED rejection means the adapter's operator
+        # device isn't in the container's trust store -- durably, because the
+        # trust store is only seeded from paired.json at gateway process
+        # start and a paid always-on container never restarts on its own.
+        # Approve the pending device right here so the adapter's OWN
+        # reconnect loop (not us -- see the module docstring, this relay
+        # never re-drives a connect inline) lands paired next time. Every
+        # other rejection code (bad signature, AUTH_FAILED/lockout, protocol
+        # mismatch) is left alone -- retrying an auth failure only feeds the
+        # gateway's 10-failed-auths-in-60s lockout.
+        rejection = upstream.rejection_error
+        if isinstance(rejection, dict) and rejection.get("code") == "NOT_PAIRED":
+            details = rejection.get("details")
+            if not isinstance(details, dict):
+                details = {}
+            request_id = details.get("requestId")
+            logger.warning(
+                "Operator relay connect NOT_PAIRED for owner=%s conn=%s device=%s -- attempting self-heal approval",
+                owner_id,
+                connection_id,
+                (upstream.device_id or "?")[:16] if upstream.device_id else "?",
+            )
+            healed = await approve_pending_device_from_rejection(
+                owner_id=owner_id,
+                ip=ip,
+                gateway_token=container["gateway_token"],
+                device_id=upstream.device_id,
+                request_id=request_id if isinstance(request_id, str) and request_id else None,
+            )
+            put_metric(
+                "operator.connect.not_paired_selfheal" if healed else "operator.connect.not_paired_selfheal_failed"
+            )
+
         try:
             await upstream.close()
         except Exception:

@@ -183,6 +183,82 @@ async def test_connect_raises_on_upstream_rejection(monkeypatch, mock_ws):
     assert rejections[0]["error"]["message"] == "bad signature"
 
 
+async def test_device_id_and_rejection_error_populated_on_not_paired_rejection(monkeypatch, mock_ws):
+    """Regression guard for the moved assignment: device_id must be populated
+    from the client's own signed connect BEFORE a NOT_PAIRED rejection can
+    raise, since a self-heal caller needs it to approve the pending pairing
+    request. Also pins that the structured rejection error (code + details)
+    is captured on the connection object rather than only living inside the
+    raised RuntimeError's (500-char-truncated) message string."""
+    from core.gateway import node_connection
+
+    mock_ws.recv = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "type": "event",
+                    "event": "connect.challenge",
+                    "payload": {"nonce": "n"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "res",
+                    "id": "x",
+                    "ok": False,
+                    "error": {
+                        "code": "NOT_PAIRED",
+                        "message": "device not paired",
+                        "details": {"requestId": "req-42", "deviceId": "dev_rejected"},
+                    },
+                }
+            ),
+        ]
+    )
+
+    async def fake_connect(url, **kwargs):
+        return mock_ws
+
+    monkeypatch.setattr(node_connection, "ws_connect", fake_connect)
+
+    conn = node_connection.NodeUpstreamConnection(
+        user_id="u",
+        owner_id="o",
+        container_ip="10.0.0.1",
+        node_connect_params={},
+        gateway_token="t",
+    )
+    conn.set_client_push_callback(AsyncMock())
+
+    async def signer():
+        await asyncio.sleep(0.01)
+        conn.submit_signed_connect(
+            {
+                "type": "req",
+                "id": "x",
+                "method": "connect",
+                "params": {"device": {"id": "dev_rejected"}},
+            }
+        )
+
+    asyncio.create_task(signer())
+
+    with pytest.raises(RuntimeError):
+        await conn.connect()
+
+    # device_id is set from the client's own signed connect, not derived from
+    # the container's rejection payload -- and it survives the raise.
+    assert conn.device_id == "dev_rejected"
+    # The structured error is exposed for a caller to act on (e.g. self-heal
+    # the pairing), independent of the truncated JSON string embedded in the
+    # RuntimeError message.
+    assert conn.rejection_error == {
+        "code": "NOT_PAIRED",
+        "message": "device not paired",
+        "details": {"requestId": "req-42", "deviceId": "dev_rejected"},
+    }
+
+
 async def test_submit_signed_connect_idempotent_when_future_done():
     """Calling submit_signed_connect after the future resolves is a no-op."""
     from core.gateway import node_connection

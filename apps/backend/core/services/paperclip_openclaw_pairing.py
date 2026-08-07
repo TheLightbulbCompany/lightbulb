@@ -32,6 +32,7 @@ import websockets
 
 from core.gateway.operator_rpc import (
     GATEWAY_PORT,
+    GatewayConnectAuthError,
     GatewayConnectNotPairedError,
     gateway_rpc_oneshot,
     perform_signed_connect,
@@ -438,6 +439,95 @@ async def _approve_pairing_request(
             if not fresh or fresh == request_id:
                 raise
             request_id = fresh
+
+
+async def approve_pending_device_from_rejection(
+    *,
+    owner_id: str,
+    ip: str,
+    gateway_token: str,
+    device_id: str | None,
+    request_id: str | None,
+) -> bool:
+    """Self-heal a stranded operator device straight off a live NOT_PAIRED
+    rejection, so the caller's own reconnect (the Paperclip adapter's retry
+    loop) lands paired on its very next attempt.
+
+    Distinct from ``ensure_operator_device_paired``: that seam pairs a
+    freshly-created agent's device by PROBING the gateway (connecting AS the
+    device to manufacture a pending request). Here the pending request
+    already exists -- a real connect attempt was just rejected -- so there is
+    nothing to probe. Reuses the same ``_find_pending_request_id`` /
+    ``_approve_pairing_request`` primitives verbatim.
+
+    ``request_id`` -- prefer the id the rejection payload carried (avoids a
+    round trip); fall back to ``device.pair.list`` when it is absent. It can
+    also be present but STALE (the pending-request TTL is 5 minutes and the
+    adapter's own retries can have superseded it since the rejection was
+    built) -- ``_approve_pairing_request`` already re-lists and retries once
+    on an "unknown requestId" rejection, so that case is covered without this
+    helper doing anything extra.
+
+    Never raises: called from an exception handler on an already-failed
+    connect, so an approval failure here must not mask or replace the
+    original rejection. Does NOT retry on ``GatewayConnectAuthError`` -- the
+    gateway locks out after repeated failed auths (10 in 60s -> 5 minutes),
+    and this whole path already fires off a live rejection, so compounding it
+    with another failed admin auth only digs the lockout hole deeper. Returns
+    True iff an approval RPC actually landed.
+    """
+    if not device_id:
+        logger.warning(
+            "approve_pending_device_from_rejection: rejection carried no deviceId for owner=%s -- cannot self-heal",
+            owner_id,
+        )
+        return False
+
+    try:
+        resolved_request_id = request_id
+        if not resolved_request_id:
+            resolved_request_id = await _find_pending_request_id(
+                ip=ip, owner_id=owner_id, token=gateway_token, device_id=device_id
+            )
+        if not resolved_request_id:
+            logger.warning(
+                "approve_pending_device_from_rejection: no pending pairing request found for device=%s owner=%s",
+                device_id[:16],
+                owner_id,
+            )
+            return False
+        await _approve_pairing_request(
+            ip=ip,
+            owner_id=owner_id,
+            token=gateway_token,
+            device_id=device_id,
+            request_id=resolved_request_id,
+        )
+    except GatewayConnectAuthError as e:
+        logger.warning(
+            "approve_pending_device_from_rejection: admin auth failed for device=%s owner=%s -- not retrying "
+            "(gateway lockout guard): %s",
+            device_id[:16],
+            owner_id,
+            e,
+        )
+        return False
+    except Exception as e:  # noqa: BLE001 — never-raise contract; caller's reconnect loop is the real recovery
+        logger.warning(
+            "approve_pending_device_from_rejection: self-heal approval failed for device=%s owner=%s: %s",
+            device_id[:16],
+            owner_id,
+            e,
+        )
+        return False
+
+    logger.info(
+        "approve_pending_device_from_rejection: self-healed NOT_PAIRED device=%s owner=%s request=%s",
+        device_id[:16],
+        owner_id,
+        resolved_request_id,
+    )
+    return True
 
 
 async def ensure_operator_device_paired(

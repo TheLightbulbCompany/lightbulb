@@ -134,6 +134,75 @@ async def test_connect_rolls_back_on_handshake_failure(mock_ecs, mock_upstream):
 
 
 @pytest.mark.asyncio
+async def test_not_paired_rejection_triggers_self_heal_approval(mock_ecs, mock_upstream):
+    """A NOT_PAIRED rejection on connect() triggers a self-heal approval
+    attempt against the requestId parsed from the container's rejection
+    payload -- the highest-leverage fix in the plan (the adapter's own
+    reconnect then lands paired)."""
+    mgmt = MagicMock()
+    mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected: NOT_PAIRED"))
+    mock_upstream.device_id = "dev_stranded"
+    mock_upstream.rejection_error = {
+        "code": "NOT_PAIRED",
+        "message": "device not paired",
+        "details": {"requestId": "req-99", "deviceId": "dev_stranded"},
+    }
+
+    with patch(
+        "core.services.operator_proxy.approve_pending_device_from_rejection",
+        new_callable=AsyncMock,
+    ) as heal:
+        heal.return_value = True
+        with pytest.raises(RuntimeError, match="NOT_PAIRED"):
+            await handle_operator_connect(
+                owner_id="owner_x",
+                user_id="owner_x",
+                connection_id="conn_notpaired",
+                connect_params={},
+                management_api=mgmt,
+            )
+
+    heal.assert_awaited_once()
+    kwargs = heal.await_args.kwargs
+    assert kwargs["owner_id"] == "owner_x"
+    assert kwargs["ip"] == "10.0.1.7"  # from mock_ecs.resolve_running_container
+    assert kwargs["gateway_token"] == "tok123"  # from mock_ecs's container row
+    assert kwargs["device_id"] == "dev_stranded"
+    assert kwargs["request_id"] == "req-99"
+    # The original failure still propagates and the upstream is still rolled
+    # back -- self-healing accelerates the NEXT connect, it does not turn
+    # this one into a success.
+    assert is_operator_connection("conn_notpaired") is False
+
+
+@pytest.mark.asyncio
+async def test_non_not_paired_rejection_does_not_trigger_self_heal(mock_ecs, mock_upstream):
+    """A rejection that is NOT NOT_PAIRED (e.g. an auth failure / token
+    mismatch) must NOT trigger an approval attempt -- this is the lockout
+    guard: the gateway locks out after 10 failed auths in 60s, and blindly
+    approving on every rejection would retry into that lockout."""
+    mgmt = MagicMock()
+    mock_upstream.connect = AsyncMock(side_effect=RuntimeError("Node handshake rejected: AUTH_FAILED"))
+    mock_upstream.device_id = "dev_stranded"
+    mock_upstream.rejection_error = {"code": "AUTH_FAILED", "message": "bad token"}
+
+    with patch(
+        "core.services.operator_proxy.approve_pending_device_from_rejection",
+        new_callable=AsyncMock,
+    ) as heal:
+        with pytest.raises(RuntimeError, match="AUTH_FAILED"):
+            await handle_operator_connect(
+                owner_id="owner_y",
+                user_id="owner_y",
+                connection_id="conn_authfail",
+                connect_params={},
+                management_api=mgmt,
+            )
+
+    heal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_message_relays_to_upstream(mock_ecs, mock_upstream):
     """Steady-state adapter frames relay verbatim to the upstream container."""
     mgmt = MagicMock()

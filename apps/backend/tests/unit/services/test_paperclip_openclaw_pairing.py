@@ -8,6 +8,7 @@ import pytest
 from core.containers.config import build_device_paired_json
 from core.crypto.operator_device import generate_operator_device, private_key_pem
 from core.services.paperclip_openclaw_pairing import (
+    approve_pending_device_from_rejection,
     ensure_operator_device_paired,
     fetch_paperclip_agents_for_owner,
     pair_with_openclaw,
@@ -1113,3 +1114,127 @@ async def test_probe_parses_not_paired_details(monkeypatch):
 
     monkeypatch.setattr(f"{_PAIRING_MOD}.perform_signed_connect", AsyncMock(return_value={"ok": True}))
     assert await _probe_pairing_request(ip="10.0.0.9", owner_id="o", token="GW", identity=ident) == (True, None)
+
+
+# ---------------------------------------------------------------------------
+# approve_pending_device_from_rejection — self-heal off a live NOT_PAIRED
+# rejection (Task 1 of the pairing self-heal plan).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_device_from_rejection_uses_payload_request_id(monkeypatch):
+    """When the rejection payload carries a requestId, it's approved directly
+    -- no device.pair.list round trip needed."""
+    calls = []
+
+    async def _oneshot(ip, *, method, params, **kwargs):
+        calls.append((method, dict(params)))
+        return {"requestId": params["requestId"], "device": {"deviceId": "dev_stranded"}}
+
+    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+
+    healed = await approve_pending_device_from_rejection(
+        owner_id="owner_x",
+        ip="10.0.0.9",
+        gateway_token="GW_TOKEN",
+        device_id="dev_stranded",
+        request_id="req-99",
+    )
+
+    assert healed is True
+    assert calls == [("device.pair.approve", {"requestId": "req-99"})]
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_device_from_rejection_falls_back_when_request_id_missing(monkeypatch):
+    """When the rejection payload carries no requestId, the helper falls back
+    to device.pair.list to locate the pending request for the device before
+    approving it."""
+    calls = []
+
+    async def _oneshot(ip, *, method, params, **kwargs):
+        calls.append((method, dict(params)))
+        if method == "device.pair.list":
+            return {"pending": [{"deviceId": "dev_stranded", "requestId": "req-listed"}]}
+        return {"requestId": params["requestId"], "device": {"deviceId": "dev_stranded"}}
+
+    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+
+    healed = await approve_pending_device_from_rejection(
+        owner_id="owner_x",
+        ip="10.0.0.9",
+        gateway_token="GW_TOKEN",
+        device_id="dev_stranded",
+        request_id=None,
+    )
+
+    assert healed is True
+    assert calls == [
+        ("device.pair.list", {}),
+        ("device.pair.approve", {"requestId": "req-listed"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_device_from_rejection_never_raises_on_failure(monkeypatch):
+    """The helper must never raise -- it's called from an exception handler on
+    an already-failed connect, so an approval failure here must not mask or
+    replace the original rejection. five callers already depend on the same
+    never-raise contract for ensure_operator_device_paired; this is the new
+    helper's equivalent guarantee."""
+    monkeypatch.setattr(
+        f"{_PAIRING_MOD}._approve_pairing_request",
+        AsyncMock(side_effect=RuntimeError("gateway unreachable")),
+    )
+
+    healed = await approve_pending_device_from_rejection(
+        owner_id="owner_z",
+        ip="10.0.0.9",
+        gateway_token="GW_TOKEN",
+        device_id="dev_abc",
+        request_id="req-1",
+    )
+
+    assert healed is False
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_device_from_rejection_no_retry_on_auth_error(monkeypatch):
+    """A GatewayConnectAuthError (e.g. the container's admin token is stale)
+    must not be retried -- retrying an auth failure feeds the gateway's
+    10-failed-auths-in-60s lockout instead of healing anything."""
+    from core.gateway.operator_rpc import GatewayConnectAuthError
+
+    attempts = {"n": 0}
+
+    async def _oneshot(ip, *, method, params, **kwargs):
+        attempts["n"] += 1
+        raise GatewayConnectAuthError("bad admin token", code="AUTH_FAILED")
+
+    monkeypatch.setattr(f"{_PAIRING_MOD}.gateway_rpc_oneshot", _oneshot)
+
+    healed = await approve_pending_device_from_rejection(
+        owner_id="owner_z",
+        ip="10.0.0.9",
+        gateway_token="GW_TOKEN",
+        device_id="dev_abc",
+        request_id="req-1",
+    )
+
+    assert healed is False
+    assert attempts["n"] == 1  # exactly one attempt -- no retry on auth failure
+
+
+@pytest.mark.asyncio
+async def test_approve_pending_device_from_rejection_no_device_id_is_noop():
+    """No deviceId in the rejection payload -> nothing to approve; must not
+    attempt any RPC and must not raise."""
+    healed = await approve_pending_device_from_rejection(
+        owner_id="owner_z",
+        ip="10.0.0.9",
+        gateway_token="GW_TOKEN",
+        device_id=None,
+        request_id="req-1",
+    )
+    assert healed is False

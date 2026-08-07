@@ -561,14 +561,28 @@ async def test_top_up_checkout_opt_in_captures_off_session_consent(async_client,
 
 
 @pytest.mark.asyncio
-async def test_top_up_checkout_requires_lifecycle(async_client, monkeypatch):
-    """Without the Metronome lifecycle the completion webhook has nowhere to
-    grant the credits — refuse before taking money that would strand."""
+async def test_top_up_checkout_refuses_when_credits_are_unconfigured(async_client):
+    """Refuse before taking money the completion webhook could not grant.
+
+    Renamed from test_top_up_checkout_requires_lifecycle. When
+    METRONOME_LIFECYCLE_ENABLED was deleted this test kept its bare
+    `status_code == 400` assertion and kept passing — for a different reason
+    than its name claimed. A test that passes for a reason its own name
+    contradicts is worse than no test: it advertises coverage of a behaviour
+    that no longer exists.
+
+    The guard that actually fires is METRONOME_CREDITS_PRODUCT_ID being empty
+    (unset in the test settings), which `create_credit_top_up_checkout` checks
+    before minting a payable session — same money-safety intent as the deleted
+    lifecycle check, different condition. Asserting the MESSAGE, not just the
+    status, is what stops this test drifting back into passing by accident.
+    """
     resp = await async_client.post(
         "/api/v1/billing/credits/top_up_checkout",
         json={"amount_cents": 2000},
     )
     assert resp.status_code == 400
+    assert "not configured" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

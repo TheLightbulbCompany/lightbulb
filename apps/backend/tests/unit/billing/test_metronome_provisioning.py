@@ -32,7 +32,7 @@ def _billing_row(**overrides):
 
 
 @pytest.fixture(autouse=True)
-def lifecycle_enabled(monkeypatch):
+def metronome_env(monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_RATE_CARD_ID", "rc-1")
     monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 

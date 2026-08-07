@@ -14,7 +14,7 @@ from core.billing.metronome_funding import FundingError, request_top_up
 
 
 @pytest.fixture(autouse=True)
-def lifecycle_enabled(monkeypatch):
+def metronome_env(monkeypatch):
     monkeypatch.setattr("core.config.settings.METRONOME_CREDITS_PRODUCT_ID", "prod-credits")
     monkeypatch.setattr("core.config.settings.METRONOME_USD_CENTS_CREDIT_TYPE_ID", "ct-usd-cents")
 

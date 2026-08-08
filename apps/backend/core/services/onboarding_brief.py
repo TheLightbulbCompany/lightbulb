@@ -225,6 +225,29 @@ def build_onboarding_brief_text(*, path: str, user_input: str | None, detail: st
     return idea
 
 
+# Appended to BOTH kickoff paths, ahead of _CLOSING_STEPS. Research alone
+# names the right next moves and then recommends none of the connections that
+# would let the agent DO them: the first prod run on this kickoff (2026-08-08)
+# produced three backlog items that each mapped onto an integration already in
+# credentials/providers.yaml — waitlist email, social posting, payments — and
+# offered zero of them.
+#
+# The isol8 skill has a first-run rule for exactly this, but it covers only
+# `requestable` (not-yet-available) integrations, and the agent has to open the
+# skill to see it — which the 2026-07-26 run below proved she may not do. So the
+# endpoint is handed over directly, same as the email script: it is public and
+# unauthenticated, so it answers before anything is connected.
+_INTEGRATIONS_STEP = (
+    "\n\nAlong with those moves, tell me which integrations to connect. Read the "
+    "live catalog first — `curl -s $ISOL8_API_URL/api/v1/platform-info` — then "
+    "name only the ones that serve the moves you picked, say what each one "
+    "unlocks, and say what it costs me to set up (each entry's `requestable` and "
+    "`byo_required` flags tell you that — don't promise me one click without "
+    "checking them). You can't connect them yourself, so just tell me which are "
+    "worth my time."
+)
+
+
 # Appended to BOTH kickoff paths. This is what makes first contact happen at
 # all: the command is handed over directly rather than left to be discovered.
 #
@@ -268,12 +291,16 @@ def build_first_run_message(brief_text: str | None) -> str:
     """
     brief = (brief_text or "").strip()
     if not brief:
-        return FIRST_RUN_NO_BRIEF_MESSAGE + _CLOSING_STEPS
+        return FIRST_RUN_NO_BRIEF_MESSAGE + _INTEGRATIONS_STEP + _CLOSING_STEPS
     return (
-        f"I'm starting {brief}. Dig into the business and market, write it up, and put "
-        "my three best next moves in the backlog — don't start any of them yet, just "
-        "tell me which to tackle first. I'm watching."
-    ) + _CLOSING_STEPS
+        (
+            f"I'm starting {brief}. Dig into the business and market, write it up, and put "
+            "my three best next moves in the backlog — don't start any of them yet, just "
+            "tell me which to tackle first. I'm watching."
+        )
+        + _INTEGRATIONS_STEP
+        + _CLOSING_STEPS
+    )
 
 
 async def seed_goal_and_project(

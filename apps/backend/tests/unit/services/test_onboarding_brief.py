@@ -274,6 +274,40 @@ def test_staging_overwrites_a_partial_prior_attempt():
     ws.write_file_if_missing.assert_not_called()
 
 
+# --- First-run kickoff: recommend integrations -----------------------------
+#
+# Same discovery problem as the email step below. The first prod run on this
+# kickoff picked three next moves that each needed an integration already in
+# providers.yaml (waitlist email, social posting, payments) and recommended
+# none of them, because nothing in the kickoff asked and it never opened the
+# isol8 skill. The catalog endpoint is handed over directly instead.
+
+CATALOG = "/api/v1/platform-info"
+
+
+@pytest.mark.parametrize("brief", ["a coffee subscription business", None])
+def test_first_run_message_asks_for_integration_recommendations(brief):
+    from core.services.onboarding_brief import build_first_run_message
+
+    msg = build_first_run_message(brief)
+    # Both kickoff paths: the "you pick" fallback is the same product moment.
+    assert CATALOG in msg
+    assert "integrations to connect" in msg
+
+
+def test_kickoff_names_the_flags_that_gate_a_one_click_promise():
+    """`requestable` / `byo_required` decide whether a row is one click, a BYO
+    OAuth form, or an email to a human. Recommending one without reading them
+    is how the owner gets promised a click that isn't there."""
+    from core.services.onboarding_brief import build_first_run_message
+
+    msg = build_first_run_message("a coffee subscription business")
+    assert "requestable" in msg
+    assert "byo_required" in msg
+    # The user's own ask still leads; integrations come after the moves.
+    assert msg.index("coffee subscription") < msg.index(CATALOG)
+
+
 # --- First-run kickoff: name the company, then email the owner -------------
 #
 # Discovery is not enough on its own. A live prod run showed the agent asked to

@@ -321,24 +321,54 @@ describe("reduceTeamsRunEvent", () => {
 });
 
 describe("reduceTeamsActivityEvent — approvals", () => {
-  it("emits an approval action on approval.created when no teams panel is active", () => {
+  it("emits an attention action on approval.created when no teams panel is active", () => {
     expect(
       reduceTeamsActivityEvent(
         "teams.activity.logged",
         { action: "approval.created", entityType: "approval", entityId: "ap1", agentId: "pa1" },
         bgCtx,
       ),
-    ).toEqual([{ kind: "approval", key: "approval:ap1" }]);
+    ).toEqual([
+      { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval" },
+    ]);
   });
 
-  it("emits an approval action on approval.resubmitted (ball back in the user's court)", () => {
+  it("names what is being approved when details.type is a known approval type", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        { action: "approval.created", entityId: "ap1", details: { type: "hire_agent" } },
+        bgCtx,
+      ),
+    ).toEqual([
+      { kind: "attention", key: "approval:ap1", message: "An agent wants to hire a new agent" },
+    ]);
+  });
+
+  it("falls back to the generic line for an unknown or prototype-shaped type", () => {
+    for (const type of ["some_future_type", "constructor"]) {
+      expect(
+        reduceTeamsActivityEvent(
+          "teams.activity.logged",
+          { action: "approval.created", entityId: "ap1", details: { type } },
+          bgCtx,
+        ),
+      ).toEqual([
+        { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval" },
+      ]);
+    }
+  });
+
+  it("emits an attention action on approval.resubmitted (ball back in the user's court)", () => {
     expect(
       reduceTeamsActivityEvent(
         "teams.activity.logged",
         { action: "approval.resubmitted", entityId: "ap1" },
         bgCtx,
       ),
-    ).toEqual([{ kind: "approval", key: "approval:ap1" }]);
+    ).toEqual([
+      { kind: "attention", key: "approval:ap1", message: "An agent is awaiting your approval" },
+    ]);
   });
 
   it("suppresses while a teams panel is active (the inbox band is on screen)", () => {
@@ -351,7 +381,7 @@ describe("reduceTeamsActivityEvent — approvals", () => {
     ).toEqual([]);
   });
 
-  it("dismisses on approval.approved / approval.rejected even while suppressed", () => {
+  it("dismisses on every action that ends the wait, even while suppressed", () => {
     expect(
       reduceTeamsActivityEvent(
         "teams.activity.logged",
@@ -366,16 +396,18 @@ describe("reduceTeamsActivityEvent — approvals", () => {
         bgCtx,
       ),
     ).toEqual([{ kind: "dismiss", key: "approval:ap2" }]);
-  });
-
-  it("ignores non-approval actions, other events, and malformed payloads", () => {
+    // revision_requested hands the work back to the agent, so the sticky toast
+    // must clear. It previously fell through to [] and outlived its approval.
     expect(
       reduceTeamsActivityEvent(
         "teams.activity.logged",
-        { action: "approval.revision_requested", entityId: "ap1" },
+        { action: "approval.revision_requested", entityId: "ap3" },
         bgCtx,
       ),
-    ).toEqual([]);
+    ).toEqual([{ kind: "dismiss", key: "approval:ap3" }]);
+  });
+
+  it("ignores non-approval actions, other events, and malformed payloads", () => {
     expect(
       reduceTeamsActivityEvent(
         "teams.activity.logged",
@@ -389,6 +421,118 @@ describe("reduceTeamsActivityEvent — approvals", () => {
     expect(reduceTeamsActivityEvent("teams.activity.logged", null, bgCtx)).toEqual([]);
     expect(
       reduceTeamsActivityEvent("teams.activity.logged", { action: "approval.created" }, bgCtx),
+    ).toEqual([]);
+  });
+});
+
+describe("reduceTeamsActivityEvent — thread interactions (a paused task)", () => {
+  const created = (details: Record<string, unknown>) => ({
+    action: "issue.thread_interaction_created",
+    entityType: "issue",
+    entityId: "issue-1",
+    details,
+  });
+
+  it("emits a kind-specific attention action pointing at the blocked task", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        created({
+          interactionId: "int-1",
+          interactionKind: "request_confirmation",
+          addresseeAgentId: null,
+        }),
+        bgCtx,
+      ),
+    ).toEqual([
+      {
+        kind: "attention",
+        key: "interaction:int-1",
+        message: "A task is paused waiting for your confirmation",
+        issueId: "issue-1",
+      },
+    ]);
+  });
+
+  it("gives each interaction kind its own copy", () => {
+    const copy = (kind: string) =>
+      (
+        reduceTeamsActivityEvent(
+          "teams.activity.logged",
+          created({ interactionId: "int-1", interactionKind: kind }),
+          bgCtx,
+        )[0] as { message: string }
+      ).message;
+    const kinds = [
+      "request_confirmation",
+      "request_checkbox_confirmation",
+      "ask_user_questions",
+      "suggest_tasks",
+    ];
+    const messages = kinds.map(copy);
+    expect(new Set(messages).size).toBe(kinds.length);
+    expect(copy("some_future_kind")).toBe("A task is paused waiting for your input");
+  });
+
+  it("keys on the interaction, so two waits on one task do not replace each other", () => {
+    const keyOf = (interactionId: string) =>
+      (
+        reduceTeamsActivityEvent(
+          "teams.activity.logged",
+          created({ interactionId, interactionKind: "request_confirmation" }),
+          bgCtx,
+        )[0] as { key: string }
+      ).key;
+    expect(keyOf("int-1")).not.toBe(keyOf("int-2"));
+  });
+
+  it("stays silent when the interaction is addressed to another agent", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        created({
+          interactionId: "int-1",
+          interactionKind: "request_confirmation",
+          addresseeAgentId: "agent-9",
+        }),
+        bgCtx,
+      ),
+    ).toEqual([]);
+  });
+
+  it("suppresses while a teams panel is active", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        created({ interactionId: "int-1", interactionKind: "request_confirmation" }),
+        chatCtx([], true),
+      ),
+    ).toEqual([]);
+  });
+
+  it("dismisses on accepted / rejected / expired, even while suppressed", () => {
+    for (const action of [
+      "issue.thread_interaction_accepted",
+      "issue.thread_interaction_rejected",
+      "issue.thread_interaction_expired",
+    ]) {
+      expect(
+        reduceTeamsActivityEvent(
+          "teams.activity.logged",
+          { action, entityId: "issue-1", details: { interactionId: "int-1" } },
+          chatCtx([], true),
+        ),
+      ).toEqual([{ kind: "dismiss", key: "interaction:int-1" }]);
+    }
+  });
+
+  it("ignores an interaction event with no interactionId to key on", () => {
+    expect(
+      reduceTeamsActivityEvent(
+        "teams.activity.logged",
+        created({ interactionKind: "request_confirmation" }),
+        bgCtx,
+      ),
     ).toEqual([]);
   });
 });

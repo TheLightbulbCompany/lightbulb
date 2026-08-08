@@ -9,12 +9,23 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 const notifyLoading = vi.fn();
 const notifySuccess = vi.fn();
 const notifyFailure = vi.fn();
+const notifyAttention = vi.fn();
 const dismissNotification = vi.fn();
 vi.mock("@/lib/notify", () => ({
   notifyLoading: (...a: unknown[]) => notifyLoading(...a),
   notifySuccess: (...a: unknown[]) => notifySuccess(...a),
   notifyFailure: (...a: unknown[]) => notifyFailure(...a),
+  notifyAttention: (...a: unknown[]) => notifyAttention(...a),
   dismissNotification: (...a: unknown[]) => dismissNotification(...a),
+}));
+
+// The component's handlers swallow their own errors so a notification bug can
+// never break chat delivery — which means an unmocked notify export would look
+// like a silent pass. pushSearchParams is captured so the toast's View action
+// can be asserted on the URL it actually builds.
+const pushSearchParams = vi.fn();
+vi.mock("@/lib/shellNav", () => ({
+  pushSearchParams: (...a: unknown[]) => pushSearchParams(...a),
 }));
 
 vi.mock("@/hooks/useAgents", () => ({
@@ -99,7 +110,51 @@ beforeEach(() => {
   notifyLoading.mockClear();
   notifySuccess.mockClear();
   notifyFailure.mockClear();
+  notifyAttention.mockClear();
   dismissNotification.mockClear();
+  pushSearchParams.mockClear();
+});
+
+describe("RunNotifications — a task paused on human input", () => {
+  const pausedEvent = {
+    action: "issue.thread_interaction_created",
+    entityType: "issue",
+    entityId: "issue-1",
+    details: { interactionId: "int-1", interactionKind: "request_confirmation" },
+  };
+
+  it("raises a sticky toast naming what is being asked", () => {
+    mount();
+    dispatchEvent("teams.activity.logged", pausedEvent);
+    expect(notifyAttention).toHaveBeenCalledTimes(1);
+    const [msg, opts] = notifyAttention.mock.calls[0] as [string, { dedupeKey: string }];
+    expect(msg).toBe("A task is paused waiting for your confirmation");
+    expect(opts.dedupeKey).toBe("interaction:int-1");
+  });
+
+  it("routes View to the blocked task, not a generic list", () => {
+    mount();
+    dispatchEvent("teams.activity.logged", pausedEvent);
+    const [, opts] = notifyAttention.mock.calls[0] as [
+      string,
+      { action: { onClick: () => void } },
+    ];
+    act(() => opts.action.onClick());
+    const params = pushSearchParams.mock.calls[0][0] as URLSearchParams;
+    expect(params.get("panel")).toBe("teams-issue-detail");
+    expect(params.get("detailId")).toBe("issue-1");
+  });
+
+  it("clears the toast once the interaction is answered", () => {
+    mount();
+    dispatchEvent("teams.activity.logged", pausedEvent);
+    dispatchEvent("teams.activity.logged", {
+      action: "issue.thread_interaction_accepted",
+      entityId: "issue-1",
+      details: { interactionId: "int-1" },
+    });
+    expect(dismissNotification).toHaveBeenCalledWith("interaction:int-1");
+  });
 });
 
 describe("RunNotifications", () => {

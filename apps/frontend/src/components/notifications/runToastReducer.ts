@@ -25,7 +25,10 @@ export interface RunToastContext {
 
 export type RunToastAction =
   | { kind: "working" | "success" | "failure"; key: string; agentId: string; source: "chat" | "teams" }
-  | { kind: "approval"; key: string }
+  // Something is waiting on the user. `message` is resolved here (not in the
+  // component) because only the payload knows what is actually being asked;
+  // `issueId`, when present, is the task the wait is blocking.
+  | { kind: "attention"; key: string; message: string; issueId?: string }
   | { kind: "dismiss"; key: string };
 
 interface TrackedRun {
@@ -190,14 +193,67 @@ export function reduceTeamsRunEvent(
   return [];
 }
 
-// Approval lifecycle rides the generic teams.activity.logged event (Paperclip
-// has no first-class approval live-event type); payload.action is the
-// discriminator. created/resubmitted both mean "the ball is in the user's
-// court"; approved/rejected resolve the wait and clear the toast. Other
-// actions (revision_requested, comment_added, work_product_created) are the
+// Two families of "the ball is in the user's court" ride the generic
+// teams.activity.logged event (Paperclip gives neither a first-class live-event
+// type); payload.action is the discriminator and payload.details carries the
+// specifics.
+//
+//   issue.thread_interaction_* — a task is PAUSED until a human answers. This is
+//     the family that actually fires: production has logged 27 of these and has
+//     never once created an approval, and four expired unanswered because no
+//     surface said a word.
+//   approval.*                 — a board decision is pending.
+//
+// `revision_requested` resolves the wait as surely as approved/rejected — the
+// ball goes back to the agent — so it must clear the toast too. Without it the
+// sticky toast outlives the thing it is about. The remaining actions
+// (comment_added, work_product_created, the review_path_wakeup_* pair) are the
 // user's own moves or too noisy to toast.
 const APPROVAL_ATTENTION_ACTIONS = new Set(["approval.created", "approval.resubmitted"]);
-const APPROVAL_RESOLVED_ACTIONS = new Set(["approval.approved", "approval.rejected"]);
+const APPROVAL_RESOLVED_ACTIONS = new Set([
+  "approval.approved",
+  "approval.rejected",
+  "approval.revision_requested",
+]);
+const INTERACTION_CREATED_ACTION = "issue.thread_interaction_created";
+const INTERACTION_RESOLVED_ACTIONS = new Set([
+  "issue.thread_interaction_accepted",
+  "issue.thread_interaction_rejected",
+  "issue.thread_interaction_expired",
+]);
+
+// Copy is keyed off the payload's own discriminators so the toast says what is
+// actually being asked. Both key sets are closed upstream enums
+// (ISSUE_THREAD_INTERACTION_KINDS, APPROVAL_TYPES); an unrecognized value falls
+// back to the generic line rather than dropping the notification.
+const INTERACTION_KIND_COPY: Readonly<Record<string, string>> = {
+  request_confirmation: "A task is paused waiting for your confirmation",
+  request_checkbox_confirmation: "A task is paused waiting for you to verify a checklist",
+  ask_user_questions: "An agent asked you a question and can't continue until you answer",
+  suggest_tasks: "An agent suggested follow-up tasks for your review",
+};
+const APPROVAL_TYPE_COPY: Readonly<Record<string, string>> = {
+  hire_agent: "An agent wants to hire a new agent",
+  approve_ceo_strategy: "An agent needs your sign-off on its strategy",
+  budget_override_required: "An agent needs a budget override approved",
+  request_board_approval: "An agent is requesting your approval",
+};
+
+// Own-property lookup only: the `in`/index operator walks the prototype chain,
+// so a crafted kind ("constructor") would otherwise resolve to a function.
+function copyFor(
+  map: Readonly<Record<string, string>>,
+  key: string | undefined,
+  fallback: string,
+): string {
+  if (!key || !Object.prototype.hasOwnProperty.call(map, key)) return fallback;
+  return map[key];
+}
+
+function readDetails(p: Record<string, unknown>): Record<string, unknown> {
+  const details = p.details;
+  return details && typeof details === "object" ? (details as Record<string, unknown>) : {};
+}
 
 export function reduceTeamsActivityEvent(
   event: string,
@@ -209,11 +265,49 @@ export function reduceTeamsActivityEvent(
   const action = readString(p.action);
   const entityId = readString(p.entityId);
   if (!action || !entityId) return [];
+  const details = readDetails(p);
+
+  if (action === INTERACTION_CREATED_ACTION || INTERACTION_RESOLVED_ACTIONS.has(action)) {
+    // Keyed on the interaction, not on entityId: entityId is the ISSUE, and one
+    // task can hold several interactions at once — keying on the issue would
+    // make the second one replace the first's toast.
+    const interactionId = readString(details.interactionId);
+    if (!interactionId) return [];
+    const key = `interaction:${interactionId}`;
+    if (action !== INTERACTION_CREATED_ACTION) return [{ kind: "dismiss", key }];
+    // An interaction addressed to a specific agent is that agent's to answer;
+    // only an unaddressed one is waiting on a human.
+    if (readString(details.addresseeAgentId)) return [];
+    if (ctx.teamsPanelActive) return [];
+    return [
+      {
+        kind: "attention",
+        key,
+        message: copyFor(
+          INTERACTION_KIND_COPY,
+          readString(details.interactionKind),
+          "A task is paused waiting for your input",
+        ),
+        issueId: entityId,
+      },
+    ];
+  }
+
   const key = `approval:${entityId}`;
   // Resolution always dismisses (toast.dismiss on an unknown id is a no-op),
   // covering approvals resolved from another device/tab.
   if (APPROVAL_RESOLVED_ACTIONS.has(action)) return [{ kind: "dismiss", key }];
   if (!APPROVAL_ATTENTION_ACTIONS.has(action)) return [];
   if (ctx.teamsPanelActive) return [];
-  return [{ kind: "approval", key }];
+  return [
+    {
+      kind: "attention",
+      key,
+      message: copyFor(
+        APPROVAL_TYPE_COPY,
+        readString(details.type),
+        "An agent is awaiting your approval",
+      ),
+    },
+  ];
 }

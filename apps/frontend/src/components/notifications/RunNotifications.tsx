@@ -103,21 +103,38 @@ function viewTeamsAction(panel: "teams-activity" | "teams-inbox"): {
   };
 }
 
+// Opens the blocked task directly. `?panel=teams-<detail-key>&detailId=` is the
+// shared grammar both shells already speak (dockview's describePanel and the
+// mobile page's openDetail), so one action works on desktop and mobile.
+function viewIssueAction(issueId: string): { label: string; onClick: () => void } {
+  return {
+    label: "View",
+    onClick: () => {
+      capture("run_notification_clicked", { source: "interaction" });
+      const params = new URLSearchParams(window.location.search);
+      params.set("panel", "teams-issue-detail");
+      params.set("detailId", issueId);
+      pushSearchParams(params);
+    },
+  };
+}
+
 function executeAction(action: RunToastAction, agents: Agent[]): void {
   if (action.kind === "dismiss") {
     dismissNotification(action.key);
     return;
   }
-  if (action.kind === "approval") {
-    // Paperclip agent ids don't resolve against the OpenClaw roster, so the
-    // copy stays generic (same reason the teams run toasts do).
-    const message = "An agent is awaiting your approval";
+  if (action.kind === "attention") {
     capture("run_notification_shown", { source: "teams", kind: action.kind });
-    notifyAttention(message, {
+    notifyAttention(action.message, {
       dedupeKey: action.key,
-      action: viewTeamsAction("teams-inbox"),
+      // Land on the blocked task itself when we know it; the inbox is only the
+      // fallback for approvals, which carry no issue id.
+      action: action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("teams-inbox"),
     });
-    nativeNotify(message);
+    // Native notifications take a title AND a body; the specific line reads
+    // better as the body under a short standing title.
+    nativeNotify("Waiting on you", action.message);
     return;
   }
   const isChat = action.source === "chat";

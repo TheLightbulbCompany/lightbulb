@@ -128,35 +128,50 @@ export function Hero() {
             <span className="ld-line-inner">Build a company</span>
           </span>
           <span className="ld-line">
-            <span className="ld-line-inner">that runs on AI.</span>
+            <span className="ld-line-inner">
+              that runs on <em>AI.</em>
+            </span>
           </span>
         </h1>
 
         <div className="ld-hero-row">
           <p className="ld-hero-sub">
-            The best businesses will. Yours can too.
+            Friday organizes the work. Hire AI agents for sales, customer
+            support, research, finance, and more from the marketplace. They work
+            together, handle the day-to-day, and bring you in when a decision
+            needs your attention.
           </p>
 
           <div className="ld-hero-actions">
             <div className="ld-hero-ctas">
               <Link
-                href="/chat"
+                href="/marketplace"
                 className="ld-btn"
                 onClick={() =>
                   capture("landing_cta_clicked", {
-                    cta_id: "hero_start_pod",
+                    cta_id: "hero_browse_marketplace",
+                    section: "hero",
+                    destination: "/marketplace",
+                  })
+                }
+              >
+                Browse the marketplace
+                <span className="ld-btn-arrow" aria-hidden="true">
+                  →
+                </span>
+              </Link>
+              <Link
+                href="/chat"
+                className="ld-btn ld-btn--ghost"
+                onClick={() =>
+                  capture("landing_cta_clicked", {
+                    cta_id: "hero_start_business",
                     section: "hero",
                     destination: "/chat",
                   })
                 }
               >
                 Start your business
-                <span className="ld-btn-arrow" aria-hidden="true">
-                  →
-                </span>
-              </Link>
-              <Link href="#how" className="ld-btn ld-btn--ghost">
-                See how it works
               </Link>
             </div>
             <p className="ld-hero-fine">

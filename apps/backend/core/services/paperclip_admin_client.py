@@ -2171,6 +2171,27 @@ class PaperclipAdminClient:
         # tests fail loudly rather than silently guessing an envelope key.
         return result if isinstance(result, list) else []
 
+    async def create_company_label(
+        self,
+        *,
+        company_id: str,
+        body: dict,
+        session_cookie: str,
+    ) -> dict:
+        """Create a label on a Paperclip company.
+
+        Maps to ``POST /api/companies/{companyId}/labels`` upstream
+        (``createIssueLabelSchema``: ``{name, color}``, colour a required
+        6-digit hex). Nothing seeds labels at provisioning, so without this
+        every company's label set stays permanently empty and the rail's
+        label picker has nothing to offer.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/labels",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Routines
     # ------------------------------------------------------------------

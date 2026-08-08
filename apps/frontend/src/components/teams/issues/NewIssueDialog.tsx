@@ -17,6 +17,7 @@ import { useIssueMutations } from "./hooks/useIssueMutations";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import type {
   CompanyAgent,
+  Goal,
   IssueProject,
   IssuePriority,
   IssueStatus,
@@ -54,6 +55,8 @@ export interface NewIssueDialogProps {
   onOpenChange: (open: boolean) => void;
   agents?: CompanyAgent[];
   projects?: IssueProject[];
+  /** Company goals. Like `projects`, the picker renders only when non-empty. */
+  goals?: Goal[];
   /** Called with the created issue id on success. */
   onCreated?: (issueId: string) => void;
   /** When set, the dialog creates a sub-issue under this parent. */
@@ -84,6 +87,7 @@ export function NewIssueDialog({
   onOpenChange,
   agents = [],
   projects = [],
+  goals = [],
   onCreated,
   parentId,
   parentLabel,
@@ -102,6 +106,7 @@ export function NewIssueDialog({
   const [status, setStatus] = useState<IssueStatus>(defaultStatus ?? "backlog");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
+  const [goalId, setGoalId] = useState<string>("");
   const [assigneeAgentId, setAssigneeAgentId] = useState<string>(
     defaultAssigneeAgentId ?? "",
   );
@@ -129,6 +134,7 @@ export function NewIssueDialog({
     setStatus(defaultStatus ?? "backlog");
     setWorkMode("standard");
     setProjectId(defaultProjectId ?? "");
+    setGoalId("");
     setAssigneeAgentId(defaultAssigneeAgentId ?? "");
     setError(null);
   };
@@ -151,6 +157,7 @@ export function NewIssueDialog({
         status,
         workMode,
         projectId: projectId || undefined,
+        goalId: goalId || undefined,
         assigneeAgentId: assigneeAgentId || undefined,
       };
       const issue = parentId ? await createChild(parentId, payload) : await create(payload);
@@ -378,6 +385,32 @@ export function NewIssueDialog({
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {goals.length > 0 && (
+          <div>
+            <label
+              htmlFor="new-issue-goal"
+              className="section-label"
+              style={{ ...labelStyle, marginTop: 0 }}
+            >
+              <b>Goal</b>
+            </label>
+            <select
+              id="new-issue-goal"
+              value={goalId}
+              onChange={(e) => setGoalId(e.target.value)}
+              disabled={submitting}
+              className="w-full rounded px-3 py-2 text-sm"
+              style={selectStyle}
+            >
+              <option value="">No goal</option>
+              {goals.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.title}
                 </option>
               ))}
             </select>

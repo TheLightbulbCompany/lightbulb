@@ -24,6 +24,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import type {
+  Goal,
   Issue,
   IssueStatus,
   IssuePriority,
@@ -32,6 +33,7 @@ import type {
   CompanyMember,
   IssueProject,
 } from "@/components/teams/shared/types";
+import { GoalPicker } from "@/components/teams/goals/GoalPicker";
 import { AssigneePicker } from "./pickers/AssigneePicker";
 import { ProjectPicker } from "./pickers/ProjectPicker";
 import { LabelPicker } from "./pickers/LabelPicker";
@@ -54,6 +56,9 @@ export interface IssuePropertiesProps {
    * agent-only. */
   onAssigneeUserChange?: (userId: string | null) => void;
   onProjectChange: (projectId: string | null) => void;
+  /** Link the task to a goal (or ``null`` to detach). Optional — without it
+   * the Goal row stays a read-only link. */
+  onGoalChange?: (goalId: string | null) => void;
   /** Receives the FULL desired blocker-id set (replace semantics). */
   onBlockedByChange: (ids: string[]) => void;
   /** Receives the FULL desired label-id set (replace semantics). Optional —
@@ -131,10 +136,55 @@ function EmptyDash() {
 // count stays correct regardless of which shape the proxy forwards.
 type ChildrenResponse = { issues: Issue[] } | Issue[];
 
+// Same dual shape as the children endpoint — the goals BFF envelopes, but the
+// bare-array form is accepted so a raw proxy passthrough still renders.
+type GoalsResponse = { goals: Goal[] } | Goal[];
+
 function childrenCount(data: ChildrenResponse | undefined): number {
   if (!data) return 0;
   if (Array.isArray(data)) return data.length;
   return data.issues?.length ?? 0;
+}
+
+/** Goal rail row. Self-fetches the company goal list the same way LabelPicker
+ * and ParentPicker fetch theirs, so the host only has to wire the change
+ * handler. Read-only (a link to the goal) when no handler is passed. */
+function GoalRow({
+  goalId,
+  onChange,
+}: {
+  goalId: string | null;
+  onChange?: (goalId: string | null) => void;
+}) {
+  const { read } = useTeamsApi();
+  const { data } = read<GoalsResponse>("/goals");
+  const goals = Array.isArray(data) ? data : (data?.goals ?? []);
+
+  if (!onChange) {
+    if (!goalId) return <EmptyDash />;
+    const goal = goals.find((g) => g.id === goalId);
+    const goalUrl = teamsDetailUrl("goal", goalId);
+    return (
+      <Link
+        href={goalUrl}
+        prefetch={false}
+        onClick={(e) => handleShellLinkClick(e, goalUrl)}
+        className="truncate hover:underline"
+        style={{ color: "var(--ink)" }}
+      >
+        {goal?.title ?? goalId.slice(0, 8)}
+      </Link>
+    );
+  }
+
+  return (
+    <GoalPicker
+      goals={goals}
+      selectedGoalId={goalId}
+      onChange={onChange}
+      emptyLabel="No goal"
+    />
+  );
 }
 
 /** Read-only Parent link (used only when no onParentChange is wired). Fetches
@@ -495,6 +545,7 @@ export function IssueProperties({
   onAssigneeChange,
   onAssigneeUserChange,
   onProjectChange,
+  onGoalChange,
   onBlockedByChange,
   onLabelsChange,
   onParentChange,
@@ -582,6 +633,9 @@ export function IssueProperties({
           selectedProjectId={projectId}
           onChange={onProjectChange}
         />
+      </PropertyRow>
+      <PropertyRow label="Goal">
+        <GoalRow goalId={issue.goalId ?? null} onChange={onGoalChange} />
       </PropertyRow>
       <PropertyRow label="Parent">
         {onParentChange ? (

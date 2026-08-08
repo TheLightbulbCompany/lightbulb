@@ -15,6 +15,7 @@ import { ChevronRight, MoreHorizontal, Target, Trash2 } from "lucide-react";
 import { GoalHeader } from "./GoalHeader";
 import { GoalProperties } from "./GoalProperties";
 import { GoalStatusIcon } from "./GoalStatusIcon";
+import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { useGoalDetail } from "./hooks/useGoalDetail";
 import { useGoalMutations } from "./hooks/useGoalMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -68,7 +69,7 @@ function projectLinksGoal(p: GoalLinkedProject, goalId: string): boolean {
 }
 
 export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
-  const { goal, allGoals, projects, isLoading, isError, error } =
+  const { goal, allGoals, projects, issues, isLoading, isError, error } =
     useGoalDetail(goalId);
   const mutations = useGoalMutations();
   const { read } = useTeamsApi();
@@ -156,6 +157,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
   const linkedProjects = (projects as unknown as GoalLinkedProject[]).filter((p) =>
     projectLinksGoal(p, goalId),
   );
+  const linkedTasks = issues.filter((i) => i.goalId === goalId);
 
   return (
     <div
@@ -271,6 +273,55 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                       style={{ color: "var(--mute)" }}
                     >
                       {child.level}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <h2 className="section-label">
+            <b>Tasks ({linkedTasks.length})</b>
+          </h2>
+          {linkedTasks.length === 0 ? (
+            <p className="text-sm italic" style={{ color: "var(--mute)" }}>
+              No tasks. Link one from its Goal row on the task page.
+            </p>
+          ) : (
+            <ul
+              className="flex flex-col rounded overflow-hidden"
+              style={{ border: "1px solid var(--edge)" }}
+            >
+              {linkedTasks.map((task) => (
+                <li
+                  key={task.id}
+                  style={{ borderBottom: "1px solid var(--edge)" }}
+                  className="last:border-b-0"
+                >
+                  <Link
+                    href={teamsDetailUrl("issue", task.id)}
+                    prefetch={false}
+                    onClick={(e) =>
+                      handleShellLinkClick(e, teamsDetailUrl("issue", task.id))
+                    }
+                    className="flex items-center gap-2 p-3 transition-colors hover:bg-[var(--cream-deeper)]"
+                  >
+                    <StatusIcon status={task.status} />
+                    {task.identifier && (
+                      <span
+                        className="shrink-0 text-xs tabular-nums"
+                        style={{ color: "var(--mute)" }}
+                      >
+                        {task.identifier}
+                      </span>
+                    )}
+                    <span
+                      className="min-w-0 flex-1 truncate text-sm"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      {task.title}
                     </span>
                   </Link>
                 </li>

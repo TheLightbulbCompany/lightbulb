@@ -22,6 +22,7 @@ import { IssueTreeControlSection } from "./IssueTreeControlSection";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { IssueWorkProductsSection } from "./IssueWorkProductsSection";
 import { IssueAttachmentsSection } from "./IssueAttachmentsSection";
+import { hideIssueWithUndo } from "./lib/hideIssue";
 import { IssueParentBreadcrumb } from "./IssueParentBreadcrumb";
 import { useIssueDetail } from "./hooks/useIssueDetail";
 import { useIssueMutations } from "./hooks/useIssueMutations";
@@ -220,11 +221,15 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
   };
 
   const handleHide = async () => {
-    // Hiding is reversible (it just stamps hiddenAt), so it skips the confirm
-    // dialog that guards the destructive delete. The hidden task drops out of
-    // the Tasks list, so leave the detail view afterwards.
-    await mutations.update(issueId, { hiddenAt: new Date().toISOString() });
-    leaveForTasksList();
+    // Hiding stamps hiddenAt, so it skips the confirm dialog that guards the
+    // destructive delete — but nothing in the product can list a hidden task
+    // afterwards, so the Undo toast is the only way back (see lib/hideIssue).
+    // The hidden task drops out of the Tasks list, so leave the detail view.
+    await hideIssueWithUndo(
+      issueId,
+      (id, patch) => mutations.update(id, patch),
+      leaveForTasksList,
+    );
   };
 
   if (isLoading && !issue) {
@@ -278,6 +283,43 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
       style={{ background: "var(--cream)", color: "var(--ink)" }}
     >
       <main className="flex flex-col gap-6 min-w-0">
+        {/* Hidden tasks are unreachable from every list, board, and search —
+            upstream applies `hidden_at IS NULL` to all of them and offers no
+            include-hidden filter. Fetch-by-id does NOT filter, though, so this
+            page still opens for anyone holding the link. That makes this banner
+            the only durable restore path once the Undo toast is gone; without
+            it the page renders as a normal task and silently stays invisible. */}
+        {issue.hiddenAt && (
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded px-3 py-2 text-sm"
+            style={{
+              border: "1px solid var(--edge)",
+              background: "var(--cream-deeper)",
+              color: "var(--ink-soft)",
+            }}
+          >
+            <EyeOff
+              className="h-4 w-4 shrink-0"
+              style={{ color: "var(--mute)" }}
+              aria-hidden="true"
+            />
+            <span>This task is hidden — it won&apos;t show in Tasks or search.</span>
+            <button
+              type="button"
+              onClick={() => {
+                void mutations
+                  .update(issueId, { hiddenAt: null })
+                  .catch((e) =>
+                    notifyApiError(e, "Couldn't restore the task."),
+                  );
+              }}
+              className="hover:underline"
+              style={{ color: "var(--forest)" }}
+            >
+              Restore
+            </button>
+          </div>
+        )}
         {issue.parentId && <IssueParentBreadcrumb parentId={issue.parentId} />}
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
@@ -421,6 +463,9 @@ export function IssueDetailPage({ issueId }: IssueDetailPageProps) {
           }}
           onProjectChange={(projectId) => {
             void mutations.update(issueId, { projectId });
+          }}
+          onGoalChange={(goalId) => {
+            void mutations.update(issueId, { goalId });
           }}
           onBlockedByChange={(blockedByIssueIds) => {
             void mutations.update(issueId, { blockedByIssueIds });

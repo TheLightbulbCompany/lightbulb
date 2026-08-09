@@ -357,7 +357,6 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     );
     expect(found).toBe(true);
   });
-
 });
 
 describe("ServiceStack — provisioning executor (state machine, live)", () => {

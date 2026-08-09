@@ -54,8 +54,13 @@ export interface ChatErrorCardProps {
   onRetry?: () => void;
   /**
    * Whether this card may render the live conversion paywall. MessageList
-   * passes true only for the LAST message, so repeated capped turns produce
-   * one purchase form rather than one per bubble. Defaults to true so the
+   * passes true only for the NEWEST trial-coded card in the transcript —
+   * not the newest bubble. The distinction is load-bearing: a mid-run cap
+   * emits the reclassified trial_daily_cap error and then OpenClaw's raw
+   * "all models rate-limited" frame ~20ms later (verified in prod logs,
+   * 17:58:44.187 vs .208), so "newest bubble" demoted the paywall to the
+   * settings link in exactly the scenario it was built for. Repeated capped
+   * turns still produce one live picker, never a stack. Defaults to true so
    * single-card callers and tests keep the interactive behaviour.
    */
   interactive?: boolean;
@@ -214,6 +219,17 @@ const TRIAL_PAYWALL_HEADINGS: Readonly<Record<string, string>> = {
   trial_daily_cap: "You've used today's free usage",
   trial_expired: "Your free trial has ended",
 };
+
+/**
+ * Whether this error code renders the in-place conversion paywall. Exported
+ * for MessageList, which must decide WHICH card in the transcript gets the
+ * live picker — the two must agree on what counts as a paywall code, or the
+ * card MessageList blesses and the card that can actually render a picker
+ * drift apart.
+ */
+export function isTrialPaywallCode(code: string | undefined | null): boolean {
+  return Boolean(code) && Object.hasOwn(TRIAL_PAYWALL_HEADINGS, code as string);
+}
 
 export function ChatErrorCard({ message, code, onRetry, interactive = true }: ChatErrorCardProps) {
   // ProviderPicker posts /billing/trial-checkout, which an org admin must NOT

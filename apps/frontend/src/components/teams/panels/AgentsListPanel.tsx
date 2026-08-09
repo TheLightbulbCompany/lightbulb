@@ -11,6 +11,8 @@ import {
   PanelToolbar,
   type PanelDataColumn,
 } from "@/components/teams/shell";
+import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
@@ -184,6 +186,10 @@ function CreateAgentDialog({
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
+  const { open: openMarketplace } = useMarketplaceDrawer();
+  // Chooser first: steer toward hiring a pre-built marketplace agent; the
+  // custom-build form is the secondary path.
+  const [mode, setMode] = useState<"choose" | "build">("choose");
   const [name, setName] = useState("");
   const [role, setRole] = useState("engineer");
   const [title, setTitle] = useState("");
@@ -221,6 +227,25 @@ function CreateAgentDialog({
       setErr(String(e));
       setSubmitting(false);
     }
+  }
+
+  if (mode === "choose") {
+    return (
+      <EditorialDialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="New agent"
+      >
+        <AgentCreateChooser
+          surface="teams"
+          onHire={() => {
+            onClose();
+            openMarketplace({ view: "browse" });
+          }}
+          onBuild={() => setMode("build")}
+        />
+      </EditorialDialog>
+    );
   }
 
   return (

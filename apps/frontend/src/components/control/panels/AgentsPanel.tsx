@@ -10,6 +10,8 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
@@ -57,15 +59,18 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
     setSelectedAgent(initialAgentId);
   }
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
-  const [showCreateForm, setShowCreateForm] = useState(false);
+  // "+ New" opens a chooser first (hire from marketplace vs build custom);
+  // the create form only renders once the user picks "build".
+  const [createStep, setCreateStep] = useState<"choose" | "build" | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const { open: openMarketplace } = useMarketplaceDrawer();
 
   const agents = rosterAgents as AgentEntry[];
   const defaultId = rosterDefaultId;
 
   const handleAgentCreated = () => {
     mutate();
-    setShowCreateForm(false);
+    setCreateStep(null);
   };
 
   const handleDelete = async (agentId: string) => {
@@ -119,7 +124,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
           <span className="text-xs text-[var(--mute)]">{agents.length}</span>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="outline" size="sm" onClick={() => setShowCreateForm(true)}>
+          <Button variant="outline" size="sm" onClick={() => setCreateStep("choose")}>
             <Plus className="h-3.5 w-3.5 mr-1" /> New
           </Button>
           <Button variant="ghost" size="sm" onClick={() => mutate()}>
@@ -128,7 +133,20 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
         </div>
       </div>
 
-      {showCreateForm && (
+      {createStep === "choose" && (
+        <div className="px-4 py-3 border-b border-[var(--edge)]">
+          <AgentCreateChooser
+            surface="control"
+            onHire={() => {
+              setCreateStep(null);
+              openMarketplace({ view: "browse" });
+            }}
+            onBuild={() => setCreateStep("build")}
+          />
+        </div>
+      )}
+
+      {createStep === "build" && (
         <div className="px-4 py-3 border-b border-[var(--edge)]">
           <AgentCreateForm
             // Names only — the id is the identity, never a name (see dialog).
@@ -136,7 +154,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
               .map((a) => a.name)
               .filter((n): n is string => !!n)}
             onCreated={handleAgentCreated}
-            onCancel={() => setShowCreateForm(false)}
+            onCancel={() => setCreateStep(null)}
           />
         </div>
       )}

@@ -4,6 +4,8 @@ import { useState, useRef } from "react";
 import { Loader2 } from "lucide-react";
 
 import { capture } from "@/lib/analytics";
+import { AgentCreateChooser } from "@/components/agents/AgentCreateChooser";
+import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -53,6 +55,10 @@ interface CreateProps {
 }
 
 export function AgentCreateDialog({ open, existingNames, onCancel, onCreate }: CreateProps) {
+  const { open: openMarketplace } = useMarketplaceDrawer();
+  // Chooser first: steer toward hiring a pre-built marketplace agent before
+  // the blank-agent form. Resets per open via the parent's key-remount.
+  const [mode, setMode] = useState<"choose" | "build">("choose");
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -75,6 +81,32 @@ export function AgentCreateDialog({ open, existingNames, onCancel, onCreate }: C
       setSubmitting(false);
     }
   };
+
+  if (mode === "choose") {
+    return (
+      <AlertDialog open={open} onOpenChange={(next) => !next && onCancel()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>New agent</AlertDialogTitle>
+            <AlertDialogDescription>
+              Hire a ready-made agent from the marketplace, or build your own from scratch.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AgentCreateChooser
+            surface="chat"
+            onHire={() => {
+              onCancel();
+              openMarketplace({ view: "browse" });
+            }}
+            onBuild={() => setMode("build")}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    );
+  }
 
   return (
     <AlertDialog open={open} onOpenChange={(next) => !next && !submittingRef.current && onCancel()}>

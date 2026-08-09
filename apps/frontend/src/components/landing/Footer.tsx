@@ -20,9 +20,9 @@ export function Footer() {
           <div className="ld-footer-cols">
             <div className="ld-footer-col">
               <span>Product</span>
-              <Link href="/#features">Features</Link>
               <Link href="/#team">Team</Link>
-              <Link href="/marketplace">Marketplace</Link>
+              <Link href="/#marketplace">Marketplace</Link>
+              <Link href="/#features">Features</Link>
               <Link href="/#pricing">Pricing</Link>
             </div>
             <div className="ld-footer-col">

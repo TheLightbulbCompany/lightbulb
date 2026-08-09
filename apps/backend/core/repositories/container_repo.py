@@ -575,15 +575,17 @@ async def try_consume_daily_email_send(owner_id: str, *, day: str, cap: int) -> 
 # it over and runs concurrently, the first hire's ``finally`` release is
 # correctly no-op'd by the fencing token, and nothing logs the overlap.
 #
-# 600 = PAIR_WORST_CASE_S (~361s) + headroom for everything stacked on top of
-# pairing in one deploy: the S3 GET, the tar extract to EFS, the Paperclip mint,
-# ``ensure_operator_device_paired``, routine recreation, integration reconcile
-# and the ACP enable. Kept a literal rather than importing the pairing module
-# (a repository must not import a service that drags in the gateway/websockets);
+# 720 = PAIR_WORST_CASE_S (~546s: 2 attempts x 2 RPCs x 90s, plus the bounded
+# runtime-snapshot-lag rename retries) + headroom for everything stacked on top
+# of pairing in one deploy: the S3 GET, the tar extract to EFS, the Paperclip
+# mint, ``ensure_operator_device_paired``, routine recreation, integration
+# reconcile and the ACP enable. Kept a literal rather than importing the pairing
+# module (a repository must not import a service that drags in the
+# gateway/websockets);
 # ``tests/unit/repositories/test_container_repo_deploy_claim.py`` asserts the
 # ``DEPLOY_CLAIM_STALE_S > PAIR_WORST_CASE_S`` relationship so the two can never
 # drift apart silently again.
-DEPLOY_CLAIM_STALE_S = 600
+DEPLOY_CLAIM_STALE_S = 720
 
 # Fixed map key for the owner-wide deploy claim. The listing that triggered a
 # claim is still recorded in the claim VALUE (for diagnostics) but no longer

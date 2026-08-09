@@ -65,15 +65,32 @@ _PAIR_RETRY_BACKOFF_S = 0.5
 # from under the still-running write.
 _PAIR_RPC_TIMEOUT_S = 90
 
+# ``agents.create`` can acknowledge before the container's RUNTIME config
+# snapshot advances: the write lands in openclaw.json, but some gateway
+# processes only pick it up via the EFS chokidar hot-reload, 1-3s later
+# (observed 2026-08-09: create ✓ in 3.1s, rename rejected "agent not found"
+# 7ms after, reload applied 2.9s after that). The rename below validates
+# against that runtime snapshot, so a fast "not found" right after a
+# successful create is transient — retry the UPDATE alone (the create is
+# already committed; re-sending it would just bounce "already exists").
+# The budget is shared across the whole call, not per outer attempt, so
+# ``PAIR_WORST_CASE_S`` stays honest.
+_PAIR_NOT_FOUND_MAX_RETRIES = 2
+_PAIR_NOT_FOUND_BACKOFF_S = 2.5
+
 # Worst-case wall clock for ONE ``pair_with_openclaw`` call: every attempt can
-# burn the full timeout on BOTH RPCs (create, then update) before the backoff.
-# Exported because the marketplace deploy claim's lease
-# (``container_repo.DEPLOY_CLAIM_STALE_S``) has to outlive it — a lease shorter
-# than the pairing it fences goes stale WHILE the deploy is still running, which
-# lets a second deploy take it over and reopens the exact concurrent-write
-# window the claim exists to close. The two constants are pinned in lockstep by
+# burn the full timeout on BOTH RPCs (create, then update) before the backoff,
+# and each not-found rename retry can burn a full timeout of its own once the
+# runtime snapshot catches up mid-call. Exported because the marketplace deploy
+# claim's lease (``container_repo.DEPLOY_CLAIM_STALE_S``) has to outlive it — a
+# lease shorter than the pairing it fences goes stale WHILE the deploy is still
+# running, which lets a second deploy take it over and reopens the exact
+# concurrent-write window the claim exists to close. The two constants are
+# pinned in lockstep by
 # ``tests/unit/repositories/test_container_repo_deploy_claim.py``.
-PAIR_WORST_CASE_S = _PAIR_MAX_ATTEMPTS * (2 * _PAIR_RPC_TIMEOUT_S + _PAIR_RETRY_BACKOFF_S)
+PAIR_WORST_CASE_S = _PAIR_MAX_ATTEMPTS * (
+    2 * _PAIR_RPC_TIMEOUT_S + _PAIR_RETRY_BACKOFF_S
+) + _PAIR_NOT_FOUND_MAX_RETRIES * (_PAIR_RPC_TIMEOUT_S + _PAIR_NOT_FOUND_BACKOFF_S)
 
 
 def _is_org_owner_id(owner_id: str) -> bool:
@@ -867,6 +884,7 @@ async def pair_with_openclaw(
     # (cooperative task cancellation) is BaseException, not Exception, so it
     # propagates untouched — we never fight a real cancel. Any other RuntimeError
     # (a genuine schema/protocol rejection) also propagates immediately.
+    not_found_retries = 0
     for attempt in range(1, _PAIR_MAX_ATTEMPTS + 1):
         try:
             try:
@@ -893,16 +911,37 @@ async def pair_with_openclaw(
                     owner_id,
                 )
 
-            await gateway_pool.send_rpc(
-                user_id=owner_id,  # gateway pool is keyed by owner_id
-                req_id=f"pair-update-{secrets.token_hex(8)}",
-                method="agents.update",
-                params=update_params,
-                ip=ip,
-                token=token,
-                timeout=_PAIR_RPC_TIMEOUT_S,
-            )
-            return
+            while True:
+                try:
+                    await gateway_pool.send_rpc(
+                        user_id=owner_id,  # gateway pool is keyed by owner_id
+                        req_id=f"pair-update-{secrets.token_hex(8)}",
+                        method="agents.update",
+                        params=update_params,
+                        ip=ip,
+                        token=token,
+                        timeout=_PAIR_RPC_TIMEOUT_S,
+                    )
+                    return
+                except RuntimeError as e:
+                    # "agent not found" right after a successful create is the
+                    # runtime-snapshot lag documented at
+                    # ``_PAIR_NOT_FOUND_MAX_RETRIES`` — give the hot-reload a
+                    # moment and rename again. Anything else, or a "not found"
+                    # that outlives the budget (the agent may genuinely be
+                    # gone, e.g. a concurrent delete), propagates.
+                    if "not found" not in str(e) or not_found_retries >= _PAIR_NOT_FOUND_MAX_RETRIES:
+                        raise
+                    not_found_retries += 1
+                    logger.warning(
+                        "pair_with_openclaw: agents.update says agent %s not found for owner=%s — "
+                        "runtime config likely still reloading; retrying rename (%d/%d)",
+                        pc_uuid,
+                        owner_id,
+                        not_found_retries,
+                        _PAIR_NOT_FOUND_MAX_RETRIES,
+                    )
+                    await asyncio.sleep(_PAIR_NOT_FOUND_BACKOFF_S)
         except TimeoutError:
             if attempt >= _PAIR_MAX_ATTEMPTS:
                 raise

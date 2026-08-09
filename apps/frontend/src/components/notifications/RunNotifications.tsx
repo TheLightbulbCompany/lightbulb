@@ -125,7 +125,13 @@ function executeAction(action: RunToastAction, agents: Agent[]): void {
     return;
   }
   if (action.kind === "attention") {
-    capture("run_notification_shown", { source: "teams", kind: action.kind });
+    // Same discriminator the View target uses two lines down. Without it both
+    // families report kind:"attention"/source:"teams" and impressions stop
+    // telling approvals apart from paused tasks — while clicks still do.
+    capture("run_notification_shown", {
+      source: action.issueId ? "interaction" : "approval",
+      kind: action.kind,
+    });
     notifyAttention(action.message, {
       dedupeKey: action.key,
       // Land on the blocked task itself when we know it; the inbox is only the

@@ -20,6 +20,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
+// NOTE: GatewayRpcError is imported DYNAMICALLY inside each test that needs it.
+// beforeEach calls vi.resetModules(), and the hook is imported after that, so a
+// top-level static import would be a DIFFERENT class instance than the hook's
+// fresh one — `err instanceof GatewayRpcError` would silently be false. The
+// dynamic import shares the hook's post-reset module registry.
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@/lib/notify", () => ({
@@ -103,10 +108,12 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
         reads += 1;
-        // First read's response is LOST (backend transient / socket drop);
-        // the wake retry lands on a ready container and returns the transcript.
+        // First read's response is LOST to a transport drop — the socket
+        // parked/superseded/closed mid-flight (a plain Error, not a
+        // GatewayRpcError): the primary refresh-churn case. The wake retry
+        // lands on a live socket + ready container and returns the transcript.
         if (reads === 1) {
-          return Promise.reject(new Error("Container is starting up. Try again in a moment."));
+          return Promise.reject(new Error("WebSocket closed"));
         }
         return Promise.resolve(history("recovered answer"));
       }
@@ -136,10 +143,72 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
     expect(historyCalls()).toBe(2);
   });
 
+  it("a RETRYABLE GatewayRpcError (container starting up, retryable:true) keeps the skeleton and retries, then recovers", async () => {
+    const { GatewayRpcError } = await import("@isol8/shared");
+    let reads = 0;
+    sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        reads += 1;
+        if (reads === 1) {
+          return Promise.reject(
+            new GatewayRpcError({
+              message: "Container is starting up. Try again in a moment.",
+              retryable: true,
+              retryAfterMs: 3000,
+            }),
+          );
+        }
+        return Promise.resolve(history("recovered answer"));
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+
+    await advance(0);
+    expect(historyCalls()).toBe(1);
+    expect(result.current.needsBootstrap).toBe(false);
+    expect(result.current.isLoadingHistory).toBe(true);
+
+    await advance(WAKE_RETRY_MS);
+    expect(historyCalls()).toBe(2);
+    expect(JSON.stringify(result.current.renderItems)).toContain("recovered answer");
+    expect(result.current.isLoadingHistory).toBe(false);
+  });
+
+  it("a NON-retryable GatewayRpcError (No container provisioned) terminates immediately — no retry, does not hold the loading shell", async () => {
+    const { GatewayRpcError } = await import("@isol8/shared");
+    let reads = 0;
+    sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
+        reads += 1;
+        // Deterministic failure: it can never succeed on retry.
+        return Promise.reject(new GatewayRpcError({ message: "No container provisioned." }));
+      }
+      return Promise.resolve({ messages: [] });
+    });
+
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "user-1"));
+
+    // One read, then TERMINAL: it must NOT retry across the whole wake window,
+    // and the loading shell is released (input re-enabled) rather than spun for
+    // 10min on a request that can never succeed.
+    await advance(0);
+    expect(historyCalls()).toBe(1);
+
+    await advance(WAKE_DEADLINE_MS);
+    await advance(WAKE_DEADLINE_MS);
+    expect(historyCalls()).toBe(1);
+    expect(reads).toBe(1);
+    expect(result.current.isLoadingHistory).toBe(false);
+  });
+
   it("a persistently-rejecting read is wall-clock bounded — it keeps retrying, then stops instead of spinning forever", async () => {
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
-        return Promise.reject(new Error("Container is starting up"));
+        return Promise.reject(new Error("WebSocket closed")); // transport drop — retryable
       }
       return Promise.reject(new Error("unreachable"));
     });
@@ -176,9 +245,10 @@ describe("useAgentChat — a rejected chat.history is retried, never blanked to 
     sendReq.mockImplementation((method: string, params?: Record<string, unknown>) => {
       if (method === "chat.history" && params?.sessionKey === GENERAL_KEY) {
         reads += 1;
-        // First mount seeds the cache; the remount's revalidation REJECTS.
+        // First mount seeds the cache; the remount's revalidation REJECTS on a
+        // transport drop.
         if (reads === 1) return Promise.resolve(history("cached answer"));
-        return Promise.reject(new Error("Container is starting up"));
+        return Promise.reject(new Error("WebSocket closed"));
       }
       return Promise.reject(new Error("unreachable"));
     });

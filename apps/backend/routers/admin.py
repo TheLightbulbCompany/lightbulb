@@ -43,6 +43,7 @@ from core.services.account_wipe import (
     OrgWipeUnsupportedError,
     preview_wipe,
     resolve_account_emails,
+    sweep_orphans,
     wipe_account,
 )
 from core.services.admin_access import require_admin_read_access
@@ -883,6 +884,26 @@ async def admin_wipe_preview(
     except BootstrapAccountProtectedError:
         raise HTTPException(status_code=400, detail="bootstrap_account_protected")
     return report.to_dict()
+
+
+@router.post(
+    "/orphan-sweep",
+    description=(
+        "Find rows whose owner no longer exists — credential/identity leftovers "
+        "from wipes that ran before the wipe covered them. Defaults to a DRY RUN: "
+        "pass `execute=true` to actually delete. Reads the users table as the "
+        "liveness signal (wipe_account deletes that row), then walks the "
+        "integrations, agent-email-addresses and company-slugs tables. Does NOT "
+        "touch Secrets Manager — see sweep_orphans' docstring for why."
+    ),
+)
+@audit_admin_action("account.orphan_sweep")
+async def admin_orphan_sweep(
+    request: Request,
+    execute: bool = False,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    return (await sweep_orphans(dry_run=not execute)).to_dict()
 
 
 @router.post(

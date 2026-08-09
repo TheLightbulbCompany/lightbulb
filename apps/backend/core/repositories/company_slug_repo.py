@@ -66,3 +66,37 @@ async def get_by_owner(owner_id: str) -> dict | None:
     )
     items = response.get("Items", [])
     return items[0] if items else None
+
+
+async def delete_for_owner(owner_id: str) -> str | None:
+    """Release this owner's slug reservation. Returns the slug, if any.
+
+    Without this a wiped account held its slug forever: there was no delete
+    path, so the name could never be handed to another owner — and the same
+    person re-signing up could not reclaim their own.
+    """
+    row = await get_by_owner(owner_id)
+    if not row or not row.get("slug"):
+        return None
+    slug = row["slug"]
+    await run_in_thread(_get_table().delete_item, Key={"slug": normalize(slug)})
+    return slug
+
+
+async def scan_all() -> list[dict]:
+    """Every row in the table, paginated.
+
+    Only the orphan sweep uses this — a full scan is the ONLY way to find rows
+    whose owner no longer exists, because the owner id is gone from everywhere
+    that would let you query for it. Not for request-path use.
+    """
+    table = _get_table()
+    items: list[dict] = []
+    kwargs: dict = {}
+    while True:
+        page = await run_in_thread(table.scan, **kwargs)
+        items.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return items
+        kwargs["ExclusiveStartKey"] = last

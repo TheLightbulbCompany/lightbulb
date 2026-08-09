@@ -1180,9 +1180,12 @@ class TestDeleteUserService:
         )
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
-            mock_repo.delete = AsyncMock()
+            mock_repo.delete = AsyncMock(return_value=container_dict)
 
-            await manager.delete_user_service("user_test_123")
+            # The DELETE's own ALL_OLD image is handed back to the caller — an
+            # account teardown reads the bedrock-gate token hashes off it,
+            # since nothing else can find those rows once this row is gone.
+            assert await manager.delete_user_service("user_test_123") is container_dict
 
             # Verify update_service (scale to 0) called first
             mock_ecs_client.update_service.assert_called_once_with(
@@ -1207,19 +1210,25 @@ class TestDeleteUserService:
 
     @pytest.mark.asyncio
     async def test_delete_no_db_record(self, manager, mock_ecs_client, mock_efs_client):
-        """delete_user_service with no repo record still deletes ECS service."""
+        """delete_user_service with no repo record still deletes ECS service —
+        and still issues the row delete.
+
+        The read above it is eventually consistent, so "no row" may just be a
+        stale answer about a row a racing provision has already written. The
+        DeleteItem is a no-op when there is genuinely nothing, and its ALL_OLD
+        image is the only thing that can tell the two apart."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.delete = AsyncMock()
+            mock_repo.delete = AsyncMock(return_value=None)
 
-            await manager.delete_user_service("user_test_123")
+            assert await manager.delete_user_service("user_test_123") is None
 
             mock_ecs_client.update_service.assert_called_once()
             mock_ecs_client.delete_service.assert_called_once()
             # No per-user resources to clean up
             mock_ecs_client.deregister_task_definition.assert_not_called()
             mock_efs_client.delete_access_point.assert_not_called()
-            mock_repo.delete.assert_not_called()
+            mock_repo.delete.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
     async def test_delete_without_per_user_resources(self, manager, mock_ecs_client, mock_efs_client):

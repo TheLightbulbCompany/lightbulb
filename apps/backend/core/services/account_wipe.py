@@ -12,9 +12,11 @@ Two entry points:
 
 * ``wipe_account(owner_id, *, actor_admin_id)`` — the ordered teardown (spec
   "complete teardown map", steps 1-12). Reads the SAME identifier rows up
-  front (so every later step already has the ARNs/ids it needs — no step
-  re-reads a row another step might have just deleted), then runs each
-  teardown step in its own try/except. A step that raises is recorded
+  front so every later step already has the ARNs/ids it needs off a row an
+  earlier step deletes — but that snapshot decides no DELETE (see
+  ``_Identifiers``: it is stale by construction, and the gate-token step
+  re-reads for exactly that reason). Then runs each teardown step in its own
+  try/except. A step that raises is recorded
   ``status="failed"`` with the error and execution CONTINUES — this
   partial-failure tolerance is the load-bearing property: a Paperclip
   timeout must not block the Clerk delete (step 12, always last, so a
@@ -32,6 +34,7 @@ for them (see the inline notes at those call sites):
 
   spec #1  -> "paperclip_company"     (PaperclipAdminClient.delete_company)
   spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
+  (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   spec #3  -> "ecs_service"           (ecs_manager.delete_user_service)
   spec #4  -> "efs_workspace_dir"     (Workspace.delete_user_dir)
   spec #5  -> folded into "ecs_service" (see note below)
@@ -41,7 +44,9 @@ for them (see the inline notes at those call sites):
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
   spec #11 -> "usage_counters" / "paperclip_row" / "billing_row" / "user_row"
               (containers row + channel-links already folded into
-              "ecs_service" — see note below)
+              "ecs_service" — see note below; "paperclip_row" also carries the
+              owner's ``__pending_brief__:`` item, which lives in the SAME
+              table under a prefixed key)
   spec #12 -> "clerk_user"            (clerk_admin.delete_user) -- ALWAYS LAST
 
 KNOWN GAP — NOT YET COVERED (honest, not "complete"): this orchestrator does
@@ -59,6 +64,13 @@ handed to another owner) and the ``agent-email-addresses`` table (once
 ``AGENT_EMAIL_DOMAIN`` is live, a wiped account leaves its address row
 pointing at a deleted owner, so inbound mail to that address has nowhere
 valid to route). No collaborator exists yet for either.
+
+The paperclip-companies table's OTHER prefixed key,
+``__org_create_claim__:{org_id}`` (``kind="org_create_claim"``), is out of
+reach by construction rather than by omission: it is keyed by Clerk org id and
+only ever written on the org branch of ``ensure_user_ready``, so a v1
+personal-owner wipe can never have created one. It becomes this orchestrator's
+problem on the same day org wipe does.
 """
 
 from __future__ import annotations
@@ -71,6 +83,7 @@ import httpx
 
 from core.auth import is_org_owner_id
 from core.billing.bedrock_aip import delete_owner_aips, delete_owner_bedrock_role
+from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
@@ -186,20 +199,53 @@ class WipeReport:
 class _Identifiers:
     """The identifier rows read up front, before any delete runs — steps
     6-11 (bedrock/metronome/stripe/DDB cleanup) all need values off these
-    rows, and some of those rows get deleted by earlier steps."""
+    rows, and some of those rows get deleted by earlier steps.
+
+    WHAT THIS SNAPSHOT IS NOT: authoritative about what exists. Every read
+    below is eventually consistent except ``get_pending_brief``, and all of
+    them are taken before the first teardown step runs — so a row written by a
+    provision (or an onboarding submission) that overlaps the wipe is missing
+    from it. Use it to CARRY values a later step can no longer read (ARNs off a
+    row an earlier step deletes) and to shape the preview. Never let it decide
+    that an idempotent delete can be skipped: that is how a wipe reports
+    success over a row it never touched. Two steps take the fresh answer
+    instead — ``bedrock_gate_tokens`` (re-reads consistently, deletes the
+    union) and ``paperclip_row`` (always attempts the pending-brief delete).
+
+    Still snapshot-gated, and knowingly: ``bedrock_aips`` / ``bedrock_role``
+    (an AIP minted mid-wipe survives, though the ``bedrock-aip-owners`` reverse
+    table still names it, unlike a gate-token row), the ``ecs_service`` step
+    itself, and the ``billing_row`` / ``user_row`` / paperclip-company deletes.
+    None of those rows is the sole handle on anything else, so the residue is
+    findable and a re-run clears it.
+    """
 
     user_row: dict | None
     container: dict | None
     paperclip: PaperclipCompany | None
     billing: dict | None
+    pending_brief: dict | None
+    """The owner's ``__pending_brief__:`` item, if any. Read independently of
+    ``paperclip`` because it is a SEPARATE item in the same table under a
+    prefixed key, and routinely outlives (or predates) the company row — the
+    funnel is answered during provisioning, so an owner whose seed never landed
+    has a pending brief and no company row at all."""
 
 
 async def _read_identifiers(owner_id: str) -> _Identifiers:
     user_row = await user_repo.get(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
-    paperclip = await PaperclipRepo(table_name="paperclip-companies").get(owner_id)
+    paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
+    paperclip = await paperclip_repo.get(owner_id)
+    pending_brief = await paperclip_repo.get_pending_brief(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
-    return _Identifiers(user_row=user_row, container=container, paperclip=paperclip, billing=billing)
+    return _Identifiers(
+        user_row=user_row,
+        container=container,
+        paperclip=paperclip,
+        billing=billing,
+        pending_brief=pending_brief,
+    )
 
 
 def _refuse_org_owners(owner_id: str) -> None:
@@ -312,6 +358,15 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_exists=(f"paperclip_user_id={ids.paperclip.paperclip_user_id}" if ids.paperclip else ""),
         detail_if_absent="no paperclip-companies row",
     )
+    gate_token_hashes = owner_gate_token_hashes(ids.container)
+    _preview_step(
+        steps,
+        system="bedrock_gate_tokens",
+        action="delete_gate_token_rows",
+        exists=bool(gate_token_hashes),
+        detail_if_exists=f"{len(gate_token_hashes)} gate-token row(s)",
+        detail_if_absent="no bedrock-gate token hash on containers row",
+    )
     _preview_step(
         steps,
         system="ecs_service",
@@ -399,13 +454,21 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         )
     )
 
+    paperclip_rows = [
+        label
+        for label, present in (
+            ("paperclip-companies row", ids.paperclip is not None),
+            ("pending_brief row", ids.pending_brief is not None),
+        )
+        if present
+    ]
     _preview_step(
         steps,
         system="paperclip_row",
         action="paperclip_repo.delete",
-        exists=ids.paperclip is not None,
-        detail_if_exists="paperclip-companies row",
-        detail_if_absent="no paperclip-companies row",
+        exists=bool(paperclip_rows),
+        detail_if_exists=" + ".join(paperclip_rows),
+        detail_if_absent="no paperclip-companies or pending_brief row",
     )
     _preview_step(
         steps,
@@ -507,6 +570,42 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     else:
         _skip(steps, "paperclip_aurora_user", "delete_paperclip_user", "no paperclip-companies row")
 
+    # --- Step 2b: bedrock-gate token rows ----------------------------------
+    # The gate-tokens table is keyed on the token hash with NO owner index, so
+    # the containers row — ``bedrock_gate_token_hash`` plus every hash tracked
+    # in ``bedrock_gate_superseded_hashes`` — is the only handle on an owner's
+    # rows. Step 3 below destroys that row (inside delete_user_service), so
+    # this is ordered ahead of it: a row that outlives its handle is
+    # unreachable forever — unfindable, unexpirable, and outside
+    # deny_gate_token's reach, at ``denied=False``. Four were stranded that way
+    # in prod by wipes run before this step existed.
+    #
+    # THE SNAPSHOT IS NOT AUTHORITATIVE HERE, and ordering alone does not make
+    # it so. ``_read_identifiers`` reads the containers row eventually
+    # consistently, and reads it before the Paperclip steps above run — so a
+    # ``mint_gate_token`` that landed just before the wipe, or concurrently with
+    # those steps, can leave its ``denied=False`` hash off ``ids.container``
+    # entirely. Re-read STRONGLY CONSISTENT at the moment of use and delete the
+    # UNION of both: deleting a hash twice is a free no-op, missing one is
+    # permanent. (Union, not replacement — a mint that superseded and pruned a
+    # hash between the two reads leaves it named only by the snapshot.)
+    #
+    # The window this cannot close — a mint between that read and the row's
+    # death — is closed by the sweep in step 3, off the DELETE's own ALL_OLD
+    # image. That sweep also backstops this step failing outright.
+    snapshot_gate_hashes = owner_gate_token_hashes(ids.container)
+
+    async def _s2b() -> str:
+        fresh = await container_repo.get_by_owner_id(owner_id, consistent=True)
+        hashes = list(dict.fromkeys([*snapshot_gate_hashes, *owner_gate_token_hashes(fresh)]))
+        if not hashes:
+            # chatgpt_oauth / byo_key owners never mint one — a genuine no-op.
+            return "no bedrock-gate token hash on containers row"
+        deleted = await delete_gate_token_rows(hashes)
+        return f"deleted {deleted} of {len(hashes)} gate-token row(s)"
+
+    await _step(steps, system="bedrock_gate_tokens", action="delete_gate_token_rows", fn=_s2b)
+
     # --- Step 3 (spec #3 + #5 folded): ECS service ------------------------
     # ecs_manager.delete_user_service already does, in the right internal
     # order: scale-to-0 + delete ECS service (spec #3) -> deregister the
@@ -521,8 +620,21 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     if ids.container is not None:
 
         async def _s3() -> str:
-            await get_ecs_manager().delete_user_service(owner_id)
-            return "ECS service + task-def + EFS access point + containers row + channel-links removed"
+            row_at_death = await get_ecs_manager().delete_user_service(owner_id)
+            detail = "ECS service + task-def + EFS access point + containers row + channel-links removed"
+            # FINAL SWEEP — the last moment any gate-token hash is reachable.
+            # ``delete_user_service`` returns the row's own ALL_OLD image, so
+            # this covers exactly what step 2b could not see: a hash minted
+            # after its strongly-consistent re-read, and every hash at all if
+            # that step failed. Already-deleted hashes cost a free no-op
+            # DeleteItem and are reported as 0, so no bookkeeping is needed to
+            # tell the two apart. A failure here fails THIS step rather than
+            # passing silently — the residue is real and the wipe is retryable.
+            late_hashes = owner_gate_token_hashes(row_at_death)
+            swept = await delete_gate_token_rows(late_hashes) if late_hashes else 0
+            if swept:
+                detail += f" (+ swept {swept} gate-token row(s) still named on the row at delete time)"
+            return detail
 
         await _step(steps, system="ecs_service", action="delete_user_service", fn=_s3)
     else:
@@ -632,15 +744,37 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     await _step(steps, system="usage_counters", action="delete_all_for_owner", fn=_s9a)
 
-    if ids.paperclip is not None:
+    # Both of this owner's items in paperclip-companies, not just the company
+    # row: the funnel answer lives in the SAME table under the prefixed key
+    # ``__pending_brief__:{owner_id}``, and it deliberately outlives a
+    # reprovision (see PaperclipRepo's "LIFETIME" note). It is the user's own
+    # typed words — "a social media agency for small restaurants" was one of
+    # the two found stranded in prod — so a wipe that leaves it behind retains
+    # content for an account we just deleted, in a row nothing will ever read
+    # or clean up again (the key is the Clerk id, which is never reissued).
+    # Folded into this step rather than given its own because it
+    # is the same table, the same owner, and the same "delete the rows we
+    # wrote" action — but it is NOT gated on the company row: the two exist
+    # independently, and the prod case that surfaced this was a "SKIPPED — no
+    # paperclip-companies row" wipe with a live pending_brief.
+    #
+    # Nor is it gated on the pending_brief snapshot. ``_read_identifiers`` runs
+    # before every Paperclip step above, so an onboarding submission that lands
+    # during the wipe leaves ``ids.pending_brief`` None while its item sits in
+    # the table — the exact residue this exists to remove. The delete is
+    # idempotent, so it is simply always attempted, and the step reports what
+    # DynamoDB says it actually removed rather than what the snapshot predicted.
+    async def _s9b() -> str:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        deleted: list[str] = []
+        if ids.paperclip is not None:
+            await repo.delete(owner_id)
+            deleted.append("paperclip-companies row deleted")
+        if await repo.delete_pending_brief(owner_id):
+            deleted.append("pending_brief row deleted")
+        return " + ".join(deleted) or "no paperclip-companies or pending_brief row"
 
-        async def _s9b() -> str:
-            await PaperclipRepo(table_name="paperclip-companies").delete(owner_id)
-            return "paperclip-companies row deleted"
-
-        await _step(steps, system="paperclip_row", action="paperclip_repo.delete", fn=_s9b)
-    else:
-        _skip(steps, "paperclip_row", "paperclip_repo.delete", "no paperclip-companies row")
+    await _step(steps, system="paperclip_row", action="paperclip_repo.delete", fn=_s9b)
 
     if ids.billing is not None:
 

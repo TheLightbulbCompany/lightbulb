@@ -768,6 +768,50 @@ async def _swap_hash_pointer(
         )
 
 
+def owner_gate_token_hashes(row: dict | None) -> list[str]:
+    """Every gate-token hash a containers ``row`` still names — the current
+    pointer plus each tracked superseded hash, order-preserving and de-duped.
+
+    The gate-tokens table is keyed on the hash and has no owner index, so this
+    list is the ONLY handle on an owner's rows. One definition of the set, used
+    by everything that has to cover all of it: ``deny_gate_token`` below, and
+    the account wipe (``core.services.account_wipe``), which deletes exactly
+    this set before the row that names it is destroyed.
+    """
+    row = row or {}
+    hashes = [row.get("bedrock_gate_token_hash"), *(row.get(_SUPERSEDED_FIELD) or [])]
+    return list(dict.fromkeys(h for h in hashes if h))
+
+
+async def delete_gate_token_rows(token_hashes: list[str]) -> int:
+    """Delete these gate-token rows outright; return how many existed.
+
+    For account teardown ONLY — the ordinary rotation path never deletes a row
+    without the liveness predicate's permission (``_drain_superseded``). Here
+    the whole account is going, so there is no container left to lock out, and
+    NOT deleting is the harmful direction: once the containers row naming these
+    hashes is gone, the rows can never be found, expired, or denied again (four
+    were stranded that way in prod, all at ``denied=False``).
+
+    Every hash is attempted even if one delete fails, and the first failure is
+    re-raised so the caller's step reports it rather than claiming success.
+    """
+    table = _tokens_table()
+    deleted = 0
+    failure: Exception | None = None
+    for token_hash in token_hashes:
+        try:
+            resp = await run_in_thread(table.delete_item, Key={"token_hash": token_hash}, ReturnValues="ALL_OLD")
+        except Exception as e:  # noqa: BLE001 — try every hash, raise the first failure
+            failure = failure or e
+            continue
+        if resp.get("Attributes"):
+            deleted += 1
+    if failure is not None:
+        raise failure
+    return deleted
+
+
 async def deny_gate_token(owner_id: str, denied: bool) -> None:
     """Flip the ``denied`` flag on EVERY gate-token row the owner can present.
 
@@ -797,12 +841,12 @@ async def deny_gate_token(owner_id: str, denied: bool) -> None:
     callers still see it.
     """
     row = await container_repo.get_by_owner_id(owner_id) or {}
-    hashes = [h for h in [row.get("bedrock_gate_token_hash"), *(row.get(_SUPERSEDED_FIELD) or [])] if h]
+    hashes = owner_gate_token_hashes(row)
     if not hashes:
         return
     table = _tokens_table()
     failure: Exception | None = None
-    for token_hash in dict.fromkeys(hashes):
+    for token_hash in hashes:
         try:
             await run_in_thread(
                 table.update_item,

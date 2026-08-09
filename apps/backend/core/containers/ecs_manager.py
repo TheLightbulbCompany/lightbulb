@@ -1663,7 +1663,7 @@ class EcsManager:
             "memory": new_memory,
         }
 
-    async def delete_user_service(self, user_id: str) -> None:
+    async def delete_user_service(self, user_id: str) -> dict | None:
         """Remove a user's ECS service and per-user resources entirely.
 
         1. Scale to 0 and delete ECS service
@@ -1673,6 +1673,15 @@ class EcsManager:
 
         Args:
             user_id: Clerk user ID.
+
+        Returns:
+            The containers row as it was at the instant it was deleted, or
+            None if there was none. Callers tearing an account down use it to
+            reach state the row is the only handle on (the bedrock-gate token
+            hashes) — see ``container_repo.delete``. It is the DELETE's own
+            ``ALL_OLD`` image, not the read above it, because the read is
+            eventually consistent and a row written after it would otherwise
+            be both undeleted and unreadable.
 
         Raises:
             EcsManagerError: If the ECS API calls fail.
@@ -1737,7 +1746,14 @@ class EcsManager:
             if container.get("access_point_id"):
                 self._delete_access_point(container["access_point_id"])
 
-            await container_repo.delete(user_id)
+        # UNCONDITIONAL, and after the per-user cleanup above. The read is
+        # eventually consistent, so a row created (or re-created by a racing
+        # provision) since it was written can come back empty here — gating the
+        # delete on it leaves that row behind, along with everything only it
+        # names. DeleteItem is a no-op when there is genuinely nothing, and its
+        # ALL_OLD image is the authoritative answer to "what did this row say
+        # when it died", which is what the account wipe sweeps.
+        deleted = await container_repo.delete(user_id)
 
         # Sweep channel_links rows for this owner
         try:
@@ -1759,6 +1775,7 @@ class EcsManager:
             )
 
         logger.info("Deleted ECS service %s for user %s", service_name, user_id)
+        return deleted
 
     # ------------------------------------------------------------------
     # Discovery and health

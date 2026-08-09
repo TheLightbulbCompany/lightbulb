@@ -355,6 +355,31 @@ async def test_delete(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_delete_returns_the_row_as_it_was(dynamodb_table):
+    """ALL_OLD. The row is the only handle on the owner's bedrock-gate token
+    hashes, so an account teardown has to learn what it named at the instant it
+    died — a read before the delete can miss a concurrent write."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_all_old", {"gateway_token": "tao", "status": "running"})
+    # swap_gate_token_hash is the only writer of these two fields.
+    await container_repo.swap_gate_token_hash(
+        "user_all_old",
+        new_hash="hash-current",
+        superseded=["hash-old"],
+        expected_prior_hash=None,
+    )
+
+    deleted = await container_repo.delete("user_all_old")
+
+    assert deleted is not None
+    assert deleted["bedrock_gate_token_hash"] == "hash-current"
+    assert deleted["bedrock_gate_superseded_hashes"] == ["hash-old"]
+    # Idempotent, and says so: nothing was there the second time.
+    assert await container_repo.delete("user_all_old") is None
+
+
+@pytest.mark.asyncio
 async def test_upsert_org_container(dynamodb_table):
     """Org containers store owner_type and org_id fields."""
     from core.repositories import container_repo

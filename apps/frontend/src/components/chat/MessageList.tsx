@@ -5,7 +5,7 @@ import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
-import { ChatErrorCard } from "@/components/chat/ChatErrorCard";
+import { ChatErrorCard, isTrialPaywallCode } from "@/components/chat/ChatErrorCard";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism-light";
@@ -822,6 +822,7 @@ const BubbleGroup = React.memo(BubbleGroupImpl, (prev, next) =>
   prev.agentName === next.agentName &&
   prev.isStreaming === next.isStreaming &&
   prev.isLastAssistantGroup === next.isLastAssistantGroup &&
+  prev.paywallItemKey === next.paywallItemKey &&
   prev.onOpenFile === next.onOpenFile &&
   groupEquals(prev.group, next.group),
 );
@@ -831,12 +832,17 @@ function BubbleGroupImpl({
   agentName,
   isStreaming,
   isLastAssistantGroup,
+  paywallItemKey,
   onOpenFile,
 }: {
   group: RenderGroup;
   agentName?: string;
   isStreaming?: boolean;
   isLastAssistantGroup?: boolean;
+  /** Key of the ONE transcript item allowed to render the live conversion
+   *  paywall — the newest trial-coded error card. See the computation at the
+   *  call site for why this is not simply the newest bubble. */
+  paywallItemKey?: string | null;
   onOpenFile?: (path: string) => void;
 }) {
   if (group.side === "btw") {
@@ -883,12 +889,17 @@ function BubbleGroupImpl({
               key={item.key}
               item={item}
               onOpenFile={onOpenFile}
-              // Only the newest bubble of the newest assistant group gets the
-              // live paywall. Otherwise a capped owner who sends three more
-              // messages stacks three ProviderPickers, each with its own
-              // credit amount — set $100 on the visible one, scroll up, buy an
-              // older one's $20, charged an amount the screen never quoted.
-              interactive={isLastAssistantGroup && idx === group.items.length - 1}
+              // Exactly ONE item in the whole transcript may render the live
+              // paywall: the newest trial-coded error card (paywallItemKey,
+              // computed once at the top level). Not "the newest bubble" —
+              // a mid-run cap emits the reclassified trial error and then
+              // OpenClaw's raw rate-limited frame ~20ms later, so the newest
+              // bubble is reliably NOT the cap card and that predicate
+              // demoted the paywall to a settings link in exactly the
+              // scenario it exists for (observed live in prod). The
+              // one-key rule still prevents stacked pickers with divergent
+              // credit-amount state.
+              interactive={item.key === paywallItemKey}
             />
           ))}
         </div>
@@ -1068,6 +1079,26 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       }
     }
 
+    // The ONE item allowed to render the live conversion paywall: the newest
+    // trial-coded error card anywhere in the transcript. Searched backward so
+    // repeated capped turns bless only the latest (no stacked pickers with
+    // divergent credit-amount state), and searched by CODE rather than
+    // position because the cap card is reliably NOT the last bubble — a
+    // mid-run cap emits the reclassified trial error and then OpenClaw's raw
+    // rate-limited frame ~20ms behind it (prod logs: 17:58:44.187 vs .208).
+    let paywallItemKey: string | null = null;
+    outer: for (let i = renderGroups.length - 1; i >= 0; i--) {
+      if (renderGroups[i].side !== "assistant") continue;
+      const items = renderGroups[i].items;
+      for (let j = items.length - 1; j >= 0; j--) {
+        const it = items[j];
+        if (it.kind === "message" && isTrialPaywallCode(it.message.errorCode)) {
+          paywallItemKey = it.key;
+          break outer;
+        }
+      }
+    }
+
     return (
       <div
         ref={containerRef}
@@ -1097,6 +1128,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               agentName={agentName}
               isStreaming={isStreaming}
               isLastAssistantGroup={idx === lastAssistantGroupIndex}
+              paywallItemKey={paywallItemKey}
               onOpenFile={onOpenFile}
             />
           ))}

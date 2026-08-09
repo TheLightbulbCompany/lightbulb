@@ -32,6 +32,7 @@ for them (see the inline notes at those call sites):
 
   spec #1  -> "paperclip_company"     (PaperclipAdminClient.delete_company)
   spec #2  -> "paperclip_aurora_user" (paperclip_user_delete.delete_paperclip_user)
+  (no spec row) -> "bedrock_gate_tokens" (bedrock_gate_tokens.delete_gate_token_rows)
   spec #3  -> "ecs_service"           (ecs_manager.delete_user_service)
   spec #4  -> "efs_workspace_dir"     (Workspace.delete_user_dir)
   spec #5  -> folded into "ecs_service" (see note below)
@@ -41,7 +42,9 @@ for them (see the inline notes at those call sites):
   spec #10 -> "stripe"                (billing_service.delete_stripe_customer)
   spec #11 -> "usage_counters" / "paperclip_row" / "billing_row" / "user_row"
               (containers row + channel-links already folded into
-              "ecs_service" — see note below)
+              "ecs_service" — see note below; "paperclip_row" also carries the
+              owner's ``__pending_brief__:`` item, which lives in the SAME
+              table under a prefixed key)
   spec #12 -> "clerk_user"            (clerk_admin.delete_user) -- ALWAYS LAST
 
 KNOWN GAP — NOT YET COVERED (honest, not "complete"): this orchestrator does
@@ -59,6 +62,13 @@ handed to another owner) and the ``agent-email-addresses`` table (once
 ``AGENT_EMAIL_DOMAIN`` is live, a wiped account leaves its address row
 pointing at a deleted owner, so inbound mail to that address has nowhere
 valid to route). No collaborator exists yet for either.
+
+The paperclip-companies table's OTHER prefixed key,
+``__org_create_claim__:{org_id}`` (``kind="org_create_claim"``), is out of
+reach by construction rather than by omission: it is keyed by Clerk org id and
+only ever written on the org branch of ``ensure_user_ready``, so a v1
+personal-owner wipe can never have created one. It becomes this orchestrator's
+problem on the same day org wipe does.
 """
 
 from __future__ import annotations
@@ -71,6 +81,7 @@ import httpx
 
 from core.auth import is_org_owner_id
 from core.billing.bedrock_aip import delete_owner_aips, delete_owner_bedrock_role
+from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_token_hashes
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
@@ -192,14 +203,28 @@ class _Identifiers:
     container: dict | None
     paperclip: PaperclipCompany | None
     billing: dict | None
+    pending_brief: dict | None
+    """The owner's ``__pending_brief__:`` item, if any. Read independently of
+    ``paperclip`` because it is a SEPARATE item in the same table under a
+    prefixed key, and routinely outlives (or predates) the company row — the
+    funnel is answered during provisioning, so an owner whose seed never landed
+    has a pending brief and no company row at all."""
 
 
 async def _read_identifiers(owner_id: str) -> _Identifiers:
     user_row = await user_repo.get(owner_id)
     container = await container_repo.get_by_owner_id(owner_id)
-    paperclip = await PaperclipRepo(table_name="paperclip-companies").get(owner_id)
+    paperclip_repo = PaperclipRepo(table_name="paperclip-companies")
+    paperclip = await paperclip_repo.get(owner_id)
+    pending_brief = await paperclip_repo.get_pending_brief(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
-    return _Identifiers(user_row=user_row, container=container, paperclip=paperclip, billing=billing)
+    return _Identifiers(
+        user_row=user_row,
+        container=container,
+        paperclip=paperclip,
+        billing=billing,
+        pending_brief=pending_brief,
+    )
 
 
 def _refuse_org_owners(owner_id: str) -> None:
@@ -312,6 +337,15 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_exists=(f"paperclip_user_id={ids.paperclip.paperclip_user_id}" if ids.paperclip else ""),
         detail_if_absent="no paperclip-companies row",
     )
+    gate_token_hashes = owner_gate_token_hashes(ids.container)
+    _preview_step(
+        steps,
+        system="bedrock_gate_tokens",
+        action="delete_gate_token_rows",
+        exists=bool(gate_token_hashes),
+        detail_if_exists=f"{len(gate_token_hashes)} gate-token row(s)",
+        detail_if_absent="no bedrock-gate token hash on containers row",
+    )
     _preview_step(
         steps,
         system="ecs_service",
@@ -399,13 +433,21 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         )
     )
 
+    paperclip_rows = [
+        label
+        for label, present in (
+            ("paperclip-companies row", ids.paperclip is not None),
+            ("pending_brief row", ids.pending_brief is not None),
+        )
+        if present
+    ]
     _preview_step(
         steps,
         system="paperclip_row",
         action="paperclip_repo.delete",
-        exists=ids.paperclip is not None,
-        detail_if_exists="paperclip-companies row",
-        detail_if_absent="no paperclip-companies row",
+        exists=bool(paperclip_rows),
+        detail_if_exists=" + ".join(paperclip_rows),
+        detail_if_absent="no paperclip-companies or pending_brief row",
     )
     _preview_step(
         steps,
@@ -506,6 +548,30 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         await _step(steps, system="paperclip_aurora_user", action="delete_paperclip_user", fn=_s2)
     else:
         _skip(steps, "paperclip_aurora_user", "delete_paperclip_user", "no paperclip-companies row")
+
+    # --- Step 2b: bedrock-gate token rows ----------------------------------
+    # The gate-tokens table is keyed on the token hash with NO owner index, so
+    # the containers row — ``bedrock_gate_token_hash`` plus every hash tracked
+    # in ``bedrock_gate_superseded_hashes`` — is the only handle on an owner's
+    # rows. Step 3 below destroys that row (inside delete_user_service), so
+    # this is ordered ahead of it: a row that outlives its handle is
+    # unreachable forever — unfindable, unexpirable, and outside
+    # deny_gate_token's reach, at ``denied=False``. Four were stranded that way
+    # in prod by wipes run before this step existed. (The hashes themselves
+    # come off the up-front identifier snapshot, the same way the bedrock_aips
+    # step's ARNs do, so the ordering is belt-and-braces rather than the only
+    # thing keeping this correct.)
+    gate_token_hashes = owner_gate_token_hashes(ids.container)
+    if gate_token_hashes:
+
+        async def _s2b(hashes: list[str] = gate_token_hashes) -> str:
+            deleted = await delete_gate_token_rows(hashes)
+            return f"deleted {deleted} of {len(hashes)} gate-token row(s)"
+
+        await _step(steps, system="bedrock_gate_tokens", action="delete_gate_token_rows", fn=_s2b)
+    else:
+        # chatgpt_oauth / byo_key owners never mint one — a genuine no-op.
+        _skip(steps, "bedrock_gate_tokens", "delete_gate_token_rows", "no bedrock-gate token hash on containers row")
 
     # --- Step 3 (spec #3 + #5 folded): ECS service ------------------------
     # ecs_manager.delete_user_service already does, in the right internal
@@ -632,15 +698,32 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
     await _step(steps, system="usage_counters", action="delete_all_for_owner", fn=_s9a)
 
-    if ids.paperclip is not None:
+    # Both of this owner's items in paperclip-companies, not just the company
+    # row: the funnel answer lives in the SAME table under the prefixed key
+    # ``__pending_brief__:{owner_id}``, and it deliberately outlives a
+    # reprovision (see PaperclipRepo's "LIFETIME" note), so a wipe that leaves
+    # it behind hands the next account created on this Clerk id the previous
+    # one's brief. Folded into this step rather than given its own because it
+    # is the same table, the same owner, and the same "delete the rows we
+    # wrote" action — but it is NOT gated on the company row: the two exist
+    # independently, and the prod case that surfaced this was a "SKIPPED — no
+    # paperclip-companies row" wipe with a live pending_brief.
+    if ids.paperclip is not None or ids.pending_brief is not None:
 
         async def _s9b() -> str:
-            await PaperclipRepo(table_name="paperclip-companies").delete(owner_id)
-            return "paperclip-companies row deleted"
+            repo = PaperclipRepo(table_name="paperclip-companies")
+            deleted: list[str] = []
+            if ids.paperclip is not None:
+                await repo.delete(owner_id)
+                deleted.append("paperclip-companies row deleted")
+            if ids.pending_brief is not None:
+                await repo.delete_pending_brief(owner_id)
+                deleted.append("pending_brief row deleted")
+            return " + ".join(deleted)
 
         await _step(steps, system="paperclip_row", action="paperclip_repo.delete", fn=_s9b)
     else:
-        _skip(steps, "paperclip_row", "paperclip_repo.delete", "no paperclip-companies row")
+        _skip(steps, "paperclip_row", "paperclip_repo.delete", "no paperclip-companies or pending_brief row")
 
     if ids.billing is not None:
 

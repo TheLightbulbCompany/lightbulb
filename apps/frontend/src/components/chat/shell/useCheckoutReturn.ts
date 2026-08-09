@@ -48,7 +48,19 @@ export function useCheckoutReturn(): { showSubscriptionSuccess: boolean } {
   // automatically via useCredits' refreshInterval/onFocus, and the
   // ProvisioningStepper re-evaluates needsProviderStep on URL change so
   // the wizard advances out of CreditsStep on success.
-  const cameFromCreditsCheckout = searchParams.get("credits") !== null;
+  // Match the RETURN markers by value, not merely "the param exists".
+  //
+  // `?credits=bundled` is a different kind of thing: not a marker that a
+  // credit Checkout just finished, but a live instruction to CreditsStep —
+  // "this balance was already paid for in the subscription Checkout, show the
+  // waiting state instead of a purchase form" — that must survive for as long
+  // as that step is mounted. Deleting on `!== null` stripped it on the first
+  // render, so `awaitingBundledGrant` was never true and the owner who had
+  // just paid $150 was shown a live second purchase form anyway. Verified on
+  // dev: the browser landed on /chat?provider=bedrock_claude with both
+  // `checkout` and `credits` already gone.
+  const creditsParam = searchParams.get("credits");
+  const cameFromCreditsCheckout = creditsParam === "success" || creditsParam === "cancel";
   useEffect(() => {
     if (!cameFromCreditsCheckout) return;
     const params = new URLSearchParams(searchParams.toString());

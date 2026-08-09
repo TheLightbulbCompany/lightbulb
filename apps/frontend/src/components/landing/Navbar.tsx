@@ -8,6 +8,16 @@ import { useAuth, UserButton } from "@clerk/nextjs";
 import { Logo } from "@/components/Logo";
 import { capture } from "@/lib/analytics";
 
+const LANDING_NAV_SECTIONS: ReadonlyArray<{ id: string; selector?: string }> = [
+  { id: "home", selector: ".ld-hero" },
+  { id: "team" },
+  { id: "marketplace" },
+  { id: "features" },
+  { id: "pricing" },
+  { id: "faq" },
+  { id: "goosetown" },
+];
+
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -38,15 +48,10 @@ export function Navbar() {
       clickHandlers.push(handler);
     });
 
-    const sections = [
-      { id: "home", el: document.querySelector(".ld-hero") },
-      { id: "features", el: document.getElementById("features") },
-      { id: "team", el: document.getElementById("team") },
-      { id: "marketplace", el: document.getElementById("marketplace") },
-      { id: "pricing", el: document.getElementById("pricing") },
-      { id: "faq", el: document.getElementById("faq") },
-      { id: "goosetown", el: document.getElementById("goosetown") },
-    ].filter((s) => s.el);
+    const sections = LANDING_NAV_SECTIONS.map((section) => ({
+      id: section.id,
+      el: section.selector ? document.querySelector(section.selector) : document.getElementById(section.id),
+    })).filter((s) => s.el);
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -94,14 +99,14 @@ export function Navbar() {
         <Link href="/" data-section="home" className={initialActive("home")}>
           Home
         </Link>
-        <Link href={anchor("features")} data-section="features" className={initialActive("features")}>
-          Features
-        </Link>
         <Link href={anchor("team")} data-section="team" className={initialActive("team")}>
           Team
         </Link>
         <Link href={anchor("marketplace")} data-section="marketplace" className={initialActive("marketplace")}>
           Marketplace
+        </Link>
+        <Link href={anchor("features")} data-section="features" className={initialActive("features")}>
+          Features
         </Link>
         <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
           Pricing
@@ -109,11 +114,11 @@ export function Navbar() {
         <Link href={anchor("faq")} data-section="faq" className={initialActive("faq")}>
           FAQ
         </Link>
-        <Link href="/blog" data-section="blog" className={initialActive("blog")}>
-          Blog
-        </Link>
         <Link href={anchor("goosetown")} data-section="goosetown" className={initialActive("goosetown")}>
           GooseTown<span className="nav-alpha">alpha</span>
+        </Link>
+        <Link href="/blog" data-section="blog" className={initialActive("blog")}>
+          Blog
         </Link>
         {isLoaded && !isSignedIn && (
           <Link href="/sign-in" className="nav-mobile-login">

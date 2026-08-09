@@ -221,6 +221,27 @@ const _historyPaging = new Map<string, { nextOffset: number; hasMore: boolean }>
 // few times lets the store come up before we conclude the session is empty.
 // One entry per retry; the array length caps the number of attempts.
 const HISTORY_EMPTY_RETRY_DELAYS_MS = [500, 1250, 3000];
+// Post-reachable grace re-reads: the gateway answering health does not mean
+// the session store finished loading in the same instant, so one near-
+// immediate and one short-backoff re-read run before "empty" is believed.
+const HISTORY_EMPTY_CONFIRM_DELAYS_MS = [250, 2000];
+// While the container is UNREACHABLE, empty is not evidence of anything —
+// a parked trial box takes minutes to wake (measured 5m30s on prod,
+// 2026-08-09), so the quick ladder above is hopeless there. Keep re-reading
+// on a slow cadence until the gateway answers, bounded well past the worst
+// observed wake. The 2026-08-09 prod incident is the reference: a General
+// session with 127 stored messages rendered the new-chat bootstrap because
+// the 4.75s ladder concluded "empty" 4½ minutes before the store came up.
+const HISTORY_WAKE_RETRY_MS = 5_000;
+// Wall-clock, NOT an attempt count: a hung backend leaves each RPC waiting
+// its 30s default timeout, so "120 attempts at 5s" could actually hold the
+// skeleton for over an hour. The deadline bounds what the owner experiences
+// regardless of how long individual attempts take (Codex P2 on this PR).
+const HISTORY_WAKE_DEADLINE_MS = 10 * 60_000;
+// The health probe gets a short timeout of its own — its only job is
+// distinguishing "container down" from "container up, store lagging", and a
+// 30s hang per round would triple the cadence.
+const HISTORY_PROBE_TIMEOUT_MS = 5_000;
 // Sessions whose last chat.history response was trimmed by the backend to fit
 // the WS frame limit (payload carried `truncated: true`) — the transcript
 // starts mid-conversation and the UI says so.
@@ -835,13 +856,19 @@ export function useAgentChat(
     // so this must run first to re-mark the hook mounted and keep the first
     // fetch's retry loop alive.
     historyEffectMountedRef.current = true;
-    if (historyLoadedRef.current.has(cacheKey)) return;
+    // The latched (StrictMode phantom / flicker re-mount) run must STILL fall
+    // through to register the cleanup below. An early `return` here leaves
+    // the final unmount with no cleanup to call — React only invokes the most
+    // recent setup's cleanup — so historyEffectMountedRef stays true forever
+    // and the wake-phase retry chain keeps firing RPCs and mutating module
+    // state from a dead hook (Codex P2 on this PR).
+    const alreadyLatched = historyLoadedRef.current.has(cacheKey);
     // Cached transcript paints instantly, but a run that completed while
     // this hook was unmounted only exists server-side — so always fetch
     // once per mount and let the server result replace the cache.
     const hasCache = _messageCache.has(cacheKey);
     const sessionKey = buildChatSessionKey(agentId, sessionName, activeSessionId);
-    if (!hasCache) {
+    if (!alreadyLatched && !hasCache) {
       Promise.resolve().then(() => setHistoryLoadState("loading"));
     }
     const mutationSeqAtIssue = transcriptMutationSeqRef.current;
@@ -849,13 +876,26 @@ export function useAgentChat(
     // the first resolves (an isConnected flicker, a StrictMode double-mount)
     // would each pass the has()-guard above and fire a duplicate chat.history.
     // The `.catch` un-latches so a failed fetch still retries on the next run.
-    historyLoadedRef.current.add(cacheKey);
+    if (!alreadyLatched) historyLoadedRef.current.add(cacheKey);
 
     // Stable Set (the ref is never reassigned); captured for the cleanup so it
     // doesn't read ref.current there (react-hooks/exhaustive-deps).
     const loadedKeys = historyLoadedRef.current;
 
-    const runFetch = (attempt: number): void => {
+    const isStillCurrent = (): boolean =>
+      historyEffectMountedRef.current &&
+      agentIdRef.current === agentId &&
+      activeSessionIdRef.current === (activeSessionId ?? null);
+    const scheduleRefetch = (fn: () => void, ms: number): void => {
+      historyRetryTimerRef.current = setTimeout(() => {
+        historyRetryTimerRef.current = null;
+        fn();
+      }, ms);
+    };
+    // First probe-rejection timestamp: the wake deadline is measured from
+    // here, spanning the whole recursive retry chain of this effect run.
+    let wakeStartedAt: number | null = null;
+    const runFetch = (attempt: number, phase: "quick" | "confirm" | "wake" = "quick"): void => {
       sendReq("chat.history", { sessionKey, limit: HISTORY_PAGE_SIZE, offset: 0 })
         .then((result: unknown) => {
           const historyResult = result as {
@@ -905,27 +945,77 @@ export function useAgentChat(
             if (!hasCache) {
               // An empty-but-200 read is NOT a reliable "authoritatively empty"
               // signal (container mid-restart/update, session store not yet
-              // loaded, session-key casing mismatch, or a trial container still
-              // waking from scale-to-zero all return it). While we're still on
-              // this session and have retries left, re-read after a short
-              // backoff (the store loads shortly after the WS connects) and stay
-              // on the loading skeleton — never flash the bootstrap suggestion
-              // for a conversation that exists (it "comes back" once the
-              // container is up). Only after the retries exhaust — or if the
-              // user already switched away — do we conclude it is empty. (The
-              // cleanest long-term fix is a backend authoritative-empty marker
-              // on chat.history; until then this bounded retry is the frontend
-              // guard.)
-              const stillCurrent =
-                historyEffectMountedRef.current &&
-                agentIdRef.current === agentId &&
-                activeSessionIdRef.current === (activeSessionId ?? null);
-              if (stillCurrent && attempt < HISTORY_EMPTY_RETRY_DELAYS_MS.length) {
-                historyRetryTimerRef.current = setTimeout(() => {
-                  historyRetryTimerRef.current = null;
-                  runFetch(attempt + 1);
-                }, HISTORY_EMPTY_RETRY_DELAYS_MS[attempt]);
-                return; // keep isLoadingHistory true (skeleton); decide later
+              // loaded, or a trial container still waking from scale-to-zero
+              // all return it). The quick ladder below covers store-lag on a
+              // LIVE container. It cannot cover a wake: a parked trial box
+              // takes minutes (measured 5m30s), so after the ladder exhausts
+              // we ask the gateway whether the container is even reachable —
+              // a health RPC down the same pool chat.history rides — before
+              // believing "empty".
+              //
+              //   reachable + still empty  -> two grace re-reads (the store
+              //     can lag the socket by a beat), then conclude bootstrap.
+              //   unreachable              -> the read said NOTHING. Keep the
+              //     loading skeleton and re-read on a slow cadence until the
+              //     container answers (bounded ~10min). Concluding here is
+              //     the amnesia bug: a returning owner with a full transcript
+              //     got the new-chat bootstrap because a 4.75s ladder raced a
+              //     5-minute wake (prod, 2026-08-09).
+              if (!isStillCurrent()) {
+                // Switched away mid-read: this empty read says NOTHING about
+                // the session, and the transcript view belongs to another one
+                // now. Un-latch so a revisit refetches, and flag nothing —
+                // falling through to the bootstrap flag here painted the
+                // new-chat suggestion over a full transcript on return, with
+                // the latch blocking the refetch that would have corrected it
+                // (Codex P1 on this PR; the wake loop widened this window
+                // from 4.75s to minutes).
+                loadedKeys.delete(cacheKey);
+                return;
+              }
+              {
+                if (phase === "quick" && attempt < HISTORY_EMPTY_RETRY_DELAYS_MS.length) {
+                  scheduleRefetch(
+                    () => runFetch(attempt + 1, "quick"),
+                    HISTORY_EMPTY_RETRY_DELAYS_MS[attempt],
+                  );
+                  return; // keep isLoadingHistory true (skeleton); decide later
+                }
+                if (phase === "confirm" && attempt < HISTORY_EMPTY_CONFIRM_DELAYS_MS.length) {
+                  scheduleRefetch(
+                    () => runFetch(attempt + 1, "confirm"),
+                    HISTORY_EMPTY_CONFIRM_DELAYS_MS[attempt],
+                  );
+                  return;
+                }
+                if (
+                  phase !== "confirm" &&
+                  (wakeStartedAt === null || Date.now() - wakeStartedAt < HISTORY_WAKE_DEADLINE_MS)
+                ) {
+                  sendReq("health", undefined, HISTORY_PROBE_TIMEOUT_MS)
+                    .then(() => {
+                      if (!isStillCurrent()) {
+                        loadedKeys.delete(cacheKey); // let a revisit refetch
+                        return;
+                      }
+                      // First grace re-read rides the first confirm delay —
+                      // an immediate re-read would race the same store-lag
+                      // the grace period exists for.
+                      scheduleRefetch(
+                        () => runFetch(1, "confirm"),
+                        HISTORY_EMPTY_CONFIRM_DELAYS_MS[0],
+                      );
+                    })
+                    .catch(() => {
+                      if (!isStillCurrent()) {
+                        loadedKeys.delete(cacheKey);
+                        return;
+                      }
+                      if (wakeStartedAt === null) wakeStartedAt = Date.now();
+                      scheduleRefetch(() => runFetch(attempt, "wake"), HISTORY_WAKE_RETRY_MS);
+                    });
+                  return; // probe in flight; skeleton stays
+                }
               }
               _needsBootstrap.add(cacheKey);
             }
@@ -954,7 +1044,7 @@ export function useAgentChat(
         });
     };
 
-    runFetch(0);
+    if (!alreadyLatched) runFetch(0);
 
     return () => {
       // Mark this hook's history effect unmounted. A StrictMode phantom cleanup

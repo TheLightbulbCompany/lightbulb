@@ -121,14 +121,26 @@ describe("useAgentChat — empty chat.history read is retried, not treated as au
     expect(result.current.needsBootstrap).toBe(false);
 
     await advance(3000);
-    // Retries exhausted (4 reads total) — NOW it is authoritatively empty.
+    // Quick ladder exhausted (4 reads). NOT authoritative yet: the hook now
+    // probes the gateway (health resolves here — the catch-all mock answers
+    // every method), and a REACHABLE container earns two grace re-reads
+    // because the session store can lag the socket by a beat.
     expect(historyCalls()).toBe(4);
+    expect(result.current.needsBootstrap).toBe(false);
+
+    await advance(0); // health probe microtask -> confirm phase armed
+    await advance(250);
+    expect(historyCalls()).toBe(5);
+    await advance(2000);
+    // Confirm re-reads exhausted against a reachable container — NOW empty
+    // is believed.
+    expect(historyCalls()).toBe(6);
     expect(result.current.needsBootstrap).toBe(true);
     expect(result.current.isLoadingHistory).toBe(false);
 
     // And it does not keep retrying forever.
     await advance(10000);
-    expect(historyCalls()).toBe(4);
+    expect(historyCalls()).toBe(6);
   });
 
   it("an isConnected flicker (or StrictMode re-mount) mid-fetch does NOT defeat the retry — no bootstrap on attempt 0", async () => {
@@ -191,10 +203,15 @@ describe("useAgentChat — empty chat.history read is retried, not treated as au
     expect(historyCalls()).toBe(2);
     expect(result.current.needsBootstrap).toBe(false);
 
-    // And it still eventually concludes empty after the bounded retries.
+    // And it still eventually concludes empty after the bounded retries —
+    // quick ladder, then the reachable-probe's two grace re-reads.
     await advance(1250);
     await advance(3000);
     expect(historyCalls()).toBe(4);
+    await advance(0); // health probe -> confirm phase
+    await advance(250);
+    await advance(2000);
+    expect(historyCalls()).toBe(6);
     expect(result.current.needsBootstrap).toBe(true);
     expect(result.current.isLoadingHistory).toBe(false);
   });

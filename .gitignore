@@ -72,3 +72,4 @@ apps/desktop/src-tauri/.sidecar-tmp/
 
 # Playwright MCP scratch
 .playwright-mcp/
+.codex-security/

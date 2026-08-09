@@ -716,3 +716,41 @@ def test_refund_non_admin_org_member_403(mock_table, mock_refund, org_member_cli
     assert resp.status_code == 403
     mock_table.assert_not_called()
     mock_refund.assert_not_called()
+
+
+class TestValidateReturnUrl:
+    """Stripe Checkout return URLs are client-supplied; anything off an
+    isol8.co origin is rejected before a session is ever created."""
+
+    def _validate(self, url):
+        from fastapi import HTTPException
+
+        from routers.marketplace_purchases import _validate_return_url
+
+        try:
+            return _validate_return_url(url, "success_url"), None
+        except HTTPException as e:
+            return None, e
+
+    def test_allows_isol8_origins(self):
+        for url in (
+            "https://isol8.co/deploy-success?session_id={CHECKOUT_SESSION_ID}",
+            "https://dev.isol8.co/listing/l1",
+            "https://company.isol8.co/deploy-success",
+            "http://localhost:3000/deploy-success",  # local dev
+        ):
+            ok, err = self._validate(url)
+            assert err is None, f"{url} should be allowed: {err and err.detail}"
+            assert ok == url
+
+    def test_rejects_foreign_and_lookalike_origins(self):
+        for url in (
+            "https://evil.com/phish",
+            "https://isol8.co.evil.com/phish",  # suffix lookalike
+            "https://notisol8.co/",
+            "http://isol8.co/",  # https required off-localhost
+            "javascript:alert(1)",
+            "",
+        ):
+            ok, err = self._validate(url)
+            assert err is not None and err.status_code == 400, f"{url} should be rejected"

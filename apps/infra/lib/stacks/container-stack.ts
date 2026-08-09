@@ -181,12 +181,20 @@ export class ContainerStack extends cdk.Stack {
       ],
     });
 
+    // Scoped to the only secrets per-user task defs inject: per-user BYOK
+    // LLM keys (ecs_manager._build_byo_secrets_for_user) and the shared gog
+    // keyring password (referenced by name below, so CDK cannot auto-grant
+    // it). Secret ARNs carry a random 6-char suffix, hence the trailing
+    // wildcards. Unscoped GetSecretValue would let a leaked execution-role
+    // credential read every secret in the account.
     this.taskExecutionRole.addToPolicy(
       new iam.PolicyStatement({
-        actions: [
-          "secretsmanager:GetSecretValue",
+        sid: "PerUserTaskSecrets",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${props.environment}/user-keys/*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${props.gogKeyringPasswordSecretName}*`,
         ],
-        resources: ["*"],
       }),
     );
 

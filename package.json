@@ -11,5 +11,10 @@
     "lint": "turbo run lint",
     "prepare": "git config core.hooksPath .githooks"
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "overrides": {
+      "protobufjs": "^7.6.1"
+    }
+  }
 }

@@ -903,12 +903,24 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // STS
+    // STS. GetCallerIdentity is resource-less; AssumeRole is scoped to the
+    // customer connector role only (aws-connector.yaml pins
+    // RoleName=isol8-connector = bedrock_aip.CONNECTOR_ROLE_NAME, and
+    // routers/connections.py is the sole assume_role caller). Unscoped
+    // AssumeRole would let a compromised backend assume ANY role in ANY
+    // account that trusts this principal.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "StsAccess",
-        actions: ["sts:GetCallerIdentity", "sts:AssumeRole"],
+        actions: ["sts:GetCallerIdentity"],
         resources: ["*"],
+      }),
+    );
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "StsAssumeConnectorRole",
+        actions: ["sts:AssumeRole"],
+        resources: ["arn:aws:iam::*:role/isol8-connector"],
       }),
     );
 

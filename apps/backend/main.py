@@ -533,7 +533,9 @@ app = FastAPI(
         "AI agent platform powered by OpenClaw. Personal agents with persistent memory and streaming LLM inference."
     ),
     version="2.0.0",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    # Schema off in prod like /docs — nothing consumes it there, and it maps
+    # the full route inventory (admin/debug/webhook shapes) for free.
+    openapi_url=None if settings.ENVIRONMENT == "prod" else f"{settings.API_V1_STR}/openapi.json",
     docs_url=None if settings.ENVIRONMENT == "prod" else "/docs",
     redoc_url=None if settings.ENVIRONMENT == "prod" else "/redoc",
     servers=(

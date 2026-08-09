@@ -23,6 +23,24 @@ from schemas import marketplace as schemas
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace-purchases"])
 
 
+def _validate_return_url(url: str, field: str) -> str:
+    """Restrict Stripe Checkout return URLs to Isol8-owned origins.
+
+    These are client-supplied; without the check an org admin could mint a
+    legitimate Stripe session that redirects buyers to an arbitrary domain
+    after payment (phishing with our checkout as the lure).
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and (host == "isol8.co" or host.endswith(".isol8.co")):
+        return url
+    if parsed.scheme == "http" and host in ("localhost", "127.0.0.1"):
+        return url  # local dev
+    raise HTTPException(status_code=400, detail=f"{field} must be an isol8.co URL")
+
+
 @router.post("/checkout")
 async def checkout(
     payload: schemas.CheckoutRequest,
@@ -41,8 +59,8 @@ async def checkout(
     stripe.api_key = settings.STRIPE_SECRET_KEY
     session = stripe.checkout.Session.create(
         mode="payment",
-        success_url=payload.success_url,
-        cancel_url=payload.cancel_url,
+        success_url=_validate_return_url(payload.success_url, "success_url"),
+        cancel_url=_validate_return_url(payload.cancel_url, "cancel_url"),
         customer_email=payload.email or None,
         line_items=[
             {

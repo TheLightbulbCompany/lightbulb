@@ -71,7 +71,9 @@ async def test_happy_path_writes_audit_and_tags_response(repo_mock, fake_auth, f
     assert call_kwargs["error_message"] is None
     assert call_kwargs["user_agent"] == "Mozilla/5.0 (test)"
     # First X-Forwarded-For hop
-    assert call_kwargs["ip"] == "203.0.113.1"
+    # Rightmost XFF hop: the ALB appends the true peer, the leftmost hop is
+    # client-supplied and spoofable.
+    assert call_kwargs["ip"] == "10.0.0.1"
     assert call_kwargs["elapsed_ms"] >= 0
 
 

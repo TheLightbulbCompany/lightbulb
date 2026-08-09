@@ -39,13 +39,21 @@ from core.repositories import admin_actions_repo
 logger = logging.getLogger(__name__)
 
 
-def _extract_client_ip(request: Any) -> str:
-    """First X-Forwarded-For hop (set by Vercel's edge), or client.host."""
+def extract_client_ip(request: Any) -> str:
+    """Rightmost X-Forwarded-For hop, or client.host.
+
+    The ALB APPENDS the peer IP it observed to any inbound XFF, so the
+    rightmost entry is the only hop an attacker cannot choose. The leftmost
+    hop is client-supplied and spoofable — reading it let forged source IPs
+    into audit rows (see the ProxyHeadersMiddleware residual-caveat note in
+    main.py). Falls back to request.client.host when no XFF is present
+    (local dev / tests).
+    """
     if request is None:
         return "unknown"
     xff = request.headers.get("x-forwarded-for", "") if hasattr(request, "headers") else ""
     if xff:
-        return xff.split(",")[0].strip()
+        return xff.split(",")[-1].strip()
     client = getattr(request, "client", None)
     return getattr(client, "host", "unknown") if client else "unknown"
 
@@ -156,7 +164,7 @@ def audit_admin_action(
             payload = _redact_payload(raw_payload, redact_paths)
 
             user_agent = _extract_user_agent(request)
-            ip = _extract_client_ip(request)
+            ip = extract_client_ip(request)
 
             started = time.monotonic()
             result_label = "success"

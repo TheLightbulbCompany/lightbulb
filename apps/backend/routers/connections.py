@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.billing import bedrock_aip
+from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -546,6 +547,16 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     match = _ROLE_ARN_RE.fullmatch(role_arn)
     if not match:
         raise HTTPException(status_code=400, detail="invalid role ARN")
+
+    # The backend's sts:AssumeRole IAM grant is scoped to role/isol8-connector
+    # (service-stack.ts StsAssumeConnectorRole), and the quick-create template
+    # pins that RoleName. Reject other names HERE so a hand-rolled role fails
+    # with a clear 400 at connect time, not an AccessDenied at vend time.
+    if role_arn.split(":role/", 1)[1] != CONNECTOR_ROLE_NAME:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be named {CONNECTOR_ROLE_NAME} (use the quick-create stack from aws-setup)",
+        )
 
     # ``region`` is owner-supplied and gets written into ~/.aws/config. Validate
     # it (when given) before storing or using it so a newline can't inject a

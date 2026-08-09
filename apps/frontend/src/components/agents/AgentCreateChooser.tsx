@@ -36,7 +36,7 @@ export function AgentCreateChooser({
         onClick={choose("hire", onHire)}
         className={
           cardClass +
-          " border-[var(--forest)] bg-[#e8f5e9]/60 hover:bg-[#e8f5e9]"
+          " border-[var(--forest)] bg-[var(--forest-tint)]/60 hover:bg-[var(--forest-tint)]"
         }
       >
         <span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--forest)]">

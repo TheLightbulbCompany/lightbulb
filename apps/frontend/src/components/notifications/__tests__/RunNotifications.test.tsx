@@ -4,7 +4,8 @@ import type { ComponentProps } from "react";
 import type { ChatIncomingMessage } from "@/hooks/useGateway";
 import { _resetTeamsEventsForTests } from "@/lib/teamsSubscription";
 
-vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+const capture = vi.fn();
+vi.mock("@/lib/analytics", () => ({ capture: (...a: unknown[]) => capture(...a) }));
 
 const notifyLoading = vi.fn();
 const notifySuccess = vi.fn();
@@ -113,6 +114,7 @@ beforeEach(() => {
   notifyAttention.mockClear();
   dismissNotification.mockClear();
   pushSearchParams.mockClear();
+  capture.mockClear();
 });
 
 describe("RunNotifications — a task paused on human input", () => {
@@ -143,6 +145,22 @@ describe("RunNotifications — a task paused on human input", () => {
     const params = pushSearchParams.mock.calls[0][0] as URLSearchParams;
     expect(params.get("panel")).toBe("teams-issue-detail");
     expect(params.get("detailId")).toBe("issue-1");
+  });
+
+  it("reports impressions distinctly from approvals", () => {
+    mount();
+    dispatchEvent("teams.activity.logged", pausedEvent);
+    dispatchEvent("teams.activity.logged", {
+      action: "approval.created",
+      entityType: "approval",
+      entityId: "ap-1",
+    });
+    const shown = capture.mock.calls
+      .filter((c) => c[0] === "run_notification_shown")
+      .map((c) => (c[1] as { source: string }).source);
+    // Both are `kind: "attention"`; source is the only thing separating a
+    // parked task from an approval in the funnel.
+    expect(shown).toEqual(["interaction", "approval"]);
   });
 
   it("clears the toast once the interaction is answered", () => {

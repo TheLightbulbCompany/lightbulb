@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { ReportButton } from "@/components/support/ReportButton";
@@ -104,6 +105,44 @@ export function notifyError(message: string, opts?: NotifyErrorOptions): string 
 }
 
 /**
+ * Gate codes that mean "the free tier is what ran out" — the only 402s that
+ * earn the conversion treatment. All three are raised by
+ * routers/teams/_guards.py exclusively for non-paid owners. A PAID owner's
+ * blocked states (credits_required, payment_past_due, subscription_required…)
+ * must stay ordinary errors: "Upgrade" is wrong copy for someone already
+ * paying. Today those arrive in a different payload shape anyway
+ * (provision_gate.Gate.to_payload puts the object under a top-level `blocked`
+ * key, not `blocked: true`), but the allowlist makes the rule explicit rather
+ * than an accident of shape.
+ */
+const CONVERSION_GATE_CODES: ReadonlySet<string> = new Set([
+  "trial_daily_cap",
+  "trial_expired",
+  "routines_require_subscription",
+]);
+
+/**
+ * The "Upgrade" action on a blocked-gate toast. A real client-side <Link> —
+ * /settings is a different Next route, and a hard navigation would tear down
+ * the whole workspace shell (live WebSocket, open panels) at exactly the
+ * moment the user is deciding whether to pay (the DockUnmountSentinel
+ * regression class ChatErrorCard documents). Custom JSX also means sonner
+ * does not auto-dismiss on click, so we dismiss explicitly — otherwise the
+ * prompt follows the user onto the very billing page it links to.
+ */
+function UpgradeLink({ toastId }: { toastId: string }) {
+  return (
+    <Link
+      href="/settings?panel=billing"
+      onClick={() => toast.dismiss(toastId)}
+      className="shrink-0 whitespace-nowrap rounded-md bg-[var(--forest)] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#0a5c3e]"
+    >
+      Upgrade
+    </Link>
+  );
+}
+
+/**
  * Structured `{blocked: true, code, message}` detail — the shape every trial /
  * subscription gate 402 in the system uses (see routers/teams/_guards.py).
  */
@@ -135,19 +174,14 @@ function blockedGateDetail(body: unknown): { code?: string; message?: string } |
 export function notifyApiError(err: unknown, fallback = "Something went wrong", opts?: NotifyOptions): string | number {
   if (err instanceof ApiError) {
     const gate = blockedGateDetail(err.body);
-    if (gate) {
-      return notifyAttention(gate.message || err.message || fallback, {
-        ...opts,
-        // One toast per gate, however many blocked clicks — sonner replaces
-        // by id, so a user retrying doesn't stack identical upgrade prompts.
-        dedupeKey: opts?.dedupeKey ?? `gate:${gate.code ?? "blocked"}`,
-        action: {
-          label: "Upgrade",
-          // notify.tsx is a plain module (no router hook available), and
-          // /settings is a different Next route anyway — a hard navigation is
-          // exactly what the cross-route <Link> in ChatErrorCard does too.
-          onClick: () => window.location.assign("/settings?panel=billing"),
-        },
+    if (gate && gate.code && CONVERSION_GATE_CODES.has(gate.code)) {
+      // One toast per gate, however many blocked clicks — sonner replaces
+      // by id, so a user retrying doesn't stack identical upgrade prompts.
+      const id = opts?.dedupeKey ?? `gate:${gate.code}`;
+      return toast.info(gate.message || err.message || fallback, {
+        id,
+        duration: Infinity,
+        action: <UpgradeLink toastId={id} />,
       });
     }
     return notifyError(err.message || fallback, {

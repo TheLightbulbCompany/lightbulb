@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 
 // Mock sonner so we can assert on toast calls without mounting a DOM Toaster.
@@ -77,24 +78,23 @@ describe("notifyApiError", () => {
   });
 });
 
-describe("notifyApiError — blocked gates convert instead of erroring", () => {
+describe("notifyApiError — free-tier gates convert instead of erroring", () => {
   const GATE_COPY = "You've used today's free usage. Resets at midnight UTC.";
-  const gateError = () =>
+  const gateError = (code = "trial_daily_cap") =>
     new ApiError(
       402,
-      { detail: { blocked: true, code: "trial_daily_cap", message: GATE_COPY } },
+      { detail: { blocked: true, code, message: GATE_COPY } },
       GATE_COPY,
       "req_402",
     );
 
-  it("renders a sticky attention toast with the gate copy and an Upgrade action", () => {
+  it("renders a sticky info toast with the gate copy and an Upgrade action", () => {
     notifyApiError(gateError(), "Failed to post comment");
     // Not a red Report-able error — the cap is the product working.
     expect(toastError).not.toHaveBeenCalled();
     const [msg, opts] = toastInfo.mock.calls.at(-1)!;
     expect(msg).toBe(GATE_COPY);
     expect(opts.duration).toBe(Infinity);
-    expect(opts.action).toMatchObject({ label: "Upgrade" });
   });
 
   it("dedupes by gate code so repeated blocked clicks replace one toast", () => {
@@ -102,20 +102,28 @@ describe("notifyApiError — blocked gates convert instead of erroring", () => {
     expect(toastInfo.mock.calls.at(-1)![1].id).toBe("gate:trial_daily_cap");
   });
 
-  it("navigates to the billing panel when Upgrade is clicked", () => {
-    const assign = vi.fn();
-    const original = window.location;
-    Object.defineProperty(window, "location", {
-      value: { ...original, assign },
-      writable: true,
-    });
-    try {
-      notifyApiError(gateError());
-      (toastInfo.mock.calls.at(-1)![1].action as { onClick: () => void }).onClick();
-      expect(assign).toHaveBeenCalledWith("/settings?panel=billing");
-    } finally {
-      Object.defineProperty(window, "location", { value: original, writable: true });
-    }
+  it("the Upgrade action is a client-side Link into the billing panel", () => {
+    // A <Link>, not window.location — a hard navigation would tear down the
+    // workspace shell at the moment the user is deciding whether to pay.
+    notifyApiError(gateError());
+    render(toastInfo.mock.calls.at(-1)![1].action as ReactElement);
+    const link = screen.getByRole("link", { name: "Upgrade" });
+    expect(link).toHaveAttribute("href", "/settings?panel=billing");
+  });
+
+  it("converts the routines subscription gate too", () => {
+    notifyApiError(gateError("routines_require_subscription"));
+    expect(toastInfo).toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("leaves PAID blocked codes on the reportable error path — Upgrade is wrong copy for a paying owner", () => {
+    notifyApiError(gateError("credits_required"));
+    expect(toastInfo).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalled();
+    // The gate copy still surfaces as the message (via the client's
+    // structured-detail promotion), just without the conversion framing.
+    expect(toastError.mock.calls.at(-1)![0]).toBe(GATE_COPY);
   });
 
   it("leaves non-blocked ApiErrors on the reportable error path", () => {

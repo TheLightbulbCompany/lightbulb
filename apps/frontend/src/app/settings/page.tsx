@@ -7,7 +7,8 @@ import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
 import { planLabel } from "@/lib/planLabel";
-import { useAuth, useUser, UserButton, useOrganization } from "@clerk/nextjs";
+import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/nextjs";
+import { useApi, ApiError } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
@@ -61,6 +62,120 @@ type Panel =
 // Profile Panel
 // =============================================================================
 
+const DANGER = "#b63025";
+
+// Self-serve account deletion (mirrors the mobile settings flow): explain
+// permanence, require the account email typed back (same guard the backend
+// enforces), run the server-side teardown, then sign out. Org members get the
+// support-only message — workspace deletion has per-member fan-out the wipe
+// orchestrator refuses, so the backend 403s it.
+function DeleteAccountCard() {
+  const { user } = useUser();
+  const { organization } = useOrganization();
+  const { signOut } = useClerk();
+  const api = useApi();
+
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const email = user?.primaryEmailAddress?.emailAddress ?? "";
+
+  const handleDelete = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/users/me/delete", { confirm_email: typed.trim() });
+      // The Clerk user is already gone server-side (last teardown step);
+      // signOut just clears the local session. If it throws, hard-redirect.
+      await signOut({ redirectUrl: "/" }).catch(() => {
+        window.location.href = "/";
+      });
+    } catch (err) {
+      const detail =
+        err instanceof ApiError && typeof (err.body as { detail?: unknown })?.detail === "string"
+          ? (err.body as { detail: string }).detail
+          : null;
+      setError(
+        detail === "email_mismatch"
+          ? "That email didn't match this account."
+          : detail === "deletion_incomplete"
+            ? "Deletion didn't finish — try again in a moment, or contact support@isol8.co."
+            : (detail ?? "Something went wrong — try again or contact support@isol8.co."),
+      );
+      setBusy(false);
+    }
+  }, [api, typed, signOut]);
+
+  return (
+    <div className="settings-card" style={{ borderColor: "rgba(182,48,37,.25)" }}>
+      <div className="settings-card-title" style={{ color: DANGER }}>Delete account</div>
+      {organization ? (
+        <div className="settings-card-desc">
+          Workspace accounts can&apos;t be deleted in-app — contact support@isol8.co.
+        </div>
+      ) : !open ? (
+        <>
+          <div className="settings-card-desc">
+            Permanently delete your account, agents, workspace, and data. This cannot be undone.
+          </div>
+          <button
+            type="button"
+            className="settings-btn-outline"
+            style={{ color: DANGER, borderColor: "rgba(182,48,37,.4)" }}
+            onClick={() => setOpen(true)}
+          >
+            Delete account…
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="settings-card-desc">
+            Type your account email ({email}) to confirm. This permanently deletes your account,
+            agents, workspace, and data — it cannot be undone.
+          </div>
+          <input
+            type="email"
+            className="settings-overage-input"
+            style={{ width: "100%", maxWidth: 360, marginBottom: 10 }}
+            placeholder={email}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={busy}
+            aria-label="Confirm account email"
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              className="settings-btn-outline"
+              style={{ color: "#fff", background: DANGER, borderColor: DANGER }}
+              onClick={handleDelete}
+              disabled={busy || typed.trim().toLowerCase() !== email.trim().toLowerCase()}
+            >
+              {busy && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+              Delete forever
+            </button>
+            <button
+              type="button"
+              className="settings-btn-outline"
+              onClick={() => { setOpen(false); setTyped(""); setError(null); }}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </div>
+          {error && (
+            <div className="settings-alert settings-alert-error" style={{ marginTop: 10 }}>
+              {error}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ProfilePanel() {
   const { user } = useUser();
   const { account } = useBilling();
@@ -101,6 +216,8 @@ function ProfilePanel() {
           To update your name, email, or password, use the account menu in the top-right corner of the app.
         </div>
       </div>
+
+      <DeleteAccountCard />
     </div>
   );
 }

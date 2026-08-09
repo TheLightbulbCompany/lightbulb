@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 
 // Covers the settings ProfilePanel's `.settings-profile-badge` — it renders
@@ -17,6 +17,10 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
 }));
 
+const clerk = vi.hoisted(() => ({
+  organization: null as Record<string, unknown> | null,
+  signOut: vi.fn(() => Promise.resolve()),
+}));
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({
     user: {
@@ -27,7 +31,8 @@ vi.mock("@clerk/nextjs", () => ({
     },
   }),
   useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
-  useOrganization: () => ({ membership: null, organization: null }),
+  useOrganization: () => ({ membership: null, organization: clerk.organization }),
+  useClerk: () => ({ signOut: clerk.signOut }),
   UserButton: () => <div data-testid="user-button" />,
 }));
 
@@ -80,5 +85,81 @@ describe("ProfilePanel — subscription badge", () => {
     render(<SettingsPage />);
     const badge = screen.getByText("Free tier");
     expect(badge).toHaveStyle({ textTransform: "none" });
+  });
+});
+
+// Covers the self-serve DeleteAccountCard: typed-email confirm gating the
+// POST /users/me/delete call, sign-out on success, honest error on a partial
+// teardown (502 deletion_incomplete), and the org-context support-only state.
+describe("ProfilePanel — delete account", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    nav.panel = null;
+    billing.account = null;
+    clerk.organization = null;
+    clerk.signOut.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ status: "deleted" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("requires the account email typed back before the delete button arms", async () => {
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+
+    const deleteBtn = screen.getByRole("button", { name: /delete forever/i });
+    expect(deleteBtn).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Confirm account email"), {
+      target: { value: "wrong@isol8.co" },
+    });
+    expect(deleteBtn).toBeDisabled();
+
+    // Case-insensitive match, same as the backend guard.
+    fireEvent.change(screen.getByLabelText("Confirm account email"), {
+      target: { value: "TEST@isol8.co" },
+    });
+    expect(deleteBtn).toBeEnabled();
+
+    fireEvent.click(deleteBtn);
+    await waitFor(() => expect(clerk.signOut).toHaveBeenCalled());
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/users/me/delete");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ confirm_email: "TEST@isol8.co" });
+  });
+
+  it("surfaces a partial teardown instead of signing out", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: "deletion_incomplete" }), {
+        status: 502,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    fireEvent.change(screen.getByLabelText("Confirm account email"), {
+      target: { value: "test@isol8.co" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /delete forever/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Deletion didn't finish/)).toBeInTheDocument(),
+    );
+    expect(clerk.signOut).not.toHaveBeenCalled();
+  });
+
+  it("org context gets the support-only message, never a delete button", () => {
+    clerk.organization = { id: "org_1" };
+    render(<SettingsPage />);
+    expect(screen.getByText(/contact support@isol8\.co/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
   });
 });

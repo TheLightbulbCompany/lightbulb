@@ -55,6 +55,7 @@ vi.mock("@clerk/nextjs", () => ({
   }),
   useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
   useOrganization: () => ({ membership: clerk.membership, organization: null }),
+  useClerk: () => ({ signOut: vi.fn() }),
   UserButton: () => <div data-testid="user-button" />,
 }));
 

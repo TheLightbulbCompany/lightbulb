@@ -1035,11 +1035,31 @@ export function useAgentChat(
         })
         .catch((err: unknown) => {
           console.warn("Failed to fetch chat history:", err);
-          // Un-latch (the marker was set BEFORE the fetch for in-flight dedupe):
-          // a failed fetch (gateway drop, container restart) must retry on the
-          // next visit or reconnect instead of leaving this session blank until
-          // page reload.
-          historyLoadedRef.current.delete(cacheKey);
+          // A REJECTED read (gateway drop/park/supersede, the 30s RPC timeout,
+          // or a transient backend ok:false like "container is starting up")
+          // tells us NOTHING about the session — flipping to done+empty blanks a
+          // real transcript until the next reload. Route it into the SAME
+          // wall-clock-bounded wake ladder the unreachable-empty branch uses
+          // (via the health-probe `.catch` above): keep the loading skeleton and
+          // re-read on the slow cadence. `sendReq` reconnects itself before
+          // sending, so the retry rides whatever socket is live next — covering
+          // the park/unpark AND supersede cases that never toggle isConnected,
+          // so no effect re-run fires. Never setChatMessages([]), never
+          // _needsBootstrap.add: preserves the 2026-08-09 amnesia invariant (a
+          // cached transcript keeps rendering untouched during the silent retry).
+          if (!isStillCurrent()) {
+            loadedKeys.delete(cacheKey); // switched away — a revisit refetches
+            return;
+          }
+          if (wakeStartedAt === null) wakeStartedAt = Date.now();
+          if (Date.now() - wakeStartedAt < HISTORY_WAKE_DEADLINE_MS) {
+            scheduleRefetch(() => runFetch(attempt, "wake"), HISTORY_WAKE_RETRY_MS);
+            return; // skeleton stays — do NOT flip to "done"
+          }
+          // Deadline exhausted (~10min of a container that never answered): fall
+          // back to the prior terminal so a later reconnect/revisit can still
+          // retry rather than spinning the skeleton forever.
+          loadedKeys.delete(cacheKey);
           setHistoryLoadState("done");
         });
     };

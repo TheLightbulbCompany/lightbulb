@@ -310,22 +310,52 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
-  test("backend role can read the bedrock-gate URL SSM parameter (single-parameter GetParameter, not a wildcard)", () => {
-    // The gate stack publishes each env's Function URL to
-    // /isol8/{env}/bedrock-gate-url; the backend discovers it at runtime and
-    // the parameter doubles as the break-glass lever ("direct" = bypass gate).
-    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+  test("backend STS lives in a dedicated ManagedPolicy: AssumeRole scoped to the connector role, GetCallerIdentity unscoped", () => {
+    // A ManagedPolicy (not DefaultPolicy) so the near-10 KB inline document's
+    // packing stays stable; the AssumeRole resource pin is the security fence
+    // (an unscoped * let a compromised backend assume any trusted role).
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
-            Sid: "BedrockGateUrlParamRead",
-            Action: "ssm:GetParameter",
-            Resource:
-              "arn:aws:ssm:us-east-1:877352799272:parameter/isol8/dev/bedrock-gate-url",
+            Sid: "StsAccess",
+            Action: "sts:GetCallerIdentity",
+            Resource: "*",
+          }),
+          Match.objectLike({
+            Sid: "StsAssumeConnectorRole",
+            Action: "sts:AssumeRole",
+            Resource: "arn:aws:iam::*:role/isol8-connector",
           }),
         ]),
       }),
     });
+  });
+
+  test("backend role can read the bedrock-gate URL SSM parameter (single-parameter GetParameter, not a wildcard)", () => {
+    // The gate stack publishes each env's Function URL to
+    // /isol8/{env}/bedrock-gate-url; the backend discovers it at runtime and
+    // the parameter doubles as the break-glass lever ("direct" = bypass gate).
+    //
+    // Searched across BOTH inline and managed policies: the task role's
+    // DefaultPolicy sits near CloudFormation's 10 KB limit, so CDK packs
+    // grants into overflow ManagedPolicies and the exact placement shifts as
+    // grants change (this statement lives in an overflow policy today). What
+    // this test pins is the single-parameter resource scope, wherever the
+    // statement lands — asserting the packing location made the test red the
+    // first time CDK repacked, which no CI job caught.
+    const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
+      Object.values(SERVICE_TEMPLATE_DEV.findResources(type)).some((r) =>
+        ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
+          (s) =>
+            s.Sid === "BedrockGateUrlParamRead" &&
+            s.Action === "ssm:GetParameter" &&
+            s.Resource ===
+              "arn:aws:ssm:us-east-1:877352799272:parameter/isol8/dev/bedrock-gate-url",
+        ),
+      ),
+    );
+    expect(found).toBe(true);
   });
 
 });

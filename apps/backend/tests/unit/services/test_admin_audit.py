@@ -34,7 +34,12 @@ def fake_auth():
 def fake_request():
     """Mock FastAPI Request with headers + client.host."""
     request = MagicMock()
-    request.headers = {"user-agent": "Mozilla/5.0 (test)", "x-forwarded-for": "203.0.113.1, 10.0.0.1"}
+    # Production REST chain: attacker-spoofed hop, then the true client IP
+    # (appended by API Gateway), then the VPC-link ENI (appended by the ALB).
+    request.headers = {
+        "user-agent": "Mozilla/5.0 (test)",
+        "x-forwarded-for": "203.0.113.1, 198.51.100.7, 10.0.0.1",
+    }
     request.client = MagicMock(host="10.0.0.1")
     return request
 
@@ -70,9 +75,10 @@ async def test_happy_path_writes_audit_and_tags_response(repo_mock, fake_auth, f
     assert call_kwargs["http_status"] == 200
     assert call_kwargs["error_message"] is None
     assert call_kwargs["user_agent"] == "Mozilla/5.0 (test)"
-    # Rightmost XFF hop: the ALB appends the true peer, the leftmost hop is
-    # client-supplied and spoofable.
-    assert call_kwargs["ip"] == "10.0.0.1"
+    # Rightmost UNTRUSTED hop: the ALB-appended VPC-link ENI (10.0.0.1) is
+    # skipped, the API-Gateway-established client IP is taken, and the
+    # client-supplied spoofable leftmost hop is never reached.
+    assert call_kwargs["ip"] == "198.51.100.7"
     assert call_kwargs["elapsed_ms"] >= 0
 
 
@@ -206,3 +212,41 @@ async def test_ip_falls_back_to_client_host_when_no_xff(repo_mock, fake_auth):
 
     assert repo_mock.await_args.kwargs["ip"] == "192.0.2.5"
     assert repo_mock.await_args.kwargs["user_agent"] == "curl/8"
+
+
+class TestExtractClientIp:
+    """Rightmost-untrusted XFF walk: skip our own infra hops from the right,
+    take the client hop the innermost trusted proxy established."""
+
+    def _req(self, xff, host="10.0.0.1"):
+        request = MagicMock()
+        request.headers = {"x-forwarded-for": xff} if xff is not None else {}
+        request.client = MagicMock(host=host)
+        return request
+
+    def test_skips_vpc_hop_and_takes_apigw_client(self):
+        from core.services.admin_audit import extract_client_ip
+
+        assert extract_client_ip(self._req("203.0.113.1, 198.51.100.7, 10.0.0.1")) == "198.51.100.7"
+
+    def test_direct_chain_takes_rightmost_public(self):
+        from core.services.admin_audit import extract_client_ip
+
+        assert extract_client_ip(self._req("203.0.113.1, 198.51.100.7")) == "198.51.100.7"
+
+    def test_all_trusted_hops_falls_back_to_client_host(self):
+        from core.services.admin_audit import extract_client_ip
+
+        assert extract_client_ip(self._req("10.0.0.9, 10.0.0.1", host="10.0.0.2")) == "10.0.0.2"
+
+    def test_no_xff_falls_back_to_client_host(self):
+        from core.services.admin_audit import extract_client_ip
+
+        assert extract_client_ip(self._req(None, host="192.0.2.5")) == "192.0.2.5"
+
+    def test_garbage_hop_is_not_treated_as_trusted(self):
+        from core.services.admin_audit import extract_client_ip
+
+        # A non-IP token can't be classified as infra — surfaced as-is rather
+        # than silently skipped (better a weird audit value than a wrong one).
+        assert extract_client_ip(self._req("203.0.113.1, not-an-ip, 10.0.0.1")) == "not-an-ip"

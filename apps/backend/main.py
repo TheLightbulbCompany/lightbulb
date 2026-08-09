@@ -685,10 +685,12 @@ app.add_middleware(HostDispatcherMiddleware)
 #   - swap to a middleware that reads the rightmost XFF (trust N hops from
 #     the right).
 # The audit-log half of this gap is closed: audit rows now derive their IP
-# from core/services/admin_audit.extract_client_ip, which reads the RIGHTMOST
-# XFF hop (the ALB-appended one) directly and ignores the promoted
-# request.client.host. Other request.client.host consumers (rate-limit keys
-# etc.) still see the leftmost hop until an ALB-side fix lands.
+# from core/services/admin_audit.extract_client_ip, which walks XFF from the
+# RIGHT skipping our own infrastructure hops (VPC CIDR / loopback) and takes
+# the first untrusted entry — the client hop API Gateway established — and
+# ignores the promoted request.client.host. Other request.client.host
+# consumers (rate-limit keys etc.) still see the leftmost hop until an
+# edge-side fix lands.
 app.add_middleware(
     ProxyHeadersMiddleware,
     trusted_hosts=["10.0.0.0/16", "127.0.0.1", "::1"],

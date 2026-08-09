@@ -890,20 +890,48 @@ async def admin_wipe_preview(
     "/orphan-sweep",
     description=(
         "Find rows whose owner no longer exists — credential/identity leftovers "
-        "from wipes that ran before the wipe covered them. Defaults to a DRY RUN: "
-        "pass `execute=true` to actually delete. Reads the users table as the "
-        "liveness signal (wipe_account deletes that row), then walks the "
-        "integrations, agent-email-addresses and company-slugs tables. Does NOT "
-        "touch Secrets Manager — see sweep_orphans' docstring for why."
+        "from wipes that ran before the wipe covered them. DRY RUN by default; "
+        "pass `execute=true` to delete. Reads the users table as the liveness "
+        "signal (wipe_account deletes that row), then walks the integrations, "
+        "agent-email-addresses and company-slugs tables. Does NOT touch Secrets "
+        "Manager — see sweep_orphans' docstring for why."
     ),
 )
-@audit_admin_action("account.orphan_sweep")
 async def admin_orphan_sweep(
     request: Request,
     execute: bool = False,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    return (await sweep_orphans(dry_run=not execute)).to_dict()
+    started = time.monotonic()
+    report_dict = (await sweep_orphans(dry_run=not execute)).to_dict()
+
+    # Hand-written rather than @audit_admin_action, for the same reason
+    # admin_wipe_execute is: the decorator writes a row on EVERY call with
+    # `_payload_from_body(kwargs.get("body"))` — and `execute` is a query
+    # param, not a body — so every dry-run "just show me what's orphaned"
+    # click would land an indistinguishable row carrying neither the flag nor
+    # what was swept. Audit the destructive form only, and carry the report.
+    if execute:
+        try:
+            await admin_actions_repo.create(
+                admin_user_id=auth.user_id,
+                target_user_id="*",
+                action="orphan_sweep",
+                payload=report_dict,
+                result="partial_failure"
+                if any(step["status"] == "failed" for step in report_dict["steps"])
+                else "success",
+                audit_status="written",
+                http_status=200,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error_message=None,
+                user_agent=request.headers.get("user-agent", "unknown"),
+                ip=extract_client_ip(request),
+            )
+        except Exception:  # noqa: BLE001 — mirrors admin_wipe_execute (S1)
+            logger.critical("ADMIN_AUDIT_PANIC action=orphan_sweep admin=%s", auth.user_id, exc_info=True)
+
+    return report_dict
 
 
 @router.post(

@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
-import { useApi } from "@/lib/api";
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
@@ -26,6 +25,13 @@ import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
+import {
+  CREDIT_PRESETS_CENTS,
+  DEFAULT_CREDITS_CENTS,
+  MAX_CREDITS_CENTS,
+  MIN_CREDITS_CENTS,
+  formatUsdCents,
+} from "@/lib/creditAmounts";
 // Provisioning copy + timing live in @isol8/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
@@ -959,7 +965,18 @@ export function ProvisioningStepper({
             <ByoKeyStep onComplete={handleProviderComplete} />
           )}
           {providerChoice === "bedrock_claude" && (
-            <CreditsStep onComplete={handleProviderComplete} />
+            // `?credits=bundled` on the Checkout success_url means the balance
+            // was already paid for in that same session and the grant is in
+            // flight through the webhook. CreditsStep otherwise only skips once
+            // the balance READS spendable, which it does not at the instant the
+            // browser gets back from Stripe — so the owner who paid precisely
+            // to avoid a second step was shown a live second purchase form, and
+            // could pay twice. The awaiting state keeps the same balance poll,
+            // so it advances by itself the moment the credits land.
+            <CreditsStep
+              onComplete={handleProviderComplete}
+              awaitingBundledGrant={searchParams.get("credits") === "bundled"}
+            />
           )}
         </div>
       </div>
@@ -1847,15 +1864,13 @@ function StepperDisplay({
 /** The flat monthly subscription, in dollars — the same on all three paths. */
 const FLAT_PRICE_USD = 50;
 
-// Starter Claude credits for the bedrock_claude path, in cents. These MIRROR
-// the server's bounds (billing_service.MIN/MAX_STARTER_CREDITS_CENTS and
-// TrialCheckoutRequest's ge=500/le=100_000). The server is the authority and
-// re-clamps whatever arrives — these only keep the UI from offering an amount
-// that would come back a 422.
-const MIN_STARTER_CREDITS_CENTS = 500;
-const MAX_STARTER_CREDITS_CENTS = 100_000;
-const DEFAULT_STARTER_CREDITS_CENTS = 2000;
-const STARTER_CREDIT_PRESETS_CENTS = [500, 2000, 5000, 10000];
+// Shared with CreditsStep via lib/creditAmounts — the two purchase surfaces
+// had drifted to different preset ladders for the same balance.
+const MIN_STARTER_CREDITS_CENTS = MIN_CREDITS_CENTS;
+const MAX_STARTER_CREDITS_CENTS = MAX_CREDITS_CENTS;
+const DEFAULT_STARTER_CREDITS_CENTS = DEFAULT_CREDITS_CENTS;
+const STARTER_CREDIT_PRESETS_CENTS = CREDIT_PRESETS_CENTS;
+
 
 /**
  * Amount chooser for the bedrock_claude starter credits.
@@ -1884,13 +1899,27 @@ function StarterCreditsPicker({
 
   const commit = useCallback(
     (raw: string) => {
+      // Empty/blank restores the previous amount rather than committing a
+      // number. `Number("")` is 0, not NaN, so the finite-check below lets it
+      // through and the clamp silently rewrites a cleared box to the $5 floor
+      // — someone who picked $100 and select-all-deleted to retype would buy
+      // $5. `<input type="number">` also reports "" for a partially-invalid
+      // entry, so this is the ordinary typing path, not an edge case.
+      if (raw.trim() === "") {
+        setDraft(String(valueCents / 100));
+        return;
+      }
       const dollars = Number(raw);
       if (!Number.isFinite(dollars)) {
         setDraft(String(valueCents / 100));
         return;
       }
+      // Whole dollars only. The presets are whole, the input steps by 5, and
+      // rounding at the source is what keeps the quoted total exact — cents
+      // would put binary float error into the price string the customer is
+      // asked to agree to ($60.230000000000004).
       const clamped = Math.min(
-        Math.max(Math.round(dollars * 100), MIN_STARTER_CREDITS_CENTS),
+        Math.max(Math.round(dollars) * 100, MIN_STARTER_CREDITS_CENTS),
         MAX_STARTER_CREDITS_CENTS,
       );
       onChange(clamped);
@@ -2000,7 +2029,13 @@ export function ProviderPicker({
         error: err instanceof Error ? err.message : "unknown",
       });
       setLoading(null);
-      setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
+      // Fixed copy, not err.message. startTrialCheckout propagates ApiError
+      // carrying the backend `detail`, so surfacing it verbatim put strings
+      // like "No Stripe customer for owner_id=user_2xK…" and the literal
+      // "checkout_in_progress" in front of a customer at the paywall. The
+      // real error still reaches the console and the capture() above.
+      console.error("trial checkout failed", err);
+      setError("Couldn't start checkout. Please try again.");
     }
   }, [startTrialCheckout, isOrg, source, creditsCents]);
 
@@ -2054,12 +2089,12 @@ export function ProviderPicker({
                     subtitle. */}
                 <p className="text-sm text-[var(--mute)]">
                   {card.id === "bedrock_claude"
-                    ? `$${FLAT_PRICE_USD + creditsCents / 100} at checkout, then $${FLAT_PRICE_USD} / month`
+                    ? `${formatUsdCents(FLAT_PRICE_USD * 100 + creditsCents)} at checkout, then $${FLAT_PRICE_USD} / month`
                     : card.subtitle}
                 </p>
                 <p className="text-xs text-[var(--forest)] font-medium">
                   {card.id === "bedrock_claude"
-                    ? `Includes $${creditsCents / 100} Claude credits — no second step`
+                    ? `Includes ${formatUsdCents(creditsCents)} Claude credits — no second step`
                     : card.trialNote}
                 </p>
                 {isOrg && card.id === "chatgpt_oauth" && (

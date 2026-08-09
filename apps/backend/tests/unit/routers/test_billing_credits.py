@@ -363,6 +363,7 @@ async def test_checkout_session_paid_grants_ungated_credits(async_client, monkey
     grant = AsyncMock()
     with (
         patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
         patch("routers.billing.billing_repo.set_credits_auto_charge", new=AsyncMock()) as set_flag,
     ):
         resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event())
@@ -386,6 +387,7 @@ async def test_checkout_session_opt_in_enables_auto_charge(async_client, monkeyp
     set_flag = AsyncMock()
     with (
         patch("core.billing.metronome_funding.grant_prepaid_credits", new=AsyncMock()),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
         patch(
             "core.services.stripe_webhook_handlers.billing_repo.set_credits_auto_charge",
             new=set_flag,
@@ -606,7 +608,10 @@ async def test_handler_failure_rolls_back_dedup_for_redelivery(async_client, mon
     the redelivery re-attempts and the (session-id-keyed, idempotent) grant
     lands."""
     grant = AsyncMock(side_effect=[RuntimeError("metronome outage"), None])
-    with patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant):
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
+    ):
         # First delivery: grant blows up -> 500 back to Stripe.
         with pytest.raises(RuntimeError):
             await _post_checkout_event(async_client, monkeypatch, _checkout_event())
@@ -672,6 +677,7 @@ async def _run_checkout_session(session: dict):
     grant = AsyncMock(return_value=None)
     with (
         patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
         patch("core.services.metronome_gate.read_net_balance_microcents", new=AsyncMock(return_value=None)),
     ):
         resp = await handle_checkout_session(

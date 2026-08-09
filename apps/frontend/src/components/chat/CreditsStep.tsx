@@ -2,10 +2,24 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useCredits, isCreditsExhausted } from "@/hooks/useCredits";
+import { CREDIT_PRESETS_CENTS, MIN_CREDITS_CENTS } from "@/lib/creditAmounts";
 
-type Props = { onComplete: () => void };
+type Props = {
+  onComplete: () => void;
+  /**
+   * The Checkout that just completed already bought these credits as a
+   * one-time line item, so the grant is travelling through the webhook right
+   * now. Render a waiting state instead of the purchase form: the skip effect
+   * below only fires once the balance READS spendable, and at the moment the
+   * browser returns from Stripe it does not — which put a live "pay again"
+   * form in front of someone who had just paid to avoid exactly that.
+   */
+  awaitingBundledGrant?: boolean;
+};
 
-const PRESET_AMOUNTS_CENTS = [1000, 2000, 5000, 10000]; // $10, $20, $50, $100
+// Shared ladder — see lib/creditAmounts. This used to be a separate array
+// offering $10 where the bundled picker offered $5.
+const PRESET_AMOUNTS_CENTS = CREDIT_PRESETS_CENTS;
 
 // Grace window for the one-click `requested` latch before it un-sticks itself
 // with a retryable error. Comfortably longer than the "usually under a minute"
@@ -40,7 +54,7 @@ const TEXT_INPUT =
  * Metronome commit charges the saved card with no redirect; credits release
  * when the payment collects and the same balance poll advances the wizard.
  */
-export function CreditsStep({ onComplete }: Props) {
+export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props) {
   const {
     balance,
     autoChargeEnabled,
@@ -147,6 +161,26 @@ export function CreditsStep({ onComplete }: Props) {
     }
   };
 
+  // Already paid for in the subscription Checkout — wait for the grant, never
+  // offer a second purchase. The balance poll above still runs, so this
+  // advances on its own; the refresh button is only for impatience.
+  if (awaitingBundledGrant) {
+    return (
+      <div className="flex flex-col gap-4 py-8 max-w-md mx-auto text-center" style={SANS_FONT}>
+        <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
+          Adding your Claude credits
+        </h3>
+        <p className="text-sm text-[var(--mute)]">
+          Your payment went through. The credits are being added to your
+          balance — this usually takes a few seconds and continues on its own.
+        </p>
+        <button onClick={() => void refresh()} className={PRIMARY_BUTTON} style={SANS_FONT}>
+          Check again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto" style={SANS_FONT}>
       <h3 className="text-[22px] font-normal text-[var(--ink)]" style={SERIF_FONT}>
@@ -179,7 +213,7 @@ export function CreditsStep({ onComplete }: Props) {
 
       <input
         type="number"
-        min={5}
+        min={MIN_CREDITS_CENTS / 100}
         step={5}
         value={amount / 100}
         onChange={(e) => setAmount(Math.round(Number(e.target.value) * 100))}

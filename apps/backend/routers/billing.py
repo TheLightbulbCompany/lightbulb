@@ -400,6 +400,7 @@ async def create_trial_checkout(
         BillingService,
         BillingServiceError,
         create_flat_fee_checkout,
+        normalize_starter_credits,
     )
 
     # Note: provider_choice and byo_provider enums are enforced by pydantic
@@ -546,13 +547,34 @@ async def create_trial_checkout(
         except stripe.error.InvalidRequestError:
             logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
         if pending is not None and pending.get("status") == "open":
-            if account.get("pending_checkout_provider") == body.provider_choice:
+            # "Same intent" has to mean the same BODY, not just the same
+            # provider. Provider alone was sufficient while it fully determined
+            # the session; bundled starter credits made the amount a second
+            # body-varying input, and this guard returns before
+            # create_flat_fee_checkout runs — so its amount-aware idempotency
+            # key never gets a say. An owner who opened a $1,050 session, went
+            # back, and chose the $5 preset would be handed the old session:
+            # charged $1,050 against a page that had just quoted $55.
+            #
+            # Read from the SESSION's own metadata rather than a stored column
+            # so there is one source of truth (and no migration): it is the
+            # same dict the grant webhook reads.
+            requested_credits = (
+                normalize_starter_credits(body.credits_cents) if body.provider_choice == "bedrock_claude" else None
+            )
+            pending_credits_raw = (pending.get("metadata") or {}).get("credits_cents")
+            pending_credits = int(pending_credits_raw) if pending_credits_raw else None
+            if (
+                account.get("pending_checkout_provider") == body.provider_choice
+                and pending_credits == requested_credits
+            ):
                 # Same intent — send them back to the SAME hosted session.
                 return {"checkout_url": pending.url}
-            # Provider switch: the open session carries the OLD provider in
-            # its subscription metadata (the webhook would clobber the new
-            # choice), and leaving it open would allow completing both.
-            # Expire it, then mint fresh below.
+            # Provider switch OR credit-amount change: the open session carries
+            # the OLD provider in its subscription metadata (the webhook would
+            # clobber the new choice) and the OLD amount in its line item, and
+            # leaving it open would allow completing both. Expire it, then mint
+            # fresh below.
             try:
                 with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
                     stripe.checkout.Session.expire(pending_id)

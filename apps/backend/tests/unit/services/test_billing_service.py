@@ -487,7 +487,7 @@ class TestCreateFlatFeeCheckout:
         # 5-minute idempotency bucket collapses rapid duplicate clicks and
         # multi-tab retries to a single Checkout Session, preventing
         # parallel subscriptions before the webhook + guard catches up.
-        assert kwargs["idempotency_key"].startswith("flat_checkout:u_1:")
+        assert kwargs["idempotency_key"].startswith("flat_checkout:v")
         # owner_id threaded into subscription metadata so the webhook can
         # resolve owner unambiguously when one Stripe customer is shared
         # across multiple billing rows.
@@ -563,7 +563,9 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             "get_by_owner_id",
             new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
         ):
-            result = await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="bedrock_claude")
+            result = await billing_service.create_flat_fee_checkout(
+                owner_id="u_1", provider_choice="bedrock_claude", credits_cents=2000
+            )
 
         assert result.url == "https://checkout/flat"
         # bedrock_claude carries the starter credits as a SECOND, one-time line
@@ -589,7 +591,73 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         # The webhook grants off metadata, not off the line items, so a
         # 100%-off promo code still funds the balance.
         assert seen["metadata"]["credits_cents"] == str(billing_service.BEDROCK_STARTER_CREDITS_CENTS)
-        assert seen["idempotency_key"].startswith("flat_checkout:u_1:")
+        assert seen["idempotency_key"].startswith("flat_checkout:v")
+
+    @pytest.mark.asyncio
+    async def test_bedrock_without_an_explicit_amount_bundles_no_credits(self, monkeypatch):
+        """Absent credits_cents means NO credits line item, never a default.
+
+        The amount is quoted to the customer before they pay, and only a client
+        that renders the chooser knows what was quoted. A cached bundle, the
+        mobile app, or anything predating this change posts provider_choice
+        alone — defaulting to $20 there would charge $70 against a UI showing
+        $50. Those callers keep the old behaviour: $50 now, credits later.
+        """
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="bedrock_claude")
+
+        assert seen["line_items"] == [{"price": "price_flat_test", "quantity": 1}]
+        assert "credits_cents" not in seen["metadata"]
+        # Promotion codes stay available when no credits ride along.
+        assert seen["allow_promotion_codes"] is True
+
+    @pytest.mark.asyncio
+    async def test_promotion_codes_are_off_when_credits_are_bundled(self, monkeypatch):
+        """A subscription-intended coupon must not discount prepaid credits.
+
+        The webhook grants the full metadata amount, so a percentage-off code
+        applied across the session would hand over up to $1,000 of balance for
+        less (or none) of the money. The standalone top-up can allow coupons
+        because that session contains only credits the owner chose.
+        """
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            await billing_service.create_flat_fee_checkout(
+                owner_id="u_1", provider_choice="bedrock_claude", credits_cents=100_000
+            )
+
+        assert seen["allow_promotion_codes"] is False
+
+    def test_normalize_starter_credits_keeps_absent_distinct_from_zero(self):
+        """`or` treated a deliberate 0 as "not supplied" and substituted $20 —
+        money nobody asked for, and the clamp below it never saw the zero."""
+        assert billing_service.normalize_starter_credits(None) is None
+        assert billing_service.normalize_starter_credits(0) == billing_service.MIN_STARTER_CREDITS_CENTS
+        assert billing_service.normalize_starter_credits(2000) == 2000
+        assert billing_service.normalize_starter_credits(10**9) == billing_service.MAX_STARTER_CREDITS_CENTS
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("choice", ["chatgpt_oauth", "byo_key"])
@@ -621,7 +689,6 @@ class TestBuildSubscriptionCheckoutSharedSpine:
     @pytest.mark.parametrize(
         "requested,expected",
         [
-            (None, billing_service.BEDROCK_STARTER_CREDITS_CENTS),  # default when unspecified
             (500, 500),  # the $5 floor is a legal choice, not a rejection
             (10_000, 10_000),  # $100 preset
             (1, billing_service.MIN_STARTER_CREDITS_CENTS),  # clamped up
@@ -751,7 +818,7 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             "purpose": "team_seat",
             "provider_choice": "bedrock_claude",
         }
-        assert seen["idempotency_key"].startswith("team_checkout:org_1:")
+        assert seen["idempotency_key"].startswith("team_checkout:v")
 
     @pytest.mark.asyncio
     async def test_team_checkout_raises_without_seat_price_id(self, monkeypatch):

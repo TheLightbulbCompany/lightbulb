@@ -135,4 +135,30 @@ describe("ProviderPicker — starter credits", () => {
     render(<ProviderPicker isOrg={false} />);
     expect(screen.getAllByLabelText("Starter Claude credits in dollars")).toHaveLength(1);
   });
+
+  it("restores the previous amount when the custom box is cleared", () => {
+    // Number("") is 0, not NaN, so the finite-check let a cleared box through
+    // and the clamp rewrote it to the $5 floor. Someone who picked $100 and
+    // select-all-deleted to retype would have bought $5.
+    render(<ProviderPicker isOrg={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "$100" }));
+    const input = screen.getByLabelText("Starter Claude credits in dollars");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input, { target: { value: "" } });
+    expect(screen.getByText("$150 at checkout, then $50 / month")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
+    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 10000);
+  });
+
+  it("never renders float noise in the pre-payment price", () => {
+    // The price line is what the customer agrees to. Built as
+    // `$${50 + cents/100}` it rendered "$60.230000000000004" for 10.23.
+    render(<ProviderPicker isOrg={false} />);
+    const input = screen.getByLabelText("Starter Claude credits in dollars");
+    for (const typed of ["10.23", "5.02", "25.50"]) {
+      fireEvent.change(input, { target: { value: typed } });
+      fireEvent.blur(input, { target: { value: typed } });
+      expect(screen.queryByText(/\d\.\d{3,}/)).not.toBeInTheDocument();
+    }
+  });
 });

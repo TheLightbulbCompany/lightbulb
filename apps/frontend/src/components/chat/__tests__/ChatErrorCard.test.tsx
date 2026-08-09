@@ -73,6 +73,44 @@ describe("ChatErrorCard", () => {
     expect(screen.queryByRole("link", { name: "Upgrade to keep going" })).not.toBeInTheDocument();
   });
 
+  it("suppresses the paywall on non-newest bubbles so purchase forms cannot stack", () => {
+    // MessageList renders one card per errored message, and each ProviderPicker
+    // owns its own credit amount and loading state. Stacked copies let an owner
+    // set $100 on the visible card, scroll up, and buy an older card's $20 —
+    // charged an amount the screen never quoted — with CTAs that do not disable
+    // one another.
+    render(<ChatErrorCard code="trial_daily_cap" message="" interactive={false} />);
+    expect(screen.queryByRole("button", { name: /powered by claude/i })).not.toBeInTheDocument();
+    // It still says what happened, and still offers a way forward.
+    expect(screen.getByText("Daily free limit reached")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Upgrade to keep going" })).toBeInTheDocument();
+  });
+
+  it("does not wrap the purchase form in role=alert", () => {
+    // role="alert" carries implicit aria-live="assertive" + aria-atomic, so
+    // every credit-amount change re-announced the whole pricing table and cut
+    // the screen-reader user off mid-interaction. Right for a static error,
+    // wrong for a live form.
+    render(<ChatErrorCard code="trial_daily_cap" message="" />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "You've used today's free usage" })).toBeInTheDocument();
+    // A genuine error still announces assertively.
+    render(<ChatErrorCard code="timeout" message="upstream timed out" />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("ignores Object.prototype keys arriving as an error code", () => {
+    // Indexing a plain object literal with a server-supplied key resolves
+    // inherited members to truthy functions, which sailed through the gate and
+    // rendered a purchase form for a code that is not a trial code.
+    for (const code of ["constructor", "toString", "hasOwnProperty"]) {
+      const { unmount } = render(<ChatErrorCard code={code} message="boom" />);
+      expect(screen.queryByRole("button", { name: /powered by claude/i })).not.toBeInTheDocument();
+      expect(screen.getByText("Failed to generate")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
   it("converts trial_expired in place and omits the reset line — expiry is permanent", () => {
     // Non-empty, distinctive message: proves the card ignores it (a
     // regressed `message ||` fallback would surface this string instead of

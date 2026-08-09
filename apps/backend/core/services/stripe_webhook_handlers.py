@@ -1239,9 +1239,48 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
         logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
         return Response(status_code=200)
 
+    # Make the ledger exist BEFORE granting, rather than assuming a prior
+    # webhook already built it.
+    #
+    # The standalone top-up can assume it: create_credit_top_up_checkout
+    # refuses to take the money at all unless metronome_customer_id and
+    # metronome_contract_id are already on the row. The bundled path cannot
+    # make that check — a converting owner is still `trial_local` at checkout
+    # time, which is deliberately excluded from LEDGER_ELIGIBLE_STATUSES, so
+    # there is no ledger to verify yet.
+    #
+    # The ledger is created by handle_subscription_state's entering_live
+    # branch as a best-effort background task, and Stripe delivers
+    # checkout.session.completed and customer.subscription.created unordered.
+    # Granting on the assumption that task has landed means the common
+    # interleaving raises FundingError, 500s, and leaves the owner charged and
+    # still blocked on `credits_required` until a redelivery happens to arrive
+    # after provisioning — the "paid for a container that won't boot" outcome
+    # this whole flow exists to remove. If provisioning had failed outright,
+    # every redelivery would fail identically and Stripe would give up with
+    # the money collected.
+    #
+    # ensure_metronome_customer is idempotent on the persisted ids, so this is
+    # a no-op for the top-up path and for redeliveries. It returns None while
+    # the row is not yet ledger-eligible; raising then is correct — Stripe
+    # redelivers, and the retry re-attempts provisioning instead of waiting on
+    # someone else's background task.
+    from core.billing.metronome_provisioning import ensure_metronome_customer
+
+    if not await ensure_metronome_customer(owner_id=owner_id):
+        put_metric("credit.grant.ledger_not_ready", dimensions={"source": "checkout"})
+        logger.warning(
+            "Credit grant deferred for owner %s session %s — Metronome ledger not ready yet; "
+            "raising so Stripe redelivers.",
+            owner_id,
+            session.get("id"),
+        )
+        raise RuntimeError(f"Metronome ledger not ready for owner {owner_id}")
+
     # Grant the REQUESTED amount, not what Stripe charged — a 100%-off
     # internal coupon charges nothing but still funds the full balance
-    # (the coupon is us absorbing the cost).
+    # (the coupon is us absorbing the cost). Bundled sessions disable
+    # promotion codes outright, so this only applies to standalone top-ups.
     from core.billing.metronome_funding import grant_prepaid_credits
 
     # Session id as the Metronome Idempotency-Key: one completed Checkout

@@ -7,12 +7,14 @@ const toastSuccess = vi.fn();
 const toastDefault = vi.fn();
 const toastLoading = vi.fn();
 const toastDismiss = vi.fn();
+const toastInfo = vi.fn();
 vi.mock("sonner", () => ({
   toast: Object.assign((...args: unknown[]) => toastDefault(...args), {
     error: (...args: unknown[]) => toastError(...args),
     success: (...args: unknown[]) => toastSuccess(...args),
     loading: (...args: unknown[]) => toastLoading(...args),
     dismiss: (...args: unknown[]) => toastDismiss(...args),
+    info: (...args: unknown[]) => toastInfo(...args),
   }),
 }));
 
@@ -31,6 +33,7 @@ beforeEach(() => {
   toastDefault.mockClear();
   toastLoading.mockClear();
   toastDismiss.mockClear();
+  toastInfo.mockClear();
 });
 
 describe("notifyError", () => {
@@ -71,6 +74,54 @@ describe("notifyApiError", () => {
     notifyApiError("nope", "fallback msg");
     expect(toastError.mock.calls.at(-1)![0]).toBe("fallback msg");
     expect(lastErrorOpts().action).toBeUndefined();
+  });
+});
+
+describe("notifyApiError — blocked gates convert instead of erroring", () => {
+  const GATE_COPY = "You've used today's free usage. Resets at midnight UTC.";
+  const gateError = () =>
+    new ApiError(
+      402,
+      { detail: { blocked: true, code: "trial_daily_cap", message: GATE_COPY } },
+      GATE_COPY,
+      "req_402",
+    );
+
+  it("renders a sticky attention toast with the gate copy and an Upgrade action", () => {
+    notifyApiError(gateError(), "Failed to post comment");
+    // Not a red Report-able error — the cap is the product working.
+    expect(toastError).not.toHaveBeenCalled();
+    const [msg, opts] = toastInfo.mock.calls.at(-1)!;
+    expect(msg).toBe(GATE_COPY);
+    expect(opts.duration).toBe(Infinity);
+    expect(opts.action).toMatchObject({ label: "Upgrade" });
+  });
+
+  it("dedupes by gate code so repeated blocked clicks replace one toast", () => {
+    notifyApiError(gateError());
+    expect(toastInfo.mock.calls.at(-1)![1].id).toBe("gate:trial_daily_cap");
+  });
+
+  it("navigates to the billing panel when Upgrade is clicked", () => {
+    const assign = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, "location", {
+      value: { ...original, assign },
+      writable: true,
+    });
+    try {
+      notifyApiError(gateError());
+      (toastInfo.mock.calls.at(-1)![1].action as { onClick: () => void }).onClick();
+      expect(assign).toHaveBeenCalledWith("/settings?panel=billing");
+    } finally {
+      Object.defineProperty(window, "location", { value: original, writable: true });
+    }
+  });
+
+  it("leaves non-blocked ApiErrors on the reportable error path", () => {
+    notifyApiError(new ApiError(402, { detail: "plain string detail" }, "plain string detail"));
+    expect(toastInfo).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalled();
   });
 });
 

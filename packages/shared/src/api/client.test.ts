@@ -104,6 +104,35 @@ describe("createAuthenticatedFetch", () => {
     }
   });
 
+  it("promotes a structured detail's message to ApiError.message", async () => {
+    // The Teams trial gates 402 with {blocked, code, message}. Only the
+    // string-detail path was promoted, so these surfaced as "API 402" —
+    // truthy, so even notify fallbacks never fired.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(402, {
+        detail: { blocked: true, code: "trial_daily_cap", message: "You've used today's free usage." },
+      }),
+    );
+    const authedFetch = createAuthenticatedFetch(CONFIG);
+
+    try {
+      await authedFetch("/teams/issues/1/comments");
+      expect.unreachable();
+    } catch (e) {
+      const err = e as ApiError;
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err.message).toBe("You've used today's free usage.");
+      expect(err.body).toMatchObject({ detail: { code: "trial_daily_cap" } });
+    }
+  });
+
+  it("keeps the API-status fallback when a structured detail has no message", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(422, { detail: [{ loc: ["body"], msg: "invalid" }] }));
+    const authedFetch = createAuthenticatedFetch(CONFIG);
+
+    await expect(authedFetch("/x")).rejects.toThrow("API 422");
+  });
+
   it("reports request ids to onRequestId on success and failure", async () => {
     const seen: Array<string | null> = [];
     fetchMock

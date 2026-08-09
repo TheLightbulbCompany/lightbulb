@@ -73,10 +73,10 @@ interface Routine {
 
 /** Human copy for a blocked-gate 402 (e.g. routines_require_subscription).
  *
- * The shared API client only promotes a STRING `detail` to `ApiError.message`,
- * so a structured `{blocked, code, message}` body would otherwise surface as a
- * stringified exception. It does keep the parsed body, which is what we read
- * here — the difference between "Error: API 402" and an actual upgrade prompt.
+ * The shared API client now promotes a structured `{blocked, code, message}`
+ * detail's message to `ApiError.message` too, so for ApiErrors this is
+ * equivalent to reading `e.message` — kept because it also covers non-ApiError
+ * values via the `String(e)` fallback at the call sites below.
  */
 function gateMessage(e: unknown): string {
   const body = (e as { body?: { detail?: { message?: string } } })?.body;

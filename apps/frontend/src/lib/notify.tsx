@@ -104,12 +104,52 @@ export function notifyError(message: string, opts?: NotifyErrorOptions): string 
 }
 
 /**
+ * Structured `{blocked: true, code, message}` detail — the shape every trial /
+ * subscription gate 402 in the system uses (see routers/teams/_guards.py).
+ */
+function blockedGateDetail(body: unknown): { code?: string; message?: string } | null {
+  const detail =
+    body && typeof body === "object" && "detail" in body
+      ? (body as { detail?: unknown }).detail
+      : undefined;
+  if (!detail || typeof detail !== "object") return null;
+  const d = detail as { blocked?: unknown; code?: unknown; message?: unknown };
+  if (d.blocked !== true) return null;
+  return {
+    code: typeof d.code === "string" ? d.code : undefined,
+    message: typeof d.message === "string" ? d.message : undefined,
+  };
+}
+
+/**
  * Convenience for catch blocks: derives the message + request ID from an
  * ApiError (or any Error) and shows a reportable error toast. The most common
  * shape in the migrated call sites.
+ *
+ * A blocked-gate 402 is the exception: hitting the free-tier cap is not a
+ * malfunction, so it renders as an info-styled attention toast with an
+ * Upgrade action instead of a red Report-able error. This is the single
+ * conversion surface for every Teams action the trial guards refuse
+ * (comments, approvals, check-now, retry) — the call sites stay dumb.
  */
 export function notifyApiError(err: unknown, fallback = "Something went wrong", opts?: NotifyOptions): string | number {
   if (err instanceof ApiError) {
+    const gate = blockedGateDetail(err.body);
+    if (gate) {
+      return notifyAttention(gate.message || err.message || fallback, {
+        ...opts,
+        // One toast per gate, however many blocked clicks — sonner replaces
+        // by id, so a user retrying doesn't stack identical upgrade prompts.
+        dedupeKey: opts?.dedupeKey ?? `gate:${gate.code ?? "blocked"}`,
+        action: {
+          label: "Upgrade",
+          // notify.tsx is a plain module (no router hook available), and
+          // /settings is a different Next route anyway — a hard navigation is
+          // exactly what the cross-route <Link> in ChatErrorCard does too.
+          onClick: () => window.location.assign("/settings?panel=billing"),
+        },
+      });
+    }
     return notifyError(err.message || fallback, {
       ...opts,
       requestId: err.requestId,

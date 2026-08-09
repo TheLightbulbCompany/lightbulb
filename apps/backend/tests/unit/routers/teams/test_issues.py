@@ -311,6 +311,25 @@ def test_create_label_honours_explicit_color(client, monkeypatch):
     assert admin.create_company_label.await_args.kwargs["body"]["color"] == "#123abc"
 
 
+def test_create_label_rejects_blank_name(client, monkeypatch):
+    """``min_length`` runs against the raw string, so a whitespace-only name
+    would pass validation and reach upstream as "" once the router stripped it.
+    The validator strips first so the validated value is the forwarded one."""
+    admin = MagicMock()
+    admin.create_company_label = AsyncMock(return_value={"id": "lbl_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "   "},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.create_company_label.assert_not_awaited()
+
+
 def test_create_label_rejects_bad_color(client):
     """A non-hex colour 422s locally rather than being forwarded for upstream's
     zod regex to reject opaquely."""

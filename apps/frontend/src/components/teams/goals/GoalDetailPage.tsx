@@ -69,8 +69,16 @@ function projectLinksGoal(p: GoalLinkedProject, goalId: string): boolean {
 }
 
 export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
-  const { goal, allGoals, projects, issues, isLoading, isError, error } =
-    useGoalDetail(goalId);
+  const {
+    goal,
+    allGoals,
+    projects,
+    issues,
+    issuesLoading,
+    isLoading,
+    isError,
+    error,
+  } = useGoalDetail(goalId);
   const mutations = useGoalMutations();
   const { read } = useTeamsApi();
   const { data: agentsResp } = read<{ agents: CompanyAgent[] }>("/agents");
@@ -286,8 +294,14 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <b>Tasks ({linkedTasks.length})</b>
           </h2>
           {linkedTasks.length === 0 ? (
+            // The issues fetch is company-wide and lands well after the
+            // single-row goal fetch, and an unresolved fetch normalizes to []
+            // — so without this the section asserts "No tasks" for a goal that
+            // has plenty, until the list arrives.
             <p className="text-sm italic" style={{ color: "var(--mute)" }}>
-              No tasks. Link one from its Goal row on the task page.
+              {issuesLoading
+                ? "Loading…"
+                : "No tasks. Link one from its Goal row on the task page."}
             </p>
           ) : (
             <ul

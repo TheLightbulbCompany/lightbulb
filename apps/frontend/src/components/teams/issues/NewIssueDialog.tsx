@@ -390,7 +390,15 @@ export function NewIssueDialog({
             </select>
           </div>
         )}
-        {goals.length > 0 && (
+        {/* Top-level creates only. The children endpoint inherits the
+            parent's goal when `goalId` is omitted (upstream
+            `goalId: issueData.goalId ?? parent.goalId`), and
+            `exclude_none` drops an explicit null too — so on a sub-task
+            this control could not honour the "No goal" it displays.
+            The rail's Goal row can change it right after creation.
+            (`projectId` inherits the same way; that predates this and is
+            left as-is rather than changed from under people.) */}
+        {goals.length > 0 && !parentId && (
           <div>
             <label
               htmlFor="new-issue-goal"

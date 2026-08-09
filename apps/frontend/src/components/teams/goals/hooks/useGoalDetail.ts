@@ -17,6 +17,9 @@ export interface UseGoalDetailResult {
    * Upstream's `IssueFilters` has no `goalId`, so there is no server-side
    * filter to ask for; this mirrors how linked projects are already resolved. */
   issues: Issue[];
+  /** True while the issues fetch is in flight. Separate from `isLoading` so
+   * the Tasks section can tell "not loaded yet" from "genuinely empty". */
+  issuesLoading: boolean;
   isLoading: boolean;
   isError: boolean;
   error: Error | null;
@@ -60,6 +63,15 @@ export function useGoalDetail(goalId: string): UseGoalDetailResult {
     allGoals: normalizeGoals(goals.data),
     projects: normalizeProjects(projects.data),
     issues: normalizeIssues(issues.data),
+    // Reported separately rather than folded into `isLoading`. The page's
+    // full-view spinner is gated on `isLoading && !goal`, so once the (fast,
+    // single-row) goal fetch lands the page renders no matter what the
+    // aggregate says — folding this in would look like a fix and change
+    // nothing. The Tasks section reads this directly so it can say "Loading…"
+    // instead of "No tasks." while the (whole-company) issues fetch is in
+    // flight; `normalizeIssues(undefined)` is `[]`, which is indistinguishable
+    // from a genuinely empty result.
+    issuesLoading: issues.isLoading,
     isLoading: goal.isLoading || goals.isLoading || projects.isLoading,
     isError: !!goal.error,
     error: goal.error || null,

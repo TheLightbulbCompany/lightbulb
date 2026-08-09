@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -152,6 +152,22 @@ class CreateIssueLabelBody(_Strict):
 
     name: str = Field(min_length=1, max_length=48)
     color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, v: str) -> str:
+        """Strip before the length check rather than after.
+
+        ``min_length`` runs against the raw string, so a whitespace-only name
+        passes validation and then reaches upstream as ``""`` once the router
+        strips it. Normalising here makes the validated value the forwarded
+        value. The picker already gates on a non-empty trimmed query; this is
+        the boundary guard for every other BFF caller.
+        """
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("name must not be blank")
+        return stripped
 
 
 class AddIssueCommentBody(_Strict):

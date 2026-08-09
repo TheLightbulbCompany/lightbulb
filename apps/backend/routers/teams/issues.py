@@ -167,7 +167,8 @@ async def create_label(body: CreateIssueLabelBody, ctx: TeamsContext = Depends(_
     created = await _agents._admin().create_company_label(
         company_id=ctx.company_id,
         body={
-            "name": body.name.strip(),
+            # Already stripped + rejected-if-blank by CreateIssueLabelBody.
+            "name": body.name,
             "color": body.color or _label_color_for(body.name),
         },
         session_cookie=ctx.session_cookie,

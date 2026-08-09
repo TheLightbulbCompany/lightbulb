@@ -77,13 +77,11 @@ const PANELS: PanelRow[] = [
     icon: "grid",
     route: "/(app)/control/integrations",
   },
-  {
-    key: "marketplace",
-    label: "Marketplace",
-    description: "Discover and deploy community agents",
-    icon: "shopping-bag",
-    route: "/(app)/control/marketplace",
-  },
+  // Marketplace is intentionally absent on iOS. A paid listing's "Get" hands a
+  // Stripe URL to the system browser (control/listing/[id].tsx), which reads as
+  // selling digital content from an in-app storefront under guideline 3.1.1.
+  // The screens still exist and are unchanged — restore this row to turn the
+  // storefront back on once the billing posture is settled with App Review.
 ];
 
 export default function ControlIndex() {

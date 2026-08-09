@@ -16,6 +16,9 @@ export interface NotifyOptions {
 export interface NotifyActionOptions extends NotifyOptions {
   /** Optional action button rendered on the toast's trailing edge. */
   action?: { label: string; onClick: () => void };
+  /** Override the 4s auto-dismiss. Only worth setting when the action is the
+   * user's only route back from something otherwise irreversible. */
+  durationMs?: number;
 }
 
 export interface NotifyErrorOptions extends NotifyOptions {
@@ -36,7 +39,7 @@ export function notify(message: string, opts?: NotifyOptions): string | number {
 export function notifySuccess(message: string, opts?: NotifyActionOptions): string | number {
   return toast.success(message, {
     id: opts?.dedupeKey,
-    duration: AUTO_DISMISS_MS,
+    duration: opts?.durationMs ?? AUTO_DISMISS_MS,
     action: opts?.action,
   });
 }

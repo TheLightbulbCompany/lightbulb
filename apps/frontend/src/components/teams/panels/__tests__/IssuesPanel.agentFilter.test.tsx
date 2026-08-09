@@ -16,7 +16,9 @@ const ISSUES: Issue[] = [
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string) => {
-      if (path === "/issues")
+      // Prefix-match: the panel's issues key carries the routine-filter query
+      // string (`/issues?excludeRoutineExecutions=true`) by default.
+      if (path.startsWith("/issues"))
         return { data: { issues: ISSUES }, isLoading: false, error: null, mutate: vi.fn() };
       if (path === "/agents")
         return {

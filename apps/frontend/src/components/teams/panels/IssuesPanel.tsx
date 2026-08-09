@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { Repeat, X } from "lucide-react";
 import { useUser } from "@clerk/nextjs";
 import {
   EditorialButton,
@@ -15,6 +15,7 @@ import { useLiveRuns } from "@/components/teams/dashboard/hooks/useLiveRuns";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type {
   CompanyAgent,
+  Goal,
   Issue,
   IssueProject,
   IssueUpdateInput,
@@ -63,8 +64,15 @@ export function IssuesPanel({
   // "No tasks yet" for minutes while GET /issues already returned the rows.
   // A 30s poll + focus revalidation heals it cheaply, mirroring the
   // ProvisioningStepper's event-fast-path-plus-polling backstop.
+  // Routine-spawned tasks are excluded by default. A routine files a fresh
+  // task every time it fires and upstream's dedup only holds while that task
+  // is open with a live run, so an hourly routine leaves a finished row per
+  // tick — they crowd out hand-filed work within days. The filter is applied
+  // upstream (the list is capped by `limit`, so dropping rows client-side
+  // would just return fewer real tasks), which makes it part of the SWR key.
+  const [showRoutineTasks, setShowRoutineTasks] = useState(false);
   const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
-    "/issues",
+    showRoutineTasks ? "/issues" : "/issues?excludeRoutineExecutions=true",
     { refreshInterval: 30_000, revalidateOnFocus: true },
   );
   // NewIssueDialog renders Project + Assignee pickers only when these arrays
@@ -74,6 +82,7 @@ export function IssuesPanel({
   const { data: projectsData } = read<{ projects: IssueProject[] }>(
     "/projects",
   );
+  const { data: goalsData } = read<{ goals: Goal[] }>("/goals");
   // Live-agent-runs feed → the set of task ids with an active run, which lights
   // the board "Live" badge + the list-row live dot. Derived the same way the
   // dashboard does (useLiveRuns → isRunActive); SWR self-refreshes the feed.
@@ -141,9 +150,10 @@ export function IssuesPanel({
   // TasksList's inline status circle + board drag both patch the issue; route
   // them through the same mutation hook the rest of the issues surface uses,
   // then revalidate this panel's /issues read so the change shows immediately.
-  const handleUpdateIssue = (id: string, dataPatch: Record<string, unknown>) => {
-    void update(id, dataPatch as IssueUpdateInput).then(() => mutate());
-  };
+  // Returns the promise so TasksList's Hide can wait for the write before
+  // showing its Undo toast (and see a failure if the PATCH rejects).
+  const handleUpdateIssue = (id: string, dataPatch: Record<string, unknown>) =>
+    update(id, dataPatch as IssueUpdateInput).then(() => mutate());
 
   if (error)
     return (
@@ -168,6 +178,26 @@ export function IssuesPanel({
         onSearchChange={setSearch}
         searchPlaceholder="Search tasks..."
         searchAriaLabel="Search tasks"
+        filters={
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showRoutineTasks}
+            onClick={() => setShowRoutineTasks((v) => !v)}
+            title="Tasks filed automatically by a routine on each run"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
+            style={{
+              border: "1px solid var(--edge)",
+              background: showRoutineTasks
+                ? "var(--cream-deeper)"
+                : "transparent",
+              color: showRoutineTasks ? "var(--ink)" : "var(--mute)",
+            }}
+          >
+            <Repeat className="h-3 w-3" aria-hidden="true" />
+            Routine tasks
+          </button>
+        }
       />
       {agentFilter ? (
         <div className="flex items-center gap-2">
@@ -210,6 +240,7 @@ export function IssuesPanel({
         onOpenChange={(open) => (open ? setCreating(true) : closeNewTask())}
         agents={agentsData?.agents ?? []}
         projects={projectsData?.projects ?? []}
+        goals={goalsData?.goals ?? []}
         onCreated={() => {
           closeNewTask();
           mutate();

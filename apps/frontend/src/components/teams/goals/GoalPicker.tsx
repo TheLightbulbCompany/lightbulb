@@ -22,6 +22,9 @@ export interface GoalPickerProps {
   onChange: (goalId: string | null) => void;
   /** Goal id to exclude (e.g. the goal being edited can't be its own parent). */
   excludeGoalId?: string | null;
+  /** Label for the empty selection. Defaults to the create-goal dialog's
+   * "No parent"; the task rail passes "No goal". */
+  emptyLabel?: string;
   className?: string;
 }
 
@@ -30,6 +33,7 @@ export function GoalPicker({
   selectedGoalId,
   onChange,
   excludeGoalId,
+  emptyLabel = "No parent",
   className,
 }: GoalPickerProps) {
   const [open, setOpen] = useState(false);
@@ -42,7 +46,7 @@ export function GoalPicker({
     ? selected.title
     : selectedGoalId
       ? "Unknown goal"
-      : "No parent";
+      : emptyLabel;
 
   const selectable = goals.filter((g) => g.id !== excludeGoalId);
   const visibleGoals = query.trim()
@@ -97,7 +101,7 @@ export function GoalPicker({
               className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
               style={{ color: "var(--mute)" }}
             >
-              No parent
+              {emptyLabel}
             </button>
           </li>
           {visibleGoals.map((goal) => (

@@ -8,6 +8,7 @@ boundary. No adapter synthesis here — issues are pure user data.
 from __future__ import annotations
 
 import logging
+import zlib
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -24,6 +25,7 @@ from .deps import TeamsContext, envelope_list
 from .schemas import (
     AddIssueCommentBody,
     CreateIssueBody,
+    CreateIssueLabelBody,
     CreateWorkProductBody,
     PatchIssueBody,
     PatchWorkProductBody,
@@ -64,6 +66,7 @@ async def list_issues(
     sort_field: Optional[str] = Query(default=None, alias="sortField", pattern=r"^(updated)$"),
     sort_dir: Optional[str] = Query(default=None, alias="sortDir", pattern=r"^(asc|desc)$"),
     limit: Optional[int] = Query(default=None, ge=1, le=500),
+    exclude_routine_executions: bool = Query(default=False, alias="excludeRoutineExecutions"),
 ):
     """List issues in the caller's company.
 
@@ -76,6 +79,14 @@ async def list_issues(
     search (``q``), status filtering, per-status board columns
     (``status``), assignee/project filters, and sort. Mirrors the
     pass-through style of the sibling ``inbox.py`` listing.
+
+    ``excludeRoutineExecutions`` drops the rows a routine spawns on every
+    firing (``originKind == "routine_execution"``). Upstream's dedup index
+    only holds a routine's task open while it has a live execution run, so a
+    recurring routine accumulates one finished row per tick — enough to bury
+    hand-filed tasks. Filtering has to happen upstream, not client-side: the
+    list is capped by ``limit``, so a client-side drop would return a handful
+    of real tasks out of a page full of routine rows.
     """
     upstream_params: dict[str, str] = {}
     if q is not None:
@@ -92,6 +103,9 @@ async def list_issues(
         upstream_params["sortDir"] = sort_dir
     if limit is not None:
         upstream_params["limit"] = str(limit)
+    if exclude_routine_executions:
+        # Upstream reads this as the literal string "true" / "1".
+        upstream_params["excludeRoutineExecutions"] = "true"
 
     kwargs: dict[str, Any] = {
         "company_id": ctx.company_id,
@@ -120,6 +134,46 @@ async def list_labels(ctx: TeamsContext = Depends(_ctx)):
         session_cookie=ctx.session_cookie,
     )
     return envelope_list(upstream, "labels")
+
+
+# Editorial palette. Upstream requires a colour on every label; picking one is
+# not a decision worth asking the user for, so a label's colour is derived from
+# its name — deterministic, so the same name always reads the same.
+_LABEL_COLORS = (
+    "#2F5D50",  # forest
+    "#8C5A3C",  # clay
+    "#4A5B8C",  # slate blue
+    "#7A6A9B",  # plum
+    "#3F6F8C",  # teal
+    "#96603E",  # amber-brown
+)
+
+
+def _label_color_for(name: str) -> str:
+    return _LABEL_COLORS[zlib.crc32(name.strip().lower().encode("utf-8")) % len(_LABEL_COLORS)]
+
+
+@router.post("/issues/labels")
+async def create_label(body: CreateIssueLabelBody, ctx: TeamsContext = Depends(_ctx)):
+    """Create a company label.
+
+    Nothing seeds labels at provisioning, so before this route existed the
+    rail's label picker had an empty list it offered no way to fill — labels
+    were selectable in principle and unusable in practice.
+
+    Registered above ``/issues/{issue_id}``-style paths for the same
+    static-vs-parameterized reason as ``GET /issues/labels``.
+    """
+    created = await _agents._admin().create_company_label(
+        company_id=ctx.company_id,
+        body={
+            # Already stripped + rejected-if-blank by CreateIssueLabelBody.
+            "name": body.name,
+            "color": body.color or _label_color_for(body.name),
+        },
+        session_cookie=ctx.session_cookie,
+    )
+    return created
 
 
 # NOTE: any new static `/issues/<word>` routes (e.g. /issues/labels) MUST be

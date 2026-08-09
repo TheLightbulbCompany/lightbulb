@@ -1,5 +1,6 @@
 """Tests for the Teams Issues BFF."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -84,6 +85,51 @@ def test_list_issues_forwards_query_params(client, monkeypatch):
             "sortField": "updated",
             "sortDir": "desc",
         },
+    )
+
+
+def test_list_issues_forwards_exclude_routine_executions(client, monkeypatch):
+    """The Tasks panel hides routine-spawned rows by default. Upstream reads the
+    flag as the literal string "true", and it must only be sent when asked for —
+    a default-on ``params`` would change every other caller's result set."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={"excludeRoutineExecutions": "true"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.list_issues.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
+        params={"excludeRoutineExecutions": "true"},
+    )
+
+
+def test_list_issues_omits_exclude_routine_executions_when_false(client, monkeypatch):
+    """Toggling routine tasks back on must send no filter at all, not
+    ``excludeRoutineExecutions=false`` (which upstream would ignore anyway) —
+    and must not manufacture an empty ``params`` dict."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value={"issues": []})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues",
+        params={"excludeRoutineExecutions": "false"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.list_issues.assert_awaited_once_with(
+        company_id="co_abc",
+        session_cookie="cookie",
     )
 
 
@@ -188,6 +234,26 @@ def test_create_issue_passes_whitelisted_body(client, monkeypatch):
     assert body == {"title": "Bug", "priority": "high"}
 
 
+def test_create_issue_forwards_goal_id_as_camelcase(client, monkeypatch):
+    """Tasks can roll up to a goal. ``issues.goalId`` has always existed
+    upstream (createIssueSchema accepts it) — it was simply not whitelisted
+    here, which is why goals could only hold sub-goals and projects."""
+    admin = MagicMock()
+    admin.create_issue = AsyncMock(return_value={"id": "iss_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues",
+        json={"title": "Bug", "goalId": "goal_1"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.create_issue.await_args.kwargs["body"]
+    assert body == {"title": "Bug", "goalId": "goal_1"}
+
+
 def test_create_issue_rejects_unknown_field(client):
     """Unknown body fields must 422 at the FastAPI boundary
     (CreateIssueBody is extra="forbid")."""
@@ -197,6 +263,101 @@ def test_create_issue_rejects_unknown_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_create_label_derives_color_from_name(client, monkeypatch):
+    """Upstream requires a 6-digit hex colour on every label. Asking the user to
+    pick one before they can categorise anything is friction for no gain, so the
+    BFF derives it — deterministically, so a name always reads the same."""
+    admin = MagicMock()
+    admin.create_company_label = AsyncMock(return_value={"id": "lbl_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "  Marketing  "},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.create_company_label.await_args.kwargs["body"]
+    assert body["name"] == "Marketing"
+    assert re.fullmatch(r"#[0-9A-Fa-f]{6}", body["color"])
+
+    # Deterministic: the same name must not drift colour between calls.
+    admin.create_company_label.reset_mock()
+    client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "Marketing"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert admin.create_company_label.await_args.kwargs["body"]["color"] == body["color"]
+
+
+def test_create_label_honours_explicit_color(client, monkeypatch):
+    admin = MagicMock()
+    admin.create_company_label = AsyncMock(return_value={"id": "lbl_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "Ops", "color": "#123abc"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert admin.create_company_label.await_args.kwargs["body"]["color"] == "#123abc"
+
+
+def test_create_label_rejects_blank_name(client, monkeypatch):
+    """``min_length`` runs against the raw string, so a whitespace-only name
+    would pass validation and reach upstream as "" once the router stripped it.
+    The validator strips first so the validated value is the forwarded one."""
+    admin = MagicMock()
+    admin.create_company_label = AsyncMock(return_value={"id": "lbl_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "   "},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+    admin.create_company_label.assert_not_awaited()
+
+
+def test_create_label_rejects_bad_color(client):
+    """A non-hex colour 422s locally rather than being forwarded for upstream's
+    zod regex to reject opaquely."""
+    r = client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "Ops", "color": "red"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_create_label_route_is_not_shadowed_by_issue_id(client, monkeypatch):
+    """`/issues/labels` is a static segment registered above `/issues/{id}`.
+    If that order ever flips, this POST would fall through to a parameterized
+    handler and fail confusingly instead of creating a label."""
+    admin = MagicMock()
+    admin.create_company_label = AsyncMock(return_value={"id": "lbl_1"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/labels",
+        json={"name": "Research"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.create_company_label.assert_awaited_once()
 
 
 def test_archive_issue(client, monkeypatch):
@@ -612,6 +773,27 @@ async def test_patch_issue_forwards_explicit_null_to_unassign():
     fake_admin.patch_issue.assert_called_once()
     forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
     assert forwarded_body == {"assigneeAgentId": None}
+
+
+@pytest.mark.asyncio
+async def test_patch_issue_forwards_explicit_null_goal_to_detach():
+    """Detaching a task from its goal has to reach upstream as an explicit
+    null. Under exclude_none it would be stripped and the link would survive
+    every attempt to clear it."""
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+    fake_ctx.session_cookie = "sess=abc"
+
+    body = PatchIssueBody(goal_id=None)
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        await patch_issue(issue_id="iss_1", body=body, ctx=fake_ctx)
+
+    forwarded_body = fake_admin.patch_issue.call_args.kwargs["body"]
+    assert forwarded_body == {"goalId": None}
 
 
 @pytest.mark.asyncio

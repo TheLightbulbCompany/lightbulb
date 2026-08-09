@@ -56,6 +56,7 @@ import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { PanelEmptyState } from "@/components/teams/shell";
 import { IssueFiltersPopover } from "@/components/teams/inbox/IssueFiltersPopover";
+import { hideIssueWithUndo } from "./lib/hideIssue";
 import {
   KanbanBoard,
   type KanbanBoardProps,
@@ -112,7 +113,10 @@ export interface TasksListProps {
   searchActive?: boolean;
   isLoading?: boolean;
   /** Patches an issue (status / assignee / …). Routed to the BFF PATCH. */
-  onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  // Returns the in-flight PATCH so callers that need to sequence on it can —
+  // Hide waits for the write to land before offering its Undo toast. Callers
+  // that only fire-and-forget (status circle, board drag) ignore it.
+  onUpdateIssue: (id: string, data: Record<string, unknown>) => void | Promise<unknown>;
   /** Opens the New Task dialog (rendered by the parent panel). */
   onNewTask: () => void;
 }
@@ -510,7 +514,10 @@ interface TaskRowProps {
   /** Resolves the assignee agent's display name (null = unassigned/unknown). */
   assigneeName: string | null;
   onToggleExpand: () => void;
-  onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  // Returns the in-flight PATCH so callers that need to sequence on it can —
+  // Hide waits for the write to land before offering its Undo toast. Callers
+  // that only fire-and-forget (status circle, board drag) ignore it.
+  onUpdateIssue: (id: string, data: Record<string, unknown>) => void | Promise<unknown>;
 }
 
 function TaskRow({
@@ -691,9 +698,7 @@ function TaskRow({
             <DropdownMenuItem
               onSelect={(e) => {
                 e.preventDefault();
-                onUpdateIssue(issue.id, {
-                  hiddenAt: new Date().toISOString(),
-                });
+                void hideIssueWithUndo(issue.id, onUpdateIssue);
               }}
             >
               <EyeOff className="h-4 w-4" />

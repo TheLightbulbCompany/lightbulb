@@ -146,6 +146,9 @@ export interface IssueCreateInput {
   description?: string;
   priority?: IssuePriority;
   projectId?: string;
+  /** Goal the new task rolls up to. Omitted on the children endpoint means
+   * upstream inherits the parent task's goal rather than leaving it unset. */
+  goalId?: string;
   assigneeAgentId?: string;
   status?: IssueStatus;
   workMode?: IssueWorkMode;
@@ -181,6 +184,9 @@ export interface IssueUpdateInput {
    * sent, matching the multi-select rail control). The BFF camelCase-aliases
    * this to ``labelIds``. ``undefined`` leaves the labels unchanged. */
   labelIds?: string[];
+  /** Link the task to a goal, or ``null`` to detach it. ``undefined`` leaves
+   * the link unchanged. The BFF camelCase-aliases this to ``goalId``. */
+  goalId?: string | null;
   /** An ISO timestamp hides the task (it drops out of the Tasks list);
    * ``null`` restores it. ``undefined`` leaves the hidden state unchanged.
    * The BFF whitelists ``hiddenAt`` and forwards it to upstream Paperclip. */
@@ -281,6 +287,16 @@ export interface Issue {
   labels?: IssueLabel[] | null;
   project?: IssueProject | null;
   parentId?: string | null;
+  /** Goal this task rolls up to (upstream `issues.goalId`). The goal-detail
+   * page lists its tasks off this field and the rail's Goal row edits it. */
+  goalId?: string | null;
+  /** How the task came to exist. `"routine_execution"` marks a row a routine
+   * spawned on one of its firings — the Tasks panel hides those by default. */
+  originKind?: string | null;
+  /** Set when the task is hidden. Every list/board/search read filters these
+   * out upstream, but fetch-by-id does not — so the detail page is the one
+   * surface that can see (and restore) a hidden task. */
+  hiddenAt?: string | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   createdByUserId?: string | null;

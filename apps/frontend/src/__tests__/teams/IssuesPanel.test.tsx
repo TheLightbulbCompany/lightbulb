@@ -17,14 +17,21 @@ import type { Issue } from "@/components/teams/shared/types";
 let seededIssues: Issue[] = [];
 const mockMutate = vi.fn();
 const mockRead = vi.fn((path: string) => {
-  if (path === "/issues")
+  // Prefix-match: the panel's issues key carries the routine-filter query
+  // string (`/issues?excludeRoutineExecutions=true`) unless the toggle is on.
+  if (path.startsWith("/issues"))
     return {
       data: { issues: seededIssues },
       isLoading: false,
       error: null,
       mutate: mockMutate,
     };
-  return { data: { agents: [], projects: [] }, isLoading: false, error: null, mutate: vi.fn() };
+  return {
+    data: { agents: [], projects: [], goals: [] },
+    isLoading: false,
+    error: null,
+    mutate: vi.fn(),
+  };
 });
 
 vi.mock("@/hooks/useTeamsApi", () => ({
@@ -125,11 +132,34 @@ describe("IssuesPanel", () => {
     mockRead.mockClear();
     render(<IssuesPanel />);
     expect(mockRead).toHaveBeenCalledWith(
-      "/issues",
+      expect.stringMatching(/^\/issues(\?|$)/),
       expect.objectContaining({
         refreshInterval: 30_000,
         revalidateOnFocus: true,
       }),
     );
+  });
+
+  // Routine-spawned tasks (one row per firing, forever) drown out hand-filed
+  // work, so the panel asks upstream to drop them by default. Filtering MUST
+  // stay server-side: the list is capped by `limit`, so a client-side drop
+  // would just return fewer real tasks per page.
+  it("excludes routine tasks by default and includes them when toggled on", () => {
+    mockRead.mockClear();
+    render(<IssuesPanel />);
+    expect(mockRead).toHaveBeenCalledWith(
+      "/issues?excludeRoutineExecutions=true",
+      expect.anything(),
+    );
+
+    const toggle = screen.getByRole("switch", { name: /routine tasks/i });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    mockRead.mockClear();
+    fireEvent.click(toggle);
+    expect(mockRead).toHaveBeenCalledWith("/issues", expect.anything());
+    expect(
+      screen.getByRole("switch", { name: /routine tasks/i }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 });

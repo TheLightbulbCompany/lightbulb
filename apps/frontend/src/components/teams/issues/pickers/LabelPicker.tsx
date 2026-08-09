@@ -8,6 +8,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { notifyApiError } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import type { IssueLabel } from "@/components/teams/shared/types";
 
@@ -33,14 +34,15 @@ export interface LabelPickerProps {
  * server replaces the issue's labels wholesale. Renders the applied labels as
  * removable chips next to an "Add label" trigger. */
 export function LabelPicker({ selected, onChange, className }: LabelPickerProps) {
-  const { read } = useTeamsApi();
+  const { read, post } = useTeamsApi();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
 
   // Company labels for the dropdown. There's no server-side label search on
   // the Teams BFF, so we filter the full list client-side (mirrors how
   // IssueRelations filters its candidate issues).
-  const { data } = read<{ labels: IssueLabel[] }>("/issues/labels");
+  const { data, mutate } = read<{ labels: IssueLabel[] }>("/issues/labels");
   const allLabels = data?.labels;
 
   const selectedIds = useMemo(() => selected.map((l) => l.id), [selected]);
@@ -61,6 +63,34 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
   };
   const remove = (labelId: string) => {
     onChange(selectedIds.filter((id) => id !== labelId));
+  };
+
+  // Nothing seeds labels, so without a create-here path this picker is empty
+  // on every fresh company and there is no other screen that fills it. The
+  // typed query becomes the label name; the BFF derives the colour.
+  const trimmedQuery = query.trim();
+  const canCreate =
+    trimmedQuery.length > 0 &&
+    trimmedQuery.length <= 48 &&
+    !(allLabels ?? []).some(
+      (l) => l.name.toLowerCase() === trimmedQuery.toLowerCase(),
+    );
+
+  const createAndApply = async () => {
+    if (!canCreate || creating) return;
+    setCreating(true);
+    try {
+      const created = await post<IssueLabel>("/issues/labels", {
+        name: trimmedQuery,
+      });
+      await mutate();
+      onChange([...selectedIds, created.id]);
+      setQuery("");
+    } catch (e) {
+      notifyApiError(e, "Couldn't create the label.");
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
@@ -114,7 +144,15 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search labels..."
+            onKeyDown={(e) => {
+              // Enter creates when the typed name is new — the gesture people
+              // expect from a tag input, and the only path on an empty company.
+              if (e.key === "Enter" && canCreate) {
+                e.preventDefault();
+                void createAndApply();
+              }
+            }}
+            placeholder="Search or create labels..."
             className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
             style={{ borderBottom: "1px solid var(--edge)" }}
             aria-label="Search labels"
@@ -143,9 +181,24 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
                 </li>
               );
             })}
-            {candidates.length === 0 && (
+            {candidates.length === 0 && !canCreate && (
               <li className="px-2 py-2 text-xs" style={{ color: "var(--mute)" }}>
-                No matching labels.
+                {trimmedQuery ? "No matching labels." : "No labels yet — type to create one."}
+              </li>
+            )}
+            {canCreate && (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => void createAndApply()}
+                  disabled={creating}
+                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded hover:bg-[var(--cream-deeper)]"
+                >
+                  <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="truncate">
+                    {creating ? "Creating…" : `Create "${trimmedQuery}"`}
+                  </span>
+                </button>
               </li>
             )}
           </ul>

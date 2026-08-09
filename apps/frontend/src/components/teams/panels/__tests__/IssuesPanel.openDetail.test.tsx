@@ -13,7 +13,9 @@ import { IssuesPanel } from "../IssuesPanel";
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
     read: (path: string) => {
-      if (path === "/issues")
+      // Prefix-match: the panel's issues key carries the routine-filter query
+      // string (`/issues?excludeRoutineExecutions=true`) by default.
+      if (path.startsWith("/issues"))
         return {
           data: { issues: [{ id: "iss_1", title: "Fix the thing", status: "todo" }] },
           isLoading: false,

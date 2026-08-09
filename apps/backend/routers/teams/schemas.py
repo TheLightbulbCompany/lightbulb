@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -83,6 +83,12 @@ class CreateIssueBody(_Strict):
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     project_id: Optional[str] = None
+    # Goal linkage. ``issues.goal_id`` is a real upstream column and both
+    # ``createIssueSchema`` and ``updateIssueSchema`` accept ``goalId`` — it was
+    # simply never whitelisted here, which is why the UI could only hang
+    # sub-goals and projects off a goal. Uses the same alias-generator path as
+    # ``project_id``, so it goes out as ``goalId``.
+    goal_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     # Compose-time status preset + execution work mode — both forward to
@@ -99,6 +105,10 @@ class PatchIssueBody(_Strict):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20000)
     project_id: Optional[str] = None
+    # Goal linkage — see CreateIssueBody.goal_id. This route forwards with
+    # ``exclude_unset``, so an explicit ``null`` detaches the task from its goal
+    # while omitting the key leaves the link untouched.
+    goal_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     status: Optional[str] = None
@@ -129,6 +139,35 @@ class PatchIssueBody(_Strict):
     # already be camelCase — the alias generator only renames model fields,
     # not nested dict contents.)
     execution_policy: Optional[dict] = None
+
+
+class CreateIssueLabelBody(_Strict):
+    """Body for ``POST /teams/issues/labels``.
+
+    Mirrors upstream ``createIssueLabelSchema`` (name 1-48 chars, colour a
+    required 6-digit hex). Colour is optional HERE and defaults to a value
+    derived from the name in the router — labelling a task is the categorising
+    gesture, and making the user pick a hex first is friction for no gain.
+    """
+
+    name: str = Field(min_length=1, max_length=48)
+    color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, v: str) -> str:
+        """Strip before the length check rather than after.
+
+        ``min_length`` runs against the raw string, so a whitespace-only name
+        passes validation and then reaches upstream as ``""`` once the router
+        strips it. Normalising here makes the validated value the forwarded
+        value. The picker already gates on a non-empty trimmed query; this is
+        the boundary guard for every other BFF caller.
+        """
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("name must not be blank")
+        return stripped
 
 
 class AddIssueCommentBody(_Strict):

@@ -105,3 +105,19 @@ async def clear_push_token(user_id: str, device_id: str) -> None:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return  # no users row — nothing to remove
         raise
+
+
+async def list_all() -> list[dict]:
+    """Every users row, paginated. Used by the orphan sweep as the liveness
+    signal: wipe_account deletes this row, so an owner id that appears in a
+    credential table but not here has no account left."""
+    table = _get_table()
+    items: list[dict] = []
+    kwargs: dict = {}
+    while True:
+        page = await run_in_thread(table.scan, **kwargs)
+        items.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return items
+        kwargs["ExclusiveStartKey"] = last

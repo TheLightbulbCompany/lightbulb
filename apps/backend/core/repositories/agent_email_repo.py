@@ -96,3 +96,49 @@ async def query_by_owner(owner_id: str) -> list[dict]:
         KeyConditionExpression=Key("owner_id").eq(owner_id),
     )
     return response.get("Items", [])
+
+
+async def delete_all_for_owner(owner_id: str) -> list[str]:
+    """Delete every agent email address owned by this owner. Returns them.
+
+    The wipe used to skip this, so a deleted owner's addresses stayed in the
+    table and inbound SES mail to them routed at an owner that no longer
+    exists. Reads through the by-owner GSI (eventually consistent — a write
+    from the same second could be missed, which is acceptable for a teardown
+    that runs after the owner's surfaces are already gone).
+    """
+    rows = await query_by_owner(owner_id)
+    table = _get_table()
+    addresses: list[str] = []
+    for row in rows:
+        address = row.get("address")
+        if not address:
+            continue
+        await run_in_thread(table.delete_item, Key={"address": address})
+        addresses.append(address)
+    return addresses
+
+
+async def scan_all() -> list[dict]:
+    """Every row in the table, paginated.
+
+    Only the orphan sweep uses this — a full scan is the ONLY way to find rows
+    whose owner no longer exists, because the owner id is gone from everywhere
+    that would let you query for it. Not for request-path use.
+    """
+    table = _get_table()
+    items: list[dict] = []
+    kwargs: dict = {}
+    while True:
+        page = await run_in_thread(table.scan, **kwargs)
+        items.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            return items
+        kwargs["ExclusiveStartKey"] = last
+
+
+async def delete_by_address(address: str) -> None:
+    """Delete one address row by primary key. Used by the orphan sweep, which
+    has the row in hand and must not re-derive it from a dead owner id."""
+    await run_in_thread(_get_table().delete_item, Key={"address": normalize(address)})

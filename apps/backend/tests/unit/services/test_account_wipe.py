@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
@@ -58,6 +59,16 @@ EXPECTED_ORDER = [
     "billing_row",
     "user_row",
     "paperclip_agent_keys",
+    # Credential + identity leftovers: without these a "wiped" owner kept
+    # their BYOK LLM keys, ChatGPT tokens and integration credentials in
+    # Secrets Manager, their agent email addresses still routed inbound SES
+    # mail, and their company slug stayed reserved forever. All BEFORE
+    # clerk_user, which stays last so nothing regrows.
+    "owner_secrets",
+    "integrations",
+    "oauth_tokens",
+    "agent_email_addresses",
+    "company_slug",
     "clerk_user",
 ]
 
@@ -169,32 +180,60 @@ def wipe_mocks():
     clerk_delete = AsyncMock(return_value=None)
     agent_keys_list = AsyncMock(return_value=["isol8/dev/paperclip-agent-keys/user_abc123/agent-1"])
     agent_keys_delete = AsyncMock(return_value=1)
+    # Credential leftovers. These reach Secrets Manager, DDB and OpenAI for
+    # real, so all must be stubbed or the suite makes live AWS calls.
+    owner_secrets_list = AsyncMock(return_value=["isol8/dev/user-keys/user_abc123/anthropic"])
+    owner_secrets_delete = AsyncMock(return_value=["isol8/dev/user-keys/user_abc123/anthropic"])
+    integrations_list = AsyncMock(return_value=[{"owner_id": "user_abc123", "provider": "slack"}])
+    integrations_delete = AsyncMock(return_value=["slack"])
+    oauth_revoke = AsyncMock(return_value=None)
+    agent_email_query = AsyncMock(return_value=[{"owner_id": "user_abc123", "address": "friday@acme.isol8.co"}])
+    agent_email_delete = AsyncMock(return_value=["friday@acme.isol8.co"])
+    slug_get = AsyncMock(return_value={"owner_id": "user_abc123", "slug": "acme"})
+    slug_delete = AsyncMock(return_value="acme")
     # Real boto3 underneath — the moto-backed tests at the bottom of this file
     # swap the real implementation back in via side_effect.
     gate_tokens_delete = AsyncMock(return_value=3)
 
-    with (
-        patch("core.services.account_wipe.user_repo.get", new=user_get),
-        patch("core.services.account_wipe.user_repo.delete", new=user_delete),
-        patch("core.services.account_wipe.clerk_admin.get_user", new=clerk_get_user),
-        patch("core.services.account_wipe.container_repo.get_by_owner_id", new=container_get),
-        patch("core.services.account_wipe.PaperclipRepo", new=paperclip_repo_cls),
-        patch("core.services.account_wipe.billing_repo.get_by_owner_id", new=billing_get),
-        patch("core.services.account_wipe.billing_repo.delete", new=billing_delete),
-        patch("core.services.account_wipe._delete_paperclip_company_call", new=paperclip_company_delete),
-        patch("core.services.account_wipe.delete_paperclip_user", new=paperclip_user_delete_fn),
-        patch("core.services.account_wipe.get_ecs_manager", new=get_ecs_manager_fn),
-        patch("core.services.account_wipe.get_workspace", new=get_workspace_fn),
-        patch("core.services.account_wipe.delete_owner_aips", new=bedrock_aips_delete),
-        patch("core.services.account_wipe.delete_owner_bedrock_role", new=bedrock_role_delete),
-        patch("core.services.account_wipe._archive_metronome_customer", new=metronome_archive),
-        patch("core.services.account_wipe.delete_stripe_customer", new=stripe_delete),
-        patch("core.services.account_wipe.usage_repo.delete_all_for_owner", new=usage_delete),
-        patch("core.services.account_wipe.clerk_admin.delete_user", new=clerk_delete),
-        patch("core.services.account_wipe.list_owner_agent_key_secret_names", new=agent_keys_list),
-        patch("core.services.account_wipe.delete_owner_agent_key_secrets", new=agent_keys_delete),
-        patch("core.services.account_wipe.delete_gate_token_rows", new=gate_tokens_delete),
-    ):
+    # ExitStack, not a parenthesised `with (patch(...), ...)` chain: that
+    # form is one statically nested block PER patch and CPython caps those
+    # at 20. Adding the credential-leftover stubs tipped it over and the
+    # module stopped compiling with SyntaxError. A list + ExitStack has no
+    # such ceiling.
+    _patches = [
+        ("core.services.account_wipe.user_repo.get", user_get),
+        ("core.services.account_wipe.user_repo.delete", user_delete),
+        ("core.services.account_wipe.clerk_admin.get_user", clerk_get_user),
+        ("core.services.account_wipe.container_repo.get_by_owner_id", container_get),
+        ("core.services.account_wipe.PaperclipRepo", paperclip_repo_cls),
+        ("core.services.account_wipe.billing_repo.get_by_owner_id", billing_get),
+        ("core.services.account_wipe.billing_repo.delete", billing_delete),
+        ("core.services.account_wipe._delete_paperclip_company_call", paperclip_company_delete),
+        ("core.services.account_wipe.delete_paperclip_user", paperclip_user_delete_fn),
+        ("core.services.account_wipe.get_ecs_manager", get_ecs_manager_fn),
+        ("core.services.account_wipe.get_workspace", get_workspace_fn),
+        ("core.services.account_wipe.delete_owner_aips", bedrock_aips_delete),
+        ("core.services.account_wipe.delete_owner_bedrock_role", bedrock_role_delete),
+        ("core.services.account_wipe._archive_metronome_customer", metronome_archive),
+        ("core.services.account_wipe.delete_stripe_customer", stripe_delete),
+        ("core.services.account_wipe.usage_repo.delete_all_for_owner", usage_delete),
+        ("core.services.account_wipe.clerk_admin.delete_user", clerk_delete),
+        ("core.services.account_wipe.list_owner_agent_key_secret_names", agent_keys_list),
+        ("core.services.account_wipe.delete_owner_agent_key_secrets", agent_keys_delete),
+        ("core.services.account_wipe.delete_gate_token_rows", gate_tokens_delete),
+        ("core.services.account_wipe.list_owner_secret_names", owner_secrets_list),
+        ("core.services.account_wipe.delete_owner_secrets", owner_secrets_delete),
+        ("core.services.account_wipe.integrations_repo.list_for_owner", integrations_list),
+        ("core.services.account_wipe.integrations_repo.delete_all_for_owner", integrations_delete),
+        ("core.services.account_wipe.revoke_user_oauth", oauth_revoke),
+        ("core.services.account_wipe.agent_email_repo.query_by_owner", agent_email_query),
+        ("core.services.account_wipe.agent_email_repo.delete_all_for_owner", agent_email_delete),
+        ("core.services.account_wipe.company_slug_repo.get_by_owner", slug_get),
+        ("core.services.account_wipe.company_slug_repo.delete_for_owner", slug_delete),
+    ]
+    with ExitStack() as _stack:
+        for _target, _new in _patches:
+            _stack.enter_context(patch(_target, new=_new))
         yield SimpleNamespace(
             user_get=user_get,
             user_delete=user_delete,
@@ -220,6 +259,11 @@ def wipe_mocks():
             clerk_delete=clerk_delete,
             agent_keys_list=agent_keys_list,
             agent_keys_delete=agent_keys_delete,
+            owner_secrets_delete=owner_secrets_delete,
+            integrations_delete=integrations_delete,
+            oauth_revoke=oauth_revoke,
+            agent_email_delete=agent_email_delete,
+            slug_delete=slug_delete,
             gate_tokens_delete=gate_tokens_delete,
         )
 
@@ -496,6 +540,11 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.billing_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.agent_keys_delete.side_effect = RuntimeError("sm down")
+    wipe_mocks.owner_secrets_delete.side_effect = RuntimeError("sm down")
+    wipe_mocks.integrations_delete.side_effect = RuntimeError("ddb down")
+    wipe_mocks.oauth_revoke.side_effect = RuntimeError("openai down")
+    wipe_mocks.agent_email_delete.side_effect = RuntimeError("ddb down")
+    wipe_mocks.slug_delete.side_effect = RuntimeError("ddb down")
 
     with (
         patch("core.services.account_wipe.settings.LITESTREAM_BUCKET", "isol8-dev-openclaw-replicas"),

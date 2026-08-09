@@ -87,7 +87,15 @@ from core.billing.bedrock_gate_tokens import delete_gate_token_rows, owner_gate_
 from core.billing.metronome_client import for_settings as metronome_for_settings
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.repositories import billing_repo, container_repo, usage_repo, user_repo
+from core.repositories import (
+    agent_email_repo,
+    billing_repo,
+    company_slug_repo,
+    container_repo,
+    integrations_repo,
+    usage_repo,
+    user_repo,
+)
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import clerk_admin
 from core.services.billing_service import delete_stripe_customer
@@ -97,6 +105,8 @@ from core.services.paperclip_api_key import (
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.oauth_service import revoke_user_oauth
+from core.services.owner_secret_sweep import delete_owner_secrets, list_owner_secret_names
 from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
 
 logger = logging.getLogger(__name__)
@@ -502,6 +512,51 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     # Clerk is external; we don't spend a live GET here just for the
     # preview (preview_wipe touches only our own DDB rows + EFS). Always
     # shown as would_delete — the same convention as usage_counters above.
+    # Credential + identity leftovers. A preview that omits these tells an
+    # admin the credentials survive — the impression this report exists to
+    # correct. All read-only.
+    secret_names = await list_owner_secret_names(owner_id)
+    _preview_step(
+        steps,
+        system="owner_secrets",
+        action="delete_owner_secrets",
+        exists=bool(secret_names),
+        detail_if_exists=f"{len(secret_names)} secret(s): BYOK keys, integration creds, OAuth apps",
+        detail_if_absent="no owner secrets",
+    )
+
+    integration_rows = await integrations_repo.list_for_owner(owner_id)
+    _preview_step(
+        steps,
+        system="integrations",
+        action="delete_all_for_owner",
+        exists=bool(integration_rows),
+        detail_if_exists=f"{len(integration_rows)} integration row(s)",
+        detail_if_absent="no integration rows",
+    )
+
+    steps.append(WipeStep(system="oauth_tokens", action="revoke_user_oauth", status="would_delete", detail=owner_id))
+
+    email_rows = await agent_email_repo.query_by_owner(owner_id)
+    _preview_step(
+        steps,
+        system="agent_email_addresses",
+        action="delete_all_for_owner",
+        exists=bool(email_rows),
+        detail_if_exists=f"{len(email_rows)} address(es): " + ", ".join(r.get("address", "?") for r in email_rows),
+        detail_if_absent="no agent email addresses",
+    )
+
+    slug_row = await company_slug_repo.get_by_owner(owner_id)
+    _preview_step(
+        steps,
+        system="company_slug",
+        action="delete_for_owner",
+        exists=slug_row is not None,
+        detail_if_exists=f"slug {(slug_row or {}).get('slug')}",
+        detail_if_absent="no slug reservation",
+    )
+
     steps.append(WipeStep(system="clerk_user", action="delete_user", status="would_delete", detail=owner_id))
 
     return WipeReport(owner_id=owner_id, steps=steps, dry_run=True)
@@ -807,6 +862,47 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         return f"deleted {count} per-agent key secret(s)"
 
     await _step(steps, system="paperclip_agent_keys", action="delete_owner_agent_key_secrets", fn=_s9e)
+
+    # --- Credential + identity leftovers ----------------------------------
+    # These were the module's documented KNOWN GAP: the owner's ChatGPT
+    # tokens, BYOK LLM keys and integration credentials all survived a
+    # "wipe", and their agent email addresses kept routing inbound SES mail
+    # at an owner that no longer existed. Unconditional and idempotent —
+    # each no-ops on an empty set.
+
+    async def _s9f() -> str:
+        names = await delete_owner_secrets(owner_id)
+        return f"deleted {len(names)} owner secret(s) (BYOK keys, integration creds, OAuth apps)"
+
+    await _step(steps, system="owner_secrets", action="delete_owner_secrets", fn=_s9f)
+
+    async def _s9g() -> str:
+        providers = await integrations_repo.delete_all_for_owner(owner_id)
+        return f"deleted {len(providers)} integration row(s): {', '.join(providers) or 'none'}"
+
+    await _step(steps, system="integrations", action="delete_all_for_owner", fn=_s9g)
+
+    # Deletes OUR stored tokens. It does NOT revoke the grant upstream at
+    # OpenAI — there is no call to an OpenAI revocation endpoint anywhere in
+    # this codebase, so the grant stays live on their side until it expires
+    # or the human revokes it in their OpenAI account settings.
+    async def _s9h() -> str:
+        await revoke_user_oauth(user_id=owner_id)
+        return "stored chatgpt oauth tokens deleted (grant NOT revoked upstream at OpenAI)"
+
+    await _step(steps, system="oauth_tokens", action="revoke_user_oauth", fn=_s9h)
+
+    async def _s9i() -> str:
+        addresses = await agent_email_repo.delete_all_for_owner(owner_id)
+        return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
+
+    await _step(steps, system="agent_email_addresses", action="delete_all_for_owner", fn=_s9i)
+
+    async def _s9j() -> str:
+        slug = await company_slug_repo.delete_for_owner(owner_id)
+        return f"released slug {slug}" if slug else "no slug reservation"
+
+    await _step(steps, system="company_slug", action="delete_for_owner", fn=_s9j)
 
     # --- Step 10 (spec #12): Clerk user -- ALWAYS LAST ---------------------
     # Deliberately unconditional and unguarded by any row read above:

@@ -135,9 +135,18 @@ export function useBilling() {
   // a hardcoded choice made server-side rather than picked client-side ALSO
   // skipped CreditsStep — leaving converted owners on Bedrock-managed
   // inference with a zero credit balance they were never asked to fund.
-  const startTrialCheckout = useCallback(async (providerChoice: ProviderChoiceId) => {
+  // `creditsCents` is the starter Claude-credit amount bundled into the same
+  // Checkout as a one-time line item — bedrock_claude only, since the other
+  // two providers spend no Isol8 credits. Omitted => the server default. The
+  // server re-validates and re-scopes it; this is a UI convenience, never the
+  // authority on what gets charged.
+  const startTrialCheckout = useCallback(async (
+    providerChoice: ProviderChoiceId,
+    creditsCents?: number,
+  ) => {
     const { checkout_url } = (await api.post("/billing/trial-checkout", {
       provider_choice: providerChoice,
+      ...(creditsCents != null ? { credits_cents: creditsCents } : {}),
     })) as { checkout_url?: string };
     if (!checkout_url) throw new Error("No checkout_url returned");
     window.location.href = checkout_url;

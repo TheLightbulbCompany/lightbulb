@@ -9,7 +9,7 @@ import { capture } from "@/lib/analytics";
 import { planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
-import { PROVIDER_SWITCH_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
+import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { WebhooksPanel } from "@/components/settings/WebhooksPanel";
 import { DesktopFileAccess } from "@/components/desktop/DesktopFileAccess";
@@ -184,17 +184,11 @@ function BillingPanel() {
     isSubscribed,
     openPortal,
     startTeamCheckout,
-    startTrialCheckout,
     upgradeToUltra,
   } = useBilling();
   const { membership } = useOrganization();
 
   const [portalLoading, setPortalLoading] = useState(false);
-  // Which provider's Subscribe button is in flight, not a bare boolean — the
-  // free-tier card renders one per provider path and only the clicked one
-  // should spin.
-  const [subscribeLoading, setSubscribeLoading] = useState<ProviderChoiceId | null>(null);
-  const [subscribeError, setSubscribeError] = useState<string | null>(null);
   // Mount-time snapshot for the trial-expired check below: render must stay
   // pure (the react-compiler lint rejects Date.now() during render), and the
   // 3-day expiry granularity makes a per-mount timestamp plenty fresh.
@@ -209,22 +203,6 @@ function BillingPanel() {
       setPortalLoading(false);
     }
   }, [openPortal]);
-
-  // Free-tier upgrade: redirect to Stripe Checkout via the same
-  // /billing/trial-checkout client path the signup ProviderPicker uses.
-  // On success the browser leaves for Stripe, so loading only clears on
-  // failure.
-  const handleSubscribe = useCallback(async (choice: ProviderChoiceId) => {
-    capture("subscription_checkout_started", { source: "settings_billing", provider_choice: choice });
-    setSubscribeError(null);
-    setSubscribeLoading(choice);
-    try {
-      await startTrialCheckout(choice);
-    } catch {
-      setSubscribeError("Couldn't start checkout. Please try again.");
-      setSubscribeLoading(null);
-    }
-  }, [startTrialCheckout]);
 
   if (isLoading) {
     return (
@@ -413,8 +391,8 @@ function BillingPanel() {
                   : "Free trial — full access now, then $50/mo. Cancel anytime."
                 : isTrialLocal
                   ? isTrialExpired
-                    ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — usage is paused. Subscribe for the full plan.`
-                    : "Free tier — $3/day of included usage. Subscribe for the full plan."
+                    ? `Free tier ended${trialEndLabel ? ` on ${trialEndLabel}` : ""} — your agents are paused.`
+                    : "Free tier — $3/day of included usage."
                   : isSubscribed
                     ? "Active subscription"
                     : "No active subscription"}
@@ -426,42 +404,35 @@ function BillingPanel() {
               Manage Payment
             </button>
           ) : isTrialLocal ? (
-            // Free-tier upgrade — one Subscribe button per provider path, so
-            // the choice is made BEFORE Checkout and rides its success_url
-            // (`?provider=<id>`) into the wizard's provider step. This used to
-            // be a single button posting a hardcoded `bedrock_claude`: the
-            // owner was silently put on Bedrock-managed inference, never saw
-            // the alternatives, and never hit CreditsStep to buy the credits
-            // that path spends. No Manage Payment here — a trial_local row has
-            // no Stripe customer, so the portal would fail.
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-              {/* The $50/mo is the same on all three — it buys the always-on
-                  infrastructure. What differs is who pays for inference, so
-                  price it once here instead of on every button. */}
-              <div style={{ fontSize: 12, color: "var(--mute)" }}>Subscribe — $50/mo. Pick how to power it:</div>
-              {PROVIDER_SWITCH_CARDS.map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  className={card.id === "bedrock_claude" ? "settings-btn-save" : "settings-btn-outline"}
-                  onClick={() => handleSubscribe(card.id)}
-                  disabled={subscribeLoading !== null}
-                  title={card.subtitle}
-                >
-                  {subscribeLoading === card.id && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-                  {card.title}
-                </button>
-              ))}
-            </div>
+            // No CTA in the header — the picker renders full-width below the
+            // card. No Manage Payment either: a trial_local row has no Stripe
+            // customer, so the portal would fail.
+            null
           ) : (
             <Link href="/chat" className="settings-btn-save">
               Sign up
             </Link>
           )}
         </div>
-        {subscribeError && (
-          <div className="settings-alert settings-alert-error" style={{ marginTop: 8 }}>
-            {subscribeError}
+        {/* The SAME picker the chat paywall renders (ChatErrorCard's trial
+            branch) — one component, so this surface cannot drift back into
+            showing a different set of choices or a different price. It used
+            to hand-roll three pill buttons over PROVIDER_SWITCH_CARDS, the
+            array documented as the POST-purchase variant that deliberately
+            carries no pricing ("the sales framing would be noise" for an
+            owner who already subscribed). Rendered pre-purchase, that
+            stripped the prices off the one screen whose entire job is to
+            show them — including the fact that the Bedrock path costs $70
+            today, not $50. */}
+        {isTrialLocal && (
+          <div style={{ marginTop: 20 }}>
+            <ProviderPicker
+              embedded
+              isOrg={false}
+              source="settings_billing"
+              heading={isTrialExpired ? "Your agents are paused" : "Subscribe to keep your agents running"}
+              subheading="Pick how you want to power your agents. The $50/month covers your always-on infrastructure."
+            />
           </div>
         )}
         {/* Ultra upgrade hangs off the paid card for a subscribed owner only —

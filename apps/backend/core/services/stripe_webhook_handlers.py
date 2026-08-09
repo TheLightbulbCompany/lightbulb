@@ -1174,9 +1174,12 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """`checkout.session.completed` + `checkout.session.async_payment_succeeded`.
 
-    Trial-checkout sessions get their state from the subscription
-    handlers above; only credit-top-up sessions (metadata
-    ``purpose=credit_top_up``) do work here:
+    Subscription STATE always comes from the ``customer.subscription.*``
+    handlers above — this handler never touches it. What it owns is funding
+    credits, for the two session shapes that carry them: the standalone
+    top-up Checkout (``purpose=credit_top_up``) and the ``bedrock_claude``
+    subscription Checkout, which bundles starter credits as a one-time line
+    item (``credits_cents``). For both:
 
       1. Grant the paid-for credits as an UNGATED Metronome commit —
          the money is already collected by THIS checkout, so the grant
@@ -1191,7 +1194,23 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
          the moment the credits land (same hook as the one-click path).
     """
     session = event["data"]["object"]
-    if (session.get("metadata") or {}).get("purpose") != "credit_top_up":
+    session_metadata = session.get("metadata") or {}
+    # Two session shapes fund credits here:
+    #   - purpose=credit_top_up      → the standalone top-up Checkout
+    #                                  (mode=payment), amount in `amount_cents`
+    #   - credits_cents on a flat    → the bedrock_claude SUBSCRIPTION Checkout
+    #     subscription Checkout        (mode=subscription), which carries the
+    #                                  starter credits as a one-time line item
+    #                                  beside the recurring price
+    # The subscription half of that second shape is still owned by the
+    # customer.subscription.* handlers — this only grants the credits. Without
+    # this branch the one-time line item would be CHARGED and never granted,
+    # which is worse than the two-checkout flow it replaces.
+    credits_cents_str = session_metadata.get("amount_cents") or session_metadata.get("credits_cents")
+    is_credit_funding = session_metadata.get("purpose") == "credit_top_up" or bool(
+        session_metadata.get("credits_cents")
+    )
+    if not is_credit_funding:
         return Response(status_code=200)
 
     # Only grant when Stripe has actually collected payment.
@@ -1213,9 +1232,9 @@ async def handle_checkout_session(event: dict[str, Any], billing_service: Billin
         )
         return Response(status_code=200)
 
-    metadata = session["metadata"]
+    metadata = session_metadata
     owner_id = metadata.get("owner_id")
-    amount_cents_str = metadata.get("amount_cents")
+    amount_cents_str = credits_cents_str
     if not owner_id or not amount_cents_str:
         logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
         return Response(status_code=200)

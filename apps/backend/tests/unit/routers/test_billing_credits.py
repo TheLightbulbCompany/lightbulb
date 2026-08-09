@@ -650,3 +650,90 @@ async def test_top_up_checkout_refuses_unprovisioned_owner(async_client, monkeyp
     assert resp.status_code == 400
     assert "ready" in resp.json()["detail"].lower()
     create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Combined subscription + starter-credits Checkout
+# ---------------------------------------------------------------------------
+#
+# bedrock_claude subscribes and funds its opening credit balance in ONE Stripe
+# Checkout (a one-time line item beside the recurring price). handle_checkout_session
+# has to grant off that session, because the customer.subscription.* handlers
+# own subscription state and know nothing about credits. If this branch is
+# missing the customer is CHARGED for the credits line item and never receives
+# the balance — strictly worse than the two-checkout flow it replaced.
+
+
+async def _run_checkout_session(session: dict):
+    """Invoke handle_checkout_session with the Metronome/DDB tail stubbed,
+    returning the grant_prepaid_credits mock so callers assert on the grant."""
+    from core.services.stripe_webhook_handlers import handle_checkout_session
+
+    grant = AsyncMock(return_value=None)
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.services.metronome_gate.read_net_balance_microcents", new=AsyncMock(return_value=None)),
+    ):
+        resp = await handle_checkout_session(
+            {"data": {"object": session}},
+            MagicMock(),
+        )
+    assert resp.status_code == 200
+    return grant
+
+
+@pytest.mark.asyncio
+async def test_subscription_checkout_with_credits_grants_them():
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_sub_1",
+            "payment_status": "paid",
+            "metadata": {"owner_id": "u_1", "credits_cents": "2000", "provider_choice": "bedrock_claude"},
+        }
+    )
+    # Session id as the idempotency key: Stripe redelivers completed and
+    # async_payment_succeeded for the same session, and both land here.
+    grant.assert_awaited_once_with("u_1", 2000, idempotency_key="checkout-cs_sub_1")
+
+
+@pytest.mark.asyncio
+async def test_standalone_top_up_checkout_still_grants():
+    """The pre-existing mode=payment top-up path is unchanged — it keys on
+    purpose=credit_top_up with the amount in `amount_cents`."""
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_topup_1",
+            "payment_status": "paid",
+            "metadata": {"owner_id": "u_2", "purpose": "credit_top_up", "amount_cents": "5000"},
+        }
+    )
+    grant.assert_awaited_once_with("u_2", 5000, idempotency_key="checkout-cs_topup_1")
+
+
+@pytest.mark.asyncio
+async def test_subscription_checkout_without_credits_grants_nothing():
+    """chatgpt_oauth / byo_key subscribe with no credits line item. Granting
+    here would hand out an unpaid balance on every non-Bedrock signup."""
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_sub_2",
+            "payment_status": "paid",
+            "metadata": {"owner_id": "u_3", "provider_choice": "chatgpt_oauth"},
+        }
+    )
+    grant.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_credits_not_granted_until_payment_collects():
+    """Delayed methods (ACH) fire completed with payment_status=unpaid, then
+    async_payment_succeeded later. Granting on the first would fund a balance
+    a failed debit never paid for."""
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_sub_3",
+            "payment_status": "unpaid",
+            "metadata": {"owner_id": "u_4", "credits_cents": "2000"},
+        }
+    )
+    grant.assert_not_awaited()

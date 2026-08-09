@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 
 // The ProviderPicker is currently defined as a non-exported function inside
@@ -13,6 +13,14 @@ vi.mock("@/lib/api", () => ({
     post: vi.fn(),
     get: vi.fn(),
   }),
+}));
+
+// Checkout goes through useBilling.startTrialCheckout — the SAME call the
+// settings Billing panel makes. It used to be a second inline api.post here,
+// which is how the two surfaces drifted apart in the first place.
+const startTrialCheckout = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => ({ startTrialCheckout }),
 }));
 
 describe("ProviderPicker", () => {
@@ -56,13 +64,75 @@ describe("ProviderPicker", () => {
     );
   });
 
-  it("uses the 3-col grid for both org and personal users", () => {
-    const { container: orgContainer } = render(
-      <ProviderPicker isOrg={true} orgName="Acme" />,
-    );
-    expect(orgContainer.querySelector(".md\\:grid-cols-3")).toBeInTheDocument();
+  it("sizes the 3-col grid on the CONTAINER, not the viewport", () => {
+    // This renders inside a resizable dock panel (ChatErrorCard's inline
+    // paywall) as well as full-screen. A viewport breakpoint would force three
+    // cards into a narrow chat column on any wide desktop; the container query
+    // stacks them there and goes three-wide only where there is room.
+    for (const props of [{ isOrg: true, orgName: "Acme" }, { isOrg: false }]) {
+      const { container } = render(<ProviderPicker {...props} />);
+      expect(container.querySelector(".\\@container")).toBeInTheDocument();
+      expect(container.querySelector(".\\@3xl\\:grid-cols-3")).toBeInTheDocument();
+      expect(container.querySelector(".md\\:grid-cols-3")).not.toBeInTheDocument();
+    }
+  });
+});
 
-    const { container: personalContainer } = render(<ProviderPicker isOrg={false} />);
-    expect(personalContainer.querySelector(".md\\:grid-cols-3")).toBeInTheDocument();
+// ---------------------------------------------------------------------------
+// Starter Claude credits (bedrock_claude only)
+// ---------------------------------------------------------------------------
+//
+// The owner picks how much to start with. The displayed total and the amount
+// sent to Checkout must move together — a mismatch here charges a number the
+// customer never agreed to, which is the exact failure the combined Checkout
+// was built to prevent.
+
+describe("ProviderPicker — starter credits", () => {
+  beforeEach(() => startTrialCheckout.mockClear());
+
+  it("defaults to $20 and quotes the combined total, not the bare subscription", () => {
+    render(<ProviderPicker isOrg={false} />);
+    expect(screen.getByText("$70 at checkout, then $50 / month")).toBeInTheDocument();
+    expect(screen.getByText(/Includes \$20 Claude credits/)).toBeInTheDocument();
+  });
+
+  it("re-quotes the total when a preset is picked, and sends that amount", () => {
+    render(<ProviderPicker isOrg={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "$100" }));
+    // $50 subscription + $100 credits.
+    expect(screen.getByText("$150 at checkout, then $50 / month")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
+    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 10000);
+  });
+
+  it("clamps a custom amount below the $5 minimum on blur", () => {
+    render(<ProviderPicker isOrg={false} />);
+    const input = screen.getByLabelText("Starter Claude credits in dollars");
+    fireEvent.change(input, { target: { value: "1" } });
+    fireEvent.blur(input, { target: { value: "1" } });
+    expect(screen.getByText("$55 at checkout, then $50 / month")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
+    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 500);
+  });
+
+  it("clamps a custom amount above the $1,000 ceiling on blur", () => {
+    render(<ProviderPicker isOrg={false} />);
+    const input = screen.getByLabelText("Starter Claude credits in dollars");
+    fireEvent.change(input, { target: { value: "999999" } });
+    fireEvent.blur(input, { target: { value: "999999" } });
+    fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
+    expect(startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 100000);
+  });
+
+  it("does not attach a credit amount to the two providers that spend none", () => {
+    render(<ProviderPicker isOrg={false} />);
+    fireEvent.click(screen.getByRole("button", { name: /sign in with chatgpt/i }));
+    expect(startTrialCheckout).toHaveBeenCalledWith("chatgpt_oauth", undefined);
+  });
+
+  it("offers the chooser only on the Bedrock card", () => {
+    render(<ProviderPicker isOrg={false} />);
+    expect(screen.getAllByLabelText("Starter Claude credits in dollars")).toHaveLength(1);
   });
 });

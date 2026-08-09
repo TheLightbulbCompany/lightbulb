@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
+import { ProviderPicker } from "@/components/chat/ProvisioningStepper";
 
 /**
  * Typed error card rendered when an agent run terminates with an error.
@@ -179,7 +181,65 @@ function describeError(code: string | undefined, message: string): ErrorPresenta
   }
 }
 
+/**
+ * The two free-tier codes convert IN PLACE instead of linking out.
+ *
+ * These used to render as a red error card whose action cross-routed to
+ * /settings?panel=billing. Two things were wrong with that. First, running
+ * out of free usage is not a malfunction — it is the moment the product
+ * worked — and a red alert box frames the one success signal you get as a
+ * failure. Second, /settings was the ONLY paywall a mid-session owner ever
+ * reached: `useOnboardingStatus` polls "0/off once ready", so nothing
+ * re-asks the gate after the shell settles, `gatePhase` never flips to
+ * blocked, and ProvisioningStepper's own picker branch stays unreachable
+ * for the entire session. The good screen existed and no one could get to it.
+ *
+ * Rendering the picker here — rather than flipping the gate so the stepper
+ * takes over — is deliberate. ProvisioningStepper WRAPS {dock}
+ * (WorkspaceShell.tsx), so a blocked gate swaps the whole Dockview workspace
+ * for the paywall: panels, layout, open detail views and scroll positions
+ * all unmount mid-session. That teardown already has a name in this codebase
+ * (`DockUnmountSentinel`, "the recovery regression"). Doing it deliberately
+ * at the exact moment someone is deciding whether to pay is the worst
+ * possible time for it.
+ */
+const TRIAL_PAYWALL_HEADINGS: Readonly<Record<string, string>> = {
+  trial_daily_cap: "You've used today's free usage",
+  trial_expired: "Your free trial has ended",
+};
+
 export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
+  // ProviderPicker posts /billing/trial-checkout, which an org admin must NOT
+  // use — orgs pay per-seat via startTeamCheckout. An org should never carry a
+  // trial_local row today, but ProvisioningStepper's own picker branch guards
+  // this too, with a comment saying to enforce it where the consequence is.
+  // This is a new consequence site. Org context falls through to the linked
+  // card below, whose /settings target renders TeamBillingCard correctly.
+  const { organization } = useOrganization();
+  const paywallHeading = organization ? undefined : code ? TRIAL_PAYWALL_HEADINGS[code] : undefined;
+  if (paywallHeading) {
+    return (
+      <div
+        role="alert"
+        data-testid="chat-error-card"
+        data-error-code={code ?? "none"}
+        className="my-2 rounded-lg border border-[var(--edge)] bg-white px-4 py-4"
+      >
+        <ProviderPicker
+          embedded
+          isOrg={false}
+          source="trial_conversion_inline"
+          heading={paywallHeading}
+          subheading={
+            code === "trial_daily_cap"
+              ? "Your agents are paused until midnight UTC. Subscribe to lift the cap and keep them running."
+              : "Your agents are paused. Subscribe to start them again."
+          }
+        />
+      </div>
+    );
+  }
+
   const { title, description, action } = describeError(code, message);
   const showRetry = Boolean(onRetry) && !MONEY_CODES.has(code ?? "");
 

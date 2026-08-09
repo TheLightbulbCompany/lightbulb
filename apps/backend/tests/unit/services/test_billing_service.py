@@ -566,10 +566,123 @@ class TestBuildSubscriptionCheckoutSharedSpine:
             result = await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice="bedrock_claude")
 
         assert result.url == "https://checkout/flat"
-        assert seen["line_items"] == [{"price": "price_flat_test", "quantity": 1}]
+        # bedrock_claude carries the starter credits as a SECOND, one-time line
+        # item so the owner pays $70 once instead of $50 now and a surprise $20
+        # at CreditsStep — after the container is already bought and unable to
+        # boot (provision_gate Layer 3 refuses to start on a zero balance).
+        assert seen["line_items"] == [
+            {"price": "price_flat_test", "quantity": 1},
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": billing_service.BEDROCK_STARTER_CREDITS_CENTS,
+                    "product_data": {
+                        "name": "Claude credits",
+                        "description": "Prepaid Claude inference balance.",
+                    },
+                },
+                "quantity": 1,
+            },
+        ]
         assert seen["metadata"]["owner_id"] == "u_1"
         assert seen["metadata"]["provider_choice"] == "bedrock_claude"
+        # The webhook grants off metadata, not off the line items, so a
+        # 100%-off promo code still funds the balance.
+        assert seen["metadata"]["credits_cents"] == str(billing_service.BEDROCK_STARTER_CREDITS_CENTS)
         assert seen["idempotency_key"].startswith("flat_checkout:u_1:")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("choice", ["chatgpt_oauth", "byo_key"])
+    async def test_flat_checkout_bundles_credits_only_for_bedrock(self, monkeypatch, choice):
+        """ChatGPT / BYO owners bring their own inference — charging them for
+        Claude credits they can never spend would be taking money for nothing.
+        Asserting the ABSENCE is the point: the credits line item is priced
+        inline, so a mis-scoped conditional silently overcharges by $20 with
+        no config change to notice."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1", provider_choice=choice)
+
+        assert seen["line_items"] == [{"price": "price_flat_test", "quantity": 1}]
+        assert "credits_cents" not in seen["metadata"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "requested,expected",
+        [
+            (None, billing_service.BEDROCK_STARTER_CREDITS_CENTS),  # default when unspecified
+            (500, 500),  # the $5 floor is a legal choice, not a rejection
+            (10_000, 10_000),  # $100 preset
+            (1, billing_service.MIN_STARTER_CREDITS_CENTS),  # clamped up
+            (99_999_999, billing_service.MAX_STARTER_CREDITS_CENTS),  # clamped down
+        ],
+    )
+    async def test_starter_credits_amount_is_chosen_and_clamped(self, monkeypatch, requested, expected):
+        """The owner picks the starter amount; this function is the backstop.
+
+        Pydantic bounds the value at the router, but create_flat_fee_checkout is
+        importable — a caller that skips the router must not be able to mint a
+        $0 line item (Stripe rejects it, checkout dies) or a $1M one.
+        """
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        seen = {}
+
+        async def _fake_builder(**kwargs):
+            seen.update(kwargs)
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            await billing_service.create_flat_fee_checkout(
+                owner_id="u_1", provider_choice="bedrock_claude", credits_cents=requested
+            )
+
+        assert seen["line_items"][1]["price_data"]["unit_amount"] == expected
+        # The line item and the metadata the webhook grants from must agree —
+        # if they diverge the customer is charged one amount and credited
+        # another.
+        assert seen["metadata"]["credits_cents"] == str(expected)
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_varies_with_the_credit_amount(self, monkeypatch):
+        """The key is bucketed to 5 minutes to collapse double-clicks. Without
+        the amount in it, an owner who picks $20, backs out, and picks $100
+        inside that window reuses one key with two different bodies — Stripe
+        rejects the mismatch and the larger purchase just fails."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        keys = []
+
+        async def _fake_builder(**kwargs):
+            keys.append(kwargs["idempotency_key"])
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_builder)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            for cents in (2000, 10_000):
+                await billing_service.create_flat_fee_checkout(
+                    owner_id="u_1", provider_choice="bedrock_claude", credits_cents=cents
+                )
+
+        assert keys[0] != keys[1]
 
     @pytest.mark.asyncio
     async def test_team_checkout_uses_seat_price_and_quantity(self, monkeypatch):

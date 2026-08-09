@@ -19,6 +19,7 @@ vi.mock("next/navigation", () => ({
 
 const clerk = vi.hoisted(() => ({
   organization: null as Record<string, unknown> | null,
+  orgLoaded: true,
   signOut: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("@clerk/nextjs", () => ({
@@ -31,7 +32,11 @@ vi.mock("@clerk/nextjs", () => ({
     },
   }),
   useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
-  useOrganization: () => ({ membership: null, organization: clerk.organization }),
+  useOrganization: () => ({
+    membership: null,
+    organization: clerk.organization,
+    isLoaded: clerk.orgLoaded,
+  }),
   useClerk: () => ({ signOut: clerk.signOut }),
   UserButton: () => <div data-testid="user-button" />,
 }));
@@ -98,6 +103,7 @@ describe("ProfilePanel — delete account", () => {
     nav.panel = null;
     billing.account = null;
     clerk.organization = null;
+    clerk.orgLoaded = true;
     clerk.signOut.mockClear();
     fetchMock.mockReset();
     fetchMock.mockResolvedValue(
@@ -161,5 +167,14 @@ describe("ProfilePanel — delete account", () => {
     render(<SettingsPage />);
     expect(screen.getByText(/contact support@isol8\.co/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
+  });
+
+  it("withholds the card entirely while Clerk's org context is still loading", () => {
+    // organization is unset during the load window — reading that as
+    // "personal" would offer deletion to an org member (backend would 403).
+    clerk.orgLoaded = false;
+    render(<SettingsPage />);
+    expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
+    expect(screen.queryByText(/contact support@isol8\.co/)).toBeNull();
   });
 });

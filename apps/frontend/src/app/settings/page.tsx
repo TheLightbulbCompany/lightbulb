@@ -71,7 +71,12 @@ const DANGER = "#b63025";
 // orchestrator refuses, so the backend 403s it.
 function DeleteAccountCard() {
   const { user } = useUser();
-  const { organization } = useOrganization();
+  // `isLoaded` is load-bearing (same window FirstRunFunnel documents): Clerk
+  // resolves the org context independently, so `organization` can be unset
+  // while a workspace membership is still loading. Reading that as "personal"
+  // would offer the deletion flow to an org member, whose request the backend
+  // 403s. Until it resolves, render nothing.
+  const { organization, isLoaded: orgLoaded } = useOrganization();
   const { signOut } = useClerk();
   const api = useApi();
 
@@ -107,6 +112,8 @@ function DeleteAccountCard() {
       setBusy(false);
     }
   }, [api, typed, signOut]);
+
+  if (!orgLoaded) return null;
 
   return (
     <div className="settings-card" style={{ borderColor: "rgba(182,48,37,.25)" }}>

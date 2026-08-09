@@ -36,7 +36,7 @@ import type {
   ChatRenderItem,
   RenderGroup,
 } from "./internal/types";
-import { accumulateStreamText } from "@isol8/shared";
+import { accumulateStreamText, GatewayRpcError } from "@isol8/shared";
 import { projectChatHistoryMessages } from "./internal/chatHistoryFilters";
 import { buildChatItems } from "./internal/buildChatItems";
 import { groupBySide } from "./internal/groupBySide";
@@ -1035,11 +1035,40 @@ export function useAgentChat(
         })
         .catch((err: unknown) => {
           console.warn("Failed to fetch chat history:", err);
-          // Un-latch (the marker was set BEFORE the fetch for in-flight dedupe):
-          // a failed fetch (gateway drop, container restart) must retry on the
-          // next visit or reconnect instead of leaving this session blank until
-          // page reload.
-          historyLoadedRef.current.delete(cacheKey);
+          if (!isStillCurrent()) {
+            loadedKeys.delete(cacheKey); // switched away — a revisit refetches
+            return;
+          }
+          // A LOST response — the gateway socket parked/superseded/closed
+          // mid-flight, the 30s RPC timeout (plain Errors), or a RETRYABLE
+          // backend ok:false ("container is starting up", retryable:true) —
+          // tells us NOTHING about the session; flipping to done+empty blanks a
+          // real transcript until the next reload. Route those into the SAME
+          // wall-clock-bounded wake ladder the unreachable-empty branch uses:
+          // keep the loading skeleton and re-read on the slow cadence. `sendReq`
+          // reconnects itself before sending, so the retry rides whatever socket
+          // is live next — covering the park/unpark AND supersede cases that
+          // never toggle isConnected. Never setChatMessages([]), never
+          // _needsBootstrap.add: preserves the 2026-08-09 amnesia invariant (a
+          // cached transcript keeps rendering untouched during the silent retry).
+          //
+          // A NON-retryable RPC response — "No container provisioned", an
+          // ownership rejection, INVALID_REQUEST (GatewayRpcError, retryable
+          // false) — will never succeed, so terminate it exactly as before
+          // rather than hold the loading shell (input disabled) for the whole
+          // wake window.
+          const nonRetryable = err instanceof GatewayRpcError && !err.retryable;
+          if (!nonRetryable) {
+            if (wakeStartedAt === null) wakeStartedAt = Date.now();
+            if (Date.now() - wakeStartedAt < HISTORY_WAKE_DEADLINE_MS) {
+              scheduleRefetch(() => runFetch(attempt, "wake"), HISTORY_WAKE_RETRY_MS);
+              return; // skeleton stays — do NOT flip to "done"
+            }
+            // Deadline exhausted (~10min of a container that never answered):
+            // fall through to the terminal so a later reconnect/revisit can
+            // still retry rather than spinning the skeleton forever.
+          }
+          loadedKeys.delete(cacheKey);
           setHistoryLoadState("done");
         });
     };

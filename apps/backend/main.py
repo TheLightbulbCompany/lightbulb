@@ -684,8 +684,11 @@ app.add_middleware(HostDispatcherMiddleware)
 #   - enable XFF stripping at the ALB (AWS-side attribute / WAF rule), or
 #   - swap to a middleware that reads the rightmost XFF (trust N hops from
 #     the right).
-# Out of scope for this commit; the route-level fix uses request.client.host
-# directly so a future ALB-side change immediately closes the gap.
+# The audit-log half of this gap is closed: audit rows now derive their IP
+# from core/services/admin_audit.extract_client_ip, which reads the RIGHTMOST
+# XFF hop (the ALB-appended one) directly and ignores the promoted
+# request.client.host. Other request.client.host consumers (rate-limit keys
+# etc.) still see the leftmost hop until an ALB-side fix lands.
 app.add_middleware(
     ProxyHeadersMiddleware,
     trusted_hosts=["10.0.0.0/16", "127.0.0.1", "::1"],

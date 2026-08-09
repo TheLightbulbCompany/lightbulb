@@ -675,6 +675,77 @@ async def test_pair_does_not_retry_non_timeout_error():
 
 
 @pytest.mark.asyncio
+async def test_pair_retries_update_on_agent_not_found_then_succeeds(monkeypatch):
+    """agents.create can acknowledge before the container's runtime config
+    snapshot advances (the EFS chokidar hot-reload applies the write 1-3s
+    later), so the immediate rename bounces with INVALID_REQUEST
+    'agent not found'. That's transient — retry the update alone until the
+    reload lands, without re-running the (already committed) create."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    update_calls = {"n": 0}
+
+    def _side(*_args, **kwargs):
+        if kwargs.get("method") == "agents.update":
+            update_calls["n"] += 1
+            if update_calls["n"] <= 2:
+                raise RuntimeError('{"code": "INVALID_REQUEST", "message": "agent \\"' + pc_uuid + '\\" not found"}')
+        return {"ok": True}
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=_side)
+
+    await pair_with_openclaw(
+        owner_id="user_abc",
+        paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+        gateway_pool=pool,
+        ip="10.0.0.5",
+        token="gw_token",
+    )
+
+    # create ✓, update ✗ (not found), update ✗ (not found), update ✓ — the
+    # create is never re-sent on a not-found rename.
+    assert pool.send_rpc.await_count == 4
+    assert pool.send_rpc.await_args_list[0].kwargs["method"] == "agents.create"
+    for call in pool.send_rpc.await_args_list[1:]:
+        assert call.kwargs["method"] == "agents.update"
+
+
+@pytest.mark.asyncio
+async def test_pair_raises_after_exhausting_update_not_found_retries(monkeypatch):
+    """A rename that keeps bouncing 'agent not found' past the bounded retry
+    budget still surfaces — the agent may genuinely be gone (e.g. a
+    concurrent delete), and the caller owns the rollback."""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(_asyncio, "sleep", AsyncMock())
+    pc_uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+    def _side(*_args, **kwargs):
+        if kwargs.get("method") == "agents.update":
+            raise RuntimeError('{"code": "INVALID_REQUEST", "message": "agent \\"' + pc_uuid + '\\" not found"}')
+        return {"ok": True}
+
+    pool = MagicMock()
+    pool.send_rpc = AsyncMock(side_effect=_side)
+
+    with pytest.raises(RuntimeError, match="not found"):
+        await pair_with_openclaw(
+            owner_id="user_abc",
+            paperclip_agent={"id": pc_uuid, "name": "Code Reviewer"},
+            gateway_pool=pool,
+            ip="10.0.0.5",
+            token="gw_token",
+        )
+
+    # create + initial update + 2 bounded retries = 4 RPCs total.
+    assert pool.send_rpc.await_count == 4
+
+
+@pytest.mark.asyncio
 async def test_pair_with_extra_update_fields_none_preserves_existing_behavior():
     """extra_update_fields=None (default) -> agents.update RPC params
     contain only agentId + name, identical to today. Backwards

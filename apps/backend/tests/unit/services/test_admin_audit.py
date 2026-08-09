@@ -250,3 +250,10 @@ class TestExtractClientIp:
         # A non-IP token can't be classified as infra — surfaced as-is rather
         # than silently skipped (better a weird audit value than a wrong one).
         assert extract_client_ip(self._req("203.0.113.1, not-an-ip, 10.0.0.1")) == "not-an-ip"
+
+    def test_prod_vpc_hop_is_also_trusted(self):
+        from core.services.admin_audit import extract_client_ip
+
+        # Prod's VPC is 10.2.0.0/16 (network-stack ENV_CONFIG), not the dev
+        # 10.0.0.0/16 — the prod VPC-link ENI must be skipped the same way.
+        assert extract_client_ip(self._req("203.0.113.1, 198.51.100.7, 10.2.0.14")) == "198.51.100.7"

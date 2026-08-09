@@ -691,9 +691,13 @@ app.add_middleware(HostDispatcherMiddleware)
 # ignores the promoted request.client.host. Other request.client.host
 # consumers (rate-limit keys etc.) still see the leftmost hop until an
 # edge-side fix lands.
+# Both per-env VPC CIDRs (network-stack.ts ENV_CONFIG): dev 10.0.0.0/16,
+# prod 10.2.0.0/16. The list previously carried only the dev CIDR, so in
+# prod the ALB peer was never trusted and X-Forwarded-Proto promotion
+# silently didn't happen there.
 app.add_middleware(
     ProxyHeadersMiddleware,
-    trusted_hosts=["10.0.0.0/16", "127.0.0.1", "::1"],
+    trusted_hosts=["10.0.0.0/16", "10.2.0.0/16", "127.0.0.1", "::1"],
 )
 
 # CORS Middleware

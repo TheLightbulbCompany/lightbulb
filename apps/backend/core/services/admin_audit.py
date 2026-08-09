@@ -40,12 +40,14 @@ from core.repositories import admin_actions_repo
 logger = logging.getLogger(__name__)
 
 
-# Hops our own infrastructure appends to X-Forwarded-For. 10.0.0.0/16 is the
-# VPC CIDR (same value ProxyHeadersMiddleware trusts in main.py) — the ALB
-# appends the VPC-link ENI's address when REST traffic arrives via
+# Hops our own infrastructure appends to X-Forwarded-For. The VPC CIDRs are
+# per-environment (network-stack.ts ENV_CONFIG: dev 10.0.0.0/16, prod
+# 10.2.0.0/16; ProxyHeadersMiddleware in main.py trusts the same pair) — the
+# ALB appends the VPC-link ENI's address when REST traffic arrives via
 # API Gateway → VPC Link → ALB (api-stack.ts).
 _TRUSTED_HOP_NETS = (
     ipaddress.ip_network("10.0.0.0/16"),
+    ipaddress.ip_network("10.2.0.0/16"),
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("::1/128"),
 )

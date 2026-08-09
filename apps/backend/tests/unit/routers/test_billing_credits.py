@@ -363,6 +363,7 @@ async def test_checkout_session_paid_grants_ungated_credits(async_client, monkey
     grant = AsyncMock()
     with (
         patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
         patch("routers.billing.billing_repo.set_credits_auto_charge", new=AsyncMock()) as set_flag,
     ):
         resp = await _post_checkout_event(async_client, monkeypatch, _checkout_event())
@@ -386,6 +387,7 @@ async def test_checkout_session_opt_in_enables_auto_charge(async_client, monkeyp
     set_flag = AsyncMock()
     with (
         patch("core.billing.metronome_funding.grant_prepaid_credits", new=AsyncMock()),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
         patch(
             "core.services.stripe_webhook_handlers.billing_repo.set_credits_auto_charge",
             new=set_flag,
@@ -606,7 +608,10 @@ async def test_handler_failure_rolls_back_dedup_for_redelivery(async_client, mon
     the redelivery re-attempts and the (session-id-keyed, idempotent) grant
     lands."""
     grant = AsyncMock(side_effect=[RuntimeError("metronome outage"), None])
-    with patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant):
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
+    ):
         # First delivery: grant blows up -> 500 back to Stripe.
         with pytest.raises(RuntimeError):
             await _post_checkout_event(async_client, monkeypatch, _checkout_event())
@@ -650,3 +655,128 @@ async def test_top_up_checkout_refuses_unprovisioned_owner(async_client, monkeyp
     assert resp.status_code == 400
     assert "ready" in resp.json()["detail"].lower()
     create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Combined subscription + starter-credits Checkout
+# ---------------------------------------------------------------------------
+#
+# bedrock_claude subscribes and funds its opening credit balance in ONE Stripe
+# Checkout (a one-time line item beside the recurring price). handle_checkout_session
+# has to grant off that session, because the customer.subscription.* handlers
+# own subscription state and know nothing about credits. If this branch is
+# missing the customer is CHARGED for the credits line item and never receives
+# the balance — strictly worse than the two-checkout flow it replaced.
+
+
+async def _run_checkout_session(session: dict):
+    """Invoke handle_checkout_session with the Metronome/DDB tail stubbed,
+    returning the grant_prepaid_credits mock so callers assert on the grant."""
+    from core.services.stripe_webhook_handlers import handle_checkout_session
+
+    grant = AsyncMock(return_value=None)
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value="mc_1")),
+        patch("core.services.metronome_gate.read_net_balance_microcents", new=AsyncMock(return_value=None)),
+    ):
+        resp = await handle_checkout_session(
+            {"data": {"object": session}},
+            MagicMock(),
+        )
+    assert resp.status_code == 200
+    return grant
+
+
+@pytest.mark.asyncio
+async def test_subscription_checkout_with_credits_grants_them():
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_sub_1",
+            "payment_status": "paid",
+            "metadata": {"owner_id": "u_1", "credits_cents": "2000", "provider_choice": "bedrock_claude"},
+        }
+    )
+    # Session id as the idempotency key: Stripe redelivers completed and
+    # async_payment_succeeded for the same session, and both land here.
+    grant.assert_awaited_once_with("u_1", 2000, idempotency_key="checkout-cs_sub_1")
+
+
+@pytest.mark.asyncio
+async def test_standalone_top_up_checkout_still_grants():
+    """The pre-existing mode=payment top-up path is unchanged — it keys on
+    purpose=credit_top_up with the amount in `amount_cents`."""
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_topup_1",
+            "payment_status": "paid",
+            "metadata": {"owner_id": "u_2", "purpose": "credit_top_up", "amount_cents": "5000"},
+        }
+    )
+    grant.assert_awaited_once_with("u_2", 5000, idempotency_key="checkout-cs_topup_1")
+
+
+@pytest.mark.asyncio
+async def test_subscription_checkout_without_credits_grants_nothing():
+    """chatgpt_oauth / byo_key subscribe with no credits line item. Granting
+    here would hand out an unpaid balance on every non-Bedrock signup."""
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_sub_2",
+            "payment_status": "paid",
+            "metadata": {"owner_id": "u_3", "provider_choice": "chatgpt_oauth"},
+        }
+    )
+    grant.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bundled_grant_defers_when_the_ledger_is_not_ready_yet():
+    """The deferred-and-raise path, exercised for real.
+
+    Every other test here patches ensure_metronome_customer to a truthy id, so
+    the branch that answers the ordering race is never run — the same
+    assert-against-a-mock-that-assumes-the-contract shape that let the
+    session-metadata bug ship. A converting owner is still trial_local when
+    checkout.session.completed can arrive, so the ledger genuinely may not
+    exist: granting anyway raises FundingError deep inside Metronome, while
+    raising HERE is deliberate so Stripe redelivers and the retry re-attempts
+    provisioning. What must never happen is a silent 200 with the money taken.
+    """
+    from core.services.stripe_webhook_handlers import handle_checkout_session
+
+    grant = AsyncMock(return_value=None)
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value=None)),
+    ):
+        with pytest.raises(Exception):
+            await handle_checkout_session(
+                {
+                    "data": {
+                        "object": {
+                            "id": "cs_sub_notready",
+                            "payment_status": "paid",
+                            "metadata": {"owner_id": "u_9", "credits_cents": "2000"},
+                        }
+                    }
+                },
+                MagicMock(),
+            )
+    # The money is collected; the balance must not be quietly skipped.
+    grant.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_credits_not_granted_until_payment_collects():
+    """Delayed methods (ACH) fire completed with payment_status=unpaid, then
+    async_payment_succeeded later. Granting on the first would fund a balance
+    a failed debit never paid for."""
+    grant = await _run_checkout_session(
+        {
+            "id": "cs_sub_3",
+            "payment_status": "unpaid",
+            "metadata": {"owner_id": "u_4", "credits_cents": "2000"},
+        }
+    )
+    grant.assert_not_awaited()

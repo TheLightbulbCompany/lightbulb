@@ -39,6 +39,51 @@ FRONTEND_URL = os.getenv(
     "FRONTEND_URL", settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000"
 )
 
+# Starter Claude credits bundled into the bedrock_claude subscription Checkout
+# as a one-time line item. The owner picks the amount; this is only the
+# preselected default when they don't. Deliberately constants and not env vars:
+# the resulting total is quoted to the customer BEFORE payment, so a value that
+# drifted per environment would make the disclosure false in one of them.
+#
+# The min/max mirror the standalone top-up window (routers/billing.py
+# `_TOP_UP_MAX_CENTS`, `ge=500`) — the same money buying the same balance
+# should not have two different limits depending on which door it came
+# through. Kept as literals here rather than imported to avoid a service →
+# router import; the router's Pydantic bounds are the front-line check and
+# these are the backstop for non-router callers.
+BEDROCK_STARTER_CREDITS_CENTS = 2000
+MIN_STARTER_CREDITS_CENTS = 500  # $5 — matches TrialCheckoutRequest ge=500
+MAX_STARTER_CREDITS_CENTS = 100_000  # $1,000 — matches _TOP_UP_MAX_CENTS
+
+
+# Bumped whenever the Checkout Session request body shape changes — see
+# _checkout_idempotency_key. v2 = top-level `metadata` + the optional credits
+# line item + conditional allow_promotion_codes.
+_CHECKOUT_BODY_VERSION = 2
+
+
+def normalize_starter_credits(credits_cents: int | None) -> int | None:
+    """The ONE definition of "what starter amount does this request mean".
+
+    ``None`` in, ``None`` out — absent means no credits line item, never a
+    silent default (see create_flat_fee_checkout). Any supplied value is
+    clamped into the $5–$1,000 window.
+
+    Explicitly `is None`, not truthiness: ``credits_cents or DEFAULT`` treated
+    a deliberate ``0`` as "not supplied" and substituted $20, charging money
+    nobody asked for — and the clamp that would have caught the zero never saw
+    it.
+
+    Shared with the router's open-session guard on purpose. That guard decides
+    whether an already-open Checkout still matches what the customer is asking
+    for now, which is only answerable against the same normalized value this
+    function feeds into the line item; two copies of the arithmetic would let
+    "same amount" and "same session" disagree.
+    """
+    if credits_cents is None:
+        return None
+    return min(max(credits_cents, MIN_STARTER_CREDITS_CENTS), MAX_STARTER_CREDITS_CENTS)
+
 
 class BillingServiceError(Exception):
     pass
@@ -194,6 +239,7 @@ async def create_flat_fee_checkout(
     provider_choice: str | None = None,
     byo_provider: str | None = None,
     clerk_user_id: str | None = None,
+    credits_cents: int | None = None,
 ) -> stripe.checkout.Session:
     """Create a Stripe Checkout session on the single flat-fee price.
 
@@ -246,16 +292,90 @@ async def create_flat_fee_checkout(
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
 
+    # Bedrock is the only path provision_gate will not start a container for
+    # until credits are funded (Layer 3, `credits_required`), so its Checkout
+    # carries the starter credits as a ONE-TIME line item beside the recurring
+    # flat price: one session, one card entry, the full total disclosed before
+    # payment.
+    #
+    # This replaces a second Checkout that fired AFTER the subscription was
+    # already paid for — the owner reached CreditsStep having bought a
+    # container that would not boot, which is a refund, not a conversion. It
+    # is also strictly cheaper: one combined charge costs 2.9% + $0.30, where
+    # the two separate charges paid the fixed $0.30 twice.
+    #
+    # CreditsStep needs no change to match — it already calls onComplete()
+    # when the balance is spendable, so a funded balance makes it self-skip.
+    #
+    # `credits_cents` is the owner's chosen starter amount, already bounded to
+    # $5–$1,000 by TrialCheckoutRequest and scoped to bedrock_claude by the
+    # router. It is re-normalized here anyway: this function is importable and
+    # a future caller that skips the router must not be able to mint a
+    # $0-or-$1M line item.
+    #
+    # EXPLICIT-ONLY, deliberately: no credits_cents means no credits line item,
+    # never a silent default. The amount is quoted to the customer before they
+    # pay, and only a caller that renders the chooser knows what was quoted. A
+    # cached frontend bundle, the mobile app, or any client predating this
+    # change posts {provider_choice: "bedrock_claude"} alone — defaulting there
+    # would charge $70 against a UI that displayed $50. Such a caller gets the
+    # pre-existing behaviour instead: $50 now, credits later via CreditsStep.
+    line_items: list[dict] = [{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}]
+    starter_cents = normalize_starter_credits(credits_cents) if provider_choice == "bedrock_claude" else None
+    if starter_cents is not None:
+        line_items.append(
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": starter_cents,
+                    "product_data": {
+                        "name": "Claude credits",
+                        "description": "Prepaid Claude inference balance.",
+                    },
+                },
+                "quantity": 1,
+            }
+        )
+        # The webhook grants off metadata, never off the line items.
+        metadata["credits_cents"] = str(starter_cents)
+
     try:
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+            line_items=line_items,
             metadata=metadata,
+            # `credits=bundled` tells the returning wizard the balance is
+            # already paid for and in flight, so CreditsStep shows a "landing
+            # shortly" state instead of a live second purchase form. Without
+            # it CreditsStep only self-skips once the balance READS spendable,
+            # which it does not at the instant the browser gets back from
+            # Stripe — the grant is still travelling through the webhook — so
+            # the owner who just paid to avoid a second step was shown one.
             success_url=(
-                f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
+                f"{FRONTEND_URL}/chat?checkout=success"
+                + (f"&provider={provider_choice}" if provider_choice else "")
+                + ("&credits=bundled" if starter_cents is not None else "")
             ),
             cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
-            idempotency_key=_checkout_idempotency_key("flat_checkout", owner_id, provider_choice or "_"),
+            # Promotion codes are OFF once credits ride along. The standalone
+            # top-up deliberately grants the REQUESTED amount under a coupon
+            # ("us absorbing the cost") — safe there, because that session
+            # contains nothing but credits the owner chose. Here one
+            # subscription-intended code would also discount up to $1,000 of
+            # prepaid balance while the webhook still grants the full metadata
+            # amount. Re-enable only with a coupon restricted via `applies_to`
+            # to the subscription product.
+            allow_promotion_codes=starter_cents is None,
+            # The amount is part of the key, not just the provider. The key is
+            # bucketed to 5 minutes to collapse double-clicks; without the
+            # amount, an owner who picks $20, backs out, and picks $100 inside
+            # that window reuses the key with a different body — Stripe rejects
+            # the mismatch and the second, larger purchase simply fails.
+            idempotency_key=_checkout_idempotency_key(
+                "flat_checkout",
+                owner_id,
+                f"{provider_choice or '_'}:{starter_cents or '_'}",
+            ),
         )
     except Exception:
         # No session exists — free the slot so the user's immediate retry
@@ -311,10 +431,18 @@ def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None
     duplicate-sub guard catch up. ``flow`` namespaces flat vs team; ``extra``
     carries the flat path's provider_choice so a config change bypasses the
     cached response naturally.
+
+    ``_BODY_VERSION`` exists because Stripe compares the REQUEST BODY against a
+    stored idempotency key and rejects a mismatch rather than replaying. Any
+    change to the session kwargs — the top-level ``metadata`` this file now
+    sends on every subscription checkout, for instance — makes an old task's
+    key and a new task's body disagree for the length of a rolling deploy, and
+    a customer's retry fails inside that window. Bump this whenever the body
+    shape changes; it costs one wasted bucket and nothing else.
     """
     bucket = int(time.time() // 300)
     suffix = f":{extra}" if extra is not None else ""
-    return f"{flow}:{owner_id}{suffix}:{bucket}"
+    return f"{flow}:v{_CHECKOUT_BODY_VERSION}:{owner_id}{suffix}:{bucket}"
 
 
 async def _build_subscription_checkout(
@@ -325,6 +453,7 @@ async def _build_subscription_checkout(
     success_url: str,
     cancel_url: str,
     idempotency_key: str,
+    allow_promotion_codes: bool = True,
 ) -> stripe.checkout.Session:
     """Single builder for subscription-mode Stripe Checkout sessions.
 
@@ -347,9 +476,23 @@ async def _build_subscription_checkout(
         line_items=line_items,
         success_url=success_url,
         cancel_url=cancel_url,
-        allow_promotion_codes=True,
+        allow_promotion_codes=allow_promotion_codes,
         automatic_tax={"enabled": True},
         customer_update={"address": "auto"},
+        # The SAME dict on BOTH, because Stripe puts them on different objects
+        # and two different webhooks read them:
+        #   subscription_data.metadata → the created Subscription, which is
+        #     what customer.subscription.* carries (handle_subscription_state).
+        #   metadata                   → the Session itself, which is what
+        #     checkout.session.completed carries (handle_checkout_session).
+        # Only subscription_data was set here, so any Session-reading handler
+        # saw {}. That was invisible until the bedrock_claude Checkout started
+        # bundling starter credits: the one-time line item was charged and
+        # `credits_cents` never reached the grant, so the customer paid for a
+        # balance that was never funded. The standalone top-up path never hit
+        # this because it calls Session.create directly with top-level
+        # metadata — which is exactly why it worked and this did not.
+        metadata=metadata,
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,
         # Stripe's minimum is 30 minutes; the default is 24 hours. A short

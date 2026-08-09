@@ -150,7 +150,7 @@ class TestCreateUltraUpgradeService:
         # purpose=ultra rides the subscription metadata so the webhook records
         # the Ultra tier when the subscription first goes live.
         assert seen["metadata"] == {"owner_id": "owner_trial", "purpose": "ultra"}
-        assert seen["idempotency_key"].startswith("ultra_checkout:owner_trial:")
+        assert seen["idempotency_key"].startswith("ultra_checkout:v")
         modify_mock.assert_not_called()
 
     @pytest.mark.asyncio

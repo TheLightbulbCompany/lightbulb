@@ -333,6 +333,18 @@ async def create_portal(
 # Trial signup — single endpoint that backs the ProviderPicker cards.
 # ---------------------------------------------------------------------------
 
+# Hard cap on credit-purchase amounts — a safety rail: without an upper
+# bound, a compromised session could lock in an unreasonable
+# charge-automatically payment against the saved card. Metronome/Stripe
+# would likely reject extremes too, but defense in depth says we cap
+# server-side. Raise via a code change + a pricing-tier conversation.
+#
+# Defined here rather than beside TopUpRequest because the subscription
+# Checkout below now bundles starter credits and must enforce the SAME
+# $5–$1,000 window. Two constants would let the bundled path drift into
+# accepting an amount the standalone top-up rejects.
+_TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
+
 
 class TrialCheckoutRequest(BaseModel):
     # Pydantic Literal validates at request time (422 on unknown values), so
@@ -350,6 +362,18 @@ class TrialCheckoutRequest(BaseModel):
             "Optional. Set later via the BYO wizard step after Stripe checkout "
             "completes. The gateway/provisioner enforces a populated byo_provider "
             "(plus an actual key) as a separate downstream gate."
+        ),
+    )
+    credits_cents: int | None = Field(
+        None,
+        ge=500,
+        le=_TOP_UP_MAX_CENTS,
+        description=(
+            "Starter Claude credits to bundle into this Checkout as a one-time "
+            "line item, for provider_choice=bedrock_claude only. Min $5, max "
+            "$1,000 — the same window the standalone top-up enforces. Omit for "
+            "the default. Ignored for the other two providers, which spend no "
+            "Isol8 credits."
         ),
     )
 
@@ -376,6 +400,7 @@ async def create_trial_checkout(
         BillingService,
         BillingServiceError,
         create_flat_fee_checkout,
+        normalize_starter_credits,
     )
 
     # Note: provider_choice and byo_provider enums are enforced by pydantic
@@ -522,13 +547,34 @@ async def create_trial_checkout(
         except stripe.error.InvalidRequestError:
             logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
         if pending is not None and pending.get("status") == "open":
-            if account.get("pending_checkout_provider") == body.provider_choice:
+            # "Same intent" has to mean the same BODY, not just the same
+            # provider. Provider alone was sufficient while it fully determined
+            # the session; bundled starter credits made the amount a second
+            # body-varying input, and this guard returns before
+            # create_flat_fee_checkout runs — so its amount-aware idempotency
+            # key never gets a say. An owner who opened a $1,050 session, went
+            # back, and chose the $5 preset would be handed the old session:
+            # charged $1,050 against a page that had just quoted $55.
+            #
+            # Read from the SESSION's own metadata rather than a stored column
+            # so there is one source of truth (and no migration): it is the
+            # same dict the grant webhook reads.
+            requested_credits = (
+                normalize_starter_credits(body.credits_cents) if body.provider_choice == "bedrock_claude" else None
+            )
+            pending_credits_raw = (pending.get("metadata") or {}).get("credits_cents")
+            pending_credits = int(pending_credits_raw) if pending_credits_raw else None
+            if (
+                account.get("pending_checkout_provider") == body.provider_choice
+                and pending_credits == requested_credits
+            ):
                 # Same intent — send them back to the SAME hosted session.
                 return {"checkout_url": pending.url}
-            # Provider switch: the open session carries the OLD provider in
-            # its subscription metadata (the webhook would clobber the new
-            # choice), and leaving it open would allow completing both.
-            # Expire it, then mint fresh below.
+            # Provider switch OR credit-amount change: the open session carries
+            # the OLD provider in its subscription metadata (the webhook would
+            # clobber the new choice) and the OLD amount in its line item, and
+            # leaving it open would allow completing both. Expire it, then mint
+            # fresh below.
             try:
                 with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
                     stripe.checkout.Session.expire(pending_id)
@@ -605,6 +651,12 @@ async def create_trial_checkout(
             # through subscription_data.metadata so the webhook can persist
             # provider_choice on the right per-Clerk-user row.
             clerk_user_id=auth.user_id,
+            # Scoped to bedrock_claude at the boundary rather than trusting the
+            # body: the other two providers spend no Isol8 credits, so a client
+            # sending credits_cents with them would be charged for a balance it
+            # can never draw down. Pydantic already bounded the value to
+            # $5–$1,000; this bounds WHO it can apply to.
+            credits_cents=body.credits_cents if body.provider_choice == "bedrock_claude" else None,
         )
     except BillingServiceError as e:
         if str(e) == "checkout_in_progress":
@@ -833,14 +885,6 @@ async def change_provider(
 # ---------------------------------------------------------------------------
 # Credit endpoints — Metronome is the only balance source
 # ---------------------------------------------------------------------------
-
-
-# Hard cap on credit-purchase amounts — a safety rail: without an upper
-# bound, a compromised session could lock in an unreasonable
-# charge-automatically payment against the saved card. Metronome/Stripe
-# would likely reject extremes too, but defense in depth says we cap
-# server-side. Raise via a code change + a pricing-tier conversation.
-_TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
 
 
 class TopUpRequest(BaseModel):

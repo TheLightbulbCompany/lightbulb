@@ -556,9 +556,14 @@ function AgentHead({ name, state = "idle" }: { name: string; state?: "idle" | "t
 function MessageBlocks({
   message,
   onOpenFile,
+  interactive = true,
 }: {
   message: HistoryMessage;
   onOpenFile?: (path: string) => void;
+  /** Forwarded to ChatErrorCard — only the newest bubble may render the live
+   *  conversion paywall, so repeated capped turns do not stack purchase forms
+   *  each holding their own credit amount. */
+  interactive?: boolean;
 }) {
   // `content` may be a block array, a bare string, or absent with the body on
   // the top-level `text` field (older chat.history rows, cron run transcripts).
@@ -633,6 +638,7 @@ function MessageBlocks({
               key={`err:${i}`}
               message={text.slice("Error: ".length)}
               code={message.errorCode}
+              interactive={interactive}
             />
           );
         } else {
@@ -712,9 +718,14 @@ const ItemRenderer = React.memo(
   function ItemRenderer({
     item,
     onOpenFile,
+    interactive = true,
   }: {
     item: ChatRenderItem;
     onOpenFile?: (path: string) => void;
+    /** True only for the newest bubble of the newest assistant group — gates
+     *  ChatErrorCard's live conversion paywall so it cannot stack. Included in
+     *  the memo comparator below, or the flag would never propagate. */
+    interactive?: boolean;
   }) {
     if (item.kind === "divider") {
       return (
@@ -732,11 +743,14 @@ const ItemRenderer = React.memo(
       return <ThinkingBlock content={item.text} streaming />;
     }
     if (item.kind === "message") {
-      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} />;
+      return <MessageBlocks message={item.message} onOpenFile={onOpenFile} interactive={interactive} />;
     }
     return null;
   },
-  (prev, next) => prev.onOpenFile === next.onOpenFile && itemEquals(prev.item, next.item),
+  (prev, next) =>
+    prev.onOpenFile === next.onOpenFile &&
+    prev.interactive === next.interactive &&
+    itemEquals(prev.item, next.item),
 );
 
 /**
@@ -864,8 +878,18 @@ function BubbleGroupImpl({
           state={isStreaming && isLastAssistantGroup ? "thinking" : "idle"}
         />
         <div className="relative text-sm leading-7 text-[#302d28] w-full">
-          {group.items.map((item) => (
-            <ItemRenderer key={item.key} item={item} onOpenFile={onOpenFile} />
+          {group.items.map((item, idx) => (
+            <ItemRenderer
+              key={item.key}
+              item={item}
+              onOpenFile={onOpenFile}
+              // Only the newest bubble of the newest assistant group gets the
+              // live paywall. Otherwise a capped owner who sends three more
+              // messages stacks three ProviderPickers, each with its own
+              // credit amount — set $100 on the visible one, scroll up, buy an
+              // older one's $20, charged an amount the screen never quoted.
+              interactive={isLastAssistantGroup && idx === group.items.length - 1}
+            />
           ))}
         </div>
       </div>

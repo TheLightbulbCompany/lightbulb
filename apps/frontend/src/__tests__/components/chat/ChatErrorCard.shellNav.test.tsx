@@ -28,11 +28,16 @@ describe("ChatErrorCard action link", () => {
 
   it("navigates cross-route CTAs with a real Link, not pushState", () => {
     // /settings is a DIFFERENT Next route. pushState would change the URL bar
-    // while leaving the chat shell mounted — the upgrade CTA would silently do
+    // while leaving the chat shell mounted — the CTA would silently do
     // nothing. Only in-shell ?panel swaps may use pushState.
+    //
+    // Uses subscription_inactive rather than trial_daily_cap: the two trial
+    // codes no longer link anywhere, they render the provider picker inline
+    // (see ChatErrorCard). subscription_inactive is the remaining cross-route
+    // CTA and exercises the identical Link path.
     const push = vi.spyOn(window.history, "pushState").mockImplementation(() => {});
-    render(<ChatErrorCard code="trial_daily_cap" message="" />);
-    const link = screen.getByRole("link", { name: "Upgrade to keep going" });
+    render(<ChatErrorCard code="subscription_inactive" message="" />);
+    const link = screen.getByRole("link", { name: "Reactivate" });
     expect(link).toHaveAttribute("href", "/settings?panel=billing");
     fireEvent.click(link, { button: 0 });
     expect(push).not.toHaveBeenCalled();

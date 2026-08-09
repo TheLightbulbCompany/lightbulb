@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
-import { useApi } from "@/lib/api";
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
@@ -26,6 +25,13 @@ import { CreditsStep } from "@/components/chat/CreditsStep";
 import { TeamBillingCard } from "@/components/chat/TeamBillingCard";
 import { Logo } from "@/components/Logo";
 import { PROVIDER_CARDS, type ProviderChoiceId } from "@/lib/providerCards";
+import {
+  CREDIT_PRESETS_CENTS,
+  DEFAULT_CREDITS_CENTS,
+  MAX_CREDITS_CENTS,
+  MIN_CREDITS_CENTS,
+  formatUsdCents,
+} from "@/lib/creditAmounts";
 // Provisioning copy + timing live in @isol8/shared so the web and mobile
 // steppers stay in lockstep. Aliased to this file's historical local names so
 // every usage site below is unchanged.
@@ -959,7 +965,18 @@ export function ProvisioningStepper({
             <ByoKeyStep onComplete={handleProviderComplete} />
           )}
           {providerChoice === "bedrock_claude" && (
-            <CreditsStep onComplete={handleProviderComplete} />
+            // `?credits=bundled` on the Checkout success_url means the balance
+            // was already paid for in that same session and the grant is in
+            // flight through the webhook. CreditsStep otherwise only skips once
+            // the balance READS spendable, which it does not at the instant the
+            // browser gets back from Stripe — so the owner who paid precisely
+            // to avoid a second step was shown a live second purchase form, and
+            // could pay twice. The awaiting state keeps the same balance poll,
+            // so it advances by itself the moment the credits land.
+            <CreditsStep
+              onComplete={handleProviderComplete}
+              awaitingBundledGrant={searchParams.get("credits") === "bundled"}
+            />
           )}
         </div>
       </div>
@@ -1843,22 +1860,148 @@ function StepperDisplay({
  * `source` on the analytics event distinguishes them; keep it accurate, the
  * signup-vs-conversion split is the conversion funnel.
  */
+
+/** The flat monthly subscription, in dollars — the same on all three paths. */
+const FLAT_PRICE_USD = 50;
+
+// Shared with CreditsStep via lib/creditAmounts — the two purchase surfaces
+// had drifted to different preset ladders for the same balance.
+const MIN_STARTER_CREDITS_CENTS = MIN_CREDITS_CENTS;
+const MAX_STARTER_CREDITS_CENTS = MAX_CREDITS_CENTS;
+const DEFAULT_STARTER_CREDITS_CENTS = DEFAULT_CREDITS_CENTS;
+const STARTER_CREDIT_PRESETS_CENTS = CREDIT_PRESETS_CENTS;
+
+
+/**
+ * Amount chooser for the bedrock_claude starter credits.
+ *
+ * Presets plus a free-entry box, matching CreditsStep's control so the two
+ * places an owner buys credits behave the same way. Deliberately NOT extracted
+ * from CreditsStep: that component's control is welded to its own submit +
+ * one-click-opt-in flow, and the shared piece would be four presets and an
+ * input.
+ *
+ * Blur-commit on the custom field, not change-commit: clamping mid-keystroke
+ * turns "" into $5 and "1" into $5 while someone is typing "100", which fights
+ * the user for the whole entry. The raw string is held locally and only
+ * reconciled to a legal amount on blur.
+ */
+function StarterCreditsPicker({
+  valueCents,
+  onChange,
+  disabled,
+}: {
+  valueCents: number;
+  onChange: (cents: number) => void;
+  disabled: boolean;
+}) {
+  const [draft, setDraft] = useState<string>(String(valueCents / 100));
+
+  const commit = useCallback(
+    (raw: string) => {
+      // Empty/blank restores the previous amount rather than committing a
+      // number. `Number("")` is 0, not NaN, so the finite-check below lets it
+      // through and the clamp silently rewrites a cleared box to the $5 floor
+      // — someone who picked $100 and select-all-deleted to retype would buy
+      // $5. `<input type="number">` also reports "" for a partially-invalid
+      // entry, so this is the ordinary typing path, not an edge case.
+      if (raw.trim() === "") {
+        setDraft(String(valueCents / 100));
+        return;
+      }
+      const dollars = Number(raw);
+      if (!Number.isFinite(dollars)) {
+        setDraft(String(valueCents / 100));
+        return;
+      }
+      // Whole dollars only. The presets are whole, the input steps by 5, and
+      // rounding at the source is what keeps the quoted total exact — cents
+      // would put binary float error into the price string the customer is
+      // asked to agree to ($60.230000000000004).
+      const clamped = Math.min(
+        Math.max(Math.round(dollars) * 100, MIN_STARTER_CREDITS_CENTS),
+        MAX_STARTER_CREDITS_CENTS,
+      );
+      onChange(clamped);
+      setDraft(String(clamped / 100));
+    },
+    [onChange, valueCents],
+  );
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1.5">
+        {STARTER_CREDIT_PRESETS_CENTS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            disabled={disabled}
+            aria-pressed={valueCents === c}
+            onClick={() => {
+              onChange(c);
+              setDraft(String(c / 100));
+            }}
+            className={
+              "rounded-full border px-2.5 py-1 text-xs transition-colors disabled:opacity-50 " +
+              (valueCents === c
+                ? "border-[var(--forest)] bg-[var(--forest-tint)] text-[var(--forest)] font-medium"
+                : "border-[var(--edge)] bg-white text-[var(--ink)] hover:bg-[var(--cream-deeper)]")
+            }
+          >
+            ${c / 100}
+          </button>
+        ))}
+      </div>
+      <label className="flex items-center gap-1.5 text-xs text-[var(--mute)]">
+        <span>Custom $</span>
+        <input
+          type="number"
+          min={MIN_STARTER_CREDITS_CENTS / 100}
+          max={MAX_STARTER_CREDITS_CENTS / 100}
+          step={5}
+          value={draft}
+          disabled={disabled}
+          aria-label="Starter Claude credits in dollars"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
+          className="w-20 rounded-md border border-[var(--edge)] bg-white px-2 py-1 text-xs text-[var(--ink)] focus:border-[rgba(6,64,43,0.25)] focus:outline-none disabled:opacity-50"
+        />
+      </label>
+    </div>
+  );
+}
+
 export function ProviderPicker({
   isOrg,
   orgName,
   heading,
   subheading,
   source = "provider_picker",
+  embedded = false,
 }: {
   isOrg: boolean;
   orgName?: string;
   heading?: string;
   subheading?: string;
   source?: string;
+  /**
+   * Render inside an existing page that already has its own chrome (the
+   * settings Billing panel) rather than as the full-bleed onboarding screen:
+   * drops the logo and the centered full-height wrapper, keeps the cards.
+   */
+  embedded?: boolean;
 }) {
-  const api = useApi();
+  // The checkout call lives in useBilling, shared with the settings Billing
+  // panel. It used to be duplicated inline here — two copies of the same POST
+  // + redirect, which is how the two surfaces drifted into offering different
+  // copy for the same three paths in the first place.
+  const { startTrialCheckout } = useBilling();
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Starter Claude credits for the bedrock_claude path. Sent with that card's
+  // Checkout only; the server re-scopes it to bedrock anyway, since the other
+  // two providers spend no Isol8 credits.
+  const [creditsCents, setCreditsCents] = useState<number>(DEFAULT_STARTER_CREDITS_CENTS);
 
   const handlePick = useCallback(async (id: ProviderChoiceId) => {
     setLoading(id);
@@ -1867,22 +2010,17 @@ export function ProviderPicker({
       provider_choice: id,
       owner_type: isOrg ? "org" : "personal",
       source,
+      ...(id === "bedrock_claude" ? { credits_cents: creditsCents } : {}),
     });
     try {
-      const resp = (await api.post("/billing/trial-checkout", {
-        provider_choice: id,
-      })) as { checkout_url?: string };
-      if (resp?.checkout_url) {
-        // Redirect to Stripe Checkout. After Checkout returns success, the
-        // wizard re-mounts on /chat?checkout=success&provider=<id>; the
-        // subscription.updated webhook persists provider_choice to the user
-        // row, the wizard sees subscription_status === "trialing", and
-        // advances into the provider phase. Without this round-trip the
-        // user gets stuck in the payment phase forever.
-        window.location.href = resp.checkout_url;
-      } else {
-        throw new Error("No checkout_url returned");
-      }
+      // Redirects to Stripe Checkout on success, so the browser leaves this
+      // page and `loading` only ever clears on the failure path below. After
+      // Checkout returns, the wizard re-mounts on
+      // /chat?checkout=success&provider=<id>; the subscription.updated webhook
+      // persists provider_choice to the user row, the wizard sees
+      // subscription_status === "trialing", and advances into the provider
+      // phase. Without that round-trip the user is stuck in the payment phase.
+      await startTrialCheckout(id, id === "bedrock_claude" ? creditsCents : undefined);
     } catch (err) {
       capture("subscription_checkout_failed", {
         provider_choice: id,
@@ -1891,22 +2029,37 @@ export function ProviderPicker({
         error: err instanceof Error ? err.message : "unknown",
       });
       setLoading(null);
-      setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
+      // Fixed copy, not err.message. startTrialCheckout propagates ApiError
+      // carrying the backend `detail`, so surfacing it verbatim put strings
+      // like "No Stripe customer for owner_id=user_2xK…" and the literal
+      // "checkout_in_progress" in front of a customer at the paywall. The
+      // real error still reaches the console and the capture() above.
+      console.error("trial checkout failed", err);
+      setError("Couldn't start checkout. Please try again.");
     }
-  }, [api, isOrg, source]);
+  }, [startTrialCheckout, isOrg, source, creditsCents]);
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8 bg-[var(--cream)]">
-      <div className="max-w-5xl w-full space-y-8 text-center">
+    // `@container` (not a viewport breakpoint) because this now renders inside
+    // a resizable dock panel. The grid below used `md:grid-cols-3`, which keys
+    // off the VIEWPORT: on a wide desktop with a narrow chat panel that forces
+    // three cards into a ~400px column regardless of how little room they have.
+    // Sized on the container instead, the same component stacks in the chat
+    // transcript and goes three-wide in the settings card and the full-screen
+    // onboarding step.
+    <div className={"@container " + (embedded ? "" : "flex-1 flex items-center justify-center p-8 bg-[var(--cream)]")}>
+      <div className={"w-full space-y-8 " + (embedded ? "" : "max-w-5xl text-center")}>
         <div className="space-y-3">
-          <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4">
-            <rect width="100" height="100" rx="22" fill="var(--forest)" />
-            <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-          </svg>
+          {!embedded && (
+            <svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4">
+              <rect width="100" height="100" rx="22" fill="var(--forest)" />
+              <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
+            </svg>
+          )}
           <h2 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
             {heading ?? "One price. Three ways to power it."}
           </h2>
-          <p className="text-[var(--mute)] text-sm max-w-md mx-auto">
+          <p className={"text-[var(--mute)] text-sm max-w-md " + (embedded ? "" : "mx-auto")}>
             {subheading ??
               (isOrg
                 ? `Pick how ${orgName} wants to pay for inference. The $50/month covers the always-on agent infrastructure.`
@@ -1918,7 +2071,7 @@ export function ProviderPicker({
           <div className="text-sm text-red-600 -mt-4">{error}</div>
         )}
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 @3xl:grid-cols-3">
           {PROVIDER_CARDS.map((card) => (
             <div
               key={card.id}
@@ -1929,8 +2082,21 @@ export function ProviderPicker({
             >
               <div className="space-y-1">
                 <h3 className="font-medium text-[var(--ink)]">{card.title}</h3>
-                <p className="text-sm text-[var(--mute)]">{card.subtitle}</p>
-                <p className="text-xs text-[var(--forest)] font-medium">{card.trialNote}</p>
+                {/* Bedrock's total moves with the chosen credit amount, so its
+                    price line is computed rather than the static card copy —
+                    the number the customer reads here is the number Checkout
+                    charges. The other two are a flat $50 and keep the static
+                    subtitle. */}
+                <p className="text-sm text-[var(--mute)]">
+                  {card.id === "bedrock_claude"
+                    ? `${formatUsdCents(FLAT_PRICE_USD * 100 + creditsCents)} at checkout, then $${FLAT_PRICE_USD} / month`
+                    : card.subtitle}
+                </p>
+                <p className="text-xs text-[var(--forest)] font-medium">
+                  {card.id === "bedrock_claude"
+                    ? `Includes ${formatUsdCents(creditsCents)} Claude credits — no second step`
+                    : card.trialNote}
+                </p>
                 {isOrg && card.id === "chatgpt_oauth" && (
                   <p className="text-xs text-[var(--mute)]">
                     You connect your ChatGPT account (Pro recommended) — one
@@ -1938,6 +2104,13 @@ export function ProviderPicker({
                   </p>
                 )}
               </div>
+              {card.id === "bedrock_claude" && (
+                <StarterCreditsPicker
+                  valueCents={creditsCents}
+                  onChange={setCreditsCents}
+                  disabled={loading !== null}
+                />
+              )}
               <ul className="text-sm text-[#5a5549] space-y-2 flex-1">
                 {card.bullets.map((b) => (
                   <li key={b} className="flex items-start gap-2">
@@ -1953,6 +2126,12 @@ export function ProviderPicker({
                     : "w-full rounded-full border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)]"
                 }
                 variant={card.highlighted ? "default" : "outline"}
+                // All three CTAs read "Get started", so the visible label alone
+                // gives a screen-reader user three identical buttons and no way
+                // to tell which plan each buys — the <h3> above is not part of
+                // the button's accessible name. Naming it after the card fixes
+                // that (and is what the tests query by).
+                aria-label={`${card.cta} — ${card.title}`}
                 onClick={() => handlePick(card.id)}
                 disabled={loading !== null}
               >

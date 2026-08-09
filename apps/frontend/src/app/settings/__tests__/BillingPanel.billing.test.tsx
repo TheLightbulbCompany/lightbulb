@@ -249,25 +249,33 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     expect(screen.queryByText("Active subscription")).not.toBeInTheDocument();
 
     // No portal button — a trial_local row has no Stripe customer, so the
-    // portal would fail. One Subscribe CTA PER PROVIDER PATH renders instead,
-    // each wired to the flat-fee checkout with its own provider.
+    // portal would fail. The shared ProviderPicker renders instead: one card
+    // per provider path, each wired to the flat-fee checkout with its own
+    // provider, and each showing that path's REAL price.
     //
-    // This was a single button posting a hardcoded `provider_choice:
-    // "bedrock_claude"`. The owner never chose, and since Checkout echoes
-    // `?provider=<id>` into the wizard's provider step, the hardcode also
-    // skipped CreditsStep — so converted owners landed on Bedrock-managed
-    // inference with a zero credit balance nobody had asked them to fund.
+    // This surface used to hand-roll three pill buttons over
+    // PROVIDER_SWITCH_CARDS — the array documented as the post-purchase
+    // variant that deliberately carries no pricing. Rendered pre-purchase it
+    // stripped the prices off the one screen whose job is to show them, and
+    // hid that the Bedrock path costs $70 today rather than $50.
     expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /sign in with chatgpt/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /bring your own api key/i })).toBeInTheDocument();
+    // The per-path price is the disclosure, and it must survive on this
+    // surface: Bedrock takes $70 at checkout, the other two take $50.
+    expect(screen.getByText(/\$70 at checkout/i)).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /powered by claude/i }));
     });
     // The clicked provider must reach the hook — asserting the ARGUMENT is the
     // point, since a reintroduced hardcode still satisfies a bare call count.
+    // The second argument is the starter-credit amount bundled into the same
+    // Checkout ($20 default, in cents); dropping it would silently fall back to
+    // the server default and make the "$70 at checkout" line above a lie
+    // whenever the owner picked a different amount.
     expect(billing.startTrialCheckout).toHaveBeenCalledTimes(1);
-    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude");
+    expect(billing.startTrialCheckout).toHaveBeenCalledWith("bedrock_claude", 2000);
 
     // Once a checkout is in flight every path disables — the browser is
     // leaving for Stripe, and two completable sessions means two charged
@@ -335,7 +343,7 @@ describe("BillingPanel — personal free tier (trial_local)", () => {
     // Expired framing: chip + description reflect that the free tier ended
     // and usage is paused. The chip is the exact "Free tier ended" string.
     expect(screen.getByText("Free tier ended")).toBeInTheDocument();
-    expect(screen.getByText(/free tier ended.*usage is paused/i)).toBeInTheDocument();
+    expect(screen.getByText(/free tier ended.*agents are paused/i)).toBeInTheDocument();
 
     // The misleading "$3/day of included usage" promise is gone.
     expect(screen.queryByText(/\$3\/day of included usage/)).not.toBeInTheDocument();

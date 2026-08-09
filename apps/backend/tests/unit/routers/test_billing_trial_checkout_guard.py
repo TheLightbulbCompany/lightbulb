@@ -351,11 +351,12 @@ _PENDING_ROW = {
 }
 
 
-def _open_session(url="https://checkout.stripe.com/cs_pending"):
+def _open_session(url="https://checkout.stripe.com/cs_pending", credits_cents=None):
     from unittest.mock import MagicMock
 
     m = MagicMock(url=url)
-    m.get.side_effect = lambda k, d=None: {"status": "open"}.get(k, d)
+    meta = {"credits_cents": str(credits_cents)} if credits_cents is not None else {}
+    m.get.side_effect = lambda k, d=None: {"status": "open", "metadata": meta}.get(k, d)
     return m
 
 
@@ -378,6 +379,72 @@ async def test_same_provider_reuses_open_pending_session(
     resp = await async_client.post(
         "/api/v1/billing/trial-checkout",
         json={"provider_choice": "bedrock_claude"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/cs_pending"
+    mock_create_checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.expire")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_changed_credit_amount_expires_the_open_session(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_expire, mock_create_checkout, async_client
+):
+    """Same provider, DIFFERENT starter amount is a different purchase.
+
+    This guard used to key on provider alone, which was sufficient while
+    provider fully determined the session body. Bundled credits made the
+    amount a second body-varying input, and this guard returns BEFORE
+    create_flat_fee_checkout — so its amount-aware idempotency key never got a
+    say. An owner who opened a $1,050 session, went back, and chose the $5
+    preset was handed the old session: charged $1,050 against a page that had
+    just quoted $55.
+    """
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
+    mock_repo.release_checkout_slot = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_retrieve.return_value = _open_session(credits_cents=100_000)
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/fresh"})()
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude", "credits_cents": 500},
+    )
+
+    assert resp.status_code == 200
+    # The stale $1,050 session must be killed, not handed back.
+    mock_expire.assert_called_once()
+    assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
+
+
+@pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("routers.billing.stripe.checkout.Session.retrieve")
+@patch("routers.billing.stripe.Subscription.list")
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_same_provider_and_same_amount_still_reuses(
+    mock_repo, mock_clerk, mock_sub_list, mock_retrieve, mock_create_checkout, async_client
+):
+    """The reuse behaviour itself must survive: an identical re-click (same
+    provider AND same amount) still returns the one open session rather than
+    minting a second completable one."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=dict(_PENDING_ROW))
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    mock_sub_list.return_value = _sub_list([])
+    mock_retrieve.return_value = _open_session(credits_cents=2000)
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude", "credits_cents": 2000},
     )
 
     assert resp.status_code == 200

@@ -68,7 +68,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     id: "chatgpt_oauth",
     title: "Sign in with ChatGPT",
     subtitle: "$50 / month + your ChatGPT subscription",
-    trialNote: "Billed monthly, starts today",
+    trialNote: "Sign in to OpenAI after checkout",
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
       "All channels (Telegram, Discord, WhatsApp)",
@@ -81,7 +81,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     id: "byo_key",
     title: "Bring your own API key",
     subtitle: "$50 / month + your provider bill",
-    trialNote: "Billed monthly, starts today",
+    trialNote: "Add your key after checkout",
     bullets: [
       "OpenAI or Anthropic — your key, your billing",
       "All channels",
@@ -93,8 +93,26 @@ export const PROVIDER_CARDS: ProviderCard[] = [
   {
     id: "bedrock_claude",
     title: "Powered by Claude",
-    subtitle: "$50 / month + Claude credits",
-    trialNote: "Pay-as-you-go credits",
+    // This path is the only one that needs funded credits before
+    // provision_gate will start the container, so its Checkout carries a
+    // one-time $20 credits line item ALONGSIDE the $50 subscription — one
+    // session, one card entry, $70 shown before payment. Previously it was
+    // two checkouts and the second was a surprise: an owner reached
+    // CreditsStep having already paid $50 for a container that wouldn't boot.
+    // If you change this copy, change BEDROCK_STARTER_CREDITS_CENTS in
+    // billing_service.create_flat_fee_checkout with it — this string IS the
+    // pre-payment disclosure.
+    //
+    // These two strings are the LANDING-page copy (PricingThreeCard). The
+    // ProviderPicker overrides both with a total computed from the credit
+    // amount the owner picks, because only that surface has the chooser.
+    //
+    // So they must be true with NO amount selected, and true on a page whose
+    // cards link to /sign-up?provider=… — where a new signup gets a card-less
+    // trial_local row (user_provision), not a charge. Hence "from $5" rather
+    // than a fixed total, and "at checkout" rather than "due today".
+    subtitle: "$50 / month + Claude credits from $5",
+    trialNote: "Credits bought at checkout — no second step",
     bullets: [
       "Claude Sonnet 4.6 + Opus 4.7",
       "All channels",

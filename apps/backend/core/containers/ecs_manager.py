@@ -758,8 +758,41 @@ class EcsManager:
     # Safe DB helpers
     # ------------------------------------------------------------------
 
-    async def _update_container(self, user_id: str, **fields) -> None:
+    async def _update_container(
+        self,
+        user_id: str,
+        *,
+        claim_id: str | None = None,
+        generation: str | None = None,
+        attempt_token: str | None = None,
+        **fields,
+    ) -> None:
         """Update container fields via the DynamoDB container repo.
+
+        CLAIM FENCE: with ``claim_id`` the write goes through
+        ``container_repo.update_container_leased``, so it is conditioned on
+        this run still holding the provision lease and raises
+        ``ProvisionSuperseded`` when it does not. Without a lease-conditioned
+        write, a run superseded between two checkpoints still stamped its own
+        ``access_point_id`` / ``task_definition_arn`` / ``substatus`` over the
+        winner's row (``update_fields`` is conditioned only on the row
+        existing), leaving a row that describes a mixture of two provisions.
+        ``claim_id=None`` keeps the plain unfenced ``update_fields``, exactly
+        as the checkpoints treat a missing lease: the callers that reach here
+        without one are ``routers/debug.py``'s direct create_user_service, the
+        resize path (webhook/admin, no provision lease), and tests.
+        ``start_user_service`` picks between this helper and its original bare
+        ``update_status`` on the same rule, at its own call site.
+
+        ``generation`` is the same optional extra fence the checkpoints take,
+        and each call site passes exactly what the checkpoint next to it
+        passes. ``_provision_user_container_inner``'s writes (and the
+        ``start_user_service`` write it drives) DO pass it — the value they
+        hold is the one every checkpoint in that function was just validated
+        against. ``create_user_service``'s three writes do NOT: its own upsert
+        re-mints ``provision_generation``, so any caller-supplied value is
+        stale by construction there — which is why that method takes no
+        ``generation`` argument at all.
 
         SINGLE-OWNER RULE (guarded): this generic provision-path setter must
         NEVER write a ``status="error"`` transition. That transition is owned
@@ -781,7 +814,18 @@ class EcsManager:
                 "status='error' must not be written through _update_container — "
                 "the claim-fenced release_provision_to_error owns that transition"
             )
-        await container_repo.update_fields(user_id, fields)
+        if claim_id is None:
+            await container_repo.update_fields(user_id, fields)
+            return
+        # Lazy module lookup for the LEASE primitive, same reason as
+        # _provision_checkpoint: several tests wholesale-replace this module's
+        # `container_repo` binding with a MagicMock to stub row I/O, while the
+        # lease is stubbed at its source module.
+        from core.repositories import container_repo as _lease_repo
+
+        await _lease_repo.update_container_leased(
+            user_id, claim_id, fields, generation=generation, attempt_token=attempt_token
+        )
 
     # ------------------------------------------------------------------
     # Service lifecycle
@@ -939,8 +983,18 @@ class EcsManager:
         try:
             # Step 1: Create per-user EFS access point
             access_point_id = self._create_access_point(user_id, owner_type=owner_type)
+            # Fenced on the lease (see _update_container): the checkpoint above
+            # only covers the moment it ran — a takeover landing while the
+            # access point was being created must not let this run stamp its
+            # own access_point_id over the winner's row. No `generation`: the
+            # upsert above just re-minted provision_generation, so a
+            # caller-supplied one would be stale by construction — which is why
+            # create_user_service takes no `generation` at all and its
+            # checkpoints omit it too.
             await self._update_container(
                 user_id,
+                claim_id=claim_id,
+                attempt_token=attempt_token,
                 access_point_id=access_point_id,
                 substatus="efs_created",
             )
@@ -964,6 +1018,8 @@ class EcsManager:
             )
             await self._update_container(
                 user_id,
+                claim_id=claim_id,
+                attempt_token=attempt_token,
                 task_definition_arn=task_def_arn,
                 substatus="task_registered",
             )
@@ -1021,7 +1077,12 @@ class EcsManager:
                 del create_kwargs["capacityProviderStrategy"]
                 create_kwargs["launchType"] = "FARGATE"
                 self._ecs.create_service(**create_kwargs)
-            await self._update_container(user_id, substatus="service_created")
+            await self._update_container(
+                user_id,
+                claim_id=claim_id,
+                attempt_token=attempt_token,
+                substatus="service_created",
+            )
         except ProvisionSuperseded:
             raise
         except EcsManagerError:
@@ -1327,7 +1388,28 @@ class EcsManager:
 
         container = await container_repo.get_by_owner_id(user_id)
         if container:
-            await container_repo.update_status(user_id, "provisioning")
+            if claim_id is None:
+                # No lease: the original unconditional write, untouched. Every
+                # caller but the provision lands here (wake-from-stopped, agent
+                # mail, the admin and debug starts).
+                await container_repo.update_status(user_id, "provisioning")
+            else:
+                # A claim_id reaches here only from
+                # _provision_user_container_inner's two calls, and only when
+                # the SFN runner supplied one. Unfenced, this is a blind
+                # "provisioning" stamp: a superseded run arriving after the
+                # winner had finished would knock the winner's status=running
+                # row back to provisioning, and the status poll would
+                # re-provision a healthy container. The fields are exactly
+                # update_status's — it writes substatus=None alongside.
+                await self._update_container(
+                    user_id,
+                    claim_id=claim_id,
+                    generation=generation,
+                    attempt_token=attempt_token,
+                    status="provisioning",
+                    substatus=None,
+                )
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
 
@@ -2457,13 +2539,22 @@ class EcsManager:
                 gateway_token = (existing.get("gateway_token") if existing else None) or secrets.token_urlsafe(32)
 
                 # Update gateway token and write configs.
+                # Every _update_container call in this method carries the
+                # claim: claim_id is non-optional here, so unlike
+                # create_user_service there is no unfenced door — a run
+                # superseded in this branch stops instead of stamping its
+                # state over the winner's row. The row writes further down the
+                # call chain (write_user_configs -> ensure_device_identities)
+                # take no lease of their own; the checkpoint immediately
+                # before each write_user_configs call is their fence.
                 if existing:
-                    await container_repo.update_fields(
+                    await self._update_container(
                         user_id,
-                        {
-                            "status": "provisioning",
-                            "substatus": "restarting",
-                        },
+                        claim_id=claim_id,
+                        generation=generation,
+                        attempt_token=attempt_token,
+                        status="provisioning",
+                        substatus="restarting",
                     )
 
                 # Self-heal hook_token for legacy rows that pre-date hook-token
@@ -2480,13 +2571,14 @@ class EcsManager:
                 # env var, and the rendered config stay consistent.
                 existing_hook_token = (existing.get("hook_token") if existing else None) or secrets.token_urlsafe(32)
                 if existing and not existing.get("hook_token"):
-                    await container_repo.update_fields(
+                    await self._update_container(
                         user_id,
-                        {
-                            "hook_token": existing_hook_token,
-                            "hook_token_rotated_at": utc_now_iso(),
-                            "hook_token_provisioned_at": utc_now_iso(),
-                        },
+                        claim_id=claim_id,
+                        generation=generation,
+                        attempt_token=attempt_token,
+                        hook_token=existing_hook_token,
+                        hook_token_rotated_at=utc_now_iso(),
+                        hook_token_provisioned_at=utc_now_iso(),
                     )
 
                 try:
@@ -2562,9 +2654,18 @@ class EcsManager:
                             deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
                         )
                         old_task_def_arn = existing.get("task_definition_arn") if existing else None
-                        await container_repo.update_fields(
+                        # The widest unfenced window on this path: the
+                        # checkpoint above is separated from this write by the
+                        # plan lookup, the task-def register and the ECS
+                        # update_service call. A takeover landing in there must
+                        # not leave the winner's row naming THIS run's
+                        # revision, which the winner's service never runs.
+                        await self._update_container(
                             user_id,
-                            {"task_definition_arn": new_task_def_arn},
+                            claim_id=claim_id,
+                            generation=generation,
+                            attempt_token=attempt_token,
+                            task_definition_arn=new_task_def_arn,
                         )
                         if old_task_def_arn and old_task_def_arn != new_task_def_arn:
                             try:
@@ -2590,6 +2691,21 @@ class EcsManager:
                         # the transition) still needs it.
                         if not suppress_transition_poller:
                             asyncio.create_task(self._await_running_transition(user_id))
+                    except ProvisionSuperseded:
+                        # NOT a provision failure — bare re-raise, ahead of the
+                        # handlers below. This is the ONLY newly-fenced write
+                        # sitting inside a try that wraps: `except Exception`
+                        # would have rebranded the fence's refusal as an
+                        # EcsManagerError, so provision_user_container would
+                        # classify + release instead of taking its superseded
+                        # branch, and the runner would exit retry/deterministic
+                        # instead of EXIT_SUPERSEDED. (The release itself is
+                        # conditioned on the same claim, so it would no-op —
+                        # the row is safe either way; the exception TYPE is
+                        # what the runner reads.) The sibling fenced writes in
+                        # this method sit in no try at all and reach that
+                        # branch directly.
+                        raise
                     except EcsManagerError:
                         # Metrics only — the outer claim-fenced
                         # release_provision_to_error owns the status="error"
@@ -2640,12 +2756,13 @@ class EcsManager:
                     running,
                 )
                 if existing:
-                    await container_repo.update_fields(
+                    await self._update_container(
                         user_id,
-                        {
-                            "status": "provisioning",
-                            "substatus": "redeploying",
-                        },
+                        claim_id=claim_id,
+                        generation=generation,
+                        attempt_token=attempt_token,
+                        status="provisioning",
+                        substatus="redeploying",
                     )
 
                 try:
@@ -2682,12 +2799,13 @@ class EcsManager:
                     running,
                 )
                 if existing and existing.get("status") != "provisioning":
-                    await container_repo.update_fields(
+                    await self._update_container(
                         user_id,
-                        {
-                            "status": "provisioning",
-                            "substatus": "starting",
-                        },
+                        claim_id=claim_id,
+                        generation=generation,
+                        attempt_token=attempt_token,
+                        status="provisioning",
+                        substatus="starting",
                     )
                     # Fire the poller UNLESS the SFN runner will
                     # foreground-await the transition itself — see the
@@ -2707,13 +2825,14 @@ class EcsManager:
                 except Exception:
                     pass
             # Don't delete access point -- preserves user's EFS data
-            await container_repo.update_fields(
+            await self._update_container(
                 user_id,
-                {
-                    "task_definition_arn": None,
-                    "status": "provisioning",
-                    "substatus": None,
-                },
+                claim_id=claim_id,
+                generation=generation,
+                attempt_token=attempt_token,
+                task_definition_arn=None,
+                status="provisioning",
+                substatus=None,
             )
 
         # Step 1: Generate gateway token + hook token. The gateway token

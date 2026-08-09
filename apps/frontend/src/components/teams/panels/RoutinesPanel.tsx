@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { notifyConversionGate } from "@/lib/notify";
 import { ArrowUpDown, Check, Repeat } from "lucide-react";
 import {
   EditorialButton,
@@ -73,10 +74,10 @@ interface Routine {
 
 /** Human copy for a blocked-gate 402 (e.g. routines_require_subscription).
  *
- * The shared API client only promotes a STRING `detail` to `ApiError.message`,
- * so a structured `{blocked, code, message}` body would otherwise surface as a
- * stringified exception. It does keep the parsed body, which is what we read
- * here — the difference between "Error: API 402" and an actual upgrade prompt.
+ * The shared API client now promotes a structured `{blocked, code, message}`
+ * detail's message to `ApiError.message` too, so for ApiErrors this is
+ * equivalent to reading `e.message` — kept because it also covers non-ApiError
+ * values via the `String(e)` fallback at the call sites below.
  */
 function gateMessage(e: unknown): string {
   const body = (e as { body?: { detail?: { message?: string } } })?.body;
@@ -631,7 +632,10 @@ function RunRoutineDialog({
     } catch (e) {
       // Surface the failure in the dialog rather than leaving the user with a
       // button that just flips back to "Run" — mirrors CreateRoutineDialog.
-      setErr(e instanceof Error ? e.message : String(e));
+      // A trial-gate 402 renders the upgrade toast instead of dialog text.
+      if (notifyConversionGate(e) === null) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
     }
   }
 
@@ -837,7 +841,9 @@ function CreateRoutineDialog({
       });
       onCreated();
     } catch (e) {
-      setErr(gateMessage(e));
+      if (notifyConversionGate(e) === null) {
+        setErr(gateMessage(e));
+      }
       setSubmitting(false);
     }
   }

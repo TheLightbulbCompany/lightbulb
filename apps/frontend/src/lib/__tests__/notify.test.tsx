@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 
 // Mock sonner so we can assert on toast calls without mounting a DOM Toaster.
@@ -7,17 +8,19 @@ const toastSuccess = vi.fn();
 const toastDefault = vi.fn();
 const toastLoading = vi.fn();
 const toastDismiss = vi.fn();
+const toastInfo = vi.fn();
 vi.mock("sonner", () => ({
   toast: Object.assign((...args: unknown[]) => toastDefault(...args), {
     error: (...args: unknown[]) => toastError(...args),
     success: (...args: unknown[]) => toastSuccess(...args),
     loading: (...args: unknown[]) => toastLoading(...args),
     dismiss: (...args: unknown[]) => toastDismiss(...args),
+    info: (...args: unknown[]) => toastInfo(...args),
   }),
 }));
 
 import { ReportButton } from "@/components/support/ReportButton";
-import { notify, notifySuccess, notifyError, notifyApiError, notifyLoading, notifyFailure, dismissNotification } from "../notify";
+import { notify, notifySuccess, notifyError, notifyApiError, notifyConversionGate, notifyLoading, notifyFailure, dismissNotification } from "../notify";
 import { ApiError } from "../api";
 
 /** The `opts` arg of the most recent toast.error call. */
@@ -31,6 +34,7 @@ beforeEach(() => {
   toastDefault.mockClear();
   toastLoading.mockClear();
   toastDismiss.mockClear();
+  toastInfo.mockClear();
 });
 
 describe("notifyError", () => {
@@ -71,6 +75,73 @@ describe("notifyApiError", () => {
     notifyApiError("nope", "fallback msg");
     expect(toastError.mock.calls.at(-1)![0]).toBe("fallback msg");
     expect(lastErrorOpts().action).toBeUndefined();
+  });
+});
+
+describe("notifyApiError — free-tier gates convert instead of erroring", () => {
+  const GATE_COPY = "You've used today's free usage. Resets at midnight UTC.";
+  const gateError = (code = "trial_daily_cap") =>
+    new ApiError(
+      402,
+      { detail: { blocked: true, code, message: GATE_COPY } },
+      GATE_COPY,
+      "req_402",
+    );
+
+  it("renders a sticky info toast with the gate copy and an Upgrade action", () => {
+    notifyApiError(gateError(), "Failed to post comment");
+    // Not a red Report-able error — the cap is the product working.
+    expect(toastError).not.toHaveBeenCalled();
+    const [msg, opts] = toastInfo.mock.calls.at(-1)!;
+    expect(msg).toBe(GATE_COPY);
+    expect(opts.duration).toBe(Infinity);
+  });
+
+  it("dedupes by gate code so repeated blocked clicks replace one toast", () => {
+    notifyApiError(gateError());
+    expect(toastInfo.mock.calls.at(-1)![1].id).toBe("gate:trial_daily_cap");
+  });
+
+  it("the Upgrade action is a client-side Link into the billing panel", () => {
+    // A <Link>, not window.location — a hard navigation would tear down the
+    // workspace shell at the moment the user is deciding whether to pay.
+    notifyApiError(gateError());
+    render(toastInfo.mock.calls.at(-1)![1].action as ReactElement);
+    const link = screen.getByRole("link", { name: "Upgrade" });
+    expect(link).toHaveAttribute("href", "/settings?panel=billing");
+  });
+
+  it("converts the routines subscription gate too", () => {
+    notifyApiError(gateError("routines_require_subscription"));
+    expect(toastInfo).toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("leaves PAID blocked codes on the reportable error path — Upgrade is wrong copy for a paying owner", () => {
+    notifyApiError(gateError("credits_required"));
+    expect(toastInfo).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalled();
+    // The gate copy still surfaces as the message (via the client's
+    // structured-detail promotion), just without the conversion framing.
+    expect(toastError.mock.calls.at(-1)![0]).toBe(GATE_COPY);
+  });
+
+  it("leaves non-blocked ApiErrors on the reportable error path", () => {
+    notifyApiError(new ApiError(402, { detail: "plain string detail" }, "plain string detail"));
+    expect(toastInfo).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalled();
+  });
+
+  // Call sites with their own INLINE error surface (RunDetailPanel, the
+  // routine dialogs) use the exported helper directly: toast when it's a
+  // gate (so they skip the inline line), null otherwise (inline as before).
+  it("notifyConversionGate returns the toast id for a gate and null otherwise", () => {
+    expect(notifyConversionGate(gateError())).toBe("gate:trial_daily_cap");
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(notifyConversionGate(gateError("credits_required"))).toBeNull();
+    expect(notifyConversionGate(new Error("boom"))).toBeNull();
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(toastError).not.toHaveBeenCalled();
   });
 });
 

@@ -84,7 +84,16 @@ function extractDetailMessage(body: unknown): string | undefined {
     body && typeof body === "object" && "detail" in body
       ? (body as { detail?: unknown }).detail
       : undefined;
-  return typeof detail === "string" ? detail : undefined;
+  if (typeof detail === "string") return detail;
+  // Structured gate bodies ({blocked, code, message} — the Teams trial 402s)
+  // carry their human copy on `message`. Without promoting it, ApiError falls
+  // back to "API <status>" and every toast shows that instead of the copy the
+  // backend wrote for exactly this moment.
+  const message =
+    detail && typeof detail === "object" && "message" in detail
+      ? (detail as { message?: unknown }).message
+      : undefined;
+  return typeof message === "string" && message ? message : undefined;
 }
 
 async function parseJsonBody(response: Response): Promise<unknown> {

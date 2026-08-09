@@ -2,6 +2,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { notifyConversionGate } from "@/lib/notify";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useRunTranscript } from "@/components/teams/runs/useRunTranscript";
 import { MessageList } from "@/components/chat/MessageList";
@@ -218,7 +219,11 @@ export function RunDetailPanel({ runId }: { runId: string }) {
       }
       await hb.mutate();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Action failed.");
+      // A trial-gate 402 becomes the upgrade toast; anything else stays on
+      // the panel's inline error line as before.
+      if (notifyConversionGate(e) === null) {
+        setActionError(e instanceof Error ? e.message : "Action failed.");
+      }
     } finally {
       setActing(null);
     }
@@ -241,7 +246,9 @@ export function RunDetailPanel({ runId }: { runId: string }) {
       await post(`/heartbeat-runs/${run.id}/watchdog-decisions`, body);
       await hb.mutate();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Watchdog decision failed.");
+      if (notifyConversionGate(e) === null) {
+        setActionError(e instanceof Error ? e.message : "Watchdog decision failed.");
+      }
     } finally {
       setWdActing(false);
     }

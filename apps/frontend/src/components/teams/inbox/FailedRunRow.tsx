@@ -2,6 +2,7 @@
 "use client";
 
 import { useState } from "react";
+import { notifyApiError } from "@/lib/notify";
 import { AlertTriangle } from "lucide-react";
 import { EditorialButton } from "@/components/teams/shell";
 import { useAgentWake } from "@/components/teams/inbox/hooks/useAgentWake";
@@ -44,7 +45,10 @@ export function FailedRunRow({
     try {
       await wakeAgent(run.agentId, { reason: "retry" });
       setRetry("done");
-    } catch {
+    } catch (e) {
+      // The phase alone says "error" with no why; the toast carries the
+      // reason (and, for a trial-gate 402, the upgrade prompt).
+      notifyApiError(e, "Couldn't retry the run");
       setRetry("error");
     }
   }

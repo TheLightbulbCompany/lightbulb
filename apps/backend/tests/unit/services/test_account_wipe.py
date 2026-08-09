@@ -323,11 +323,12 @@ async def test_bedrock_aips_step_passes_prefetched_arns_not_a_live_reread(wipe_m
     assert "aip_arns" in call.kwargs, "delete_owner_aips must be called with the aip_arns kwarg, not rely on a re-read"
     assert call.kwargs["aip_arns"], "aip_arns must be populated (non-empty) from the identifier snapshot"
 
-    # container_repo.get_by_owner_id is read exactly ONCE for the whole wipe
-    # (the upfront identifier snapshot in _read_identifiers) -- the
-    # bedrock_aips step does not trigger a second read of the containers row,
-    # proving it isn't depending on that row still being present.
-    wipe_mocks.container_get.assert_awaited_once_with(OWNER_ID)
+    # The containers row is read exactly TWICE for the whole wipe: the upfront
+    # identifier snapshot, and the gate-token step's strongly-consistent
+    # re-read. The bedrock_aips step adds no third read, proving it isn't
+    # depending on that row still being present.
+    assert [c.args for c in wipe_mocks.container_get.await_args_list] == [(OWNER_ID,), (OWNER_ID,)]
+    assert [c.kwargs for c in wipe_mocks.container_get.await_args_list] == [{}, {"consistent": True}]
 
 
 @pytest.mark.asyncio
@@ -417,8 +418,13 @@ async def test_skips_billing_dependent_steps_when_no_billing_row(wipe_mocks):
 
 @pytest.mark.asyncio
 async def test_skips_paperclip_steps_when_no_paperclip_row(wipe_mocks):
-    """No paperclip-companies row -> paperclip_company, paperclip_aurora_user,
-    and paperclip_row all skip; the rest of the wipe still runs."""
+    """No paperclip-companies row -> paperclip_company and
+    paperclip_aurora_user skip, and paperclip_row deletes no company row; the
+    rest of the wipe still runs.
+
+    paperclip_row itself does NOT skip: its pending-brief delete is attempted
+    unconditionally (the snapshot predates the Paperclip steps), so the step
+    runs and reports that it found nothing."""
     wipe_mocks.paperclip_get.return_value = None
 
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
@@ -426,10 +432,12 @@ async def test_skips_paperclip_steps_when_no_paperclip_row(wipe_mocks):
     by_system = {s.system: s for s in report.steps}
     assert by_system["paperclip_company"].status == "skipped"
     assert by_system["paperclip_aurora_user"].status == "skipped"
-    assert by_system["paperclip_row"].status == "skipped"
+    assert by_system["paperclip_row"].status == "ok"
+    assert by_system["paperclip_row"].detail == "no paperclip-companies or pending_brief row"
     wipe_mocks.paperclip_company_delete.assert_not_awaited()
     wipe_mocks.paperclip_user_delete_fn.assert_not_awaited()
     wipe_mocks.paperclip_row_delete.assert_not_awaited()
+    wipe_mocks.pending_brief_delete.assert_awaited_once_with(OWNER_ID)
     assert by_system["ecs_service"].status == "ok"
     assert by_system["clerk_user"].status == "ok"
 
@@ -444,7 +452,10 @@ async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks
     assert by_system["ecs_service"].status == "skipped"
     assert by_system["bedrock_aips"].status == "skipped"
     assert by_system["bedrock_role"].status == "skipped"
-    assert by_system["bedrock_gate_tokens"].status == "skipped"
+    # The gate-token step always runs (it re-reads the row itself) but finds
+    # nothing to delete when there is no row at all.
+    assert by_system["bedrock_gate_tokens"].status == "ok"
+    assert by_system["bedrock_gate_tokens"].detail == "no bedrock-gate token hash on containers row"
     wipe_mocks.gate_tokens_delete.assert_not_awaited()
     wipe_mocks.ecs_manager_stub.delete_user_service.assert_not_awaited()
     wipe_mocks.bedrock_aips_delete.assert_not_awaited()
@@ -873,9 +884,70 @@ async def test_gate_tokens_are_gone_before_delete_user_service_runs(wipe_mocks, 
 
 
 @pytest.mark.asyncio
-async def test_gate_token_step_is_a_clean_skip_for_a_non_bedrock_owner(wipe_mocks):
+async def test_deletes_a_gate_token_hash_the_up_front_snapshot_never_saw(wipe_mocks, real_ddb):
+    """Gap 1, staleness. ``_read_identifiers`` reads the containers row
+    eventually consistently AND before the Paperclip steps run, so a mint that
+    landed just before the wipe — or during it — is simply not in the snapshot.
+    The step re-reads strongly consistently and deletes the UNION.
+
+    Union, not replacement: a swap that lost its race drops hashes from the
+    tracked list while their rows stay live (``_swap_hash_pointer`` logs exactly
+    that), so the snapshot can be the only thing still naming them."""
+    for h in ("hash-current", "hash-old-1", "hash-old-2", "hash-minted-mid-wipe"):
+        _put_gate_row(real_ddb, h)
+    _put_gate_row(real_ddb, "hash-someone-else", owner_id="user_other")
+
+    # 1st read = the stale up-front snapshot; 2nd = the gate-token step's
+    # strongly-consistent re-read, by which time a mint has rotated the pointer
+    # and dropped two old hashes from tracking.
+    wipe_mocks.container_get.side_effect = [
+        _container_row(),
+        _container_row(
+            bedrock_gate_token_hash="hash-minted-mid-wipe",
+            bedrock_gate_superseded_hashes=["hash-current"],
+        ),
+    ]
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    step = {s.system: s for s in report.steps}["bedrock_gate_tokens"]
+    assert step.status == "ok", step
+    assert "deleted 4 of 4" in step.detail
+    assert _gate_rows(real_ddb) == {"hash-someone-else"}
+
+
+@pytest.mark.asyncio
+async def test_final_sweep_deletes_a_hash_minted_after_the_gate_token_step(wipe_mocks, real_ddb):
+    """Gap 1, the residual window. Nothing stops a mint landing between the
+    gate-token step's re-read and the containers row's death; at that point the
+    row is the only thing naming the new hash and the next instruction destroys
+    it. ``delete_user_service`` hands back the DELETE's own ALL_OLD image, and
+    the ecs_service step sweeps whatever it still named."""
+    _put_gate_row(real_ddb, "hash-current")
+    _put_gate_row(real_ddb, "hash-minted-after-the-step")
+    _put_gate_row(real_ddb, "hash-someone-else", owner_id="user_other")
+
+    async def _delete_user_service(owner_id):
+        return _container_row(
+            bedrock_gate_token_hash="hash-minted-after-the-step",
+            bedrock_gate_superseded_hashes=["hash-current"],
+        )
+
+    wipe_mocks.ecs_manager_stub.delete_user_service = AsyncMock(side_effect=_delete_user_service)
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    assert _gate_rows(real_ddb) == {"hash-someone-else"}
+    ecs_step = {s.system: s for s in report.steps}["ecs_service"]
+    assert ecs_step.status == "ok", ecs_step
+    assert "swept 1 gate-token row(s)" in ecs_step.detail
+
+
+@pytest.mark.asyncio
+async def test_gate_token_step_is_a_clean_no_op_for_a_non_bedrock_owner(wipe_mocks):
     """chatgpt_oauth / byo_key owners never mint a gate token — their
-    containers row carries neither attribute. That is a skip, not a failure."""
+    containers row carries neither attribute. That is a clean no-op, not a
+    failure, and nothing is deleted."""
     row = _container_row()
     row.pop("bedrock_gate_token_hash")
     row.pop("bedrock_gate_superseded_hashes")
@@ -884,7 +956,8 @@ async def test_gate_token_step_is_a_clean_skip_for_a_non_bedrock_owner(wipe_mock
     report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
 
     step = {s.system: s for s in report.steps}["bedrock_gate_tokens"]
-    assert step.status == "skipped"
+    assert step.status == "ok"
+    assert step.detail == "no bedrock-gate token hash on containers row"
     assert step.error is None
     wipe_mocks.gate_tokens_delete.assert_not_awaited()
 
@@ -903,6 +976,32 @@ async def test_wipe_deletes_the_owners_pending_brief_and_leaves_others_alone(wip
     assert step.status == "ok", step
     assert "pending_brief row deleted" in step.detail
     assert _paperclip_keys(real_ddb) == {"__pending_brief__:user_other"}
+
+
+@pytest.mark.asyncio
+async def test_wipe_deletes_a_pending_brief_written_after_the_snapshot(wipe_mocks, real_ddb):
+    """Gap 2, staleness. The snapshot is taken before the Paperclip steps run,
+    so an onboarding submission that finishes during the wipe leaves
+    ``ids.pending_brief`` None while its item sits in the table. Gating the
+    delete on that snapshot recreated the exact residue this step removes; the
+    delete is idempotent, so it is always attempted."""
+    _put_pending_brief(real_ddb, "user_other")
+
+    # The submission lands mid-wipe — hung off the container teardown, which is
+    # simply a step known to run after the up-front snapshot and before this one.
+    async def _teardown_that_races_a_submission(owner_id):
+        _put_pending_brief(real_ddb, OWNER_ID)
+
+    wipe_mocks.ecs_manager_stub.delete_user_service = AsyncMock(side_effect=_teardown_that_races_a_submission)
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    assert _paperclip_keys(real_ddb) == {"__pending_brief__:user_other"}
+    step = {s.system: s for s in report.steps}["paperclip_row"]
+    assert step.status == "ok", step
+    # Reported off what DynamoDB actually removed, not off the snapshot, which
+    # said there was nothing there.
+    assert "pending_brief row deleted" in step.detail
 
 
 @pytest.mark.asyncio

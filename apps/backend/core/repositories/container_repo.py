@@ -1721,9 +1721,21 @@ async def update_error(owner_id: str, error: str) -> dict | None:
     )
 
 
-async def delete(owner_id: str) -> None:
+async def delete(owner_id: str) -> dict | None:
+    """Delete the owner's containers row; return the item as it was, or None.
+
+    ``ALL_OLD`` because this row is the ONLY handle on some of the owner's
+    other state — most sharply the bedrock-gate token hashes, whose table is
+    keyed on the hash with no owner index. A caller tearing an account down
+    (``core.services.account_wipe``) reads those off the returned image and
+    sweeps them: anything written onto the row after that caller last read it
+    is otherwise unreachable the instant this delete lands.
+    """
     table = _get_table()
-    await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+    resp = await run_in_thread(table.delete_item, Key={"owner_id": owner_id}, ReturnValues="ALL_OLD")
+    # ``or None``: DynamoDB omits Attributes when there was no row, but moto
+    # returns an empty map — one answer for "there was nothing here" either way.
+    return resp.get("Attributes") or None
 
 
 async def stamp_email_cold_wake(owner_id: str) -> None:

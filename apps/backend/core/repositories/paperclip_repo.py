@@ -1955,8 +1955,9 @@ class PaperclipRepo:
         # The funnel is about to re-render for every tab on this company.
         publish_status_changed(owner_broadcast_id or owner_id)
 
-    async def delete_pending_brief(self, owner_id: str) -> None:
+    async def delete_pending_brief(self, owner_id: str) -> bool:
         """Retire a pending answer once it has demonstrably been fulfilled.
+        Returns whether an item was actually there.
 
         Callers must be sure fulfilment actually happened -- see
         ``reconcile_pending_brief``, where only the drain that WON the claim
@@ -1965,11 +1966,18 @@ class PaperclipRepo:
         Friday's kickoff was observed to deliver). Deleting on weaker evidence
         loses the brief in exactly the case this mechanism exists to survive:
         the winner can still fail and roll everything back.
+
+        The return value exists for callers that must attempt the delete
+        UNCONDITIONALLY (``core.services.account_wipe``, whose existence
+        snapshot is read before the item it is deleting could have been
+        written) and still report what they actually removed.
         """
-        await run_in_thread(
+        resp = await run_in_thread(
             self._table().delete_item,
             Key={"user_id": _pending_brief_key(owner_id)},
+            ReturnValues="ALL_OLD",
         )
+        return bool(resp.get("Attributes"))
 
     async def scan_purge_due(self, now: datetime) -> list[PaperclipCompany]:
         """Return disabled rows whose ``scheduled_purge_at <= now`` via the GSI.

@@ -22,13 +22,13 @@ export async function MarketplaceSection() {
               the marketplace
             </div>
             <h2 className="ld-h2" data-ld-reveal>
-              Staff up in <em>one click.</em>
+              Hire specialists in <em>one click.</em>
             </h2>
             <p className="ld-lede" data-ld-reveal>
-              A growing storefront of production-grade agents you can drop
-              straight into your business. Need a sales rep, a bookkeeper, a
-              researcher? Hire one and it starts working today.{" "}
-              <strong>Curated, vetted, and yours to own.</strong>
+              Browse ready-to-hire AI agents for the work already on your desk:
+              sales, support, research, finance, scheduling, and more. Pick the
+              help you need, add it to your team, and let Friday coordinate what
+              happens next. <strong>Simple to try, easy to change.</strong>
             </p>
           </div>
           <Link href="/marketplace" className="ld-mkt-link" data-ld-reveal>

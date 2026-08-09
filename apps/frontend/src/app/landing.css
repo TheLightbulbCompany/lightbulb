@@ -413,6 +413,12 @@
 @media (prefers-reduced-motion: reduce) {
   .ld-ticker-track { animation: none; }
   .ld-scroll-cue .ld-cue-line::after { animation: none; }
+  .ld-const-node,
+  .ld-const svg line,
+  .ld-listing,
+  .ld-agent-card {
+    transition: none;
+  }
 }
 
 /* -------------------------------------------------------------- features */
@@ -730,9 +736,9 @@
 
 .ld-const {
   position: relative;
-  height: 420px;
+  height: 480px;
   margin: 0 auto;
-  max-width: 860px;
+  max-width: 920px;
 }
 
 .ld-const svg {
@@ -745,11 +751,16 @@
 .ld-const svg line {
   stroke: var(--edge);
   stroke-width: 1;
-  transition: stroke 0.5s ease;
+  transition: stroke 0.5s ease, opacity 0.3s ease, stroke-width 0.3s ease;
 }
 
 .ld-const svg line.active {
   stroke: var(--forest-soft);
+  stroke-width: 1.8;
+}
+
+.ld-const svg line.is-dimmed {
+  opacity: 0.24;
 }
 
 .ld-const-node {
@@ -759,12 +770,41 @@
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  transition: opacity 0.25s ease, filter 0.25s ease, transform 0.25s ease;
+}
+
+.ld-const-node--agent {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.ld-const-node--agent:focus-visible .ld-puck,
+.ld-const-node--agent.is-active .ld-puck {
+  outline: 2px solid var(--forest-soft);
+  outline-offset: 4px;
+  border-color: rgba(6, 64, 43, 0.35);
+  box-shadow: 0 16px 38px rgba(6, 64, 43, 0.18);
+}
+
+.ld-const-node.is-dimmed {
+  opacity: 0.34;
+  filter: saturate(0.7);
+}
+
+.ld-const-node--agent.is-active {
+  z-index: 4;
+  transform: translate(-50%, -50%) scale(1.04);
 }
 
 .ld-puck {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
   background: var(--cream);
   border: 1px solid var(--edge);
   display: flex;
@@ -818,6 +858,107 @@
   border-radius: 50%;
   background: var(--forest-soft);
   pointer-events: none;
+}
+
+.ld-agent-card {
+  position: absolute;
+  z-index: 5;
+  width: min(280px, calc(100% - 28px));
+  padding: 18px 18px 16px;
+  border: 1px solid rgba(6, 64, 43, 0.16);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 68px rgba(26, 26, 26, 0.14);
+  color: var(--ink);
+  pointer-events: auto;
+}
+
+.ld-agent-card--left {
+  right: clamp(12px, 9%, 80px);
+}
+
+.ld-agent-card--right {
+  left: clamp(12px, 9%, 80px);
+}
+
+.ld-agent-card--center {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.ld-agent-card--below {
+  top: 24px;
+}
+
+.ld-agent-card--above {
+  bottom: 24px;
+}
+
+.ld-agent-eyebrow {
+  margin: 0 0 8px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--forest);
+}
+
+.ld-agent-card h3 {
+  margin: 0 0 8px;
+  font-family: var(--font-lora-serif), Georgia, serif;
+  font-size: 21px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.ld-agent-card h3 span {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--forest);
+}
+
+.ld-agent-card p:not(.ld-agent-eyebrow) {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.ld-agent-card a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--forest);
+}
+
+.ld-agent-card a:hover,
+.ld-agent-card a:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ld-agent-roster-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--forest);
+}
+
+.ld-agent-roster-note::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--forest-soft);
 }
 
 /* -------------------------------------------------- teams inbox mock */
@@ -1863,7 +2004,30 @@
   }
 
   .ld-const {
-    height: 360px;
+    height: 390px;
+  }
+
+  .ld-agent-card {
+    left: 14px;
+    right: 14px;
+    bottom: 14px;
+    top: auto;
+    width: auto;
+    transform: none;
+  }
+
+  .ld-agent-card--left,
+  .ld-agent-card--right,
+  .ld-agent-card--center {
+    left: 14px;
+    right: 14px;
+    transform: none;
+  }
+
+  .ld-agent-card--below,
+  .ld-agent-card--above {
+    top: auto;
+    bottom: 14px;
   }
 
   .ld-puck {
@@ -1938,7 +2102,7 @@
   }
 
   .ld-const {
-    height: 320px;
+    height: 350px;
   }
 }
 

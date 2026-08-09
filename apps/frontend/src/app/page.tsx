@@ -18,15 +18,15 @@ export default function LandingPage() {
         <ScrollManager />
         <Navbar />
         <Hero />
-        <div className="ld-rule">
-          <span>org_chart</span>
-        </div>
         <Team />
+        <div className="ld-rule">
+          <span>marketplace_next_hires</span>
+        </div>
+        <MarketplaceSection />
         <div className="ld-rule">
           <span>cloud_sandbox</span>
         </div>
         <Isolation />
-        <MarketplaceSection />
         <div className="ld-rule">
           <span>what_you_get</span>
         </div>

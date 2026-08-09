@@ -10,6 +10,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
+import { notifyApiError } from "@/lib/notify";
 import Link from "next/link";
 import {
   Popover,
@@ -302,8 +303,10 @@ function MonitorRow({
       setCheckState("done");
       // Reset the label after a beat so the button reads "Check now" again.
       window.setTimeout(() => setCheckState("idle"), 2000);
-    } catch {
-      // Tolerate failures — drop back to idle so the user can retry.
+    } catch (e) {
+      // Surface the failure (a trial-gate 402 renders the upgrade toast) —
+      // a silent drop back to idle read as "the button did nothing".
+      notifyApiError(e, "Couldn't run the check");
       setCheckState("idle");
     }
   };

@@ -19,6 +19,7 @@
 "use client";
 
 import { useState } from "react";
+import { notifyConversionGate } from "@/lib/notify";
 import { ChevronRight, History, KeyRound, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -265,6 +266,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
 
   // One shared runner for every mutation: clears the last error, flips busy,
   // surfaces a 402/5xx inline (via gateMessage) instead of an unhandled reject.
+  // A trial-gate 402 renders the upgrade toast instead of the inline line.
   async function run(fn: () => Promise<void>): Promise<boolean> {
     setBusy(true);
     setActionError(null);
@@ -272,7 +274,9 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
       await fn();
       return true;
     } catch (e) {
-      setActionError(gateMessage(e));
+      if (notifyConversionGate(e) === null) {
+        setActionError(gateMessage(e));
+      }
       return false;
     } finally {
       setBusy(false);

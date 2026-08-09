@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { notifyConversionGate } from "@/lib/notify";
 import { ArrowUpDown, Check, Repeat } from "lucide-react";
 import {
   EditorialButton,
@@ -631,7 +632,10 @@ function RunRoutineDialog({
     } catch (e) {
       // Surface the failure in the dialog rather than leaving the user with a
       // button that just flips back to "Run" — mirrors CreateRoutineDialog.
-      setErr(e instanceof Error ? e.message : String(e));
+      // A trial-gate 402 renders the upgrade toast instead of dialog text.
+      if (notifyConversionGate(e) === null) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
     }
   }
 
@@ -837,7 +841,9 @@ function CreateRoutineDialog({
       });
       onCreated();
     } catch (e) {
-      setErr(gateMessage(e));
+      if (notifyConversionGate(e) === null) {
+        setErr(gateMessage(e));
+      }
       setSubmitting(false);
     }
   }

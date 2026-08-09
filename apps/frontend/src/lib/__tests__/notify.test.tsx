@@ -20,7 +20,7 @@ vi.mock("sonner", () => ({
 }));
 
 import { ReportButton } from "@/components/support/ReportButton";
-import { notify, notifySuccess, notifyError, notifyApiError, notifyLoading, notifyFailure, dismissNotification } from "../notify";
+import { notify, notifySuccess, notifyError, notifyApiError, notifyConversionGate, notifyLoading, notifyFailure, dismissNotification } from "../notify";
 import { ApiError } from "../api";
 
 /** The `opts` arg of the most recent toast.error call. */
@@ -130,6 +130,18 @@ describe("notifyApiError — free-tier gates convert instead of erroring", () =>
     notifyApiError(new ApiError(402, { detail: "plain string detail" }, "plain string detail"));
     expect(toastInfo).not.toHaveBeenCalled();
     expect(toastError).toHaveBeenCalled();
+  });
+
+  // Call sites with their own INLINE error surface (RunDetailPanel, the
+  // routine dialogs) use the exported helper directly: toast when it's a
+  // gate (so they skip the inline line), null otherwise (inline as before).
+  it("notifyConversionGate returns the toast id for a gate and null otherwise", () => {
+    expect(notifyConversionGate(gateError())).toBe("gate:trial_daily_cap");
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(notifyConversionGate(gateError("credits_required"))).toBeNull();
+    expect(notifyConversionGate(new Error("boom"))).toBeNull();
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(toastError).not.toHaveBeenCalled();
   });
 });
 

@@ -143,6 +143,30 @@ function UpgradeLink({ toastId }: { toastId: string }) {
 }
 
 /**
+ * Show the conversion toast when `err` is a free-tier gate 402; returns the
+ * toast id, or null when `err` is anything else. The single conversion
+ * surface for every guarded Teams action. notifyApiError calls this first, so
+ * plain catch blocks get it for free; call sites that render errors INLINE
+ * (RunDetailPanel, the routine dialogs) call it directly and skip their
+ * inline surface when it fires — the gate copy should convert, not read as a
+ * second failure message.
+ */
+export function notifyConversionGate(err: unknown): string | number | null {
+  if (!(err instanceof ApiError)) return null;
+  const gate = blockedGateDetail(err.body);
+  if (!gate || !gate.code || !CONVERSION_GATE_CODES.has(gate.code)) return null;
+  // One toast per gate, however many blocked clicks — sonner replaces by id,
+  // so a user retrying doesn't stack identical upgrade prompts.
+  const id = `gate:${gate.code}`;
+  toast.info(gate.message || err.message, {
+    id,
+    duration: Infinity,
+    action: <UpgradeLink toastId={id} />,
+  });
+  return id;
+}
+
+/**
  * Structured `{blocked: true, code, message}` detail — the shape every trial /
  * subscription gate 402 in the system uses (see routers/teams/_guards.py).
  */
@@ -173,17 +197,8 @@ function blockedGateDetail(body: unknown): { code?: string; message?: string } |
  */
 export function notifyApiError(err: unknown, fallback = "Something went wrong", opts?: NotifyOptions): string | number {
   if (err instanceof ApiError) {
-    const gate = blockedGateDetail(err.body);
-    if (gate && gate.code && CONVERSION_GATE_CODES.has(gate.code)) {
-      // One toast per gate, however many blocked clicks — sonner replaces
-      // by id, so a user retrying doesn't stack identical upgrade prompts.
-      const id = opts?.dedupeKey ?? `gate:${gate.code}`;
-      return toast.info(gate.message || err.message || fallback, {
-        id,
-        duration: Infinity,
-        action: <UpgradeLink toastId={id} />,
-      });
-    }
+    const gateToast = notifyConversionGate(err);
+    if (gateToast !== null) return gateToast;
     return notifyError(err.message || fallback, {
       ...opts,
       requestId: err.requestId,

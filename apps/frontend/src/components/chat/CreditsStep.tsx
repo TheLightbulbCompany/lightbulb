@@ -26,6 +26,15 @@ const PRESET_AMOUNTS_CENTS = CREDIT_PRESETS_CENTS;
 // happy path so a normally-collecting charge advances the wizard first.
 const REQUESTED_TIMEOUT_MS = 90_000;
 
+// Same backstop, same reason, for the bundled-grant wait. The money is ALREADY
+// collected by the subscription Checkout at this point, so a grant that never
+// lands (a persistent Metronome failure rather than a transient ordering race)
+// would otherwise park the owner on a spinner forever with no indication that
+// anything is wrong and no route to support. Stripe's redelivery + the
+// reconciling meter make a permanent stall unlikely, which is why this
+// surfaces a message rather than retrying harder.
+const BUNDLED_GRANT_TIMEOUT_MS = 90_000;
+
 // Onboarding design system — mirrors the stepper branch this step renders
 // inside (cream page, forest CTAs, Lora headings, DM Sans body). Fonts ride
 // the next/font CSS vars via inline styles rather than Tailwind font classes,
@@ -68,6 +77,7 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
   const [requested, setRequested] = useState(false);
   const [optIn, setOptIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [bundledGrantSlow, setBundledGrantSlow] = useState(false);
   const advancedRef = useRef(false);
   const searchParams = useSearchParams();
   // Returning from a cancelled Checkout: surface it instead of a blank form.
@@ -161,6 +171,16 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
     }
   };
 
+  // Bundled-grant backstop — parity with the one-click latch above.
+  useEffect(() => {
+    if (!awaitingBundledGrant) return;
+    const t = setTimeout(() => {
+      if (advancedRef.current) return;
+      setBundledGrantSlow(true);
+    }, BUNDLED_GRANT_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [awaitingBundledGrant]);
+
   // Already paid for in the subscription Checkout — wait for the grant, never
   // offer a second purchase. The balance poll above still runs, so this
   // advances on its own; the refresh button is only for impatience.
@@ -174,6 +194,13 @@ export function CreditsStep({ onComplete, awaitingBundledGrant = false }: Props)
           Your payment went through. The credits are being added to your
           balance — this usually takes a few seconds and continues on its own.
         </p>
+        {bundledGrantSlow && (
+          <p className="text-sm text-[var(--danger)]">
+            This is taking longer than expected. Your payment was received and
+            the credits will still land — if this doesn&apos;t clear shortly,
+            contact support and we&apos;ll finish it for you.
+          </p>
+        )}
         <button onClick={() => void refresh()} className={PRIMARY_BUTTON} style={SANS_FONT}>
           Check again
         </button>

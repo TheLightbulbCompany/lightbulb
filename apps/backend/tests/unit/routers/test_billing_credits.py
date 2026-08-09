@@ -731,6 +731,43 @@ async def test_subscription_checkout_without_credits_grants_nothing():
 
 
 @pytest.mark.asyncio
+async def test_bundled_grant_defers_when_the_ledger_is_not_ready_yet():
+    """The deferred-and-raise path, exercised for real.
+
+    Every other test here patches ensure_metronome_customer to a truthy id, so
+    the branch that answers the ordering race is never run — the same
+    assert-against-a-mock-that-assumes-the-contract shape that let the
+    session-metadata bug ship. A converting owner is still trial_local when
+    checkout.session.completed can arrive, so the ledger genuinely may not
+    exist: granting anyway raises FundingError deep inside Metronome, while
+    raising HERE is deliberate so Stripe redelivers and the retry re-attempts
+    provisioning. What must never happen is a silent 200 with the money taken.
+    """
+    from core.services.stripe_webhook_handlers import handle_checkout_session
+
+    grant = AsyncMock(return_value=None)
+    with (
+        patch("core.billing.metronome_funding.grant_prepaid_credits", new=grant),
+        patch("core.billing.metronome_provisioning.ensure_metronome_customer", new=AsyncMock(return_value=None)),
+    ):
+        with pytest.raises(Exception):
+            await handle_checkout_session(
+                {
+                    "data": {
+                        "object": {
+                            "id": "cs_sub_notready",
+                            "payment_status": "paid",
+                            "metadata": {"owner_id": "u_9", "credits_cents": "2000"},
+                        }
+                    }
+                },
+                MagicMock(),
+            )
+    # The money is collected; the balance must not be quietly skipped.
+    grant.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_credits_not_granted_until_payment_collects():
     """Delayed methods (ACH) fire completed with payment_status=unpaid, then
     async_payment_succeeded later. Granting on the first would fund a balance

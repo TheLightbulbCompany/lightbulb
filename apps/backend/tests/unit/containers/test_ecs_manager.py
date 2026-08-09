@@ -4219,6 +4219,133 @@ class TestProvisionLeaseFencing:
             manager._ecs.create_service.assert_not_called()
             container_repo.release_provision_to_error.assert_not_awaited()
 
+    # --- the restart branch (service exists, desiredCount == 0) --------------
+    #
+    # This branch never calls create_user_service, so its writes are fenced by
+    # _provision_user_container_inner's own claim. The task-def write is the
+    # widest window of the lot: the checkpoint before the config write is
+    # separated from it by the plan lookup, the task-def register and the ECS
+    # update_service call.
+
+    async def _seed_restart_row(self, container_repo, owner):
+        """Claim the row and give it the shape the restart branch needs: an
+        ACTIVE service at desiredCount 0, with an access point already on
+        record so the branch re-registers rather than falling back to
+        start_user_service."""
+        claim = await container_repo.try_claim_provision(owner, claim_id="claim-loser")
+        await container_repo.update_fields(
+            owner,
+            {
+                "service_name": f"openclaw-{owner}",
+                "gateway_token": "gw-existing",
+                "hook_token": "hook-existing",
+                "access_point_id": "fsap-existing",
+                "task_definition_arn": "arn:old",
+            },
+        )
+        return claim
+
+    def _stub_restart_branch(self, manager, monkeypatch, *, register):
+        monkeypatch.setattr(
+            manager,
+            "_service_exists",
+            MagicMock(return_value={"status": "ACTIVE", "desiredCount": 0, "runningCount": 0}),
+        )
+        monkeypatch.setattr(manager, "write_user_configs", AsyncMock())
+        monkeypatch.setattr(manager, "_size_for_owner", AsyncMock(return_value=("1024", "4096")))
+        monkeypatch.setattr(manager, "_register_task_definition", register)
+        monkeypatch.setattr(manager, "_deregister_task_definition", MagicMock())
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.mint_gate_token", AsyncMock(return_value="gate-token"))
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.hash_token", MagicMock(return_value="gate-hash"))
+        monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", AsyncMock())
+        monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", MagicMock(return_value="https://gate"))
+        manager._ecs.update_service = MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_takeover_while_re_registering_cannot_stamp_the_task_def_arn(self, manager, monkeypatch):
+        """The restart branch's task-def write. A takeover landing between the
+        pre-config checkpoint and this write must not leave the winner's row
+        naming the loser's revision — the winner's service never runs it."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await self._seed_restart_row(container_repo, "user_restart")
+            state: dict = {}
+
+            def register_then_takeover(*args, **kwargs):
+                async def winner():
+                    won = await container_repo.takeover_provision("user_restart")
+                    await container_repo.update_container_leased(
+                        "user_restart", won, {"task_definition_arn": "arn:winner"}
+                    )
+                    return won
+
+                state["winner"] = _run_off_loop(winner)
+                return "arn:loser"
+
+            self._stub_restart_branch(manager, monkeypatch, register=register_then_takeover)
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.provision_user_container("user_restart", provider_choice="bedrock_claude", claim_id=claim)
+
+            row = await container_repo.get_by_owner_id("user_restart")
+            assert row["task_definition_arn"] == "arn:winner"
+            assert row["provision_claim_id"] == state["winner"] != claim
+            # The loser stopped AT the write, so it never went on to deregister
+            # the revision the row used to name.
+            manager._deregister_task_definition.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_restart_branch_with_the_lease_held_writes_the_new_task_def_arn(self, manager, monkeypatch):
+        """The over-fencing guard: no takeover, so the fenced write lands and
+        the row names this run's revision."""
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await self._seed_restart_row(container_repo, "user_restart_ok")
+            self._stub_restart_branch(manager, monkeypatch, register=MagicMock(return_value="arn:new"))
+
+            await manager.provision_user_container("user_restart_ok", provider_choice="bedrock_claude", claim_id=claim)
+
+            row = await container_repo.get_by_owner_id("user_restart_ok")
+            assert row["task_definition_arn"] == "arn:new"
+            assert row["substatus"] == "restarting"
+            assert row["status"] == "provisioning"
+            # The fenced write refreshes the lease rather than releasing it.
+            assert row["provision_claim_id"] == claim
+            manager._ecs.update_service.assert_called_once()
+            assert manager._ecs.update_service.call_args.kwargs["desiredCount"] == 1
+            manager._deregister_task_definition.assert_called_once_with("arn:old")
+
+    @pytest.mark.asyncio
+    async def test_superseded_task_def_write_does_not_release_the_row_to_error(self, manager, monkeypatch):
+        """The escape path for THIS site specifically. Unlike its siblings it
+        sits inside a try whose `except Exception` rebrands anything it catches
+        as an EcsManagerError — which would send provision_user_container down
+        its classify-and-release path instead of its superseded branch."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await self._seed_restart_row(container_repo, "user_restart_err")
+            state: dict = {}
+
+            def register_then_takeover(*args, **kwargs):
+                state["winner"] = _run_off_loop(lambda: container_repo.takeover_provision("user_restart_err"))
+                return "arn:loser"
+
+            self._stub_restart_branch(manager, monkeypatch, register=register_then_takeover)
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.provision_user_container(
+                    "user_restart_err", provider_choice="bedrock_claude", claim_id=claim
+                )
+
+            row = await container_repo.get_by_owner_id("user_restart_err")
+            assert row["status"] == "provisioning"
+            assert row["substatus"] != "provision_failed"
+            assert "last_error" not in row
+            assert row["provision_claim_id"] == state["winner"] != claim
+            # Not merely a no-op release — the loser must never REACH it.
+            container_repo.release_provision_to_error.assert_not_awaited()
+
     def _describe(self, *, desired=1, running=0, rollout=None, status="ACTIVE"):
         svc = {"status": status, "desiredCount": desired, "runningCount": running}
         if rollout is not None:

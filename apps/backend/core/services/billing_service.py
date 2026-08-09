@@ -422,6 +422,20 @@ async def _build_subscription_checkout(
         allow_promotion_codes=True,
         automatic_tax={"enabled": True},
         customer_update={"address": "auto"},
+        # The SAME dict on BOTH, because Stripe puts them on different objects
+        # and two different webhooks read them:
+        #   subscription_data.metadata → the created Subscription, which is
+        #     what customer.subscription.* carries (handle_subscription_state).
+        #   metadata                   → the Session itself, which is what
+        #     checkout.session.completed carries (handle_checkout_session).
+        # Only subscription_data was set here, so any Session-reading handler
+        # saw {}. That was invisible until the bedrock_claude Checkout started
+        # bundling starter credits: the one-time line item was charged and
+        # `credits_cents` never reached the grant, so the customer paid for a
+        # balance that was never funded. The standalone top-up path never hit
+        # this because it calls Session.create directly with top-level
+        # metadata — which is exactly why it worked and this did not.
+        metadata=metadata,
         subscription_data=subscription_data,
         idempotency_key=idempotency_key,
         # Stripe's minimum is 30 minutes; the default is 24 hours. A short

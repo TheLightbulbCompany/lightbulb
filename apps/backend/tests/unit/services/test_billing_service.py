@@ -685,6 +685,47 @@ class TestBuildSubscriptionCheckoutSharedSpine:
         assert keys[0] != keys[1]
 
     @pytest.mark.asyncio
+    async def test_credits_metadata_lands_on_the_SESSION_not_only_the_subscription(self, monkeypatch):
+        """Mocks the real Stripe SDK boundary, not our own builder.
+
+        Stripe puts `subscription_data.metadata` on the created SUBSCRIPTION and
+        top-level `metadata` on the SESSION, and they surface in different
+        webhooks: customer.subscription.* carries the former,
+        checkout.session.completed carries the latter. handle_checkout_session
+        reads the SESSION's metadata, so credits bundled into a subscription
+        Checkout are granted only if `credits_cents` is on the top-level dict.
+
+        The builder previously set subscription_data alone. Every other test
+        here monkeypatches _build_subscription_checkout and asserts on the
+        metadata passed INTO it, so all of them passed while the real call
+        omitted the field — the customer was charged for the credits line item
+        and the balance was never funded. This test exists at the SDK boundary
+        precisely because that is the only place the bug was visible.
+        """
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        captured = {}
+
+        def _fake_create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock(url="https://checkout/flat", id="cs_flat")
+
+        monkeypatch.setattr(billing_service.stripe.checkout.Session, "create", _fake_create)
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+        ):
+            await billing_service.create_flat_fee_checkout(
+                owner_id="u_1", provider_choice="bedrock_claude", credits_cents=5000
+            )
+
+        # What checkout.session.completed will actually carry.
+        assert captured["metadata"]["credits_cents"] == "5000"
+        assert captured["metadata"]["owner_id"] == "u_1"
+        # And the subscription copy stays, for customer.subscription.*.
+        assert captured["subscription_data"]["metadata"]["provider_choice"] == "bedrock_claude"
+
+    @pytest.mark.asyncio
     async def test_team_checkout_uses_seat_price_and_quantity(self, monkeypatch):
         """Team checkout emits [base x1, seat xN] — a solo admin is $50 + 1x$20."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_TEAM_SEAT_PRICE_ID", "price_seat_test")

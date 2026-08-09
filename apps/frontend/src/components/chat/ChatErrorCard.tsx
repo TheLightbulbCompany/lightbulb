@@ -215,8 +215,15 @@ export function ChatErrorCard({ message, code, onRetry }: ChatErrorCardProps) {
   // this too, with a comment saying to enforce it where the consequence is.
   // This is a new consequence site. Org context falls through to the linked
   // card below, whose /settings target renders TeamBillingCard correctly.
-  const { organization } = useOrganization();
-  const paywallHeading = organization ? undefined : code ? TRIAL_PAYWALL_HEADINGS[code] : undefined;
+  // `isLoaded` matters, not just `organization`: Clerk reports
+  // `organization: null` while it is still loading, so keying on the value
+  // alone treats "don't know yet" as "no org" and would render the personal
+  // picker for one paint — the path an org admin must not take. Withhold the
+  // paywall until Clerk has actually answered; the linked card below is the
+  // safe thing to show in the meantime.
+  const { organization, isLoaded } = useOrganization();
+  const paywallHeading =
+    isLoaded && !organization && code ? TRIAL_PAYWALL_HEADINGS[code] : undefined;
   if (paywallHeading) {
     return (
       <div

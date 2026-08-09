@@ -9,12 +9,12 @@ import { Logo } from "@/components/Logo";
 import { capture } from "@/lib/analytics";
 
 const IN_PAGE_NAV_ITEMS = [
-  { id: "home", label: "Home" },
-  { id: "team", label: "Team" },
-  { id: "marketplace", label: "Marketplace" },
-  { id: "features", label: "Features" },
-  { id: "pricing", label: "Pricing" },
-  { id: "faq", label: "FAQ" },
+  { id: "home", label: "Home", suffix: null },
+  { id: "team", label: "Team", suffix: null },
+  { id: "marketplace", label: "Marketplace", suffix: null },
+  { id: "features", label: "Features", suffix: null },
+  { id: "pricing", label: "Pricing", suffix: null },
+  { id: "faq", label: "FAQ", suffix: null },
   { id: "goosetown", label: "GooseTown", suffix: <span className="nav-alpha">alpha</span> },
 ] as const;
 

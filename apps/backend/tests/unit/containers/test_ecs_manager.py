@@ -4,6 +4,9 @@ Uses mocked boto3 clients and container_repo -- no real AWS or
 DynamoDB required.
 """
 
+import asyncio
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -39,6 +42,51 @@ _REAL_LEASED = _container_repo_module.update_container_leased
 _REAL_TAKEOVER = _container_repo_module.takeover_provision
 _REAL_GET_BY_OWNER = _container_repo_module.get_by_owner_id
 _REAL_PERSIST_HASH = _bedrock_gate_tokens_module.persist_gate_token_hash
+
+
+@contextmanager
+def _real_containers_table(monkeypatch):
+    """A moto-backed containers table with the REAL lease primitives put back
+    (the autouse fixture stubs them), so a test can assert on the row DynamoDB
+    actually holds rather than on mock calls. Yields the repo module."""
+    import boto3
+    from moto import mock_aws
+
+    from core.repositories import container_repo
+
+    with mock_aws():
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        ddb.create_table(
+            TableName="test-containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr("core.dynamodb._table_prefix", "test-")
+        monkeypatch.setattr("core.dynamodb._dynamodb_resource", ddb)
+        monkeypatch.setattr("core.repositories.container_repo.update_container_leased", _REAL_LEASED)
+        monkeypatch.setattr("core.repositories.container_repo.takeover_provision", _REAL_TAKEOVER)
+        # _start_guards_clear stubs the row read to None, which would blind
+        # every assertion (and the real upsert's CAS snapshot).
+        monkeypatch.setattr("core.repositories.container_repo.get_by_owner_id", _REAL_GET_BY_OWNER)
+        yield container_repo
+
+
+def _run_off_loop(coro_factory):
+    """Run an async repo call from a SYNCHRONOUS seam. ``_create_access_point``
+    and ``_register_task_definition`` are plain sync calls inside the already-
+    running test loop, and they are the only hooks that sit between a
+    checkpoint and the row write it is supposed to be fencing — so the
+    interleaved takeover gets its own loop on a worker thread."""
+    out: dict = {}
+
+    def run():
+        out["result"] = asyncio.run(coro_factory())
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+    return out["result"]
 
 
 @pytest.fixture(autouse=True)
@@ -4001,6 +4049,175 @@ class TestProvisionLeaseFencing:
             await manager.create_user_service("user_d", "gw-token")
 
         leased.assert_not_awaited()
+
+    # --- the row writes BETWEEN the checkpoints ------------------------------
+    #
+    # The checkpoints fence the moments they run; the substatus/artifact row
+    # writes that follow them used to go through the unfenced `update_fields`
+    # (conditioned only on the row existing), so a run superseded between two
+    # checkpoints still stamped its own access_point_id / task_definition_arn
+    # over the winner's row — a row describing a mixture of two provisions.
+
+    @pytest.mark.asyncio
+    async def test_takeover_at_the_access_point_write_cannot_stamp_the_winners_row(self, manager, monkeypatch):
+        """Takeover lands after the pre-artifact checkpoint, while the loser's
+        EFS access point is being created. The loser's efs_created write must
+        refuse — the winner's access point stays on the row."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await container_repo.try_claim_provision("user_efs", claim_id="claim-loser")
+            state: dict = {}
+
+            def create_ap_then_takeover(user_id, owner_type="personal"):
+                async def winner():
+                    won = await container_repo.takeover_provision(user_id)
+                    # The winner gets as far as its OWN efs_created write.
+                    await container_repo.update_container_leased(
+                        user_id, won, {"access_point_id": "fsap-winner", "substatus": "efs_created"}
+                    )
+                    return won
+
+                state["winner"] = _run_off_loop(winner)
+                return "fsap-loser"
+
+            monkeypatch.setattr(manager, "_create_access_point", create_ap_then_takeover)
+            register = MagicMock(return_value="arn:loser-task-def")
+            monkeypatch.setattr(manager, "_register_task_definition", register)
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.create_user_service("user_efs", "gw-token", claim_id=claim)
+
+            row = await container_repo.get_by_owner_id("user_efs")
+            assert row["access_point_id"] == "fsap-winner"
+            assert row["substatus"] == "efs_created"
+            # The loser must not flip the row to error over the winner: the
+            # superseded branch re-raises bare, ahead of the rollback handlers.
+            assert row["status"] == "provisioning"
+            assert row["provision_claim_id"] == state["winner"] != claim
+            register.assert_not_called()
+            manager._ecs.create_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_takeover_at_the_task_definition_write_cannot_stamp_the_winners_row(self, manager, monkeypatch):
+        """Same fence, one step later: a takeover landing while the loser
+        registers its task definition must not put that revision's ARN on the
+        winner's row — the row would then name a task def the live service
+        never runs."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await container_repo.try_claim_provision("user_td", claim_id="claim-loser")
+            state: dict = {}
+
+            def register_then_takeover(*args, **kwargs):
+                async def winner():
+                    won = await container_repo.takeover_provision("user_td")
+                    await container_repo.update_container_leased(
+                        "user_td", won, {"task_definition_arn": "arn:winner", "substatus": "task_registered"}
+                    )
+                    return won
+
+                state["winner"] = _run_off_loop(winner)
+                return "arn:loser"
+
+            monkeypatch.setattr(manager, "_create_access_point", MagicMock(return_value="fsap-loser"))
+            monkeypatch.setattr(manager, "_register_task_definition", register_then_takeover)
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.create_user_service("user_td", "gw-token", claim_id=claim)
+
+            row = await container_repo.get_by_owner_id("user_td")
+            assert row["task_definition_arn"] == "arn:winner"
+            assert row["substatus"] == "task_registered"
+            assert row["status"] == "provisioning"
+            assert row["provision_claim_id"] == state["winner"] != claim
+            # The efs write DID land — the loser still held the lease then.
+            assert row["access_point_id"] == "fsap-loser"
+            manager._ecs.create_service.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fenced_provision_without_a_takeover_writes_both_artifacts(self, manager, monkeypatch):
+        """The over-fencing guard: lease held throughout, so every write lands
+        and the row ends up describing this run's artifacts."""
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await container_repo.try_claim_provision("user_fenced", claim_id="claim-held")
+            monkeypatch.setattr(manager, "_create_access_point", MagicMock(return_value="fsap-x"))
+            monkeypatch.setattr(manager, "_register_task_definition", MagicMock(return_value="arn:task-def"))
+            manager._ecs.create_service = MagicMock()
+
+            await manager.create_user_service("user_fenced", "gw-token", claim_id=claim)
+
+            row = await container_repo.get_by_owner_id("user_fenced")
+            assert row["access_point_id"] == "fsap-x"
+            assert row["task_definition_arn"] == "arn:task-def"
+            assert row["substatus"] == "service_created"
+            assert row["status"] == "provisioning"
+            # Every fenced write refreshes the lease rather than releasing it.
+            assert row["provision_claim_id"] == claim
+            manager._ecs.create_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_claimless_create_user_service_still_writes_its_row(self, manager, monkeypatch):
+        """``routers/debug.py`` shape: no lease exists on the row at all, so
+        the writes must stay unfenced. The lease primitives here are REAL — a
+        write that tried to condition on a claim would find none and raise."""
+        with _real_containers_table(monkeypatch) as container_repo:
+            monkeypatch.setattr(manager, "_create_access_point", MagicMock(return_value="fsap-x"))
+            monkeypatch.setattr(manager, "_register_task_definition", MagicMock(return_value="arn:task-def"))
+            manager._ecs.create_service = MagicMock()
+
+            await manager.create_user_service("user_debug", "gw-token")
+
+            row = await container_repo.get_by_owner_id("user_debug")
+            assert row["access_point_id"] == "fsap-x"
+            assert row["task_definition_arn"] == "arn:task-def"
+            assert row["substatus"] == "service_created"
+            assert "provision_claim_id" not in row
+
+    @pytest.mark.asyncio
+    async def test_superseded_row_write_does_not_release_the_row_to_error(self, manager, monkeypatch):
+        """Through the real entry point: a ProvisionSuperseded raised by a
+        fenced row write must reach ``provision_user_container``'s superseded
+        branch (metric + bare re-raise), NOT its error release — the row
+        belongs to the winner now."""
+        from core.repositories.container_repo import ProvisionSuperseded
+
+        with _real_containers_table(monkeypatch) as container_repo:
+            claim = await container_repo.try_claim_provision("user_rel", claim_id="claim-loser")
+            # Bedrock provision, minus the control planes it talks to (the AIP
+            # + role mint are stubbed by the autouse _mock_bedrock_mint).
+            monkeypatch.setattr(
+                "core.billing.bedrock_gate_tokens.mint_gate_token", AsyncMock(return_value="gate-token")
+            )
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.hash_token", MagicMock(return_value="gate-hash"))
+            monkeypatch.setattr("core.billing.bedrock_gate_tokens.persist_gate_token_hash", AsyncMock())
+            monkeypatch.setattr("core.billing.bedrock_gate_url.gate_url", MagicMock(return_value="https://gate"))
+            monkeypatch.setattr(manager, "_service_exists", MagicMock(return_value=None))
+            state: dict = {}
+
+            def create_ap_then_takeover(user_id, owner_type="personal"):
+                state["winner"] = _run_off_loop(lambda: container_repo.takeover_provision(user_id))
+                return "fsap-loser"
+
+            monkeypatch.setattr(manager, "_create_access_point", create_ap_then_takeover)
+            monkeypatch.setattr(manager, "_register_task_definition", MagicMock(return_value="arn:loser"))
+            manager._ecs.create_service = MagicMock()
+
+            with pytest.raises(ProvisionSuperseded):
+                await manager.provision_user_container("user_rel", provider_choice="bedrock_claude", claim_id=claim)
+
+            row = await container_repo.get_by_owner_id("user_rel")
+            assert row["status"] == "provisioning"
+            assert "last_error" not in row
+            assert row["provision_claim_id"] == state["winner"] != claim
+            # Nothing of the loser's reached the row, and it stopped before the
+            # service create rather than running on to a later checkpoint.
+            assert "access_point_id" not in row
+            manager._ecs.create_service.assert_not_called()
+            container_repo.release_provision_to_error.assert_not_awaited()
 
     def _describe(self, *, desired=1, running=0, rollout=None, status="ACTIVE"):
         svc = {"status": status, "desiredCount": desired, "runningCount": running}

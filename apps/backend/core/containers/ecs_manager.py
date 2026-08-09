@@ -758,8 +758,28 @@ class EcsManager:
     # Safe DB helpers
     # ------------------------------------------------------------------
 
-    async def _update_container(self, user_id: str, **fields) -> None:
+    async def _update_container(
+        self,
+        user_id: str,
+        *,
+        claim_id: str | None = None,
+        attempt_token: str | None = None,
+        **fields,
+    ) -> None:
         """Update container fields via the DynamoDB container repo.
+
+        CLAIM FENCE: with ``claim_id`` the write goes through
+        ``container_repo.update_container_leased``, so it is conditioned on
+        this run still holding the provision lease and raises
+        ``ProvisionSuperseded`` when it does not. Without a lease-conditioned
+        write, a run superseded between two checkpoints still stamped its own
+        ``access_point_id`` / ``task_definition_arn`` / ``substatus`` over the
+        winner's row (``update_fields`` is conditioned only on the row
+        existing), leaving a row that describes a mixture of two provisions.
+        ``claim_id=None`` keeps the plain unfenced ``update_fields``, exactly
+        as the checkpoints treat a missing lease: the callers that reach here
+        without one are ``routers/debug.py``'s direct create_user_service, the
+        resize path (webhook/admin, no provision lease), and tests.
 
         SINGLE-OWNER RULE (guarded): this generic provision-path setter must
         NEVER write a ``status="error"`` transition. That transition is owned
@@ -781,7 +801,16 @@ class EcsManager:
                 "status='error' must not be written through _update_container — "
                 "the claim-fenced release_provision_to_error owns that transition"
             )
-        await container_repo.update_fields(user_id, fields)
+        if claim_id is None:
+            await container_repo.update_fields(user_id, fields)
+            return
+        # Lazy module lookup for the LEASE primitive, same reason as
+        # _provision_checkpoint: several tests wholesale-replace this module's
+        # `container_repo` binding with a MagicMock to stub row I/O, while the
+        # lease is stubbed at its source module.
+        from core.repositories import container_repo as _lease_repo
+
+        await _lease_repo.update_container_leased(user_id, claim_id, fields, attempt_token=attempt_token)
 
     # ------------------------------------------------------------------
     # Service lifecycle
@@ -939,8 +968,18 @@ class EcsManager:
         try:
             # Step 1: Create per-user EFS access point
             access_point_id = self._create_access_point(user_id, owner_type=owner_type)
+            # Fenced on the lease (see _update_container): the checkpoint above
+            # only covers the moment it ran — a takeover landing while the
+            # access point was being created must not let this run stamp its
+            # own access_point_id over the winner's row. No `generation`: the
+            # upsert above just re-minted provision_generation, so a
+            # caller-supplied one would be stale by construction — which is why
+            # create_user_service takes no `generation` at all and its
+            # checkpoints omit it too.
             await self._update_container(
                 user_id,
+                claim_id=claim_id,
+                attempt_token=attempt_token,
                 access_point_id=access_point_id,
                 substatus="efs_created",
             )
@@ -964,6 +1003,8 @@ class EcsManager:
             )
             await self._update_container(
                 user_id,
+                claim_id=claim_id,
+                attempt_token=attempt_token,
                 task_definition_arn=task_def_arn,
                 substatus="task_registered",
             )
@@ -1021,7 +1062,12 @@ class EcsManager:
                 del create_kwargs["capacityProviderStrategy"]
                 create_kwargs["launchType"] = "FARGATE"
                 self._ecs.create_service(**create_kwargs)
-            await self._update_container(user_id, substatus="service_created")
+            await self._update_container(
+                user_id,
+                claim_id=claim_id,
+                attempt_token=attempt_token,
+                substatus="service_created",
+            )
         except ProvisionSuperseded:
             raise
         except EcsManagerError:

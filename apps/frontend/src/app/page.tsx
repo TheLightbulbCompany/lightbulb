@@ -18,11 +18,11 @@ export default function LandingPage() {
         <ScrollManager />
         <Navbar />
         <Hero />
-        <MarketplaceSection />
-        <div className="ld-rule">
-          <span>marketplace_to_team</span>
-        </div>
         <Team />
+        <div className="ld-rule">
+          <span>marketplace_next_hires</span>
+        </div>
+        <MarketplaceSection />
         <div className="ld-rule">
           <span>cloud_sandbox</span>
         </div>

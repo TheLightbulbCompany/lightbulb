@@ -736,9 +736,9 @@
 
 .ld-const {
   position: relative;
-  height: 420px;
+  height: 480px;
   margin: 0 auto;
-  max-width: 860px;
+  max-width: 920px;
 }
 
 .ld-const svg {
@@ -802,9 +802,9 @@
 }
 
 .ld-puck {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
   background: var(--cream);
   border: 1px solid var(--edge);
   display: flex;
@@ -939,6 +939,26 @@
 .ld-agent-card a:focus-visible {
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.ld-agent-roster-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--forest);
+}
+
+.ld-agent-roster-note::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--forest-soft);
 }
 
 /* -------------------------------------------------- teams inbox mock */
@@ -1984,7 +2004,7 @@
   }
 
   .ld-const {
-    height: 360px;
+    height: 390px;
   }
 
   .ld-agent-card {
@@ -2082,7 +2102,7 @@
   }
 
   .ld-const {
-    height: 320px;
+    height: 350px;
   }
 }
 

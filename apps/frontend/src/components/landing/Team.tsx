@@ -9,15 +9,27 @@ import {
   type LandingMarketplaceAgent,
 } from "@/lib/marketplace/landingAgents";
 
+type RosterAgentId =
+  | "F"
+  | LandingMarketplaceAgent["id"]
+  | "Ops"
+  | "Th"
+  | "PA"
+  | "A"
+  | "P"
+  | "V"
+  | "J";
+
 type Node = {
-  id: "F" | LandingMarketplaceAgent["id"];
+  id: RosterAgentId;
   name: string;
   role: string;
   x: number;
   y: number;
   big?: boolean;
-  status: "delegating" | "working" | "idle";
+  status: "delegating" | "working" | "idle" | "review" | "error";
   load: string;
+  value: string;
   agent?: LandingMarketplaceAgent;
 };
 
@@ -26,26 +38,54 @@ const AGENT_BY_ID = Object.fromEntries(
 ) as Record<LandingMarketplaceAgent["id"], LandingMarketplaceAgent>;
 
 const NODES: Node[] = [
-  { id: "F", name: "Friday", role: "Orchestrator", x: 50, y: 50, big: true, status: "delegating", load: "organizing" },
-  { id: "L", name: "Lens", role: "Research", x: 14, y: 22, status: "working", load: "research", agent: AGENT_BY_ID.L },
-  { id: "St", name: "Stitch", role: "Sales", x: 86, y: 22, status: "working", load: "sales", agent: AGENT_BY_ID.St },
-  { id: "O", name: "Ora", role: "Schedule", x: 94, y: 60, status: "working", load: "calendar", agent: AGENT_BY_ID.O },
-  { id: "T", name: "Tally", role: "Finance", x: 70, y: 86, status: "working", load: "finance", agent: AGENT_BY_ID.T },
-  { id: "E", name: "Echo", role: "Recap", x: 28, y: 86, status: "idle", load: "recaps", agent: AGENT_BY_ID.E },
+  {
+    id: "F",
+    name: "Friday",
+    role: "CEO / orchestrator",
+    x: 50,
+    y: 50,
+    big: true,
+    status: "delegating",
+    load: "directing",
+    value: "Friday turns company goals into work, delegates to the roster, and brings humans in when judgement matters.",
+  },
+  { id: "Ops", name: "Platform Ops", role: "Reliability", x: 50, y: 8, status: "idle", load: "infra", value: "Keeps the platform healthy, watches reliability work, and turns production signals into follow-up tasks." },
+  { id: "L", name: "Lens", role: "Research", x: 26, y: 14, status: "working", load: "research", value: AGENT_BY_ID.L.value, agent: AGENT_BY_ID.L },
+  { id: "Th", name: "Thread", role: "Customer support", x: 74, y: 14, status: "idle", load: "support", value: "Turns customer conversations into clear threads, next actions, and owner-ready follow-up." },
+  { id: "E", name: "Echo", role: "Recap", x: 10, y: 34, status: "idle", load: "recaps", value: AGENT_BY_ID.E.value, agent: AGENT_BY_ID.E },
+  { id: "St", name: "Stitch", role: "Sales", x: 90, y: 34, status: "working", load: "sales", value: AGENT_BY_ID.St.value, agent: AGENT_BY_ID.St },
+  { id: "V", name: "Vera", role: "Review", x: 14, y: 64, status: "review", load: "review", value: "Reviews work, catches risk, and helps keep public-facing changes clear before they ship." },
+  { id: "PA", name: "Product Analytics", role: "Metrics", x: 86, y: 64, status: "idle", load: "scorecard", value: "Keeps product and company metrics readable so the team can see what is changing." },
+  { id: "T", name: "Tally", role: "Finance", x: 28, y: 86, status: "working", load: "finance", value: AGENT_BY_ID.T.value, agent: AGENT_BY_ID.T },
+  { id: "O", name: "Ora", role: "Schedule", x: 72, y: 86, status: "working", load: "calendar", value: AGENT_BY_ID.O.value, agent: AGENT_BY_ID.O },
+  { id: "A", name: "Atlas", role: "Recruiter", x: 50, y: 94, status: "idle", load: "hiring", value: "Finds or designs the next specialist when Friday sees a gap in the company." },
+  { id: "P", name: "Pulse", role: "Monitoring", x: 36, y: 38, status: "idle", load: "watching", value: "Watches for important changes and wakes the right person or agent when something needs attention." },
+  { id: "J", name: "Jarvis", role: "Engineering", x: 64, y: 38, status: "working", load: "coding", value: "Builds and verifies product changes, then hands them back with evidence for review." },
 ];
 
 const EDGES: [Node["id"], Node["id"]][] = [
-  ["F", "L"], ["F", "St"], ["F", "O"], ["F", "T"], ["F", "E"],
-  ["L", "St"],
-  ["St", "O"],
-  ["T", "E"],
+  ["F", "Ops"], ["F", "L"], ["F", "Th"], ["F", "E"], ["F", "St"], ["F", "V"], ["F", "PA"], ["F", "T"], ["F", "O"], ["F", "A"], ["F", "P"], ["F", "J"],
+  ["Ops", "Th"],
+  ["Th", "St"],
+  ["St", "PA"],
+  ["PA", "O"],
+  ["O", "A"],
+  ["A", "T"],
+  ["T", "V"],
+  ["V", "E"],
+  ["E", "L"],
+  ["L", "Ops"],
+  ["J", "St"],
+  ["J", "L"],
+  ["P", "V"],
+  ["P", "T"],
 ];
 
 const BY_ID: Record<Node["id"], Node> = Object.fromEntries(NODES.map((n) => [n.id, n])) as Record<Node["id"], Node>;
 
 export function Team() {
   const [tick, setTick] = useState(0);
-  const [activeAgentId, setActiveAgentId] = useState<LandingMarketplaceAgent["id"] | null>(null);
+  const [activeNodeId, setActiveNodeId] = useState<Node["id"] | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,12 +95,12 @@ export function Team() {
   }, []);
 
   useEffect(() => {
-    if (!activeAgentId) return;
+    if (!activeNodeId) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setActiveAgentId(null);
+      if (event.key === "Escape") setActiveNodeId(null);
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (!stageRef.current?.contains(event.target as globalThis.Node)) setActiveAgentId(null);
+      if (!stageRef.current?.contains(event.target as globalThis.Node)) setActiveNodeId(null);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("pointerdown", onPointerDown);
@@ -68,43 +108,44 @@ export function Team() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [activeAgentId]);
+  }, [activeNodeId]);
 
   const animatedActive = new Set<number>([tick % EDGES.length, (tick + 3) % EDGES.length]);
-  const activeEdgeIndexes = activeAgentId
-    ? new Set(EDGES.map(([a, b], i) => ((a === "F" && b === activeAgentId) || (b === "F" && a === activeAgentId)) ? i : -1).filter((i) => i >= 0))
+  const activeEdgeIndexes = activeNodeId
+    ? new Set(EDGES.map(([a, b], i) => ((a === "F" && b === activeNodeId) || (b === "F" && a === activeNodeId) || a === activeNodeId || b === activeNodeId) ? i : -1).filter((i) => i >= 0))
     : animatedActive;
-  const activeNode = activeAgentId ? BY_ID[activeAgentId] : null;
+  const activeNode = activeNodeId ? BY_ID[activeNodeId] : null;
   const activeAgent = activeNode?.agent ?? null;
 
   return (
     <section className="ld-team" id="team">
       <div className="ld-section">
         <div className="ld-kicker" data-ld-reveal>
-          marketplace to team
+          live company roster
         </div>
         <h2 className="ld-h2" data-ld-reveal>
-          Hire the agents you need. <em>Friday keeps them moving.</em>
+          Watch the company form around the work. <em>Friday keeps it moving.</em>
         </h2>
         <p className="ld-lede" data-ld-reveal>
-          Browse the marketplace, add specialists to your team, and let Friday
-          coordinate the handoffs. You can inspect the work, approve important
-          decisions, and swap in new help as the business changes.
+          The spiderweb is the current Isol8 roster: Friday in the middle,
+          marketplace specialists and company agents around her, each taking a
+          real slice of the business. As the company grows, the roster becomes
+          part of the story people can see.
         </p>
 
         <div className="ld-team-stage" data-ld-reveal ref={stageRef}>
           <span className="ld-frame-label">marketplace → your team</span>
           <span className="ld-frame-meta">
-            <span className="ld-dot ld-dot--live" /> Friday connects the work
+            <span className="ld-dot ld-dot--live" /> live Isol8 roster
           </span>
 
-          <div className={"ld-const" + (activeAgentId ? " has-active-agent" : "")}>
+          <div className={"ld-const" + (activeNodeId ? " has-active-agent" : "")}>
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
               {EDGES.map(([a, b], i) => {
                 const A = BY_ID[a];
                 const B = BY_ID[b];
                 const isActive = activeEdgeIndexes.has(i);
-                const isDimmed = Boolean(activeAgentId && !isActive && a !== activeAgentId && b !== activeAgentId);
+                const isDimmed = Boolean(activeNodeId && !isActive && a !== activeNodeId && b !== activeNodeId);
                 return (
                   <line
                     key={i}
@@ -123,12 +164,12 @@ export function Team() {
               const [a, b] = EDGES[i];
               const A = BY_ID[a];
               const B = BY_ID[b];
-              return <Pulse key={activeAgentId ? "selected-" + i : tick + "-" + i} ax={A.x} ay={A.y} bx={B.x} by={B.y} />;
+              return <Pulse key={activeNodeId ? "selected-" + i : tick + "-" + i} ax={A.x} ay={A.y} bx={B.x} by={B.y} />;
             })}
 
             {NODES.map((n) => {
-              const isActive = activeAgentId === n.id;
-              const isDimmed = Boolean(activeAgentId && n.id !== "F" && !isActive);
+              const isActive = activeNodeId === n.id;
+              const isDimmed = Boolean(activeNodeId && n.id !== "F" && !isActive);
               const content = (
                 <>
                   <span className={"ld-puck" + (n.big ? " ld-puck--lead" : "")}>{n.id === "F" ? <span>F</span> : n.id}</span>
@@ -140,17 +181,17 @@ export function Team() {
                 </>
               );
 
-              return n.agent ? (
+              return !n.big ? (
                 <button
                   key={n.id}
                   type="button"
                   className={"ld-const-node ld-const-node--agent" + (isActive ? " is-active" : "") + (isDimmed ? " is-dimmed" : "")}
                   style={{ left: `${n.x}%`, top: `${n.y}%` }}
                   onPointerEnter={(event) => {
-                    if (event.pointerType !== "touch") setActiveAgentId(n.agent!.id);
+                    if (event.pointerType !== "touch") setActiveNodeId(n.id);
                   }}
-                  onFocus={() => setActiveAgentId(n.agent!.id)}
-                  onClick={() => setActiveAgentId((current) => current === n.agent!.id ? null : n.agent!.id)}
+                  onFocus={() => setActiveNodeId(n.id)}
+                  onClick={() => setActiveNodeId((current) => current === n.id ? null : n.id)}
                   aria-expanded={isActive}
                   aria-describedby={isActive ? "ld-agent-card" : undefined}
                 >
@@ -163,19 +204,23 @@ export function Team() {
               );
             })}
 
-            {activeAgent && activeNode && (
+            {activeNode && activeNode.id !== "F" && (
               <div
                 id="ld-agent-card"
                 className={"ld-agent-card " + cardClass(activeNode)}
                 role="dialog"
-                aria-label={`${activeAgent.name} marketplace listing`}
+                aria-label={`${activeNode.name} roster detail`}
               >
-                <p className="ld-agent-eyebrow">Marketplace agent</p>
-                <h3>{activeAgent.name} <span>— {activeAgent.role}</span></h3>
-                <p>{activeAgent.value}</p>
-                <Link href={marketplaceListingHref(activeAgent.listingId)}>
-                  View in marketplace <span aria-hidden="true">→</span>
-                </Link>
+                <p className="ld-agent-eyebrow">{activeAgent ? "Marketplace agent" : "Isol8 roster"}</p>
+                <h3>{activeNode.name} <span>— {activeAgent?.role ?? activeNode.role}</span></h3>
+                <p>{activeAgent?.value ?? activeNode.value}</p>
+                {activeAgent ? (
+                  <Link href={marketplaceListingHref(activeAgent.listingId)}>
+                    View in marketplace <span aria-hidden="true">→</span>
+                  </Link>
+                ) : (
+                  <span className="ld-agent-roster-note">Live company agent</span>
+                )}
               </div>
             )}
           </div>
@@ -184,9 +229,9 @@ export function Team() {
         <InboxMock />
 
         <div className="ld-inbox-captions" data-ld-reveal-group>
-          <span>hire from marketplace</span>
-          <span>agents work together</span>
-          <span>you approve key decisions</span>
+          <span>company building in public</span>
+          <span>marketplace agents plus roster agents</span>
+          <span>humans approve key decisions</span>
         </div>
       </div>
     </section>
@@ -211,19 +256,19 @@ const ISSUES = [
   },
   {
     id: "ISO-213",
-    title: "Weekly status report",
-    who: "F",
-    name: "Friday",
-    status: "done",
-    kind: "done" as const,
+    title: "ISOA-77 landing review",
+    who: "J",
+    name: "Jarvis",
+    status: "in review",
+    kind: "warn" as const,
   },
   {
     id: "ISO-209",
-    title: "Reconcile Q2 invoices",
-    who: "T",
-    name: "Tally",
-    status: "needs approval",
-    kind: "warn" as const,
+    title: "Monitor production health",
+    who: "Ops",
+    name: "Platform Ops",
+    status: "idle",
+    kind: "done" as const,
   },
 ];
 
@@ -236,9 +281,9 @@ const ISSUES = [
 function InboxMock() {
   return (
     <div className="ld-inbox" data-ld-reveal aria-hidden="true">
-      <span className="ld-frame-label">paperclip · inbox</span>
+      <span className="ld-frame-label">live work queue</span>
       <span className="ld-frame-meta">
-        <span className="ld-dot ld-dot--live" /> 3 open issues
+        <span className="ld-dot ld-dot--live" /> work moving now
       </span>
 
       <div className="ld-inbox-body">
@@ -274,8 +319,8 @@ function InboxMock() {
             <div>
               <span className="ld-ib-author">You</span>
               <p>
-                Find 40 leads for the Q3 outreach push — mid-market SaaS,
-                US/EU.
+                Put the company roster directly under the hero so visitors can
+                see Isol8 building in public.
               </p>
             </div>
           </div>
@@ -287,10 +332,10 @@ function InboxMock() {
                 Friday <i>· orchestrator</i>
               </span>
               <p>
-                On it. Splitting across Stitch (sourcing) and Lens
-                (research). ETA tonight.
+                On it. Keeping the marketplace story, moving the live roster
+                spiderweb up, and handing the PR back with evidence.
               </p>
-              <span className="ld-ib-tag">assigned → Stitch, Lens</span>
+              <span className="ld-ib-tag">assigned → Jarvis, Lens, Stitch</span>
             </div>
           </div>
 
@@ -298,22 +343,22 @@ function InboxMock() {
             <span className="ld-ib-avatar">St</span>
             <div>
               <span className="ld-ib-author">
-                Stitch <i>· sourcing</i>
+                Jarvis <i>· engineering</i>
               </span>
-              <p>38 verified so far — list attached.</p>
-              <span className="ld-ib-attach">⎘ leads-q3.csv</span>
+              <p>PR updated — desktop and mobile screenshots ready for review.</p>
+              <span className="ld-ib-attach">⎘ landing-roster.png</span>
             </div>
           </div>
 
           <div className="ld-approval">
             <div>
-              <span className="ld-approval-kicker">approval needed</span>
-              <p>Stitch wants to send 42 intro emails via Gmail.</p>
+              <span className="ld-approval-kicker">review needed</span>
+              <p>Owner reviews the PR before merge or deploy.</p>
             </div>
             <div className="ld-approval-actions">
               <span className="ld-approve-btn">Approve</span>
               <span className="ld-approve-btn ld-approve-btn--ghost">
-                Hold
+                Request changes
               </span>
             </div>
           </div>

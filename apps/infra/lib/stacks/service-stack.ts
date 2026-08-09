@@ -903,14 +903,32 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // STS
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "StsAccess",
-        actions: ["sts:GetCallerIdentity", "sts:AssumeRole"],
-        resources: ["*"],
-      }),
-    );
+    // STS. GetCallerIdentity is resource-less; AssumeRole is scoped to the
+    // customer connector role only (aws-connector.yaml pins
+    // RoleName=isol8-connector = bedrock_aip.CONNECTOR_ROLE_NAME, and
+    // routers/connections.py is the sole assume_role caller). Unscoped
+    // AssumeRole would let a compromised backend assume ANY role in ANY
+    // account that trusts this principal.
+    //
+    // A dedicated ManagedPolicy, NOT addToPolicy: the role's DefaultPolicy
+    // inline document sits near CloudFormation's 10 KB limit, and one more
+    // inline statement tips CDK into an overflow ManagedPolicy that
+    // relocates unrelated statements (the packing the stack tests pin).
+    new iam.ManagedPolicy(this, "TaskRoleSts", {
+      statements: [
+        new iam.PolicyStatement({
+          sid: "StsAccess",
+          actions: ["sts:GetCallerIdentity"],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({
+          sid: "StsAssumeConnectorRole",
+          actions: ["sts:AssumeRole"],
+          resources: ["arn:aws:iam::*:role/isol8-connector"],
+        }),
+      ],
+      roles: [this.taskRole],
+    });
 
     // EFS access points management
     this.taskRole.addToPolicy(

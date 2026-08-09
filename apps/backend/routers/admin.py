@@ -46,7 +46,7 @@ from core.services.account_wipe import (
     wipe_account,
 )
 from core.services.admin_access import require_admin_read_access
-from core.services.admin_audit import audit_admin_action
+from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
@@ -946,8 +946,7 @@ async def admin_wipe_execute(
             elapsed_ms=elapsed_ms,
             error_message=None,
             user_agent=request.headers.get("user-agent", "unknown"),
-            ip=request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or (request.client.host if request.client else "unknown"),
+            ip=extract_client_ip(request),
         )
     except Exception:  # noqa: BLE001 — fail-closed like @audit_admin_action (S1)
         # The teardown already ran (irreversible side effects) -- an audit

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from core.auth import get_current_user, resolve_owner_id, AuthContext
 from core.repositories import admin_actions_repo, billing_repo, user_repo
+from core.services.admin_audit import extract_client_ip
 from schemas.user_schemas import SyncUserRequest, SyncUserResponse
 
 logger = logging.getLogger(__name__)
@@ -185,8 +186,7 @@ async def delete_my_account(
             elapsed_ms=elapsed_ms,
             error_message=None,
             user_agent=request.headers.get("user-agent", "unknown"),
-            ip=request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or (request.client.host if request.client else "unknown"),
+            ip=extract_client_ip(request),
         )
     except Exception:  # noqa: BLE001 — mirror the admin wipe's audit posture
         logger.critical("SELF_WIPE_AUDIT_PANIC target=%s", owner_id, exc_info=True)

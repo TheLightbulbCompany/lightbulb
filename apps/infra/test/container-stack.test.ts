@@ -100,6 +100,36 @@ describe("ContainerStack — dev", () => {
     template = buildStack("dev");
   });
 
+  test("execution role GetSecretValue is scoped to BYOK user-keys + the gog keyring secret, never '*'", () => {
+    // The per-user task defs inject exactly two secret families; a wildcard
+    // here would let a leaked execution-role credential read every secret in
+    // the account. Searched across both policy types so CDK repacking can't
+    // silently invalidate the assertion.
+    const found = ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy"].some((type) =>
+      Object.values(template.findResources(type)).some((r) =>
+        ((r.Properties?.PolicyDocument?.Statement ?? []) as Array<Record<string, unknown>>).some(
+          (s) => {
+            if (s.Sid !== "PerUserTaskSecrets") return false;
+            const resources = s.Resource as unknown[];
+            return (
+              s.Action === "secretsmanager:GetSecretValue" &&
+              Array.isArray(resources) &&
+              resources.length === 2 &&
+              resources.some(
+                (res) => typeof res === "string" && res.includes(":secret:isol8/dev/user-keys/*"),
+              ) &&
+              resources.some(
+                (res) =>
+                  typeof res === "string" && res.includes(":secret:isol8/dev/gog-keyring-password"),
+              )
+            );
+          },
+        ),
+      ),
+    );
+    expect(found).toBe(true);
+  });
+
   test("does NOT create the extended OpenClaw ECR repo (referenced by name, account-scoped)", () => {
     // Both dev and prod now use `ecr.Repository.fromRepositoryName(...)` —
     // the repo is managed as existing AWS state outside any stack to avoid

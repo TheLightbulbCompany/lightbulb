@@ -29,6 +29,7 @@ so the decorator can capture and (optionally) redact it for the audit row.
 """
 
 import functools
+import ipaddress
 import logging
 import time
 from typing import Any, Callable
@@ -39,13 +40,45 @@ from core.repositories import admin_actions_repo
 logger = logging.getLogger(__name__)
 
 
-def _extract_client_ip(request: Any) -> str:
-    """First X-Forwarded-For hop (set by Vercel's edge), or client.host."""
+# Hops our own infrastructure appends to X-Forwarded-For. The VPC CIDRs are
+# per-environment (network-stack.ts ENV_CONFIG: dev 10.0.0.0/16, prod
+# 10.2.0.0/16; ProxyHeadersMiddleware in main.py trusts the same pair) — the
+# ALB appends the VPC-link ENI's address when REST traffic arrives via
+# API Gateway → VPC Link → ALB (api-stack.ts).
+_TRUSTED_HOP_NETS = (
+    ipaddress.ip_network("10.0.0.0/16"),
+    ipaddress.ip_network("10.2.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+)
+
+
+def _is_trusted_hop(value: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return any(ip in net for net in _TRUSTED_HOP_NETS)
+
+
+def extract_client_ip(request: Any) -> str:
+    """Rightmost untrusted X-Forwarded-For hop, or client.host.
+
+    Each proxy in the chain APPENDS the peer it observed, so walking from
+    the RIGHT and skipping our own infrastructure hops lands on the client
+    address the innermost trusted proxy established (API Gateway appends the
+    true source IP; the ALB then appends the VPC-link ENI). Everything to
+    the LEFT of that hop is client-supplied and spoofable — reading the
+    leftmost let forged source IPs into audit rows, and reading the bare
+    rightmost recorded our own ENI addresses. Falls back to
+    request.client.host when no XFF is present (local dev / tests).
+    """
     if request is None:
         return "unknown"
     xff = request.headers.get("x-forwarded-for", "") if hasattr(request, "headers") else ""
-    if xff:
-        return xff.split(",")[0].strip()
+    for hop in reversed([h.strip() for h in xff.split(",") if h.strip()]):
+        if not _is_trusted_hop(hop):
+            return hop
     client = getattr(request, "client", None)
     return getattr(client, "host", "unknown") if client else "unknown"
 
@@ -156,7 +189,7 @@ def audit_admin_action(
             payload = _redact_payload(raw_payload, redact_paths)
 
             user_agent = _extract_user_agent(request)
-            ip = _extract_client_ip(request)
+            ip = extract_client_ip(request)
 
             started = time.monotonic()
             result_label = "success"

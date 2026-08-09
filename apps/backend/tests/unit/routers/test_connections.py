@@ -1524,7 +1524,7 @@ class TestAwsComplete:
     owner-supplied role ARN is the confused-deputy surface, so it is validated
     BEFORE the credential is ever stored or assumed."""
 
-    _GOOD_ARN = "arn:aws:iam::123456789012:role/IsolReadOnly"
+    _GOOD_ARN = "arn:aws:iam::123456789012:role/isol8-connector"
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1598,6 +1598,34 @@ class TestAwsComplete:
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
         mock_store.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_rejects_non_connector_role_name(
+        self, mock_repo, mock_store, mock_apply, mock_aip, async_client
+    ):
+        # SECURITY: the backend's sts:AssumeRole IAM grant is scoped to
+        # role/isol8-connector, so a hand-rolled role with any other name is
+        # rejected with a clear 400 at connect time — never stored, never
+        # left to fail as a vend-time AccessDenied.
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete",
+            json={"role_arn": "arn:aws:iam::123456789012:role/MyCustomRole"},
+        )
+        assert resp.status_code == 400
+        assert "isol8-connector" in resp.json()["detail"]
+        mock_store.put.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")

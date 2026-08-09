@@ -45,6 +45,27 @@ _FINISHED_PUSH_SOURCES = {"assignment", "on_demand"}
 # upgrade to a sliding window if the bucket boundary double-push ever matters.
 _FAILURE_COOLDOWN_S = 3600
 
+# A thread interaction parks its issue until a human answers — the one event
+# here that represents stalled work rather than finished work, so it is never
+# rate-limited. Bodies mirror the web toast copy in `runToastReducer.ts`; keep
+# the two in step. Keys are Paperclip's ISSUE_THREAD_INTERACTION_KINDS.
+_INTERACTION_KIND_BODY = {
+    "request_confirmation": "A task is paused waiting for your confirmation",
+    "request_checkbox_confirmation": "A task is paused waiting for you to verify a checklist",
+    "ask_user_questions": "An agent asked you a question and can't continue until you answer",
+    "suggest_tasks": "An agent suggested follow-up tasks for your review",
+}
+_INTERACTION_FALLBACK_BODY = "A task is paused waiting for your input"
+
+# Keys are Paperclip's APPROVAL_TYPES. Same intent as the interaction map: the
+# payload knows what is being asked, so the push should say it.
+_APPROVAL_TYPE_BODY = {
+    "hire_agent": "An agent wants to hire a new agent",
+    "approve_ceo_strategy": "An agent needs your sign-off on its strategy",
+    "budget_override_required": "An agent needs a budget override approved",
+    "request_board_approval": "An agent is requesting your approval",
+}
+
 
 def _payload_of(event: dict) -> dict:
     payload = event.get("payload")
@@ -54,14 +75,25 @@ def _payload_of(event: dict) -> dict:
 def decide_push(event: dict) -> tuple[str, str] | None:
     """Map a plugin event to ``(title, body)``, or None for no push.
 
-    Pure so it can be tested without HTTP. Copy stays generic: the payload's
-    agentId is a Paperclip agent id, which the push path can't resolve to a
-    display name without a per-event Paperclip round-trip.
+    Pure so it can be tested without HTTP. The agent is never named: the
+    payload's agentId is a Paperclip agent id, which the push path can't
+    resolve to a display name without a per-event Paperclip round-trip. What
+    the copy CAN say precisely is what is being asked, since the payload
+    carries its own discriminator (interactionKind, or an approval's type).
     """
     event_type = event.get("eventType")
     payload = _payload_of(event)
+    if event_type == "issue.thread_interaction_created":
+        # An interaction addressed to a specific agent is that agent's to
+        # answer; only an unaddressed one is parked on a human.
+        if payload.get("addresseeAgentId"):
+            return None
+        kind = payload.get("interactionKind")
+        return ("A task needs you", _INTERACTION_KIND_BODY.get(kind, _INTERACTION_FALLBACK_BODY))
     if event_type in ("approval.created", "approval.resubmitted"):
-        body = (
+        # Both actions carry details.type; fall back to the create/resubmit
+        # distinction only when it is missing or is a type we don't know yet.
+        body = _APPROVAL_TYPE_BODY.get(payload.get("type")) or (
             "An agent resubmitted work for your approval"
             if event_type == "approval.resubmitted"
             else "An agent submitted work for your approval"

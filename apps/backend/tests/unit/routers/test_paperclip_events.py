@@ -23,6 +23,43 @@ def _event(event_type: str, payload: dict | None = None, **overrides) -> dict:
 
 
 class TestDecidePush:
+    def test_thread_interaction_names_what_is_being_asked(self):
+        """The one event that means work is STOPPED, not finished."""
+        bodies = set()
+        for kind in (
+            "request_confirmation",
+            "request_checkbox_confirmation",
+            "ask_user_questions",
+            "suggest_tasks",
+        ):
+            title, body = decide_push(_event("issue.thread_interaction_created", {"interactionKind": kind}))
+            assert title == "A task needs you"
+            bodies.add(body)
+        # Distinct copy per kind -- a shared string would defeat the point.
+        assert len(bodies) == 4
+
+    def test_thread_interaction_unknown_kind_still_pushes(self):
+        _, body = decide_push(_event("issue.thread_interaction_created", {"interactionKind": "future_kind"}))
+        assert body == "A task is paused waiting for your input"
+
+    def test_thread_interaction_addressed_to_an_agent_is_silent(self):
+        assert (
+            decide_push(
+                _event(
+                    "issue.thread_interaction_created",
+                    {"interactionKind": "request_confirmation", "addresseeAgentId": "agent-9"},
+                )
+            )
+            is None
+        )
+
+    def test_approval_body_names_the_approval_type(self):
+        _, body = decide_push(_event("approval.created", {"type": "hire_agent"}))
+        assert body == "An agent wants to hire a new agent"
+        # Unknown type falls back to the create/resubmit wording, never to None.
+        _, body = decide_push(_event("approval.resubmitted", {"type": "future_type"}))
+        assert "resubmitted" in body
+
     def test_approval_created(self):
         title, body = decide_push(_event("approval.created"))
         assert title == "Awaiting your approval"

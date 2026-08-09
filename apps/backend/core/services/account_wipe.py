@@ -701,9 +701,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # Both of this owner's items in paperclip-companies, not just the company
     # row: the funnel answer lives in the SAME table under the prefixed key
     # ``__pending_brief__:{owner_id}``, and it deliberately outlives a
-    # reprovision (see PaperclipRepo's "LIFETIME" note), so a wipe that leaves
-    # it behind hands the next account created on this Clerk id the previous
-    # one's brief. Folded into this step rather than given its own because it
+    # reprovision (see PaperclipRepo's "LIFETIME" note). It is the user's own
+    # typed words — "a social media agency for small restaurants" was one of
+    # the two found stranded in prod — so a wipe that leaves it behind retains
+    # content for an account we just deleted, in a row nothing will ever read
+    # or clean up again (the key is the Clerk id, which is never reissued).
+    # Folded into this step rather than given its own because it
     # is the same table, the same owner, and the same "delete the rows we
     # wrote" action — but it is NOT gated on the company row: the two exist
     # independently, and the prod case that surfaced this was a "SKIPPED — no

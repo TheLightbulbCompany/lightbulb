@@ -221,6 +221,19 @@ const _historyPaging = new Map<string, { nextOffset: number; hasMore: boolean }>
 // few times lets the store come up before we conclude the session is empty.
 // One entry per retry; the array length caps the number of attempts.
 const HISTORY_EMPTY_RETRY_DELAYS_MS = [500, 1250, 3000];
+// Post-reachable grace re-reads: the gateway answering health does not mean
+// the session store finished loading in the same instant, so one near-
+// immediate and one short-backoff re-read run before "empty" is believed.
+const HISTORY_EMPTY_CONFIRM_DELAYS_MS = [250, 2000];
+// While the container is UNREACHABLE, empty is not evidence of anything —
+// a parked trial box takes minutes to wake (measured 5m30s on prod,
+// 2026-08-09), so the quick ladder above is hopeless there. Keep re-reading
+// on a slow cadence until the gateway answers, bounded well past the worst
+// observed wake. The 2026-08-09 prod incident is the reference: a General
+// session with 127 stored messages rendered the new-chat bootstrap because
+// the 4.75s ladder concluded "empty" 4½ minutes before the store came up.
+const HISTORY_WAKE_RETRY_MS = 5_000;
+const HISTORY_WAKE_MAX_ATTEMPTS = 120; // ≈10 minutes
 // Sessions whose last chat.history response was trimmed by the backend to fit
 // the WS frame limit (payload carried `truncated: true`) — the transcript
 // starts mid-conversation and the UI says so.
@@ -855,7 +868,17 @@ export function useAgentChat(
     // doesn't read ref.current there (react-hooks/exhaustive-deps).
     const loadedKeys = historyLoadedRef.current;
 
-    const runFetch = (attempt: number): void => {
+    const isStillCurrent = (): boolean =>
+      historyEffectMountedRef.current &&
+      agentIdRef.current === agentId &&
+      activeSessionIdRef.current === (activeSessionId ?? null);
+    const scheduleRefetch = (fn: () => void, ms: number): void => {
+      historyRetryTimerRef.current = setTimeout(() => {
+        historyRetryTimerRef.current = null;
+        fn();
+      }, ms);
+    };
+    const runFetch = (attempt: number, phase: "quick" | "confirm" | "wake" = "quick", wakeAttempt = 0): void => {
       sendReq("chat.history", { sessionKey, limit: HISTORY_PAGE_SIZE, offset: 0 })
         .then((result: unknown) => {
           const historyResult = result as {
@@ -905,27 +928,64 @@ export function useAgentChat(
             if (!hasCache) {
               // An empty-but-200 read is NOT a reliable "authoritatively empty"
               // signal (container mid-restart/update, session store not yet
-              // loaded, session-key casing mismatch, or a trial container still
-              // waking from scale-to-zero all return it). While we're still on
-              // this session and have retries left, re-read after a short
-              // backoff (the store loads shortly after the WS connects) and stay
-              // on the loading skeleton — never flash the bootstrap suggestion
-              // for a conversation that exists (it "comes back" once the
-              // container is up). Only after the retries exhaust — or if the
-              // user already switched away — do we conclude it is empty. (The
-              // cleanest long-term fix is a backend authoritative-empty marker
-              // on chat.history; until then this bounded retry is the frontend
-              // guard.)
-              const stillCurrent =
-                historyEffectMountedRef.current &&
-                agentIdRef.current === agentId &&
-                activeSessionIdRef.current === (activeSessionId ?? null);
-              if (stillCurrent && attempt < HISTORY_EMPTY_RETRY_DELAYS_MS.length) {
-                historyRetryTimerRef.current = setTimeout(() => {
-                  historyRetryTimerRef.current = null;
-                  runFetch(attempt + 1);
-                }, HISTORY_EMPTY_RETRY_DELAYS_MS[attempt]);
-                return; // keep isLoadingHistory true (skeleton); decide later
+              // loaded, or a trial container still waking from scale-to-zero
+              // all return it). The quick ladder below covers store-lag on a
+              // LIVE container. It cannot cover a wake: a parked trial box
+              // takes minutes (measured 5m30s), so after the ladder exhausts
+              // we ask the gateway whether the container is even reachable —
+              // a health RPC down the same pool chat.history rides — before
+              // believing "empty".
+              //
+              //   reachable + still empty  -> two grace re-reads (the store
+              //     can lag the socket by a beat), then conclude bootstrap.
+              //   unreachable              -> the read said NOTHING. Keep the
+              //     loading skeleton and re-read on a slow cadence until the
+              //     container answers (bounded ~10min). Concluding here is
+              //     the amnesia bug: a returning owner with a full transcript
+              //     got the new-chat bootstrap because a 4.75s ladder raced a
+              //     5-minute wake (prod, 2026-08-09).
+              if (isStillCurrent()) {
+                if (phase === "quick" && attempt < HISTORY_EMPTY_RETRY_DELAYS_MS.length) {
+                  scheduleRefetch(
+                    () => runFetch(attempt + 1, "quick", wakeAttempt),
+                    HISTORY_EMPTY_RETRY_DELAYS_MS[attempt],
+                  );
+                  return; // keep isLoadingHistory true (skeleton); decide later
+                }
+                if (phase === "confirm" && attempt < HISTORY_EMPTY_CONFIRM_DELAYS_MS.length) {
+                  scheduleRefetch(
+                    () => runFetch(attempt + 1, "confirm", wakeAttempt),
+                    HISTORY_EMPTY_CONFIRM_DELAYS_MS[attempt],
+                  );
+                  return;
+                }
+                if (phase !== "confirm" && wakeAttempt < HISTORY_WAKE_MAX_ATTEMPTS) {
+                  sendReq("health")
+                    .then(() => {
+                      if (!isStillCurrent()) {
+                        loadedKeys.delete(cacheKey); // let a revisit refetch
+                        return;
+                      }
+                      // First grace re-read rides the first confirm delay —
+                      // an immediate re-read would race the same store-lag
+                      // the grace period exists for.
+                      scheduleRefetch(
+                        () => runFetch(1, "confirm", wakeAttempt),
+                        HISTORY_EMPTY_CONFIRM_DELAYS_MS[0],
+                      );
+                    })
+                    .catch(() => {
+                      if (!isStillCurrent()) {
+                        loadedKeys.delete(cacheKey);
+                        return;
+                      }
+                      scheduleRefetch(
+                        () => runFetch(attempt, "wake", wakeAttempt + 1),
+                        HISTORY_WAKE_RETRY_MS,
+                      );
+                    });
+                  return; // probe in flight; skeleton stays
+                }
               }
               _needsBootstrap.add(cacheKey);
             }

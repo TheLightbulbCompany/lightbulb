@@ -876,9 +876,25 @@ function BubbleGroupImpl({
     );
   }
   // Assistant side
+  //
+  // `w-full` when any item carries an errorCode: ChatErrorCard's conversion
+  // paywall wraps ProviderPicker, whose root is `@container` —
+  // `container-type: inline-size` zeroes the element's intrinsic width, and
+  // this column is shrink-to-fit (sized from intrinsic content), so without an
+  // explicit width the bubble collapses to the AgentHead's ~120px and the
+  // purchase form renders as a needle-thin strip that no window resize can
+  // widen. Error cards are full-width cards; plain bubbles keep hugging.
+  const hasErrorCard = group.items.some(
+    (item) => item.kind === "message" && Boolean(item.message.errorCode),
+  );
   return (
     <div className="flex w-full justify-start" data-role="assistant">
-      <div className="flex flex-col min-w-0 max-w-[85%] group relative">
+      <div
+        className={cn(
+          "flex flex-col min-w-0 max-w-[85%] group relative",
+          hasErrorCard && "w-full",
+        )}
+      >
         <AgentHead
           name={agentName || "Assistant"}
           state={isStreaming && isLastAssistantGroup ? "thinking" : "idle"}

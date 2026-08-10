@@ -18,6 +18,9 @@ const LANDING_NAV_SECTIONS: ReadonlyArray<{ id: string; selector?: string }> = [
   { id: "goosetown" },
 ];
 
+const getLandingSectionElement = ({ id, selector }: { id: string; selector?: string }) =>
+  selector ? document.querySelector(selector) : document.getElementById(id);
+
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -27,8 +30,9 @@ export function Navbar() {
   const onMarketplace = pathname.startsWith("/marketplace");
   const onBlog = pathname.startsWith("/blog");
 
-  // From a non-landing route, scroll anchors must navigate back to "/" first.
-  const anchor = (id: string) => (onLanding ? `#${id}` : `/#${id}`);
+  // Use root-qualified anchors so Next preserves hashes consistently on the landing page
+  // and from non-landing routes.
+  const anchor = (id: string) => `/#${id}`;
 
   useEffect(() => {
     if (!onLanding) return; // Active-state observer only meaningful on the landing page.
@@ -37,9 +41,22 @@ export function Navbar() {
 
     const links = linksEl.querySelectorAll<HTMLAnchorElement>("a[data-section]");
 
-    const clickHandlers: Array<() => void> = [];
+    const clickHandlers: Array<(event: MouseEvent) => void> = [];
     links.forEach((link) => {
-      const handler = () => {
+      const handler = (event: MouseEvent) => {
+        const sectionId = link.dataset.section;
+        if (sectionId && LANDING_NAV_SECTIONS.some((section) => section.id === sectionId)) {
+          event.preventDefault();
+          const target = getLandingSectionElement(
+            LANDING_NAV_SECTIONS.find((section) => section.id === sectionId)!,
+          );
+          if (target) {
+            const navOffset = Math.ceil(document.querySelector(".landing-nav")?.getBoundingClientRect().height ?? 0) + 12;
+            const top = sectionId === "home" ? 0 : Math.max(0, target.getBoundingClientRect().top + window.scrollY - navOffset);
+            history.pushState(null, "", sectionId === "home" ? "/" : `/#${sectionId}`);
+            window.scrollTo({ top, behavior: "auto" });
+          }
+        }
         links.forEach((l) => l.classList.remove("active"));
         link.classList.add("active");
         setMobileOpen(false);
@@ -50,7 +67,7 @@ export function Navbar() {
 
     const sections = LANDING_NAV_SECTIONS.map((section) => ({
       id: section.id,
-      el: section.selector ? document.querySelector(section.selector) : document.getElementById(section.id),
+      el: getLandingSectionElement(section),
     })).filter((s) => s.el);
 
     const observer = new IntersectionObserver(

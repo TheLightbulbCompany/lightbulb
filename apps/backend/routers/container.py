@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.gateway.connection_pool import GatewayReconnectThrottled
 from core.containers.ecs_manager import (
     START_REFUSED_CAP,
     START_REFUSED_EXPIRED,
@@ -601,12 +602,16 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
         # attached. Over-preserve-safe: the grace path re-checks frontends
         # at fire time and the trial stop re-checks cross-task DDB truth.
         pool.arm_idle_teardown_if_unattended(owner_id)
-    except ConnectionRefusedError as exc:
-        # The kernel rejected the connect instantly — the gateway process
-        # isn't listening yet (the normal boot-window race this helper
-        # documents above). No lock time was consumed, so no backoff: the
-        # next ~5s poll's dial is the one that heals.
-        logger.info("status-poll pool self-heal dial refused (gateway booting) owner=%s: %s", owner_id, exc)
+    except (ConnectionRefusedError, GatewayReconnectThrottled) as exc:
+        # Both are instant, zero-lock-time failures — no backoff; the next
+        # ~5s poll's dial is the one that heals. ConnectionRefusedError:
+        # the kernel rejected the connect because the gateway process isn't
+        # listening yet (the normal boot-window race this helper documents
+        # above). GatewayReconnectThrottled: the pool's own 5s reconnect
+        # floor raised BEFORE any I/O — its throttle clears long before our
+        # backoff would, and bootstrap_dispatcher classifies it transient
+        # for the same reason.
+        logger.info("status-poll pool self-heal dial transient owner=%s: %s", owner_id, exc)
     except Exception as exc:
         # Anything else ate a real wait on the pool's global connect lock
         # (handshake timeout on a blackholed IP, auth rejection mid-boot).

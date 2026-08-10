@@ -245,6 +245,31 @@ async def test_fast_boot_refusal_retries_on_next_poll(mock_get_ecs, mock_gateway
 @pytest.mark.asyncio
 @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
 @patch("routers.container.get_ecs_manager")
+async def test_pool_reconnect_throttle_retries_on_next_poll(
+    mock_get_ecs, mock_gateway_connected, mock_pool, async_client
+):
+    """GatewayReconnectThrottled (the pool's own 5s reconnect floor, raised
+    before any I/O) is transient — it must NOT arm the 60s backoff, or a 5s
+    pool throttle would suppress status-driven repair for a minute."""
+    from core.gateway.connection_pool import GatewayReconnectThrottled
+
+    mock_ecs = AsyncMock()
+    mock_get_ecs.return_value = mock_ecs
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
+    mock_gateway_connected.return_value = False
+    mock_pool.ensure_connection = AsyncMock(side_effect=GatewayReconnectThrottled("floor"))
+
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+
+    assert mock_pool.ensure_connection.await_count == 2
+
+
+@pytest.mark.asyncio
+@patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+@patch("routers.container.get_ecs_manager")
 async def test_expensive_failure_arms_the_backoff(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
     """A non-refused failure (handshake timeout — a real wait on the global
     connect lock) arms the per-owner backoff: no re-dial on the next poll."""

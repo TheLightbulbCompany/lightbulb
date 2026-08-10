@@ -140,6 +140,28 @@ async def test_disconnect_revokes(async_client):
 
 
 @pytest.mark.asyncio
+async def test_disconnect_keeps_harness_row_when_unlink_fails(async_client):
+    """Harness cleanup during provider disconnect is FILE first, row second:
+    the file is the live credential, so if the unlink fails the row must
+    survive with it — deleting the row over a surviving auth.json would leave
+    an untracked, still-spawnable credential. The disconnect itself still
+    succeeds (best-effort chain; the provider revoke is the authoritative
+    act)."""
+    with (
+        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+        patch(
+            "routers.oauth.delete_opencode_auth",
+            new=AsyncMock(side_effect=OSError("efs io")),
+        ),
+        patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+    assert resp.status_code == 200
+    # Only the provider row was revoked — the harness revoke never ran.
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+
+
+@pytest.mark.asyncio
 async def test_disconnect_personal_unchanged(async_client):
     """Personal /disconnect revokes the user's OAuth row, deletes the EFS
     auth-profiles store keyed on the personal owner (== the Clerk user), and

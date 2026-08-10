@@ -433,6 +433,19 @@ describe("CodingHarnessBlock", () => {
     ).toHaveAttribute("href", "https://auth.openai.com/codex/device");
   });
 
+  it("pending + expired code: offers Get a new code instead of waiting forever", () => {
+    mockHarnessState.mockReturnValue({
+      status: "pending",
+      userCode: "HARN-1234",
+      verificationUri: "https://auth.openai.com/codex/device",
+      expiresAt: Date.now() - 1000,
+    });
+    render(<LLMPanel />);
+    expect(screen.getByText(/this code expired/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /get a new code/i }));
+    expect(mockHarnessStart).toHaveBeenCalledTimes(1);
+  });
+
   it("completed: Disconnect calls the harness disconnect, not the provider's", async () => {
     mockHarnessState.mockReturnValue({ status: "completed", accountId: "acc_h" });
     mockHarnessDisconnect.mockResolvedValueOnce(undefined);

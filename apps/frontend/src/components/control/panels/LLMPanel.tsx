@@ -155,6 +155,16 @@ function CodingHarnessBlock() {
     autoStart: false,
   });
   const [busy, setBusy] = useState(false);
+  // Ticks while a code is pending so the expired affordance appears on its
+  // own — the device code lives ~15 minutes, and the poll loop reports
+  // "pending" forever on an expired session, so without this the card would
+  // wait indefinitely with no way to get a new code.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (state.status !== "pending") return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [state.status]);
 
   const handleDisconnect = async () => {
     setBusy(true);
@@ -198,9 +208,23 @@ function CodingHarnessBlock() {
             and enter this code:
           </p>
           <p className="font-mono text-lg tracking-widest text-[var(--ink)]">{state.userCode}</p>
-          <p className="text-xs text-[var(--mute)]">
-            Waiting for you to finish signing in — this updates automatically.
-          </p>
+          {state.expiresAt - now <= 0 ? (
+            <>
+              <p className="text-xs text-[var(--danger)]">
+                This code expired. Get a new one to finish connecting.
+              </p>
+              <button
+                onClick={() => void start()}
+                className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+              >
+                Get a new code
+              </button>
+            </>
+          ) : (
+            <p className="text-xs text-[var(--mute)]">
+              Waiting for you to finish signing in — this updates automatically.
+            </p>
+          )}
         </>
       )}
       {(state.status === "idle" || state.status === "error") && (

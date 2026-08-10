@@ -350,10 +350,14 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     # revoke it (and the running config keeps advertising opencode until
     # reprovision). Best-effort like the rest of this cleanup chain — the
     # provider disconnect above is the authoritative act, and a reconnect
-    # re-offers the harness grant in the wizard.
+    # re-offers the grant in the wizard. FILE first, row second (same order
+    # as /harness/disconnect): the file is the live credential, so if the
+    # unlink fails the row must survive with it — row-and-file stay
+    # consistent, and a later reconnect/disconnect or account wipe can still
+    # find and clean the grant.
     try:
-        await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
         await delete_opencode_auth(user_id=owner_id)
+        await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
     except Exception:
         logger.exception("harness cleanup failed during disconnect for owner %s", owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to

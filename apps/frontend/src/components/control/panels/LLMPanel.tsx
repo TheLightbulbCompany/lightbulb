@@ -212,7 +212,7 @@ function CodingHarnessBlock() {
             main connection.
           </p>
           {state.status === "error" && (
-            <p className="text-sm text-[var(--danger,#b3382e)]">{state.message}</p>
+            <p className="text-sm text-[var(--danger)]">{state.message}</p>
           )}
           <button
             onClick={() => void start()}

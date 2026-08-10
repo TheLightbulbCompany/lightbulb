@@ -64,6 +64,10 @@ export function useChatGPTOAuth(
   { basePath = "/oauth/chatgpt", autoStart = true }: ChatGPTOAuthOptions = {},
 ) {
   const [state, setState] = useState<OAuthState>({ status: "idle" });
+  // Whether the on-mount /status probe has resolved. Until then, "idle" is
+  // ambiguous (could still flip to completed); consumers that branch on
+  // connected-vs-not (the wizard's harness offer) wait for probed first.
+  const [probed, setProbed] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollIntervalSec = useRef<number>(DEFAULT_POLL_INTERVAL_S);
   // Guards the on-mount status-probe + auto-start sequence so React 19
@@ -181,6 +185,8 @@ export function useChatGPTOAuth(
         // knowing whether /start would 409.
         const message = e instanceof Error ? e.message : "OAuth status probe failed";
         setState({ status: "error", message });
+      } finally {
+        setProbed(true);
       }
     })();
     // Run-once on mount by design — re-running on every `api`/`start`
@@ -189,5 +195,5 @@ export function useChatGPTOAuth(
     // eslint.config.js), so no disable directive is needed here.
   }, []);
 
-  return { state, start, disconnect };
+  return { state, start, disconnect, probed };
 }

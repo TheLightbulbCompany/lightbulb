@@ -2,6 +2,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import React from "react";
 
+// Global-mutate spy for the ready re-kick (the stepper sweeps `rpc|*` SWR
+// keys via useSWRConfig().mutate on the not-ready→ready transition). Partial
+// mock: everything else in `swr` stays real for any hook in the tree.
+const { swrGlobalMutate } = vi.hoisted(() => ({ swrGlobalMutate: vi.fn() }));
+vi.mock("swr", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("swr")>();
+  return {
+    ...actual,
+    useSWRConfig: () => ({ mutate: swrGlobalMutate }),
+  };
+});
+
 // Gateway event bus stub — lets tests push status_change events the way
 // the backend's connection pool does over the WebSocket.
 let gwEventHandlers: Array<(event: string, payload: unknown) => void> = [];
@@ -1315,3 +1327,114 @@ describe("ProvisioningStepper per-container onboarding gate", () => {
 // at the shared-hook level, in
 // packages/shared/src/hooks/useOnboardingStatus.test.ts — not re-tested per
 // consumer here.
+
+// Ready re-kick: the observed not-ready→ready transition on the HTTP status
+// poll must revive every gateway `rpc|*` SWR key. Those keys go permanently
+// dead during a long cold start (fixed 3s error-retry chain capped at 100,
+// and SWR never fires refreshInterval while a key holds an error), and
+// nothing else observes readiness on a channel independent of the gateway
+// WS — a stuck wake used to need a full page reload to recover.
+describe("ProvisioningStepper ready re-kick", () => {
+  const baseProv = {
+    phase: "normal",
+    blocked: null,
+    refreshInterval: 3000,
+    refresh: vi.fn(),
+  };
+
+  beforeEach(() => {
+    swrGlobalMutate.mockClear();
+    clerkMockUser = { id: "user_1", unsafeMetadata: {} };
+    clerkMockIsLoaded = true;
+    clerkMockOrganization = null;
+    billingMockIsSubscribed = true;
+    billingMockAccount = { provider_choice: "bedrock_claude" };
+  });
+
+  function renderPhases(first: Record<string, unknown>) {
+    useProvMock.mockReturnValue({ ...baseProv, container: first });
+    return render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+  }
+
+  function rerenderWith(
+    rerender: (ui: React.ReactElement) => void,
+    container: Record<string, unknown>,
+  ) {
+    useProvMock.mockReturnValue({ ...baseProv, container });
+    rerender(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+  }
+
+  it("revives gateway rpc keys on the observed starting→ready transition", () => {
+    const { rerender } = renderPhases({
+      container_status: "running",
+      runtime_phase: "starting",
+    });
+    expect(swrGlobalMutate).not.toHaveBeenCalled();
+
+    rerenderWith(rerender, {
+      container_status: "running",
+      runtime_phase: "ready",
+      onboarded: true,
+    });
+
+    expect(swrGlobalMutate).toHaveBeenCalledTimes(1);
+    const filter = swrGlobalMutate.mock.calls[0][0] as (key: unknown) => boolean;
+    // Sweeps every gateway RPC key…
+    expect(filter("rpc|agents.list|")).toBe(true);
+    expect(filter('rpc|health|{"a":1}')).toBe(true);
+    // …and nothing else (Teams BFF keys, non-string keys).
+    expect(filter("/teams/inbox")).toBe(false);
+    expect(filter(["array-key"])).toBe(false);
+  });
+
+  it("stays ready without re-sweeping on subsequent polls", () => {
+    const { rerender } = renderPhases({
+      container_status: "running",
+      runtime_phase: "starting",
+    });
+    rerenderWith(rerender, {
+      container_status: "running",
+      runtime_phase: "ready",
+      onboarded: true,
+    });
+    rerenderWith(rerender, {
+      container_status: "running",
+      runtime_phase: "ready",
+      onboarded: true,
+    });
+    expect(swrGlobalMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not sweep on a warm mount that first observes ready", () => {
+    // A page load straight onto a ready container mount-revalidates every
+    // key anyway; the sweep would only double-fetch.
+    renderPhases({
+      container_status: "running",
+      runtime_phase: "ready",
+      onboarded: true,
+    });
+    expect(swrGlobalMutate).not.toHaveBeenCalled();
+  });
+
+  it("does not sweep on parked→ready (unpark resumes SWR keys itself)", () => {
+    const { rerender } = renderPhases({
+      container_status: "running",
+      runtime_phase: "ready",
+      parked: true,
+    });
+    rerenderWith(rerender, {
+      container_status: "running",
+      runtime_phase: "ready",
+      onboarded: true,
+    });
+    expect(swrGlobalMutate).not.toHaveBeenCalled();
+  });
+});

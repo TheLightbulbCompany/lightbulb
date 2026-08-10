@@ -738,6 +738,15 @@ class ConnectionService:
                 TableName=self.table_name,
                 Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
                 ProjectionExpression="lastPingAt, connToken",
+                # Strongly consistent: this read gates an IRREVERSIBLE
+                # container stop, and a replacement's mark_gateway_connected
+                # may have landed milliseconds ago on another worker — an
+                # eventually-consistent read could miss it or return the
+                # superseded token. One 2x-RCU read per stop attempt is
+                # nothing; is_gateway_connected stays eventually consistent
+                # because its readiness consumer runs on every poll and
+                # fails toward the harmless side.
+                ConsistentRead=True,
             )
             item = resp.get("Item")
             if item is None:

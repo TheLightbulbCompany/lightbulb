@@ -9,6 +9,14 @@ network I/O of its own beyond AWS):
     uv run python -m scripts.ingest_companies_registry \
         --repo-dir /tmp/pc-companies --commit <sha> [--dry-run]
 
+First-party recipe packages live in THIS repo under ``apps/backend/registry/``
+and go through the same pipeline — point --repo-dir at that directory and
+stamp honest provenance with --source-repo:
+
+    uv run python -m scripts.ingest_companies_registry \
+        --repo-dir registry --commit $(git rev-parse HEAD) \
+        --source-repo Isol8AI/isol8 [--dry-run]
+
 Writes published format="company" rows via the marketplace repo with the
 system seller id (the seller service surface is a seller-centric
 draft→review state machine; curated ingestion drives the repo transitions
@@ -75,7 +83,14 @@ def build_package_tarball(pkg_dir: Path) -> bytes:
     return gz_buf.getvalue()
 
 
-async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: dict[str, str], dry_run: bool) -> dict:
+async def ingest_one(
+    pkg_dir: Path,
+    *,
+    source_commit: str,
+    existing_listings: dict[str, str],
+    dry_run: bool,
+    source_repo: str = SOURCE_REPO,
+) -> dict:
     meta = parse_company_meta(pkg_dir)
     if meta.slug in existing_listings:
         # Unconditional skip for ANY existing row, even a half-transitioned
@@ -97,7 +112,7 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: di
     manifest = {
         "company": {
             **meta.to_manifest_dict(),
-            "source": {"repo": SOURCE_REPO, "commit": source_commit, "path": pkg_dir.name},
+            "source": {"repo": source_repo, "commit": source_commit, "path": pkg_dir.name},
         }
     }
     if dry_run:
@@ -159,7 +174,12 @@ async def ingest_one(pkg_dir: Path, *, source_commit: str, existing_listings: di
 
 
 async def ingest_all(
-    repo_dir: Path, *, source_commit: str, existing_listings: dict[str, str], dry_run: bool
+    repo_dir: Path,
+    *,
+    source_commit: str,
+    existing_listings: dict[str, str],
+    dry_run: bool,
+    source_repo: str = SOURCE_REPO,
 ) -> list[dict]:
     """Run ingest_one over every discovered package, printing one summary
     line per package. A per-package exception becomes an ``error`` summary
@@ -178,6 +198,7 @@ async def ingest_all(
                 source_commit=source_commit,
                 existing_listings=existing_listings,
                 dry_run=dry_run,
+                source_repo=source_repo,
             )
         except Exception as exc:
             summary = {"slug": pkg_dir.name, "status": "error", "error": str(exc)}
@@ -190,6 +211,11 @@ async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo-dir", type=Path, required=True)
     ap.add_argument("--commit", required=True, help="pinned registry SHA (provenance)")
+    ap.add_argument(
+        "--source-repo",
+        default=SOURCE_REPO,
+        help="registry repo stamped into manifest provenance (default: the companies.sh registry)",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -212,6 +238,7 @@ async def main() -> None:
         source_commit=args.commit,
         existing_listings=existing,
         dry_run=args.dry_run,
+        source_repo=args.source_repo,
     )
     # Non-zero exit when anything errored so the operator (or a wrapping
     # shell) can't mistake a partial run for a clean one.

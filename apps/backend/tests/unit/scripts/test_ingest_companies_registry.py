@@ -18,6 +18,9 @@ from scripts.ingest_companies_registry import (
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "companies"
+# First-party recipe packages checked into this repo (ingested with
+# --repo-dir registry --source-repo Isol8AI/isol8).
+REGISTRY = Path(__file__).resolve().parents[3] / "registry"
 
 # Dict-shaped finding matching scan_tarball's real return contract
 # (dataclasses.asdict of a marketplace_safety.SafetyFlag).
@@ -104,6 +107,59 @@ async def test_ingest_one_pipeline(monkeypatch):
     assert update_artifact.call_args.kwargs["sha"] == "sha"
     assert update_artifact.call_args.kwargs["seller_id"] == ISOL8_SYSTEM_SELLER_ID
     assert mark_published.call_args.kwargs["approved_by"] == ISOL8_SYSTEM_SELLER_ID
+
+
+def test_support_inbox_recipe_package_is_ingestable():
+    """The checked-in support-inbox recipe must survive the whole pipeline's
+    static gates: it parses as an agentcompanies/v1 package, yields a valid
+    deploy plan (a broken plan bricks the buyer-side hire), and the REAL
+    safety scan finds nothing (a finding blocks ingestion outright)."""
+    from core.services.agent_export import _scan_tarball_for_safety_flags
+    from core.services.company_package import parse_company_meta, parse_deploy_plan
+
+    pkg = REGISTRY / "support-inbox"
+    meta = parse_company_meta(pkg)
+    assert meta.slug == "support-inbox"
+    assert meta.agent_slugs == ["support-triage"]
+    assert meta.min_plan == "standard"
+    assert meta.description  # becomes the listing's description_md
+
+    plan = parse_deploy_plan(pkg)
+    assert plan.ceo_slug == "support-triage"  # sole agent, reportsTo: null
+    assert plan.agents[0].body_md.strip()  # AGENTS.md body is the agent identity
+
+    assert _scan_tarball_for_safety_flags(build_package_tarball(pkg)) == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_one_stamps_source_repo_override(monkeypatch):
+    """First-party packages ingested from this repo must not claim
+    companies.sh provenance — --source-repo overrides the manifest stamp."""
+    from scripts import ingest_companies_registry as mod
+
+    monkeypatch.setattr(mod, "scan_tarball", lambda b: [])
+    upload = AsyncMock(return_value=("listings/x/v1/", "sha"))
+    monkeypatch.setattr(mod, "_upload_artifact_to_s3", upload)
+    monkeypatch.setattr(mod.marketplace_repo, "put_draft_v1", AsyncMock())
+    monkeypatch.setattr(mod.marketplace_repo, "update_artifact_fields", AsyncMock())
+    monkeypatch.setattr(mod.marketplace_repo, "mark_review", AsyncMock())
+    monkeypatch.setattr(mod.marketplace_repo, "mark_published", AsyncMock())
+
+    summary = await ingest_one(
+        REGISTRY / "support-inbox",
+        source_commit="deadbeef",
+        existing_listings={},
+        dry_run=False,
+        source_repo="Isol8AI/isol8",
+    )
+
+    assert summary["status"] == "published"
+    manifest = upload.call_args.kwargs["manifest"]
+    assert manifest["company"]["source"] == {
+        "repo": "Isol8AI/isol8",
+        "commit": "deadbeef",
+        "path": "support-inbox",
+    }
 
 
 @pytest.mark.asyncio

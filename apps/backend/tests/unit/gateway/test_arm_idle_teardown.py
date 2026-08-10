@@ -223,3 +223,32 @@ async def test_grace_stop_proceeds_over_own_stale_liveness_row():
     ):
         await pool._maybe_stop_trial_container(USER, trigger="grace", closed_conn_token="tok-old")
     stop.assert_awaited_once_with(USER, reason="trial_idle")
+
+
+@pytest.mark.asyncio
+async def test_grace_stop_aborted_when_liveness_read_fails():
+    """An unreadable liveness row means the replacement question is
+    UNANSWERED — any doubt = don't stop. The getter propagates and the stop
+    path's catch-all skips the stop; the next teardown cycle retries."""
+    conn_svc = MagicMock()
+    conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
+    conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    conn_svc.get_live_gateway_conn_token = AsyncMock(side_effect=RuntimeError("ddb read failed"))
+    pool = GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
+
+    from core.repositories import billing_repo as billing_mod
+
+    stop = AsyncMock()
+    with (
+        patch.object(
+            billing_mod,
+            "get_by_owner_id",
+            AsyncMock(return_value={"subscription_status": "trial_local"}),
+        ),
+        patch(
+            "core.containers.get_ecs_manager",
+            return_value=MagicMock(stop_user_service=stop),
+        ),
+    ):
+        await pool._maybe_stop_trial_container(USER, trigger="grace", closed_conn_token="tok-old")
+    stop.assert_not_called()

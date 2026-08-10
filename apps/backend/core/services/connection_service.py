@@ -721,6 +721,15 @@ class ConnectionService:
         replacement — otherwise one failed delete inside the freshness
         window vetoes the stop with nothing left to re-arm it, and the
         container runs indefinitely.
+
+        Read failures PROPAGATE — deliberately unlike
+        ``is_gateway_connected``, which fails toward False because its
+        consumer (readiness) must fail toward the cold-start UI. This
+        getter's sole consumer is the stop veto, where "unreadable" must
+        mean "abort this stop attempt" (any doubt = don't stop): mapping a
+        failure to None would read as "no replacement" and stop a container
+        another worker may have just connected to. The stop path's
+        catch-all absorbs the raise and skips the stop.
         """
         now_epoch = int(time.time())
 
@@ -740,15 +749,7 @@ class ConnectionService:
                 return None
             return item.get("connToken", {}).get("S")
 
-        try:
-            return await asyncio.to_thread(_get)
-        except ClientError as e:
-            logger.warning(
-                "get_live_gateway_conn_token read failed for owner %s (defaulting None): %s",
-                owner_id,
-                e.response["Error"]["Message"],
-            )
-            return None
+        return await asyncio.to_thread(_get)
 
     async def is_gateway_connected(self, owner_id: str) -> bool:
         """Whether the gateway-liveness row for ``owner_id`` is present AND

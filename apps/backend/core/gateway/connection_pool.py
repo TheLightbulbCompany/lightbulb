@@ -3176,6 +3176,12 @@ class GatewayConnectionPool:
                 account = None
             is_trial = bool(account) and account.get("subscription_status") == "trial_local"
             run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
+            # Captured BEFORE close_user pops the connection: the stop's
+            # replacement veto needs to tell a genuinely new connection's
+            # liveness row apart from THIS connection's own leftover row
+            # (mark_gateway_disconnected's conditioned delete can fail).
+            closed_conn = self._connections.get(user_id)
+            closed_conn_token = getattr(closed_conn, "_liveness_token", None)
             await self.close_user(user_id)
             if not (is_trial and not run_in_flight):
                 return
@@ -3187,7 +3193,7 @@ class GatewayConnectionPool:
             self._grace_tasks[user_id] = asyncio.current_task()
             try:
                 await asyncio.sleep(_TRIAL_STOP_GRACE_S)
-                await self._maybe_stop_trial_container(user_id)
+                await self._maybe_stop_trial_container(user_id, closed_conn_token=closed_conn_token)
             finally:
                 if self._grace_tasks.get(user_id) is asyncio.current_task():
                     self._grace_tasks.pop(user_id, None)
@@ -3206,7 +3212,9 @@ class GatewayConnectionPool:
             # a normally-completed cycle closed its connection.
             self.arm_idle_teardown_if_unattended(user_id)
 
-    async def _maybe_stop_trial_container(self, owner_id: str, trigger: str = "grace") -> None:
+    async def _maybe_stop_trial_container(
+        self, owner_id: str, trigger: str = "grace", closed_conn_token: str | None = None
+    ) -> None:
         """Stop a trial container that provably has nobody using it.
 
         Every check must pass; any doubt = don't stop (over-preserve, never
@@ -3272,15 +3280,21 @@ class GatewayConnectionPool:
                 # The lock above is process-local; a replacement dial can
                 # land on a DIFFERENT backend worker. Its one durable
                 # announcement is the gateway-liveness row
-                # (mark_gateway_connected). On the grace path our own
-                # connection was closed — and its liveness row deleted —
-                # before the stop-grace sleep, so a fresh row here IS a
-                # replacement, wherever it lives; the worker that dialed it
-                # armed its own teardown cycle, and stopping on the old
-                # deadline would kill the container under it. Direct
-                # callers skip this veto: they stop while a connection
-                # (and hence a live row) may legitimately exist.
-                if await self._conn_svc.is_gateway_connected(owner_id):
+                # (mark_gateway_connected). Compare TOKENS, not mere
+                # presence: our own row's conditioned delete can fail, and
+                # a leftover row refreshed just before close is still
+                # inside the freshness window at stop-fire time — treating
+                # it as a replacement would veto the stop with nothing left
+                # to re-arm it (the container would run indefinitely). A
+                # fresh row bearing a DIFFERENT token is a genuine
+                # replacement, wherever it lives — the worker that dialed
+                # it armed its own teardown cycle; one bearing the token of
+                # the connection THIS cycle closed is our own stale row and
+                # is no reason to keep the container up. Direct callers
+                # skip this veto: they stop while a live connection (and
+                # row) may legitimately exist.
+                live_token = await self._conn_svc.get_live_gateway_conn_token(owner_id)
+                if live_token is not None and live_token != closed_conn_token:
                     return
 
             from core.containers import get_ecs_manager

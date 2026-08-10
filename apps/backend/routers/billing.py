@@ -600,9 +600,12 @@ async def create_trial_checkout(
         # to mint a replacement. The claim from that session's create may
         # still be inside its 90s TTL — release it, or the mint below 409s
         # `checkout_in_progress` and a provider switch is stuck for up to
-        # 90s. Safe under concurrency: releasing only re-opens the claim,
-        # and create_flat_fee_checkout re-acquires it, so exactly one
-        # concurrent minter still wins.
+        # 90s. This is the ONE deliberate TOKEN-LESS release: we are clearing
+        # a *confirmed-dead* session's lingering claim that this request does
+        # not itself hold, so we cannot pass its token. The create-path
+        # failure releases ARE token-fenced (that was the double-charge ABA);
+        # this residual foreign-clear window is far narrower — a fully fenced
+        # switch would stamp the session id on the claim (follow-up).
         try:
             await billing_repo.release_checkout_slot(owner_id)
         except Exception:

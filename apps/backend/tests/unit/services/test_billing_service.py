@@ -1,6 +1,6 @@
 """Tests for BillingService — flat-fee model."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -1155,7 +1155,8 @@ class TestCheckoutSlotClaim:
             await billing_service.create_flat_fee_checkout(owner_id="u_1")
 
         mock_expire.assert_called_once_with("cs_unrecorded")
-        mock_release.assert_awaited_once_with("u_1")
+        # Release is fenced on the claim's own token (see release_checkout_slot).
+        mock_release.assert_awaited_once_with("u_1", token=ANY)
 
     @pytest.mark.asyncio
     async def test_build_failure_releases_slot(self, monkeypatch):
@@ -1176,7 +1177,7 @@ class TestCheckoutSlotClaim:
             pytest.raises(BillingServiceError, match="No Stripe customer"),
         ):
             await billing_service.create_flat_fee_checkout(owner_id="u_1")
-        mock_release.assert_awaited_once_with("u_1")
+        mock_release.assert_awaited_once_with("u_1", token=ANY)
 
 
 class TestCreditTopUpProvisionsOnDemand:

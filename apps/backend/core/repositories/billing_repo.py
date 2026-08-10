@@ -203,28 +203,34 @@ async def set_pending_checkout(
     )
 
 
-async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 90) -> bool:
+async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 90) -> str | None:
     """Conditional-write claim serializing Checkout session creation per owner.
 
     Two concurrent ``/trial-checkout`` requests with DIFFERENT provider
     choices carry different Stripe idempotency keys, so without this claim
     both would mint distinct completable sessions before either post-create
     ``set_pending_checkout`` write lands — completing both double-charges.
-    Returns True to exactly ONE caller inside the TTL window; mirrors
-    ``try_claim_nightly_arm``. The claim is a timestamp, not a flag: a
-    request that dies between claim and session create self-heals after
-    ``ttl_seconds`` (session creation takes ~1s, so 90s is generous).
-    No phantom rows: guarded on ``attribute_exists(owner_id)``.
+    Returns a claim TOKEN to exactly ONE caller inside the TTL window (``None``
+    if the slot is held). The claim is a timestamp, not a flag: a request that
+    dies between claim and session create self-heals after ``ttl_seconds``
+    (session creation takes ~1s, so 90s is generous). No phantom rows: guarded
+    on ``attribute_exists(owner_id)``.
+
+    Pass the returned token to :func:`release_checkout_slot` — a late
+    failure-path release is then fenced on it and can only clear ITS OWN claim,
+    never a concurrent create that re-claimed the expired slot in between.
     """
     table = _get_table()
     now = int(time.time())
+    token = uuid.uuid4().hex
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="SET checkout_claim_at = :now, updated_at = :t",
+            UpdateExpression="SET checkout_claim_at = :now, checkout_claim_token = :tok, updated_at = :t",
             ExpressionAttributeValues={
                 ":now": now,
+                ":tok": token,
                 ":cutoff": now - ttl_seconds,
                 ":t": utc_now_iso(),
             },
@@ -235,26 +241,41 @@ async def try_claim_checkout_slot(owner_id: str, *, ttl_seconds: int = 90) -> bo
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
+            return None
         raise
-    return True
+    return token
 
 
-async def release_checkout_slot(owner_id: str) -> None:
+async def release_checkout_slot(owner_id: str, *, token: str | None = None) -> None:
     """Release the checkout-slot claim after a FAILED session create, so the
-    user's retry doesn't wait out the TTL. Only the claim holder calls this
-    inside its window (the claim condition blocks concurrent claimants), so
-    an unconditional REMOVE cannot clobber someone else's claim. No-row is a
-    silent no-op.
+    user's retry doesn't wait out the TTL. No-row is a silent no-op.
+
+    Pass the ``token`` returned by :func:`try_claim_checkout_slot`: the REMOVE
+    is fenced on it, so a create that hung past the 90s TTL and then failed can
+    only clear its OWN claim — never a concurrent create that re-claimed the
+    expired slot in the meantime. Without the fence, that late release deleted
+    the new holder's claim, letting a third caller mint a second completable
+    Checkout session → **two charged subscriptions**.
+
+    ``token=None`` performs the legacy UNCONDITIONAL clear, used ONLY by the
+    provider-switch path that deliberately frees a *confirmed-dead* session's
+    lingering claim it does not itself hold (``routers/billing.py``). That
+    residual foreign-clear window is far narrower than the create-path ABA; a
+    fully fenced switch would stamp the session id on the claim (follow-up).
     """
     table = _get_table()
+    expr_values: dict = {":t": utc_now_iso()}
+    condition = "attribute_exists(owner_id)"
+    if token is not None:
+        condition += " AND checkout_claim_token = :tok"
+        expr_values[":tok"] = token
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE checkout_claim_at SET updated_at = :t",
-            ExpressionAttributeValues={":t": utc_now_iso()},
-            ConditionExpression="attribute_exists(owner_id)",
+            UpdateExpression="REMOVE checkout_claim_at, checkout_claim_token SET updated_at = :t",
+            ExpressionAttributeValues=expr_values,
+            ConditionExpression=condition,
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

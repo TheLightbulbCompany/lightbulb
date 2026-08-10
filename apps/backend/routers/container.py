@@ -580,12 +580,18 @@ async def container_status(
         and _self_heal_dial_allowed(owner_id)
     ):
         _self_heal_inflight.add(owner_id)
-        asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
+        # Resolve the pool HERE, not inside the detached task: a task that
+        # first runs after shutdown_containers() reset the singleton would
+        # otherwise construct a brand-new pool whose _closing fence is down
+        # and install a connection past the shutdown snapshot.
+        asyncio.create_task(
+            _pool_self_heal_connect(get_gateway_pool(), owner_id, container_ip, container["gateway_token"])
+        )
 
     return _status_response(contract)
 
 
-async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
+async def _pool_self_heal_connect(pool, owner_id: str, ip: str, token: str) -> None:
     """Background dial for the status poll's pool self-heal.
 
     Same (owner, ip, token) triple and ensure_connection primitive the chat
@@ -598,7 +604,6 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
     on ``_self_heal_backoff_at``).
     """
     try:
-        pool = get_gateway_pool()
         if pool.is_user_connected(owner_id):
             return
         await pool.ensure_connection(owner_id, ip, token)

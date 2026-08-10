@@ -220,6 +220,8 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         llm_task_model,
         web_search_provider,
         tool_search_mode,
+        acp_block,
+        acpx_entry,
     ):
         # Hot swap into chatgpt_oauth — shape pinned by the personal hot-path
         # test; here we only care that the org claim + connector write happen.
@@ -688,6 +690,8 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         llm_task_model,
         web_search_provider,
         tool_search_mode,
+        acp_block,
+        acpx_entry,
     ):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
@@ -729,6 +733,14 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # Same for toolSearch: never written for chatgpt_oauth at provision,
         # so the swap must delete any stale embedded-runtime key.
         assert tool_search_mode is None
+        # The harness set follows the provider: a bedrock owner arriving on
+        # chatgpt_oauth swaps claude → opencode, and the acpx agents map must
+        # ride along (the patcher's plugins.entries rebuild would otherwise
+        # drop the acpx entry entirely, stranding the harness until a cold
+        # reprovision).
+        assert acp_block["allowedAgents"] == ["opencode"]
+        assert acp_block["defaultAgent"] == "opencode"
+        assert acpx_entry["acpx"]["config"]["agents"]["opencode"]["command"] == "env"
 
     with (
         patch(

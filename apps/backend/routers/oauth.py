@@ -344,6 +344,18 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     # gateway to drop it via models.authLogout so disconnect revokes the live
     # token immediately — best-effort, a no-op if the container is cold.
     await revoke_provider_auth_in_container(owner_id)
+    # The coding-harness grant leaves with the main connection: clearing
+    # provider_choice below hides the harness management card, so a surviving
+    # #harness row + auth.json would be a live credential with no UI to
+    # revoke it (and the running config keeps advertising opencode until
+    # reprovision). Best-effort like the rest of this cleanup chain — the
+    # provider disconnect above is the authoritative act, and a reconnect
+    # re-offers the harness grant in the wizard.
+    try:
+        await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+        await delete_opencode_auth(user_id=owner_id)
+    except Exception:
+        logger.exception("harness cleanup failed during disconnect for owner %s", owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to
     # onboarding to pick a provider. Without this, the wizard sees
     # provider_choice=chatgpt_oauth on a billing row with no auth.json and the

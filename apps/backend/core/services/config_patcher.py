@@ -204,11 +204,23 @@ async def replace_provider_block(
     llm_task_model: str | None = None,
     web_search_provider: str | None = None,
     tool_search_mode: str | None = None,
+    acp_block: dict | None = None,
+    acpx_entry: dict | None = None,
 ) -> None:
     """Atomically swap the three openclaw.json subtrees that define the LLM
     provider: ``models.providers``, ``agents.defaults.model``, and
     ``plugins.entries`` — and re-pin the CEO agent's per-agent ``model`` plus
     the aux-model overrides under ``agents.defaults``.
+
+    ``acp_block`` / ``acpx_entry`` keep the coding-harness config in sync
+    with the new provider: the harness set is provider-derived (bedrock →
+    claude, chatgpt_oauth → opencode), so a swap must replace the root
+    ``acp`` block (``allowedAgents``/``defaultAgent``) and re-seed the acpx
+    plugin entry — which the wholesale ``plugins.entries`` rebuild below
+    would otherwise DROP, leaving the container with the old provider's ACP
+    policy and no acpx runtime at all until a cold reprovision. ``None``
+    leaves the root ``acp`` block untouched (and adds no acpx entry) — live
+    callers always pass both.
 
     Used by the post-onboarding change-provider hot path
     (``billing_service.change_provider`` for Bedrock ↔ ChatGPT switches).
@@ -445,8 +457,16 @@ async def replace_provider_block(
         plugins["entries"] = {
             **workflow_plugin_entries(llm_task_model=llm_task_model),
             **memory_plugin_entries(),
+            **copy.deepcopy(acpx_entry or {}),
             **copy.deepcopy(plugin_entries),
         }
+
+        # The harness set follows the provider, so the swap replaces the root
+        # acp block wholesale (a deep-merge could not clear the old
+        # allowedAgents). The acpx plugin entry re-seeds via the rebuild
+        # above.
+        if acp_block is not None:
+            current["acp"] = copy.deepcopy(acp_block)
 
         # memorySearch is intentionally NOT rewritten here. Its embedding
         # backend is provider-derived (config.memory_search_entry), but both

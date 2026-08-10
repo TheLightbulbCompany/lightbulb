@@ -132,7 +132,7 @@ async def test_disconnect_revokes(async_client):
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
-    mock_revoke.assert_awaited_once()
+    assert mock_revoke.await_count == 2  # provider row + harness grant
     # 6.6: disconnect must also clear the credential the running container
     # already imported into its SQLite store (models.authLogout), not just the
     # EFS seed file.
@@ -154,6 +154,7 @@ async def test_disconnect_personal_unchanged(async_client):
     with (
         patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
         patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
+        patch("routers.oauth.delete_opencode_auth", new=AsyncMock()) as mock_delete_oc,
         patch(
             "core.repositories.billing_repo.clear_provider_choice",
             new=AsyncMock(),
@@ -162,8 +163,14 @@ async def test_disconnect_personal_unchanged(async_client):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
 
     assert resp.status_code == 200
-    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+    # The harness grant leaves with the main connection: clearing
+    # provider_choice hides its management card, so a surviving #harness row
+    # would be a live credential with no UI. Provider row first, then harness.
+    assert mock_revoke.await_count == 2
+    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
+    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
     mock_delete.assert_awaited_once_with(user_id="user_test_123")
+    mock_delete_oc.assert_awaited_once_with(user_id="user_test_123")
     mock_clear.assert_awaited_once_with("user_test_123")
 
 
@@ -611,7 +618,14 @@ class TestDisconnectOrgRules:
         ):
             resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
         assert resp.status_code == 200
-        mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+        # Both token rows go (provider chain + harness grant), keyed on the
+        # HUMAN connector; the EFS files are keyed on the CONTAINER owner.
+        assert mock_revoke.await_count == 2
+        assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
+        assert mock_revoke.await_args_list[1].kwargs == {
+            "user_id": "user_test_123",
+            "purpose": "harness",
+        }
         mock_delete.assert_awaited_once_with(user_id="org_test_456")
         mock_clear.assert_awaited_once_with("org_test_456")
 

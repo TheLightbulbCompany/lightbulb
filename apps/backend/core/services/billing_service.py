@@ -1641,8 +1641,10 @@ async def _hot_swap_provider(
     back to the cold path.
     """
     from core.containers.config import (
+        build_acp_config,
         build_provider_block,
         cheap_model_ref,
+        derive_enabled_harnesses,
         heartbeat_model_ref,
         premium_model_ref,
     )
@@ -1729,6 +1731,18 @@ async def _hot_swap_provider(
     # web search at all. Mirrors build_openclaw_config_dict.
     web_search_provider = "parallel-free"
 
+    # The coding-harness set follows the provider (bedrock → claude,
+    # chatgpt_oauth → opencode), so the swap must replace the acp block and
+    # re-seed the acpx entry — the patcher's plugins.entries rebuild would
+    # otherwise drop acpx entirely and leave the old provider's ACP policy.
+    harnesses = derive_enabled_harnesses(new_provider, None)
+    if harnesses:
+        acp_block, acpx_entry = build_acp_config(harnesses)
+    else:
+        # Defensive: no hot-path provider derives empty today. Disable
+        # rather than leave the old policy advertising unauthable spawns.
+        acp_block, acpx_entry = {"enabled": False}, None
+
     try:
         await replace_provider_block(
             owner_id,
@@ -1745,6 +1759,8 @@ async def _hot_swap_provider(
             # Provision-time never writes toolSearch for chatgpt_oauth (the
             # hot path's only target) — delete any stale embedded-runtime key.
             tool_search_mode=None,
+            acp_block=acp_block,
+            acpx_entry=acpx_entry,
         )
     except ConfigPatchError as e:
         logger.info(

@@ -1026,6 +1026,34 @@ async def test_replace_provider_block_preserves_unrelated_subtrees(tmp_efs_with_
 
 
 @pytest.mark.asyncio
+async def test_replace_provider_block_swaps_acp_and_seeds_acpx(tmp_efs_with_bedrock_provider):
+    """The harness set follows the provider: passing acp_block/acpx_entry
+    replaces the root acp block wholesale (a stale claude allowedAgents on a
+    bedrock → chatgpt swap would advertise an unauthable harness) and the
+    acpx entry survives the wholesale plugins.entries rebuild — without the
+    param it is DROPPED, stranding the harness until a cold reprovision."""
+    from core.containers.config import build_acp_config
+
+    acp_block, acpx_entry = build_acp_config(["opencode"])
+    await replace_provider_block(
+        "user_p",
+        providers={},
+        default_model={"primary": "openai/gpt-5.5", "fallbacks": ["openai/gpt-5.4"]},
+        plugin_entries={},
+        ceo_model=None,
+        acp_block=acp_block,
+        acpx_entry=acpx_entry,
+    )
+    with open(os.path.join(tmp_efs_with_bedrock_provider, "user_p", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["acp"]["allowedAgents"] == ["opencode"]
+    assert result["acp"]["defaultAgent"] == "opencode"
+    acpx = result["plugins"]["entries"]["acpx"]
+    assert acpx["enabled"] is True
+    assert acpx["config"]["agents"]["opencode"]["command"] == "env"
+
+
+@pytest.mark.asyncio
 async def test_replace_provider_block_preserves_memory_core(tmp_efs_with_bedrock_provider):
     """A provider swap must not drop memory-core. Like lobster/llm-task it is
     a bundled extension enabled at provision time and is independent of the

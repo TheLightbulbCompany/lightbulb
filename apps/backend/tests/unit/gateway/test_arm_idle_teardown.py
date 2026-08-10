@@ -316,3 +316,51 @@ async def test_grace_stop_vetoed_by_local_dial_landing_during_the_liveness_read(
     ):
         await pool._maybe_stop_trial_container(USER, trigger="grace", closed_conn_token="tok-old")
     stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_fences_new_dials_and_snapshots_late_inserts():
+    """close_all sets the closing flag and passes through the connect lock
+    once: a dial that began before shutdown finishes inserting and is
+    closed by the snapshot; a dial arriving after refuses. Without the
+    fence, a mid-shutdown insert leaves a live reader and a fresh liveness
+    row that other workers read as \"ready\" off a dead process."""
+    from core.gateway.connection_pool import GatewayReconnectThrottled
+
+    pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
+    pool._lock = asyncio.Lock()
+    pool._connections = {}
+    pool._frontend_connections = {}
+    pool._grace_tasks = {}
+    closed = []
+
+    async def fake_close_user(uid):
+        closed.append(uid)
+        pool._connections.pop(uid, None)
+
+    pool.close_user = fake_close_user
+    pool._sender = MagicMock()
+    pool._sender.flush = AsyncMock()
+
+    # Simulate an in-flight dial: it holds the lock and inserts before
+    # releasing — close_all must wait for it and include it in the snapshot.
+    release = asyncio.Event()
+
+    async def in_flight_dial():
+        async with pool._lock:
+            await release.wait()
+            pool._connections[USER] = MagicMock()
+
+    dial = asyncio.create_task(in_flight_dial())
+    await asyncio.sleep(0)  # dial acquires the lock
+    shutdown = asyncio.create_task(pool.close_all())
+    await asyncio.sleep(0)  # close_all sets the flag, blocks on the lock
+    assert pool._closing is True
+    release.set()
+    await dial
+    await shutdown
+    assert closed == [USER]
+
+    # And a dial arriving after the fence refuses outright.
+    with pytest.raises(GatewayReconnectThrottled):
+        await pool.ensure_connection(USER, "10.0.0.9", "tok")

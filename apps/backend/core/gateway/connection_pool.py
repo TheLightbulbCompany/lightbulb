@@ -2430,6 +2430,12 @@ class GatewayConnection:
 class GatewayConnectionPool:
     """Pool of persistent gateway connections, one per active user."""
 
+    # Set by close_all; ensure_connection refuses new dials once it flips so
+    # a mid-shutdown dial can't insert past the shutdown snapshot. A class
+    # default (not __init__ state) so the __new__-constructed test harnesses
+    # inherit it without each one having to know the attribute exists.
+    _closing: bool = False
+
     def __init__(
         self,
         management_api: Any,
@@ -2805,6 +2811,15 @@ class GatewayConnectionPool:
         connection on the fast path).
         """
         async with self._lock:
+            # Shutdown fence: a dial that would insert AFTER close_all's
+            # snapshot would leave a live reader and a fresh gateway-liveness
+            # row behind a dead process — other workers would read this
+            # owner as \"ready\" for the whole 180s freshness window.
+            # close_all sets the flag and then passes through this lock
+            # once, so every dial that began before shutdown has either
+            # inserted (and is closed by the snapshot) or refuses here.
+            if self._closing:
+                raise GatewayReconnectThrottled("pool is shutting down")
             conn = self._connections.get(user_id)
             # Always adopt the freshly-resolved endpoint. Container task IPs are
             # ephemeral (every ECS task replacement changes them); a parked/stale
@@ -3406,6 +3421,17 @@ class GatewayConnectionPool:
 
     async def close_all(self) -> None:
         """Shutdown: close all connections concurrently, then drain delivery."""
+        # Fence new dials (see ensure_connection), then serialize with any
+        # in-flight one: it holds _lock through connection insertion, so
+        # passing through the lock once here guarantees every dial that
+        # began before shutdown has either inserted — and is in the
+        # snapshot below — or will refuse on the flag. Without this, a
+        # status-poll self-heal dial landing mid-shutdown leaves a live
+        # reader plus a fresh liveness row that makes other workers read
+        # this owner as "ready" off a dead process for up to 180s.
+        self._closing = True
+        async with self._lock:
+            pass
         await asyncio.gather(
             *(self.close_user(uid) for uid in list(self._connections.keys())),
             return_exceptions=True,

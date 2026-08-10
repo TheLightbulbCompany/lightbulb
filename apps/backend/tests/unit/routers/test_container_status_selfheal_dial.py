@@ -270,9 +270,32 @@ async def test_pool_reconnect_throttle_retries_on_next_poll(
 @pytest.mark.asyncio
 @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
 @patch("routers.container.get_ecs_manager")
+async def test_connection_reset_retries_on_next_poll(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
+    """ConnectionResetError (gateway accepted TCP then reset mid-boot) is a
+    kernel-level connection-phase failure like a refusal — transient, no
+    backoff, retried by the next poll."""
+    mock_ecs = AsyncMock()
+    mock_get_ecs.return_value = mock_ecs
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
+    mock_gateway_connected.return_value = False
+    mock_pool.ensure_connection = AsyncMock(side_effect=ConnectionResetError("mid-boot reset"))
+
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+
+    assert mock_pool.ensure_connection.await_count == 2
+
+
+@pytest.mark.asyncio
+@patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+@patch("routers.container.get_ecs_manager")
 async def test_expensive_failure_arms_the_backoff(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
-    """A non-refused failure (handshake timeout — a real wait on the global
-    connect lock) arms the per-owner backoff: no re-dial on the next poll."""
+    """A handshake timeout — a real wait on the global connect lock — arms
+    the per-owner backoff: no re-dial on the next poll. TimeoutError
+    subclasses OSError, so this also pins the except-branch ORDER: swapping
+    the tiers would silently re-dial 10s hangs at poll cadence."""
     mock_ecs = AsyncMock()
     mock_get_ecs.return_value = mock_ecs
     mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))

@@ -602,21 +602,29 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
         # attached. Over-preserve-safe: the grace path re-checks frontends
         # at fire time and the trial stop re-checks cross-task DDB truth.
         pool.arm_idle_teardown_if_unattended(owner_id)
-    except (ConnectionRefusedError, GatewayReconnectThrottled) as exc:
-        # Both are instant, zero-lock-time failures — no backoff; the next
-        # ~5s poll's dial is the one that heals. ConnectionRefusedError:
-        # the kernel rejected the connect because the gateway process isn't
-        # listening yet (the normal boot-window race this helper documents
-        # above). GatewayReconnectThrottled: the pool's own 5s reconnect
-        # floor raised BEFORE any I/O — its throttle clears long before our
-        # backoff would, and bootstrap_dispatcher classifies it transient
-        # for the same reason.
+    except TimeoutError as exc:
+        # The expensive failure: a full connect/handshake timeout held the
+        # pool's global connect lock for the whole wait (blackholed IP,
+        # wedged task). Arm the backoff so a wedged container can't consume
+        # a fresh lock hold on every poll. MUST precede the OSError branch —
+        # TimeoutError subclasses OSError, and letting it fall into the
+        # transient tier would re-dial a 10s hang at poll cadence.
+        logger.info("status-poll pool self-heal dial timed out owner=%s: %s", owner_id, exc)
+        _self_heal_backoff_at[owner_id] = time.monotonic()
+    except (OSError, GatewayReconnectThrottled) as exc:
+        # Transient connection-phase failures, all effectively instant with
+        # no lock time consumed: the kernel-level connect errors (refused
+        # while the gateway is booting, reset mid-restart, unreachable —
+        # the same OSError family bootstrap_dispatcher classifies as
+        # transient) and the pool's own 5s reconnect floor, which raises
+        # before any I/O and clears long before a backoff would. No stamp:
+        # the next ~5s poll's dial is the one that heals.
         logger.info("status-poll pool self-heal dial transient owner=%s: %s", owner_id, exc)
     except Exception as exc:
-        # Anything else ate a real wait on the pool's global connect lock
-        # (handshake timeout on a blackholed IP, auth rejection mid-boot).
-        # Arm the per-owner backoff so a wedged container can't consume a
-        # fresh lock hold on every poll.
+        # Deterministic failures — auth rejection above all. The pool arms
+        # its own lockout-aware auth backoff, and every hot retry would
+        # count toward the gateway's 10-in-60s lockout, so pacing here is
+        # correct even though the failure itself returned quickly.
         logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
         _self_heal_backoff_at[owner_id] = time.monotonic()
     finally:

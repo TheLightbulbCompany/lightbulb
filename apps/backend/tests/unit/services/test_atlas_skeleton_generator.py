@@ -202,7 +202,7 @@ def _verify_fail_next_snippet():
     return step.split("node -e '", 1)[1].split("'", 1)[0]
 
 
-def _run_verify_fail_next(verify_result):
+def _run_verify_fail_next(verify_result, write_result=None):
     proc = subprocess.run(
         ["node", "-e", _verify_fail_next_snippet()],
         capture_output=True,
@@ -212,6 +212,7 @@ def _run_verify_fail_next(verify_result):
             "PATH": os.environ["PATH"],
             "NOTIFS": "[]",
             "VERIFY": json.dumps(verify_result),
+            "WRITE": json.dumps(write_result or {}),
             "LOBSTER_ARG_BUILD_ID": "b1",
             "LOBSTER_ARG_AGENT_NAME": "lex-legal",
         },
@@ -248,6 +249,86 @@ def test_verify_fail_notification_carries_schema_issues():
     assert notif["schema_issues"] == []
     assert "No files on disk or hash mismatch" in notif["summary"]
     assert "destination_dir_missing" in notif["summary"]
+
+    # write-disk schema-gates the promote, so a refusal reaches verify as
+    # destination_dir_missing — the notification must pull the issue list
+    # (and the schema error kind) from file-generate's stdout instead.
+    notif = _run_verify_fail_next(
+        {"success": False, "error": "destination_dir_missing"},
+        {
+            "success": False,
+            "error": "schema_validation_failed",
+            "schema_issues": [{"path": "agents.list.0.archetype", "message": "Unrecognized key"}],
+        },
+    )
+    assert notif["error"] == "schema_validation_failed"
+    assert notif["schema_issues"][0]["path"] == "agents.list.0.archetype"
+    assert "agents.list.0.archetype: Unrecognized key" in notif["summary"]
+
+
+# Driver for the write-disk promote gate: poison the DRAFTED artifacts (before
+# any write), prove write-disk refuses the rename — destination never created,
+# staging cleaned — then prove a corrected retry promotes cleanly (no
+# destination_exists wedge from the rejected snapshot).
+_PROMOTE_GATE_DRIVER = r"""
+const os=require("os"),fs=require("fs"),path=require("path");
+const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"atlas-gate-test-"));
+process.env.ISOL8_AGENTS_DIR=tmp;
+const g=require(process.env.GEN_PATH);
+const spec={ build_id:"b1", intake:{name:"lex-legal", build_id:"b1"},
+  user_stories:[{req_id:"US1", action:"summarize contracts", outcome:"the team saves time"}],
+  never_does:["leak client PII"], what_you_are:"You are Lex.",
+  requirements_with_triggers:[] };
+const draft=g.draftToFastIo(spec);
+const bad={...draft.artifacts_to_stage};
+const cfg=JSON.parse(bad["workspace/openclaw.json"]);
+cfg.agents.list[0].archetype="general";
+bad["workspace/openclaw.json"]=JSON.stringify(cfg,null,2);
+const w1=g.writeDisk("b1","lex-legal",bad);
+const destAfterRefusal=fs.existsSync(path.join(tmp,"lex-legal"));
+const stagingAfterRefusal=fs.existsSync(path.join(tmp,".atlas-staging-b1"));
+const w2=g.writeDisk("b1","lex-legal",draft.artifacts_to_stage);
+const v=g.verifyWrite("b1","lex-legal");
+fs.rmSync(tmp,{recursive:true,force:true});
+process.stdout.write(JSON.stringify({
+  first_error:w1.error||"",
+  first_issues:w1.schema_issues===undefined?null:w1.schema_issues,
+  dest_created_on_refusal:destAfterRefusal,
+  staging_left_on_refusal:stagingAfterRefusal,
+  retry_success:!!w2.success,
+  verify_success:!!v.success
+}));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_write_disk_refuses_promote_on_schema_violation(tmp_path):
+    # Validation must gate the COMMIT: catching the violation only after the
+    # atomic mv leaves the rejected snapshot occupying the destination, and
+    # every corrected retry then dies on destination_exists.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "openclaw"
+    stub.write_text(_STUB_OPENCLAW)
+    stub.chmod(0o755)
+    proc = subprocess.run(
+        ["node", "-e", _PROMOTE_GATE_DRIVER],
+        capture_output=True,
+        text=True,
+        env={"GEN_PATH": str(_GEN), "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["first_error"] == "schema_validation_failed"
+    assert out["first_issues"]
+    assert out["first_issues"][0]["path"] == "agents.list.0.archetype"
+    # The rename never happened and staging was cleaned for the retry.
+    assert out["dest_created_on_refusal"] is False
+    assert out["staging_left_on_refusal"] is False
+    # A corrected retry promotes cleanly — no destination_exists wedge.
+    assert out["retry_success"] is True
+    assert out["verify_success"] is True
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")

@@ -678,6 +678,37 @@ function writeDisk(buildId, agentName, artifacts) {
     return err;
   }
 
+  // Schema-gate the PROMOTE: validate the staged openclaw.json BEFORE the
+  // atomic mv, so a rejected config never occupies the destination — otherwise
+  // a corrected retry hits destination_exists and the build wedges. Staging is
+  // cleaned so the retry regenerates from scratch. Fail-open (no openclaw bin)
+  // is inherited from validateStagedConfig.
+  const stagedCfg = [
+    path.join(stagingDir, 'workspace', 'openclaw.json'),
+    path.join(stagingDir, 'openclaw.json')
+  ].find(p => fs.existsSync(p));
+  const schemaCheck = stagedCfg ? validateStagedConfig(stagedCfg) : { valid: true, issues: [] };
+  if (!schemaCheck.valid) {
+    let cleanupError = null;
+    try {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    } catch (ce) { cleanupError = ce.message; }
+    const err = {
+      success: false,
+      error: 'schema_validation_failed',
+      message: 'Staged openclaw.json violates the installed OpenClaw schema. Nothing was promoted; fix schema_issues and rebuild.',
+      schema_issues: schemaCheck.issues,
+      build_id: buildId,
+      staging_dir: stagingDir,
+      destination_dir: destDir,
+      staged_file_hashes: stagedHashes,
+      cleanup_succeeded: !cleanupError,
+      cleanup_error: cleanupError
+    };
+    process.stderr.write(JSON.stringify(err) + '\n');
+    return err;
+  }
+
   // Atomic mv via rename(2)
   try {
     fs.renameSync(stagingDir, destDir);

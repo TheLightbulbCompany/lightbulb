@@ -64,6 +64,12 @@ CHANNEL_PROVIDER_IDS = ("telegram", "discord", "slack")
 BEDROCK_TRIAL_CHOICE = "bedrock_trial"
 BEDROCK_PROVIDER_CHOICES = ("bedrock_claude", BEDROCK_TRIAL_CHOICE)
 
+# In-container XDG data home for the OpenCode harness. The EFS access point
+# chroots /users/{owner_id} to /home/node/.openclaw, so this maps to
+# <EFS>/users/{owner_id}/opencode-data — where workspace.pre_stage_opencode_auth
+# writes opencode/auth.json. Keep the two in lockstep.
+OPENCODE_XDG_DATA_DIR = "/home/node/.openclaw/opencode-data"
+
 # ---------------------------------------------------------------------------
 # Runaway bounds — applied to EVERY provider path (see build_openclaw_config_dict).
 #
@@ -989,32 +995,44 @@ def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> 
     """Which ACP coding harnesses the owner can spawn, DERIVED from their
     provider choice — no stored per-owner state.
 
-    An ACP harness can only authenticate if the owner already has that
-    harness's model-provider credentials, so harness availability is a pure
-    function of ``provider_choice`` (+ ``byo_provider``):
-
     - ``bedrock_claude`` -> ``["claude"]`` (Claude Code via
       ``CLAUDE_CODE_USE_BEDROCK=1`` + the container task-role IAM).
     - ``byo_key`` + ``anthropic`` -> ``["claude"]`` (``ANTHROPIC_API_KEY``).
     - ``byo_key`` + ``openai``    -> ``["codex"]``  (``OPENAI_API_KEY``).
+    - ``chatgpt_oauth`` -> ``["opencode"]``, UNCONDITIONALLY — connection
+      state deliberately does NOT gate the config. The credential is a SECOND
+      dedicated OAuth grant (``/oauth/chatgpt/harness``) whose auth.json lives
+      on EFS; before the owner connects, a spawn starts but the first prompt
+      fails with an auth-required error, which the agent relays as "connect
+      the coding harness in settings". That differs from the historical
+      failed-spawn bug below in the way that matters: this failure is
+      user-fixable, that one had no credential path at all. Keeping the config
+      connection-agnostic means connect/disconnect touch only the EFS file —
+      no config patches, no DDB↔config drift. Requires the ``opencode``
+      binary in the extended image (same PR as this code): until that image
+      tag is promoted, spawns on stale-image containers fail command-not-found
+      — promote promptly after merge.
 
-    ``chatgpt_oauth`` returns ``[]``. It used to return ``["codex"]`` on the
-    premise that acpx's codex-auth-bridge would pick up the ChatGPT OAuth tokens
+    History: ``chatgpt_oauth`` used to return ``["codex"]`` on the premise
+    that acpx's codex-auth-bridge would pick up the ChatGPT OAuth tokens
     we pre-stage onto EFS. It does not, and never did: the bridge builds an
     ISOLATED ``CODEX_HOME``, copies only ``config.toml`` out of the host one, and
     writes ``codex-home/auth.json`` in exactly one case — ``CODEX_API_KEY`` or
     ``OPENAI_API_KEY`` present in the process env. It never reads OpenClaw's own
     ``credentials/oauth.json`` (different format, different path, written by
     ``workspace.pre_stage_auth_profile_store``). A subscription-OAuth owner
-    therefore has NO credential path: every spawn failed ``Authentication
+    therefore had NO credential path: every spawn failed ``Authentication
     required`` while ``acp.enabled`` still advertised the harness to the agent.
 
-    That is an upstream property of the ACP adapters, not something we can wire
-    around — openclaw/openclaw#53456 is the same defect on the Claude Code side,
-    where ``claude-agent-acp`` rejects Claude Max subscription OAuth. Restoring a
-    harness here needs a REAL credential, not different wiring: an owner-supplied
-    OpenAI key delivered as ``CODEX_API_KEY``, or Bedrock AIPs + a gate token
-    minted for the owner so the ``claude`` harness applies.
+    That is an upstream property of the CODEX ACP adapter, not something we can
+    wire around — openclaw/openclaw#53456 is the same defect on the Claude Code
+    side, where ``claude-agent-acp`` rejects Claude Max subscription OAuth.
+    OpenCode is the exception that makes ``chatgpt_oauth`` workable: its
+    ChatGPT login is a first-class subscription flow (the same Codex device-code
+    flow ``oauth_service`` drives), and it reads a plain ``auth.json`` we can
+    mint server-side. The grant MUST be a second, dedicated chain — never the
+    provider row's tokens (rotating refresh tokens, two holders race into
+    ``refresh_token_reused``; see project_openclaw_oauth_auth_model).
 
     Gemini is intentionally absent: there is no Google credential path on the
     platform today, so no owner can authenticate it. Returns ``[]`` for any
@@ -1035,6 +1053,8 @@ def derive_enabled_harnesses(provider_choice: str, byo_provider: str | None) -> 
             return ["claude"]
         if byo_provider == "openai":
             return ["codex"]
+    if provider_choice == "chatgpt_oauth":
+        return ["opencode"]
     return []
 
 
@@ -1070,6 +1090,25 @@ def build_acp_config(harnesses: list[str]) -> tuple[dict, dict]:
             },
         },
     }
+    if "opencode" in harnesses:
+        # opencode is not an acpx builtin (those are claude/codex wrappers) —
+        # it registers through the open agents map, which is strictly
+        # {command, args} (no env field in the schema). XDG_DATA_HOME is
+        # therefore scoped to the spawned process via an env(1) wrapper: it
+        # relocates OpenCode's auth store onto EFS (rotating tokens must
+        # survive task replacement) WITHOUT re-pointing every other XDG
+        # consumer in the container. `opencode acp` speaks ACP v1 over stdio
+        # and requires credentials already on disk (no ACP auth round) —
+        # pre_stage_opencode_auth writes them. The long runtime TTL above
+        # doubles as the auth-store serializer: OpenCode has no cross-process
+        # lock on auth.json, so ONE live runtime per container is what keeps
+        # concurrent refreshes from clobbering each other's rotated token.
+        acpx_plugin_entry["acpx"]["config"]["agents"] = {
+            "opencode": {
+                "command": "env",
+                "args": [f"XDG_DATA_HOME={OPENCODE_XDG_DATA_DIR}", "opencode", "acp"],
+            },
+        }
     return acp_block, acpx_plugin_entry
 
 

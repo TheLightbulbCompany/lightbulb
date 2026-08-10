@@ -191,6 +191,13 @@ RUN npm i -g --ignore-scripts \
 # every `xurl` invocation fails with "xurl binary not found".
 RUN npm i -g @xdevplatform/xurl@1.2.3 && xurl --help >/dev/null
 
+# OpenCode: the ACP coding harness for chatgpt_oauth owners (registered via
+# the acpx agents map in openclaw.json — see backend build_acp_config). Its
+# platform binary arrives via optionalDependencies + postinstall, so like xurl
+# it stays outside the --ignore-scripts install above. Version-pinned; the
+# smoke test fails the build if the binary didn't materialize for this arch.
+RUN npm i -g opencode-ai@1.18.15 && opencode --version >/dev/null
+
 # Durable lobster pipeline state. Lobster's native `state.get`/`state.set` verbs are a
 # real, gateway-free file-KV, but they default to $HOME/.lobster/state — on the ephemeral
 # container FS, wiped on every task restart. Point them at the per-user EFS mount instead,

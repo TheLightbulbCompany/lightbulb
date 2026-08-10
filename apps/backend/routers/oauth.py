@@ -22,13 +22,14 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
-from core.containers.workspace import delete_auth_profile_store
+from core.containers.workspace import delete_auth_profile_store, delete_opencode_auth, pre_stage_opencode_auth
 from core.repositories import billing_repo
 from core.services.container_auth import (
     push_oauth_credential_to_container,
     revoke_provider_auth_in_container,
 )
 from core.services.oauth_service import (
+    PURPOSE_HARNESS,
     DevicePollPending,
     DevicePollResult,
     OAuthAlreadyActiveError,
@@ -183,6 +184,114 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     # stages it then.
     await push_oauth_credential_to_container(owner_id=result.bound_owner_id, connector_id=ctx.user_id)
     return {"status": "completed", "account_id": result.account_id}
+
+
+# --- OpenCode coding harness (second, dedicated OAuth grant) ---------------
+#
+# Same ChatGPT account, INDEPENDENT token chain. The provider chain and the
+# harness chain must never share tokens (rotating refresh tokens; two holders
+# race into refresh_token_reused — see oauth_service.HARNESS_ROW_SUFFIX). The
+# flow mirrors the provider endpoints exactly; completion stages OpenCode's
+# auth.json onto EFS instead of pushing into the container's provider store.
+# Connection state IS the EFS file — the container config advertises the
+# opencode harness for every chatgpt_oauth owner unconditionally, so there is
+# no config patch on connect/disconnect.
+
+
+@router.get(
+    "/harness/status",
+    summary="Whether the workspace has a coding-harness OAuth grant",
+)
+async def harness_status(ctx: AuthContext = Depends(get_current_user)):
+    owner_id = resolve_owner_id(ctx)
+    token_owner = await resolve_token_owner(owner_id=owner_id) if ctx.is_org_context else ctx.user_id
+    tokens = await get_decrypted_tokens_consistent(user_id=token_owner, bound_to=owner_id, purpose=PURPOSE_HARNESS)
+    return {
+        "connected": tokens is not None,
+        "account_id": (tokens or {}).get("account_id"),
+    }
+
+
+@router.post(
+    "/harness/start",
+    summary="Begin a coding-harness OAuth device-code session",
+    description=(
+        "Second device-code grant on the owner's ChatGPT account, dedicated "
+        "to the OpenCode coding harness. Same user-facing shape as /start."
+    ),
+)
+async def harness_start(ctx: AuthContext = Depends(get_current_user)):
+    if ctx.is_org_context:
+        await _require_org_oauth_owner(ctx)
+    try:
+        result = await request_device_code(
+            user_id=ctx.user_id,
+            bound_owner_id=resolve_owner_id(ctx),
+            purpose=PURPOSE_HARNESS,
+        )
+    except OAuthAlreadyActiveError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except OAuthBoundElsewhereError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except OAuthExchangeFailedError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {
+        "user_code": result.user_code,
+        "verification_uri": result.verification_uri,
+        "expires_in": result.expires_in,
+        "interval": result.interval,
+    }
+
+
+@router.post(
+    "/harness/poll",
+    summary="Poll the coding-harness device-code session",
+)
+async def harness_poll(ctx: AuthContext = Depends(get_current_user)):
+    # No owner gate — same reasoning as /poll: authorization and binding were
+    # both fixed at /harness/start under the owner gate and ride the pending
+    # row through to completion.
+    try:
+        result = await poll_device_code(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+    except OAuthExchangeFailedError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    if result is DevicePollPending:
+        return {"status": "pending"}
+    assert isinstance(result, DevicePollResult)
+    # Stage the fresh grant as OpenCode's auth.json. This IS the connect:
+    # the container config already advertises the harness, and OpenCode reads
+    # this file (via XDG_DATA_HOME on EFS) at spawn. Genuine fresh-token event,
+    # so overwrite a previous chain if one exists. Consistent read so we see
+    # the tokens poll_device_code just wrote.
+    tokens = await get_decrypted_tokens_consistent(
+        user_id=ctx.user_id, bound_to=result.bound_owner_id, purpose=PURPOSE_HARNESS
+    )
+    if tokens:
+        try:
+            await pre_stage_opencode_auth(user_id=result.bound_owner_id, oauth_tokens=tokens)
+        except Exception:
+            # The grant exists in DDB; provision-path staging self-heals the
+            # missing file (write-if-missing) on the next config write.
+            logger.exception("opencode auth staging failed for %s", result.bound_owner_id)
+    return {"status": "completed", "account_id": result.account_id}
+
+
+@router.post(
+    "/harness/disconnect",
+    summary="Revoke the coding-harness OAuth grant",
+)
+async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
+    if ctx.is_org_context:
+        await _require_org_oauth_owner(ctx)
+    owner_id = resolve_owner_id(ctx)
+    await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+    try:
+        await delete_opencode_auth(user_id=owner_id)
+    except Exception:
+        # Best-effort: the row deletion is the authoritative signal; a live
+        # container keeps the file until the unlink is retried by reconnect.
+        pass
+    return {"status": "disconnected"}
 
 
 @router.post(

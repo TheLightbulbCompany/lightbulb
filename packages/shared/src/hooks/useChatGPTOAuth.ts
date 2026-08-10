@@ -47,7 +47,22 @@ type StatusResponse = {
 
 const DEFAULT_POLL_INTERVAL_S = 5;
 
-export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
+export type ChatGPTOAuthOptions = {
+  /** Endpoint prefix. The default drives the PROVIDER connection; the
+   * coding-harness flow passes "/oauth/chatgpt/harness" — a second,
+   * independent device-code grant with the same request/response shapes. */
+  basePath?: string;
+  /** Auto-fire start() on mount when the status probe says disconnected.
+   * True is the wizard behavior (ChatGPTOAuthStep renders mid-flow, the
+   * user already chose to connect). Settings-surface consumers pass false
+   * so merely opening the panel never starts a device-code session. */
+  autoStart?: boolean;
+};
+
+export function useChatGPTOAuth(
+  api: Pick<ApiMethods, "get" | "post">,
+  { basePath = "/oauth/chatgpt", autoStart = true }: ChatGPTOAuthOptions = {},
+) {
   const [state, setState] = useState<OAuthState>({ status: "idle" });
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollIntervalSec = useRef<number>(DEFAULT_POLL_INTERVAL_S);
@@ -67,7 +82,7 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
     stopPolling();
     setState({ status: "idle" });
     try {
-      const r = (await api.post("/oauth/chatgpt/start", {})) as StartResponse;
+      const r = (await api.post(`${basePath}/start`, {})) as StartResponse;
       pollIntervalSec.current = r.interval || DEFAULT_POLL_INTERVAL_S;
       setState({
         status: "pending",
@@ -90,18 +105,18 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
       const message = e instanceof Error ? e.message : "OAuth start failed";
       setState({ status: "error", message });
     }
-  }, [api, stopPolling]);
+  }, [api, basePath, stopPolling]);
 
   const disconnect = useCallback(async () => {
     stopPolling();
     try {
-      await api.post("/oauth/chatgpt/disconnect", {});
+      await api.post(`${basePath}/disconnect`, {});
       setState({ status: "idle" });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Disconnect failed";
       setState({ status: "error", message });
     }
-  }, [api, stopPolling]);
+  }, [api, basePath, stopPolling]);
 
   // Poll while in pending state. Interval comes from /start's response
   // (defaults to 5s). Stops once we transition to completed/error.
@@ -110,7 +125,7 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
     intervalRef.current = setInterval(async () => {
       try {
         const r = (await api.post(
-          "/oauth/chatgpt/poll",
+          `${basePath}/poll`,
           {},
         )) as PollResponse;
         if (r.status === "completed") {
@@ -125,7 +140,7 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
     }, pollIntervalSec.current * 1000);
 
     return () => stopPolling();
-  }, [state.status, api, stopPolling]);
+  }, [state.status, api, basePath, stopPolling]);
 
   // Stop on unmount.
   useEffect(() => () => stopPolling(), [stopPolling]);
@@ -151,12 +166,15 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
     startedRef.current = true;
     (async () => {
       try {
-        const r = (await api.get("/oauth/chatgpt/status")) as StatusResponse;
+        const r = (await api.get(`${basePath}/status`)) as StatusResponse;
         if (r.connected) {
           setState({ status: "completed", accountId: r.account_id });
           return;
         }
-        await start();
+        // Settings-surface consumers stay idle until the user clicks
+        // Connect; the wizard auto-fires because rendering the step IS the
+        // user's choice to connect.
+        if (autoStart) await start();
       } catch (e: unknown) {
         // Status probe failure: surface as error rather than silently
         // auto-starting, since /status is a required precondition for

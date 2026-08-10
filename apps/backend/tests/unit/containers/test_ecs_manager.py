@@ -3319,8 +3319,17 @@ class TestProvisionUserContainerProviderChoice:
             await manager.provision_user_container("user_test_123", provider_choice="chatgpt_oauth")
 
             # Tokens were read from the resolved CONNECTOR's row, not the
-            # container owner's — guards the token_owner_id= plumbing.
-            mock_get_tokens.assert_awaited_once_with(user_id=connector_id, bound_to="user_test_123")
+            # container owner's — guards the token_owner_id= plumbing. Two
+            # reads: the provider row, then the harness (#harness) row for
+            # the OpenCode credential self-heal.
+            assert mock_get_tokens.await_count == 2
+            provider_call, harness_call = mock_get_tokens.await_args_list
+            assert provider_call.kwargs == {"user_id": connector_id, "bound_to": "user_test_123"}
+            assert harness_call.kwargs == {
+                "user_id": connector_id,
+                "bound_to": "user_test_123",
+                "purpose": "harness",
+            }
 
             assert call_order, "pre_stage_auth_profile_store and create_service must both be called"
             # pre_stage_auth_profile_store runs before create_service.

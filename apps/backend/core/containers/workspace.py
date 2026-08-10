@@ -903,6 +903,101 @@ async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> N
     )
 
 
+async def pre_stage_opencode_auth(*, user_id: str, oauth_tokens: dict, overwrite: bool = True) -> None:
+    """Write the OpenCode harness credential to EFS.
+
+    OpenCode reads ``$XDG_DATA_HOME/opencode/auth.json``; the acpx agents-map
+    entry launches it with ``XDG_DATA_HOME=/home/node/.openclaw/opencode-data``
+    (see ``config.OPENCODE_XDG_DATA_DIR``), which the EFS access point chroots
+    to ``<EFS>/users/{user_id}/opencode-data`` — so the rotating token chain
+    survives task replacement. The tokens here are a SECOND, dedicated OAuth
+    grant (the ``#harness`` row), never the provider chain: after this
+    bootstrap write, OpenCode refreshes and persists rotations itself, and the
+    DDB copy becomes a stale seed exactly like the provider row's.
+
+    Shape is OpenCode's own auth-store schema (verified against opencode
+    1.18.15): ``{"openai": {"type": "oauth", "access", "refresh",
+    "expires" (ms epoch, required — 0 forces refresh-on-first-use),
+    "accountId"?}}``. Entries that fail schema decode are silently dropped by
+    OpenCode, so the shape here must stay exact.
+
+    Same security posture as ``pre_stage_auth_profile_store``: plaintext on
+    EFS behind KMS-at-rest + per-user access-point isolation.
+
+    ``overwrite=False`` writes only when no auth.json exists yet. Unlike the
+    provider seed (which the container's store-row-absent import gate protects),
+    OpenCode reads THIS file directly and rewrites it on every rotation — so a
+    provision-path re-stage over a live file would replace rotated tokens with
+    the stale DDB seed and kill the chain. Fresh-token events (/harness/poll)
+    overwrite; provision self-heal does not.
+    """
+    if not _USER_ID_PATTERN.match(user_id):
+        raise ValueError(f"user_id contains invalid characters: {user_id!r}")
+
+    required = {"access_token", "refresh_token"}
+    missing = required - set(oauth_tokens.keys())
+    if missing:
+        raise ValueError(f"oauth_tokens missing required keys: {sorted(missing)}")
+
+    efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
+    if not efs_root:
+        raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
+
+    creds: dict = {
+        "type": "oauth",
+        "access": oauth_tokens["access_token"],
+        "refresh": oauth_tokens["refresh_token"],
+        # ``expires`` is REQUIRED (non-negative int) by OpenCode's schema; an
+        # entry without it is dropped, not defaulted. 0 = already expired =
+        # refresh before first use, which is right for aged DDB seeds.
+        "expires": int(oauth_tokens.get("expires_at") or 0),
+    }
+    if oauth_tokens.get("account_id"):
+        creds["accountId"] = oauth_tokens["account_id"]
+
+    payload = json.dumps({"openai": creds}, indent=2)
+
+    base = Path(efs_root) / user_id / "opencode-data" / "opencode"
+    base.mkdir(parents=True, exist_ok=True)
+    auth_path = base / "auth.json"
+    if not overwrite and auth_path.exists():
+        return
+    tmp_path = base / "auth.json.tmp"
+    tmp_path.write_text(payload)
+    try:
+        os.chmod(str(tmp_path), 0o600)
+    except OSError:
+        pass
+    # OpenCode runs as the container user (uid 1000) and must rewrite this
+    # file on every token rotation.
+    try:
+        os.chown(str(tmp_path), 1000, 1000)
+    except (PermissionError, OSError):
+        pass
+    os.replace(str(tmp_path), str(auth_path))
+    for dir_path in (base, base.parent):
+        try:
+            os.chown(str(dir_path), 1000, 1000)
+        except (PermissionError, OSError):
+            pass
+
+    logger.info("pre_staged_opencode_auth", extra={"user_id": user_id})
+
+
+async def delete_opencode_auth(*, user_id: str) -> None:
+    """Remove the OpenCode harness credential from EFS (harness disconnect)."""
+    if not _USER_ID_PATTERN.match(user_id):
+        raise ValueError(f"user_id contains invalid characters: {user_id!r}")
+    efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
+    if not efs_root:
+        raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
+    auth_path = Path(efs_root) / user_id / "opencode-data" / "opencode" / "auth.json"
+    try:
+        auth_path.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("delete_opencode_auth: %s -- %s", auth_path, e)
+
+
 async def delete_auth_profile_store(*, user_id: str) -> None:
     """Remove the staged ChatGPT credential from EFS on OAuth disconnect/switch.
 

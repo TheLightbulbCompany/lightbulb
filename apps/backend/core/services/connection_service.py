@@ -709,6 +709,57 @@ class ConnectionService:
                     e.response["Error"]["Message"],
                 )
 
+    async def get_live_gateway_conn_token(self, owner_id: str) -> str | None:
+        """The ``connToken`` of the owner's gateway-liveness row, or ``None``
+        when the row is absent, stale, tokenless, or unreadable.
+
+        Same presence + freshness semantics as ``is_gateway_connected``, but
+        surfaces WHICH connection owns the row. The grace-path trial stop
+        needs the distinction: a fresh row bearing the token of the
+        connection that grace cycle itself just closed is that cycle's own
+        leftover (its conditioned delete failed) and must NOT read as a
+        replacement — otherwise one failed delete inside the freshness
+        window vetoes the stop with nothing left to re-arm it, and the
+        container runs indefinitely.
+
+        Read failures PROPAGATE — deliberately unlike
+        ``is_gateway_connected``, which fails toward False because its
+        consumer (readiness) must fail toward the cold-start UI. This
+        getter's sole consumer is the stop veto, where "unreadable" must
+        mean "abort this stop attempt" (any doubt = don't stop): mapping a
+        failure to None would read as "no replacement" and stop a container
+        another worker may have just connected to. The stop path's
+        catch-all absorbs the raise and skips the stop.
+        """
+        now_epoch = int(time.time())
+
+        def _get() -> str | None:
+            resp = self._client.get_item(
+                TableName=self.table_name,
+                Key={"connectionId": {"S": _gateway_liveness_key(owner_id)}},
+                ProjectionExpression="lastPingAt, connToken",
+                # Strongly consistent: this read gates an IRREVERSIBLE
+                # container stop, and a replacement's mark_gateway_connected
+                # may have landed milliseconds ago on another worker — an
+                # eventually-consistent read could miss it or return the
+                # superseded token. One 2x-RCU read per stop attempt is
+                # nothing; is_gateway_connected stays eventually consistent
+                # because its readiness consumer runs on every poll and
+                # fails toward the harmless side.
+                ConsistentRead=True,
+            )
+            item = resp.get("Item")
+            if item is None:
+                return None
+            last_ping_raw = item.get("lastPingAt", {}).get("N")
+            if last_ping_raw is None:
+                return None
+            if (now_epoch - int(last_ping_raw)) >= _LIVENESS_STALE_SECONDS:
+                return None
+            return item.get("connToken", {}).get("S")
+
+        return await asyncio.to_thread(_get)
+
     async def is_gateway_connected(self, owner_id: str) -> bool:
         """Whether the gateway-liveness row for ``owner_id`` is present AND
         fresh.

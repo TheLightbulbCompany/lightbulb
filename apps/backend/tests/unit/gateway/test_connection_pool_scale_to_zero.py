@@ -48,6 +48,10 @@ def _pool(conn_svc=None) -> GatewayConnectionPool:
         # No Paperclip run in flight (the operator veto — see
         # test_stop_is_vetoed_by_an_in_flight_paperclip_run).
         conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+        # No live gateway-liveness row anywhere (the cross-worker
+        # replacement veto): our own row is deleted at close, and no other
+        # worker has dialed a replacement.
+        conn_svc.get_live_gateway_conn_token = AsyncMock(return_value=None)
     return GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
 
 
@@ -188,6 +192,7 @@ async def test_veto_cross_task_live_chat_prevents_stop():
     conn_svc = MagicMock()
     conn_svc.count_live_chat_connections = AsyncMock(return_value=1)
     conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    conn_svc.get_live_gateway_conn_token = AsyncMock(return_value=None)
     pool = _pool(conn_svc=conn_svc)
     stop = AsyncMock()
     with (
@@ -721,6 +726,7 @@ async def test_stop_is_vetoed_by_an_in_flight_paperclip_run(monkeypatch):
     conn_svc = MagicMock()
     conn_svc.count_live_chat_connections = AsyncMock(return_value=0)  # tab is closed
     conn_svc.has_live_operator_connection = AsyncMock(return_value=True)  # ...but Paperclip is running
+    conn_svc.get_live_gateway_conn_token = AsyncMock(return_value=None)
     pool._conn_svc = conn_svc
 
     with (
@@ -744,6 +750,7 @@ async def test_stop_proceeds_once_the_paperclip_run_ends(monkeypatch):
     conn_svc = MagicMock()
     conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
     conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    conn_svc.get_live_gateway_conn_token = AsyncMock(return_value=None)
     pool._conn_svc = conn_svc
 
     with (

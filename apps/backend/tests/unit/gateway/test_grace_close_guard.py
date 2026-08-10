@@ -18,10 +18,21 @@ from core.gateway.connection_pool import (
 def _pool_with_active_run(active: bool):
     pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
     pool._frontend_connections = {}  # no clients connected
+    pool._grace_tasks = {}
     conn = MagicMock()
     conn.has_active_runs = active  # property form: attribute, not callable
     pool._connections = {"user_1": conn}
-    pool.close_user = AsyncMock()
+
+    # Honor close_user's real contract: the connection entry is popped
+    # SYNCHRONOUSLY, before any await. _grace_close's exit re-arm keys on
+    # that pop — a mock that leaves the entry would make the re-arm chain a
+    # second (spurious) cycle and fail these tests for a reason production
+    # cannot exhibit.
+    async def _close(user_id):
+        pool._connections.pop(user_id, None)
+        pool._grace_tasks.pop(user_id, None)
+
+    pool.close_user = AsyncMock(side_effect=_close)
     return pool
 
 

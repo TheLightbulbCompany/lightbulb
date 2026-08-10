@@ -6,12 +6,14 @@ and a manual retry-provision endpoint.
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.gateway.connection_pool import GatewayReconnectThrottled
 from core.containers.ecs_manager import (
     START_REFUSED_CAP,
     START_REFUSED_EXPIRED,
@@ -36,6 +38,41 @@ from core.services.stripe_webhook_handlers import CONVERTING_SUBSTATUS, maybe_re
 from core.services.user_provision import ensure_personal_trial_default, ensure_user_ready
 
 logger = logging.getLogger(__name__)
+
+# Dispatch guards for the status poll's pool self-heal dial. The pool
+# serializes ALL connect I/O behind one process-wide lock — and every chat
+# RPC (send_rpc → ensure_connection) queues on that same lock — while the
+# absent-create path has no reconnect floor. So the dispatch site must not
+# let the ~5s poll cadence pile up dials: the in-flight set is a GLOBAL
+# single-flight (one self-heal dial outstanding per process, whoever it is
+# for — a wake burst of N owners must not queue N serial handshake holds in
+# front of every healthy user's chat RPCs; each blocked owner's next poll
+# retries within seconds of the slot freeing), and the per-owner backoff
+# stops a wedged container (running row + unreachable IP) from eating a
+# fresh handshake-timeout lock hold per poll. A chat send still dials
+# immediately through its own path — these guards only pace the background
+# repair.
+_SELF_HEAL_BACKOFF_S = 60.0
+_self_heal_inflight: set[str] = set()
+# Stamped ONLY when a dial fails expensively (a real handshake wait on the
+# pool's global connect lock — e.g. a blackholed IP eating the full connect
+# timeout). Success leaves no stamp (a later drop re-dials on the next
+# poll; the pool's is_user_connected fast-path bounds redundant dials), and
+# ConnectionRefusedError leaves no stamp (the kernel rejected the connect
+# instantly — the normal gateway-boot race, where the next poll's dial is
+# the one that heals). Failure TYPE is the classifier; no latency
+# measurement is involved.
+_self_heal_backoff_at: dict[str, float] = {}
+
+
+def _self_heal_dial_allowed(owner_id: str) -> bool:
+    """True when NO self-heal dial is outstanding process-wide and this
+    owner is not backing off from an expensive failure."""
+    if _self_heal_inflight:
+        return False
+    stamp = _self_heal_backoff_at.get(owner_id)
+    return stamp is None or (time.monotonic() - stamp) >= _SELF_HEAL_BACKOFF_S
+
 
 # A start refusal carries the SAME code as the provision gate's, so each maps
 # straight to the gate that renders it. Keeping them in one map means a new
@@ -510,17 +547,103 @@ async def container_status(
     ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 
-    # Gateway liveness now lives on the connection-service DDB table (see
-    # core/services/connection_service.py's mark_gateway_connected /
-    # mark_gateway_disconnected, written by core/gateway/connection_pool.py
-    # at every is_alive transition) instead of the per-process
-    # GatewayConnectionPool (readiness store R4). That in-process pool used
-    # to blind THIS backend instance to a connection a DIFFERENT instance
-    # was holding (e.g. after a rolling deploy), which is exactly what made
-    # the self-heal dial below necessary — PR #1364. Liveness is durable
-    # and instance-independent now, so the next poll simply reads the
-    # truth; there is nothing left to self-heal here.
+    # runtime_phase "ready" requires TWO truths: DDB status "running" AND a
+    # gateway-liveness row — and that row is written ONLY by a successful
+    # pool connect (connection_pool.connect → mark_gateway_connected). Every
+    # pool dial is demand-driven (an RPC arriving), so a scale-from-zero
+    # wake deadlocks by construction: the cold-start UI polls this endpoint
+    # and sends no RPCs, this endpoint reports "starting" because no
+    # connection exists, and no connection will ever exist because nothing
+    # dials. The durable DDB liveness row fixed the READ half of the old
+    # per-process-pool blind spot (another instance's connection is now
+    # visible); this dial is the WRITE half — when no instance holds a
+    # connection at all, the poll itself must create the demand. Dial in
+    # the background so the NEXT poll reports the truth; failures are
+    # swallowed — the next poll simply reports whatever is true.
+    #
+    # Deliberately NOT gated on the wake param. wake governs whether a poll
+    # may START a parked container (billing semantics); this dial never
+    # starts anything — it completes the handshake for a container that is
+    # ALREADY running (phase "starting"; a parked row resolves "parked" and
+    # never reaches here). Gating on wake!=\"0\" would break the primary
+    # cold-start repair: the frontend demotes its polls to wake=0 after
+    # 120s without keyboard/pointer input, and a user silently WATCHING the
+    # stepper crosses that line before a normal gateway boot finishes
+    # (~141s observed) — exactly the user this dial exists for. The poll
+    # itself is visibility-gated client-side, so any poll arriving here
+    # implies a visible, watching tab.
+    if (
+        container_ip
+        and container is not None
+        and container.get("gateway_token")
+        and contract["runtime_phase"] == "starting"
+        and _self_heal_dial_allowed(owner_id)
+    ):
+        _self_heal_inflight.add(owner_id)
+        # Resolve the pool HERE, not inside the detached task: a task that
+        # first runs after shutdown_containers() reset the singleton would
+        # otherwise construct a brand-new pool whose _closing fence is down
+        # and install a connection past the shutdown snapshot.
+        asyncio.create_task(
+            _pool_self_heal_connect(get_gateway_pool(), owner_id, container_ip, container["gateway_token"])
+        )
+
     return _status_response(contract)
+
+
+async def _pool_self_heal_connect(pool, owner_id: str, ip: str, token: str) -> None:
+    """Background dial for the status poll's pool self-heal.
+
+    Same (owner, ip, token) triple and ensure_connection primitive the chat
+    send path uses — idempotent, fast-paths when a racing dial already won.
+    The dial races real container state (mid-boot gateway, task just died),
+    so failures are logged and swallowed: the poll it came from has already
+    answered, and the next poll simply reports whatever is true. Always
+    clears the per-owner in-flight marker the dispatch site set; only an
+    expensive failure arms the per-owner backoff (see the classifier note
+    on ``_self_heal_backoff_at``).
+    """
+    try:
+        if pool.is_user_connected(owner_id):
+            return
+        await pool.ensure_connection(owner_id, ip, token)
+        logger.info("status-poll pool self-heal dial connected owner=%s", owner_id)
+        # This dial may have created a connection while NO frontend WS is
+        # registered on this task (status-only client, or the browser's WS
+        # landed on a different backend task). remove_frontend_connection —
+        # the only other armer of the idle grace-close — will never fire for
+        # it, so without this arm the connection would refresh gateway
+        # liveness forever and keep a trial container running with nobody
+        # attached. Over-preserve-safe: the grace path re-checks frontends
+        # at fire time and the trial stop re-checks cross-task DDB truth.
+        pool.arm_idle_teardown_if_unattended(owner_id)
+    except TimeoutError as exc:
+        # The expensive failure: a full connect/handshake timeout held the
+        # pool's global connect lock for the whole wait (blackholed IP,
+        # wedged task). Arm the backoff so a wedged container can't consume
+        # a fresh lock hold on every poll. MUST precede the OSError branch —
+        # TimeoutError subclasses OSError, and letting it fall into the
+        # transient tier would re-dial a 10s hang at poll cadence.
+        logger.info("status-poll pool self-heal dial timed out owner=%s: %s", owner_id, exc)
+        _self_heal_backoff_at[owner_id] = time.monotonic()
+    except (OSError, GatewayReconnectThrottled) as exc:
+        # Transient connection-phase failures, all effectively instant with
+        # no lock time consumed: the kernel-level connect errors (refused
+        # while the gateway is booting, reset mid-restart, unreachable —
+        # the same OSError family bootstrap_dispatcher classifies as
+        # transient) and the pool's own 5s reconnect floor, which raises
+        # before any I/O and clears long before a backoff would. No stamp:
+        # the next ~5s poll's dial is the one that heals.
+        logger.info("status-poll pool self-heal dial transient owner=%s: %s", owner_id, exc)
+    except Exception as exc:
+        # Deterministic failures — auth rejection above all. The pool arms
+        # its own lockout-aware auth backoff, and every hot retry would
+        # count toward the gateway's 10-in-60s lockout, so pacing here is
+        # correct even though the failure itself returned quickly.
+        logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
+        _self_heal_backoff_at[owner_id] = time.monotonic()
+    finally:
+        _self_heal_inflight.discard(owner_id)
 
 
 def _sync_contract_with_container(contract: dict, container: dict) -> dict:

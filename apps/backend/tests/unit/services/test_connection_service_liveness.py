@@ -435,3 +435,46 @@ async def test_refresh_recovers_missing_but_never_steals_a_newer_token(plain_ddb
     assert (
         client.get_item(TableName=plain_ddb_table, Key={"connectionId": {"S": key}})["Item"]["connToken"]["S"] == "t2"
     )
+
+
+# ---------------------------------------------------------------------------
+# get_live_gateway_conn_token — the grace-path stop veto's read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_live_gateway_conn_token_uses_a_strongly_consistent_read():
+    """The token read gates an irreversible container stop: a replacement's
+    mark_gateway_connected may have landed milliseconds ago on another
+    worker, so the read must be strongly consistent — and it must surface
+    the row's token when fresh."""
+    svc = ConnectionService.__new__(ConnectionService)
+    svc.table_name = "tbl"
+    client = MagicMock()
+    client.get_item.return_value = {
+        "Item": {
+            "lastPingAt": {"N": str(int(time.time()))},
+            "connToken": {"S": "tok-live"},
+        }
+    }
+    svc._client = client
+
+    token = await svc.get_live_gateway_conn_token("owner_1")
+
+    assert token == "tok-live"
+    assert client.get_item.call_args.kwargs["ConsistentRead"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_live_gateway_conn_token_propagates_read_failures():
+    """Unlike is_gateway_connected (fails toward the cold-start UI), the
+    stop veto's read must NOT map failure to \"no replacement\" — it raises,
+    and the stop path's catch-all aborts that stop attempt."""
+    svc = ConnectionService.__new__(ConnectionService)
+    svc.table_name = "tbl"
+    client = MagicMock()
+    client.get_item.side_effect = ClientError({"Error": {"Code": "InternalServerError", "Message": "boom"}}, "GetItem")
+    svc._client = client
+
+    with pytest.raises(ClientError):
+        await svc.get_live_gateway_conn_token("owner_1")

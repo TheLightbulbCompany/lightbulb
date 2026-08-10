@@ -350,6 +350,31 @@ class GatewayConnection:
         # _liveness_lock only orders writes WITHIN one connection; the token is
         # what orders them across connection replacement (and across instances).
         self._liveness_token = uuid.uuid4().hex
+        # Latest scheduled _write_liveness task. Retained for two reasons:
+        # a strong reference (the loop keeps only weak task refs), and so
+        # shutdown can DRAIN the terminal delete — close() only schedules
+        # it, and an undrained delete cancelled by lifespan teardown leaves
+        # a dead process's row falsely "ready" for the freshness window.
+        self._pending_liveness_write: Optional[asyncio.Task] = None
+
+    async def drain_liveness_write(self, timeout_s: float = 5.0) -> None:
+        """Wait (bounded, non-cancelling) for the most recently scheduled
+        liveness write, if any.
+
+        The terminal disconnect delete serializes behind any in-flight put
+        via ``_liveness_lock``, so awaiting the LAST scheduled task is
+        sufficient to know the row reflects this connection's final state.
+        Bounded so a wedged DynamoDB call can never hold a close path past
+        the lifespan's shutdown deadline, and SHIELDED so the timeout only
+        stops the waiting — the write task itself keeps running rather
+        than being cancelled mid-put/delete. Never raises: write failures
+        are already swallowed inside the service methods."""
+        task = self._pending_liveness_write
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout_s)
+            except Exception:
+                pass
 
     def _note_gateway_liveness(self, *, connected: bool) -> None:
         """Record the durable (cross-instance) DDB liveness transition (readiness
@@ -386,7 +411,7 @@ class GatewayConnection:
             self._start_liveness_refresh()
         else:
             self._liveness_dead = True
-        asyncio.create_task(self._write_liveness(connected=connected))
+        self._pending_liveness_write = asyncio.create_task(self._write_liveness(connected=connected))
 
     async def _write_liveness(self, *, connected: bool) -> None:
         """Serialized DDB liveness write. Puts are gated on ``_liveness_dead``
@@ -2430,6 +2455,12 @@ class GatewayConnection:
 class GatewayConnectionPool:
     """Pool of persistent gateway connections, one per active user."""
 
+    # Set by close_all; ensure_connection refuses new dials once it flips so
+    # a mid-shutdown dial can't insert past the shutdown snapshot. A class
+    # default (not __init__ state) so the __new__-constructed test harnesses
+    # inherit it without each one having to know the attribute exists.
+    _closing: bool = False
+
     def __init__(
         self,
         management_api: Any,
@@ -2805,6 +2836,15 @@ class GatewayConnectionPool:
         connection on the fast path).
         """
         async with self._lock:
+            # Shutdown fence: a dial that would insert AFTER close_all's
+            # snapshot would leave a live reader and a fresh gateway-liveness
+            # row behind a dead process — other workers would read this
+            # owner as \"ready\" for the whole 180s freshness window.
+            # close_all sets the flag and then passes through this lock
+            # once, so every dial that began before shutdown has either
+            # inserted (and is closed by the snapshot) or refuses here.
+            if self._closing:
+                raise GatewayReconnectThrottled("pool is shutting down")
             conn = self._connections.get(user_id)
             # Always adopt the freshly-resolved endpoint. Container task IPs are
             # ephemeral (every ECS task replacement changes them); a parked/stale
@@ -3053,6 +3093,48 @@ class GatewayConnectionPool:
             if user_id in self._connections:
                 self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
+    def arm_idle_teardown_if_unattended(self, user_id: str) -> None:
+        """Arm the standard grace-close for a gateway connection that exists
+        with no frontend registered on this task.
+
+        ``remove_frontend_connection`` is otherwise the ONLY armer of
+        ``_grace_close`` — it fires on a frontend *leaving*. A connection
+        created while the frontend set is already empty (the status poll's
+        self-heal dial: a status-only client, or a browser whose WS landed
+        on a different backend task) never traverses that path, so nothing
+        would ever close it: it refreshes gateway liveness indefinitely and,
+        for a trial owner, keeps a scaled-to-zero-eligible container running
+        with nobody attached.
+
+        Safe to over-arm: ``_grace_close`` re-checks the frontend set at
+        fire time, and ``_maybe_stop_trial_container`` re-checks cross-task
+        DDB truth (live chat connections, operator runs) before stopping
+        anything — so arming here can only over-preserve, never over-kill.
+        No-op when a frontend IS registered here or when no connection
+        exists.
+
+        A PENDING grace task IS coverage — even one that belongs to the
+        PREVIOUS connection (parked in the post-close trial-stop sleep
+        while a status poll dialed a replacement) — because every grace
+        task re-runs this arm on its way out (``_grace_close``'s finally):
+        however it exits — stop completed, stop vetoed, or cancelled — it
+        re-arms a fresh cycle if an unattended connection exists at that
+        moment. Deliberately NO cancellation of a pending task here: a
+        cancel landing while the old task is inside ``close_user`` would
+        abandon the old connection's drain mid-flight (leaked reader task
+        and socket), and shielding the drain instead lets its completion
+        erase a returning client's registration — both were real review
+        findings. Skip-and-let-it-finish has neither problem.
+        """
+        if self._frontend_connections.get(user_id):
+            return
+        if user_id not in self._connections:
+            return
+        existing = self._grace_tasks.get(user_id)
+        if existing is not None and not existing.done() and existing is not asyncio.current_task():
+            return
+        self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
+
     def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
         """Push a generic ``{type: "event"}`` frame to every frontend WS
         registered for *owner_id*.
@@ -3134,6 +3216,12 @@ class GatewayConnectionPool:
                 account = None
             is_trial = bool(account) and account.get("subscription_status") == "trial_local"
             run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
+            # Captured BEFORE close_user pops the connection: the stop's
+            # replacement veto needs to tell a genuinely new connection's
+            # liveness row apart from THIS connection's own leftover row
+            # (mark_gateway_disconnected's conditioned delete can fail).
+            closed_conn = self._connections.get(user_id)
+            closed_conn_token = getattr(closed_conn, "_liveness_token", None)
             await self.close_user(user_id)
             if not (is_trial and not run_in_flight):
                 return
@@ -3145,14 +3233,28 @@ class GatewayConnectionPool:
             self._grace_tasks[user_id] = asyncio.current_task()
             try:
                 await asyncio.sleep(_TRIAL_STOP_GRACE_S)
-                await self._maybe_stop_trial_container(user_id)
+                await self._maybe_stop_trial_container(user_id, closed_conn_token=closed_conn_token)
             finally:
                 if self._grace_tasks.get(user_id) is asyncio.current_task():
                     self._grace_tasks.pop(user_id, None)
         except asyncio.CancelledError:
             pass
+        finally:
+            # Exit guarantee for arm_idle_teardown_if_unattended's
+            # skip-if-pending: a status poll may have dialed a REPLACEMENT
+            # connection while this task was mid-cycle (most likely during
+            # the post-close trial-stop sleep), and the arm deliberately
+            # treated this pending task as coverage. Make that true: on the
+            # way out — stop completed, stop vetoed, or cancelled — re-arm a
+            # fresh cycle if an unattended connection exists right now. The
+            # arm's own guards make this a no-op in every other exit: a
+            # returning client (cancel path) has a registered frontend, and
+            # a normally-completed cycle closed its connection.
+            self.arm_idle_teardown_if_unattended(user_id)
 
-    async def _maybe_stop_trial_container(self, owner_id: str, trigger: str = "grace") -> None:
+    async def _maybe_stop_trial_container(
+        self, owner_id: str, trigger: str = "grace", closed_conn_token: str | None = None
+    ) -> None:
         """Stop a trial container that provably has nobody using it.
 
         Every check must pass; any doubt = don't stop (over-preserve, never
@@ -3172,6 +3274,16 @@ class GatewayConnectionPool:
         try:
             if self._frontend_connections.get(owner_id):
                 return  # a client reconnected on this task
+            # Grace path only: the cycle that armed this stop closed its own
+            # connection before the stop-grace sleep, so ANY connection
+            # present now is a REPLACEMENT (a status-poll self-heal dial
+            # that landed mid-sleep). It must not be stopped on the old
+            # cycle's deadline — skip; the old task's exit re-arm gives it
+            # a full fresh cycle of its own. Direct callers (trigger !=
+            # "grace") deliberately stop despite a live connection — their
+            # has_active_runs/is_parked vetoes are the fence there.
+            if trigger == "grace" and owner_id in self._connections:
+                return
             from core.repositories import billing_repo
 
             account = await billing_repo.get_by_owner_id(owner_id)
@@ -3190,6 +3302,55 @@ class GatewayConnectionPool:
                 # adapter opens its WS in execute() and closes it when the run
                 # ends, so the connection's existence IS the run.
                 return
+            # Final re-check under the pool's connect lock, immediately
+            # before the irreversible stop. The entry veto above is
+            # TOCTOU-exposed two ways: a replacement dial mid-handshake has
+            # not been inserted into _connections yet, and an insert can
+            # land during the awaited billing / connection-service reads.
+            # Serializing on _lock closes both for any dial that began
+            # before this point — it has either inserted its connection
+            # (veto) or failed. A dial starting after is indistinguishable
+            # from one starting right after the stop; both fail fast
+            # against a stopping container and self-correct on the next
+            # presence-backed wake poll.
+            # Final re-checks for EVERY trigger, immediately before the
+            # irreversible stop. Both production callers need them: the
+            # grace path races replacement dials (mid-handshake or landing
+            # during the awaited reads above), and boot_reconcile — a NEW
+            # worker sweeping "running" rows during a rolling deploy — is
+            # blind to a live connection an EXISTING worker holds. The
+            # locked local check is a free no-op at boot (empty pool).
+            async with self._lock:
+                if owner_id in self._connections or self._frontend_connections.get(owner_id):
+                    return
+            # The lock above is process-local; the durable cross-worker
+            # signal is the gateway-liveness row (mark_gateway_connected).
+            # Compare TOKENS, not mere presence: the grace cycle's own
+            # row's conditioned delete can fail, and a leftover row
+            # refreshed just before close is still inside the freshness
+            # window at stop-fire time — treating it as a replacement
+            # would veto the stop with nothing left to re-arm it (the
+            # container would run indefinitely). A fresh row bearing a
+            # DIFFERENT token than the connection the caller just closed
+            # (or ANY token, for boot_reconcile's closed_conn_token=None)
+            # is a live connection somewhere — the worker holding it owns
+            # teardown; a row bearing the closed connection's own token is
+            # its stale leftover and no reason to keep the container up.
+            live_token = await self._conn_svc.get_live_gateway_conn_token(owner_id)
+            if live_token is not None and live_token != closed_conn_token:
+                return
+            # One last SYNCHRONOUS local look after the awaited read above:
+            # a local dial can acquire the connect lock the moment our
+            # locked check released it, complete its handshake, and insert
+            # into _connections while the DDB read was in flight — and its
+            # own liveness write is dispatched async, so the strong read
+            # cannot see it either. A dict lookup here closes that local
+            # window; the residual (an insert landing between this line and
+            # the ECS call) is irreducible without a distributed fence and
+            # self-corrects on the next presence-backed wake poll.
+            if owner_id in self._connections:
+                return
+
             from core.containers import get_ecs_manager
 
             await get_ecs_manager().stop_user_service(owner_id, reason="trial_idle")
@@ -3203,6 +3364,14 @@ class GatewayConnectionPool:
         if conn:
             put_metric("gateway.connection", dimensions={"event": "disconnect"})
             await conn.close()
+            # close() only SCHEDULES the terminal liveness delete; land it
+            # before returning so every close path — grace task, shutdown
+            # snapshot, admin teardown — leaves the row truthful the moment
+            # it completes. Without this, a close finishing just before
+            # lifespan teardown could have its queued delete cancelled,
+            # leaving a dead worker's row falsely "ready" for the
+            # freshness window.
+            await conn.drain_liveness_write()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
         # This pops the whole frontend-connection entry regardless of
@@ -3285,10 +3454,51 @@ class GatewayConnectionPool:
 
     async def close_all(self) -> None:
         """Shutdown: close all connections concurrently, then drain delivery."""
+        # Fence new dials (see ensure_connection), then serialize with any
+        # in-flight one: it holds _lock through connection insertion, so
+        # passing through the lock once here guarantees every dial that
+        # began before shutdown has either inserted — and is in the
+        # snapshot below — or will refuse on the flag. Without this, a
+        # status-poll self-heal dial landing mid-shutdown leaves a live
+        # reader plus a fresh liveness row that makes other workers read
+        # this owner as "ready" off a dead process for up to 180s.
+        self._closing = True
+        async with self._lock:
+            pass
+        # Capture the connection objects BEFORE the close gather pops them:
+        # close() only SCHEDULES the terminal liveness delete, so shutdown
+        # must drain those writes afterwards or lifespan teardown can cancel
+        # a queued delete while the preceding connect put still lands —
+        # leaving a dead process's row falsely "ready" for the freshness
+        # window. Bounded like the sender flush below: a wedged DDB call
+        # must not hang shutdown.
+        conns = list(self._connections.values())
         await asyncio.gather(
             *(self.close_user(uid) for uid in list(self._connections.keys())),
             return_exceptions=True,
         )
+        # Each drain is self-bounded and shield-protected, so this gather
+        # completes within the drain timeout without cancelling any write.
+        await asyncio.gather(*(c.drain_liveness_write() for c in conns), return_exceptions=True)
+        # A grace task mid-close_user has already POPPED its connection, so
+        # the snapshot above missed it — close_user does not run under
+        # _lock, so the lock pass-through cannot make the snapshot complete
+        # for that path. close_user now drains the terminal delete before
+        # returning, so briefly OBSERVING the active grace tasks is enough
+        # to land those writes too. asyncio.wait, never wait_for(gather):
+        # wait does NOT cancel unfinished tasks on timeout, so a grace task
+        # parked in its 30s/150s sleep (normal at shutdown) or one whose
+        # close drains run long simply keeps running instead of being
+        # cancelled mid-cleanup — the exact abandonment this drain exists
+        # to prevent.
+        grace = [t for t in self._grace_tasks.values() if t is not None and not t.done()]
+        if grace:
+            done, pending = await asyncio.wait(grace, timeout=5.0)
+            if pending:
+                logger.debug(
+                    "%d grace task(s) still pending at shutdown (normal when parked in a grace sleep)",
+                    len(pending),
+                )
         # Flush queued frontend frames (close() above enqueues final
         # status_change frames) so shutdown doesn't cancel deliveries mid-send.
         try:

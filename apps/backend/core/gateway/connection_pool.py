@@ -357,18 +357,22 @@ class GatewayConnection:
         # a dead process's row falsely "ready" for the freshness window.
         self._pending_liveness_write: Optional[asyncio.Task] = None
 
-    async def drain_liveness_write(self) -> None:
-        """Await the most recently scheduled liveness write, if any.
+    async def drain_liveness_write(self, timeout_s: float = 5.0) -> None:
+        """Wait (bounded, non-cancelling) for the most recently scheduled
+        liveness write, if any.
 
         The terminal disconnect delete serializes behind any in-flight put
         via ``_liveness_lock``, so awaiting the LAST scheduled task is
         sufficient to know the row reflects this connection's final state.
-        Failures are already swallowed inside the service methods; this
-        only waits, it never raises."""
+        Bounded so a wedged DynamoDB call can never hold a close path past
+        the lifespan's shutdown deadline, and SHIELDED so the timeout only
+        stops the waiting — the write task itself keeps running rather
+        than being cancelled mid-put/delete. Never raises: write failures
+        are already swallowed inside the service methods."""
         task = self._pending_liveness_write
         if task is not None and not task.done():
             try:
-                await task
+                await asyncio.wait_for(asyncio.shield(task), timeout_s)
             except Exception:
                 pass
 
@@ -3473,28 +3477,28 @@ class GatewayConnectionPool:
             *(self.close_user(uid) for uid in list(self._connections.keys())),
             return_exceptions=True,
         )
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*(c.drain_liveness_write() for c in conns), return_exceptions=True),
-                timeout=5.0,
-            )
-        except Exception:
-            logger.warning("Liveness-write drain timed out during shutdown", exc_info=True)
+        # Each drain is self-bounded and shield-protected, so this gather
+        # completes within the drain timeout without cancelling any write.
+        await asyncio.gather(*(c.drain_liveness_write() for c in conns), return_exceptions=True)
         # A grace task mid-close_user has already POPPED its connection, so
         # the snapshot above missed it — close_user does not run under
         # _lock, so the lock pass-through cannot make the snapshot complete
         # for that path. close_user now drains the terminal delete before
-        # returning, so briefly awaiting the active grace tasks is enough
-        # to land those writes too. Bounded: a grace task parked in its
-        # 30s/150s sleep simply eats the timeout, which is why this waits
-        # at most 5s and logs at debug (a sleeping grace task at shutdown
-        # is normal, not a failure).
+        # returning, so briefly OBSERVING the active grace tasks is enough
+        # to land those writes too. asyncio.wait, never wait_for(gather):
+        # wait does NOT cancel unfinished tasks on timeout, so a grace task
+        # parked in its 30s/150s sleep (normal at shutdown) or one whose
+        # close drains run long simply keeps running instead of being
+        # cancelled mid-cleanup — the exact abandonment this drain exists
+        # to prevent.
         grace = [t for t in self._grace_tasks.values() if t is not None and not t.done()]
         if grace:
-            try:
-                await asyncio.wait_for(asyncio.gather(*grace, return_exceptions=True), timeout=5.0)
-            except (TimeoutError, asyncio.TimeoutError):
-                logger.debug("grace tasks still sleeping at shutdown (normal); proceeding")
+            done, pending = await asyncio.wait(grace, timeout=5.0)
+            if pending:
+                logger.debug(
+                    "%d grace task(s) still pending at shutdown (normal when parked in a grace sleep)",
+                    len(pending),
+                )
         # Flush queued frontend frames (close() above enqueues final
         # status_change frames) so shutdown doesn't cancel deliveries mid-send.
         try:

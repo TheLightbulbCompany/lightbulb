@@ -46,28 +46,31 @@ logger = logging.getLogger(__name__)
 # single-flight (one self-heal dial outstanding per process, whoever it is
 # for — a wake burst of N owners must not queue N serial handshake holds in
 # front of every healthy user's chat RPCs; each blocked owner's next poll
-# retries within seconds of the slot freeing), and the per-owner cooldown
+# retries within seconds of the slot freeing), and the per-owner backoff
 # stops a wedged container (running row + unreachable IP) from eating a
 # fresh handshake-timeout lock hold per poll. A chat send still dials
 # immediately through its own path — these guards only pace the background
 # repair.
-_SELF_HEAL_DIAL_COOLDOWN_S = 60.0
-# A failed dial that returned faster than this held the global connect lock
-# only briefly (connection refused during the gateway's boot window) — it is
-# exempted from the cooldown so the next poll retries. Anything slower ate a
-# real handshake wait and keeps the full cooldown.
-_SELF_HEAL_FAST_FAIL_S = 2.0
+_SELF_HEAL_BACKOFF_S = 60.0
 _self_heal_inflight: set[str] = set()
-_self_heal_last_dial: dict[str, float] = {}
+# Stamped ONLY when a dial fails expensively (a real handshake wait on the
+# pool's global connect lock — e.g. a blackholed IP eating the full connect
+# timeout). Success leaves no stamp (a later drop re-dials on the next
+# poll; the pool's is_user_connected fast-path bounds redundant dials), and
+# ConnectionRefusedError leaves no stamp (the kernel rejected the connect
+# instantly — the normal gateway-boot race, where the next poll's dial is
+# the one that heals). Failure TYPE is the classifier; no latency
+# measurement is involved.
+_self_heal_backoff_at: dict[str, float] = {}
 
 
 def _self_heal_dial_allowed(owner_id: str) -> bool:
     """True when NO self-heal dial is outstanding process-wide and this
-    owner's last attempt is at least the cooldown ago (or never happened)."""
+    owner is not backing off from an expensive failure."""
     if _self_heal_inflight:
         return False
-    last = _self_heal_last_dial.get(owner_id)
-    return last is None or (time.monotonic() - last) >= _SELF_HEAL_DIAL_COOLDOWN_S
+    stamp = _self_heal_backoff_at.get(owner_id)
+    return stamp is None or (time.monotonic() - stamp) >= _SELF_HEAL_BACKOFF_S
 
 
 # A start refusal carries the SAME code as the provision gate's, so each maps
@@ -566,7 +569,6 @@ async def container_status(
         and _self_heal_dial_allowed(owner_id)
     ):
         _self_heal_inflight.add(owner_id)
-        _self_heal_last_dial[owner_id] = time.monotonic()
         asyncio.create_task(_pool_self_heal_connect(owner_id, container_ip, container["gateway_token"]))
 
     return _status_response(contract)
@@ -580,10 +582,10 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
     The dial races real container state (mid-boot gateway, task just died),
     so failures are logged and swallowed: the poll it came from has already
     answered, and the next poll simply reports whatever is true. Always
-    clears the per-owner in-flight marker the dispatch site set — the
-    cooldown (stamped at dispatch) paces the next attempt.
+    clears the per-owner in-flight marker the dispatch site set; only an
+    expensive failure arms the per-owner backoff (see the classifier note
+    on ``_self_heal_backoff_at``).
     """
-    started = time.monotonic()
     try:
         pool = get_gateway_pool()
         if pool.is_user_connected(owner_id):
@@ -599,19 +601,19 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
         # attached. Over-preserve-safe: the grace path re-checks frontends
         # at fire time and the trial stop re-checks cross-task DDB truth.
         pool.arm_idle_teardown_if_unattended(owner_id)
+    except ConnectionRefusedError as exc:
+        # The kernel rejected the connect instantly — the gateway process
+        # isn't listening yet (the normal boot-window race this helper
+        # documents above). No lock time was consumed, so no backoff: the
+        # next ~5s poll's dial is the one that heals.
+        logger.info("status-poll pool self-heal dial refused (gateway booting) owner=%s: %s", owner_id, exc)
     except Exception as exc:
+        # Anything else ate a real wait on the pool's global connect lock
+        # (handshake timeout on a blackholed IP, auth rejection mid-boot).
+        # Arm the per-owner backoff so a wedged container can't consume a
+        # fresh lock hold on every poll.
         logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
-        # The cooldown exists to pace EXPENSIVE failures — a blackholed IP
-        # holding the pool's global connect lock through a full handshake
-        # timeout. A dial that failed in milliseconds (connection refused
-        # while the gateway is still booting — the normal race this helper
-        # documents above) held the lock for effectively nothing, and
-        # leaving the 60s stamp would pin the user on "starting" for a
-        # minute when the next ~5s poll's dial would succeed. Clear the
-        # stamp so that poll retries; the global single-flight still bounds
-        # concurrency, and a slow failure keeps the full cooldown.
-        if time.monotonic() - started < _SELF_HEAL_FAST_FAIL_S:
-            _self_heal_last_dial.pop(owner_id, None)
+        _self_heal_backoff_at[owner_id] = time.monotonic()
     finally:
         _self_heal_inflight.discard(owner_id)
 

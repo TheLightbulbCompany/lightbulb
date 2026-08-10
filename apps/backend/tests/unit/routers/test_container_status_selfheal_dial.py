@@ -8,7 +8,8 @@ so without this dial nothing ever connects, the poll reports "starting"
 forever, and only a page reload (fresh mount RPC burst) breaks the deadlock.
 These tests pin the dispatch conditions: dial exactly when the poll observes
 "starting" with an IP + token in hand, never on read-only polls, and never
-stacked (in-flight marker + cooldown pace the background repair).
+stacked (a global single-flight plus a backoff armed only by expensive
+failures pace the background repair — failure TYPE is the classifier).
 """
 
 import asyncio
@@ -38,10 +39,10 @@ def _running_row(token: str | None = TOKEN) -> dict:
 @pytest.fixture(autouse=True)
 def _reset_dial_guards():
     container_router._self_heal_inflight.clear()
-    container_router._self_heal_last_dial.clear()
+    container_router._self_heal_backoff_at.clear()
     yield
     container_router._self_heal_inflight.clear()
-    container_router._self_heal_last_dial.clear()
+    container_router._self_heal_backoff_at.clear()
 
 
 @pytest.fixture
@@ -81,8 +82,10 @@ async def test_starting_phase_dials_the_pool(mock_get_ecs, mock_gateway_connecte
     # (nothing else ever will), or a trial container stays up forever.
     mock_pool.arm_idle_teardown_if_unattended.assert_called_once_with(OWNER)
     # The helper's finally must clear the in-flight marker so a later poll
-    # (past the cooldown) can dial again.
+    # can dial again, and success must not arm the backoff (a post-success
+    # drop re-dials on the next poll).
     assert OWNER not in container_router._self_heal_inflight
+    assert OWNER not in container_router._self_heal_backoff_at
 
 
 @pytest.mark.asyncio
@@ -138,12 +141,14 @@ async def test_missing_token_never_dials(mock_get_ecs, mock_gateway_connected, m
 @pytest.mark.asyncio
 @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
 @patch("routers.container.get_ecs_manager")
-async def test_cooldown_paces_back_to_back_polls(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
-    """The ~5s poll cadence must not stack dials: one dial per cooldown."""
+async def test_successful_dial_is_not_repeated(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
+    """After a successful dial the pool holds the connection; a later poll's
+    helper fast-paths on is_user_connected instead of re-dialing."""
     mock_ecs = AsyncMock()
     mock_get_ecs.return_value = mock_ecs
     mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
     mock_gateway_connected.return_value = False
+    mock_pool.is_user_connected = MagicMock(side_effect=[False, True])
 
     await async_client.get("/api/v1/container/status?wake=1")
     await _drain_background_tasks()
@@ -160,7 +165,7 @@ async def test_dial_failure_is_swallowed_and_clears_inflight(
     mock_get_ecs, mock_gateway_connected, mock_pool, async_client
 ):
     """A refused dial (gateway still booting) must not surface anywhere and
-    must clear the in-flight marker so the next post-cooldown poll retries."""
+    must clear the in-flight marker so the next poll retries."""
     mock_ecs = AsyncMock()
     mock_get_ecs.return_value = mock_ecs
     mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
@@ -220,9 +225,9 @@ async def test_already_connected_pool_skips_redial(mock_get_ecs, mock_gateway_co
 @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
 @patch("routers.container.get_ecs_manager")
 async def test_fast_boot_refusal_retries_on_next_poll(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
-    """A dial refused in milliseconds (gateway still booting) must NOT arm
-    the 60s cooldown — the next ~5s poll retries and is the one that heals.
-    Only slow failures (real handshake waits on the global lock) pay it."""
+    """ConnectionRefusedError (gateway still booting — the kernel rejected
+    the connect, no lock time consumed) must NOT arm the backoff: the next
+    ~5s poll retries and is the one that heals."""
     mock_ecs = AsyncMock()
     mock_get_ecs.return_value = mock_ecs
     mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
@@ -240,12 +245,9 @@ async def test_fast_boot_refusal_retries_on_next_poll(mock_get_ecs, mock_gateway
 @pytest.mark.asyncio
 @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
 @patch("routers.container.get_ecs_manager")
-async def test_slow_failure_keeps_the_cooldown(
-    mock_get_ecs, mock_gateway_connected, mock_pool, async_client, monkeypatch
-):
-    """A failure that ate a real handshake wait keeps the full cooldown.
-    Simulated by making the fast-fail window unsatisfiable."""
-    monkeypatch.setattr(container_router, "_SELF_HEAL_FAST_FAIL_S", -1.0)
+async def test_expensive_failure_arms_the_backoff(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
+    """A non-refused failure (handshake timeout — a real wait on the global
+    connect lock) arms the per-owner backoff: no re-dial on the next poll."""
     mock_ecs = AsyncMock()
     mock_get_ecs.return_value = mock_ecs
     mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))

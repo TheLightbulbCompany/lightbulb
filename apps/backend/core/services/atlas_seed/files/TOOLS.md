@@ -26,7 +26,7 @@ Authorization: Bearer $OPENCLAW_HOOK_TOKEN
 { "staging_agent_id": "<staging dir name>", "name": "<agent name>", "reports_to": null }
 ```
 
-`reports_to` null/omitted defaults to the company CEO (Friday) — only set it when the role spec names a different manager. The per-owner URL is substituted at stage time (placeholder `{{ISOL8_BRIDGE_URL}}`); the body is `node` `JSON.stringify`-built, piped to `curl --data @-` so a special char can't malform the JSON. The bridge mints + deploys the agent live and returns `{agent_id, registered: true, warnings: [...]}`; relay any `warnings` verbatim into the build thread (they flag e.g. a blank description → blank org-chart capabilities). `build.lobster` does not publish — it ends at register + a `build_registered` notification.
+`reports_to` null/omitted defaults to the company CEO (Friday) — only set it when the role spec names a different manager. The per-owner URL is substituted at stage time (placeholder `{{ISOL8_BRIDGE_URL}}`); the body is `node` `JSON.stringify`-built, piped to `curl --data @-` so a special char can't malform the JSON. The bridge mints + deploys the agent live and returns `{agent_id, registered: true, warnings: [...]}`; relay any `warnings` verbatim into the build thread (they flag e.g. a blank description → blank org-chart capabilities). `verify-write` also schema-validates the staged openclaw.json against the installed OpenClaw's own schema — any `schema_issues[]` in its result must be fixed and the build re-verified before register; never retry register while verify is failing. `build.lobster` does not publish — it ends at register + a `build_registered` notification.
 
 ## Agent loop
 
@@ -77,7 +77,7 @@ Every Node script is `stdin-JSON → stdout-JSON`, a bare `node` step, exit 0|1,
 | `atlas-stack-overlap.js` | Reads `~/.openclaw/agents/*/openclaw.json` structured fields only → `{overlap_score, conflicting_agents, recommendation}` |
 | `atlas-cookbook-reader.js` | Two-source cookbook (docs cache + agent snapshots); drives the daily refresh (`diff-index`/`fetch-pages`/`snapshot-agents`) |
 | `atlas-failure-case-router.js` | Filters the corpus by archetype; refuses any case whose source URL isn't `verified`; `--refresh` re-verifies the corpus |
-| `atlas-skeleton-generator.js` | `draft` returns the artifact set; `write-disk` atomically materializes into `workspaces/{agent_name}/`; `verify-write` checks count + per-file SHA256 |
+| `atlas-skeleton-generator.js` | `draft` returns the artifact set; `write-disk` atomically materializes into `workspaces/{agent_name}/`; `verify-write` checks count + per-file SHA256 + schema-validates the staged openclaw.json |
 | `atlas-det-llm-classifier.js` | Per-requirement deterministic / LLM / hybrid classification with rationale |
 | `atlas-skill-recommender.js` | Archetype + requirements → skill list + deny list; skill-vetter first; refuses any ClawHavoc-listed skill |
 | `atlas-requirement-walker.js` | Step 4 vet: `present-next`/`apply-trigger-edits`/`check-loop`; refuses to advance past an unresolved row; H6 fuzzy match |

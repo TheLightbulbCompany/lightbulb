@@ -341,6 +341,7 @@ async def test_shutdown_fences_new_dials_and_snapshots_late_inserts():
     pool.close_user = fake_close_user
     pool._sender = MagicMock()
     pool._sender.flush = AsyncMock()
+    drained = AsyncMock()
 
     # Simulate an in-flight dial: it holds the lock and inserts before
     # releasing — close_all must wait for it and include it in the snapshot.
@@ -349,7 +350,9 @@ async def test_shutdown_fences_new_dials_and_snapshots_late_inserts():
     async def in_flight_dial():
         async with pool._lock:
             await release.wait()
-            pool._connections[USER] = MagicMock()
+            conn = MagicMock()
+            conn.drain_liveness_write = drained
+            pool._connections[USER] = conn
 
     dial = asyncio.create_task(in_flight_dial())
     await asyncio.sleep(0)  # dial acquires the lock
@@ -360,6 +363,9 @@ async def test_shutdown_fences_new_dials_and_snapshots_late_inserts():
     await dial
     await shutdown
     assert closed == [USER]
+    # The snapshot's connections get their scheduled liveness writes
+    # drained — the terminal delete must land before shutdown returns.
+    drained.assert_awaited_once()
 
     # And a dial arriving after the fence refuses outright.
     with pytest.raises(GatewayReconnectThrottled):

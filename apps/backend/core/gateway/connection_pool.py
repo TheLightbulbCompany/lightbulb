@@ -350,6 +350,27 @@ class GatewayConnection:
         # _liveness_lock only orders writes WITHIN one connection; the token is
         # what orders them across connection replacement (and across instances).
         self._liveness_token = uuid.uuid4().hex
+        # Latest scheduled _write_liveness task. Retained for two reasons:
+        # a strong reference (the loop keeps only weak task refs), and so
+        # shutdown can DRAIN the terminal delete — close() only schedules
+        # it, and an undrained delete cancelled by lifespan teardown leaves
+        # a dead process's row falsely "ready" for the freshness window.
+        self._pending_liveness_write: Optional[asyncio.Task] = None
+
+    async def drain_liveness_write(self) -> None:
+        """Await the most recently scheduled liveness write, if any.
+
+        The terminal disconnect delete serializes behind any in-flight put
+        via ``_liveness_lock``, so awaiting the LAST scheduled task is
+        sufficient to know the row reflects this connection's final state.
+        Failures are already swallowed inside the service methods; this
+        only waits, it never raises."""
+        task = self._pending_liveness_write
+        if task is not None and not task.done():
+            try:
+                await task
+            except Exception:
+                pass
 
     def _note_gateway_liveness(self, *, connected: bool) -> None:
         """Record the durable (cross-instance) DDB liveness transition (readiness
@@ -386,7 +407,7 @@ class GatewayConnection:
             self._start_liveness_refresh()
         else:
             self._liveness_dead = True
-        asyncio.create_task(self._write_liveness(connected=connected))
+        self._pending_liveness_write = asyncio.create_task(self._write_liveness(connected=connected))
 
     async def _write_liveness(self, *, connected: bool) -> None:
         """Serialized DDB liveness write. Puts are gated on ``_liveness_dead``
@@ -3432,10 +3453,25 @@ class GatewayConnectionPool:
         self._closing = True
         async with self._lock:
             pass
+        # Capture the connection objects BEFORE the close gather pops them:
+        # close() only SCHEDULES the terminal liveness delete, so shutdown
+        # must drain those writes afterwards or lifespan teardown can cancel
+        # a queued delete while the preceding connect put still lands —
+        # leaving a dead process's row falsely "ready" for the freshness
+        # window. Bounded like the sender flush below: a wedged DDB call
+        # must not hang shutdown.
+        conns = list(self._connections.values())
         await asyncio.gather(
             *(self.close_user(uid) for uid in list(self._connections.keys())),
             return_exceptions=True,
         )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(c.drain_liveness_write() for c in conns), return_exceptions=True),
+                timeout=5.0,
+            )
+        except Exception:
+            logger.warning("Liveness-write drain timed out during shutdown", exc_info=True)
         # Flush queued frontend frames (close() above enqueues final
         # status_change frames) so shutdown doesn't cancel deliveries mid-send.
         try:

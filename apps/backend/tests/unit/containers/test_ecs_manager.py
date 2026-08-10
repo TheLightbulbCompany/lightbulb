@@ -2191,7 +2191,11 @@ class TestWaitForRunningFencedWrites:
             )
 
             mock_repo.update_fields.assert_not_called()
-            mock_repo.update_container_leased.assert_called_once()
+            # Two leased calls now: the iteration-opening pure heartbeat
+            # (fields=None) and the terminal fenced running write. The
+            # assertions below pin the TERMINAL call's contract.
+            calls = mock_repo.update_container_leased.call_args_list
+            assert calls[0].args[2] is None  # opening heartbeat
             call = mock_repo.update_container_leased.call_args
             assert call.args[0] == "user_test_123"
             assert call.args[1] == "claim-1"
@@ -3733,12 +3737,50 @@ class TestAwaitRunningTransitionSubstatus:
                     "user_test_123", interval_s=0, claim_id="claim-1", attempt_token="tok-1"
                 )
 
-        # tick 1: substatus write; tick 2: pure heartbeat (fields=None);
-        # tick 3: terminal running write releasing the lease.
-        assert leased_calls[0][0] == {"substatus": "task_running"}
-        assert leased_calls[1][0] is None
+        # EVERY iteration opens with a pure heartbeat (fields=None) — first
+        # in the loop so no waiting path (including the no-primary retry
+        # `continue`) can skip it — then the real writes: one substatus
+        # write, and the terminal running write releasing the lease.
+        assert leased_calls[0][0] is None
+        heartbeats = [c for c in leased_calls if c[0] is None]
+        assert len(heartbeats) == 3  # one per iteration
+        substatus_writes = [c for c in leased_calls if c[0] == {"substatus": "task_running"}]
+        assert len(substatus_writes) == 1
         assert leased_calls[-1][0]["status"] == "running"
         assert leased_calls[-1][1] is True
+
+    @pytest.mark.asyncio
+    async def test_leased_poller_heartbeats_on_the_no_primary_retry_path(self, manager):
+        """The no-primary-deployment retry `continue` must ALSO refresh the
+        lease — an ECS describe blip longer than the TTL would otherwise make
+        a live poller read stale exactly like a dead one."""
+        rows = [
+            _make_container_dict(status="provisioning", substatus="service_created"),
+            _make_container_dict(status="provisioning", substatus="task_running"),
+        ]
+        leased_calls = []
+
+        async def track_leased(user_id, claim_id, fields=None, **kw):
+            leased_calls.append(fields)
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
+            mock_repo.update_container_leased = AsyncMock(side_effect=track_leased)
+            manager._get_primary_deployment = AsyncMock(
+                side_effect=[None, {"id": "dep-1", "rolloutState": "COMPLETED"}]
+            )
+            manager._poll_running_task = AsyncMock(return_value=("arn:aws:ecs:task/abc", "10.0.0.1", 1))
+            manager.is_healthy = MagicMock(return_value=True)
+            with patch("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", new=AsyncMock()):
+                await manager._await_running_transition(
+                    "user_test_123", interval_s=0, claim_id="claim-1", attempt_token="tok-1"
+                )
+
+        # Iteration 1 hit the no-primary `continue` — its heartbeat must
+        # still have fired before the branch.
+        assert leased_calls[0] is None
+        assert leased_calls[1] is None  # iteration 2's opening heartbeat
+        assert leased_calls[-1]["status"] == "running"
 
 
 # ---------------------------------------------------------------------------

@@ -3273,29 +3273,32 @@ class GatewayConnectionPool:
             # from one starting right after the stop; both fail fast
             # against a stopping container and self-correct on the next
             # presence-backed wake poll.
-            if trigger == "grace":
-                async with self._lock:
-                    if owner_id in self._connections or self._frontend_connections.get(owner_id):
-                        return
-                # The lock above is process-local; a replacement dial can
-                # land on a DIFFERENT backend worker. Its one durable
-                # announcement is the gateway-liveness row
-                # (mark_gateway_connected). Compare TOKENS, not mere
-                # presence: our own row's conditioned delete can fail, and
-                # a leftover row refreshed just before close is still
-                # inside the freshness window at stop-fire time — treating
-                # it as a replacement would veto the stop with nothing left
-                # to re-arm it (the container would run indefinitely). A
-                # fresh row bearing a DIFFERENT token is a genuine
-                # replacement, wherever it lives — the worker that dialed
-                # it armed its own teardown cycle; one bearing the token of
-                # the connection THIS cycle closed is our own stale row and
-                # is no reason to keep the container up. Direct callers
-                # skip this veto: they stop while a live connection (and
-                # row) may legitimately exist.
-                live_token = await self._conn_svc.get_live_gateway_conn_token(owner_id)
-                if live_token is not None and live_token != closed_conn_token:
+            # Final re-checks for EVERY trigger, immediately before the
+            # irreversible stop. Both production callers need them: the
+            # grace path races replacement dials (mid-handshake or landing
+            # during the awaited reads above), and boot_reconcile — a NEW
+            # worker sweeping "running" rows during a rolling deploy — is
+            # blind to a live connection an EXISTING worker holds. The
+            # locked local check is a free no-op at boot (empty pool).
+            async with self._lock:
+                if owner_id in self._connections or self._frontend_connections.get(owner_id):
                     return
+            # The lock above is process-local; the durable cross-worker
+            # signal is the gateway-liveness row (mark_gateway_connected).
+            # Compare TOKENS, not mere presence: the grace cycle's own
+            # row's conditioned delete can fail, and a leftover row
+            # refreshed just before close is still inside the freshness
+            # window at stop-fire time — treating it as a replacement
+            # would veto the stop with nothing left to re-arm it (the
+            # container would run indefinitely). A fresh row bearing a
+            # DIFFERENT token than the connection the caller just closed
+            # (or ANY token, for boot_reconcile's closed_conn_token=None)
+            # is a live connection somewhere — the worker holding it owns
+            # teardown; a row bearing the closed connection's own token is
+            # its stale leftover and no reason to keep the container up.
+            live_token = await self._conn_svc.get_live_gateway_conn_token(owner_id)
+            if live_token is not None and live_token != closed_conn_token:
+                return
 
             from core.containers import get_ecs_manager
 

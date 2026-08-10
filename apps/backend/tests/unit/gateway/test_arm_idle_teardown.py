@@ -141,3 +141,27 @@ async def test_grace_stop_vetoed_by_replacement_connection():
     with patch("core.containers.get_ecs_manager") as mock_get_ecs:
         await pool._maybe_stop_trial_container(USER, trigger="grace")
     mock_get_ecs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_grace_stop_vetoed_by_replacement_landing_mid_check():
+    """TOCTOU closure: a replacement dial whose insert lands DURING the
+    stop's awaited billing read must still veto — the final re-check under
+    the pool lock runs immediately before the irreversible stop."""
+    from core.repositories import billing_repo as billing_mod
+
+    conn_svc = MagicMock()
+    conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
+    conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    pool = GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
+
+    async def billing_read_inserts_replacement(owner_id):
+        pool._connections[USER] = MagicMock()
+        return {"subscription_status": "trial_local"}
+
+    with (
+        patch.object(billing_mod, "get_by_owner_id", side_effect=billing_read_inserts_replacement),
+        patch("core.containers.get_ecs_manager") as mock_get_ecs,
+    ):
+        await pool._maybe_stop_trial_container(USER, trigger="grace")
+    mock_get_ecs.assert_not_called()

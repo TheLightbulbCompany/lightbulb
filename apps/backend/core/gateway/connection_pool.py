@@ -3254,6 +3254,22 @@ class GatewayConnectionPool:
                 # adapter opens its WS in execute() and closes it when the run
                 # ends, so the connection's existence IS the run.
                 return
+            # Final re-check under the pool's connect lock, immediately
+            # before the irreversible stop. The entry veto above is
+            # TOCTOU-exposed two ways: a replacement dial mid-handshake has
+            # not been inserted into _connections yet, and an insert can
+            # land during the awaited billing / connection-service reads.
+            # Serializing on _lock closes both for any dial that began
+            # before this point — it has either inserted its connection
+            # (veto) or failed. A dial starting after is indistinguishable
+            # from one starting right after the stop; both fail fast
+            # against a stopping container and self-correct on the next
+            # presence-backed wake poll.
+            if trigger == "grace":
+                async with self._lock:
+                    if owner_id in self._connections or self._frontend_connections.get(owner_id):
+                        return
+
             from core.containers import get_ecs_manager
 
             await get_ecs_manager().stop_user_service(owner_id, reason="trial_idle")

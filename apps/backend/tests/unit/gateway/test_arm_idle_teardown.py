@@ -8,7 +8,7 @@ trial container would stay running with nobody attached.
 """
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -82,3 +82,47 @@ async def test_rearms_over_a_finished_grace_task():
     task = pool._grace_tasks[USER]
     assert task is not done
     await task
+
+
+@pytest.mark.asyncio
+async def test_cancel_mid_close_still_completes_cleanup(monkeypatch):
+    """Cancelling a grace task while it is INSIDE close_user (the
+    cancel-and-replace race) must not abandon the old connection's drain:
+    _grace_close shields the close, so the reader task and WebSocket are
+    always torn down even though the grace task itself is interrupted."""
+    from core.gateway import connection_pool as cp
+    from core.repositories import billing_repo
+
+    monkeypatch.setattr(cp, "_GRACE_PERIOD", 0)
+    monkeypatch.setattr(billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+    pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
+    pool._frontend_connections = {}
+    conn = MagicMock()
+    conn.has_active_runs = False
+    pool._connections = {USER: conn}
+    pool._grace_tasks = {}
+    pool.has_active_runs = MagicMock(return_value=False)
+    pool.is_parked = MagicMock(return_value=False)
+
+    release = asyncio.Event()
+    cleanup_done = asyncio.Event()
+
+    async def slow_close(user_id):
+        await release.wait()
+        cleanup_done.set()
+
+    pool.close_user = slow_close
+
+    task = asyncio.create_task(pool._grace_close(USER))
+    # Let the task reach the shielded close_user and block on `release`.
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not cleanup_done.is_set()
+
+    task.cancel()
+    await task  # CancelledError is swallowed by _grace_close
+    # The grace task is gone, but the shielded cleanup must still finish.
+    assert not cleanup_done.is_set()
+    release.set()
+    await asyncio.wait_for(cleanup_done.wait(), timeout=2)

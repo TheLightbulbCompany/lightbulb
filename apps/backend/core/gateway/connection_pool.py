@@ -3083,7 +3083,10 @@ class GatewayConnectionPool:
         Cancel-and-re-arm instead, so the connection that exists NOW always
         owns a full grace cycle; the fresh task re-runs every teardown
         check from the top, so replacing the old one only ever delays a
-        stop, never skips a veto.
+        stop, never skips a veto. A cancel that lands while the stale task
+        is INSIDE close_user is safe: ``_grace_close`` shields that call,
+        so the old connection's drain always runs to completion and only
+        the grace task itself is interrupted.
         """
         if self._frontend_connections.get(user_id):
             return
@@ -3175,7 +3178,16 @@ class GatewayConnectionPool:
                 account = None
             is_trial = bool(account) and account.get("subscription_status") == "trial_local"
             run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
-            await self.close_user(user_id)
+            # Shielded: this task is cancellable (a returning client, or
+            # arm_idle_teardown_if_unattended replacing a stale cycle), but
+            # the connection CLEANUP must never be — close_user pops the
+            # connection first and then drains it, so a cancel landing
+            # mid-drain would abandon the old reader task and WebSocket
+            # while a replacement connection runs alongside them (duplicate
+            # event processing, leaked socket). The shield lets the cancel
+            # interrupt THIS task at the await while the inner close runs
+            # to completion on its own.
+            await asyncio.shield(self.close_user(user_id))
             if not (is_trial and not run_in_flight):
                 return
             # close_user popped this task out of _grace_tasks; re-register it so a

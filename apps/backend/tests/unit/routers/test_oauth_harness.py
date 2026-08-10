@@ -136,6 +136,42 @@ async def test_harness_disconnect_deletes_row_and_efs_file(async_client, oauth_t
 
 
 @pytest.mark.asyncio
+async def test_harness_disconnect_502_when_unlink_fails_and_row_survives(async_client, oauth_table):
+    """A failed EFS unlink is a failed disconnect: the file IS the credential
+    (config advertises the harness unconditionally), so reporting
+    'disconnected' over a surviving auth.json would leave a live, spawnable
+    credential the UI claims is gone. The row must survive so status stays
+    truthful and the user retries."""
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
+    with patch("routers.oauth.delete_opencode_auth", new=AsyncMock(side_effect=OSError("efs io"))):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/harness/disconnect")
+    assert resp.status_code == 502
+    status = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
+    assert status.json()["connected"] is True
+
+
+@pytest.mark.asyncio
+async def test_harness_poll_staging_failure_revokes_row_and_502s(async_client, oauth_table):
+    """If the EFS staging write fails, completion must NOT be reported: for a
+    running workspace nothing re-writes the file until a future provision
+    event, so 'Connected' would be a lie with every spawn failing. The
+    just-activated row is revoked so a fresh /harness/start works."""
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")
+    done = DevicePollResult(account_id="acc_h", bound_owner_id="user_test_123")
+    with (
+        patch("routers.oauth.poll_device_code", new=AsyncMock(return_value=done)),
+        patch(
+            "routers.oauth.pre_stage_opencode_auth",
+            new=AsyncMock(side_effect=OSError("efs full")),
+        ),
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/harness/poll")
+    assert resp.status_code == 502
+    status = await async_client.get("/api/v1/oauth/chatgpt/harness/status")
+    assert status.json()["connected"] is False
+
+
+@pytest.mark.asyncio
 async def test_two_pending_sessions_coexist(oauth_table):
     """A provider device-code session and a harness session can be pending at
     the same time — the row keys must not collide."""

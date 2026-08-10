@@ -269,10 +269,19 @@ async def harness_poll(ctx: AuthContext = Depends(get_current_user)):
     if tokens:
         try:
             await pre_stage_opencode_auth(user_id=result.bound_owner_id, oauth_tokens=tokens)
-        except Exception:
-            # The grant exists in DDB; provision-path staging self-heals the
-            # missing file (write-if-missing) on the next config write.
+        except Exception as e:
+            # A completed poll with no staged file would be a lie: for an
+            # already-running workspace nothing else writes this file until
+            # some future provision event, so status/UI would show Connected
+            # while every spawn fails. Revoke the just-activated row (a fresh
+            # /harness/start works after this — no active-row 409) and
+            # surface the failure so the UI lands in its retry branch.
             logger.exception("opencode auth staging failed for %s", result.bound_owner_id)
+            await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+            raise HTTPException(
+                status_code=502,
+                detail="Connecting the coding harness failed while saving the credential — try again.",
+            ) from e
     return {"status": "completed", "account_id": result.account_id}
 
 
@@ -284,13 +293,20 @@ async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
     owner_id = resolve_owner_id(ctx)
-    await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+    # EFS first, row second, and a failed unlink is a failed disconnect: the
+    # file IS the credential (the config advertises the harness
+    # unconditionally, so a surviving auth.json stays spawnable). Deleting
+    # the row first would report "disconnected" over a live credential.
+    # With this ordering a failure leaves the row intact, /harness/status
+    # keeps saying connected (truthful), and the user retries.
     try:
         await delete_opencode_auth(user_id=owner_id)
-    except Exception:
-        # Best-effort: the row deletion is the authoritative signal; a live
-        # container keeps the file until the unlink is retried by reconnect.
-        pass
+    except OSError as e:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not remove the harness credential — try disconnecting again.",
+        ) from e
+    await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
     return {"status": "disconnected"}
 
 

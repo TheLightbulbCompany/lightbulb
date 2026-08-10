@@ -985,7 +985,16 @@ async def pre_stage_opencode_auth(*, user_id: str, oauth_tokens: dict, overwrite
 
 
 async def delete_opencode_auth(*, user_id: str) -> None:
-    """Remove the OpenCode harness credential from EFS (harness disconnect)."""
+    """Remove the OpenCode harness credential from EFS (harness disconnect).
+
+    Raises on a failed unlink (a missing file is fine): unlike the provider
+    path — where a surviving EFS seed is inert because the container reads
+    its imported SQLite copy — this file IS the harness credential, and the
+    config advertises the harness unconditionally. A swallowed failure would
+    let a disconnect report success while a live, spawnable credential
+    survives on EFS. Callers with a best-effort posture (provider switch,
+    account wipe) catch; the disconnect endpoint propagates.
+    """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
     efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
@@ -996,6 +1005,7 @@ async def delete_opencode_auth(*, user_id: str) -> None:
         auth_path.unlink(missing_ok=True)
     except OSError as e:
         logger.warning("delete_opencode_auth: %s -- %s", auth_path, e)
+        raise
 
 
 async def delete_auth_profile_store(*, user_id: str) -> None:

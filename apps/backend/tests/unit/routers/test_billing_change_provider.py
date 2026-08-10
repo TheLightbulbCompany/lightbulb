@@ -351,8 +351,11 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
 
     assert resp.status_code == 200, resp.text
     # Tokens are keyed on the recorded human owner, not the org_id and not the
-    # (possibly different) switching admin.
-    mock_revoke.assert_awaited_once_with(user_id="user_a")
+    # (possibly different) switching admin. TWO rows leave with the provider:
+    # the provider chain, then the coding-harness grant.
+    assert mock_revoke.await_count == 2
+    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_a"}
+    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_a", "purpose": "harness"}
     # The EFS auth-profiles.json lives under the CONTAINER OWNER (org_id).
     mock_delete_auth.assert_awaited_once_with(user_id="org_test_456")
 
@@ -450,7 +453,9 @@ async def test_personal_switch_away_still_revokes(
         )
 
     assert resp.status_code == 200, resp.text
-    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+    assert mock_revoke.await_count == 2
+    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
+    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
     mock_delete_auth.assert_awaited_once_with(user_id="user_test_123")
 
 
@@ -569,7 +574,7 @@ async def test_change_provider_clears_oauth_when_leaving_chatgpt(
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "ok"
-    mock_revoke.assert_awaited_once()
+    assert mock_revoke.await_count == 2  # provider chain + harness grant
     mock_delete_auth.assert_awaited_once()
 
 
@@ -829,7 +834,7 @@ async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client, 
     cold_reprovision.drain_then_dispatch_provision.assert_called_once()
     mock_replace.assert_not_awaited()
     # Side-effect cleanup for leaving chatgpt_oauth must still run.
-    mock_revoke.assert_awaited_once()
+    assert mock_revoke.await_count == 2  # provider chain + harness grant
     mock_delete_auth.assert_awaited_once()
 
 

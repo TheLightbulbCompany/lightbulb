@@ -3073,28 +3073,26 @@ class GatewayConnectionPool:
         No-op when a frontend IS registered here or when no connection
         exists.
 
-        A PENDING grace task is NOT coverage — it may belong to the
-        PREVIOUS connection: after ``_grace_close`` closes an unattended
-        connection it re-registers itself for the 150s trial-stop sleep, a
-        window in which a status poll can dial a replacement. If that stale
-        task's container stop is then vetoed (e.g. a live operator run at
-        that instant) it exits and unregisters, leaving the replacement
-        refreshing gateway liveness forever with nothing armed against it.
-        Cancel-and-re-arm instead, so the connection that exists NOW always
-        owns a full grace cycle; the fresh task re-runs every teardown
-        check from the top, so replacing the old one only ever delays a
-        stop, never skips a veto. A cancel that lands while the stale task
-        is INSIDE close_user is safe: ``_grace_close`` shields that call,
-        so the old connection's drain always runs to completion and only
-        the grace task itself is interrupted.
+        A PENDING grace task IS coverage — even one that belongs to the
+        PREVIOUS connection (parked in the post-close trial-stop sleep
+        while a status poll dialed a replacement) — because every grace
+        task re-runs this arm on its way out (``_grace_close``'s finally):
+        however it exits — stop completed, stop vetoed, or cancelled — it
+        re-arms a fresh cycle if an unattended connection exists at that
+        moment. Deliberately NO cancellation of a pending task here: a
+        cancel landing while the old task is inside ``close_user`` would
+        abandon the old connection's drain mid-flight (leaked reader task
+        and socket), and shielding the drain instead lets its completion
+        erase a returning client's registration — both were real review
+        findings. Skip-and-let-it-finish has neither problem.
         """
         if self._frontend_connections.get(user_id):
             return
         if user_id not in self._connections:
             return
         existing = self._grace_tasks.get(user_id)
-        if existing is not None and not existing.done():
-            existing.cancel()
+        if existing is not None and not existing.done() and existing is not asyncio.current_task():
+            return
         self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
     def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
@@ -3178,16 +3176,7 @@ class GatewayConnectionPool:
                 account = None
             is_trial = bool(account) and account.get("subscription_status") == "trial_local"
             run_in_flight = self.has_active_runs(user_id) or self.is_parked(user_id)
-            # Shielded: this task is cancellable (a returning client, or
-            # arm_idle_teardown_if_unattended replacing a stale cycle), but
-            # the connection CLEANUP must never be — close_user pops the
-            # connection first and then drains it, so a cancel landing
-            # mid-drain would abandon the old reader task and WebSocket
-            # while a replacement connection runs alongside them (duplicate
-            # event processing, leaked socket). The shield lets the cancel
-            # interrupt THIS task at the await while the inner close runs
-            # to completion on its own.
-            await asyncio.shield(self.close_user(user_id))
+            await self.close_user(user_id)
             if not (is_trial and not run_in_flight):
                 return
             # close_user popped this task out of _grace_tasks; re-register it so a
@@ -3204,6 +3193,18 @@ class GatewayConnectionPool:
                     self._grace_tasks.pop(user_id, None)
         except asyncio.CancelledError:
             pass
+        finally:
+            # Exit guarantee for arm_idle_teardown_if_unattended's
+            # skip-if-pending: a status poll may have dialed a REPLACEMENT
+            # connection while this task was mid-cycle (most likely during
+            # the post-close trial-stop sleep), and the arm deliberately
+            # treated this pending task as coverage. Make that true: on the
+            # way out — stop completed, stop vetoed, or cancelled — re-arm a
+            # fresh cycle if an unattended connection exists right now. The
+            # arm's own guards make this a no-op in every other exit: a
+            # returning client (cancel path) has a registered frontend, and
+            # a normally-completed cycle closed its connection.
+            self.arm_idle_teardown_if_unattended(user_id)
 
     async def _maybe_stop_trial_container(self, owner_id: str, trigger: str = "grace") -> None:
         """Stop a trial container that provably has nobody using it.

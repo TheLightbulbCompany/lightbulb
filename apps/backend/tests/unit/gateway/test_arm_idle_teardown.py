@@ -52,12 +52,12 @@ async def test_noop_when_no_gateway_connection():
 
 
 @pytest.mark.asyncio
-async def test_pending_grace_task_is_cancelled_and_replaced():
-    """A pending grace task may belong to the PREVIOUS connection (parked in
-    the post-close trial-stop sleep) — it is not coverage for the connection
-    that exists now. The arm must cancel it and install a fresh full cycle,
-    or a vetoed stop on the stale task exits and leaves the replacement
-    connection unarmed forever."""
+async def test_pending_grace_task_is_left_alone():
+    """A pending grace task IS coverage (its exit re-arm guarantees a
+    replacement connection gets a fresh cycle) — the arm must never cancel
+    it: a cancel landing mid-close_user abandons the old connection's
+    drain, and shielding the drain lets its completion erase a returning
+    client's registration."""
 
     async def _pending():
         await asyncio.sleep(3600)
@@ -65,12 +65,9 @@ async def test_pending_grace_task_is_cancelled_and_replaced():
     pending = asyncio.create_task(_pending())
     pool = _pool(grace_task=pending)
     pool.arm_idle_teardown_if_unattended(USER)
-    replacement = pool._grace_tasks[USER]
-    assert replacement is not pending
-    assert pending.cancelling() or pending.cancelled()
-    await replacement
-    with pytest.raises(asyncio.CancelledError):
-        await pending
+    assert pool._grace_tasks[USER] is pending
+    assert not pending.cancelled()
+    pending.cancel()
 
 
 @pytest.mark.asyncio
@@ -85,11 +82,10 @@ async def test_rearms_over_a_finished_grace_task():
 
 
 @pytest.mark.asyncio
-async def test_cancel_mid_close_still_completes_cleanup(monkeypatch):
-    """Cancelling a grace task while it is INSIDE close_user (the
-    cancel-and-replace race) must not abandon the old connection's drain:
-    _grace_close shields the close, so the reader task and WebSocket are
-    always torn down even though the grace task itself is interrupted."""
+async def test_grace_exit_rearms_a_replacement_connection(monkeypatch):
+    """The exit guarantee behind skip-if-pending: a replacement connection
+    dialed while the grace task was mid-cycle gets its OWN fresh cycle when
+    that task exits, and the chain terminates once no connection remains."""
     from core.gateway import connection_pool as cp
     from core.repositories import billing_repo
 
@@ -98,31 +94,34 @@ async def test_cancel_mid_close_still_completes_cleanup(monkeypatch):
 
     pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
     pool._frontend_connections = {}
-    conn = MagicMock()
-    conn.has_active_runs = False
-    pool._connections = {USER: conn}
+    old_conn = MagicMock()
+    old_conn.has_active_runs = False
+    pool._connections = {USER: old_conn}
     pool._grace_tasks = {}
     pool.has_active_runs = MagicMock(return_value=False)
     pool.is_parked = MagicMock(return_value=False)
 
-    release = asyncio.Event()
-    cleanup_done = asyncio.Event()
+    close_calls = {"n": 0}
 
-    async def slow_close(user_id):
-        await release.wait()
-        cleanup_done.set()
+    async def fake_close(user_id):
+        close_calls["n"] += 1
+        pool._connections.pop(user_id, None)
+        pool._grace_tasks.pop(user_id, None)
+        if close_calls["n"] == 1:
+            # A status-poll dial lands a replacement mid-drain.
+            replacement = MagicMock()
+            replacement.has_active_runs = False
+            pool._connections[user_id] = replacement
 
-    pool.close_user = slow_close
+    pool.close_user = fake_close
 
-    task = asyncio.create_task(pool._grace_close(USER))
-    # Let the task reach the shielded close_user and block on `release`.
-    for _ in range(10):
-        await asyncio.sleep(0)
-    assert not cleanup_done.is_set()
-
-    task.cancel()
-    await task  # CancelledError is swallowed by _grace_close
-    # The grace task is gone, but the shielded cleanup must still finish.
-    assert not cleanup_done.is_set()
-    release.set()
-    await asyncio.wait_for(cleanup_done.wait(), timeout=2)
+    first = asyncio.create_task(pool._grace_close(USER))
+    await first
+    # The exit re-arm must have armed a fresh cycle for the replacement.
+    second = pool._grace_tasks.get(USER)
+    assert second is not None and second is not first
+    await second
+    # Replacement got drained by its own cycle; nothing left, chain ended.
+    assert close_calls["n"] == 2
+    assert USER not in pool._connections
+    assert USER not in pool._grace_tasks

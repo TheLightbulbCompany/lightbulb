@@ -3141,6 +3141,26 @@ class EcsManager:
                             user_id,
                             {"substatus": "task_running"},
                         )
+                elif claim_id is not None:
+                    # Pure lease-refresh checkpoint (fields=None), every tick
+                    # the loop keeps waiting. The boot window between the
+                    # one-shot task_running write above and the terminal
+                    # running write can run ~12 minutes with no other leased
+                    # write, which let the lease read stale at 300s while
+                    # this poller was alive — and /recover's active-lease
+                    # stand-down keys on exactly that freshness. A live
+                    # poller now heartbeats; a dead one stops within one
+                    # tick, so the lease's crash-recovery TTL is unchanged.
+                    # A takeover discovered here (ProvisionSuperseded, the
+                    # handler below) stops this run one tick sooner than its
+                    # next real write would have.
+                    await container_repo.update_container_leased(
+                        user_id,
+                        claim_id,
+                        None,
+                        generation=generation,
+                        attempt_token=attempt_token,
+                    )
 
             except asyncio.CancelledError:
                 raise

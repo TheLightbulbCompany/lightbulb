@@ -3704,6 +3704,42 @@ class TestAwaitRunningTransitionSubstatus:
         assert update_calls[-1]["status"] == "running"
         assert update_calls[-1]["substatus"] == "gateway_healthy"
 
+    @pytest.mark.asyncio
+    async def test_leased_poller_heartbeats_the_lease_every_waiting_tick(self, manager):
+        """With a claim held, every tick that writes nothing else must issue a
+        pure lease-refresh checkpoint (fields=None). The boot window between
+        the one-shot task_running write and the terminal running write can run
+        ~12 minutes; without the heartbeat the lease read stale at 300s while
+        the poller was alive — and /recover's active-lease stand-down keys on
+        that freshness, so it fell through and stomped live provisions."""
+        rows = [
+            _make_container_dict(status="provisioning", substatus="service_created"),
+            _make_container_dict(status="provisioning", substatus="task_running"),
+            _make_container_dict(status="provisioning", substatus="task_running"),
+        ]
+        leased_calls = []
+
+        async def track_leased(user_id, claim_id, fields=None, **kw):
+            leased_calls.append((fields, kw.get("release_lease", False)))
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(side_effect=rows)
+            mock_repo.update_container_leased = AsyncMock(side_effect=track_leased)
+            manager._get_primary_deployment = AsyncMock(return_value={"id": "dep-1", "rolloutState": "COMPLETED"})
+            manager._poll_running_task = AsyncMock(return_value=("arn:aws:ecs:task/abc", "10.0.0.1", 1))
+            manager.is_healthy = MagicMock(side_effect=[False, False, True])
+            with patch("core.billing.bedrock_gate_tokens.expire_superseded_gate_tokens", new=AsyncMock()):
+                await manager._await_running_transition(
+                    "user_test_123", interval_s=0, claim_id="claim-1", attempt_token="tok-1"
+                )
+
+        # tick 1: substatus write; tick 2: pure heartbeat (fields=None);
+        # tick 3: terminal running write releasing the lease.
+        assert leased_calls[0][0] == {"substatus": "task_running"}
+        assert leased_calls[1][0] is None
+        assert leased_calls[-1][0]["status"] == "running"
+        assert leased_calls[-1][1] is True
+
 
 # ---------------------------------------------------------------------------
 # reprovision_for_user — full reprovision, not stop+start

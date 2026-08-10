@@ -85,6 +85,41 @@ async def test_dispatcher_rewrites_path_for_company_isol8_host():
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_rejects_direct_hit_on_internal_prefix():
+    """A request that names the internal sentinel prefix directly is 404'd, not forwarded."""
+    inner = _CapturingApp()
+    mw = HostDispatcherMiddleware(inner)
+    sent: list[dict] = []
+
+    async def _send(msg):
+        sent.append(msg)
+
+    scope = _make_scope(path=f"{PAPERCLIP_PROXY_PREFIX}/api/companies/c1/agents")
+    await mw(scope, lambda: None, _send)
+
+    assert inner.call_count == 0  # never reached the mount
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 404
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_rejects_direct_websocket_hit_on_internal_prefix():
+    """A direct WebSocket upgrade on the internal prefix is closed, not forwarded."""
+    inner = _CapturingApp()
+    mw = HostDispatcherMiddleware(inner)
+    sent: list[dict] = []
+
+    async def _send(msg):
+        sent.append(msg)
+
+    scope = _make_scope(path=f"{PAPERCLIP_PROXY_PREFIX}/api/live", scope_type="websocket")
+    await mw(scope, lambda: None, _send)
+
+    assert inner.call_count == 0
+    assert sent[0]["type"] == "websocket.close"
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_rewrites_websocket_scope():
     """WebSocket scope is rewritten the same way as HTTP."""
     inner = _CapturingApp()

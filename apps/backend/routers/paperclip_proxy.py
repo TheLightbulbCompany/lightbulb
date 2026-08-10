@@ -352,8 +352,126 @@ def _filter_request_headers(req: Request) -> dict[str, str]:
         lower = name.lower()
         if lower in _HOP_BY_HOP_HEADERS or lower in {"host", "authorization", "cookie", "content-length"}:
             continue
+        # Never relay Paperclip's own trusted-header identity family. Paperclip
+        # will honour x-paperclip-cloud-tenant-token + x-paperclip-cloud-user-id
+        # / -user-email / -stack-role as a *self-asserted* identity (see
+        # paperclip/server/src/middleware/auth.ts), and x-paperclip-run-id is
+        # likewise client-forgeable. Isol8 supplies the real identity via the
+        # server-minted Better Auth session cookie only, so a browser must never
+        # be able to smuggle these upstream.
+        if lower.startswith("x-paperclip-"):
+            continue
         out[name] = value
     return out
+
+
+# ---------------------------------------------------------------------------
+# Adapter-surface request filter — see docs/audit-2026-05-02-paperclip-routes.md
+#
+# The shared Paperclip Fargate task holds every tenant's Aurora master creds and
+# is IMDS-reachable. Its `process` / `http` / `*_local` adapters execute shell
+# (or make arbitrary outbound connections) ON that host, so any tenant who can
+# persist a non-gateway adapter — or reach an adapter-management / host-exec
+# route — gets cross-tenant compromise. Only a *remote gateway* adapter is safe:
+# the agent runs in the tenant's own OpenClaw container, never on this host.
+#
+# This proxy is the SOLE gate for the direct create+hire routes. The deployed
+# fork's create/hire handlers call assertKnownAdapterType, which only checks the
+# adapter is *registered* (`process` is) — NOT that it is allowlisted. (The
+# invite/join paths DO enforce openclaw_gateway upstream; we still filter them
+# defensively.) Follow-ups this PR does NOT cover, tracked in the audit doc:
+# the openclaw_gateway URL SSRF (§3.1, needs host-network egress rules) and the
+# §4 adapter-plugin-store pre-disable.
+# ---------------------------------------------------------------------------
+
+# Isol8 runs OpenClaw only. `hermes_gateway` is a second remote-gateway adapter
+# the fork supports and would be equally host-safe, but it is deliberately
+# excluded until Isol8 ships a Hermes flow — add it here if that changes.
+_ALLOWED_ADAPTER_TYPES = frozenset({"openclaw_gateway"})
+
+# Each entry is (methods, pattern); methods=None matches every method. `path`
+# is matched WITHOUT its leading slash (e.g. "api/companies/x/agents").
+_BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
+    # Adapter registry: npm install / uninstall / reload / toggle — host mutation
+    # + inventory disclosure of the dangerous adapters. Isol8 owns agent-create.
+    (None, re.compile(r"^api/adapters(?:/|$)")),
+    # Plugin system: install (npm on host), config eval, tool exec, info leak.
+    (None, re.compile(r"^api/plugins(?:/|$)")),
+    (None, re.compile(r"^_plugins/")),  # plugin-served static JS (XSS to loader)
+    # Environments: SSH driver + probes are outbound-from-host SSRF. Reads pass.
+    ({"POST", "PATCH", "DELETE"}, re.compile(r"^api/(?:companies/[^/]+/)?environments(?:/|$)")),
+    # Unauthenticated tenant-controlled outbound HEAD.
+    (None, re.compile(r"^api/invites/[^/]+/test-resolution$")),
+    # Paperclip's own auth surface — Isol8 injects a service-account cookie.
+    (None, re.compile(r"^api/auth(?:/|$)")),
+    # Instance-wide admin: settings, DB backups, cross-tenant scheduler list.
+    (None, re.compile(r"^api/instance(?:/|$)")),
+    (None, re.compile(r"^api/admin(?:/|$)")),
+    # Company lifecycle is Isol8-owned; portability import carries agent bundles
+    # (adapterType nested per-agent — blocked wholesale rather than walked).
+    ({"POST"}, re.compile(r"^api/companies/?$")),
+    ({"DELETE"}, re.compile(r"^api/companies/[^/]+/?$")),
+    (None, re.compile(r"^api/companies/import")),
+    (None, re.compile(r"^api/companies/[^/]+/imports(?:/|$)")),
+    # claude_local-only subprocess login.
+    (None, re.compile(r"^api/agents/[^/]+/claude-login$")),
+)
+
+# `:type`-scoped adapter routes (models / detect-model / config-schema /
+# ui-parser) — several shell out on the host. Allowed only for a gateway type.
+_ADAPTER_TYPE_ROUTE = re.compile(r"^api/(?:companies/[^/]+/)?adapters/(?P<type>[^/]+)/")
+
+# Routes that PERSIST a new agent's adapterType. A missing value defaults to
+# "process" upstream, so these must carry an allowlisted type *explicitly*.
+_ADAPTER_CREATE_ROUTES = (
+    re.compile(r"^api/companies/[^/]+/agents/?$"),
+    re.compile(r"^api/companies/[^/]+/agent-hires/?$"),
+)
+
+
+def _top_level_adapter_type(body: bytes) -> str | None:
+    """Best-effort read of a top-level ``adapterType`` from a JSON body.
+
+    Returns ``None`` for a non-JSON / non-object body or an absent/non-string
+    field. The caller distinguishes "absent" (create routes reject) from
+    "present but not allowlisted" (every route rejects).
+    """
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001 — a non-JSON body carries no adapterType
+        return None
+    if isinstance(data, dict):
+        value = data.get("adapterType")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _assert_paperclip_request_allowed(method: str, path: str, body: bytes) -> None:
+    """Reject a proxied request that could reach a non-gateway adapter.
+
+    Raises ``HTTPException(403)`` on a disallowed route/body; returns ``None``
+    otherwise. See the threat-model block above.
+    """
+    p = path.lstrip("/")
+    method = method.upper()
+
+    for methods, pattern in _BLOCKED_ROUTES:
+        if (methods is None or method in methods) and pattern.match(p):
+            raise HTTPException(status_code=403, detail="Route not permitted")
+
+    type_route = _ADAPTER_TYPE_ROUTE.match(p)
+    if type_route and type_route.group("type") not in _ALLOWED_ADAPTER_TYPES:
+        raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+    if method in {"POST", "PUT", "PATCH"}:
+        adapter_type = _top_level_adapter_type(body)
+        is_create = any(pattern.match(p) for pattern in _ADAPTER_CREATE_ROUTES)
+        if is_create and adapter_type is None:
+            raise HTTPException(status_code=403, detail="adapterType required")
+        if adapter_type is not None and adapter_type not in _ALLOWED_ADAPTER_TYPES:
+            raise HTTPException(status_code=403, detail="Adapter not permitted")
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -1334,6 +1452,11 @@ async def proxy(path: str, request: Request) -> Response:
         upstream_url = f"/{path}"
         body_bytes = await request.body()
 
+        # Adapter-surface gate: reject anything that could reach a non-gateway
+        # adapter (host shell / SSRF) or an adapter-management route before it
+        # leaves for the shared Paperclip task. Raises HTTPException(403).
+        _assert_paperclip_request_allowed(request.method, path, body_bytes)
+
         async def _forward(session_cookie: str) -> httpx.Response:
             return await client.request(
                 method=request.method,
@@ -1509,6 +1632,15 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
     leg is also a WebSocket and we relay frames bidirectionally instead
     of round-tripping a single request/response.
     """
+    # Defence-in-depth: the adapter-management / host-exec routes are HTTP, not
+    # WS, but never let a WS upgrade reach one either. GET semantics — the body
+    # and create-route rules don't apply to an upgrade, only the route denylist.
+    try:
+        _assert_paperclip_request_allowed("GET", path, b"")
+    except HTTPException:
+        await websocket.close(code=4403, reason="Route not permitted")
+        return
+
     # ---- Step 1: Extract + validate session ----
     # Prefer the proxy session cookie (``isol8_paperclip``) over Clerk's
     # ``__session``. The HTTP bootstrap establishes the proxy cookie before

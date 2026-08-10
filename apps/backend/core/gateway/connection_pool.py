@@ -3360,6 +3360,14 @@ class GatewayConnectionPool:
         if conn:
             put_metric("gateway.connection", dimensions={"event": "disconnect"})
             await conn.close()
+            # close() only SCHEDULES the terminal liveness delete; land it
+            # before returning so every close path — grace task, shutdown
+            # snapshot, admin teardown — leaves the row truthful the moment
+            # it completes. Without this, a close finishing just before
+            # lifespan teardown could have its queued delete cancelled,
+            # leaving a dead worker's row falsely "ready" for the
+            # freshness window.
+            await conn.drain_liveness_write()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
         # This pops the whole frontend-connection entry regardless of
@@ -3472,6 +3480,21 @@ class GatewayConnectionPool:
             )
         except Exception:
             logger.warning("Liveness-write drain timed out during shutdown", exc_info=True)
+        # A grace task mid-close_user has already POPPED its connection, so
+        # the snapshot above missed it — close_user does not run under
+        # _lock, so the lock pass-through cannot make the snapshot complete
+        # for that path. close_user now drains the terminal delete before
+        # returning, so briefly awaiting the active grace tasks is enough
+        # to land those writes too. Bounded: a grace task parked in its
+        # 30s/150s sleep simply eats the timeout, which is why this waits
+        # at most 5s and logs at debug (a sleeping grace task at shutdown
+        # is normal, not a failure).
+        grace = [t for t in self._grace_tasks.values() if t is not None and not t.done()]
+        if grace:
+            try:
+                await asyncio.wait_for(asyncio.gather(*grace, return_exceptions=True), timeout=5.0)
+            except (TimeoutError, asyncio.TimeoutError):
+                logger.debug("grace tasks still sleeping at shutdown (normal); proceeding")
         # Flush queued frontend frames (close() above enqueues final
         # status_change frames) so shutdown doesn't cancel deliveries mid-send.
         try:

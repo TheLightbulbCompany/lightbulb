@@ -3070,8 +3070,20 @@ class GatewayConnectionPool:
         fire time, and ``_maybe_stop_trial_container`` re-checks cross-task
         DDB truth (live chat connections, operator runs) before stopping
         anything — so arming here can only over-preserve, never over-kill.
-        No-op when a frontend IS registered here, when no connection exists,
-        or when a grace task is already pending.
+        No-op when a frontend IS registered here or when no connection
+        exists.
+
+        A PENDING grace task is NOT coverage — it may belong to the
+        PREVIOUS connection: after ``_grace_close`` closes an unattended
+        connection it re-registers itself for the 150s trial-stop sleep, a
+        window in which a status poll can dial a replacement. If that stale
+        task's container stop is then vetoed (e.g. a live operator run at
+        that instant) it exits and unregisters, leaving the replacement
+        refreshing gateway liveness forever with nothing armed against it.
+        Cancel-and-re-arm instead, so the connection that exists NOW always
+        owns a full grace cycle; the fresh task re-runs every teardown
+        check from the top, so replacing the old one only ever delays a
+        stop, never skips a veto.
         """
         if self._frontend_connections.get(user_id):
             return
@@ -3079,7 +3091,7 @@ class GatewayConnectionPool:
             return
         existing = self._grace_tasks.get(user_id)
         if existing is not None and not existing.done():
-            return
+            existing.cancel()
         self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
     def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:

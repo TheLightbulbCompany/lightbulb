@@ -52,15 +52,25 @@ async def test_noop_when_no_gateway_connection():
 
 
 @pytest.mark.asyncio
-async def test_noop_when_grace_task_already_pending():
+async def test_pending_grace_task_is_cancelled_and_replaced():
+    """A pending grace task may belong to the PREVIOUS connection (parked in
+    the post-close trial-stop sleep) — it is not coverage for the connection
+    that exists now. The arm must cancel it and install a fresh full cycle,
+    or a vetoed stop on the stale task exits and leaves the replacement
+    connection unarmed forever."""
+
     async def _pending():
         await asyncio.sleep(3600)
 
     pending = asyncio.create_task(_pending())
     pool = _pool(grace_task=pending)
     pool.arm_idle_teardown_if_unattended(USER)
-    assert pool._grace_tasks[USER] is pending
-    pending.cancel()
+    replacement = pool._grace_tasks[USER]
+    assert replacement is not pending
+    assert pending.cancelling() or pending.cancelled()
+    await replacement
+    with pytest.raises(asyncio.CancelledError):
+        await pending
 
 
 @pytest.mark.asyncio

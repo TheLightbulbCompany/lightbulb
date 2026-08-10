@@ -120,6 +120,24 @@ async def test_harness_status_rejects_row_bound_elsewhere(async_client, oauth_ta
 
 
 @pytest.mark.asyncio
+async def test_harness_disconnect_skips_row_bound_to_another_workspace(async_client, oauth_table):
+    """A human who connected an ORG's harness must not nuke that org-bound
+    row from their personal workspace: the binding check answers
+    not-connected for this workspace, the endpoint reports disconnected
+    (truthful — this workspace has no grant), and the org's row survives."""
+    _seed_active_row(row_key="user_test_123#harness", bound_owner_id="org_other_999")
+    resp = await async_client.post("/api/v1/oauth/chatgpt/harness/disconnect")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "disconnected"}
+    row = (
+        boto3.resource("dynamodb", region_name="us-east-1")
+        .Table("test-oauth-tokens")
+        .get_item(Key={"user_id": "user_test_123#harness"})
+    )
+    assert row.get("Item", {}).get("state") == "active"  # org grant untouched
+
+
+@pytest.mark.asyncio
 async def test_harness_disconnect_deletes_row_and_efs_file(async_client, oauth_table, tmp_path, monkeypatch):
     monkeypatch.setenv("EFS_MOUNT_PATH", str(tmp_path))
     _seed_active_row(row_key="user_test_123#harness", bound_owner_id="user_test_123")

@@ -129,6 +129,7 @@ async def test_disconnect_revokes(async_client):
     with (
         patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
         patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()) as mock_logout,
+        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
@@ -154,11 +155,31 @@ async def test_disconnect_keeps_harness_row_when_unlink_fails(async_client):
             new=AsyncMock(side_effect=OSError("efs io")),
         ),
         patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()),
+        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
     # Only the provider row was revoked — the harness revoke never ran.
     mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_skips_harness_bound_to_another_workspace(async_client):
+    """The harness row is keyed on the HUMAN; a row bound to a DIFFERENT
+    workspace (e.g. the org this human connected) is not this workspace's to
+    delete. The binding probe answers False and the harness cleanup is
+    skipped entirely."""
+    with (
+        patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
+        patch("routers.oauth.delete_opencode_auth", new=AsyncMock()) as mock_delete_oc,
+        patch("routers.oauth.revoke_provider_auth_in_container", new=AsyncMock()),
+        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=False)) as mock_probe,
+    ):
+        resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
+    assert resp.status_code == 200
+    mock_probe.assert_awaited_once_with(user_id="user_test_123", bound_to="user_test_123", purpose="harness")
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")  # provider only
+    mock_delete_oc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -177,6 +198,7 @@ async def test_disconnect_personal_unchanged(async_client):
         patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
         patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
         patch("routers.oauth.delete_opencode_auth", new=AsyncMock()) as mock_delete_oc,
+        patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
         patch(
             "core.repositories.billing_repo.clear_provider_choice",
             new=AsyncMock(),
@@ -633,6 +655,7 @@ class TestDisconnectOrgRules:
             ),
             patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke,
             patch("routers.oauth.delete_auth_profile_store", new=AsyncMock()) as mock_delete,
+            patch("routers.oauth.has_active_oauth", new=AsyncMock(return_value=True)),
             patch(
                 "core.repositories.billing_repo.clear_provider_choice",
                 new=AsyncMock(),

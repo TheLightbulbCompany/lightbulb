@@ -37,6 +37,7 @@ from core.services.oauth_service import (
     OAuthExchangeFailedError,
     caller_may_manage_connector,
     get_decrypted_tokens_consistent,
+    has_active_oauth,
     poll_device_code,
     request_device_code,
     resolve_token_owner,
@@ -293,6 +294,15 @@ async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
     if ctx.is_org_context:
         await _require_org_oauth_owner(ctx)
     owner_id = resolve_owner_id(ctx)
+    # Only a grant bound to THIS workspace may be disconnected here. The
+    # harness row is keyed on the HUMAN (one row per human), so without this
+    # check a human who connected an ORG's harness could nuke that org-bound
+    # row from their personal workspace context — deleting the org's tracked
+    # grant while its EFS credential survives. A row bound elsewhere reads as
+    # not-connected for this workspace, which is also what /harness/status
+    # reports, so answering "disconnected" is truthful.
+    if not await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS):
+        return {"status": "disconnected"}
     # EFS first, row second, and a failed unlink is a failed disconnect: the
     # file IS the credential (the config advertises the harness
     # unconditionally, so a surviving auth.json stays spawnable). Deleting
@@ -350,14 +360,16 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     # revoke it (and the running config keeps advertising opencode until
     # reprovision). Best-effort like the rest of this cleanup chain — the
     # provider disconnect above is the authoritative act, and a reconnect
-    # re-offers the grant in the wizard. FILE first, row second (same order
-    # as /harness/disconnect): the file is the live credential, so if the
-    # unlink fails the row must survive with it — row-and-file stay
-    # consistent, and a later reconnect/disconnect or account wipe can still
-    # find and clean the grant.
+    # re-offers the grant in the wizard. Binding-checked for the same reason
+    # as /harness/disconnect (a row bound to a different workspace is not
+    # ours to delete), and FILE first, row second: the file is the live
+    # credential, so if the unlink fails the row must survive with it —
+    # row-and-file stay consistent, and a later disconnect retry from the
+    # right context can still find and clean the grant.
     try:
-        await delete_opencode_auth(user_id=owner_id)
-        await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+        if await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS):
+            await delete_opencode_auth(user_id=owner_id)
+            await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
     except Exception:
         logger.exception("harness cleanup failed during disconnect for owner %s", owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to

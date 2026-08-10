@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSWRConfig } from "swr";
 import { useSearchParams } from "next/navigation";
 
 import { capture } from "@/lib/analytics";
@@ -377,6 +378,31 @@ export function ProvisioningStepper({
     undefined,
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
+
+  // Ready re-kick: reaching "ready" is observed on the HTTP status poll — a
+  // channel with zero coupling to the gateway-WS RPC path. Any gateway SWR
+  // key that errored through the cold start is dead by then: the fixed
+  // 3s retry chain is capped (~5min), and SWR's refreshInterval never
+  // fires while a key holds an error — so the sidebar roster, config.get
+  // and health stay failed until a remount, which is why a stuck wake used
+  // to need a full page reload. Revive every gateway RPC key on the
+  // observed not-ready→ready transition so "ready" always means "data
+  // loads now", even when the status_change(HEALTHY) push was lost. Edge-
+  // triggered off the poll data (never a timer), and only on a LIVE
+  // transition — a warm page load that first observes "ready" skips the
+  // sweep (its keys are mount-revalidating already).
+  const { mutate: reviveGatewayKeys } = useSWRConfig();
+  const readyRekickPhaseRef = useRef<UIPhase | null>(null);
+  useEffect(() => {
+    const prev = readyRekickPhaseRef.current;
+    const current = derived?.phase ?? null;
+    if (current !== null) readyRekickPhaseRef.current = current;
+    if (current !== "ready") return;
+    if (prev === null || prev === "ready" || prev === "parked") return;
+    void reviveGatewayKeys(
+      (key) => typeof key === "string" && key.startsWith("rpc|"),
+    );
+  }, [derived?.phase, reviveGatewayKeys]);
 
   // Track previous backend phase via a ref so we can detect regression
   // edges *during* render. When the backend goes ready -> not-ready

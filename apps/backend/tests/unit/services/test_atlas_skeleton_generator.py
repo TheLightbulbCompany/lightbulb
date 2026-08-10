@@ -191,6 +191,65 @@ def test_verify_write_blocks_on_schema_violation(tmp_path):
     assert out["skipped"] == ""
 
 
+def _verify_fail_next_snippet():
+    """Extract the real verify-fail-next node -e payload from build.lobster.
+
+    The inline JS contains no single quotes, so the first ``'`` after
+    ``node -e '`` is the closing quote of the -e argument.
+    """
+    text = (_GEN.parent / "build.lobster").read_text(encoding="utf-8")
+    step = text.split("- id: verify-fail-next", 1)[1]
+    return step.split("node -e '", 1)[1].split("'", 1)[0]
+
+
+def _run_verify_fail_next(verify_result):
+    proc = subprocess.run(
+        ["node", "-e", _verify_fail_next_snippet()],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": os.environ["PATH"],
+            "NOTIFS": "[]",
+            "VERIFY": json.dumps(verify_result),
+            "LOBSTER_ARG_BUILD_ID": "b1",
+            "LOBSTER_ARG_AGENT_NAME": "lex-legal",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    (notif,) = json.loads(proc.stdout)
+    return notif
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_verify_fail_notification_carries_schema_issues():
+    # The queued notification must carry the error kind + the exact zod issue
+    # list — Atlas's loop drains atlas/notifications, so a generic "retry"
+    # summary with the issues dropped means a blind retry reproduces the
+    # same schema violation. Capped at 5 issues with a "+N more" tail.
+    notif = _run_verify_fail_next(
+        {
+            "success": False,
+            "error": "schema_validation_failed",
+            "schema_issues": [{"path": f"agents.list.0.k{i}", "message": f"Unrecognized key k{i}"} for i in range(7)],
+        }
+    )
+    assert notif["kind"] == "build_verify_failed"
+    assert notif["error"] == "schema_validation_failed"
+    assert len(notif["schema_issues"]) == 5
+    assert notif["schema_issues"][0]["path"] == "agents.list.0.k0"
+    assert "agents.list.0.k0: Unrecognized key k0" in notif["summary"]
+    assert "(+2 more)" in notif["summary"]
+
+    # Non-schema verify failure keeps the original files/hash wording, now
+    # with the error kind attached.
+    notif = _run_verify_fail_next({"success": False, "error": "destination_dir_missing"})
+    assert notif["error"] == "destination_dir_missing"
+    assert notif["schema_issues"] == []
+    assert "No files on disk or hash mismatch" in notif["summary"]
+    assert "destination_dir_missing" in notif["summary"]
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
 def test_verify_write_fails_open_without_openclaw_bin(tmp_path):
     # PATH holds ONLY node — no openclaw bin (local dev / CI). Fail-open: the

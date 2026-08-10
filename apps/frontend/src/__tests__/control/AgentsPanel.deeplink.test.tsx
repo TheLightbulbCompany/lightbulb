@@ -1,6 +1,6 @@
 // apps/frontend/src/__tests__/control/AgentsPanel.deeplink.test.tsx
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 
 // AgentsPanel reads its roster through the shared useAgents hook, which
 // reaches for the gateway context — stub the hook, not the RPC beneath it.
@@ -41,7 +41,14 @@ vi.mock("@/components/control/panels/AgentOverviewTab", () => ({
 }));
 vi.mock("@/components/control/panels/AgentToolsTab", () => ({ AgentToolsTab: () => <div /> }));
 vi.mock("@/components/control/panels/AgentChannelsSection", () => ({ AgentChannelsSection: () => <div /> }));
-vi.mock("@/components/control/panels/AgentCreateForm", () => ({ AgentCreateForm: () => <div /> }));
+vi.mock("@/components/control/panels/AgentCreateForm", () => ({
+  AgentCreateForm: () => <div>create-form</div>,
+}));
+
+const mockOpenMarketplace = vi.fn();
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({ open: mockOpenMarketplace }),
+}));
 
 import { AgentsPanel } from "@/components/control/panels/AgentsPanel";
 
@@ -74,5 +81,22 @@ describe("AgentsPanel deep link", () => {
     expect(screen.getByText("overview:a2")).toBeInTheDocument();
     rerender(<AgentsPanel initialAgentId={null} />);
     expect(screen.getByText("Select an agent to view details")).toBeInTheDocument();
+  });
+
+  it("+ New shows the chooser; hire opens the marketplace drawer, build shows the form", () => {
+    mockOpenMarketplace.mockClear();
+    render(<AgentsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /new/i }));
+    expect(screen.getByTestId("agent-create-chooser")).toBeInTheDocument();
+    expect(screen.queryByText("create-form")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /hire from marketplace/i }));
+    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
+    expect(screen.queryByTestId("agent-create-chooser")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /new/i }));
+    fireEvent.click(screen.getByRole("button", { name: /build your own/i }));
+    expect(screen.getByText("create-form")).toBeInTheDocument();
   });
 });

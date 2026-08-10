@@ -61,6 +61,7 @@ export const Provider = PHProvider;
  */
 export type AnalyticsEvent =
   // Agent lifecycle
+  | "agent_create_chooser"
   | "agent_created"
   | "agent_deleted"
   | "agent_model_changed"

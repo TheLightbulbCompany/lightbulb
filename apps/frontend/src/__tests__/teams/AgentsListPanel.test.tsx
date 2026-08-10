@@ -51,7 +51,19 @@ vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
   }),
 }));
 
+const mockOpenMarketplace = vi.fn();
+vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
+  useMarketplaceDrawer: () => ({ open: mockOpenMarketplace }),
+}));
+
 import { AgentsListPanel } from "@/components/teams/panels/AgentsListPanel";
+
+/** Click through the chooser step ("New agent" → "Build your own"). */
+function openBuildForm() {
+  const buttons = screen.getAllByRole("button", { name: /new agent/i });
+  fireEvent.click(buttons[0]);
+  fireEvent.click(screen.getByRole("button", { name: /build your own/i }));
+}
 
 describe("AgentsListPanel", () => {
   it("renders empty state when no agents", () => {
@@ -65,9 +77,9 @@ describe("AgentsListPanel", () => {
     render(<AgentsListPanel />);
 
     // Two New agent CTAs render when the list is empty (masthead + empty
-    // state). Click the first.
-    const buttons = screen.getAllByRole("button", { name: /new agent/i });
-    fireEvent.click(buttons[0]);
+    // state); openBuildForm clicks the first, then picks "Build your own"
+    // on the chooser step.
+    openBuildForm();
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Helper" },
     });
@@ -111,7 +123,7 @@ describe("AgentsListPanel", () => {
     try {
       render(<AgentsListPanel />);
 
-      fireEvent.click(screen.getByRole("button", { name: /new agent/i }));
+      openBuildForm();
       fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Helper" } });
       fireEvent.change(screen.getByLabelText("Title"), {
         target: { value: "Senior engineer" },
@@ -144,14 +156,28 @@ describe("AgentsListPanel", () => {
     mockPost.mockClear();
     mockPost.mockResolvedValue({ id: "a3" });
     render(<AgentsListPanel />);
-    const buttons = screen.getAllByRole("button", { name: /new agent/i });
-    fireEvent.click(buttons[0]);
+    openBuildForm();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Solo" } });
     // Leave Title blank, leave Reports to on "No manager".
     fireEvent.click(screen.getByRole("button", { name: /^create$/i }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
     const [, body] = mockPost.mock.calls[0];
     expect(Object.keys(body as Record<string, unknown>).sort()).toEqual(["name", "role"]);
+  });
+
+  it("chooser hire path opens the marketplace drawer and closes the dialog", () => {
+    mockPost.mockClear();
+    mockOpenMarketplace.mockClear();
+    render(<AgentsListPanel />);
+
+    const buttons = screen.getAllByRole("button", { name: /new agent/i });
+    fireEvent.click(buttons[0]);
+    fireEvent.click(screen.getByRole("button", { name: /hire from marketplace/i }));
+
+    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
+    // Dialog closed: the build form never rendered, nothing was posted.
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    expect(mockPost).not.toHaveBeenCalled();
   });
 
   it("renders agent rows with link to /teams/agents/{id}", () => {

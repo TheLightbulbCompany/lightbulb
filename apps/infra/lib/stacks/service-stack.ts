@@ -1799,6 +1799,25 @@ export class ServiceStack extends cdk.Stack {
       timeout: cdk.Duration.hours(2), // hard ceiling across all attempts
     });
 
+    // The MarkRetrying/MarkFailed* DynamoUpdateItem tasks auto-grant only
+    // dynamodb:* — the containers table is CUSTOMER_MANAGED-encrypted and the
+    // key crosses stacks as a bare ARN (the deliberate no-auto-grant posture,
+    // see the header comment), so without this the state machine's every
+    // backstop write dies with KMS AccessDenied. That failure mode is the
+    // worst one this machine has: the write that exists to mark a failed
+    // provision retryable/error itself fails, the execution hard-fails
+    // instead of retrying, and the row wedges at provisioning/claimed until
+    // the stale-lease clause frees it — observed on prod 2026-08-10 during a
+    // trial->paid conversion. UpdateItem on an SSE-KMS table needs Decrypt
+    // (read the row) and GenerateDataKey (write it back).
+    provisionStateMachine.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "ContainersTableKmsAccess",
+        actions: ["kms:Decrypt", "kms:GenerateDataKey"],
+        resources: [props.kmsKeyArn],
+      }),
+    );
+
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "ProvisionStateMachineDispatch",

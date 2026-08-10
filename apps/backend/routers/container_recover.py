@@ -113,6 +113,27 @@ async def container_recover(
             "reason": "A subscription upgrade is reprovisioning this container",
         }
 
+    # An ACTIVE provision lease owns this row — stand down on ROW STATE, not
+    # a clock. The conversion guard above cannot cover this window: its stamp
+    # is cleared the moment the conversion's dispatch is created (so a stale
+    # stamp can't block the manual Restart door), which disarms it precisely
+    # when the SFN runner's minutes-long provision begins. Observed on prod
+    # 2026-08-10: /recover fired four times during a conversion's provision,
+    # each probing the mid-boot gateway, failing, writing status="error" over
+    # the in-flight run and dispatching a competitor. The lease heartbeat
+    # (refreshed by every leased checkpoint write) is the authoritative
+    # in-flight signal; a lease gone stale — the runner died — falls through
+    # to the ordinary recovery branches below, so a wedged provision is still
+    # recoverable from this endpoint. The staleness fence is the lease's own
+    # pre-existing crash-recovery TTL, not a guard window of this endpoint's.
+    if status == "provisioning" and not container_repo.is_provision_claim_stale(container):
+        logger.info("Recover for owner %s stood down: provision lease active", owner_id)
+        return {
+            "action": "already_recovering",
+            "state": "RECOVERING",
+            "reason": "A provision is already in flight for this container",
+        }
+
     # 2. Container is stopped or error -> full re-provision
     if status in ("stopped", "error"):
         # This is a WAKE, and it is customer-reachable, so it passes the same

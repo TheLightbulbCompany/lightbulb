@@ -19,13 +19,20 @@ for any agent. The "listings can't provision triggers" gap **does not bite
 this recipe at all.**
 
 But the "agent mints its own address" claim needed the challenge it got, and
-it is only **half-true today** — two precise findings:
+it was only **half-true when first written** — two precise findings:
 
-1. **The lazy mint is Friday-hardcoded.** `agent_mail_owner_send.send_to_owner`
-   resolves `friday_agent_id` and mints `agent_name="Friday"` — a hired
-   support agent's first send goes out from the *company* address (Friday's),
-   never its own. Inbound routing, delivery (`deliver_to_agent`), and the
-   reply path are already fully per-agent — only the mint caller is not.
+1. **The lazy mint was Friday-hardcoded.** ~~`agent_mail_owner_send.send_to_owner`
+   resolved `friday_agent_id` and minted `agent_name="Friday"`~~ — **CLOSED in
+   this PR** (codex flagged it P1; it was the load-bearing half). The
+   send-to-owner body now takes optional `agent_id` + `agent_name` (both or
+   neither); an agent-identified send mints THAT agent's address, so inbound
+   mail to it wakes that agent — and it never touches Friday's first-contact
+   latch, so it can't mark her hello done. Downstream needed zero changes:
+   inbound routing (`ses_inbound` delivers to the address row's `agent_id`),
+   `deliver_to_agent`, and the reply path (`resolve_from_address` matches by
+   `agent_id`) were verified per-agent-general already. "Primary" address
+   selection needed nothing either — `owner_facts` picks the earliest
+   `created_at` row, so Friday's stays the advertised company address.
 2. **Every address is private.** `mint_agent_email_address` always writes
    `verified_senders=[owner_email]`, `public=False`; nothing in the codebase
    ever sets `public=True` or adds a sender (the repo and the
@@ -43,10 +50,11 @@ mailing a customer. Human-in-the-loop is enforced by architecture.
 
 **Owner activation UX, step by step (v0):**
 1. Hire "Support Inbox" from the marketplace (existing hire flow).
-2. Say hello to Support Triage in the Teams inbox; it walks them to a company
-   email address (first-contact mint, existing flow — name the company first).
+2. Say hello to Support Triage in the Teams inbox; it mints ITS OWN address
+   (agent-identified send, closed gap above) and emails the owner from it.
 3. **The ONE thing the owner does themselves: forward a customer email to
-   that address.** No dashboard, no webhook, no OAuth.
+   that address.** No dashboard, no webhook, no OAuth. Inbound mail to that
+   address wakes Support Triage directly, per-thread session and all.
 4. Back comes a triaged draft, by email and in the thread. Owner approves /
    tweaks / sends. Follow-ups on the same thread hit the same session.
 
@@ -54,11 +62,9 @@ mailing a customer. Human-in-the-loop is enforced by architecture.
 AGENTS.md — all existing hire machinery). **Agent self-provisions:** the email
 address (first send), the loop itself (prose). **Owner provides:** one forward.
 
-**Smallest changes for the FULL zero-touch loop (both deferred, neither
-blocks v0):**
-- *Gap A:* accept optional `agent_id`/`agent_name` on the existing
-  `POST /send-to-owner/u/{owner_id}` body; `send_to_owner` mints
-  `is_primary=False` for that agent instead of Friday. ~20 lines + tests.
+**Remaining gap for the FULL zero-touch loop (deferred, does not block v0):**
+- *Gap A — CLOSED (this PR, see above).* The scoped ~20-line shape held:
+  service + router + the `isol8-owner-email.sh` flags + SKILL.md bullet.
 - *Gap B:* thread a `public` param through `mint_agent_email_address` →
   `agent_email_repo.put` (both already have the field); pick the owner-consent
   surface then. This is what makes `support@…` auto-forwardable — and the
@@ -102,7 +108,7 @@ deploy plan, hire flow — expressed the recipe as-is.
 - New "recipe" listing format/schema → a one-agent `agentcompanies/v1` package already expresses it.
 - Deploy-time trigger provisioning (the "known missing half") → recipe 1 needs none; recipes 2–3 need only the in-flight proxy + self-serve URL handoff.
 - Cron routine polling the inbox → inbound mail already wakes the agent; event-driven wins.
-- Backend change for per-agent mint (Gap A) tonight → not needed for v0; named above as the one ~20-line follow-up.
+- Backend change for per-agent mint (Gap A) → initially deferred; codex review correctly called it P1 (without it forwarded mail wakes Friday, not the hired agent) — built same night, ~20 lines as scoped.
 - `public` inbox flag (Gap B) tonight → v0's manual forward is *better* while trust is zero: it makes third-party auto-send physically impossible.
 - Package `skills/`, `TOOLS.md`, `.paperclip.yaml` env block → fleet-baked isol8 skill already documents the mail scripts; recipe needs no env; duplication drifts.
 - `--category recipe` + browse chip → the company shelf renders it; add a category when there's a second shelf to disambiguate.

@@ -132,6 +132,34 @@ def test_valid_call_returns_the_service_status(client):
     assert send.await_args.kwargs["owner_id"] == OWNER
 
 
+def test_half_an_agent_identity_is_400(client):
+    with patch.object(
+        agent_mail_send.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value=_container(OWNER)),
+    ):
+        for half in ({"agent_id": "agent_x"}, {"agent_name": "X"}):
+            r = client.post(PATH, json={**_body(), **half}, headers={"Authorization": f"Bearer {TOKEN}"})
+            assert r.status_code == 400
+            assert r.json()["detail"] == {"status": "bad_agent_identity"}
+
+
+def test_agent_identity_is_threaded_through_to_the_service(client):
+    with (
+        patch.object(
+            agent_mail_send.container_repo,
+            "get_by_owner_id",
+            AsyncMock(return_value=_container(OWNER)),
+        ),
+        patch.object(agent_mail_send, "send_to_owner", AsyncMock(return_value="sent")) as send,
+    ):
+        body = {**_body(purpose="routine"), "agent_id": "agent_support", "agent_name": "Support Triage"}
+        r = client.post(PATH, json=body, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert r.status_code == 200
+    assert send.await_args.kwargs["agent_id"] == "agent_support"
+    assert send.await_args.kwargs["agent_name"] == "Support Triage"
+
+
 def test_already_sent_is_surfaced_verbatim(client):
     with (
         patch.object(

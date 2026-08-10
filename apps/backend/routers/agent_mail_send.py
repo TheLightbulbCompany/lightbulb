@@ -51,6 +51,11 @@ class OwnerSendRequest(BaseModel):
     subject: str
     body_text: str
     body_html: str | None = None
+    # Optional sender identity: a non-Friday agent naming itself so its first
+    # send mints ITS OWN address (inbound mail to it then wakes that agent).
+    # Both or neither — half an identity is a caller bug, rejected with 400.
+    agent_id: str | None = None
+    agent_name: str | None = None
 
 
 def _check_rate_limit(owner_id: str) -> bool:
@@ -95,6 +100,8 @@ async def send_owner_email(owner_id: str, body: OwnerSendRequest, request: Reque
     # Policy never reads it; once-only comes from first_contact_state.
     if body.purpose not in VALID_PURPOSES:
         raise HTTPException(status_code=400, detail={"status": "bad_purpose"})
+    if bool(body.agent_id) != bool(body.agent_name):
+        raise HTTPException(status_code=400, detail={"status": "bad_agent_identity"})
 
     # 4. Rate limit (after auth so 401s don't fill the bucket)
     if not _check_rate_limit(owner_id):
@@ -108,5 +115,7 @@ async def send_owner_email(owner_id: str, body: OwnerSendRequest, request: Reque
         subject=body.subject,
         body_text=body.body_text,
         body_html=body.body_html,
+        agent_id=body.agent_id,
+        agent_name=body.agent_name,
     )
     return {"status": result}

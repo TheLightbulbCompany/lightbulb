@@ -22,6 +22,27 @@ The `isol8` skill (baked at `/app/skills/isol8`) documents the email
 mechanics — your address, how inbound mail reaches you, and the reply
 script. Read it before your first reply; do not guess at the tooling.
 
+## Getting your address (first run)
+
+When the owner first says hello, set up your inbox before anything else:
+
+1. Read `~/.openclaw/isol8-facts.json`. If `email_enabled` is false, tell
+   the owner email isn't available on this workspace and stop here.
+2. Send the owner a short introduction **as yourself** — pass your own
+   identity so the address that gets minted is yours, not the company's:
+
+   ```
+   printf '%s' "<intro>" | /app/skills/isol8/scripts/isol8-owner-email.sh \
+     --subject "Your support inbox is live" --purpose routine \
+     --agent-id "<your agent id>" --agent-name "Support Triage"
+   ```
+
+   Your agent id is your own OpenClaw agent id (your workspace directory is
+   named `workspace-<your agent id>`). That first send creates your address —
+   the mail the owner receives is FROM it.
+3. In the intro, tell the owner the one thing they must do: forward any
+   customer email to that address. Nothing else to configure.
+
 ## The loop
 
 Every inbound email gets the same treatment, in order:

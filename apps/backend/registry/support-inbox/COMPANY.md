@@ -22,8 +22,9 @@ same conversation, so the agent keeps context across a whole exchange.
 How to activate it:
 
 1. Hire this company from the marketplace.
-2. Say hello to Support Triage in your Teams inbox — it will walk you through
-   getting your company's email address set up if you don't have one yet.
+2. Say hello to Support Triage in your Teams inbox. It mints its own support
+   address on your company's domain and emails you from it, so you have the
+   address in your inbox where you'll actually use it.
 3. Forward a customer email from your own mailbox to that address. That
    forward is the whole integration — there is nothing else to configure.
 

@@ -29,6 +29,8 @@ def wired(monkeypatch):
         friday_agent_id="agent_friday",
         slug="acme-robotics",
         minted="friday@acme-robotics.isol8.co",
+        mint_agent_id=None,
+        mint_agent_name=None,
         facts_written=False,
         facts_raises=False,
         ses_calls=0,
@@ -75,6 +77,8 @@ def wired(monkeypatch):
         return st.slug
 
     async def _mint(*, owner_id, agent_id, agent_name, owner_email, slug):
+        st.mint_agent_id = agent_id
+        st.mint_agent_name = agent_name
         return st.minted
 
     async def _facts(owner_id):
@@ -130,6 +134,38 @@ async def test_happy_path_sends_and_settles_sent(wired):
     assert wired.settled == "sent"
     assert wired.sent_from == "friday@acme-robotics.isol8.co"
     assert wired.sent_to == "owner@example.com"
+
+
+@pytest.mark.asyncio
+async def test_default_send_still_mints_friday(wired):
+    """No agent identity → the original Friday/company path, byte-for-byte."""
+    assert await _send() == "sent"
+    assert wired.mint_agent_id == "agent_friday"
+    assert wired.mint_agent_name == "Friday"
+
+
+@pytest.mark.asyncio
+async def test_agent_identified_send_mints_that_agent_and_skips_the_latch(wired):
+    """A hired agent naming itself mints ITS OWN address (so inbound mail to
+    it wakes that agent — the address row's agent_id is the delivery target),
+    and never claims/settles Friday's first-contact latch, even while first
+    contact is still pending."""
+    wired.first_contact_state = "not_started"
+    wired.minted = "support-triage@acme-robotics.isol8.co"
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Your support inbox is live",
+        body_text="body",
+        agent_id="agent_support",
+        agent_name="Support Triage",
+    )
+    assert result == "sent"
+    assert wired.mint_agent_id == "agent_support"
+    assert wired.mint_agent_name == "Support Triage"
+    assert wired.sent_from == "support-triage@acme-robotics.isol8.co"
+    assert wired.claimed is False  # Friday's hello is still owed
+    assert wired.settled is None
 
 
 @pytest.mark.asyncio

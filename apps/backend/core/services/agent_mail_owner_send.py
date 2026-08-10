@@ -83,13 +83,28 @@ async def send_to_owner(
     subject: str,
     body_text: str,
     body_html: str | None = None,
+    agent_id: str | None = None,
+    agent_name: str | None = None,
 ) -> str:
     """Send one owner-directed email.
+
+    ``agent_id`` + ``agent_name`` (both or neither — the router enforces it)
+    let a non-Friday agent send AS ITSELF: the mint targets that agent, so its
+    first send creates ``{agent}@{slug}.{domain}`` and inbound mail to that
+    address wakes THAT agent (the address row's ``agent_id`` is what
+    ``ses_inbound`` delivers to). Identity is trusted from the owner's own
+    container (hook_token auth): the worst a lying agent can do is mint a
+    sibling mailbox on its own owner's subdomain, mailing the same owner.
+    Friday's first-contact latch is hers alone — an agent-identified send
+    never claims or settles it, so it cannot mark first contact done before
+    Friday has actually said hello. Default (no identity) is the original
+    Friday path, unchanged.
 
     Returns "sent", "already_sent", "no_address", "disabled", "rate_limited",
     or "error". Never raises — the caller is an HTTP route whose 500 would tell
     a container nothing useful.
     """
+    acting_agent = bool(agent_id and agent_name)
     try:
         # Validated HERE, not only at the router: `purpose` is a metric
         # dimension, and the routines caller invokes this function IN-PROCESS,
@@ -110,8 +125,9 @@ async def send_to_owner(
         friday_agent_id = onboarding.get("friday_agent_id")
         state = onboarding.get("first_contact_state") or "not_started"
 
-        # POLICY — inferred from state, never from the `purpose` label.
-        is_first_contact = state in _FIRST_CONTACT_PENDING
+        # POLICY — inferred from state, never from the `purpose` label. An
+        # agent-identified send never touches the latch (see docstring).
+        is_first_contact = state in _FIRST_CONTACT_PENDING and not acting_agent
         if is_first_contact:
             if not await repo.claim_first_contact(row_user_id, onboarding_generation=generation):
                 put_metric(
@@ -175,8 +191,8 @@ async def send_to_owner(
 
         address = await mint_agent_email_address(
             owner_id=owner_id,
-            agent_id=friday_agent_id,
-            agent_name="Friday",
+            agent_id=agent_id if acting_agent else friday_agent_id,
+            agent_name=agent_name if acting_agent else "Friday",
             owner_email=owner_email,
             slug=slug,
         )

@@ -17,14 +17,18 @@ usage() {
 Isol8 owner-email helper.
 
 Usage:
-  /app/skills/isol8/scripts/isol8-owner-email.sh --subject "Subject line" [--purpose first_contact|routine]
+  /app/skills/isol8/scripts/isol8-owner-email.sh --subject "Subject line" [--purpose first_contact|routine] [--agent-id ID --agent-name NAME]
 
 Reads the plain-text body from stdin.
 
 Options:
-  --subject   Required. The email subject.
-  --purpose   Optional, default first_contact. Reporting label only — it does
-              not decide anything server-side.
+  --subject     Required. The email subject.
+  --purpose     Optional, default first_contact. Reporting label only — it does
+                not decide anything server-side.
+  --agent-id    Optional, requires --agent-name. Send as a specific (non-Friday)
+                agent: that agent's first send mints its OWN address, and
+  --agent-name  inbound mail to it wakes that agent. Omit both to send as the
+                company (Friday's address).
 
 Environment (required, both already set in your container):
   OPENCLAW_HOOK_TOKEN   Bearer credential for the backend.
@@ -40,16 +44,24 @@ die() { printf '%s\n' "$1" >&2; exit 1; }
 
 subject=""
 purpose="first_contact"
+agent_id=""
+agent_name=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --subject) subject="${2:-}"; shift 2 ;;
     --purpose) purpose="${2:-}"; shift 2 ;;
+    --agent-id) agent_id="${2:-}"; shift 2 ;;
+    --agent-name) agent_name="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
 
 [[ -n "$subject" ]] || { usage >&2; exit 2; }
+# Both or neither — half an identity is rejected server-side anyway.
+if [[ -n "$agent_id" && -z "$agent_name" ]] || [[ -z "$agent_id" && -n "$agent_name" ]]; then
+  die '--agent-id and --agent-name must be given together.'
+fi
 
 command -v jq >/dev/null 2>&1 || die 'Missing required command: jq'
 command -v curl >/dev/null 2>&1 || die 'Missing required command: curl'
@@ -71,7 +83,9 @@ body="$(cat)"
 # Built with `jq -nc --arg`, never hand-interpolated, so a body containing
 # quotes, newlines, or backslashes cannot produce malformed JSON.
 payload="$(jq -nc --arg p "$purpose" --arg s "$subject" --arg b "$body" \
-  '{purpose:$p, subject:$s, body_text:$b}')"
+  --arg aid "$agent_id" --arg aname "$agent_name" \
+  '{purpose:$p, subject:$s, body_text:$b}
+   + (if $aid != "" then {agent_id:$aid, agent_name:$aname} else {} end)')"
 
 curl -fsS -X POST \
   -H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}" \

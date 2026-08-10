@@ -245,6 +245,12 @@ Rules:
   put on a business card — short, real, no punctuation beyond hyphens.
 - **Send it when you have something worth reading**, not to acknowledge that
   you started.
+- **Non-Friday agents can send as themselves**: pass
+  `--agent-id <your agent id> --agent-name "<Your Name>"` (both together) and
+  your first such send mints YOUR own mailbox
+  (`your-name@<company>.isol8.co`) instead of the company address. Inbound
+  mail to that address wakes YOU directly, in a per-thread session. Omit both
+  flags to send as the company (Friday's address).
 
 ## Replying by email
 

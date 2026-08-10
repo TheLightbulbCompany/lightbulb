@@ -153,6 +153,7 @@ async def test_grace_stop_vetoed_by_replacement_landing_mid_check():
     conn_svc = MagicMock()
     conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
     conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    conn_svc.is_gateway_connected = AsyncMock(return_value=False)
     pool = GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
 
     async def billing_read_inserts_replacement(owner_id):
@@ -165,3 +166,30 @@ async def test_grace_stop_vetoed_by_replacement_landing_mid_check():
     ):
         await pool._maybe_stop_trial_container(USER, trigger="grace")
     mock_get_ecs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_grace_stop_vetoed_by_cross_worker_replacement():
+    """The locked local re-check is process-local; a replacement dialed on
+    ANOTHER worker announces itself only via the durable gateway-liveness
+    row. A fresh row at grace-fire time must veto the stop — the worker
+    that dialed it owns teardown."""
+    conn_svc = MagicMock()
+    conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
+    conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    conn_svc.is_gateway_connected = AsyncMock(return_value=True)
+    pool = GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
+
+    from core.repositories import billing_repo as billing_mod
+
+    with (
+        patch.object(
+            billing_mod,
+            "get_by_owner_id",
+            AsyncMock(return_value={"subscription_status": "trial_local"}),
+        ),
+        patch("core.containers.get_ecs_manager") as mock_get_ecs,
+    ):
+        await pool._maybe_stop_trial_container(USER, trigger="grace")
+    mock_get_ecs.assert_not_called()
+    conn_svc.is_gateway_connected.assert_awaited_once_with(USER)

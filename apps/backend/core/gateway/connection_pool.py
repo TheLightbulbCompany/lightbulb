@@ -3269,6 +3269,19 @@ class GatewayConnectionPool:
                 async with self._lock:
                     if owner_id in self._connections or self._frontend_connections.get(owner_id):
                         return
+                # The lock above is process-local; a replacement dial can
+                # land on a DIFFERENT backend worker. Its one durable
+                # announcement is the gateway-liveness row
+                # (mark_gateway_connected). On the grace path our own
+                # connection was closed — and its liveness row deleted —
+                # before the stop-grace sleep, so a fresh row here IS a
+                # replacement, wherever it lives; the worker that dialed it
+                # armed its own teardown cycle, and stopping on the old
+                # deadline would kill the container under it. Direct
+                # callers skip this veto: they stop while a connection
+                # (and hence a live row) may legitimately exist.
+                if await self._conn_svc.is_gateway_connected(owner_id):
+                    return
 
             from core.containers import get_ecs_manager
 

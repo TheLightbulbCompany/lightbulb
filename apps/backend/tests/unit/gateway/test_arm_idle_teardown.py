@@ -281,3 +281,38 @@ async def test_boot_reconcile_vetoed_by_live_connection_on_another_worker():
     ):
         await pool._maybe_stop_trial_container(USER, trigger="boot_reconcile")
     stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_grace_stop_vetoed_by_local_dial_landing_during_the_liveness_read():
+    """A local dial can complete and insert into _connections while the
+    awaited durable read is in flight (its own liveness write is async, so
+    the strong read misses it too). The final synchronous local look must
+    catch it."""
+    conn_svc = MagicMock()
+    conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
+    conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    pool = GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
+
+    async def read_while_dial_lands(owner_id):
+        pool._connections[USER] = MagicMock()
+        return None
+
+    conn_svc.get_live_gateway_conn_token = AsyncMock(side_effect=read_while_dial_lands)
+
+    from core.repositories import billing_repo as billing_mod
+
+    stop = AsyncMock()
+    with (
+        patch.object(
+            billing_mod,
+            "get_by_owner_id",
+            AsyncMock(return_value={"subscription_status": "trial_local"}),
+        ),
+        patch(
+            "core.containers.get_ecs_manager",
+            return_value=MagicMock(stop_user_service=stop),
+        ),
+    ):
+        await pool._maybe_stop_trial_container(USER, trigger="grace", closed_conn_token="tok-old")
+    stop.assert_not_called()

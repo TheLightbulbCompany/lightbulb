@@ -3299,6 +3299,17 @@ class GatewayConnectionPool:
             live_token = await self._conn_svc.get_live_gateway_conn_token(owner_id)
             if live_token is not None and live_token != closed_conn_token:
                 return
+            # One last SYNCHRONOUS local look after the awaited read above:
+            # a local dial can acquire the connect lock the moment our
+            # locked check released it, complete its handshake, and insert
+            # into _connections while the DDB read was in flight — and its
+            # own liveness write is dispatched async, so the strong read
+            # cannot see it either. A dict lookup here closes that local
+            # window; the residual (an insert landing between this line and
+            # the ECS call) is irreducible without a distributed fence and
+            # self-corrects on the next presence-backed wake poll.
+            if owner_id in self._connections:
+                return
 
             from core.containers import get_ecs_manager
 

@@ -462,6 +462,54 @@ async def test_personal_switch_away_still_revokes(
 
 
 @pytest.mark.asyncio
+async def test_switch_away_keeps_harness_row_when_unlink_fails(
+    async_client,
+    cold_reprovision,
+):
+    """Harness cleanup on switch-away is FILE first, row second: a failed
+    EFS unlink must keep the #harness row so the surviving credential stays
+    tracked (a later disconnect/wipe can still find it). The switch itself
+    still succeeds — the cleanup chain is best-effort by design."""
+    chatgpt_account = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "chatgpt_oauth",
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=chatgpt_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.oauth_service.revoke_user_oauth",
+            new=AsyncMock(return_value=None),
+        ) as mock_revoke,
+        patch(
+            "core.containers.workspace.delete_auth_profile_store",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.containers.workspace.delete_opencode_auth",
+            new=AsyncMock(side_effect=OSError("efs io")),
+        ),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "bedrock_claude"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    # Only the provider row was revoked — the harness revoke never ran.
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+
+
+@pytest.mark.asyncio
 async def test_change_provider_inactive_subscription_returns_409(
     async_client,
     patch_dispatch_provision,

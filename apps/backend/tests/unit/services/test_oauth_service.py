@@ -7,6 +7,7 @@ Covers OpenAI's actual Codex CLI device-code flow:
 """
 
 import json
+import time
 from unittest.mock import AsyncMock, patch
 
 import boto3
@@ -147,13 +148,16 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
                     "refresh_token": "rt_opaque_1",
                     "id_token": "eyJ.id-token.x",
                     "account_id": "chatgpt-account-1",
+                    "expires_in": 3600,
                 },
                 url=url_str,
             )
         raise AssertionError(f"unexpected URL: {url_str}")
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll_then_exchange):
+        before_ms = int(time.time() * 1000)
         result = await poll_device_code(user_id="u_1")
+        after_ms = int(time.time() * 1000)
 
     assert isinstance(result, DevicePollResult)
     assert result.account_id == "chatgpt-account-1"
@@ -166,6 +170,16 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
     raw_payload_b = raw_item["encrypted_tokens"]["B"]
     assert b"eyJ.fake-jwt.access" not in raw_payload_b
     assert b"rt_opaque_1" not in raw_payload_b
+
+    # The access token's real expiry (ms epoch) is persisted so staged
+    # credentials aren't treated as already-expired — a consumer that sees
+    # no expiry refreshes on first use, needlessly rotating the refresh
+    # token (for the OpenCode harness: at every fresh process start).
+    from core.services.oauth_service import get_decrypted_tokens
+
+    stored = await get_decrypted_tokens(user_id="u_1")
+    assert stored is not None
+    assert before_ms + 3600_000 <= stored["expires_at"] <= after_ms + 3600_000
 
 
 @pytest.mark.asyncio

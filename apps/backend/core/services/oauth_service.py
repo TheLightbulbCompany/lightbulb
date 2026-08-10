@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
@@ -341,14 +342,22 @@ async def poll_device_code(*, user_id: str, purpose: str = PURPOSE_PROVIDER) -> 
     # chatgpt_account_id claim under https://api.openai.com/auth.
     account_id = body.get("account_id") or _extract_account_id(access_token)
 
-    tokens_plain = json.dumps(
-        {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "id_token": body.get("id_token"),
-            "account_id": account_id,
-        }
-    ).encode()
+    token_fields: dict[str, Any] = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "id_token": body.get("id_token"),
+        "account_id": account_id,
+    }
+    # Persist the access token's real expiry (ms epoch). Staged credentials
+    # that omit it are treated as already-expired by their consumers, which
+    # forces a refresh on first use — needless rotation of a single-use-ish
+    # refresh token, and for the OpenCode harness the difference between a
+    # fresh process using the valid access token and it burning a rotation
+    # at every start.
+    expires_in = body.get("expires_in")
+    if expires_in:
+        token_fields["expires_at"] = int(time.time() * 1000) + int(expires_in) * 1000
+    tokens_plain = json.dumps(token_fields).encode()
     encrypted = get_fernet().encrypt(tokens_plain)
 
     _table().update_item(

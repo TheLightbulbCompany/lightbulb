@@ -1331,23 +1331,28 @@ async def change_provider(
         # the new config stops advertising opencode and the management card is
         # hidden, so a surviving row + auth.json would be an unmanageable live
         # credential. Switching back later re-offers the grant in the wizard.
+        # FILE first, row second (same order as the disconnect endpoints): the
+        # file is the live credential, so if the unlink fails the row must
+        # survive with it — row-and-file stay consistent and a later
+        # disconnect/wipe can still find and clean the grant.
         from core.containers.workspace import delete_opencode_auth
         from core.services.oauth_service import PURPOSE_HARNESS
 
         try:
-            await revoke_user_oauth(user_id=recorded_connector or clerk_user_id, purpose=PURPOSE_HARNESS)
-        except Exception:
-            logger.exception(
-                "change_provider: harness revoke_user_oauth failed for connector=%s",
-                recorded_connector or clerk_user_id,
-            )
-        try:
             await delete_opencode_auth(user_id=owner_id)
         except Exception:
             logger.exception(
-                "change_provider: delete_opencode_auth failed for owner=%s",
+                "change_provider: delete_opencode_auth failed for owner=%s — keeping the harness row",
                 owner_id,
             )
+        else:
+            try:
+                await revoke_user_oauth(user_id=recorded_connector or clerk_user_id, purpose=PURPOSE_HARNESS)
+            except Exception:
+                logger.exception(
+                    "change_provider: harness revoke_user_oauth failed for connector=%s",
+                    recorded_connector or clerk_user_id,
+                )
         # On 6.6 the deleted EFS seed isn't what the running container reads —
         # the credential it imported lives in its SQLite store. Tell the live
         # gateway to drop it via models.authLogout so switch-away revokes the

@@ -1099,10 +1099,15 @@ def build_acp_config(harnesses: list[str]) -> tuple[dict, dict]:
         # survive task replacement) WITHOUT re-pointing every other XDG
         # consumer in the container. `opencode acp` speaks ACP v1 over stdio
         # and requires credentials already on disk (no ACP auth round) —
-        # pre_stage_opencode_auth writes them. The long runtime TTL above
-        # doubles as the auth-store serializer: OpenCode has no cross-process
-        # lock on auth.json, so ONE live runtime per container is what keeps
-        # concurrent refreshes from clobbering each other's rotated token.
+        # pre_stage_opencode_auth writes them. Refresh serialization: acpx
+        # reuses ONE wrapper process per agentCommand (verified in the fork:
+        # extensions/acpx/src/runtime.ts, "agentCommand as reuse identity"),
+        # so concurrent sessions_spawn calls attach to a single opencode
+        # process whose in-process single-flight serializes token refreshes;
+        # OpenCode has no cross-process lock on auth.json, so that reuse —
+        # plus staging the token's REAL expiry so fresh processes don't
+        # refresh at boot, plus OpenAI's ~1h refresh-reuse grace window —
+        # is the protection. The runtime TTL bounds process churn.
         acpx_plugin_entry["acpx"]["config"]["agents"] = {
             "opencode": {
                 "command": "env",

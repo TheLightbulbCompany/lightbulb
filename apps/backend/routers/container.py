@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 # immediately through its own path — these guards only pace the background
 # repair.
 _SELF_HEAL_DIAL_COOLDOWN_S = 60.0
+# A failed dial that returned faster than this held the global connect lock
+# only briefly (connection refused during the gateway's boot window) — it is
+# exempted from the cooldown so the next poll retries. Anything slower ate a
+# real handshake wait and keeps the full cooldown.
+_SELF_HEAL_FAST_FAIL_S = 2.0
 _self_heal_inflight: set[str] = set()
 _self_heal_last_dial: dict[str, float] = {}
 
@@ -578,6 +583,7 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
     clears the per-owner in-flight marker the dispatch site set — the
     cooldown (stamped at dispatch) paces the next attempt.
     """
+    started = time.monotonic()
     try:
         pool = get_gateway_pool()
         if pool.is_user_connected(owner_id):
@@ -595,6 +601,17 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
         pool.arm_idle_teardown_if_unattended(owner_id)
     except Exception as exc:
         logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
+        # The cooldown exists to pace EXPENSIVE failures — a blackholed IP
+        # holding the pool's global connect lock through a full handshake
+        # timeout. A dial that failed in milliseconds (connection refused
+        # while the gateway is still booting — the normal race this helper
+        # documents above) held the lock for effectively nothing, and
+        # leaving the 60s stamp would pin the user on "starting" for a
+        # minute when the next ~5s poll's dial would succeed. Clear the
+        # stamp so that poll retries; the global single-flight still bounds
+        # concurrency, and a slow failure keeps the full cooldown.
+        if time.monotonic() - started < _SELF_HEAL_FAST_FAIL_S:
+            _self_heal_last_dial.pop(owner_id, None)
     finally:
         _self_heal_inflight.discard(owner_id)
 

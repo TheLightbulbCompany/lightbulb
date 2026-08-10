@@ -214,3 +214,47 @@ async def test_already_connected_pool_skips_redial(mock_get_ecs, mock_gateway_co
 
     await _drain_background_tasks()
     mock_pool.ensure_connection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+@patch("routers.container.get_ecs_manager")
+async def test_fast_boot_refusal_retries_on_next_poll(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
+    """A dial refused in milliseconds (gateway still booting) must NOT arm
+    the 60s cooldown — the next ~5s poll retries and is the one that heals.
+    Only slow failures (real handshake waits on the global lock) pay it."""
+    mock_ecs = AsyncMock()
+    mock_get_ecs.return_value = mock_ecs
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
+    mock_gateway_connected.return_value = False
+    mock_pool.ensure_connection = AsyncMock(side_effect=ConnectionRefusedError("booting"))
+
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+
+    assert mock_pool.ensure_connection.await_count == 2
+
+
+@pytest.mark.asyncio
+@patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+@patch("routers.container.get_ecs_manager")
+async def test_slow_failure_keeps_the_cooldown(
+    mock_get_ecs, mock_gateway_connected, mock_pool, async_client, monkeypatch
+):
+    """A failure that ate a real handshake wait keeps the full cooldown.
+    Simulated by making the fast-fail window unsatisfiable."""
+    monkeypatch.setattr(container_router, "_SELF_HEAL_FAST_FAIL_S", -1.0)
+    mock_ecs = AsyncMock()
+    mock_get_ecs.return_value = mock_ecs
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
+    mock_gateway_connected.return_value = False
+    mock_pool.ensure_connection = AsyncMock(side_effect=TimeoutError("handshake"))
+
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+    await async_client.get("/api/v1/container/status?wake=1")
+    await _drain_background_tasks()
+
+    assert mock_pool.ensure_connection.await_count == 1

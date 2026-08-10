@@ -76,6 +76,10 @@ async def test_starting_phase_dials_the_pool(mock_get_ecs, mock_gateway_connecte
 
     await _drain_background_tasks()
     mock_pool.ensure_connection.assert_awaited_once_with(OWNER, IP, TOKEN)
+    # A successful dial may have created a connection with no frontend WS
+    # registered on this task — the dial must arm the idle teardown itself
+    # (nothing else ever will), or a trial container stays up forever.
+    mock_pool.arm_idle_teardown_if_unattended.assert_called_once_with(OWNER)
     # The helper's finally must clear the in-flight marker so a later poll
     # (past the cooldown) can dial again.
     assert OWNER not in container_router._self_heal_inflight
@@ -168,7 +172,30 @@ async def test_dial_failure_is_swallowed_and_clears_inflight(
 
     await _drain_background_tasks()
     mock_pool.ensure_connection.assert_awaited_once()
+    # No connection was created, so nothing to arm teardown for.
+    mock_pool.arm_idle_teardown_if_unattended.assert_not_called()
     assert OWNER not in container_router._self_heal_inflight
+
+
+@pytest.mark.asyncio
+@patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
+@patch("routers.container.get_ecs_manager")
+async def test_global_single_flight_blocks_other_owners(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
+    """The in-flight set is a process-wide single-flight: while ANY owner's
+    dial is outstanding, no other owner may queue one — the pool serializes
+    all connect I/O behind one lock, so a wake burst must not stack serial
+    handshake holds in front of chat RPCs."""
+    mock_ecs = AsyncMock()
+    mock_get_ecs.return_value = mock_ecs
+    mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
+    mock_gateway_connected.return_value = False
+    container_router._self_heal_inflight.add("user_someone_else")
+
+    response = await async_client.get("/api/v1/container/status?wake=1")
+    assert response.status_code == 200
+
+    await _drain_background_tasks()
+    mock_pool.ensure_connection.assert_not_awaited()
 
 
 @pytest.mark.asyncio

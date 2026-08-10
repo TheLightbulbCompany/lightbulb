@@ -38,24 +38,28 @@ from core.services.user_provision import ensure_personal_trial_default, ensure_u
 
 logger = logging.getLogger(__name__)
 
-# Per-owner dispatch guards for the status poll's pool self-heal dial. The
-# pool serializes ALL connect I/O behind one process-wide lock — and every
-# chat RPC (send_rpc → ensure_connection) queues on that same lock — while
-# the absent-create path has no reconnect floor. So the dispatch site must
-# not let the ~5s poll cadence pile up dials: the in-flight set stops
-# duplicate dispatches while one is outstanding, and the cooldown stops a
-# wedged container (running row + unreachable IP) from eating a fresh
-# handshake-timeout lock hold per poll. A chat send still dials immediately
-# through its own path — the cooldown only paces this background repair.
+# Dispatch guards for the status poll's pool self-heal dial. The pool
+# serializes ALL connect I/O behind one process-wide lock — and every chat
+# RPC (send_rpc → ensure_connection) queues on that same lock — while the
+# absent-create path has no reconnect floor. So the dispatch site must not
+# let the ~5s poll cadence pile up dials: the in-flight set is a GLOBAL
+# single-flight (one self-heal dial outstanding per process, whoever it is
+# for — a wake burst of N owners must not queue N serial handshake holds in
+# front of every healthy user's chat RPCs; each blocked owner's next poll
+# retries within seconds of the slot freeing), and the per-owner cooldown
+# stops a wedged container (running row + unreachable IP) from eating a
+# fresh handshake-timeout lock hold per poll. A chat send still dials
+# immediately through its own path — these guards only pace the background
+# repair.
 _SELF_HEAL_DIAL_COOLDOWN_S = 60.0
 _self_heal_inflight: set[str] = set()
 _self_heal_last_dial: dict[str, float] = {}
 
 
 def _self_heal_dial_allowed(owner_id: str) -> bool:
-    """True when no self-heal dial is outstanding for *owner_id* and the
-    last attempt is at least the cooldown ago (or never happened)."""
-    if owner_id in _self_heal_inflight:
+    """True when NO self-heal dial is outstanding process-wide and this
+    owner's last attempt is at least the cooldown ago (or never happened)."""
+    if _self_heal_inflight:
         return False
     last = _self_heal_last_dial.get(owner_id)
     return last is None or (time.monotonic() - last) >= _SELF_HEAL_DIAL_COOLDOWN_S
@@ -580,6 +584,15 @@ async def _pool_self_heal_connect(owner_id: str, ip: str, token: str) -> None:
             return
         await pool.ensure_connection(owner_id, ip, token)
         logger.info("status-poll pool self-heal dial connected owner=%s", owner_id)
+        # This dial may have created a connection while NO frontend WS is
+        # registered on this task (status-only client, or the browser's WS
+        # landed on a different backend task). remove_frontend_connection —
+        # the only other armer of the idle grace-close — will never fire for
+        # it, so without this arm the connection would refresh gateway
+        # liveness forever and keep a trial container running with nobody
+        # attached. Over-preserve-safe: the grace path re-checks frontends
+        # at fire time and the trial stop re-checks cross-task DDB truth.
+        pool.arm_idle_teardown_if_unattended(owner_id)
     except Exception as exc:
         logger.info("status-poll pool self-heal dial failed owner=%s: %s", owner_id, exc)
     finally:

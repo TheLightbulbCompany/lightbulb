@@ -3053,6 +3053,35 @@ class GatewayConnectionPool:
             if user_id in self._connections:
                 self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
 
+    def arm_idle_teardown_if_unattended(self, user_id: str) -> None:
+        """Arm the standard grace-close for a gateway connection that exists
+        with no frontend registered on this task.
+
+        ``remove_frontend_connection`` is otherwise the ONLY armer of
+        ``_grace_close`` — it fires on a frontend *leaving*. A connection
+        created while the frontend set is already empty (the status poll's
+        self-heal dial: a status-only client, or a browser whose WS landed
+        on a different backend task) never traverses that path, so nothing
+        would ever close it: it refreshes gateway liveness indefinitely and,
+        for a trial owner, keeps a scaled-to-zero-eligible container running
+        with nobody attached.
+
+        Safe to over-arm: ``_grace_close`` re-checks the frontend set at
+        fire time, and ``_maybe_stop_trial_container`` re-checks cross-task
+        DDB truth (live chat connections, operator runs) before stopping
+        anything — so arming here can only over-preserve, never over-kill.
+        No-op when a frontend IS registered here, when no connection exists,
+        or when a grace task is already pending.
+        """
+        if self._frontend_connections.get(user_id):
+            return
+        if user_id not in self._connections:
+            return
+        existing = self._grace_tasks.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        self._grace_tasks[user_id] = asyncio.create_task(self._grace_close(user_id))
+
     def broadcast_to_owner(self, owner_id: str, event: str, payload: dict) -> None:
         """Push a generic ``{type: "event"}`` frame to every frontend WS
         registered for *owner_id*.

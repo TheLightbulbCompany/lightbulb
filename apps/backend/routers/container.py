@@ -558,12 +558,22 @@ async def container_status(
     # per-process-pool blind spot (another instance's connection is now
     # visible); this dial is the WRITE half — when no instance holds a
     # connection at all, the poll itself must create the demand. Dial in
-    # the background so the NEXT poll reports the truth. wake=0 (read-only
-    # poll) never dials; failures are swallowed — the next poll simply
-    # reports whatever is true.
+    # the background so the NEXT poll reports the truth; failures are
+    # swallowed — the next poll simply reports whatever is true.
+    #
+    # Deliberately NOT gated on the wake param. wake governs whether a poll
+    # may START a parked container (billing semantics); this dial never
+    # starts anything — it completes the handshake for a container that is
+    # ALREADY running (phase "starting"; a parked row resolves "parked" and
+    # never reaches here). Gating on wake!=\"0\" would break the primary
+    # cold-start repair: the frontend demotes its polls to wake=0 after
+    # 120s without keyboard/pointer input, and a user silently WATCHING the
+    # stepper crosses that line before a normal gateway boot finishes
+    # (~141s observed) — exactly the user this dial exists for. The poll
+    # itself is visibility-gated client-side, so any poll arriving here
+    # implies a visible, watching tab.
     if (
-        wake != "0"
-        and container_ip
+        container_ip
         and container is not None
         and container.get("gateway_token")
         and contract["runtime_phase"] == "starting"

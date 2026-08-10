@@ -7,7 +7,8 @@ cold-start wake the frontend renders the stepper and sends no gateway RPCs —
 so without this dial nothing ever connects, the poll reports "starting"
 forever, and only a page reload (fresh mount RPC burst) breaks the deadlock.
 These tests pin the dispatch conditions: dial exactly when the poll observes
-"starting" with an IP + token in hand, never on read-only polls, and never
+"starting" with an IP + token in hand (regardless of the wake param — wake
+governs starting a PARKED container, not repairing a running one), and never
 stacked (a global single-flight plus a backoff armed only by expensive
 failures pace the background repair — failure TYPE is the classifier).
 """
@@ -91,7 +92,14 @@ async def test_starting_phase_dials_the_pool(mock_get_ecs, mock_gateway_connecte
 @pytest.mark.asyncio
 @patch("core.services.connection_service.is_gateway_connected", new_callable=AsyncMock)
 @patch("routers.container.get_ecs_manager")
-async def test_wake0_read_only_poll_never_dials(mock_get_ecs, mock_gateway_connected, mock_pool, async_client):
+async def test_wake0_poll_still_dials_a_starting_container(
+    mock_get_ecs, mock_gateway_connected, mock_pool, async_client
+):
+    """The dial is NOT gated on the wake param: wake governs starting a
+    PARKED container, and this dial only completes the handshake for an
+    already-running one. The frontend demotes to wake=0 after 120s without
+    input — a user silently watching the stepper crosses that line before
+    a normal gateway boot finishes, and is exactly who this dial serves."""
     mock_ecs = AsyncMock()
     mock_get_ecs.return_value = mock_ecs
     mock_ecs.resolve_running_container = AsyncMock(return_value=(_running_row(), IP))
@@ -101,7 +109,7 @@ async def test_wake0_read_only_poll_never_dials(mock_get_ecs, mock_gateway_conne
     assert response.status_code == 200
 
     await _drain_background_tasks()
-    mock_pool.ensure_connection.assert_not_awaited()
+    mock_pool.ensure_connection.assert_awaited_once_with(OWNER, IP, TOKEN)
 
 
 @pytest.mark.asyncio

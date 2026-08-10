@@ -233,9 +233,9 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
         <h3 className="text-xl font-semibold">Enable coding for your agents?</h3>
         <p className="text-sm text-muted-foreground">
           Your agents can delegate real coding work to OpenCode, powered by
-          this same ChatGPT subscription. It takes one more approval — you're
-          already signed in, no password needed. The harness keeps its own
-          credential, so it never interferes with your main connection.
+          this same ChatGPT subscription. It takes one more approval &mdash;
+          you&apos;re already signed in, no password needed. The harness keeps
+          its own credential, so it never interferes with your main connection.
         </p>
         {harness.state.status === "error" && (
           <p className="text-sm text-destructive">{harness.state.message}</p>

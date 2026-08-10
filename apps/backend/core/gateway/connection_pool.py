@@ -3226,6 +3226,16 @@ class GatewayConnectionPool:
         try:
             if self._frontend_connections.get(owner_id):
                 return  # a client reconnected on this task
+            # Grace path only: the cycle that armed this stop closed its own
+            # connection before the stop-grace sleep, so ANY connection
+            # present now is a REPLACEMENT (a status-poll self-heal dial
+            # that landed mid-sleep). It must not be stopped on the old
+            # cycle's deadline — skip; the old task's exit re-arm gives it
+            # a full fresh cycle of its own. Direct callers (trigger !=
+            # "grace") deliberately stop despite a live connection — their
+            # has_active_runs/is_parked vetoes are the fence there.
+            if trigger == "grace" and owner_id in self._connections:
+                return
             from core.repositories import billing_repo
 
             account = await billing_repo.get_by_owner_id(owner_id)

@@ -8,7 +8,7 @@ trial container would stay running with nobody attached.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -125,3 +125,19 @@ async def test_grace_exit_rearms_a_replacement_connection(monkeypatch):
     assert close_calls["n"] == 2
     assert USER not in pool._connections
     assert USER not in pool._grace_tasks
+
+
+@pytest.mark.asyncio
+async def test_grace_stop_vetoed_by_replacement_connection():
+    """At grace-path fire time the arming cycle already closed its own
+    connection, so ANY connection present is a replacement dialed mid-sleep
+    — the old cycle's deadline must not stop the container under it. The
+    veto returns before any billing/ECS work."""
+    pool = GatewayConnectionPool.__new__(GatewayConnectionPool)
+    pool._frontend_connections = {}
+    replacement = MagicMock()
+    pool._connections = {USER: replacement}
+
+    with patch("core.containers.get_ecs_manager") as mock_get_ecs:
+        await pool._maybe_stop_trial_container(USER, trigger="grace")
+    mock_get_ecs.assert_not_called()

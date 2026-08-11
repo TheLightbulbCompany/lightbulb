@@ -57,37 +57,28 @@ trigger:
 **Audit.** Same posture as ``hooks_proxy``: best-effort row to
 ``hook-events`` (kind="paperclip_trigger").
 
-**Stripe edge verification.** Stripe imposes its own ``whsec_`` signing
-secret that Paperclip's engine can't ingest, so a registry provider that
-declares ``inbound.signing_mode: stripe_edge`` (see
-``core/services/credentials/registry.py``) gets its trigger armed by the
-seed service with Paperclip ``signingMode: "none"`` and verified HERE
-instead. The discriminator is NOT signingMode — "None (unsigned)" is also a
-first-class Phase 1 option (``webhookSigning.ts``) — but the per-trigger
-credential record (``core/services/credentials/stripe_edge.py``,
-``integration_secret_store`` keyed by ``(owner_id, public_id)``). Three
-states, resolved by ``_stripe_trigger_cred`` and cached per-trigger:
+**Provider signature-header normalization.** Verification is NATIVE — this
+proxy holds no secret and does no verification. Paperclip's own
+``hmac_sha256`` mode signs ``{timestamp}.{body}`` (Stripe's exact scheme) and
+verifies against the trigger's stored secret, which is armed with the
+provider's own ``whsec_`` (``PUT /automations/{public_id}/webhook-secret`` ->
+Paperclip's rotate-secret with a caller-supplied value). The proxy's only
+provider-specific job is a header shim: Stripe packs its timestamp and
+signature into ONE ``Stripe-Signature: t=,v1=`` header, whereas Paperclip
+reads them from separate ``X-Paperclip-Timestamp`` / ``X-Paperclip-Signature``
+headers — so it splits the former into the latter (see
+``_normalize_stripe_signature``). It also derives an ``Idempotency-Key`` from
+the Stripe event id (Stripe sends none, and its delivery retries reuse the
+id) so Paperclip dedupes retries to a single run. A ``github_hmac`` provider
+needs no shim — its ``X-Hub-Signature-256`` already matches.
 
-- **no record** — an ordinary trigger (including a deliberately-unsigned
-  Phase 1 one). Forwards untouched; the publicId remains its shared secret.
-- **marker only** (``stripe_edge_seeded``, whsec_ not pasted yet — written
-  by the seed service before the owner pastes anything back) — a Stripe
-  trigger that isn't armed. **Fails CLOSED (401)**, never forwarded
-  unsigned, until the whsec_ lands (Stripe retries in the meantime).
-- **whsec_ stored** — this fire must carry a valid ``Stripe-Signature``,
-  checked before the forward. The event id is then forwarded as an
-  ``Idempotency-Key`` so Stripe's own delivery retries (Stripe sends no
-  such header itself) don't double-fire the routine — Paperclip dedupes
-  a public-trigger fire on that key.
-
-A genuine store failure (throttle, network, IAM — anything other than
-"definitively no record") is never cached and never silently treated as
-"no record": it 503s the fire rather than 500ing or fail-opening a Stripe
-trigger through unverified.
+An unarmed trigger (secret not yet pasted) **fails closed for free**:
+Paperclip verifies against its own random placeholder secret, which the
+provider's signature cannot match, so nothing fires until the real secret is
+armed. There is no per-trigger secret lookup, cache, or edge verification in
+this proxy anymore — all of that moved into Paperclip.
 """
 
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -99,21 +90,6 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories import billing_repo, hook_event_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.credentials import integration_secret_store
-from core.services.credentials.stripe_edge import (
-    STRIPE_SECRET_CACHE as _STRIPE_SECRET_CACHE,
-)
-from core.services.credentials.stripe_edge import (
-    STRIPE_SECRET_NEGATIVE_TTL_SECONDS as _STRIPE_SECRET_NEGATIVE_TTL_SECONDS,
-)
-from core.services.credentials.stripe_edge import (
-    STRIPE_SECRET_TTL_SECONDS as _STRIPE_SECRET_TTL_SECONDS,
-)
-from core.services.credentials.stripe_edge import (
-    WEBHOOK_SECRET_FIELD,
-    stripe_secret_cache_generation,
-    stripe_trigger_secret_provider,
-)
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.provision_gate import has_always_on_entitlement
@@ -147,102 +123,28 @@ def _binding_cached(owner_id: str, public_id: str) -> bool:
     return ts is not None and (time.monotonic() - ts) < _BINDING_TTL_SECONDS
 
 
-# The resolved credential record (dict, or None = no record) for a
-# (owner_id, public_id), same cache shape as _BINDING_CACHE but a SPLIT TTL
-# keyed on whether the trigger is ARMED: an armed record (whsec_ present)
-# lives for _STRIPE_SECRET_TTL_SECONDS (5 min — bounds cross-task rotation
-# staleness); a non-armed one (no record, or the seeded marker only) lives
-# for only _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (60s). Every trigger fire of
-# every kind hits this path, so an uncached read would mean a live Secrets
-# Manager GetSecretValue on every single fire; caching is what makes that
-# free after the first lookup. Storing the whole record (not just the
-# secret) is what lets the caller tell a seeded-but-unarmed trigger (marker
-# only -> fail CLOSED) apart from an ordinary unsigned one (no record ->
-# forward) — see stripe_edge.py.
-#
-# Owned by ``core.services.credentials.stripe_edge`` (imported above by
-# reference, not copied) so the webhook-secret WRITE path
-# (``routers/automations.py``) can invalidate it via
-# ``stripe_edge.invalidate_stripe_secret_cache`` right after every store.
-# On a single task that's immediate; on a multi-task fleet a sibling task's
-# stale verdict is bounded by whichever of the two TTLs above applies.
+def _normalize_stripe_signature(header: str) -> tuple[str | None, str | None]:
+    """Split a Stripe ``Stripe-Signature: t=<unixSeconds>,v1=<hexHmac>`` header
+    into ``(timestamp, signature)`` for Paperclip's native ``hmac_sha256`` mode,
+    which reads them from separate ``X-Paperclip-Timestamp`` /
+    ``X-Paperclip-Signature`` headers. Returns ``(None, None)`` on a malformed
+    header. Only the FIRST ``v1`` is used: during a Stripe endpoint-secret
+    rotation Stripe briefly sends a ``v1`` per active secret and Paperclip's
+    single-signature check verifies against one — a narrow, self-healing window
+    (Stripe retries; it resolves once the old secret is removed).
 
-
-class _StripeSecretStoreError(Exception):
-    """Secrets Manager errored while resolving a trigger's credential record
-    — NOT the same as "no record" (that's ResourceNotFoundException, already
-    collapsed to None by integration_secret_store.get). The caller turns
-    this into a 503, never a 500 and never a silent fail-open forward of an
-    unverified Stripe fire."""
-
-
-async def _stripe_trigger_cred(owner_id: str, public_id: str) -> dict | None:
-    """The stored credential record for THIS trigger, or None if the owner
-    never seeded a stripe_edge trigger here. Three shapes the caller
-    distinguishes (see module docstring): ``None`` (no record — ordinary
-    trigger, forward unsigned); ``{stripe_edge_seeded: True}`` (seeded,
-    whsec_ not pasted — fail CLOSED); ``{webhook_secret: ...}`` (armed —
-    verify). Nothing in this module ever WRITES this record.
-
-    Cached per (owner_id, public_id) with a SPLIT TTL — an armed record (has
-    a whsec_) for _STRIPE_SECRET_TTL_SECONDS, a non-armed one (None or
-    marker-only) for the much shorter _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
-    (see the cache's module-level comment). Raises _StripeSecretStoreError
-    (uncached) on a genuine store failure.
-
-    Write-during-read TOCTOU guard: the generation is captured BEFORE the
-    Secrets Manager call, and the result is only written into the cache if
-    the generation is still unchanged afterward. A concurrent
-    ``invalidate_stripe_secret_cache`` (the webhook-secret PUT, right after
-    its own store) bumps the generation, so a read that straddles that
-    write discards its own now-stale result instead of clobbering the
-    invalidate — see ``stripe_edge.py``'s module docstring.
-    """
-    key = (owner_id, public_id)
-    cached = _STRIPE_SECRET_CACHE.get(key)
-    if cached is not None:
-        cached_at, cached_cred = cached
-        armed = bool(cached_cred and cached_cred.get(WEBHOOK_SECRET_FIELD))
-        ttl = _STRIPE_SECRET_TTL_SECONDS if armed else _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
-        if (time.monotonic() - cached_at) < ttl:
-            return cached_cred
-    generation = stripe_secret_cache_generation(owner_id, public_id)
-    try:
-        cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
-    except Exception as exc:  # noqa: BLE001 — any non-ResourceNotFound Secrets Manager failure
-        raise _StripeSecretStoreError from exc
-    if stripe_secret_cache_generation(owner_id, public_id) == generation:
-        _STRIPE_SECRET_CACHE[key] = (time.monotonic(), cred)
-    return cred
-
-
-def verify_stripe_signature(secret: str, raw_body: bytes, header: str, *, tolerance_s: int = 300, now: float) -> bool:
-    """Verify a Stripe ``Stripe-Signature: t=<unixSeconds>,v1=<hexHmac>``
-    header against ``raw_body`` with the owner's ``whsec_`` secret — stdlib
-    HMAC-SHA256, the same scheme ``stripe.Webhook.construct_event``
-    implements (https://docs.stripe.com/webhooks#verify-manually), so this
-    can run at the edge with no Stripe SDK dependency. The signed payload is
-    ``f"{t}.{raw_body}"``; a header may carry multiple ``v1=`` entries
-    (secret rotation) and any match is accepted.
+    # ponytail: first-v1 only; multi-signature verify would need a Paperclip
+    # mode change — not worth it for the rare rotation window.
     """
     t: str | None = None
-    v1s: list[str] = []
+    v1: str | None = None
     for part in header.split(","):
         key, _, value = part.strip().partition("=")
-        if key == "t":
-            t = value
-        elif key == "v1":
-            v1s.append(value)
-    if t is None or not v1s:
-        return False
-    try:
-        timestamp = int(t)
-    except ValueError:
-        return False
-    if abs(now - timestamp) > tolerance_s:
-        return False
-    expected = hmac.new(secret.encode(), f"{timestamp}.".encode() + raw_body, hashlib.sha256).hexdigest()
-    return any(hmac.compare_digest(expected, v1) for v1 in v1s)
+        if key == "t" and t is None:
+            t = value or None
+        elif key == "v1" and v1 is None:
+            v1 = value or None
+    return t, v1
 
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
@@ -363,36 +265,21 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
             media_type="application/json",
         )
 
-    # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body,
-    # and stripe_edge verification (below) signs it too.
+    # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
     body = await request.body()
 
-    # Stripe edge verification — the per-trigger credential record decides
-    # (see module docstring): no record forwards untouched (ordinary/Phase-1
-    # trigger); a marker-only record fails CLOSED (seeded stripe_edge, whsec_
-    # not pasted yet — never forward a Stripe trigger unsigned); a stored
-    # whsec_ is verified, then the event id becomes an Idempotency-Key.
+    # Provider header normalization (see module docstring). Verification is
+    # native in Paperclip; the proxy only ADAPTS Stripe's combined
+    # ``Stripe-Signature: t=,v1=`` into the separate ``X-Paperclip-*`` headers
+    # Paperclip's hmac_sha256 mode reads, and derives an idempotency key from
+    # the event id (Stripe sends none and its retries reuse it). No secret and
+    # no verification live here.
+    stripe_ts: str | None = None
+    stripe_v1: str | None = None
     stripe_event_id: str | None = None
-    try:
-        stripe_cred = await _stripe_trigger_cred(owner_id, public_id)
-    except _StripeSecretStoreError:
-        return Response(
-            status_code=503,
-            headers={"Retry-After": "30"},
-            content=b'{"detail":"stripe_verification_unavailable"}',
-            media_type="application/json",
-        )
-    if stripe_cred is not None:
-        stripe_secret = stripe_cred.get(WEBHOOK_SECRET_FIELD)
-        if not stripe_secret:
-            # Seeded stripe_edge trigger still awaiting its whsec_ — reject
-            # rather than forward unsigned. Stripe retries until it's armed.
-            raise HTTPException(status_code=401, detail="stripe_trigger_not_armed")
-        sig_header = request.headers.get("Stripe-Signature")
-        if not sig_header or not verify_stripe_signature(stripe_secret, body, sig_header, now=time.time()):
-            raise HTTPException(status_code=401, detail="invalid_stripe_signature")
-        # The signature-verified body is trusted — pull the Stripe event id
-        # for idempotency (Stripe's retries reuse the same ``evt_...`` id).
+    stripe_sig = request.headers.get("Stripe-Signature")
+    if stripe_sig:
+        stripe_ts, stripe_v1 = _normalize_stripe_signature(stripe_sig)
         try:
             payload = json.loads(body)
             stripe_event_id = payload.get("id") if isinstance(payload, dict) else None
@@ -409,9 +296,12 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     headers = {h: request.headers[h] for h in _FORWARDED_HEADERS if h in request.headers}
     headers["X-Forwarded-For"] = _extract_caller_ip(request)
     headers["X-Forwarded-Proto"] = "https"
-    # Stripe sends no Idempotency-Key of its own; without one Paperclip treats
-    # each of Stripe's delivery retries as a fresh fire (duplicate agent run +
-    # spend). Derive it from the event id so retries of the same event dedupe.
+    # Feed Paperclip's hmac_sha256 mode the split Stripe timestamp + signature,
+    # and the derived idempotency key (so Stripe's delivery retries dedupe to a
+    # single routine run). A caller-supplied Idempotency-Key is never overridden.
+    if stripe_ts and stripe_v1:
+        headers["X-Paperclip-Timestamp"] = stripe_ts
+        headers["X-Paperclip-Signature"] = stripe_v1
     if stripe_event_id and "Idempotency-Key" not in headers:
         headers["Idempotency-Key"] = stripe_event_id
 

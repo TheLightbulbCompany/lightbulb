@@ -12,14 +12,14 @@ Today the only inbound shape is ``webhook_registration: "guided_paste"``
 (creating a Stripe endpoint needs a restricted API key we don't hold), so the
 owner pastes the returned ``proxy_url`` into the provider's own dashboard, then
 pastes the ``whsec_`` it hands back via ``PUT /automations/{public_id}/webhook-
-secret`` (``routers/automations.py``) — THAT write is what actually arms
-Stripe-edge verification in ``routers/paperclip_trigger_proxy.py``. This module
-never stores that secret itself, but for any ``signing_mode: "stripe_edge"``
-provider it DOES mark the trigger as stripe-edge-seeded the instant it's created
-(see ``core/services/credentials/stripe_edge.py``'s ``STRIPE_EDGE_SEEDED_FIELD``)
-— that marker, not Paperclip's own ``signingMode``, is what the webhook-secret
-PUT gates on, so a deliberately-unsigned Phase 1 trigger (also ``signingMode:
-"none"``) can never be bricked by an errant paste.
+secret`` (``routers/automations.py``) — THAT call ARMS the trigger by rotating
+its Paperclip secret to the pasted value. Verification is NATIVE: the trigger
+is created with a native ``signingMode`` straight from the registry (Stripe ->
+``hmac_sha256``, whose ``{t}.{body}`` scheme is Stripe's exact one), and
+Paperclip verifies the provider's signature against that armed secret. Until
+it's armed the trigger holds a random placeholder secret, so a provider
+signature can't match and nothing fires — it fails closed for free, no marker
+needed.
 
 (An ``"auto"`` shape — where Isol8 registers the webhook itself via the
 provider's own API — was prototyped for GitHub and removed: native GitHub
@@ -39,24 +39,22 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_routine_provisioning import _build_routine_body
-from core.services.credentials import integration_secret_store, registry
-from core.services.credentials.stripe_edge import STRIPE_EDGE_SEEDED_FIELD, stripe_trigger_secret_provider
+from core.services.credentials import registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
 
-# Registry `inbound.signing_mode` -> the trigger's OWN Paperclip `signingMode`.
-# "stripe_edge" arms Paperclip with "none" because verification happens at the
-# Isol8 edge instead (routers/paperclip_trigger_proxy.py). Registry-level
-# marker, never forwarded to Paperclip verbatim — see registry.Inbound's docstring.
-_PAPERCLIP_SIGNING_MODE = {"stripe_edge": "none"}
-
-# Stripe-edge verification tolerates a 300s clock skew
-# (paperclip_trigger_proxy.verify_stripe_signature's default `tolerance_s`) —
-# matching the trigger's own replay window keeps the two numbers from
-# drifting apart for the one signing_mode that uses both.
+# `inbound.signing_mode` in the registry IS a native Paperclip signingMode
+# now (e.g. Stripe -> "hmac_sha256"); it's passed straight through to the
+# created trigger. Paperclip verifies natively against the trigger's secret,
+# which the webhook-secret PUT arms with the provider's own value.
 _DEFAULT_REPLAY_WINDOW_SEC = 300
+
+# The signingModes Paperclip verifies natively — an inbound.signing_mode must
+# be one of these (validated at seed time so a providers.yaml typo fails with a
+# clear error instead of an opaque upstream 4xx).
+_NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "github_hmac", "none"}
 
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
@@ -131,8 +129,9 @@ async def seed_trigger_routine(
     if event is None:
         raise ValueError(f"unknown event {event_id!r} for provider {provider_key!r}")
 
-    paperclip_signing_mode = _PAPERCLIP_SIGNING_MODE.get(inbound.signing_mode)
-    if paperclip_signing_mode is None:
+    # inbound.signing_mode IS a native Paperclip signingMode, passed straight
+    # through to the created trigger.
+    if inbound.signing_mode not in _NATIVE_SIGNING_MODES:
         raise ValueError(f"unsupported inbound.signing_mode {inbound.signing_mode!r}")
 
     # Only "friday" is used by any live registry template today (Stripe's).
@@ -174,7 +173,7 @@ async def seed_trigger_routine(
                 session_cookie=cookie,
                 routine_id=routine_id,
                 body=_build_webhook_trigger_body(
-                    signing_mode=paperclip_signing_mode,
+                    signing_mode=inbound.signing_mode,
                     replay_window_sec=_DEFAULT_REPLAY_WINDOW_SEC,
                     label=title,
                 ),
@@ -195,29 +194,6 @@ async def seed_trigger_routine(
             raise
 
         proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
-
-        if inbound.signing_mode == "stripe_edge":
-            # Mark this trigger as stripe-edge-seeded BEFORE returning — the
-            # ONLY thing PUT /automations/{public_id}/webhook-secret
-            # (routers/automations.py) may gate on. Paperclip signingMode
-            # "none" is NOT a safe substitute: it's also Phase 1's own
-            # deliberately-unsigned option, so gating on signingMode alone
-            # would let a legitimate unsigned trigger accept (and be
-            # bricked by) a pasted Stripe whsec_ later. Written to the SAME
-            # per-trigger Secrets Manager slot the whsec_ itself later
-            # occupies — see stripe_edge.STRIPE_EDGE_SEEDED_FIELD. Failure
-            # here rolls back like any other post-creation step: a trigger
-            # the owner can never legitimately arm is the same orphan shape
-            # as a failed trigger-create.
-            try:
-                await integration_secret_store.put(
-                    owner_id, stripe_trigger_secret_provider(public_id), {STRIPE_EDGE_SEEDED_FIELD: True}
-                )
-            except Exception:
-                await _rollback_routine(
-                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
-                )
-                raise
 
         if inbound.webhook_registration == "guided_paste":
             logger.info(

@@ -228,9 +228,12 @@ class Inbound(BaseModel):
     # own dashboard (Stripe). (An "auto" shape — Isol8 registers the webhook
     # itself via the provider's API — returns with the generic-rail follow-up.)
     webhook_registration: Literal["guided_paste"]
-    # Registry-level marker interpreted by the trigger proxy + seed service —
-    # NOT a Paperclip signing enum. "stripe_edge" verifies HMAC at the Isol8
-    # edge (the Paperclip trigger's own signingMode stays "none").
+    # A NATIVE Paperclip signingMode ("hmac_sha256" | "github_hmac" | "bearer"
+    # | "none"), passed straight through to the created trigger — Paperclip
+    # verifies the provider's signature natively against the trigger's secret
+    # (armed with the provider's own value via PUT .../webhook-secret). Stripe
+    # uses "hmac_sha256" (its `{t}.{body}` scheme); the trigger proxy only
+    # normalizes Stripe's combined signature header into what that mode reads.
     signing_mode: str
     events: list[InboundEvent]
     template: InboundTemplate

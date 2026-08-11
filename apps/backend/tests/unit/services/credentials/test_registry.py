@@ -9,7 +9,8 @@ def test_stripe_provider_has_inbound_events():
     p = get_provider("stripe")
     assert p.inbound is not None
     assert p.inbound.webhook_registration == "guided_paste"
-    assert p.inbound.signing_mode == "stripe_edge"
+    # Native Paperclip signingMode now (its {t}.{body} HMAC == Stripe's scheme).
+    assert p.inbound.signing_mode == "hmac_sha256"
     assert any(e.id == "invoice.payment_failed" for e in p.inbound.events)
     assert "{event_label}" in p.inbound.template.title
 

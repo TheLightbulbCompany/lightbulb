@@ -5,13 +5,9 @@ personal owner user_test_123, ``async_client_org_admin`` / ``_org_member`` =
 org_test_456 admin/non-admin).
 """
 
-import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-from core.services.credentials.stripe_edge import WEBHOOK_SECRET_FIELD, stripe_trigger_secret_provider
-from routers import paperclip_trigger_proxy
 
 
 class TestFromIntegration:
@@ -78,137 +74,130 @@ class TestFromIntegration:
 
 
 class TestSetWebhookSecret:
-    @pytest.mark.asyncio
-    @patch("routers.automations.paperclip_trigger_proxy._resolve_trigger_binding", new_callable=AsyncMock)
-    async def test_stores_secret_and_invalidates_proxy_cache(self, mock_resolve, async_client):
-        """A stripe-edge-seeded trigger (already carries the seed-time
-        marker at this Secrets Manager slot) accepts the paste."""
-        owner_id = "user_test_123"
-        public_id = "pubabc123456"
-        mock_resolve.return_value = True
-        # Seed a stale cache entry, as if a fire had already resolved (and
-        # cached) "nothing stored" before the owner pasted their whsec_.
-        paperclip_trigger_proxy._STRIPE_SECRET_CACHE[(owner_id, public_id)] = (time.monotonic(), None)
-        try:
-            with patch("routers.automations.integration_secret_store") as mock_store:
-                mock_store.get = AsyncMock(return_value={"stripe_edge_seeded": True})
-                mock_store.put = AsyncMock()
-                response = await async_client.put(
-                    f"/api/v1/automations/{public_id}/webhook-secret",
-                    json={"webhook_secret": "whsec_abc123"},
-                )
+    """Verification is native in Paperclip now — arming a trigger means
+    resolving public_id -> Paperclip's internal trigger id
+    (``_lookup_trigger_detail``) and rotating that trigger's Paperclip
+    secret to the caller-supplied value. No Isol8-side secret store,
+    marker, or cache is touched anymore."""
 
-            assert response.status_code == 200
-            mock_resolve.assert_awaited_once_with(owner_id, public_id)
-            mock_store.get.assert_awaited_once_with(owner_id, stripe_trigger_secret_provider(public_id))
-            mock_store.put.assert_awaited_once_with(
-                owner_id,
-                stripe_trigger_secret_provider(public_id),
-                {WEBHOOK_SECRET_FIELD: "whsec_abc123"},
-            )
-            # The write must invalidate the SAME cache object the proxy reads
-            # — otherwise a just-pasted secret is fail-open (unsigned-forward)
-            # for up to the cache's TTL. This is the shared-object aliasing
-            # in stripe_edge.py: both modules point at ONE dict.
-            assert (owner_id, public_id) not in paperclip_trigger_proxy._STRIPE_SECRET_CACHE
-        finally:
-            paperclip_trigger_proxy._STRIPE_SECRET_CACHE.pop((owner_id, public_id), None)
-            paperclip_trigger_proxy._BINDING_CACHE.pop((owner_id, public_id), None)
+    @pytest.fixture(autouse=True)
+    def _paperclip_url(self, monkeypatch):
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
 
     @pytest.mark.asyncio
-    @patch("routers.automations.paperclip_trigger_proxy._resolve_trigger_binding", new_callable=AsyncMock)
-    async def test_rotate_on_already_armed_trigger_still_stores(self, mock_resolve, async_client):
-        """A trigger that already has a stored whsec_ (rotation, not the
-        first arm) has no marker left at this slot — the paste OVERWROTE it
-        — but presence of ANY record here still proves it was stripe_edge-
-        seeded, so rotation must not be rejected."""
+    async def test_stores_secret_and_rotates_paperclip_trigger(self, async_client):
         owner_id = "user_test_123"
         public_id = "pubabc123456"
-        mock_resolve.return_value = True
 
-        with patch("routers.automations.integration_secret_store") as mock_store:
-            mock_store.get = AsyncMock(return_value={WEBHOOK_SECRET_FIELD: "whsec_old"})
-            mock_store.put = AsyncMock()
+        with (
+            patch(
+                "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
+                AsyncMock(return_value={"id": "trig_internal_1", "publicId": public_id, "kind": "webhook"}),
+            ) as mock_lookup,
+            patch("routers.automations.get_admin_session_cookie", AsyncMock(return_value="s=1")),
+            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
+        ):
+            mock_admin = mock_client_cls.return_value
+            mock_admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
             response = await async_client.put(
                 f"/api/v1/automations/{public_id}/webhook-secret",
-                json={"webhook_secret": "whsec_new"},
+                json={"webhook_secret": "whsec_abc123"},
             )
 
         assert response.status_code == 200
-        mock_store.put.assert_awaited_once_with(
-            owner_id, stripe_trigger_secret_provider(public_id), {WEBHOOK_SECRET_FIELD: "whsec_new"}
+        assert response.json() == {"status": "stored"}
+        mock_lookup.assert_awaited_once_with(owner_id, public_id)
+        mock_admin.rotate_routine_trigger_secret.assert_awaited_once_with(
+            session_cookie="s=1", trigger_id="trig_internal_1", secret="whsec_abc123"
         )
 
     @pytest.mark.asyncio
-    @patch("routers.automations.paperclip_trigger_proxy._resolve_trigger_binding", new_callable=AsyncMock)
-    async def test_unknown_trigger_404s_and_stores_nothing(self, mock_resolve, async_client):
+    async def test_unknown_trigger_404s(self, async_client):
         """A public_id that doesn't resolve to a webhook trigger in the
         caller's own company (foreign owner, typo, deleted trigger) 404s
-        instead of silently reporting success — and nothing is stored."""
+        instead of silently reporting success."""
         owner_id = "user_test_123"
         public_id = "notminepub1234"
-        mock_resolve.return_value = False
 
-        with patch("routers.automations.integration_secret_store") as mock_store:
-            mock_store.put = AsyncMock()
+        with (
+            patch(
+                "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
+                AsyncMock(return_value=None),
+            ) as mock_lookup,
+            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
+        ):
             response = await async_client.put(
                 f"/api/v1/automations/{public_id}/webhook-secret",
                 json={"webhook_secret": "whsec_abc123"},
             )
 
         assert response.status_code == 404
-        mock_resolve.assert_awaited_once_with(owner_id, public_id)
-        mock_store.put.assert_not_called()
+        mock_lookup.assert_awaited_once_with(owner_id, public_id)
+        mock_client_cls.return_value.rotate_routine_trigger_secret.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("routers.automations.paperclip_trigger_proxy._resolve_trigger_binding", new_callable=AsyncMock)
-    async def test_non_stripe_seeded_none_trigger_rejected_and_stores_nothing(self, mock_resolve, async_client):
-        """THE P2 regression: a real, owned webhook trigger that was NEVER
-        seeded as stripe_edge — including a Phase-1 trigger the owner
-        deliberately left unsigned (signingMode "none" is ALSO that user-
-        selectable option, not a stripe_edge-only marker) — must be
-        rejected. Gating on signingMode alone would accept this paste and
-        silently brick the trigger by making it demand a Stripe-Signature
-        header no real sender of its will ever produce."""
-        owner_id = "user_test_123"
-        public_id = "phase1nonepub1"
-        mock_resolve.return_value = True
+    async def test_lookup_failure_returns_503(self, async_client):
+        """The resolver failing (Paperclip down / admin session broken)
+        fails closed, same posture as the fire-proxy's own binding gate."""
+        public_id = "pubabc123456"
 
-        with patch("routers.automations.integration_secret_store") as mock_store:
-            mock_store.get = AsyncMock(return_value=None)  # nothing ever written at this slot
-            mock_store.put = AsyncMock()
+        with patch(
+            "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
+            AsyncMock(side_effect=RuntimeError("paperclip down")),
+        ):
             response = await async_client.put(
                 f"/api/v1/automations/{public_id}/webhook-secret",
                 json={"webhook_secret": "whsec_abc123"},
             )
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == "not_a_stripe_edge_trigger"
-        mock_resolve.assert_awaited_once_with(owner_id, public_id)
-        mock_store.get.assert_awaited_once_with(owner_id, stripe_trigger_secret_provider(public_id))
-        mock_store.put.assert_not_called()
+        assert response.status_code == 503
 
     @pytest.mark.asyncio
-    @patch("routers.automations.paperclip_trigger_proxy._resolve_trigger_binding", new_callable=AsyncMock)
-    async def test_malformed_public_id_400s_before_any_lookup(self, mock_resolve, async_client):
-        with patch("routers.automations.integration_secret_store") as mock_store:
-            mock_store.put = AsyncMock()
+    async def test_rotate_failure_returns_503(self, async_client):
+        public_id = "pubabc123456"
+
+        with (
+            patch(
+                "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
+                AsyncMock(return_value={"id": "trig_internal_1", "publicId": public_id, "kind": "webhook"}),
+            ),
+            patch("routers.automations.get_admin_session_cookie", AsyncMock(return_value="s=1")),
+            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
+        ):
+            mock_admin = mock_client_cls.return_value
+            mock_admin.rotate_routine_trigger_secret = AsyncMock(side_effect=RuntimeError("upstream 500"))
+            response = await async_client.put(
+                f"/api/v1/automations/{public_id}/webhook-secret",
+                json={"webhook_secret": "whsec_abc123"},
+            )
+
+        assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_malformed_public_id_400s_before_any_lookup(self, async_client):
+        with patch(
+            "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
+            AsyncMock(),
+        ) as mock_lookup:
             response = await async_client.put(
                 "/api/v1/automations/not-alnum!/webhook-secret",
                 json={"webhook_secret": "whsec_abc123"},
             )
 
         assert response.status_code == 400
-        mock_resolve.assert_not_awaited()
-        mock_store.put.assert_not_called()
+        mock_lookup.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_admin_org_member_forbidden(self, async_client_org_member):
-        with patch("routers.automations.integration_secret_store") as mock_store:
-            mock_store.put = AsyncMock()
+        with patch(
+            "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",
+            AsyncMock(),
+        ) as mock_lookup:
             response = await async_client_org_member.put(
                 "/api/v1/automations/pubabc123456/webhook-secret",
                 json={"webhook_secret": "whsec_abc123"},
             )
         assert response.status_code == 403
-        mock_store.put.assert_not_called()
+        mock_lookup.assert_not_awaited()

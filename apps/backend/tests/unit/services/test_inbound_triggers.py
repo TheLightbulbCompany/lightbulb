@@ -13,16 +13,6 @@ import pytest
 from core.services.inbound_triggers import seed_trigger_routine
 
 
-@pytest.fixture(autouse=True)
-def mock_secret_put():
-    """Every seeded stripe_edge trigger writes a small durable record via
-    integration_secret_store.put — the stripe-edge-seeded marker. Autouse
-    keeps every OTHER test in this file off real boto3; tests that care about
-    the write itself take this fixture as an argument."""
-    with patch("core.services.inbound_triggers.integration_secret_store.put", AsyncMock(return_value="arn")) as m:
-        yield m
-
-
 def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1"):
     admin = MagicMock()
     admin.list_agents = AsyncMock(return_value=[{"id": friday_id, "role": "ceo"}])
@@ -44,7 +34,7 @@ def _env(admin, *, company_id="c_1", company_status="active"):
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_stripe_guided(mock_secret_put):
+async def test_seed_trigger_routine_stripe_guided():
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
@@ -57,35 +47,15 @@ async def test_seed_trigger_routine_stripe_guided(mock_secret_put):
     assert "invoice.payment_failed" in out["instructions"]
     assert out["proxy_url"] in out["instructions"]
 
-    # The stripe-edge-seeded marker — the ONLY thing PUT
-    # /automations/{public_id}/webhook-secret (routers/automations.py) may
-    # gate on, NOT Paperclip signingMode == "none" (also Phase 1's own
-    # deliberately-unsigned option). Written to the same Secrets Manager
-    # slot the whsec_ itself later occupies.
-    mock_secret_put.assert_awaited_once_with("owner_1", "stripe-trigger-pub_1", {"stripe_edge_seeded": True})
-
-
-@pytest.mark.asyncio
-async def test_seed_trigger_routine_stripe_marker_write_failure_rolls_back_routine(mock_secret_put):
-    """If the stripe-edge-seeded marker can't be written, the routine+trigger
-    already created upstream are an orphan the owner could never legitimately
-    arm (PUT would always 400 not_a_stripe_edge_trigger) — roll back like any
-    other post-creation failure."""
-    admin = _fake_admin(routine_id="rt_orphan_marker")
-    mock_secret_put.side_effect = RuntimeError("Secrets Manager throttled")
-    p_repo, p_cookie, p_client = _env(admin)
-    with p_repo, p_cookie, p_client, pytest.raises(RuntimeError, match="Secrets Manager throttled"):
-        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
-    admin.delete_routine.assert_awaited_once()
-    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_marker"
-
 
 @pytest.mark.asyncio
 async def test_seed_trigger_routine_builds_expected_bodies():
     """The routine and trigger bodies sent upstream — title/description carry
     the interpolated event label, the routine assigns to the resolved Friday
-    id, and the webhook trigger is armed with Paperclip signingMode "none"
-    (stripe_edge verifies at the Isol8 edge instead — see stripe_edge.py)."""
+    id, and the webhook trigger is armed with Paperclip's native
+    ``hmac_sha256`` signingMode straight from the registry (Stripe's exact
+    ``{t}.{body}`` scheme) — Paperclip verifies natively now, there is no
+    Isol8-side edge verification."""
     admin = _fake_admin(friday_id="friday_xyz")
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
@@ -101,9 +71,9 @@ async def test_seed_trigger_routine_builds_expected_bodies():
     assert trigger_call["routine_id"] == "rt_1"
     trigger_body = trigger_call["body"]
     assert trigger_body["kind"] == "webhook"
-    # Registry signing_mode "stripe_edge" must NOT reach Paperclip verbatim —
-    # it arms "none" because verification happens at the Isol8 edge instead.
-    assert trigger_body["signingMode"] == "none"
+    # inbound.signing_mode IS a native Paperclip signingMode, passed straight
+    # through — Stripe's registry entry declares "hmac_sha256".
+    assert trigger_body["signingMode"] == "hmac_sha256"
     assert trigger_body["replayWindowSec"] == 300
     assert trigger_body["label"] == "Stripe: Charge refunded"
 

@@ -2387,18 +2387,24 @@ class PaperclipAdminClient:
         *,
         session_cookie: str,
         trigger_id: str,
+        secret: str | None = None,
     ) -> dict:
         """Rotate a webhook trigger's signing secret. Returns the fresh
         ``{trigger, secretMaterial, ...}`` — the secret is shown to the
         operator exactly once.
 
         Maps to ``POST /api/routine-triggers/{triggerId}/rotate-secret``
-        upstream (paperclip/server/src/routes/routines.ts). The upstream
-        body is an empty object (``rotateRoutineTriggerSecretSchema``).
+        upstream (paperclip/server/src/routes/routines.ts,
+        ``rotateRoutineTriggerSecretSchema``). ``secret=None`` rotates to a
+        fresh RANDOM secret (the default). A ``secret`` value ARMS the trigger
+        with that exact value — used to arm a provider-imposed webhook secret
+        (a Stripe endpoint's ``whsec_``) so Paperclip verifies the provider's
+        native signature against it. Board-only upstream (the bootstrap-admin
+        session here is a board actor).
         """
         return await self._post(
             f"/api/routine-triggers/{trigger_id}/rotate-secret",
-            json={},
+            json={} if secret is None else {"secret": secret},
             session_cookie=session_cookie,
         )
 

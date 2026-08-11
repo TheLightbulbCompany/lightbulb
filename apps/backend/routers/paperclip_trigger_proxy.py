@@ -112,6 +112,7 @@ from core.services.credentials.stripe_edge import (
 )
 from core.services.credentials.stripe_edge import (
     WEBHOOK_SECRET_FIELD,
+    stripe_secret_cache_generation,
     stripe_trigger_secret_provider,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
@@ -188,6 +189,14 @@ async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
     _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (see the cache's module-level
     comment for why). Raises _StripeSecretStoreError (uncached) on a
     genuine store failure.
+
+    Write-during-read TOCTOU guard: the generation is captured BEFORE the
+    Secrets Manager call, and the result is only written into the cache if
+    the generation is still unchanged afterward. A concurrent
+    ``invalidate_stripe_secret_cache`` (the webhook-secret PUT, right after
+    its own store) bumps the generation, so a read that straddles that
+    write discards its own now-stale result instead of clobbering the
+    invalidate — see ``stripe_edge.py``'s module docstring.
     """
     key = (owner_id, public_id)
     cached = _STRIPE_SECRET_CACHE.get(key)
@@ -196,12 +205,14 @@ async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
         ttl = _STRIPE_SECRET_TTL_SECONDS if cached_secret is not None else _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
         if (time.monotonic() - cached_at) < ttl:
             return cached_secret
+    generation = stripe_secret_cache_generation(owner_id, public_id)
     try:
         cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
     except Exception as exc:  # noqa: BLE001 — any non-ResourceNotFound Secrets Manager failure
         raise _StripeSecretStoreError from exc
     secret = cred.get(WEBHOOK_SECRET_FIELD) if cred else None
-    _STRIPE_SECRET_CACHE[key] = (time.monotonic(), secret)
+    if stripe_secret_cache_generation(owner_id, public_id) == generation:
+        _STRIPE_SECRET_CACHE[key] = (time.monotonic(), secret)
     return secret
 
 
@@ -248,8 +259,9 @@ async def _lookup_trigger_detail(owner_id: str, public_id: str) -> dict | None:
     None if no such trigger exists there. The routines LIST omits publicId,
     so we fetch the detail of each routine that carries a webhook trigger.
     Shared by ``_lookup_binding`` (bool projection, used by the fire route's
-    hot path) and ``_resolve_trigger_signing_mode`` (used by the
-    webhook-secret PUT, ``routers/automations.py``, to also read signingMode)."""
+    hot path) and ``_resolve_trigger_binding`` (used by the webhook-secret
+    PUT, ``routers/automations.py``, to verify ownership before that
+    endpoint checks its own stripe-edge-seeded marker)."""
     company_id = await _company_id_for_owner(owner_id)
     if not company_id:
         return None
@@ -287,40 +299,6 @@ async def _resolve_trigger_binding(owner_id: str, public_id: str) -> bool:
     if found:
         _BINDING_CACHE[(owner_id, public_id)] = time.monotonic()
     return found
-
-
-async def _resolve_trigger_signing_mode(owner_id: str, public_id: str) -> tuple[bool, str | None]:
-    """Verify the owner↔trigger binding AND return the trigger's own
-    Paperclip ``signingMode`` in one lookup — used by the webhook-secret PUT
-    (``routers/automations.py``) to refuse arming a Stripe-edge whsec_ onto
-    a trigger that isn't ``signingMode: "none"``. Only a ``stripe_edge``
-    registry provider arms its trigger with Paperclip signingMode "none"
-    (verification happens at the Isol8 edge instead — see
-    ``core/services/credentials/stripe_edge.py``); a trigger already signed
-    some other way (``github_hmac``, or a Phase-1 hmac scheme) does not
-    need — and must never receive — a pasted Stripe whsec_, which would
-    otherwise silently brick it (the trigger would keep verifying its own
-    real scheme while the pasted secret is never consulted).
-
-    Returns ``(found, signing_mode)`` — ``found=False`` means no webhook
-    trigger with this publicId exists in the owner's company (caller
-    404s); ``signing_mode`` is only meaningful when ``found`` is True.
-    Raises on upstream failure, same as ``_resolve_trigger_binding``.
-    Retries once on an expired admin session. On a match, also populates
-    ``_BINDING_CACHE`` — the same positive-binding side effect
-    ``_resolve_trigger_binding`` has, so a subsequent fire on this trigger
-    skips a redundant resolve."""
-    try:
-        detail = await _lookup_trigger_detail(owner_id, public_id)
-    except PaperclipApiError as e:
-        if e.status_code != 401:
-            raise
-        invalidate_admin_session()
-        detail = await _lookup_trigger_detail(owner_id, public_id)
-    if detail is None:
-        return False, None
-    _BINDING_CACHE[(owner_id, public_id)] = time.monotonic()
-    return True, detail.get("signingMode")
 
 
 @router.post("/t/{owner_id}/{public_id}")

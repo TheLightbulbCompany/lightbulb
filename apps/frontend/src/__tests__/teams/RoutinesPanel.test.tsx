@@ -567,6 +567,50 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(mockMutate).toHaveBeenCalled();
   });
 
+  it("guided (Stripe): a whsec save failure renders inline in the finish dialog and stays retryable", async () => {
+    connectionsData = [connection()];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+      instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
+    });
+    mockAutomationsPut.mockRejectedValueOnce(new Error("Secret rejected by server"));
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+    await user.click(screen.getByText("Create"));
+    await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1");
+
+    const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
+    await user.type(secretField, "whsec_bad");
+    await user.click(screen.getByRole("button", { name: /save secret/i }));
+
+    // The failure is rendered INSIDE this finish dialog — previously it was
+    // swallowed into `err` state that only the earlier (now-unmounted) form
+    // step rendered, leaving the user stuck with no explanation and Done
+    // still disabled.
+    expect(
+      await screen.findByText(/secret rejected by server/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Secret saved.")).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeDisabled();
+
+    // Retryable: fixing the input and saving again succeeds and clears the
+    // error.
+    mockAutomationsPut.mockResolvedValueOnce({ status: "stored" });
+    await user.click(screen.getByRole("button", { name: /save secret/i }));
+    await waitFor(() => expect(mockAutomationsPut).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Secret saved.")).toBeInTheDocument();
+    expect(screen.queryByText(/secret rejected by server/i)).not.toBeInTheDocument();
+    expect(doneButton).toBeEnabled();
+  });
+
   it("auto (GitHub): shows a repo field before submit, sends {provider,event_id,repo}, and shows 'Registered'", async () => {
     connectionsData = [GITHUB];
     mockAutomationsPost.mockResolvedValue({

@@ -35,13 +35,21 @@ Before storing, it verifies two things about ``public_id``:
    independently) — but it's a webhook-secret write endpoint, it should
    confirm ownership like the proxy does, and a foreign/typo'd
    ``public_id`` should 404 instead of silently reporting success.
-2. The trigger's own Paperclip ``signingMode`` is ``"none"`` — the marker
-   every ``stripe_edge`` registry provider arms its trigger with (Stripe
-   edge verification happens at the Isol8 proxy instead of natively in
-   Paperclip). A trigger signed some other way (``github_hmac``, or a
-   Phase-1 hmac scheme) is rejected: pasting a Stripe whsec_ onto it would
-   silently brick it rather than arm anything, since that trigger's real
-   signing scheme is never consulted by this whsec_.
+2. The trigger was actually SEEDED as a ``stripe_edge`` trigger —
+   ``core.services.inbound_triggers.seed_trigger_routine`` writes a marker
+   into this trigger's Secrets Manager slot
+   (``core/services/credentials/stripe_edge.py``'s
+   ``STRIPE_EDGE_SEEDED_FIELD``) the instant it creates one, before the
+   owner has pasted anything back. This is NOT the same check as Paperclip
+   ``signingMode == "none"`` — that field is ALSO Phase 1's own
+   deliberately-unsigned, user-selectable webhook option
+   (``webhookSigning.ts``), so a legitimate unsigned Phase-1 trigger would
+   also read ``"none"`` and, gated that way, would incorrectly accept a
+   pasted Stripe whsec_ — which would then silently brick it: the trigger
+   would start being held to a ``Stripe-Signature`` header no real sender
+   of its will ever produce. Gating on the seed-time marker instead means
+   only a trigger this module itself armed as stripe_edge can ever accept
+   the paste.
 """
 
 from __future__ import annotations
@@ -109,11 +117,10 @@ async def set_webhook_secret(
     once the owner has the ``whsec_`` Stripe showed them).
 
     404s on a ``public_id`` that isn't a webhook trigger in the caller's own
-    company; 400s if it IS one but isn't a ``stripe_edge`` trigger (its
-    Paperclip ``signingMode`` isn't ``"none"``) — see the module docstring
-    for both. Invalidates the trigger proxy's cached lookup immediately
-    after the store — see the module docstring for why that ordering is
-    load-bearing.
+    company; 400s if it IS one but was never seeded as a ``stripe_edge``
+    trigger — see the module docstring for both. Invalidates the trigger
+    proxy's cached lookup immediately after the store — see the module
+    docstring for why that ordering is load-bearing.
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
@@ -124,16 +131,22 @@ async def set_webhook_secret(
         raise HTTPException(status_code=400, detail="invalid_public_id")
 
     try:
-        found, signing_mode = await paperclip_trigger_proxy._resolve_trigger_signing_mode(owner_id, public_id)
+        found = await paperclip_trigger_proxy._resolve_trigger_binding(owner_id, public_id)
     except Exception as exc:  # noqa: BLE001 — fail CLOSED on resolver trouble, same as the proxy
         logger.warning("automations: trigger binding resolve failed owner=%s err=%s", owner_id, exc)
         raise HTTPException(status_code=503, detail="trigger_resolution_unavailable") from exc
     if not found:
         raise HTTPException(status_code=404, detail="unknown_trigger")
-    if signing_mode != "none":
-        # Only stripe_edge triggers are armed with Paperclip signingMode
-        # "none" — a trigger signed some other way doesn't need, and must
-        # never receive, a pasted Stripe whsec_ (see module docstring).
+
+    # The stripe-edge-seeded gate — NOT Paperclip signingMode == "none",
+    # which is ALSO Phase 1's own deliberately-unsigned option and would let
+    # a legitimate unsigned trigger accept (and be bricked by) this paste.
+    # Presence at this Secrets Manager slot is unambiguous: nothing but
+    # seed_trigger_routine's seed-time marker or a previously-pasted whsec_
+    # ever writes here — see the module docstring and stripe_edge.py's
+    # STRIPE_EDGE_SEEDED_FIELD.
+    existing = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
+    if existing is None:
         raise HTTPException(status_code=400, detail="not_a_stripe_edge_trigger")
 
     await integration_secret_store.put(

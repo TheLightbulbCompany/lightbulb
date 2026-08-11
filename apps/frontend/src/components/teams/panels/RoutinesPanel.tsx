@@ -989,6 +989,7 @@ function CreateRoutineDialog({
   async function saveWebhookSecret() {
     if (!connResult || whsecInput.trim() === "") return;
     setWhsecSubmitting(true);
+    setErr(null);
     try {
       await automationsApi.put(
         `/automations/${connResult.trigger_public_id}/webhook-secret`,
@@ -1158,6 +1159,19 @@ function CreateRoutineDialog({
             <p className="text-sm" style={{ color: "var(--forest)" }}>
               Registered.
             </p>
+          )}
+          {err && (
+            <div
+              className="text-[var(--danger)] text-sm rounded px-3 py-2"
+              style={{
+                border:
+                  "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+                background:
+                  "color-mix(in srgb, var(--danger) 6%, transparent)",
+              }}
+            >
+              {err}
+            </div>
           )}
         </div>
       </EditorialDialog>

@@ -15,7 +15,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from core.services.inbound_triggers import seed_trigger_routine
+from core.services.inbound_triggers import cleanup_github_hook, seed_trigger_routine
+
+
+@pytest.fixture(autouse=True)
+def mock_secret_put():
+    """Every seeded trigger writes a small durable record via
+    integration_secret_store.put — the stripe-edge-seeded marker (stripe_edge
+    signing_mode) and the GitHub hook id/repo retention (auto registration).
+    Autouse keeps every OTHER test in this file off real boto3; tests that
+    care about the write itself take this fixture as an argument."""
+    with patch("core.services.inbound_triggers.integration_secret_store.put", AsyncMock(return_value="arn")) as m:
+        yield m
 
 
 def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1"):
@@ -44,7 +55,7 @@ def _env(admin, *, company_id="c_1", company_status="active"):
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_stripe_guided():
+async def test_seed_trigger_routine_stripe_guided(mock_secret_put):
     admin = _fake_admin()
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client:
@@ -56,6 +67,28 @@ async def test_seed_trigger_routine_stripe_guided():
     assert out["proxy_url"].endswith("/api/v1/hooks/t/owner_1/pub_1")
     assert "invoice.payment_failed" in out["instructions"]
     assert out["proxy_url"] in out["instructions"]
+
+    # The stripe-edge-seeded marker — the ONLY thing PUT
+    # /automations/{public_id}/webhook-secret (routers/automations.py) may
+    # gate on, NOT Paperclip signingMode == "none" (also Phase 1's own
+    # deliberately-unsigned option). Written to the same Secrets Manager
+    # slot the whsec_ itself later occupies.
+    mock_secret_put.assert_awaited_once_with("owner_1", "stripe-trigger-pub_1", {"stripe_edge_seeded": True})
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_stripe_marker_write_failure_rolls_back_routine(mock_secret_put):
+    """If the stripe-edge-seeded marker can't be written, the routine+trigger
+    already created upstream are an orphan the owner could never legitimately
+    arm (PUT would always 400 not_a_stripe_edge_trigger) — roll back like any
+    other post-creation failure."""
+    admin = _fake_admin(routine_id="rt_orphan_marker")
+    mock_secret_put.side_effect = RuntimeError("Secrets Manager throttled")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(RuntimeError, match="Secrets Manager throttled"):
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_marker"
 
 
 @pytest.mark.asyncio
@@ -193,7 +226,7 @@ def _github_token(token: str | None = "tok_gh"):
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_github_auto_registers_webhook():
+async def test_seed_trigger_routine_github_auto_registers_webhook(mock_secret_put):
     admin = _fake_admin(routine_id="rt_gh", public_id="pub_gh")
     p_repo, p_cookie, p_client = _env(admin)
     captured: dict = {}
@@ -216,6 +249,11 @@ async def test_seed_trigger_routine_github_auto_registers_webhook():
     # — see _auto_register_webhook's docstring for why (cross-firing routines).
     assert body["events"] == ["workflow_run"]
     admin.delete_routine.assert_not_awaited()
+
+    # The registered hook's id + repo are retained keyed by public_id, so a
+    # later routine/trigger delete can unregister it (cleanup_github_hook).
+    # _StubGitHubTransport's default response body is {"id": 123}.
+    mock_secret_put.assert_awaited_once_with("owner_1", "github-hook-pub_gh", {"hook_id": 123, "repo": "acme/widgets"})
 
 
 @pytest.mark.asyncio
@@ -311,3 +349,84 @@ async def test_seed_trigger_routine_github_api_error_rolls_back_routine():
         await seed_trigger_routine("owner_1", "github", "workflow_run", repo="acme/widgets")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_api"
+
+
+# ---------------------------------------------------------------------------
+# GitHub hook cleanup on delete (Codex P2 finding) — cleanup_github_hook
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cleanup_github_hook_noop_when_nothing_retained():
+    """A guided_paste (Stripe) trigger, a schedule trigger, or one predating
+    this retention never has a record at this slot — cleanup is a silent
+    no-op, never an error."""
+    with patch("core.services.inbound_triggers.integration_secret_store.get", AsyncMock(return_value=None)) as get:
+        await cleanup_github_hook("owner_1", "pub_1")
+    get.assert_awaited_once_with("owner_1", "github-hook-pub_1")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_github_hook_unregisters_and_clears_retention():
+    """A retained hook is unregistered via DELETE /repos/{repo}/hooks/{id}
+    using the owner's stored GitHub token, and the retention record is
+    dropped afterward."""
+    captured: dict = {}
+
+    class _Transport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            return httpx.Response(204)
+
+    async def _get(owner_id: str, provider: str):
+        if provider == "github-hook-pub_1":
+            return {"hook_id": 42, "repo": "acme/widgets"}
+        assert provider == "github"
+        return {"access_token": "tok_gh"}
+
+    delete_mock = AsyncMock()
+    with (
+        patch("core.services.inbound_triggers.integration_secret_store.get", AsyncMock(side_effect=_get)),
+        patch("core.services.inbound_triggers.integration_secret_store.delete", delete_mock),
+        patch(
+            "core.services.inbound_triggers._github_client_factory", lambda: httpx.AsyncClient(transport=_Transport())
+        ),
+    ):
+        await cleanup_github_hook("owner_1", "pub_1")
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == "https://api.github.com/repos/acme/widgets/hooks/42"
+    assert captured["headers"]["authorization"] == "Bearer tok_gh"
+    delete_mock.assert_awaited_once_with("owner_1", "github-hook-pub_1")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_github_hook_swallows_github_failure_and_still_clears_retention():
+    """A GitHub-side failure (expired token, repo renamed/deleted, hook
+    already gone) must never raise — it's cleanup running ahead of an
+    already-decided delete. The retention record is dropped regardless,
+    since this is best-effort, not a retryable job."""
+
+    class _FailTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("boom")
+
+    async def _get(owner_id: str, provider: str):
+        if provider == "github-hook-pub_1":
+            return {"hook_id": 42, "repo": "acme/widgets"}
+        return {"access_token": "tok_gh"}
+
+    delete_mock = AsyncMock()
+    with (
+        patch("core.services.inbound_triggers.integration_secret_store.get", AsyncMock(side_effect=_get)),
+        patch("core.services.inbound_triggers.integration_secret_store.delete", delete_mock),
+        patch(
+            "core.services.inbound_triggers._github_client_factory",
+            lambda: httpx.AsyncClient(transport=_FailTransport()),
+        ),
+    ):
+        await cleanup_github_hook("owner_1", "pub_1")  # must not raise
+
+    delete_mock.assert_awaited_once_with("owner_1", "github-hook-pub_1")

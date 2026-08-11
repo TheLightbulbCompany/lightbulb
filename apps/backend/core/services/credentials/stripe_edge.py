@@ -29,9 +29,38 @@ invalidate is local to the task that served the write, so a sibling task's
 stale "nothing stored" verdict is bounded by the 60s negative TTL instead
 of the hour-long positive one — never unbounded. The proxy module imports
 this same dict by reference (not a copy), so both sides see one cache.
+
+**Write-during-read TOCTOU.** A cache-miss read of Secrets Manager can
+start BEFORE a concurrent ``put()`` + ``invalidate_stripe_secret_cache()``
+(the webhook-secret PUT) and complete AFTER it — the read's own (now-stale)
+result would then unconditionally overwrite the cache, silently restoring
+the pre-write "nothing stored" verdict the invalidate just cleared, for up
+to the negative TTL. ``_STRIPE_SECRET_CACHE_GENERATION`` closes this: every
+invalidate bumps the target key's generation, and a reader captures the
+generation BEFORE issuing its Secrets Manager call and only commits its
+result to the cache if the generation is UNCHANGED when the call returns —
+otherwise it discards its own stale read (the cache stays as the
+invalidate left it, and the NEXT read re-fetches for real). See
+``stripe_secret_cache_generation`` and the reader in
+``paperclip_trigger_proxy._stripe_trigger_secret``.
 """
 
 WEBHOOK_SECRET_FIELD = "webhook_secret"
+
+# Written by ``core.services.inbound_triggers.seed_trigger_routine`` into
+# THIS SAME per-trigger Secrets Manager slot (``stripe_trigger_secret_provider``)
+# the instant a stripe_edge trigger is created — before the owner has pasted
+# anything back. Its only job is presence: ``PUT
+# /automations/{public_id}/webhook-secret`` (``routers/automations.py``) gates
+# on "does ANY record exist at this slot" rather than on Paperclip's
+# signingMode == "none", because "none" is ALSO Phase 1's own deliberately-
+# unsigned, user-selectable option (``webhookSigning.ts``) — gating on
+# signingMode alone would let that PUT arm (and thereby brick, by making it
+# demand a Stripe-Signature header it will never receive) a trigger no Stripe
+# integration will ever sign for. Nothing else ever writes to this slot, so
+# presence — this marker, or an already-pasted whsec_ that later overwrote it
+# — is an unambiguous "this trigger was seeded stripe_edge" signal.
+STRIPE_EDGE_SEEDED_FIELD = "stripe_edge_seeded"
 
 # TTL for a POSITIVE cached (owner_id, public_id) -> whsec_ lookup. See the
 # module docstring — every trigger fire of every kind hits this cache, so an
@@ -45,6 +74,20 @@ STRIPE_SECRET_TTL_SECONDS = 3600
 STRIPE_SECRET_NEGATIVE_TTL_SECONDS = 60
 
 STRIPE_SECRET_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
+
+# Per-key monotonic counter, bumped by every ``invalidate_stripe_secret_cache``
+# call. Lets a cache-miss reader detect a write that raced ahead of it and
+# discard its own now-stale result instead of caching it — see the module
+# docstring's "Write-during-read TOCTOU" section.
+_STRIPE_SECRET_CACHE_GENERATION: dict[tuple[str, str], int] = {}
+
+
+def stripe_secret_cache_generation(owner_id: str, public_id: str) -> int:
+    """Current generation for one trigger's cached whsec_ lookup. A reader
+    must capture this BEFORE issuing its Secrets Manager call, and only
+    write its result into ``STRIPE_SECRET_CACHE`` if this is still the same
+    value afterward — see ``invalidate_stripe_secret_cache``."""
+    return _STRIPE_SECRET_CACHE_GENERATION.get((owner_id, public_id), 0)
 
 
 def stripe_trigger_secret_provider(public_id: str) -> str:
@@ -64,5 +107,14 @@ def invalidate_stripe_secret_cache(owner_id: str, public_id: str) -> None:
     ``STRIPE_SECRET_NEGATIVE_TTL_SECONDS`` (a stale "nothing stored") on
     whichever task's cache still holds it. A pop of an absent key is a
     no-op, so this is safe to call unconditionally.
+
+    Also bumps the key's generation counter — see the module docstring's
+    "Write-during-read TOCTOU" section. This must happen even when the pop
+    above is a no-op: a concurrent read may not have written its (stale)
+    result into the cache YET, and the generation bump is what makes that
+    still-in-flight write discard itself instead of re-creating the entry
+    this call just cleared.
     """
-    STRIPE_SECRET_CACHE.pop((owner_id, public_id), None)
+    key = (owner_id, public_id)
+    _STRIPE_SECRET_CACHE_GENERATION[key] = _STRIPE_SECRET_CACHE_GENERATION.get(key, 0) + 1
+    STRIPE_SECRET_CACHE.pop(key, None)

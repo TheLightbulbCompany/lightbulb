@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends
 
 from core.repositories import billing_repo
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
+from core.services.inbound_triggers import cleanup_github_hook
 
 from . import agents as _agents
 from ._guards import require_always_on_entitlement, require_trial_runway
@@ -52,6 +53,42 @@ async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
         logger.warning("nightly-CEO routine lookup failed for routine=%s", routine_id, exc_info=True)
         return False
     return isinstance(routine, dict) and routine.get("title") == NIGHTLY_CEO_ROUTINE_TITLE
+
+
+async def _cleanup_github_hooks(ctx: TeamsContext, routine_id: str, *, only_trigger_id: str | None = None) -> None:
+    """Best-effort: unregister any GitHub webhook hook(s) auto-registration
+    retained for this routine's webhook trigger(s)
+    (``core.services.inbound_triggers.cleanup_github_hook``) — a
+    routine/trigger delete must not leave a live GitHub webhook delivering
+    to a dead proxy forever.
+
+    Looked up via ``get_routine`` — the only projection whose trigger rows
+    carry ``publicId`` (``list_routines``' don't; see
+    ``paperclip_admin_client.py``), which is what the retained hook record
+    is keyed by, not Paperclip's internal trigger id. A lookup failure is
+    logged and swallowed, never a reason to block the delete it runs ahead
+    of — same posture as ``_is_nightly_ceo_routine``.
+
+    ``only_trigger_id`` scopes cleanup to a single trigger (the
+    delete-one-trigger path); left ``None``, every trigger on the routine is
+    cleaned up (the delete-whole-routine path, called BEFORE the routine
+    itself is deleted so this lookup still resolves).
+    """
+    try:
+        routine = await _agents._admin().get_routine(
+            routine_id=routine_id,
+            session_cookie=ctx.session_cookie,
+        )
+    except Exception:  # noqa: BLE001 — never block a delete on a lookup failure
+        logger.warning("github hook cleanup: get_routine failed for routine=%s", routine_id, exc_info=True)
+        return
+    triggers = routine.get("triggers") if isinstance(routine, dict) else None
+    for trig in triggers or []:
+        if only_trigger_id is not None and trig.get("id") != only_trigger_id:
+            continue
+        public_id = trig.get("publicId")
+        if public_id:
+            await cleanup_github_hook(ctx.owner_id, public_id)
 
 
 # ---- Routines ---------------------------------------------------------
@@ -222,6 +259,12 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
     the opt-out permanently. Writing first means a flag failure aborts before
     the routine vanishes (retry stays possible), and a flag set for a routine
     whose delete then fails only ever errs toward NOT re-arming.
+
+    GitHub hook cleanup: also unregisters (best-effort) any GitHub webhook
+    hook auto-registration created for any of this routine's triggers — see
+    ``_cleanup_github_hooks``. Looked up BEFORE the destructive delete, same
+    reasoning as the nightly-CEO identity read above (the lookup can't
+    resolve a routine that's already gone).
     """
     is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
     if is_nightly:
@@ -229,6 +272,7 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
         # best-effort (see docstring). A silent failure would let a later
         # reprovision re-create the routine the owner deleted.
         await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+    await _cleanup_github_hooks(ctx, routine_id)
     result = await _agents._admin().delete_routine(
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
@@ -386,8 +430,14 @@ async def delete_routine_trigger(
     would silently re-arm the loop. The routine row survives a trigger delete, so
     identity stays resolvable and the flag is written AFTER the delete succeeds
     (durable / propagated on this stop direction).
+
+    GitHub hook cleanup: also unregisters (best-effort) any GitHub webhook
+    hook auto-registration created for THIS trigger — see
+    ``_cleanup_github_hooks``. Looked up BEFORE the delete, same reasoning
+    as ``delete_routine``'s.
     """
     is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    await _cleanup_github_hooks(ctx, routine_id, only_trigger_id=trigger_id)
     result = await _agents._admin().delete_routine_trigger(
         trigger_id=trigger_id,
         session_cookie=ctx.session_cookie,

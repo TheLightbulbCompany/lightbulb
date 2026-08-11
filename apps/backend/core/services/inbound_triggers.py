@@ -15,15 +15,24 @@ Two ``inbound.webhook_registration`` shapes:
     the ``whsec_`` it hands back via ``PUT /automations/{public_id}/webhook-
     secret`` (``routers/automations.py``) — THAT write is what actually arms
     Stripe-edge verification in ``routers/paperclip_trigger_proxy.py``. This
-    module never touches that secret store; it only creates the routine +
-    trigger and returns the URL + copy.
+    module never stores that secret itself, but for any ``signing_mode:
+    "stripe_edge"`` provider it DOES mark the trigger as stripe-edge-seeded
+    the instant it's created (see ``core/services/credentials/stripe_edge.py``'s
+    ``STRIPE_EDGE_SEEDED_FIELD``) — that marker, not Paperclip's own
+    ``signingMode``, is what the webhook-secret PUT gates on, so a
+    deliberately-unsigned Phase 1 trigger (also ``signingMode: "none"``)
+    can never be bricked by an errant paste.
   - ``"auto"`` (GitHub) — Isol8 registers the webhook itself via the
     provider's own API (``_auto_register_webhook``, ``POST
     /repos/{repo}/hooks``) using the owner's stored GitHub token, so there is
     no owner paste step at all. If registration fails (missing repo, no
     token, GitHub API error), the routine+trigger already created upstream
     are rolled back — see ``_auto_register_webhook``'s docstring — so a
-    failed GitHub setup never leaves an orphaned, unreachable routine.
+    failed GitHub setup never leaves an orphaned, unreachable routine. On
+    success, the registered hook's id + repo are retained (best-effort,
+    keyed by the trigger's ``public_id`` — see ``cleanup_github_hook``) so
+    deleting the routine/trigger later can unregister it instead of leaving
+    a live GitHub webhook delivering to a dead proxy forever.
 """
 
 from __future__ import annotations
@@ -38,6 +47,7 @@ from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_routine_provisioning import _build_routine_body
 from core.services.credentials import integration_secret_store, registry
+from core.services.credentials.stripe_edge import STRIPE_EDGE_SEEDED_FIELD, stripe_trigger_secret_provider
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
@@ -113,6 +123,57 @@ def _github_client_factory() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=15.0)
 
 
+def _github_hook_provider(public_id: str) -> str:
+    """The ``integration_secret_store`` ``provider`` slot for one
+    auto-registered GitHub webhook's retained ``{hook_id, repo}`` — written
+    by ``_auto_register_webhook`` right after a successful registration,
+    read (and cleared) by ``cleanup_github_hook``. Hyphenated, not
+    colon-joined — Secrets Manager names only allow ``/_+=.@-`` (same
+    convention as ``stripe_edge.stripe_trigger_secret_provider``)."""
+    return f"github-hook-{public_id}"
+
+
+async def cleanup_github_hook(owner_id: str, public_id: str) -> None:
+    """Best-effort: unregister the GitHub webhook hook ``_auto_register_webhook``
+    created for this trigger, so deleting the routine/trigger (the Isol8 BFF's
+    ``routers/teams/work.py`` delete handlers) doesn't leave a live GitHub
+    webhook delivering to a dead proxy forever.
+
+    No-op if nothing was retained for this ``public_id`` — a guided_paste
+    (Stripe) trigger, a schedule trigger, or a github_hmac trigger whose
+    hook was already cleaned up. Never raises: a webhook-unregister failure
+    (expired/revoked token, repo renamed or deleted, hook already gone)
+    must never block the delete it's running ahead of — only logged. The
+    retained record is dropped either way once cleanup has been attempted;
+    this is a best-effort action, not a retryable job.
+    """
+    record = await integration_secret_store.get(owner_id, _github_hook_provider(public_id))
+    if not record:
+        return
+    repo = record.get("repo")
+    hook_id = record.get("hook_id")
+    try:
+        if repo and hook_id:
+            credential = await integration_secret_store.get(owner_id, "github")
+            token = (credential or {}).get("token") or (credential or {}).get("access_token")
+            if token:
+                async with _github_client_factory() as http:
+                    await http.delete(
+                        f"{_GITHUB_API_BASE}/repos/{repo}/hooks/{hook_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+    except Exception:
+        logger.warning(
+            "inbound_triggers: GitHub hook cleanup failed repo=%s hook_id=%s owner=%s",
+            repo,
+            hook_id,
+            owner_id,
+            exc_info=True,
+        )
+    finally:
+        await integration_secret_store.delete(owner_id, _github_hook_provider(public_id))
+
+
 async def _auto_register_webhook(
     *,
     owner_id: str,
@@ -121,6 +182,7 @@ async def _auto_register_webhook(
     proxy_url: str,
     trigger_secret: str | None,
     event_id: str,
+    public_id: str,
 ) -> None:
     """Seam for the ``webhook_registration: "auto"`` branch (GitHub, Task 4):
     register the webhook with the provider's own API so it starts sending
@@ -154,6 +216,11 @@ async def _auto_register_webhook(
     treats that uniformly as "roll back the routine+trigger we just
     created and surface a clear error", so there is no reason to
     distinguish a caller mistake from an upstream failure here.
+
+    On success, retains the registered hook's id + ``repo`` under
+    ``public_id`` (best-effort — see ``cleanup_github_hook``) so a later
+    routine/trigger delete can unregister this hook instead of leaving it
+    live forever.
     """
     if not repo:
         raise ValueError(f"{provider_key!r} requires a repo to auto-register a webhook")
@@ -188,6 +255,25 @@ async def _auto_register_webhook(
         raise ValueError(
             f"GitHub webhook registration failed for repo={repo!r}: {exc.response.status_code} {exc.response.text}"
         ) from exc
+
+    # Retain {hook_id, repo} for cleanup_github_hook — best-effort: the
+    # registration above already succeeded and the hook is now actually
+    # live, so a retention-write failure must not roll back a webhook GitHub
+    # has already armed (it just means a future delete won't find anything
+    # to unregister, same as a pre-retention trigger).
+    try:
+        hook_id = resp.json().get("id")
+        if hook_id is not None:
+            await integration_secret_store.put(
+                owner_id, _github_hook_provider(public_id), {"hook_id": hook_id, "repo": repo}
+            )
+    except Exception:
+        logger.warning(
+            "inbound_triggers: failed to retain GitHub hook id for later cleanup, repo=%s owner=%s",
+            repo,
+            owner_id,
+            exc_info=True,
+        )
 
 
 async def seed_trigger_routine(
@@ -290,6 +376,29 @@ async def seed_trigger_routine(
 
         proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
 
+        if inbound.signing_mode == "stripe_edge":
+            # Mark this trigger as stripe-edge-seeded BEFORE returning — the
+            # ONLY thing PUT /automations/{public_id}/webhook-secret
+            # (routers/automations.py) may gate on. Paperclip signingMode
+            # "none" is NOT a safe substitute: it's also Phase 1's own
+            # deliberately-unsigned option, so gating on signingMode alone
+            # would let a legitimate unsigned trigger accept (and be
+            # bricked by) a pasted Stripe whsec_ later. Written to the SAME
+            # per-trigger Secrets Manager slot the whsec_ itself later
+            # occupies — see stripe_edge.STRIPE_EDGE_SEEDED_FIELD. Failure
+            # here rolls back like any other post-creation step: a trigger
+            # the owner can never legitimately arm is the same orphan shape
+            # as a failed trigger-create.
+            try:
+                await integration_secret_store.put(
+                    owner_id, stripe_trigger_secret_provider(public_id), {STRIPE_EDGE_SEEDED_FIELD: True}
+                )
+            except Exception:
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+
         if inbound.webhook_registration == "guided_paste":
             logger.info(
                 "inbound_triggers: seeded guided_paste routine=%s trigger=%s owner=%s provider=%s event=%s",
@@ -328,6 +437,7 @@ async def seed_trigger_routine(
                     proxy_url=proxy_url,
                     trigger_secret=trigger_secret,
                     event_id=event_id,
+                    public_id=public_id,
                 )
             except Exception as exc:
                 # The routine + webhook trigger both already exist upstream at

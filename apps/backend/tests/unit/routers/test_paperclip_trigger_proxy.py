@@ -27,17 +27,21 @@ SIBLING_ID = "fedcba987654fedcba987654"
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     """Rate buckets live in hooks_proxy module state (shared helper), and
-    the binding + Stripe-whsec caches in the trigger router — all must
-    start empty or tests pollute their neighbours."""
+    the binding + Stripe-whsec caches (plus its TOCTOU generation counters)
+    in the trigger router — all must start empty or tests pollute their
+    neighbours."""
+    from core.services.credentials.stripe_edge import _STRIPE_SECRET_CACHE_GENERATION
     from routers import hooks_proxy, paperclip_trigger_proxy
 
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
     paperclip_trigger_proxy._STRIPE_SECRET_CACHE.clear()
+    _STRIPE_SECRET_CACHE_GENERATION.clear()
     yield
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
     paperclip_trigger_proxy._STRIPE_SECRET_CACHE.clear()
+    _STRIPE_SECRET_CACHE_GENERATION.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -626,6 +630,50 @@ async def test_negative_cache_expires_after_short_ttl_positive_persists_to_long_
         result = await _stripe_trigger_secret(owner_id, public_id)
     assert result == "whsec_cached"
     get_mock2.assert_not_awaited()  # cache hit — no re-fetch
+
+
+async def test_toctou_write_during_read_does_not_recache_stale_value():
+    """P1 regression: a cache-miss read's Secrets Manager call can start
+    BEFORE a concurrent PUT /webhook-secret's store()+invalidate() and
+    complete AFTER it. Without the generation guard, the read's own
+    now-stale result (what it saw before the write landed) would
+    unconditionally overwrite the cache, silently restoring the exact
+    "nothing stored" verdict the invalidate just cleared — reopening the
+    fail-open window the invalidate exists to close."""
+    from core.services.credentials.stripe_edge import STRIPE_SECRET_CACHE, invalidate_stripe_secret_cache
+    from routers.paperclip_trigger_proxy import _stripe_trigger_secret
+
+    owner_id, public_id = "u_1", PUBLIC_ID
+
+    async def _stale_get(*args, **kwargs):
+        # Simulate the concurrent write racing ahead of this read: a store()
+        # + invalidate() for the SAME key lands while this read's own
+        # Secrets Manager call is still in flight.
+        invalidate_stripe_secret_cache(owner_id, public_id)
+        return None  # what THIS read saw before the write — now stale
+
+    with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", AsyncMock(side_effect=_stale_get)):
+        result = await _stripe_trigger_secret(owner_id, public_id)
+
+    # The in-flight caller still gets its own (stale) read result...
+    assert result is None
+    # ...but it must never have cached it — the invalidate wins, and the
+    # NEXT fire re-fetches for real instead of reusing this stale verdict.
+    assert (owner_id, public_id) not in STRIPE_SECRET_CACHE
+
+
+async def test_toctou_write_before_read_starts_is_cached_normally():
+    """Sanity check the guard isn't overzealous: an ordinary read with no
+    concurrent write in flight still caches its result as usual."""
+    from core.services.credentials.stripe_edge import STRIPE_SECRET_CACHE
+    from routers.paperclip_trigger_proxy import _stripe_trigger_secret
+
+    owner_id, public_id = "u_1", PUBLIC_ID
+    get_mock = AsyncMock(return_value={"webhook_secret": "whsec_fresh"})
+    with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock):
+        result = await _stripe_trigger_secret(owner_id, public_id)
+    assert result == "whsec_fresh"
+    assert STRIPE_SECRET_CACHE[(owner_id, public_id)][1] == "whsec_fresh"
 
 
 def test_stripe_secret_store_error_returns_503_not_500_and_is_not_cached(client):

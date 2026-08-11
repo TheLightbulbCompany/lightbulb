@@ -51,13 +51,17 @@ shared ARN passed there):
     aws ecs update-service --cluster <cluster-arn> \
         --service isol8-{env}-paperclip-server --force-new-deployment \
         --profile isol8-admin --region us-east-1
-    # update-service only STARTS the rollout (old + new tasks overlap, and the
-    # circuit breaker can roll back), so WAIT for it to stabilize before trusting
-    # the audit — otherwise the compromised task may still be running / rolled back:
+    # update-service only STARTS the rollout (old + new tasks overlap). `wait
+    # services-stable` is necessary but NOT sufficient — it also succeeds after a
+    # circuit-breaker ROLLBACK, which leaves the OLD compromised task running:
     aws ecs wait services-stable --cluster <cluster-arn> \
         --services isol8-{env}-paperclip-server --profile isol8-admin --region us-east-1
 
-Then re-run the dry-run audit to confirm clean.
+Follow the RUNBOOK's deployment-verification procedure (apps/infra/paperclip/RUNBOOK.md:
+inspect the new deployment's ``rolloutState`` == COMPLETED and confirm the
+pre-deployment task ARNs have STOPPED — a rollback leaves them alive). Only once
+the forced deployment is confirmed complete should you re-run the dry-run audit to
+confirm clean.
 
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod --apply

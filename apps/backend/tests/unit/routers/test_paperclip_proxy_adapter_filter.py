@@ -289,6 +289,8 @@ def test_resubmit_without_payload_passes():
         "api/companies/c1/agents?ignored",  # %3F decoded -> httpx reparses as ?query
         "api/companies/c1/agents#frag",  # %23 decoded
         "api/companies/c1/agents%2fextra",  # stray percent
+        "api/companies/c1/x/../agents",  # %2e%2e decoded -> httpx normalizes to /agents
+        "api/companies/c1/./agents",  # single dot segment
     ],
 )
 def test_decoded_delimiters_in_path_are_rejected(path):

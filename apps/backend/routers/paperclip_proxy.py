@@ -501,12 +501,13 @@ def _assert_paperclip_request_allowed(
     p = path.lstrip("/").lower()
     method = method.upper()
 
-    # Reject decoded URL delimiters / stray percent signs. ``agents%3Fignored``
-    # decodes to ``agents?ignored`` (misses the anchored create regex), but
-    # ``upstream_url = f"/{path}"`` is re-parsed by httpx, which treats
-    # ``?ignored`` as a query string so Paperclip sees the bare ``/agents``
-    # create route. Legit Teams paths never contain these.
-    if any(c in p for c in ("?", "#", "%")):
+    # Reject decoded URL delimiters, stray percent signs, and dot segments.
+    # ``agents%3Fignored`` decodes to ``agents?ignored`` (misses the anchored
+    # create regex) but httpx re-parses ``?ignored`` as a query string; and
+    # ``x/%2e%2e/agents`` decodes to ``x/../agents`` which httpx normalizes to
+    # ``/agents`` when merging with base_url — either way Paperclip sees the bare
+    # create route (→ process default). Legit Teams paths never contain these.
+    if any(c in p for c in ("?", "#", "%")) or any(seg in (".", "..") for seg in p.split("/")):
         raise HTTPException(status_code=403, detail="Malformed path")
 
     for methods, pattern in _BLOCKED_ROUTES:

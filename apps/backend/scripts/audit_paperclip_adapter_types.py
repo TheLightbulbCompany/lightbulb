@@ -56,10 +56,13 @@ import boto3
 ACCOUNT_ID = "877352799272"
 REGION = "us-east-1"
 
-# The only host-SAFE adapters: both are remote gateways (the agent runs in the
-# tenant's own container / Hermes install, never on the Paperclip host).
-SAFE_ADAPTER_TYPES = frozenset({"openclaw_gateway", "hermes_gateway"})
-_SAFE_SQL = "('openclaw_gateway', 'hermes_gateway')"
+# Match the deployed proxy fence (#1673) EXACTLY: it allows only openclaw_gateway.
+# hermes_gateway is host-safe in principle, but the fence rejects it (Isol8 is
+# OpenClaw-only) and a PRE-fence Hermes row could carry an attacker-controlled
+# gateway URL the fence would never have accepted — so it is dangerous here too.
+# §3.6 covers every non-OpenClaw row; keep this in lockstep with the fence.
+SAFE_ADAPTER_TYPES = frozenset({"openclaw_gateway"})
+_SAFE_SQL = "('openclaw_gateway')"
 
 
 def is_dangerous(adapter_type: str | None) -> bool:

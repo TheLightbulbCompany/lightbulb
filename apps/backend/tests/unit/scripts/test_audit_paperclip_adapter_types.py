@@ -13,13 +13,18 @@ from scripts.audit_paperclip_adapter_types import (
 )
 
 
-@pytest.mark.parametrize("adapter", ["openclaw_gateway", "hermes_gateway"])
-def test_gateway_adapters_are_safe(adapter):
-    assert not is_dangerous(adapter)
+def test_only_openclaw_gateway_is_safe():
+    # Matches the deployed fence's single-type allowlist.
+    assert not is_dangerous("openclaw_gateway")
 
 
-@pytest.mark.parametrize("adapter", ["process", "http", "claude_local", "codex_local", "cursor", None])
-def test_host_exec_and_null_adapters_are_dangerous(adapter):
+@pytest.mark.parametrize(
+    "adapter",
+    ["process", "http", "claude_local", "codex_local", "cursor", "hermes_gateway", None],
+)
+def test_host_exec_hermes_and_null_adapters_are_dangerous(adapter):
+    # hermes_gateway is dangerous HERE: the fence rejects it and a pre-fence Hermes
+    # config could carry an attacker gateway URL.
     assert is_dangerous(adapter)
 
 
@@ -31,7 +36,7 @@ def test_classify_agents_flags_only_dangerous_and_is_remediable():
         {"id": "a4", "company_id": "c2", "name": "shell", "adapter_type": None},
     ]
     found = classify_agents(rows)
-    assert {f.row_id for f in found} == {"a2", "a4"}
+    assert {f.row_id for f in found} == {"a2", "a3", "a4"}  # hermes now flagged too
     assert all(f.remediable for f in found)  # wakeup can't be blocked -> we quarantine
 
 

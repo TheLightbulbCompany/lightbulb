@@ -328,3 +328,31 @@ async def test_handoff_start_failure_leaves_row_for_branch_a(monkeypatch, sfn):
     await asyncio.sleep(0)
     await provision_dispatch.handoff_inflight_provisions()  # must not raise
     release.assert_not_awaited()
+
+
+async def test_inline_timeout_terminates_and_hands_to_sfn(monkeypatch, sfn):
+    # The state machine bounds every attempt at 30 min (taskTimeout); attempt 0
+    # gets the same ceiling. On expiry: child cancelled (terminated), claim
+    # handed to the machine, row untouched.
+    monkeypatch.setattr(provision_dispatch, "_INLINE_ATTEMPT_TIMEOUT_S", 0.05)
+    cancelled = asyncio.Event()
+
+    async def wedged_runner(owner_id, claim_id):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return 0
+
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", wedged_runner)
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
+    await _await_inline("user_abc")
+    assert cancelled.is_set()
+    kwargs = sfn.start_execution.call_args.kwargs
+    assert kwargs["name"] == provision_dispatch.execution_name("user_abc", "claimuuid-1234")
+    assert kwargs["input"] == provision_dispatch.execution_input("user_abc", "claimuuid-1234")
+    release.assert_not_awaited()
+    assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS

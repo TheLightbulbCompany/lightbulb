@@ -198,6 +198,15 @@ _INLINE_ATTEMPTS: dict[str, tuple[str, asyncio.Task]] = {}
 # semaphore; raise alongside the task size if signup bursts ever exceed it.
 _INLINE_CONCURRENCY = asyncio.Semaphore(4)
 
+# The state machine bounds every attempt with taskTimeout (30 min,
+# service-stack.ts RunProvisioner). The runner's wait loop is deliberately
+# unbounded and relies on that outer bound, so attempt 0 needs the SAME
+# per-attempt ceiling — without it, a wedged box (deployment never FAILED,
+# gateway never healthy) would hold its semaphore slot and suppress the SFN
+# handoff forever. On expiry the child is terminated and the claim handed to
+# the machine.
+_INLINE_ATTEMPT_TIMEOUT_S = 30 * 60
+
 
 def inline_attempt_token(claim_id: str) -> str:
     # DISTINCT from the SFN's attempt-0 token (claim_id itself) so an SFN
@@ -254,7 +263,23 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
     bind_log_context(user_id=owner_id)
     try:
         async with _INLINE_CONCURRENCY:
-            code = await _runner_subprocess(owner_id, claim_id)
+            try:
+                # The timeout wraps only the attempt itself, never the
+                # semaphore queue wait — a queued signup does not burn budget.
+                code = await asyncio.wait_for(_runner_subprocess(owner_id, claim_id), timeout=_INLINE_ATTEMPT_TIMEOUT_S)
+            except TimeoutError:
+                # wait_for has cancelled the attempt (terminating the child)
+                # — hand the claim to the state machine, exactly like the
+                # shutdown handoff.
+                outcome = await _start(owner_id, claim_id)
+                emit_provision_metric("inline_timeout")
+                logger.error(
+                    "inline provision attempt for owner %s exceeded %ss — handed to SFN (outcome=%s)",
+                    owner_id,
+                    _INLINE_ATTEMPT_TIMEOUT_S,
+                    outcome,
+                )
+                return
         if code == 0:
             emit_provision_metric("inline_ok")
         else:

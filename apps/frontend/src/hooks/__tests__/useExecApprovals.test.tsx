@@ -357,79 +357,117 @@ describe("useExecApprovals — auto-prune timing (cross-clock safety)", () => {
     sendReqMock = vi.fn();
   });
 
-  it("does NOT immediately prune an exec approval when the browser clock runs ahead of the container", () => {
-    // Regression: the auto-prune delay used to be `expiresAtMs - Date.now()`,
-    // subtracting the BROWSER clock from the CONTAINER-stamped expiresAtMs. A
-    // browser running ahead makes expiresAtMs look already-past, clamping the
-    // delay to 0 and pruning a still-valid approval on the next tick. Exec
-    // events carry no server createdAtMs, so the fix floors the delay.
+  function emitExec(id: string, createdAtMs: number, expiresAtMs: number) {
+    for (const h of eventHandlers) {
+      h("exec.approval.requested", {
+        id,
+        request: {
+          command: "ls",
+          host: "gateway",
+          sessionKey: "agent:agent_x:user_test",
+          allowedDecisions: ["allow-once", "deny"],
+        },
+        createdAtMs,
+        expiresAtMs,
+      });
+    }
+  }
+  function emitPluginLife(id: string, createdAtMs: number, expiresAtMs: number) {
+    for (const h of eventHandlers) {
+      h("plugin.approval.requested", {
+        id,
+        request: {
+          pluginId: "plugin:slack",
+          title: "Send Slack message",
+          agentId: "agent_x",
+          sessionKey: "agent:agent_x:user_test",
+          allowedDecisions: ["allow-once", "deny"],
+        },
+        createdAtMs,
+        expiresAtMs,
+      });
+    }
+  }
+
+  it("does NOT prune early when the browser clock runs ahead of the container (T-2)", () => {
+    // Container clock is 90s BEHIND this browser. A 20s-lifetime approval then
+    // looks 70s past to the browser. The old `max(0, expiresAtMs - Date.now())`
+    // would clamp to 0 and vanish the live card immediately; the skew tolerance
+    // (2 min > 90s) keeps it for its full 20s lifetime.
     vi.useFakeTimers();
     try {
       const { result } = renderHook(() => useExecApprovals());
-      act(() => {
-        for (const h of eventHandlers) {
-          h("exec.approval.requested", {
-            id: "skew1",
-            request: {
-              command: "ls",
-              host: "gateway",
-              sessionKey: "agent:agent_x:user_test",
-              allowedDecisions: ["allow-once", "deny"],
-            },
-            // Container clock is 5 min BEHIND this browser: expiresAtMs looks past.
-            expiresAtMs: Date.now() - 5 * 60_000,
-          });
-        }
-      });
+      const createdAtMs = Date.now() - 90_000; // container 90s behind browser
+      act(() => emitExec("skew1", createdAtMs, createdAtMs + 20_000));
       expect(result.current.queue).toHaveLength(1);
 
-      // Old code: delay clamped to 0 -> gone after one tick. New code: floored.
-      act(() => vi.advanceTimersByTime(2_000));
-      expect(result.current.queue).toHaveLength(1);
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(result.current.queue).toHaveLength(1); // still here — not pruned early
 
-      // It still prunes eventually, after the 60s floor.
-      act(() => vi.advanceTimersByTime(60_000));
+      act(() => vi.advanceTimersByTime(6_000)); // past 20s lifetime + grace
       expect(result.current.queue).toHaveLength(0);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("prunes a plugin approval on its server-clock lifetime, independent of browser skew", () => {
-    // createdAtMs + expiresAtMs are on the SAME server clock, so the lifetime
-    // (expiresAtMs - createdAtMs) is skew-free. Placing both far from the
-    // browser's Date.now() proves the timer ignores cross-clock subtraction.
+  it("prunes a late-delivered approval near its remaining lifetime, not a full one from receipt", () => {
+    // A 240s-lifetime plugin approval delivered 200s late (clocks aligned) has
+    // ~40s left. The previous fix restarted the FULL 240s lifetime from receipt
+    // (kept ~240s); the transit-aware delay prunes far sooner (~40s + skew
+    // tolerance), well before 240s.
     vi.useFakeTimers();
     try {
       const { result } = renderHook(() => useExecApprovals());
-      const serverNow = Date.now() + 10 * 60_000; // container clock 10 min ahead
-      act(() => {
-        for (const h of eventHandlers) {
-          h("plugin.approval.requested", {
-            id: "life1",
-            request: {
-              pluginId: "plugin:slack",
-              title: "Send Slack message",
-              agentId: "agent_x",
-              sessionKey: "agent:agent_x:user_test",
-              allowedDecisions: ["allow-once", "deny"],
-            },
-            createdAtMs: serverNow,
-            expiresAtMs: serverNow + 10_000, // 10s intended lifetime
-          });
-        }
-      });
+      const createdAtMs = Date.now() - 200_000; // created 200s ago
+      act(() => emitPluginLife("late1", createdAtMs, createdAtMs + 240_000));
       expect(result.current.queue).toHaveLength(1);
 
-      // Not pruned before the lifetime elapses (old code, using expiresAtMs -
-      // browser-now, would have scheduled ~10min out and also passed here —
-      // the discriminating half is the next assertion).
+      act(() => vi.advanceTimersByTime(40_000));
+      expect(result.current.queue).toHaveLength(1); // not pruned at raw remaining
+
+      // remaining(40s) + skew tolerance(120s) + grace → gone by ~160.5s, and
+      // crucially BEFORE the 240s full lifetime the old code would have used.
+      act(() => vi.advanceTimersByTime(122_000));
+      expect(result.current.queue).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prunes an already-expired replay promptly (past expiry by more than the skew tolerance)", () => {
+    // A 60s-lifetime approval whose expiry is 340s in the past (clear replay,
+    // beyond the 2-min skew tolerance) must prune promptly, not get a fresh
+    // full lifetime with live buttons.
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useExecApprovals());
+      const createdAtMs = Date.now() - 400_000;
+      act(() => emitPluginLife("replay1", createdAtMs, createdAtMs + 60_000));
+      expect(result.current.queue).toHaveLength(1);
+
+      act(() => vi.advanceTimersByTime(1_000)); // grace only
+      expect(result.current.queue).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps the delay at the server-clock lifetime when the browser clock runs behind", () => {
+    // Container clock 10 min AHEAD of the browser; 10s intended lifetime. The
+    // browser's view of remaining is huge, but the delay is capped at the
+    // skew-free full lifetime so the card doesn't over-linger.
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useExecApprovals());
+      const serverNow = Date.now() + 10 * 60_000;
+      act(() => emitPluginLife("behind1", serverNow, serverNow + 10_000));
+      expect(result.current.queue).toHaveLength(1);
+
       act(() => vi.advanceTimersByTime(9_000));
       expect(result.current.queue).toHaveLength(1);
 
-      // Pruned shortly after lifetime + grace. Old code would still be waiting
-      // ~10 more minutes (it subtracted the browser clock), keeping it here.
-      act(() => vi.advanceTimersByTime(2_000));
+      act(() => vi.advanceTimersByTime(2_000)); // past 10s lifetime + grace
       expect(result.current.queue).toHaveLength(0);
     } finally {
       vi.useRealTimers();

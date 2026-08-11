@@ -175,38 +175,66 @@ const DEFAULT_EXPIRY_MS = 10 * 60 * 1000;
  *  vanishing on the same tick it arrives. */
 const PRUNE_GRACE_MS = 500;
 
-/** Floor on the auto-prune delay used ONLY when we can't derive a server-clock
- *  lifetime (no createdAtMs — e.g. exec approvals). It guarantees a browser
- *  clock running ahead of the container can never prune a still-valid approval
- *  before the operator can act. Residual: a genuinely-expired approval that is
- *  replayed late lingers up to this long, then drops via the server's
- *  "unknown/expired id" on the next resolve attempt (terminal_error). */
-const MIN_AUTOPRUNE_FLOOR_MS = 60 * 1000;
+/** Tolerance for browser↔container clock skew, added to the browser's view of
+ *  remaining time so a browser clock running AHEAD of the container can't prune
+ *  a still-valid approval early (the T-2 bug). Also the crossover: for
+ *  approvals whose remaining lifetime exceeds this, the browser's transit-aware
+ *  estimate governs (delayed/replayed cards prune near their true remaining);
+ *  for shorter ones we fall back to the full lifetime (fail-safe — a vanished
+ *  live card is worse than a dead card lingering, since auto_pruned releases
+ *  the approval-pause busy gate). */
+const SKEW_TOLERANCE_MS = 2 * 60 * 1000;
+
+/** Fallback horizon for a MALFORMED event that carries no server createdAtMs
+ *  (real exec + plugin events both carry it — see the OpenClaw
+ *  ExecApprovalRequest wire type). Without it we can't measure the lifetime, so
+ *  we keep the card at least this long rather than risk pruning a live one.
+ *  Mirrors upstream DEFAULT_EXEC_APPROVAL_TIMEOUT_MS (30 min). */
+const KNOWN_APPROVAL_LIFETIME_MS = 30 * 60 * 1000;
 
 /** Compute the local auto-prune delay for an approval.
  *
- *  The bug this avoids: `expiresAtMs - Date.now()` subtracts a BROWSER clock
- *  (Date.now) from a CONTAINER clock (expiresAtMs). A browser running ahead of
- *  the container shrinks — or zeroes — the delay and auto-prunes a live
- *  approval before it can be acted on.
+ *  The bug this avoids (T-2): the old `expiresAtMs - Date.now()` subtracts a
+ *  BROWSER clock (Date.now) from a CONTAINER clock (expiresAtMs); a browser
+ *  running ahead shrinks — or zeroes — the delay and auto-prunes a live
+ *  approval (which also releases the approval-pause busy gate, letting a
+ *  follow-up race the still-waiting run).
  *
- *  When the event carries a server creation timestamp, `expiresAtMs -
- *  createdAtMs` is a pure server-clock delta (the intended lifetime) with no
- *  cross-clock subtraction; the timer then counts down entirely on the
- *  browser's own clock from receipt. Otherwise we fall back to the cross-clock
- *  form but floor it, so skew can only ever keep a card too long, never drop a
- *  live one too soon. */
+ *  Both exec and plugin events carry the container's `createdAtMs` +
+ *  `expiresAtMs`. We take the browser's transit/replay-aware view of remaining
+ *  time (`expiresAtMs - Date.now()`) — so a late-delivered or already-expired
+ *  card prunes near its TRUE remaining, not a full lifetime restarted from
+ *  receipt — then:
+ *    - add SKEW_TOLERANCE_MS, so a browser ahead of the container by up to that
+ *      much never prunes a live card early;
+ *    - cap at the server-clock full lifetime (`expiresAtMs - createdAtMs`,
+ *      skew-free), so a browser running BEHIND can't over-keep the card.
+ *
+ *  Residuals (no server-send timestamp is on the payload, so these are
+ *  irreducible here — the proper fix is an upstream `sentAtMs` on the event):
+ *    - a browser ahead by MORE than SKEW_TOLERANCE_MS prunes early by the
+ *      excess (bounded; the card reappears on the next request and the server
+ *      still holds the approval);
+ *    - for approvals whose lifetime is shorter than SKEW_TOLERANCE_MS, a
+ *      delayed/replayed delivery can't be told apart from clock skew, so the
+ *      card is kept up to its full lifetime (clear replays — expiry past by
+ *      more than the tolerance — still prune promptly). */
 function autoPruneDelayMs(req: ExecApprovalRequest): number {
+  const browserRemaining = req.expiresAtMs - Date.now();
   if (
     typeof req.createdAtMs === "number" &&
     Number.isFinite(req.createdAtMs) &&
     req.expiresAtMs > req.createdAtMs
   ) {
-    return req.expiresAtMs - req.createdAtMs + PRUNE_GRACE_MS;
+    const fullLifetime = req.expiresAtMs - req.createdAtMs;
+    const delay = Math.min(browserRemaining + SKEW_TOLERANCE_MS, fullLifetime);
+    return Math.max(0, delay) + PRUNE_GRACE_MS;
   }
-  return Math.max(
-    MIN_AUTOPRUNE_FLOOR_MS,
-    req.expiresAtMs - Date.now() + PRUNE_GRACE_MS,
+  // Malformed event (no server createdAtMs): keep at least the known default
+  // approval lifetime (fail-safe) rather than risk pruning a live approval.
+  return (
+    Math.max(KNOWN_APPROVAL_LIFETIME_MS, browserRemaining + SKEW_TOLERANCE_MS) +
+    PRUNE_GRACE_MS
   );
 }
 

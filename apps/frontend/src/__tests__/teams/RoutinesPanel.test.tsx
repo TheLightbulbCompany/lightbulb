@@ -430,7 +430,7 @@ describe("RoutinesPanel sort", () => {
     const user = userEvent.setup();
     render(<RoutinesPanel />);
     // The sort menu is a Radix Popover → needs userEvent + portalled options.
-    await user.click(screen.getByRole("button", { name: /sort routines/i }));
+    await user.click(screen.getByRole("button", { name: /sort automations/i }));
     // Re-select the already-active "Name" → flips to descending. The active
     // option's accessible name carries the direction arrow ("Name↑"), so match
     // on the prefix rather than an exact string.

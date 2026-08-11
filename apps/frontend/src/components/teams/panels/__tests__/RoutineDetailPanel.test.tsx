@@ -29,14 +29,14 @@ describe("RoutineDetailPanel", () => {
     };
     render(<RoutineDetailPanel routineId="r1" />);
     const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent(/failed to load routine/i);
+    expect(alert).toHaveTextContent(/failed to load automation/i);
     expect(alert).toHaveTextContent(/boom/i);
   });
 
   it("renders the not-found state when the routine is absent and no error", () => {
     reads["/routines/r1"] = { data: undefined, isLoading: false, error: undefined };
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.getByText(/routine not found/i)).toBeInTheDocument();
+    expect(screen.getByText(/automation not found/i)).toBeInTheDocument();
   });
 
   it("renders the header, status swatch + Properties aside, and run history", () => {

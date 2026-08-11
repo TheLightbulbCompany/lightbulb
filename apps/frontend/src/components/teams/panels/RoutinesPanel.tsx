@@ -99,7 +99,7 @@ function gateMessage(e: unknown): string {
 }
 
 function routineName(r: Routine): string {
-  return r.title ?? r.name ?? "Untitled routine";
+  return r.title ?? r.name ?? "Untitled automation";
 }
 
 function routineAgentId(r: Routine): string | null {
@@ -319,7 +319,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   }
 
   async function remove(id: string) {
-    if (!confirm("Delete this routine?")) return;
+    if (!confirm("Delete this automation?")) return;
     setBusy(id);
     try {
       await del(`/routines/${id}`);
@@ -484,8 +484,8 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       <PanelToolbar
         searchValue={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Find routine..."
-        searchAriaLabel="Search routines"
+        searchPlaceholder="Find automation..."
+        searchAriaLabel="Search automations"
         filters={
           <>
             {/* Agent filter — standalone-only. The inspector mount already
@@ -537,11 +537,11 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       ) : filtered.length === 0 ? (
         <PanelEmptyState
           icon={Repeat}
-          headline="No routines yet."
+          headline="No automations yet."
           supporting={
             search || agentPick
-              ? "No routines match your filters."
-              : "Create a routine to define a recurring workflow that fires on a schedule or trigger."
+              ? "No automations match your filters."
+              : "Create an automation to define a recurring workflow that fires on a schedule or trigger."
           }
         />
       ) : (
@@ -670,7 +670,7 @@ function RunRoutineDialog({
       open
       onOpenChange={(o) => !o && onClose()}
       title={`Run ${routineName(routine)}`}
-      description="Provide values for this routine's variables, then run it now."
+      description="Provide values for this automation's variables, then run it now."
       footer={
         <>
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
@@ -788,7 +788,7 @@ function SortMenu({
         <button
           type="button"
           title="Sort"
-          aria-label="Sort routines"
+          aria-label="Sort automations"
           className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--edge)] text-[var(--mute)] transition-colors hover:bg-[var(--cream-deeper)] hover:text-[var(--ink)]"
         >
           <ArrowUpDown className="h-3.5 w-3.5" />
@@ -844,10 +844,10 @@ const START_RUNGS: ReadonlyArray<{
 
 const COMING_SOON_COPY: Partial<Record<StartRung, string>> = {
   connected_app:
-    "Coming soon — for now use “Any other app” to trigger this routine.",
+    "Coming soon — for now use “Any other app” to trigger this automation.",
   email: "Coming soon — for now forward the email to your agent.",
   agent_watch:
-    "Coming soon — for now use “Any other app” to trigger this routine.",
+    "Coming soon — for now use “Any other app” to trigger this automation.",
 };
 
 function CreateRoutineDialog({
@@ -1076,7 +1076,7 @@ function CreateRoutineDialog({
               className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
             />
             <span className="text-xs text-[var(--mute)]">
-              Cron expression — when the routine fires.
+              Cron expression — when the automation fires.
             </span>
           </label>
         )}
@@ -1099,7 +1099,7 @@ function CreateRoutineDialog({
               </div>
               <span className="text-xs text-[var(--mute)]">
                 How Isol8 signs the callback — the caller verifies with the
-                secret shown once this routine is created.
+                secret shown once this automation is created.
               </span>
             </label>
             {showReplayWindow && (

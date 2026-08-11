@@ -274,7 +274,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   >(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [rotatedSecret, setRotatedSecret] = useState<string | null>(null);
+  const [rotatedSecret, setRotatedSecret] = useState<RoutineTriggerSecretMaterial | null>(null);
   const [createdWebhook, setCreatedWebhook] = useState<RoutineTriggerSecretMaterial | null>(null);
 
   async function refresh(): Promise<void> {
@@ -310,11 +310,15 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
 
   async function rotateSecret(triggerId: string): Promise<void> {
     await run(async () => {
-      const res = await post<{ secretMaterial?: string | null }>(
+      // The wire shape is an OBJECT (RoutineTriggerSecretMaterial), not a bare
+      // string — mirrors the create-trigger response below. Rendering it
+      // directly as a JSX child (rather than through SecretField) is what
+      // used to crash React 19 with "Objects are not valid as a React child".
+      const res = await post<{ secretMaterial?: RoutineTriggerSecretMaterial | null }>(
         `/routines/${routineId}/triggers/${triggerId}/rotate-secret`,
         {},
       );
-      setRotatedSecret(res?.secretMaterial ?? "(rotated — no secret returned)");
+      if (res?.secretMaterial) setRotatedSecret(res.secretMaterial);
       await refresh();
     });
   }
@@ -322,7 +326,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   async function restoreRevision(revisionId: string): Promise<void> {
     if (
       typeof window !== "undefined" &&
-      !window.confirm("Restore the routine to this revision?")
+      !window.confirm("Restore the automation to this revision?")
     )
       return;
     await run(async () => {
@@ -362,7 +366,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         className="flex h-full flex-col items-center justify-center p-8 text-sm"
         style={{ color: "var(--danger)" }}
       >
-        <p>Failed to load routine.</p>
+        <p>Failed to load automation.</p>
         {error?.message && (
           <p className="mt-1" style={{ color: "var(--mute)" }}>
             {error.message}
@@ -381,7 +385,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           color: "var(--mute)",
         }}
       >
-        Routine not found.
+        Automation not found.
       </div>
     );
   }
@@ -445,7 +449,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
               setActionError(null);
               setEditing(true);
             }}
-            aria-label="Edit routine"
+            aria-label="Edit automation"
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
             Edit
@@ -852,12 +856,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             </EditorialButton>
           }
         >
-          <code
-            className="block break-all rounded px-3 py-2 font-mono text-sm"
-            style={{ background: "var(--cream-deeper)", color: "var(--ink)" }}
-          >
-            {rotatedSecret}
-          </code>
+          <SecretField label="Webhook secret" value={rotatedSecret.webhookSecret} />
         </EditorialDialog>
       )}
     </div>
@@ -1026,7 +1025,7 @@ function EditRoutineDialog({
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title="Edit routine"
+      title="Edit automation"
       footer={
         <>
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
@@ -1365,7 +1364,7 @@ function TriggerDialog({
                 className={cn(INPUT_CLASS, "font-mono")}
               />
               <span className="text-xs text-[var(--mute)]">
-                Cron expression — when the routine fires.
+                Cron expression — when the automation fires.
               </span>
             </label>
             <label className="block">

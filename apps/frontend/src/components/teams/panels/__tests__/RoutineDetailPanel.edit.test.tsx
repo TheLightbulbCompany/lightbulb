@@ -80,7 +80,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     render(<RoutineDetailPanel routineId="r1" />);
     expect(screen.getByRole("heading", { name: "Nightly digest" })).toBeInTheDocument();
     expect(screen.getByText("0 9 * * *")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /edit routine/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /edit automation/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add schedule/i })).toBeInTheDocument();
   });
 
@@ -120,13 +120,24 @@ describe("RoutineDetailPanel — editable (A2)", () => {
         mutate,
       },
     });
-    post.mockResolvedValue({ secretMaterial: "whsec_new_123" });
+    // The real wire shape is an OBJECT (RoutineTriggerSecretMaterial), not a
+    // bare string — a string mock here would hide the "Objects are not valid
+    // as a React child" crash that a naive `<code>{rotatedSecret}</code>`
+    // render produces.
+    post.mockResolvedValue({
+      secretMaterial: {
+        webhookUrl: "https://api.isol8.co/hooks/pub_1",
+        webhookSecret: "whsec_new_123",
+      },
+    });
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
     await user.click(screen.getByRole("button", { name: /rotate secret/i }));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/routines/r1/triggers/wh1/rotate-secret", {}),
     );
+    // Renders via SecretField (label + copyable secret value) without throwing.
+    expect(await screen.findByText("Webhook secret")).toBeInTheDocument();
     expect(await screen.findByText("whsec_new_123")).toBeInTheDocument();
   });
 
@@ -164,7 +175,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
   it("sends edited variables via PATCH, preserving the date type", async () => {
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /edit routine/i }));
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Title"), {
       target: { value: "Nightly digest v2" },
@@ -191,7 +202,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     // not be re-sent — the backend would otherwise replace the newer defs.
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /edit routine/i }));
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Title"), {
       target: { value: "Nightly digest v2" },
@@ -210,7 +221,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     // fireability-increasing edit, so a benign rename must not re-send it.
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /edit routine/i }));
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("Title"), {
       target: { value: "Nightly digest renamed" },
@@ -337,7 +348,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     });
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /edit routine/i }));
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
     expect(

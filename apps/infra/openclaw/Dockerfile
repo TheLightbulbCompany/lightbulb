@@ -48,9 +48,12 @@ RUN mkdir -p /out/bin
 # resolves the canonical path from each release's go.mod, NOT from github
 # redirects. So per tool we have to use whichever path is declared at @latest:
 #   wacli@v0.8.1 → openclaw/wacli (released after rename)
-#   songsee/gogcli/goplaces/spogo @latest → still steipete/* (released before
+#   gogcli@v0.35.0 → openclaw/gogcli (flipped 2026-08: v0.35.0's go.mod
+#     declares the new path, so the steipete/* install path started failing
+#     with "module declares its path as: github.com/openclaw/gogcli")
+#   songsee/goplaces/spogo @latest → still steipete/* (released before
 #     rename; their go.mod hasn't been bumped to the new path)
-# When a future release of those four ships with `module github.com/openclaw/*`
+# When a future release of those three ships with `module github.com/openclaw/*`
 # in its go.mod, flip them too. Verify with:
 #   curl -s https://raw.githubusercontent.com/<owner>/<tool>/HEAD/go.mod | head -1
 RUN go install github.com/steipete/eightctl/cmd/eightctl@latest && \
@@ -61,7 +64,7 @@ RUN go install github.com/steipete/eightctl/cmd/eightctl@latest && \
     go install github.com/steipete/gifgrep/cmd/gifgrep@latest && \
     go install github.com/steipete/blucli/cmd/blu@latest && \
     go install github.com/steipete/songsee/cmd/songsee@latest && \
-    go install github.com/steipete/gogcli/cmd/gog@latest && \
+    go install github.com/openclaw/gogcli/cmd/gog@latest && \
     go install github.com/steipete/goplaces/cmd/goplaces@latest && \
     go install github.com/steipete/spogo/cmd/spogo@latest
 

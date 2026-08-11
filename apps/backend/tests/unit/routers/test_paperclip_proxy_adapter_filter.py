@@ -255,6 +255,60 @@ def test_uncompressed_encodings_pass(encoding):
     _assert_paperclip_request_allowed("POST", "api/companies/c1/agents", body, content_encoding=encoding)
 
 
+# ---------------------------------------------------------------
+# Approval resubmit — payload replacement resets adapterType
+# ---------------------------------------------------------------
+
+
+def test_resubmit_payload_without_adapter_is_blocked():
+    # Resubmit need not repeat `type`; a payload lacking adapterType resets it
+    # to "process" on approve. is_hire heuristics don't apply — always require.
+    body = json.dumps({"payload": {"agentName": "x"}}).encode()
+    assert _blocked("POST", "api/approvals/ap1/resubmit", body)
+
+
+def test_resubmit_payload_gateway_is_allowed():
+    body = json.dumps({"payload": {"adapterType": "openclaw_gateway"}}).encode()
+    assert not _blocked("POST", "api/approvals/ap1/resubmit", body)
+
+
+def test_resubmit_without_payload_passes():
+    # No payload -> nothing replaces the stored (already-filtered) adapter.
+    body = json.dumps({"decisionNote": "redo"}).encode()
+    assert not _blocked("POST", "api/approvals/ap1/resubmit", body)
+
+
+# ---------------------------------------------------------------
+# URL-encoded delimiter bypass + fail-closed JSON
+# ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "api/companies/c1/agents?ignored",  # %3F decoded -> httpx reparses as ?query
+        "api/companies/c1/agents#frag",  # %23 decoded
+        "api/companies/c1/agents%2fextra",  # stray percent
+    ],
+)
+def test_decoded_delimiters_in_path_are_rejected(path):
+    assert _blocked("POST", path, json.dumps({"name": "x"}).encode())
+
+
+def test_unparseable_json_body_fails_closed():
+    # Invalid UTF-8: json.loads raises, but express.json() would repair + parse.
+    bad = b'{"adapterType":"process","name":"\xff"}'
+    with pytest.raises(HTTPException) as exc:
+        _assert_paperclip_request_allowed("PATCH", "api/agents/a1", bad, content_type="application/json")
+    assert exc.value.status_code == 403
+
+
+def test_unparseable_body_without_json_content_type_passes():
+    # A non-JSON content type carries no forgeable adapterType we must inspect.
+    bad = b"\xff\xfe binary"
+    _assert_paperclip_request_allowed("PATCH", "api/agents/a1", bad, content_type="application/octet-stream")
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

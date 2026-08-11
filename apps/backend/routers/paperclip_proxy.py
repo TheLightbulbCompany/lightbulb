@@ -444,19 +444,21 @@ _ADAPTER_CREATE_ROUTES = (
 # as null and defaults to "process" when the join-request is later approved.
 _INVITE_ACCEPT_ROUTES = (re.compile(r"^api/invites/[^/]+/accept/?$"),)
 
-# Approval create / resubmit carry the hire's adapterType NESTED at
+# Approval create/resubmit carry the hire's adapterType NESTED at
 # ``payload.adapterType``; ``/approve`` applies it with a ``?? "process"``
 # fallback (paperclip services/approvals.ts). The top-level check misses these.
-_APPROVAL_ROUTES = (
-    re.compile(r"^api/companies/[^/]+/approvals/?$"),
-    re.compile(r"^api/approvals/[^/]+/resubmit/?$"),
-)
+# Resubmit is separate because it need not repeat ``type`` and REPLACES the
+# stored payload, so a payload that merely omits adapterType still resets it.
+_APPROVAL_CREATE_ROUTES = (re.compile(r"^api/companies/[^/]+/approvals/?$"),)
+_APPROVAL_RESUBMIT_ROUTES = (re.compile(r"^api/approvals/[^/]+/resubmit/?$"),)
 
 
 def _parse_json_object(body: bytes) -> dict | None:
     """Parse ``body`` as a JSON object, or ``None`` if it isn't one.
 
-    A non-JSON / non-object body carries no forgeable adapterType field.
+    A non-JSON / non-object body carries no forgeable adapterType field. This is
+    the LENIENT parse; the filter itself fails closed on an unparseable body that
+    declares ``application/json`` (see ``_assert_paperclip_request_allowed``).
     """
     if not body:
         return None
@@ -471,8 +473,20 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _require_nested_gateway(payload: object) -> None:
+    """Reject unless ``payload`` is a dict whose adapterType is allowlisted."""
+    nested = _str_or_none(payload.get("adapterType")) if isinstance(payload, dict) else None
+    if nested is None or nested not in _ALLOWED_ADAPTER_TYPES:
+        raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+
 def _assert_paperclip_request_allowed(
-    method: str, path: str, body: bytes, *, content_encoding: str | None = None
+    method: str,
+    path: str,
+    body: bytes,
+    *,
+    content_type: str | None = None,
+    content_encoding: str | None = None,
 ) -> None:
     """Reject a proxied request that could reach a non-gateway adapter.
 
@@ -486,6 +500,14 @@ def _assert_paperclip_request_allowed(
     # registry lookup is exact, so a case-variant type fails there anyway).
     p = path.lstrip("/").lower()
     method = method.upper()
+
+    # Reject decoded URL delimiters / stray percent signs. ``agents%3Fignored``
+    # decodes to ``agents?ignored`` (misses the anchored create regex), but
+    # ``upstream_url = f"/{path}"`` is re-parsed by httpx, which treats
+    # ``?ignored`` as a query string so Paperclip sees the bare ``/agents``
+    # create route. Legit Teams paths never contain these.
+    if any(c in p for c in ("?", "#", "%")):
+        raise HTTPException(status_code=403, detail="Malformed path")
 
     for methods, pattern in _BLOCKED_ROUTES:
         if (methods is None or method in methods) and pattern.match(p):
@@ -504,7 +526,20 @@ def _assert_paperclip_request_allowed(
     if content_encoding and content_encoding.strip().lower() not in ("", "identity"):
         raise HTTPException(status_code=403, detail="Encoded request body not permitted")
 
-    data = _parse_json_object(body)
+    # Parse the body. Fail CLOSED on an unparseable ``application/json`` body:
+    # our strict json.loads rejects e.g. invalid UTF-8 that Express's lenient
+    # decoder would repair and process, so "can't inspect it" must not become
+    # "allow it".
+    content_is_json = (content_type or "").split(";", 1)[0].strip().lower() == "application/json"
+    data: dict | None = None
+    if body:
+        try:
+            parsed = json.loads(body)
+            data = parsed if isinstance(parsed, dict) else None
+        except Exception:  # noqa: BLE001
+            if content_is_json:
+                raise HTTPException(status_code=403, detail="Unparseable JSON body")
+            data = None
     adapter_type = _str_or_none(data.get("adapterType")) if data else None
 
     # Direct create/hire: a missing adapterType defaults to "process" upstream.
@@ -522,20 +557,24 @@ def _assert_paperclip_request_allowed(
         if adapter_type not in _ALLOWED_ADAPTER_TYPES:
             raise HTTPException(status_code=403, detail="adapterType required")
 
-    # Approval create/resubmit: the hire's adapterType is nested at
-    # payload.adapterType, and approve applies it with a "process" fallback.
-    # Require an allowlisted type on any hire-shaped body — present-and-wrong
-    # OR absent both reject.
-    if any(r.match(p) for r in _APPROVAL_ROUTES):
+    # Approval CREATE: the hire's adapterType is nested at payload.adapterType,
+    # and approve applies it with a "process" fallback. Require gateway on any
+    # hire-shaped create body.
+    if any(r.match(p) for r in _APPROVAL_CREATE_ROUTES):
         payload = data.get("payload")
-        payload = payload if isinstance(payload, dict) else None
         is_hire = data.get("type") == "hire_agent" or (
-            payload is not None and ("adapterType" in payload or "adapterConfig" in payload)
+            isinstance(payload, dict) and ("adapterType" in payload or "adapterConfig" in payload)
         )
         if is_hire:
-            nested = _str_or_none(payload.get("adapterType")) if payload else None
-            if nested is None or nested not in _ALLOWED_ADAPTER_TYPES:
-                raise HTTPException(status_code=403, detail="Adapter not permitted")
+            _require_nested_gateway(payload)
+
+    # Approval RESUBMIT replaces the stored payload and need not repeat `type`,
+    # so a payload without adapterType resets it to "process" on approve. Any
+    # resubmit carrying a payload must name a gateway adapter.
+    if any(r.match(p) for r in _APPROVAL_RESUBMIT_ROUTES):
+        payload = data.get("payload")
+        if isinstance(payload, dict):
+            _require_nested_gateway(payload)
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -1523,6 +1562,7 @@ async def proxy(path: str, request: Request) -> Response:
             request.method,
             path,
             body_bytes,
+            content_type=request.headers.get("content-type"),
             content_encoding=request.headers.get("content-encoding"),
         )
 

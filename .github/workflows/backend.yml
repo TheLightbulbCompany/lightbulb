@@ -12,6 +12,15 @@ on:
       - 'apps/infra/lambda/bedrock-usage-meter/**'
       - '.github/workflows/backend.yml'
 
+# Supersede in-flight runs for the same PR. Every push to a branch used to
+# queue another full run while the previous ones kept their runner slots, so a
+# branch pushed 7 times sat 7 runs deep with only the last one mattering.
+# `github.ref` is refs/pull/<n>/merge here (pull_request only), so the group is
+# per-PR and PRs never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.12"
 

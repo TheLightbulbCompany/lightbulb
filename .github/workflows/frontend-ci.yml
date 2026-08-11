@@ -11,6 +11,13 @@ on:
       - '.github/workflows/frontend-ci.yml'
       - 'pnpm-lock.yaml'
 
+# Supersede in-flight runs for the same PR. `github.ref` is refs/pull/<n>/merge
+# here (pull_request only), so the group is per-PR and PRs never cancel each
+# other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   NODE_VERSION: "20"
 

@@ -4,6 +4,14 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+# Supersede in-flight reviews for the same PR — `synchronize` fires on every
+# push, so without this each push stacked another review run behind the last.
+# `github.ref` is refs/pull/<n>/merge here (pull_request only), so the group is
+# per-PR and PRs never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   claude-review:
     runs-on: ${{ vars.CI_RUNNER }}

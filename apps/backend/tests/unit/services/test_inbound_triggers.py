@@ -127,6 +127,7 @@ async def test_seed_trigger_routine_no_friday_agent_found():
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="no CEO agent"):
         await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+    admin.create_routine.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +181,42 @@ async def test_seed_trigger_routine_github_auto_registers_webhook():
     assert body["config"]["url"] == out["proxy_url"]
     assert body["config"]["secret"] == "s"  # secretMaterial.secret from _fake_admin
     assert body["config"]["content_type"] == "json"
-    assert set(body["events"]) >= {"workflow_run"}
+    # ONLY the selected event, never the provider's whole inbound.events list
+    # — see _auto_register_webhook's docstring for why (cross-firing routines).
+    assert body["events"] == ["workflow_run"]
     admin.delete_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_github_two_events_register_two_single_event_hooks():
+    """Two automations on the same repo (one per event) must each register a
+    SEPARATE hook subscribed to only its own event — never the provider's
+    whole event list — or every push fires both routines (duplicate agent
+    runs + duplicate spend)."""
+    captured_calls: list[dict] = []
+
+    class _RecordingTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            captured_calls.append({"url": str(request.url), "body": request.content})
+            return httpx.Response(201, content=b'{"id": 1}')
+
+    def _client_factory():
+        return httpx.AsyncClient(transport=_RecordingTransport())
+
+    for event_id, public_id in (("workflow_run", "pub_wr"), ("issues", "pub_is")):
+        admin = _fake_admin(routine_id=f"rt_{event_id}", public_id=public_id)
+        p_repo, p_cookie, p_client = _env(admin)
+        with (
+            p_repo,
+            p_cookie,
+            p_client,
+            _github_token(),
+            patch("core.services.inbound_triggers._github_client_factory", _client_factory),
+        ):
+            await seed_trigger_routine("owner_1", "github", event_id, repo="acme/widgets")
+
+    assert len(captured_calls) == 2
+    assert [json.loads(c["body"])["events"] for c in captured_calls] == [["workflow_run"], ["issues"]]
 
 
 @pytest.mark.asyncio

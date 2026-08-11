@@ -101,7 +101,7 @@ async def _auto_register_webhook(
     repo: str | None,
     proxy_url: str,
     trigger_secret: str | None,
-    events: list[str],
+    event_id: str,
 ) -> None:
     """Seam for the ``webhook_registration: "auto"`` branch (GitHub, Task 4):
     register the webhook with the provider's own API so it starts sending
@@ -117,6 +117,16 @@ async def _auto_register_webhook(
     secret (``trigger_resp["secretMaterial"]["secret"]``) — one shared
     value signs both sides, since the trigger itself is armed with
     Paperclip ``signingMode: "github_hmac"``.
+
+    The registered hook subscribes to ONLY ``event_id`` — the single event
+    the caller selected — never the provider's whole ``inbound.events``
+    list. The proxy forwards to a routine keyed purely by trigger publicId
+    with no per-event filtering, so a hook subscribed to every declared
+    event would fire that routine on events it never asked for, and a
+    second automation for a different event on the same repo would end up
+    subscribed to the same full set too — every push firing BOTH routines
+    (duplicate agent runs, duplicate spend). One hook per automation, one
+    event per hook, keeps automations on the same repo independent.
 
     Raises ``ValueError`` on any failure (missing repo, missing/absent
     token, or a non-2xx from GitHub) — the caller (``seed_trigger_routine``)
@@ -139,7 +149,7 @@ async def _auto_register_webhook(
             json={
                 "name": "web",
                 "active": True,
-                "events": events,
+                "events": [event_id],
                 "config": {"url": proxy_url, "secret": trigger_secret, "content_type": "json"},
             },
         )
@@ -271,7 +281,7 @@ async def seed_trigger_routine(
                     repo=repo,
                     proxy_url=proxy_url,
                     trigger_secret=trigger_secret,
-                    events=[e.id for e in inbound.events],
+                    event_id=event_id,
                 )
             except Exception as exc:
                 # The routine + webhook trigger both already exist upstream at

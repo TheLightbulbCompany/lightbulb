@@ -498,16 +498,27 @@ def _assert_paperclip_request_allowed(
     # resolves to the same handler — a lowercase-only denylist would miss it. The
     # adapterType VALUE checks below stay case-sensitive (the upstream adapter
     # registry lookup is exact, so a case-variant type fails there anyway).
-    p = path.lstrip("/").lower()
     method = method.upper()
+    p = path.lower()
 
-    # Reject decoded URL delimiters, stray percent signs, and dot segments.
-    # ``agents%3Fignored`` decodes to ``agents?ignored`` (misses the anchored
-    # create regex) but httpx re-parses ``?ignored`` as a query string; and
-    # ``x/%2e%2e/agents`` decodes to ``x/../agents`` which httpx normalizes to
-    # ``/agents`` when merging with base_url — either way Paperclip sees the bare
-    # create route (→ process default). Legit Teams paths never contain these.
-    if any(c in p for c in ("?", "#", "%")) or any(seg in (".", "..") for seg in p.split("/")):
+    # CANONICAL-PATH GUARD. The ASGI-decoded ``path`` must be exactly the path
+    # httpx forwards to Paperclip. When httpx joins ``base_url`` + ``/{path}`` it
+    # applies RFC-3986 resolution — percent-decoding, ``?``/``#`` splitting,
+    # ``.``/``..`` dot-segment removal, and leading-``//`` authority handling —
+    # so matching the *pre-join* path lets any of those transforms route the
+    # request to a DIFFERENT upstream handler than we inspect (every such gap
+    # defaulted the create route to the ``process`` adapter). Rather than chase
+    # each transform, reject anything non-canonical up front: a leading slash, an
+    # empty (``//``) / ``.`` / ``..`` segment, a delimiter, a stray percent, a
+    # backslash, or a control byte. Legit Teams paths — a slash-free ``api/…``
+    # with at most dotted file segments (``ui-parser.js``) — contain none.
+    if (
+        p.startswith("/")
+        or "//" in p
+        or any(c in p for c in ("?", "#", "%", "\\"))
+        or any(seg in (".", "..") for seg in p.split("/"))
+        or any(ord(ch) < 0x20 for ch in p)
+    ):
         raise HTTPException(status_code=403, detail="Malformed path")
 
     for methods, pattern in _BLOCKED_ROUTES:

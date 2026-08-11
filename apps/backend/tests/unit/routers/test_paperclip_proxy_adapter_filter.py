@@ -291,6 +291,10 @@ def test_resubmit_without_payload_passes():
         "api/companies/c1/agents%2fextra",  # stray percent
         "api/companies/c1/x/../agents",  # %2e%2e decoded -> httpx normalizes to /agents
         "api/companies/c1/./agents",  # single dot segment
+        "/x/api/companies/c1/agents",  # %2F-injected leading slash -> httpx authority resolution
+        "api/companies/c1//agents",  # empty segment
+        "api/companies/c1/agents\\x",  # backslash
+        "api/companies/c1/agents\x00",  # control byte
     ],
 )
 def test_decoded_delimiters_in_path_are_rejected(path):

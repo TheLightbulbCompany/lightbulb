@@ -61,10 +61,12 @@ describe("RoutinesPanel", () => {
     agentsData = { agents: AGENTS };
   });
 
-  it("renders the routine title and cron from the upstream shape", () => {
+  it("renders the routine title and a plain-English trigger sentence from the upstream shape", () => {
     render(<RoutinesPanel />);
     expect(screen.getByText("Daily standup")).toBeInTheDocument();
-    expect(screen.getByText(/0 9 \* \* \*/)).toBeInTheDocument();
+    // The row subtitle reads as a sentence ("on a schedule — ...") instead of
+    // the raw cron expression — see triggerSentence.
+    expect(screen.getByText(/on a schedule — Every day at 09:00/)).toBeInTheDocument();
   });
 
   it("resolves the assignee id to the agent display name", () => {
@@ -108,7 +110,7 @@ describe("RoutinesPanel", () => {
     };
     render(<RoutinesPanel />);
     expect(screen.getByText("Legacy routine")).toBeInTheDocument();
-    expect(screen.getByText(/0 8 \* \* \*/)).toBeInTheDocument();
+    expect(screen.getByText(/on a schedule — Every day at 08:00/)).toBeInTheDocument();
     // Legacy agent_id resolves through the same roster map.
     expect(screen.getByText(/Atlas/)).toBeInTheDocument();
   });
@@ -315,6 +317,60 @@ describe("RoutinesPanel", () => {
     expect(tb.kind).toBe("schedule");
     expect(tb.cron_expression).toBe("0 10 * * 1");
     expect(tb.timezone).toBeTruthy();
+  });
+
+  it("'Any other app' rung: POSTs a webhook trigger and shows the one-time URL + secret", async () => {
+    const user = userEvent.setup();
+    mockPost.mockResolvedValueOnce({ id: "rt3" }).mockResolvedValueOnce({
+      secretMaterial: {
+        webhookUrl: "https://api.isol8.co/hooks/abc",
+        webhookSecret: "whsec_123",
+      },
+    });
+    render(<RoutinesPanel />);
+
+    await user.click(screen.getByRole("button", { name: "New routine" }));
+    // The schedule field is the rung-picker's default; picking "Any other
+    // app" swaps it out for the webhook fields.
+    await user.click(screen.getByRole("radio", { name: "Any other app" }));
+    expect(screen.queryByLabelText(/^Schedule$/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Inbound orders" },
+    });
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledTimes(2);
+    });
+    const [triggerPath, triggerBody] = mockPost.mock.calls[1];
+    expect(triggerPath).toBe("/routines/rt3/triggers");
+    const tb = triggerBody as Record<string, unknown>;
+    expect(tb.kind).toBe("webhook");
+    expect(tb.signing_mode).toBe("bearer");
+
+    // The one-time secret dialog replaces the create form.
+    expect(await screen.findByText("https://api.isol8.co/hooks/abc")).toBeInTheDocument();
+    expect(screen.getByText("whsec_123")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(mockMutate).toHaveBeenCalled();
+  });
+
+  it("coming-soon rungs disable Create and show the inline affordance", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+
+    await user.click(screen.getByRole("button", { name: "New routine" }));
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Whatever" },
+    });
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+
+    expect(screen.getByText(/Coming soon/)).toBeInTheDocument();
+    expect(screen.getByText("Create")).toBeDisabled();
+    await user.click(screen.getByText("Create"));
+    expect(mockPost).not.toHaveBeenCalled();
   });
 });
 

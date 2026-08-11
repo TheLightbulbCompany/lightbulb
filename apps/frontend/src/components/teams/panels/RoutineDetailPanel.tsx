@@ -20,7 +20,7 @@
 
 import { useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
-import { ChevronRight, Copy, History, KeyRound, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronRight, History, KeyRound, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import Link from "next/link";
 import {
   EditorialButton,
@@ -32,6 +32,12 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { describeCron } from "@/components/teams/shared/cron-readable";
+import { SecretField } from "@/components/teams/shared/components/SecretField";
+import {
+  SIGNING_MODE_OPTIONS,
+  REPLAY_WINDOW_SIGNING_MODES,
+  DEFAULT_REPLAY_WINDOW_SEC,
+} from "@/components/teams/shared/webhookSigning";
 import { cn } from "@/lib/utils";
 import {
   handleShellLinkClick,
@@ -239,34 +245,6 @@ function PropertyRow({
 }
 
 const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
-
-// A copy-to-clipboard row for a one-time secret value. Mirrors the
-// reveal/copy idiom in settings/WebhooksPanel.tsx (Copy icon button next to
-// the value); no reveal toggle here since the value is already shown once,
-// not fetched-then-masked like the persisted webhook token there.
-function SecretField({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm text-[var(--ink-soft)]">{label}</span>
-        <button
-          type="button"
-          aria-label={`Copy ${label}`}
-          onClick={() => navigator.clipboard.writeText(value)}
-          className="text-[var(--mute)] hover:text-[var(--ink)]"
-        >
-          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
-      </div>
-      <code
-        className="mt-1 block break-all rounded px-3 py-2 font-mono text-sm"
-        style={{ background: "var(--cream-deeper)", color: "var(--ink)" }}
-      >
-        {value}
-      </code>
-    </div>
-  );
-}
 
 export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const { read, post, patch, del } = useTeamsApi();
@@ -1255,19 +1233,6 @@ interface TriggerSubmitBody {
   signing_mode?: string;
   replay_window_sec?: number;
 }
-
-// Webhook signing modes Paperclip's createRoutineTriggerSchema accepts
-// (paperclip/packages/shared/src/constants.ts ROUTINE_TRIGGER_SIGNING_MODES).
-// Only bearer/hmac_sha256 carry a replay window — github_hmac verifies via
-// GitHub's own delivery-id scheme and "none" has no signature to replay-guard.
-const SIGNING_MODE_OPTIONS: ReadonlyArray<readonly [string, string]> = [
-  ["bearer", "Bearer token"],
-  ["hmac_sha256", "HMAC (SHA-256)"],
-  ["github_hmac", "GitHub HMAC"],
-  ["none", "None (unsigned)"],
-];
-const REPLAY_WINDOW_SIGNING_MODES = new Set(["bearer", "hmac_sha256"]);
-const DEFAULT_REPLAY_WINDOW_SEC = 300;
 
 function TriggerDialog({
   mode,

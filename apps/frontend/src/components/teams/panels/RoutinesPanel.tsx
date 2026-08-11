@@ -24,9 +24,16 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
-import { describeCron } from "@/components/teams/shared/cron-readable";
+import { triggerSentence } from "@/components/teams/shared/triggerSentence";
+import { SecretField } from "@/components/teams/shared/components/SecretField";
+import {
+  SIGNING_MODE_OPTIONS,
+  REPLAY_WINDOW_SIGNING_MODES,
+  DEFAULT_REPLAY_WINDOW_SEC,
+} from "@/components/teams/shared/webhookSigning";
 import type {
   CompanyAgent,
+  RoutineTriggerSecretMaterial,
   RoutineVariable,
   RoutineVariableValue,
 } from "@/components/teams/shared/types";
@@ -107,18 +114,16 @@ function routineEnabled(r: Routine): boolean {
   return r.enabled === true;
 }
 
-// Display cron: prefer the first enabled trigger's expression, fall back to any
-// trigger's, then the legacy flat `cron`. Returns null when a routine has no
-// schedule trigger (e.g. event-only routines).
-function routineCron(r: Routine): string | null {
+// Plain-English "what starts this" subtitle for a routine's list row: picks
+// the first enabled trigger (or any trigger) and describes it via
+// triggerSentence. A legacy flat-cron row (no triggers[] array) synthesizes a
+// schedule trigger so it still reads as a sentence, not a raw cron string.
+function routineTriggerSentence(r: Routine): string {
   const triggers = r.triggers ?? [];
-  const enabledCron = triggers.find(
-    (t) => t.enabled !== false && t.cronExpression,
-  )?.cronExpression;
-  if (enabledCron) return enabledCron;
-  const anyCron = triggers.find((t) => t.cronExpression)?.cronExpression;
-  if (anyCron) return anyCron;
-  return r.cron ?? null;
+  const picked = triggers.find((t) => t.enabled !== false) ?? triggers[0];
+  if (picked) return triggerSentence(picked);
+  if (r.cron) return triggerSentence({ kind: "schedule", cronExpression: r.cron });
+  return "No trigger configured";
 }
 
 // Earliest upcoming `nextRunAt` across the routine's enabled triggers, as an
@@ -369,7 +374,6 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       key: "name",
       header: "Name",
       cell: (r) => {
-        const cron = routineCron(r);
         const next = nextRunLabel(r);
         return (
           <div>
@@ -377,13 +381,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
               {routineName(r)}
             </div>
             <div className="text-xs text-[var(--mute)]">
-              {cron ? (
-                <span>
-                  {describeCron(cron)} <span className="font-mono text-[var(--mute)]">({cron})</span>
-                </span>
-              ) : (
-                "No schedule"
-              )}
+              {routineTriggerSentence(r)}
               {" · "}
               {agentName(routineAgentId(r))}
               {next ? ` · next ${next}` : ""}
@@ -824,7 +822,33 @@ function SortMenu({
   );
 }
 
-/* ── create dialog ───────────────────────────────────────────────────────── */
+/* ── create dialog: "what should start this?" five-rung picker ──────────── */
+
+// The five ways a routine can be kicked off (spec Phase 1d). Only "schedule"
+// and "webhook" are wired to a real trigger today — the rest are visible,
+// selectable, and explain themselves as not-yet-built rather than being
+// hidden (requestable-not-hidden; delivered in Phase 2/4).
+type StartRung = "connected_app" | "webhook" | "email" | "schedule" | "agent_watch";
+
+const START_RUNGS: ReadonlyArray<{
+  value: StartRung;
+  label: string;
+  comingSoon?: boolean;
+}> = [
+  { value: "connected_app", label: "A connected app", comingSoon: true },
+  { value: "webhook", label: "Any other app" },
+  { value: "email", label: "An email arrives", comingSoon: true },
+  { value: "schedule", label: "On a schedule" },
+  { value: "agent_watch", label: "My agent watches it", comingSoon: true },
+];
+
+const COMING_SOON_COPY: Partial<Record<StartRung, string>> = {
+  connected_app:
+    "Coming soon — for now use “Any other app” to trigger this routine.",
+  email: "Coming soon — for now forward the email to your agent.",
+  agent_watch:
+    "Coming soon — for now use “Any other app” to trigger this routine.",
+};
 
 function CreateRoutineDialog({
   agents,
@@ -836,44 +860,109 @@ function CreateRoutineDialog({
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
+  const [rung, setRung] = useState<StartRung>("schedule");
   const [title, setTitle] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
+  const [signingMode, setSigningMode] = useState("bearer");
+  const [replayWindowSec, setReplayWindowSec] = useState(
+    String(DEFAULT_REPLAY_WINDOW_SEC),
+  );
   const [agentId, setAgentId] = useState<string | null>(null);
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Set once the webhook branch's create call returns — the one-time URL +
+  // secret then replace the form (mirrors RoutineDetailPanel's TriggerDialog
+  // flow, which this rung reuses).
+  const [createdWebhook, setCreatedWebhook] =
+    useState<RoutineTriggerSecretMaterial | null>(null);
+
+  const comingSoon = COMING_SOON_COPY[rung] != null;
+  const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
+  const replayWindowNum = Number(replayWindowSec);
+  const replayWindowValid =
+    !showReplayWindow ||
+    (Number.isFinite(replayWindowNum) &&
+      replayWindowNum >= 30 &&
+      replayWindowNum <= 86400);
+  const canSubmit =
+    title.trim() !== "" &&
+    !comingSoon &&
+    (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
   async function submit() {
-    if (!title.trim() || !cron.trim()) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     setErr(null);
     try {
       // Two-step create, mirroring upstream (paperclip/ui/src/pages/
       // Routines.tsx + RoutineDetail.tsx): the routine row is a titled,
-      // assignable unit; the cron schedule is a SEPARATE schedule trigger.
-      // 1. Create the routine (no cron here — that 422s upstream). The old
-      //    "prompt" maps to `description`. Start it active.
+      // assignable unit; the trigger is a SEPARATE resource attached after.
+      // 1. Create the routine (no trigger fields here — those 422 upstream on
+      //    the routine endpoint). The old "prompt" maps to `description`.
       const routine = await post<{ id: string }>("/routines", {
         title: title.trim(),
         assignee_agent_id: agentId ?? undefined,
         description: description.trim() || undefined,
         status: "active",
       });
-      // 2. Attach the schedule trigger that carries the cron expression.
-      //    Timezone matches upstream's `getLocalTimezone()` (browser TZ).
-      await post(`/routines/${routine.id}/triggers`, {
-        kind: "schedule",
-        cron_expression: cron.trim(),
-        timezone:
-          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      if (rung === "schedule") {
+        // 2. Attach the schedule trigger that carries the cron expression.
+        //    Timezone matches upstream's `getLocalTimezone()` (browser TZ).
+        await post(`/routines/${routine.id}/triggers`, {
+          kind: "schedule",
+          cron_expression: cron.trim(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        });
+        onCreated();
+        return;
+      }
+      // "Any other app" — the webhook branch, reusing the same
+      // signing-mode/replay-window fields and create call as
+      // RoutineDetailPanel's TriggerDialog.
+      const res = await post<{
+        secretMaterial?: RoutineTriggerSecretMaterial | null;
+      }>(`/routines/${routine.id}/triggers`, {
+        kind: "webhook",
+        signing_mode: signingMode,
+        replay_window_sec: showReplayWindow ? replayWindowNum : undefined,
       });
-      onCreated();
+      if (res?.secretMaterial) {
+        setCreatedWebhook(res.secretMaterial);
+        setSubmitting(false);
+      } else {
+        onCreated();
+      }
     } catch (e) {
       if (notifyConversionGate(e) === null) {
         setErr(gateMessage(e));
       }
       setSubmitting(false);
     }
+  }
+
+  if (createdWebhook) {
+    return (
+      <EditorialDialog
+        open
+        onOpenChange={(o) => !o && onCreated()}
+        title="Webhook created"
+        description="Copy the URL and secret now — the secret is shown only once."
+        footer={
+          <EditorialButton variant="primary" size="sm" onClick={onCreated}>
+            Done
+          </EditorialButton>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <SecretField label="Webhook URL" value={createdWebhook.webhookUrl} />
+          <SecretField
+            label="Webhook secret"
+            value={createdWebhook.webhookSecret}
+          />
+        </div>
+      </EditorialDialog>
+    );
   }
 
   return (
@@ -883,6 +972,50 @@ function CreateRoutineDialog({
       title="New routine"
     >
       <div className="flex flex-col gap-3">
+        <div className="block">
+          <span className="text-sm text-[var(--ink-soft)]">
+            What should start this?
+          </span>
+          <div
+            role="radiogroup"
+            aria-label="What should start this?"
+            className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-5"
+          >
+            {START_RUNGS.map((r) => (
+              <button
+                key={r.value}
+                type="button"
+                role="radio"
+                aria-checked={rung === r.value}
+                onClick={() => setRung(r.value)}
+                className={cn(
+                  "rounded border px-2 py-2 text-left text-xs transition-colors",
+                  rung === r.value
+                    ? "border-[var(--forest)] text-[var(--ink)]"
+                    : "border-[var(--edge)] text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
+                )}
+                style={
+                  rung === r.value
+                    ? {
+                        background:
+                          "color-mix(in srgb, var(--forest) 8%, transparent)",
+                      }
+                    : undefined
+                }
+              >
+                {r.label}
+                {r.comingSoon && (
+                  <span
+                    className="ml-1 text-[10px] uppercase tracking-wide"
+                    style={{ color: "var(--mute)" }}
+                  >
+                    soon
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
         <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Title</span>
           <input
@@ -906,18 +1039,75 @@ function CreateRoutineDialog({
             />
           </div>
         </div>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
-          <input
-            value={cron}
-            onChange={(e) => setCron(e.target.value)}
-            placeholder="0 9 * * *"
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
-          />
-          <span className="text-xs text-[var(--mute)]">
-            Cron expression — when the routine fires.
-          </span>
-        </label>
+
+        {rung === "schedule" && (
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
+            <input
+              value={cron}
+              onChange={(e) => setCron(e.target.value)}
+              placeholder="0 9 * * *"
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
+            />
+            <span className="text-xs text-[var(--mute)]">
+              Cron expression — when the routine fires.
+            </span>
+          </label>
+        )}
+
+        {rung === "webhook" && (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">
+                Signing mode
+              </span>
+              <div className="mt-1">
+                <EditorialSelect
+                  options={SIGNING_MODE_OPTIONS.map(([value, optLabel]) => ({
+                    value,
+                    label: optLabel,
+                  }))}
+                  value={signingMode}
+                  onValueChange={setSigningMode}
+                />
+              </div>
+              <span className="text-xs text-[var(--mute)]">
+                How Isol8 signs the callback — the caller verifies with the
+                secret shown once this routine is created.
+              </span>
+            </label>
+            {showReplayWindow && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Replay window (seconds)
+                </span>
+                <input
+                  type="number"
+                  min={30}
+                  max={86400}
+                  value={replayWindowSec}
+                  onChange={(e) => setReplayWindowSec(e.target.value)}
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+                />
+              </label>
+            )}
+          </>
+        )}
+
+        {comingSoon && (
+          <div
+            role="note"
+            className="rounded border px-3 py-2 text-sm"
+            style={{
+              borderColor: "var(--edge)",
+              background: "var(--cream-deeper)",
+              color: "var(--ink-soft)",
+            }}
+          >
+            {COMING_SOON_COPY[rung]}
+          </div>
+        )}
+
         <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Description</span>
           <textarea
@@ -948,7 +1138,7 @@ function CreateRoutineDialog({
             variant="primary"
             size="sm"
             onClick={submit}
-            disabled={submitting || !title.trim() || !cron.trim()}
+            disabled={submitting || !canSubmit}
           >
             {submitting ? "Creating…" : "Create"}
           </EditorialButton>

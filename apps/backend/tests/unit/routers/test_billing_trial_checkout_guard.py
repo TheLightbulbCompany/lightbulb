@@ -481,9 +481,10 @@ async def test_provider_switch_expires_old_session_and_mints_fresh(
     assert resp.status_code == 200
     assert resp.json()["checkout_url"] == "https://checkout.stripe.com/fresh"
     mock_expire.assert_called_once_with("cs_pending")
-    # The dead session's still-live claim must be released, or the fresh
-    # mint 409s checkout_in_progress until the TTL lapses.
-    mock_repo.release_checkout_slot.assert_awaited_once()
+    # The switch must NOT force-clear the slot (that unconditional clear was the
+    # double-charge ABA). The fresh mint's own try_claim_checkout_slot handles a
+    # stale claim; a live one correctly 409s. See routers/billing.py.
+    mock_repo.release_checkout_slot.assert_not_awaited()
     mock_create_checkout.assert_called_once()
 
 

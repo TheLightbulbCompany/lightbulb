@@ -596,20 +596,17 @@ async def create_trial_checkout(
             # row flips active momentarily and the normal guard takes over.
             raise HTTPException(status_code=409, detail="already_subscribed:checkout_completed")
         # Falling through means the pending session is dead (switch-expired
-        # just above, naturally expired, or unretrievable) and we are about
-        # to mint a replacement. The claim from that session's create may
-        # still be inside its 90s TTL — release it, or the mint below 409s
-        # `checkout_in_progress` and a provider switch is stuck for up to
-        # 90s. This is the ONE deliberate TOKEN-LESS release: we are clearing
-        # a *confirmed-dead* session's lingering claim that this request does
-        # not itself hold, so we cannot pass its token. The create-path
-        # failure releases ARE token-fenced (that was the double-charge ABA);
-        # this residual foreign-clear window is far narrower — a fully fenced
-        # switch would stamp the session id on the claim (follow-up).
-        try:
-            await billing_repo.release_checkout_slot(owner_id)
-        except Exception:
-            logger.exception("Failed to release checkout slot for owner %s", owner_id)
+        # just above, naturally expired, or unretrievable) and we are about to
+        # mint a replacement via create_flat_fee_checkout below. We deliberately
+        # do NOT force-clear the checkout slot here. An unconditional clear is
+        # the double-charge ABA this fix closes: two concurrent switches could
+        # each clear the other's fresh claim and both mint a completable session
+        # (distinct idempotency keys → Stripe won't collapse them). The
+        # replacement's own try_claim_checkout_slot handles the slot — a stale
+        # claim (>90s) is reclaimed, and a genuinely live claim yields a
+        # retryable 409 `checkout_in_progress`, which is correct: someone is
+        # minting. A rapid self-switch within 90s of a create may see that 409
+        # and retry; that is the price of not reopening the ABA.
 
     # A trial_local row EXISTS but carries no stripe_customer_id — the trial row
     # is written with no stripe_* fields so a brand-new signup can chat before

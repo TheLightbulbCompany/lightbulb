@@ -569,17 +569,6 @@ async def test_release_checkout_slot_wrong_token_is_noop(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_release_checkout_slot_tokenless_is_unconditional(dynamodb_table):
-    """The one deliberate token-less foreign clear (provider-switch path)."""
-    from core.repositories import billing_repo
-
-    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
-    assert await billing_repo.try_claim_checkout_slot("slot_owner")
-    await billing_repo.release_checkout_slot("slot_owner")  # no token
-    assert await billing_repo.try_claim_checkout_slot("slot_owner")
-
-
-@pytest.mark.asyncio
 async def test_try_claim_checkout_slot_no_row_returns_none(dynamodb_table):
     from core.repositories import billing_repo
 

@@ -260,11 +260,27 @@ def main() -> None:
         )
         return
 
-    print(f"\nQuarantining {len(remediable)} active surface(s)...")
-    for f in remediable:
-        _quarantine(client, db_arn, secret_arn, f)
-        print(f"  quarantined [{f.table}] id={f.row_id}")
-    print("Done. Re-run without --apply to confirm the audit is clean.")
+    # Apply as a bounded converge loop. ORDER MATTERS: neutralize APPROVALS first
+    # (approving a dangerous approval creates a new agent), THEN re-scan agents —
+    # so an approval that lands mid-run can't leave an invokable agent behind. Then
+    # re-scan; repeat until a pass finds nothing, or warn (concurrent activity)
+    # after a few passes. Each fresh query only matches still-dangerous rows
+    # (rejected approvals + terminated/gateway agents drop out), so this converges.
+    print(f"\nQuarantining active surfaces (env={args.env})...")
+    for attempt in range(1, 4):
+        apprs = classify_approvals(_query_approvals(client, db_arn, secret_arn))
+        for f in apprs:
+            _quarantine(client, db_arn, secret_arn, f)
+            print(f"  rejected   [approvals] id={f.row_id}")
+        agents = classify_agents(_query_agents(client, db_arn, secret_arn))
+        for f in agents:
+            _quarantine(client, db_arn, secret_arn, f)
+            print(f"  terminated [agents] id={f.row_id}")
+        if not apprs and not agents:
+            print("Done — apply pass is clean. Re-run without --apply to confirm.")
+            return
+        print(f"  pass {attempt}: {len(apprs)} approval(s) + {len(agents)} agent(s) neutralized; rescanning...")
+    print("⚠ Still finding dangerous rows after 3 passes — likely concurrent approvals in flight. Re-run --apply.")
 
 
 if __name__ == "__main__":

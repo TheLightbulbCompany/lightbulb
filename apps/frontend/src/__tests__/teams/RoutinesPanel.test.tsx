@@ -32,6 +32,40 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   }),
 }));
 
+// T6: the "A connected app" rung talks directly to the app API (automations
+// endpoints are mounted under /api/v1, not the Teams BFF), so it goes through
+// useApi(), not useTeamsApi(). Preserve every other export (ApiError,
+// BACKEND_URL, ...) via importOriginal so nothing else that imports @/lib/api
+// breaks.
+const mockAutomationsPost = vi.fn();
+const mockAutomationsPut = vi.fn();
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    useApi: () => ({
+      get: vi.fn(),
+      post: mockAutomationsPost,
+      put: mockAutomationsPut,
+      patch: vi.fn(),
+      del: vi.fn(),
+    }),
+  };
+});
+
+let connectionsData: unknown[] = [];
+vi.mock("@/hooks/useConnections", () => ({
+  useConnections: () => ({
+    connections: connectionsData,
+    isLoading: false,
+    error: undefined,
+    mutate: vi.fn(),
+    connectPaste: vi.fn(),
+    startOAuth: vi.fn(),
+    disconnect: vi.fn(),
+  }),
+}));
+
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 
 // An upstream-shaped routine row (RoutineListItem subset).
@@ -57,6 +91,9 @@ describe("RoutinesPanel", () => {
     mockPatch.mockReset();
     mockDel.mockReset();
     mockRead.mockClear();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    connectionsData = [];
     routinesData = { routines: [routine()] };
     agentsData = { agents: AGENTS };
   });
@@ -365,7 +402,9 @@ describe("RoutinesPanel", () => {
     fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Whatever" },
     });
-    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    // "A connected app" is wired (T6) — the still-unbuilt rungs are email and
+    // agent-watches.
+    await user.click(screen.getByRole("radio", { name: /My agent watches it/ }));
 
     expect(screen.getByText(/Coming soon/)).toBeInTheDocument();
     expect(screen.getByText("Create")).toBeDisabled();
@@ -403,6 +442,151 @@ describe("RoutinesPanel", () => {
     fireEvent.keyDown(connectedApp, { key: "ArrowUp" });
     expect(agentWatch).toHaveAttribute("aria-checked", "true");
     expect(document.activeElement).toBe(agentWatch);
+  });
+});
+
+describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
+  function connection(overrides: Record<string, unknown> = {}) {
+    return {
+      provider: "stripe",
+      display_name: "Stripe",
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: ["Invoice payment failed", "Charge refunded"],
+      inbound: {
+        webhook_registration: "guided_paste",
+        events: [
+          { id: "invoice.payment_failed", label: "Invoice payment failed" },
+          { id: "charge.refunded", label: "Charge refunded" },
+        ],
+      },
+      ...overrides,
+    };
+  }
+
+  const GITHUB = connection({
+    provider: "github",
+    display_name: "GitHub",
+    inbound: {
+      webhook_registration: "auto",
+      events: [{ id: "workflow_run", label: "Workflow run completed" }],
+    },
+  });
+
+  beforeEach(() => {
+    mockAutomationsPost.mockResolvedValue({});
+    mockAutomationsPut.mockResolvedValue({ status: "stored" });
+  });
+
+  async function openConnectedAppRung() {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    return user;
+  }
+
+  it("lists only connected providers that declare inbound events", async () => {
+    connectionsData = [
+      connection(),
+      GITHUB,
+      // Connected but no inbound events -> not trigger-capable.
+      connection({ provider: "acme", display_name: "Acme", inbound: null, can_trigger: [] }),
+      // Has inbound events but not connected -> not offered.
+      connection({ provider: "slack", display_name: "Slack", status: "disconnected" }),
+    ];
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    expect(await screen.findByRole("option", { name: "Stripe" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "GitHub" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Acme" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Slack" })).not.toBeInTheDocument();
+  });
+
+  it("choosing a provider populates the event dropdown from its inbound events", async () => {
+    connectionsData = [connection()];
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+
+    await user.click(screen.getAllByRole("combobox")[1]);
+    expect(await screen.findByRole("option", { name: "Invoice payment failed" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Charge refunded" })).toBeInTheDocument();
+  });
+
+  it("guided (Stripe): submits {provider,event_id}, then shows the proxy URL + a signing-secret field that PUTs it", async () => {
+    connectionsData = [connection()];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+      instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "stripe",
+      event_id: "invoice.payment_failed",
+    });
+
+    expect(
+      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+    ).toBeInTheDocument();
+    const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
+    await user.type(secretField, "whsec_abc123");
+    await user.click(screen.getByRole("button", { name: /save secret/i }));
+
+    await waitFor(() => expect(mockAutomationsPut).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPut).toHaveBeenCalledWith("/automations/pub_1/webhook-secret", {
+      webhook_secret: "whsec_abc123",
+    });
+  });
+
+  it("auto (GitHub): shows a repo field before submit, sends {provider,event_id,repo}, and shows 'Registered'", async () => {
+    connectionsData = [GITHUB];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_2",
+      trigger_public_id: "pub_2",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_2",
+      guided: false,
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "GitHub" }));
+
+    // The repo field appears BEFORE submit for an auto-registration provider.
+    const repoField = screen.getByLabelText(/repository/i);
+    await user.type(repoField, "acme/widgets");
+
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Workflow run completed" }));
+
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "github",
+      event_id: "workflow_run",
+      repo: "acme/widgets",
+    });
+
+    // Exact match — the dialog title/description also contain the substring
+    // "registered", so a loose regex would match more than one node.
+    expect(await screen.findByText("Registered.")).toBeInTheDocument();
+    // No signing-secret paste step for an auto-registered provider.
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
   });
 });
 

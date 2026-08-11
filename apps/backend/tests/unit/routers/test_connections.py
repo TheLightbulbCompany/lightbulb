@@ -270,6 +270,33 @@ class TestListConnections:
         ]
         assert by_key["google"]["can_trigger"] == []
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_inbound_carries_event_ids_and_registration_mode(self, mock_repo, async_client):
+        # Task 6: the Add-flow needs event IDS (not just labels) plus whether
+        # registration is guided_paste (Stripe) or auto (GitHub) to decide
+        # whether to show a repo field before submit. `can_trigger` (labels
+        # only) stays untouched for the Integrations card.
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["stripe"]["inbound"] == {
+            "webhook_registration": "guided_paste",
+            "events": [
+                {"id": "invoice.payment_failed", "label": "Invoice payment failed"},
+                {"id": "charge.refunded", "label": "Charge refunded"},
+                {"id": "customer.subscription.deleted", "label": "Subscription canceled"},
+            ],
+        }
+        assert by_key["github"]["inbound"] == {
+            "webhook_registration": "auto",
+            "events": [
+                {"id": "workflow_run", "label": "Workflow run completed"},
+                {"id": "issues", "label": "Issue opened"},
+            ],
+        }
+        assert by_key["google"]["inbound"] is None
+
 
 class TestEnvGatedProvider:
     """A provider with an `environments` list (Instagram: [local, dev]) is

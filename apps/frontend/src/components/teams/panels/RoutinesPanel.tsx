@@ -21,6 +21,8 @@ import {
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useApi } from "@/lib/api";
+import { useConnections } from "@/hooks/useConnections";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
@@ -835,7 +837,7 @@ const START_RUNGS: ReadonlyArray<{
   label: string;
   comingSoon?: boolean;
 }> = [
-  { value: "connected_app", label: "A connected app", comingSoon: true },
+  { value: "connected_app", label: "A connected app" },
   { value: "webhook", label: "Any other app" },
   { value: "email", label: "An email arrives", comingSoon: true },
   { value: "schedule", label: "On a schedule" },
@@ -843,12 +845,23 @@ const START_RUNGS: ReadonlyArray<{
 ];
 
 const COMING_SOON_COPY: Partial<Record<StartRung, string>> = {
-  connected_app:
-    "Coming soon — for now use “Any other app” to trigger this automation.",
   email: "Coming soon — for now forward the email to your agent.",
   agent_watch:
     "Coming soon — for now use “Any other app” to trigger this automation.",
 };
+
+// POST /automations/from-integration's response (core/services/
+// inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
+// paste the proxy URL into the provider's own dashboard (Stripe) and then
+// paste back the signing secret it hands them; !guided -> we already
+// registered the webhook for them (GitHub) and there's nothing left to do.
+interface FromIntegrationResult {
+  routine_id: string;
+  trigger_public_id: string;
+  proxy_url: string;
+  guided: boolean;
+  instructions?: string | null;
+}
 
 function CreateRoutineDialog({
   agents,
@@ -860,6 +873,11 @@ function CreateRoutineDialog({
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
+  // The connected-app rung talks straight to the app API — automations
+  // endpoints (routers/automations.py) are mounted under /api/v1, not the
+  // Teams BFF that `post` above proxies through.
+  const automationsApi = useApi();
+  const { connections } = useConnections();
   const [rung, setRung] = useState<StartRung>("schedule");
   // Roving tabindex for the rung radiogroup (WAI-ARIA APG pattern): only the
   // checked radio is a tab stop; Arrow keys move both the selection and DOM
@@ -881,6 +899,31 @@ function CreateRoutineDialog({
   const [createdWebhook, setCreatedWebhook] =
     useState<RoutineTriggerSecretMaterial | null>(null);
 
+  // "A connected app" rung state — a provider + one of its events, submitted
+  // straight to POST /automations/from-integration (no title/assignee/
+  // description: the registry template supplies all of that server-side).
+  const [connProvider, setConnProvider] = useState<string | null>(null);
+  const [connEventId, setConnEventId] = useState<string | null>(null);
+  const [connRepo, setConnRepo] = useState("");
+  const [connResult, setConnResult] = useState<FromIntegrationResult | null>(
+    null,
+  );
+  const [whsecInput, setWhsecInput] = useState("");
+  const [whsecSubmitting, setWhsecSubmitting] = useState(false);
+  const [whsecSaved, setWhsecSaved] = useState(false);
+
+  // Trigger-capable = connected AND the registry declares inbound events for
+  // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
+  const triggerableConnections = connections.filter(
+    (c) => c.status === "connected" && (c.inbound?.events.length ?? 0) > 0,
+  );
+  const selectedConnection =
+    triggerableConnections.find((c) => c.provider === connProvider) ?? null;
+  const connEvents = selectedConnection?.inbound?.events ?? [];
+  // "auto" registration (GitHub) needs a repo BEFORE we can register the
+  // hook; "guided_paste" (Stripe) has nothing to collect up front.
+  const needsRepo = selectedConnection?.inbound?.webhook_registration === "auto";
+
   const comingSoon = COMING_SOON_COPY[rung] != null;
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);
@@ -890,9 +933,13 @@ function CreateRoutineDialog({
       replayWindowNum >= 30 &&
       replayWindowNum <= 86400);
   const canSubmit =
-    title.trim() !== "" &&
-    !comingSoon &&
-    (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
+    rung === "connected_app"
+      ? connProvider != null &&
+        connEventId != null &&
+        (!needsRepo || connRepo.trim() !== "")
+      : title.trim() !== "" &&
+        !comingSoon &&
+        (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
   function moveRung(delta: 1 | -1) {
     const i = START_RUNGS.findIndex((r) => r.value === rung);
@@ -911,8 +958,58 @@ function CreateRoutineDialog({
     }
   }
 
+  // "A connected app" — one call seeds BOTH the routine and its trigger from
+  // the registry template (core/services/inbound_triggers.py), so none of
+  // the title/assignee/description fields the other two rungs use apply
+  // here. `repo` is only sent for an auto-registration provider (GitHub).
+  async function submitConnectedApp() {
+    if (!connProvider || !connEventId) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const body: { provider: string; event_id: string; repo?: string } = {
+        provider: connProvider,
+        event_id: connEventId,
+      };
+      if (needsRepo) body.repo = connRepo.trim();
+      const result = (await automationsApi.post(
+        "/automations/from-integration",
+        body,
+      )) as FromIntegrationResult;
+      setConnResult(result);
+    } catch (e) {
+      if (notifyConversionGate(e) === null) {
+        setErr(gateMessage(e));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function saveWebhookSecret() {
+    if (!connResult || whsecInput.trim() === "") return;
+    setWhsecSubmitting(true);
+    try {
+      await automationsApi.put(
+        `/automations/${connResult.trigger_public_id}/webhook-secret`,
+        { webhook_secret: whsecInput.trim() },
+      );
+      setWhsecSaved(true);
+    } catch (e) {
+      if (notifyConversionGate(e) === null) {
+        setErr(gateMessage(e));
+      }
+    } finally {
+      setWhsecSubmitting(false);
+    }
+  }
+
   async function submit() {
     if (!canSubmit) return;
+    if (rung === "connected_app") {
+      await submitConnectedApp();
+      return;
+    }
     setSubmitting(true);
     setErr(null);
     try {
@@ -986,6 +1083,70 @@ function CreateRoutineDialog({
     );
   }
 
+  if (connResult) {
+    const providerName =
+      selectedConnection?.display_name ?? connProvider ?? "the app";
+    return (
+      <EditorialDialog
+        open
+        onOpenChange={(o) => !o && onCreated()}
+        title={connResult.guided ? "Finish setup" : "Automation registered"}
+        description={
+          connResult.guided
+            ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
+            : `${providerName} registered the webhook automatically — this automation is live.`
+        }
+        footer={
+          <EditorialButton variant="primary" size="sm" onClick={onCreated}>
+            Done
+          </EditorialButton>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <SecretField label="Webhook URL" value={connResult.proxy_url} />
+          {connResult.instructions && (
+            <p className="text-xs text-[var(--mute)]">
+              {connResult.instructions}
+            </p>
+          )}
+          {connResult.guided ? (
+            <>
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Paste your {providerName} signing secret
+                </span>
+                <input
+                  value={whsecInput}
+                  onChange={(e) => setWhsecInput(e.target.value)}
+                  placeholder="whsec_..."
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
+                />
+              </label>
+              {whsecSaved ? (
+                <p className="text-sm" style={{ color: "var(--forest)" }}>
+                  Secret saved.
+                </p>
+              ) : (
+                <EditorialButton
+                  variant="secondary"
+                  size="sm"
+                  disabled={whsecSubmitting || whsecInput.trim() === ""}
+                  onClick={saveWebhookSecret}
+                >
+                  {whsecSubmitting ? "Saving…" : "Save secret"}
+                </EditorialButton>
+              )}
+            </>
+          ) : (
+            <p className="text-sm" style={{ color: "var(--forest)" }}>
+              Registered.
+            </p>
+          )}
+        </div>
+      </EditorialDialog>
+    );
+  }
+
   return (
     <EditorialDialog
       open
@@ -1042,29 +1203,99 @@ function CreateRoutineDialog({
             ))}
           </div>
         </div>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Title</span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
-          />
-        </label>
-        {/* Agent picker replaces the old raw "Agent ID" text input — the same
-            editorial AssigneePicker the issues surface uses. Assignee is
-            optional upstream (a routine can be created unassigned). */}
-        <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
-          <div className="mt-1">
-            <AssigneePicker
-              agents={agents}
-              selectedAgentId={agentId}
-              onChange={setAgentId}
-              variant="inline"
-              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
-            />
-          </div>
-        </div>
+        {/* Title/Assignee only apply to the schedule/webhook rungs — the
+            connected-app rung's registry template supplies both server-side
+            (POST /automations/from-integration). */}
+        {rung !== "connected_app" && (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Title</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+              />
+            </label>
+            {/* Agent picker replaces the old raw "Agent ID" text input — the
+                same editorial AssigneePicker the issues surface uses.
+                Assignee is optional upstream (a routine can be created
+                unassigned). */}
+            <div className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
+              <div className="mt-1">
+                <AssigneePicker
+                  agents={agents}
+                  selectedAgentId={agentId}
+                  onChange={setAgentId}
+                  variant="inline"
+                  className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {rung === "connected_app" && (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">
+                Connected app
+              </span>
+              <div className="mt-1">
+                <EditorialSelect
+                  options={triggerableConnections.map((c) => ({
+                    value: c.provider,
+                    label: c.display_name,
+                  }))}
+                  value={connProvider ?? undefined}
+                  onValueChange={(next) => {
+                    setConnProvider(next);
+                    setConnEventId(null);
+                  }}
+                  placeholder={
+                    triggerableConnections.length === 0
+                      ? "No connected apps can trigger automations yet"
+                      : "Select an app…"
+                  }
+                  disabled={triggerableConnections.length === 0}
+                />
+              </div>
+            </label>
+            {selectedConnection && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">Event</span>
+                <div className="mt-1">
+                  <EditorialSelect
+                    options={connEvents.map((e) => ({
+                      value: e.id,
+                      label: e.label,
+                    }))}
+                    value={connEventId ?? undefined}
+                    onValueChange={setConnEventId}
+                    placeholder="Select an event…"
+                  />
+                </div>
+              </label>
+            )}
+            {needsRepo && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Repository
+                </span>
+                <input
+                  value={connRepo}
+                  onChange={(e) => setConnRepo(e.target.value)}
+                  placeholder="owner/repo"
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
+                />
+                <span className="text-xs text-[var(--mute)]">
+                  {selectedConnection?.display_name} registers the webhook on
+                  this repo automatically.
+                </span>
+              </label>
+            )}
+          </>
+        )}
 
         {rung === "schedule" && (
           <label className="block">
@@ -1134,15 +1365,19 @@ function CreateRoutineDialog({
           </div>
         )}
 
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Description</span>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
-            rows={3}
-          />
-        </label>
+        {rung !== "connected_app" && (
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">
+              Description
+            </span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+              rows={3}
+            />
+          </label>
+        )}
         {err && (
           <div
             className="text-[var(--danger)] text-sm rounded px-3 py-2"

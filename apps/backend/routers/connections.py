@@ -287,6 +287,21 @@ def _connection_row(
         # `automations_count` (how many routines already fire off it) is
         # deferred — it needs a per-owner routines scan, not pure registry data.
         "can_trigger": [e.label for e in v.inbound.events] if v.inbound else [],
+        # inbound: the Add-flow's "A connected app" rung (T6) needs event IDS
+        # (not just labels) plus whether hookup is guided_paste (owner pastes
+        # the URL into the provider's own dashboard, e.g. Stripe) or auto
+        # (we register the hook ourselves, e.g. GitHub — the frontend shows a
+        # repo field first). Additive alongside `can_trigger` rather than
+        # replacing it, so the already-shipped Integrations card DTO is
+        # untouched.
+        "inbound": (
+            {
+                "webhook_registration": v.inbound.webhook_registration,
+                "events": [{"id": e.id, "label": e.label} for e in v.inbound.events],
+            }
+            if v.inbound
+            else None
+        ),
     }
 
 

@@ -281,6 +281,12 @@ def _connection_row(
         "byo_required": v.byo_required,
         "byo_configured": byo,
         "byo_setup_url": v.byo_setup_url,
+        # can_trigger: this provider's inbound event labels (registry `inbound`,
+        # T1) — the Integrations card's "Can trigger" line. Empty when the
+        # provider isn't (yet) wired as an Automations trigger source.
+        # `automations_count` (how many routines already fire off it) is
+        # deferred — it needs a per-owner routines scan, not pure registry data.
+        "can_trigger": [e.label for e in v.inbound.events] if v.inbound else [],
     }
 
 

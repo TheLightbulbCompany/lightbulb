@@ -255,6 +255,21 @@ class TestListConnections:
         assert by_key["google"]["byo_required"] is True
         assert "requires_bedrock" not in by_key["google"]
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_can_trigger_reflects_registry_inbound_events(self, mock_repo, async_client):
+        # stripe declares `inbound` (T1) -> can_trigger is its event labels.
+        # google declares no `inbound` -> can_trigger is empty.
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["stripe"]["can_trigger"] == [
+            "Invoice payment failed",
+            "Charge refunded",
+            "Subscription canceled",
+        ]
+        assert by_key["google"]["can_trigger"] == []
+
 
 class TestEnvGatedProvider:
     """A provider with an `environments` list (Instagram: [local, dev]) is

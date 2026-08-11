@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.audit_paperclip_adapter_types import (
+    _is_activate_branch,
     classify_agents,
     classify_approvals,
     classify_join_requests,
@@ -34,43 +35,49 @@ def test_classify_agents_flags_only_dangerous_and_is_remediable():
     assert all(f.remediable for f in found)  # wakeup can't be blocked -> we quarantine
 
 
+@pytest.mark.parametrize(
+    "agent_id,agent_id_type,activate",
+    [
+        ("ag_1", "string", True),  # truthy string -> activate (safe)
+        ("", "string", False),  # empty string -> create branch
+        (None, None, False),  # absent -> create branch
+        ("false", "boolean", False),  # JSON false renders as "false" text
+        ("0", "number", False),  # JSON 0 renders as "0" text
+        ("null", "null", False),  # JSON null
+    ],
+)
+def test_is_activate_branch_matches_js_truthiness(agent_id, agent_id_type, activate):
+    assert _is_activate_branch(agent_id, agent_id_type) is activate
+
+
+def _hire(id_, adapter_type, *, status="pending", agent_id=None, agent_id_type=None):
+    return {
+        "id": id_,
+        "company_id": "c1",
+        "type": "hire_agent",
+        "status": status,
+        "adapter_type": adapter_type,
+        "agent_id": agent_id,
+        "agent_id_type": agent_id_type,
+    }
+
+
 def test_classify_approvals_only_pending_hire_with_dangerous_payload():
     rows = [
-        {"id": "p1", "company_id": "c1", "type": "hire_agent", "status": "pending", "adapter_type": None},
-        {
-            "id": "p2",
-            "company_id": "c1",
-            "type": "hire_agent",
-            "status": "revision_requested",
-            "adapter_type": "process",
-        },
-        {"id": "p3", "company_id": "c1", "type": "hire_agent", "status": "pending", "adapter_type": "openclaw_gateway"},
-        {"id": "p4", "company_id": "c1", "type": "hire_agent", "status": "approved", "adapter_type": "process"},
+        _hire("p1", None),  # null adapter, create branch -> flag
+        _hire("p2", "process", status="revision_requested"),  # flag
+        _hire("p3", "openclaw_gateway"),  # safe adapter -> ignore
+        _hire("p4", "process", status="approved"),  # wrong status -> ignore
         {"id": "p5", "company_id": "c1", "type": "budget_increase", "status": "pending", "adapter_type": None},
-        # Activate branch: agentId set, adapterType deliberately absent — a legit
-        # marketplace hire of an already-created (filtered) agent. Must NOT flag.
-        {
-            "id": "p6",
-            "company_id": "c1",
-            "type": "hire_agent",
-            "status": "pending",
-            "adapter_type": None,
-            "agent_id": "ag_1",
-        },
-        # Empty-string agentId is FALSY upstream -> still the create branch -> must flag.
-        {
-            "id": "p7",
-            "company_id": "c1",
-            "type": "hire_agent",
-            "status": "pending",
-            "adapter_type": None,
-            "agent_id": "",
-        },
+        _hire("p6", None, agent_id="ag_1", agent_id_type="string"),  # activate branch -> ignore
+        _hire("p7", None, agent_id="", agent_id_type="string"),  # empty string -> flag
+        _hire("p8", None, agent_id="false", agent_id_type="boolean"),  # JSON false -> flag
+        _hire("p9", None, agent_id="0", agent_id_type="number"),  # JSON 0 -> flag
     ]
     found = classify_approvals(rows)
-    # null/process CREATE-branch hires flagged (incl. empty agentId);
-    # gateway/approved/non-hire/truthy-activate ignored.
-    assert {f.row_id for f in found} == {"p1", "p2", "p7"}
+    # every falsy-agentId create-branch hire flagged; safe-adapter / wrong-status /
+    # non-hire / truthy-string-activate ignored.
+    assert {f.row_id for f in found} == {"p1", "p2", "p7", "p8", "p9"}
     assert all(f.remediable for f in found)
 
 

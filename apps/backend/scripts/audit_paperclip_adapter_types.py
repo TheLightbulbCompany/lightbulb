@@ -81,20 +81,30 @@ def classify_agents(rows: list[dict]) -> list[Finding]:
     ]
 
 
-def classify_approvals(rows: list[dict]) -> list[Finding]:
-    """rows: [{id, company_id, type, status, adapter_type, agent_id}] — pending hire approvals.
+def _is_activate_branch(agent_id: str | None, agent_id_type: str | None) -> bool:
+    """True if this approval ACTIVATES a pre-created (already-filtered) agent.
 
-    An approval carrying ``payload.agentId`` ACTIVATES an already-created (and
-    therefore already-filtered) agent — approve calls ``activatePendingApproval``,
-    not the create branch — and deliberately omits adapterType. Those are safe;
-    only the create branch (no agentId) with a dangerous/null type is a threat.
+    Upstream (approvals.approve) branches on JS truthiness of ``payload.agentId``:
+    a truthy agentId activates that agent; anything falsy takes the CREATE branch
+    (which defaults a missing adapterType to ``process``). ``agent_id_type`` is the
+    jsonb type; only a non-empty JSON STRING is truthy — boolean ``false``, number
+    ``0``, ``null``, ``""``, and an absent key are all falsy (i.e. create branch).
+    """
+    return agent_id_type == "string" and bool(agent_id)
+
+
+def classify_approvals(rows: list[dict]) -> list[Finding]:
+    """rows: [{id, company_id, type, status, adapter_type, agent_id, agent_id_type}].
+
+    Flags pending/revision hire approvals whose CREATE branch would mint a
+    host-exec agent. The activate branch (truthy string agentId) is safe.
     """
     return [
         Finding("approvals", r["id"], r.get("company_id", ""), r.get("status", ""), r.get("adapter_type"), True)
         for r in rows
         if r.get("type") == "hire_agent"
         and r.get("status") in ("pending", "revision_requested")
-        and not r.get("agent_id")
+        and not _is_activate_branch(r.get("agent_id"), r.get("agent_id_type"))
         and is_dangerous(r.get("adapter_type"))
     ]
 
@@ -161,16 +171,16 @@ def _query_approvals(client, db_arn, secret_arn) -> list[dict]:
         client,
         db_arn,
         secret_arn,
+        # Return the agentId text AND its jsonb type so the (tested) classifier can
+        # apply JS-truthiness (only a non-empty string agentId is the safe activate
+        # branch; false/0/null/'' all take the create branch). The SQL only filters
+        # type/status/adapterType — activate-branch exclusion happens in the classifier.
         "SELECT id, company_id, type, status, payload->>'adapterType' AS adapter_type, "
-        "payload->>'agentId' AS agent_id FROM approvals "
+        "payload->>'agentId' AS agent_id, jsonb_typeof(payload->'agentId') AS agent_id_type FROM approvals "
         "WHERE type = 'hire_agent' AND status IN ('pending', 'revision_requested') "
-        # A truthy payload.agentId => approve ACTIVATES that pre-created agent (safe). The
-        # upstream branch is a truthiness check, so an EMPTY-string agentId still takes the
-        # create branch (null adapterType -> process); match that (not just IS NULL).
-        "AND (payload->>'agentId' IS NULL OR payload->>'agentId' = '') "
         f"AND (payload->>'adapterType' IS NULL OR payload->>'adapterType' NOT IN {_SAFE_SQL})",
     )
-    return _rows(resp, ["id", "company_id", "type", "status", "adapter_type", "agent_id"])
+    return _rows(resp, ["id", "company_id", "type", "status", "adapter_type", "agent_id", "agent_id_type"])
 
 
 def _query_join_requests(client, db_arn, secret_arn) -> list[dict]:
@@ -237,9 +247,7 @@ def main() -> None:
 
     print(f"\n=== Paperclip adapter audit — env={args.env} ===")
     if not findings and not rev_count:
-        print("✓ Clean: no live agents, pending approvals, join-requests, or revisions name a host-exec adapter.")
-        return
-
+        print("✓ Initial scan clean: no live agents, pending approvals, join-requests, or revisions are dangerous.")
     if remediable:
         print(f"\n⚠ {len(remediable)} ACTIVE host-exec surface(s) (wakeup / approve):")
         for f in remediable:
@@ -252,14 +260,17 @@ def main() -> None:
         print(f"\nℹ {rev_count} agent_config_revision(s) carry a non-gateway adapterType (either side). Rollback is")
         print("  blocked (#1673) so they are inert — scrub by hand before ever un-blocking rollback.")
 
-    if not remediable:
-        return
     if not args.apply:
-        print(
-            "\nDry run. Re-run with --apply to quarantine the ACTIVE surfaces (agents->terminated, approvals->rejected)."
-        )
+        if remediable:
+            print(
+                "\nDry run. Re-run with --apply to quarantine the ACTIVE surfaces "
+                "(agents->terminated, approvals->rejected)."
+            )
         return
 
+    # --apply ALWAYS runs the converge loop, even if the initial scan looked clean:
+    # a dangerous approval committing BETWEEN the agent and approval queries above
+    # can hide a freshly-created agent from both. The loop re-queries from scratch.
     # Apply as a bounded converge loop. ORDER MATTERS: neutralize APPROVALS first
     # (approving a dangerous approval creates a new agent), THEN re-scan agents —
     # so an approval that lands mid-run can't leave an invokable agent behind. Then

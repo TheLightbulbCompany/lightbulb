@@ -20,9 +20,21 @@ here. Storing it is what flips the trigger from "ordinary/unsigned" to
 write MUST invalidate that router's cached whsec_ lookup immediately, or a
 just-armed (or just-rotated) trigger keeps forwarding UNSIGNED for up to
 that cache's TTL. See ``core/services/credentials/stripe_edge.py``.
+
+Before storing, it verifies ``public_id`` actually resolves to a webhook
+trigger in the CALLER's own Paperclip company — reusing the exact binding
+lookup ``routers/paperclip_trigger_proxy.py`` uses to gate a fire. Today
+this is inert defense-in-depth (``owner_id`` is self-derived from the
+caller's own auth, so a write can only ever land in the caller's own
+Secrets Manager namespace, and the proxy's own read path re-checks the
+binding independently) — but it's a webhook-secret write endpoint, it
+should confirm ownership like the proxy does, and a foreign/typo'd
+``public_id`` should 404 instead of silently reporting success.
 """
 
 from __future__ import annotations
+
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -35,7 +47,10 @@ from core.services.credentials.stripe_edge import (
     stripe_trigger_secret_provider,
 )
 from core.services.inbound_triggers import seed_trigger_routine
+from routers import paperclip_trigger_proxy
 from routers.teams._guards import require_always_on_entitlement
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/automations", tags=["automations"])
 
@@ -81,11 +96,28 @@ async def set_webhook_secret(
     trigger (the paste half of the guided flow — the frontend calls this
     once the owner has the ``whsec_`` Stripe showed them).
 
-    Invalidates the trigger proxy's cached lookup immediately after the
-    store — see the module docstring for why that ordering is load-bearing.
+    404s on a ``public_id`` that isn't a webhook trigger in the caller's own
+    company (see the module docstring). Invalidates the trigger proxy's
+    cached lookup immediately after the store — see the module docstring
+    for why that ordering is load-bearing.
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+
+    # Same path-injection / unbounded-cache-key guard the proxy fire route
+    # uses (publicIds are 24-hex upstream).
+    if not public_id.isalnum() or len(public_id) > 64:
+        raise HTTPException(status_code=400, detail="invalid_public_id")
+
+    if not paperclip_trigger_proxy._binding_cached(owner_id, public_id):
+        try:
+            bound = await paperclip_trigger_proxy._resolve_trigger_binding(owner_id, public_id)
+        except Exception as exc:  # noqa: BLE001 — fail CLOSED on resolver trouble, same as the proxy
+            logger.warning("automations: trigger binding resolve failed owner=%s err=%s", owner_id, exc)
+            raise HTTPException(status_code=503, detail="trigger_resolution_unavailable") from exc
+        if not bound:
+            raise HTTPException(status_code=404, detail="unknown_trigger")
+
     await integration_secret_store.put(
         owner_id,
         stripe_trigger_secret_provider(public_id),

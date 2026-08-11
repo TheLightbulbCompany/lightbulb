@@ -156,8 +156,8 @@ def classify_join_requests(rows: list[dict]) -> list[Finding]:
 # --------------------------------------------------------------------------- AWS
 
 
-def _secret_arn(env: str) -> str:
-    sm = boto3.client("secretsmanager", region_name=REGION)
+def _secret_arn(session, env: str) -> str:
+    sm = session.client("secretsmanager", region_name=REGION)
     needle = f"isol8-{env}-paperclip-db-credentials"
     for page in sm.get_paginator("list_secrets").paginate():
         for s in page.get("SecretList", []):
@@ -166,11 +166,11 @@ def _secret_arn(env: str) -> str:
     sys.exit(f"Could not find paperclip-db-credentials secret for env={env}")
 
 
-def _aurora(env: str):
+def _aurora(session, env: str):
     return (
-        boto3.client("rds-data", region_name=REGION),
+        session.client("rds-data", region_name=REGION),
         f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster:isol8-{env}-paperclip-db",
-        _secret_arn(env),
+        _secret_arn(session, env),
     )
 
 
@@ -269,9 +269,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--env", required=True, choices=["dev", "staging", "prod"])
     ap.add_argument("--apply", action="store_true", help="Quarantine dangerous rows (default: audit only)")
+    ap.add_argument(
+        "--profile",
+        default="isol8-admin",
+        help="AWS profile (default: isol8-admin, matching the documented `aws sso login`)",
+    )
     args = ap.parse_args()
 
-    client, db_arn, secret_arn = _aurora(args.env)
+    # Bind to the documented SSO profile explicitly: `aws sso login --profile
+    # isol8-admin` does NOT set AWS_PROFILE, so a bare boto3 client would use the
+    # default chain (wrong identity / no creds) rather than the logged-in profile.
+    session = boto3.Session(profile_name=args.profile)
+    client, db_arn, secret_arn = _aurora(session, args.env)
 
     findings = (
         classify_agents(_query_agents(client, db_arn, secret_arn))

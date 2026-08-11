@@ -498,7 +498,8 @@ async def _ensure_paperclip_for_org(
                 # is a strongly-consistent PK conditional write that exactly
                 # one caller wins; losers fall through to the join path on
                 # their next poll once the winner's company is GSI-visible.
-                if not await provisioning.try_acquire_org_create_claim(org_id, holder=user_id):
+                claim_token = await provisioning.try_acquire_org_create_claim(org_id, holder=user_id)
+                if not claim_token:
                     logger.info(
                         "ensure_user_ready (org): org=%s create claim held by "
                         "another backend instance — waiting; will join on the "
@@ -517,8 +518,10 @@ async def _ensure_paperclip_for_org(
                     )
                 except BaseException:
                     # Release the claim so the next poll (this instance or
-                    # another) can re-acquire and retry.
-                    await provisioning.release_org_create_claim(org_id, holder=user_id)
+                    # another) can re-acquire and retry. Fenced on the
+                    # per-attempt token so a stale straggler never deletes a
+                    # newer attempt's live claim.
+                    await provisioning.release_org_create_claim(org_id, token=claim_token)
                     raise
 
                 # Verify the create actually wrote an active row before
@@ -555,7 +558,7 @@ async def _ensure_paperclip_for_org(
                         org_id,
                         user_id,
                     )
-                    await provisioning.release_org_create_claim(org_id, holder=user_id)
+                    await provisioning.release_org_create_claim(org_id, token=claim_token)
                 return
         finally:
             await close_paperclip_provisioning(provisioning)

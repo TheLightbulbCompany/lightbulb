@@ -1114,7 +1114,7 @@ class _StatefulRepo:
         from core.repositories.paperclip_repo import PaperclipCompany
 
         now = datetime.now(timezone.utc)
-        self._rows[user_id] = PaperclipCompany(
+        row = PaperclipCompany(
             user_id=user_id,
             org_id=org_id,
             company_id="",
@@ -1125,6 +1125,9 @@ class _StatefulRepo:
             created_at=now,
             updated_at=now,
         )
+        # Bare claim carries the fencing token, like the real seeding row.
+        row.seeding_claim_id = claim_id
+        self._rows[user_id] = row
         return True
 
     async def update_status(
@@ -1134,11 +1137,17 @@ class _StatefulRepo:
         status: str,
         last_error: str = "",
         not_if_status: str | None = None,
+        require_seeding_claim_id: str | None = None,
         owner_id: str | None = None,
     ):
         row = self._rows[user_id]
         if not_if_status is not None and row.status == not_if_status:
             return False  # guarded — skip (e.g. don't downgrade an active row)
+        if require_seeding_claim_id is not None:
+            existing_cid = getattr(row, "seeding_claim_id", None)
+            # Skip iff the row still carries a DIFFERENT bare-claim token.
+            if existing_cid is not None and existing_cid != require_seeding_claim_id:
+                return False
         row.status = status
         row.last_error = last_error
         return True

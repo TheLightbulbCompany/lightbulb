@@ -376,6 +376,10 @@ class PaperclipProvisioning:
         # here on runs inside the try below, whose failure path downgrades
         # the claim row via _mark_failed (seeding -> failed) so a later poll
         # retries promptly instead of waiting out the stale window.
+        # Set only on the fresh-create/seeding path below; threaded into
+        # _mark_failed so its downgrade is fenced on OUR claim (a stale holder
+        # must not flip a newer holder's stolen seeding row to failed).
+        seed_claim_id: str | None = None
         if existing is None or existing.status == "seeding":
             seed_claim_id = uuid4().hex
             claimed = await self._repo.try_acquire_seed_claim(
@@ -824,6 +828,7 @@ class PaperclipProvisioning:
                     user_id=owner_user_id,
                     owner_id=owner_id,
                     reason=f"provision_org failed: {e}",
+                    expected_seeding_claim_id=seed_claim_id,
                 )
             # ``retryable`` is now set automatically:
             #   - PaperclipApiError sets it in __init__ (5xx/429 → True).
@@ -1265,19 +1270,22 @@ class PaperclipProvisioning:
     # Helpers
     # ------------------------------------------------------------------
 
-    async def try_acquire_org_create_claim(self, owner_id: str, *, holder: str) -> bool:
+    async def try_acquire_org_create_claim(self, owner_id: str, *, holder: str) -> Optional[str]:
         """Delegate to the repo's strongly-consistent per-org create claim.
 
         Used by ``ensure_user_ready`` to serialize company creation across
         backend instances (the per-org asyncio lock only covers one process,
-        and ``find_org_owner`` reads an eventually-consistent GSI). Returns
-        True iff this caller may proceed to create the company.
+        and ``find_org_owner`` reads an eventually-consistent GSI). Returns a
+        per-attempt fencing token iff this caller may proceed to create the
+        company (None otherwise); pass it back to ``release_org_create_claim``.
         """
         return await self._repo.try_acquire_org_create_claim(owner_id, holder=holder)
 
-    async def release_org_create_claim(self, owner_id: str, *, holder: str) -> None:
-        """Delegate to the repo: release the per-org create claim on failure."""
-        await self._repo.release_org_create_claim(owner_id, holder=holder)
+    async def release_org_create_claim(self, owner_id: str, *, token: str) -> None:
+        """Delegate to the repo: release the per-org create claim on failure,
+        fenced on the per-attempt token so a stale straggler can't delete a
+        newer attempt's claim (ABA)."""
+        await self._repo.release_org_create_claim(owner_id, token=token)
 
     async def get_company_row(self, user_id: str) -> Optional[PaperclipCompany]:
         """Strongly-consistent fetch of a user's row.
@@ -1608,8 +1616,15 @@ class PaperclipProvisioning:
         owner_id: str,
         reason: str,
         company_id: str = "",
+        expected_seeding_claim_id: str | None = None,
     ) -> None:
         """Persist ONE durable ``status="failed"`` marker for this seed failure.
+
+        ``expected_seeding_claim_id`` (the fresh-create seed path passes the
+        token it acquired) fences the in-place downgrade on the bare
+        ``seeding`` row's ``seeding_claim_id`` so a stale holder can't flip a
+        NEWER holder's live claim (a stolen one) to ``failed``. It is a no-op
+        once the row advanced past the bare claim (that write dropped the id).
 
         Two paths, both leaving exactly one honest failed record:
 
@@ -1647,6 +1662,7 @@ class PaperclipProvisioning:
                 status="failed",
                 last_error=truncated,
                 not_if_status="active",
+                require_seeding_claim_id=expected_seeding_claim_id,
                 owner_id=existing.org_id,
             )
             if not landed:

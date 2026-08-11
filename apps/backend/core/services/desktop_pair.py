@@ -19,12 +19,17 @@ import logging
 import os
 import secrets
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
 from cryptography.hazmat.primitives import serialization
+
+from core.services.efs_file_lock import (
+    chown_uid_1000_best_effort,
+    get_file_lock,
+    open_lock_fd,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -34,27 +39,14 @@ logger = logging.getLogger(__name__)
 # ``fcntl`` locks are process-scoped, NOT thread-scoped: two
 # ``asyncio.to_thread`` mutators on the same paired.json in the same
 # backend worker can both "acquire" the fcntl lock and race the
-# read-modify-write, dropping each other's writes. The per-owner
-# ``threading.Lock`` here serializes those in-process callers before
-# they ever reach the file lock. The fcntl lock STILL matters — it
-# guards against cross-process writers (the in-container node
-# self-registering during first connect runs in a different OS process).
-_paired_locks: dict[str, threading.Lock] = {}
-_paired_locks_guard = threading.Lock()
-
-
-def _get_paired_lock(owner_id: str) -> threading.Lock:
-    """Return (and lazily create) the per-owner write lock.
-
-    The guard mutex is contended only on first-time lookup; steady-state
-    callers acquire the inner per-owner lock directly.
-    """
-    with _paired_locks_guard:
-        lock = _paired_locks.get(owner_id)
-        if lock is None:
-            lock = threading.Lock()
-            _paired_locks[owner_id] = lock
-        return lock
+# read-modify-write, dropping each other's writes. This in-process lock
+# serializes those callers before they ever reach the file lock. The fcntl
+# lock STILL matters — it guards against cross-process writers (the
+# in-container node self-registering during first connect runs in a
+# different OS process). Shared implementation in ``efs_file_lock``.
+def _get_paired_lock(owner_id: str):
+    """Return the per-owner in-process write lock (both paired.json files)."""
+    return get_file_lock(f"desktop_pair:{owner_id}")
 
 
 DESKTOP_MAC_COMMANDS: tuple[str, ...] = (
@@ -680,7 +672,7 @@ class EfsWorkspaceAdapter:
         # Outermost: per-owner threading.Lock guards in-process callers.
         # Innermost (acquired inside _do_rmw): fcntl.lockf guards
         # cross-process callers (in-container node self-registration).
-        # See _paired_locks docstring at the top of this module.
+        # See _get_paired_lock / efs_file_lock for the two-layer rationale.
         in_process_lock = _get_paired_lock(self.owner_id)
 
         def _do_rmw():
@@ -770,33 +762,19 @@ class EfsWorkspaceAdapter:
     def _open_lock_fd(self, devices_dir: str, lock_path: str):
         """Open the dedicated ``.lock`` file in r+ mode, creating it if missing.
 
-        A separate ``.lock`` file (not ``paired.json`` itself) is
-        required because the write path swaps paired.json's inode via
-        ``os.rename`` — a lock held on the old inode wouldn't protect
-        against a new writer racing the rename.
+        A separate ``.lock`` file (not ``paired.json`` itself) is required
+        because the write path swaps paired.json's inode via ``os.rename`` — a
+        lock held on the old inode wouldn't protect against a new writer racing
+        the rename. Shared implementation in ``efs_file_lock``.
         """
-        if not os.path.exists(lock_path):
-            os.makedirs(devices_dir, exist_ok=True)
-            self._chown_uid_1000_best_effort(devices_dir)
-            # ``open(..., "a")`` creates the file if missing without
-            # truncating concurrent locks.
-            with open(lock_path, "a"):
-                pass
-            self._chown_uid_1000_best_effort(lock_path)
-        return open(lock_path, "r+")
+        return open_lock_fd(devices_dir, lock_path)
 
     def _chown_uid_1000_best_effort(self, path: str) -> None:
         """Match OpenClaw container ownership (node uid=1000 gid=1000).
 
-        Only chown if running as root (backend container runs as root;
-        tests run as the local user where chown(other) is denied). Mirrors
-        ``config_patcher._locked_rmw``.
+        Shared implementation in ``efs_file_lock``.
         """
-        try:
-            if os.getuid() == 0:
-                os.chown(path, 1000, 1000)
-        except OSError:
-            pass
+        chown_uid_1000_best_effort(path)
 
     async def get_gateway_token(self) -> str:
         container = await self.container_repo.get_by_owner_id(self.owner_id)

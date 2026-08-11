@@ -61,35 +61,34 @@ trigger:
 secret that Paperclip's engine can't ingest, so a registry provider that
 declares ``inbound.signing_mode: stripe_edge`` (see
 ``core/services/credentials/registry.py``) gets its trigger armed by the
-seed service with Paperclip ``signingMode: "none"``. That is NOT a
-Stripe-only marker, though — "None (unsigned)" is also a first-class,
-user-selectable Phase 1 webhook option (``webhookSigning.ts``,
-``SIGNING_MODE_OPTIONS``) for any trigger the owner deliberately leaves
-unsigned. So the discriminator here is NOT signingMode: it's whether a
-per-trigger Stripe whsec_ has actually been stored
-(``core/services/credentials/stripe_edge.py``,
-``integration_secret_store`` keyed by ``(owner_id, public_id)``, written
-by T3's guided_paste seed / T6's paste-secret endpoint). No stored secret
-== an ordinary trigger (including a deliberately-unsigned Phase 1 one) —
-forwards untouched, publicId remains its shared secret exactly as before
-Stripe edge verification existed. A stored secret == THIS specific fire
-must carry a valid ``Stripe-Signature``, checked before every forward.
+seed service with Paperclip ``signingMode: "none"`` and verified HERE
+instead. The discriminator is NOT signingMode — "None (unsigned)" is also a
+first-class Phase 1 option (``webhookSigning.ts``) — but the per-trigger
+credential record (``core/services/credentials/stripe_edge.py``,
+``integration_secret_store`` keyed by ``(owner_id, public_id)``). Three
+states, resolved by ``_stripe_trigger_cred`` and cached per-trigger:
 
-Every fire hits this lookup, so the resolved value (secret, or confirmed
-absent) is cached per-trigger (``_STRIPE_SECRET_CACHE``) — an uncached
-"nothing stored" would mean a live Secrets Manager call on every ordinary
-trigger's every fire. Unlike the long-lived ``_BINDING_CACHE`` (ownership
-never migrates, so a long TTL is safe), a confirmed-absent secret gets a
-short 60s TTL, not the found-secret hour — see
-``core/services/credentials/stripe_edge.py`` for why. A genuine store
-failure (throttle, network, IAM — anything other than "definitively no
-secret") is never cached and never silently treated as "no secret": it
-503s the fire rather than either 500ing or fail-opening a Stripe trigger
-through unverified.
+- **no record** — an ordinary trigger (including a deliberately-unsigned
+  Phase 1 one). Forwards untouched; the publicId remains its shared secret.
+- **marker only** (``stripe_edge_seeded``, whsec_ not pasted yet — written
+  by the seed service before the owner pastes anything back) — a Stripe
+  trigger that isn't armed. **Fails CLOSED (401)**, never forwarded
+  unsigned, until the whsec_ lands (Stripe retries in the meantime).
+- **whsec_ stored** — this fire must carry a valid ``Stripe-Signature``,
+  checked before the forward. The event id is then forwarded as an
+  ``Idempotency-Key`` so Stripe's own delivery retries (Stripe sends no
+  such header itself) don't double-fire the routine — Paperclip dedupes
+  a public-trigger fire on that key.
+
+A genuine store failure (throttle, network, IAM — anything other than
+"definitively no record") is never cached and never silently treated as
+"no record": it 503s the fire rather than 500ing or fail-opening a Stripe
+trigger through unverified.
 """
 
 import hashlib
 import hmac
+import json
 import logging
 import time
 
@@ -148,47 +147,48 @@ def _binding_cached(owner_id: str, public_id: str) -> bool:
     return ts is not None and (time.monotonic() - ts) < _BINDING_TTL_SECONDS
 
 
-# The resolved whsec_ (or None = confirmed absent) for a (owner_id,
-# public_id), same dict/cache shape as _BINDING_CACHE but a SPLIT TTL:
-# a positive hit (secret found) lives for _STRIPE_SECRET_TTL_SECONDS (an
-# hour); a negative hit ("nothing stored") lives for only
-# _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (60s). Every trigger fire of every
-# kind hits this path, so an uncached "nothing stored" (the common case —
-# every ordinary/unsigned trigger) would mean a live Secrets Manager
-# GetSecretValue on every single fire; caching the negative result is what
-# makes that free after the first lookup — the short negative TTL keeps
-# that cheap case cheap while still bounding how long a just-armed trigger
-# can be treated as unsigned.
+# The resolved credential record (dict, or None = no record) for a
+# (owner_id, public_id), same cache shape as _BINDING_CACHE but a SPLIT TTL
+# keyed on whether the trigger is ARMED: an armed record (whsec_ present)
+# lives for _STRIPE_SECRET_TTL_SECONDS (5 min — bounds cross-task rotation
+# staleness); a non-armed one (no record, or the seeded marker only) lives
+# for only _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (60s). Every trigger fire of
+# every kind hits this path, so an uncached read would mean a live Secrets
+# Manager GetSecretValue on every single fire; caching is what makes that
+# free after the first lookup. Storing the whole record (not just the
+# secret) is what lets the caller tell a seeded-but-unarmed trigger (marker
+# only -> fail CLOSED) apart from an ordinary unsigned one (no record ->
+# forward) — see stripe_edge.py.
 #
 # Owned by ``core.services.credentials.stripe_edge`` (imported above by
 # reference, not copied) so the webhook-secret WRITE path
 # (``routers/automations.py``) can invalidate it via
 # ``stripe_edge.invalidate_stripe_secret_cache`` right after every store.
 # On a single task that's immediate; on a multi-task fleet a sibling task's
-# stale negative verdict is bounded by the 60s negative TTL rather than the
-# hour-long positive one.
+# stale verdict is bounded by whichever of the two TTLs above applies.
 
 
 class _StripeSecretStoreError(Exception):
-    """Secrets Manager errored while resolving a trigger's whsec_ — NOT
-    the same as "no secret stored" (that's ResourceNotFoundException,
-    already collapsed to None by integration_secret_store.get). The
-    caller turns this into a 503, never a 500 and never a silent
-    fail-open forward of an unverified Stripe fire."""
+    """Secrets Manager errored while resolving a trigger's credential record
+    — NOT the same as "no record" (that's ResourceNotFoundException, already
+    collapsed to None by integration_secret_store.get). The caller turns
+    this into a 503, never a 500 and never a silent fail-open forward of an
+    unverified Stripe fire."""
 
 
-async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
-    """The stored whsec_ for THIS trigger, or None if the owner never
-    pasted one (an ordinary trigger — including a deliberately-unsigned
-    Phase 1 ``none`` one; see module docstring). Presence of a secret IS
-    the "does this need Stripe edge verification" signal — no signingMode
-    heuristic, and nothing in this module ever WRITES this secret.
+async def _stripe_trigger_cred(owner_id: str, public_id: str) -> dict | None:
+    """The stored credential record for THIS trigger, or None if the owner
+    never seeded a stripe_edge trigger here. Three shapes the caller
+    distinguishes (see module docstring): ``None`` (no record — ordinary
+    trigger, forward unsigned); ``{stripe_edge_seeded: True}`` (seeded,
+    whsec_ not pasted — fail CLOSED); ``{webhook_secret: ...}`` (armed —
+    verify). Nothing in this module ever WRITES this record.
 
-    Cached per (owner_id, public_id) with a SPLIT TTL — a found secret for
-    _STRIPE_SECRET_TTL_SECONDS, a confirmed-absent one for the much shorter
-    _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (see the cache's module-level
-    comment for why). Raises _StripeSecretStoreError (uncached) on a
-    genuine store failure.
+    Cached per (owner_id, public_id) with a SPLIT TTL — an armed record (has
+    a whsec_) for _STRIPE_SECRET_TTL_SECONDS, a non-armed one (None or
+    marker-only) for the much shorter _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
+    (see the cache's module-level comment). Raises _StripeSecretStoreError
+    (uncached) on a genuine store failure.
 
     Write-during-read TOCTOU guard: the generation is captured BEFORE the
     Secrets Manager call, and the result is only written into the cache if
@@ -201,19 +201,19 @@ async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
     key = (owner_id, public_id)
     cached = _STRIPE_SECRET_CACHE.get(key)
     if cached is not None:
-        cached_at, cached_secret = cached
-        ttl = _STRIPE_SECRET_TTL_SECONDS if cached_secret is not None else _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
+        cached_at, cached_cred = cached
+        armed = bool(cached_cred and cached_cred.get(WEBHOOK_SECRET_FIELD))
+        ttl = _STRIPE_SECRET_TTL_SECONDS if armed else _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
         if (time.monotonic() - cached_at) < ttl:
-            return cached_secret
+            return cached_cred
     generation = stripe_secret_cache_generation(owner_id, public_id)
     try:
         cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
     except Exception as exc:  # noqa: BLE001 — any non-ResourceNotFound Secrets Manager failure
         raise _StripeSecretStoreError from exc
-    secret = cred.get(WEBHOOK_SECRET_FIELD) if cred else None
     if stripe_secret_cache_generation(owner_id, public_id) == generation:
-        _STRIPE_SECRET_CACHE[key] = (time.monotonic(), secret)
-    return secret
+        _STRIPE_SECRET_CACHE[key] = (time.monotonic(), cred)
+    return cred
 
 
 def verify_stripe_signature(secret: str, raw_body: bytes, header: str, *, tolerance_s: int = 300, now: float) -> bool:
@@ -367,12 +367,14 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     # and stripe_edge verification (below) signs it too.
     body = await request.body()
 
-    # Stripe edge verification — ONLY when a per-trigger whsec_ has been
-    # stored (T3/T6's guided-paste; read-only here). No stored secret means
-    # this is an ordinary trigger — including a deliberately-unsigned Phase
-    # 1 ``none`` one — and forwards untouched (see module docstring).
+    # Stripe edge verification — the per-trigger credential record decides
+    # (see module docstring): no record forwards untouched (ordinary/Phase-1
+    # trigger); a marker-only record fails CLOSED (seeded stripe_edge, whsec_
+    # not pasted yet — never forward a Stripe trigger unsigned); a stored
+    # whsec_ is verified, then the event id becomes an Idempotency-Key.
+    stripe_event_id: str | None = None
     try:
-        stripe_secret = await _stripe_trigger_secret(owner_id, public_id)
+        stripe_cred = await _stripe_trigger_cred(owner_id, public_id)
     except _StripeSecretStoreError:
         return Response(
             status_code=503,
@@ -380,10 +382,22 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
             content=b'{"detail":"stripe_verification_unavailable"}',
             media_type="application/json",
         )
-    if stripe_secret is not None:
+    if stripe_cred is not None:
+        stripe_secret = stripe_cred.get(WEBHOOK_SECRET_FIELD)
+        if not stripe_secret:
+            # Seeded stripe_edge trigger still awaiting its whsec_ — reject
+            # rather than forward unsigned. Stripe retries until it's armed.
+            raise HTTPException(status_code=401, detail="stripe_trigger_not_armed")
         sig_header = request.headers.get("Stripe-Signature")
         if not sig_header or not verify_stripe_signature(stripe_secret, body, sig_header, now=time.time()):
             raise HTTPException(status_code=401, detail="invalid_stripe_signature")
+        # The signature-verified body is trusted — pull the Stripe event id
+        # for idempotency (Stripe's retries reuse the same ``evt_...`` id).
+        try:
+            payload = json.loads(body)
+            stripe_event_id = payload.get("id") if isinstance(payload, dict) else None
+        except ValueError:
+            stripe_event_id = None
 
     if not settings.PAPERCLIP_INTERNAL_URL:
         return Response(
@@ -395,6 +409,11 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     headers = {h: request.headers[h] for h in _FORWARDED_HEADERS if h in request.headers}
     headers["X-Forwarded-For"] = _extract_caller_ip(request)
     headers["X-Forwarded-Proto"] = "https"
+    # Stripe sends no Idempotency-Key of its own; without one Paperclip treats
+    # each of Stripe's delivery retries as a fresh fire (duplicate agent run +
+    # spend). Derive it from the event id so retries of the same event dedupe.
+    if stripe_event_id and "Idempotency-Key" not in headers:
+        headers["Idempotency-Key"] = stripe_event_id
 
     base = settings.PAPERCLIP_INTERNAL_URL.rstrip("/")
     target = f"{base}/api/routine-triggers/public/{public_id}/fire"

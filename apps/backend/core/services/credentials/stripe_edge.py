@@ -11,24 +11,26 @@ triggers (different events, different Stripe Dashboard webhook endpoints),
 each with its own ``whsec_``. Storing under the owner alone would let a
 second trigger's secret silently clobber the first's.
 
-**Also owns the trigger proxy's resolved-secret cache.** The proxy caches
-every (owner_id, public_id) -> whsec_ lookup, but a POSITIVE result (a
-secret IS stored) and a NEGATIVE one ("nothing stored yet") get different
-TTLs: positive stays cached for an hour (rotation is rare and re-reading a
-still-valid secret buys nothing); negative is cached for only 60s (a live
-Secrets Manager call on every ordinary/unsigned trigger's every fire would
-otherwise be the common case — see ``paperclip_trigger_proxy``'s module
-docstring — but caching "nothing stored" for a full hour would leave a
-just-armed trigger forwarding UNSIGNED for up to that hour on any task the
-invalidate below doesn't reach). Living here — rather than as
-module-private state in the proxy — is what lets the WRITE side invalidate
-it: ``routers/automations.py``'s webhook-secret PUT calls
-``invalidate_stripe_secret_cache`` right after every store. On the common
-single-task deployment that's immediate; on a multi-task fleet the
+**Also owns the trigger proxy's resolved-credential cache.** The proxy
+caches every (owner_id, public_id) -> credential-dict lookup. Three states,
+two TTLs: an ARMED trigger (a whsec_ IS stored) caches for 5 minutes — long
+enough that the per-fire Secrets Manager read is amortized, short enough to
+bound cross-task staleness when the owner ROTATES the secret (see
+``STRIPE_SECRET_TTL_SECONDS``). A NON-armed trigger — no record ("ordinary
+unsigned"), or a record carrying only the stripe-edge-seeded marker ("seeded,
+whsec_ not pasted yet") — caches for only 60s, so a just-armed trigger starts
+verifying (and a just-seeded one keeps failing CLOSED) promptly even on a task
+the invalidate below never reaches. A seeded-but-unarmed trigger is never
+forwarded unsigned: the proxy 401s it until the whsec_ lands, so there is no
+fail-OPEN window to bound — only the two fail-closed windows above. Living
+here — rather than as module-private state in the proxy — is what lets the
+WRITE side invalidate it: ``routers/automations.py``'s webhook-secret PUT
+calls ``invalidate_stripe_secret_cache`` right after every store. On the
+common single-task deployment that's immediate; on a multi-task fleet the
 invalidate is local to the task that served the write, so a sibling task's
-stale "nothing stored" verdict is bounded by the 60s negative TTL instead
-of the hour-long positive one — never unbounded. The proxy module imports
-this same dict by reference (not a copy), so both sides see one cache.
+stale verdict is bounded by whichever TTL above applies — never unbounded.
+The proxy module imports this same dict by reference (not a copy), so both
+sides see one cache.
 
 **Write-during-read TOCTOU.** A cache-miss read of Secrets Manager can
 start BEFORE a concurrent ``put()`` + ``invalidate_stripe_secret_cache()``
@@ -42,7 +44,7 @@ result to the cache if the generation is UNCHANGED when the call returns —
 otherwise it discards its own stale read (the cache stays as the
 invalidate left it, and the NEXT read re-fetches for real). See
 ``stripe_secret_cache_generation`` and the reader in
-``paperclip_trigger_proxy._stripe_trigger_secret``.
+``paperclip_trigger_proxy._stripe_trigger_cred``.
 """
 
 WEBHOOK_SECRET_FIELD = "webhook_secret"
@@ -62,18 +64,29 @@ WEBHOOK_SECRET_FIELD = "webhook_secret"
 # — is an unambiguous "this trigger was seeded stripe_edge" signal.
 STRIPE_EDGE_SEEDED_FIELD = "stripe_edge_seeded"
 
-# TTL for a POSITIVE cached (owner_id, public_id) -> whsec_ lookup. See the
-# module docstring — every trigger fire of every kind hits this cache, so an
-# uncached negative would mean a live Secrets Manager call per fire.
-STRIPE_SECRET_TTL_SECONDS = 3600
+# TTL for a POSITIVE cached (owner_id, public_id) -> armed-whsec_ lookup. See
+# the module docstring — every trigger fire of every kind hits this cache, so
+# an uncached read would mean a live Secrets Manager call per fire. Kept to 5
+# minutes (not an hour) so that when an owner ROTATES a Stripe endpoint secret,
+# a sibling API task holding the OLD armed value re-reads within 5 minutes even
+# if the invalidate-on-write (below) never reaches it — bounding the cross-task
+# rotation-staleness window. Fails closed the whole time (a stale old secret
+# rejects new-secret-signed events, which Stripe then retries), never open.
+STRIPE_SECRET_TTL_SECONDS = 300
 
-# TTL for a NEGATIVE cached lookup ("no secret stored for this trigger yet").
-# Kept short relative to the positive TTL above so the just-armed-trigger
-# fail-open window (see module docstring) stays bounded even when the
+# TTL for a NON-ARMED cached lookup — no record at all ("ordinary/unsigned
+# trigger"), or a record carrying only the stripe-edge-seeded marker ("seeded
+# but the owner hasn't pasted the whsec_ yet"). Kept short relative to the
+# positive TTL above so a just-armed trigger starts verifying (and a
+# just-seeded one starts failing closed) promptly even when the
 # invalidate-on-write doesn't reach every task in a multi-task fleet.
 STRIPE_SECRET_NEGATIVE_TTL_SECONDS = 60
 
-STRIPE_SECRET_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
+# Caches the RESOLVED credential dict (or None = no record), not just the
+# secret string: the proxy must tell a seeded-but-unarmed trigger (marker
+# only -> fail CLOSED) apart from an ordinary unsigned trigger (no record ->
+# forward), and both would collapse to a bare None.
+STRIPE_SECRET_CACHE: dict[tuple[str, str], tuple[float, dict | None]] = {}
 
 # Per-key monotonic counter, bumped by every ``invalidate_stripe_secret_cache``
 # call. Lets a cache-miss reader detect a write that raced ahead of it and
@@ -101,7 +114,7 @@ def stripe_trigger_secret_provider(public_id: str) -> str:
 def invalidate_stripe_secret_cache(owner_id: str, public_id: str) -> None:
     """Drop the cached whsec_ lookup for one trigger. MUST be called by
     every writer of that trigger's secret (initial guided-paste store,
-    rotate) — the proxy's ``_stripe_trigger_secret`` only re-reads Secrets
+    rotate) — the proxy's ``_stripe_trigger_cred`` only re-reads Secrets
     Manager on a cache miss, so skipping this leaves a stale verdict live
     for up to ``STRIPE_SECRET_TTL_SECONDS`` (a stale positive) or
     ``STRIPE_SECRET_NEGATIVE_TTL_SECONDS`` (a stale "nothing stored") on

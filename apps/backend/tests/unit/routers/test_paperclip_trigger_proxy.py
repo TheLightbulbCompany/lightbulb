@@ -462,6 +462,81 @@ def test_stripe_edge_valid_signature_forwards(client):
     assert captured["body"] == body  # forwarded byte-verbatim
 
 
+def test_stripe_edge_seeded_but_unarmed_fails_closed(client):
+    """A stripe_edge trigger that was SEEDED (the marker record exists) but
+    whose whsec_ the owner hasn't pasted yet must FAIL CLOSED — never
+    forwarded unsigned, even though its Paperclip signingMode is "none".
+    Otherwise the window between create and paste (indefinite if the owner
+    abandons setup) would fire the routine on any unsigned POST."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        patch(
+            "routers.paperclip_trigger_proxy.integration_secret_store.get",
+            AsyncMock(return_value={"stripe_edge_seeded": True}),
+        ),
+        _stub_client(captured),
+    ):
+        r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={"id": "evt_1"})
+    assert r.status_code == 401
+    assert r.json()["detail"] == "stripe_trigger_not_armed"
+    assert captured == {}  # nothing forwarded
+
+
+def test_stripe_edge_derives_idempotency_key_from_event_id(client):
+    """A verified Stripe fire forwards the event id as an Idempotency-Key so
+    Stripe's own delivery retries (which reuse the ``evt_...`` id but send no
+    idempotency header of their own) dedupe to a single routine run upstream,
+    instead of double-firing the agent (and double-billing)."""
+    captured: dict = {}
+    body = b'{"id":"evt_dedupe_me","type":"charge.refunded"}'
+    t = int(time.time())
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_secret(_STRIPE_SECRET),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": _stripe_header(_STRIPE_SECRET, body, t),
+            },
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["idempotency-key"] == "evt_dedupe_me"
+
+
+def test_stripe_edge_sender_idempotency_key_is_not_overridden(client):
+    """If the caller already supplied an Idempotency-Key, the derived event
+    id must not clobber it — the derivation only FILLS the gap Stripe leaves."""
+    captured: dict = {}
+    body = b'{"id":"evt_from_body"}'
+    t = int(time.time())
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_secret(_STRIPE_SECRET),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": "caller-supplied",
+                "Stripe-Signature": _stripe_header(_STRIPE_SECRET, body, t),
+            },
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["idempotency-key"] == "caller-supplied"
+
+
 def test_stripe_edge_tampered_body_returns_401(client):
     """A trigger with a stored whsec_: signature computed over a
     different body than the one that actually arrives — must be
@@ -603,32 +678,33 @@ def test_no_whsec_lookup_is_also_cached_across_fires(client):
 
 
 async def test_negative_cache_expires_after_short_ttl_positive_persists_to_long_ttl():
-    """Split-TTL: a cached ``None`` ("nothing stored") expires after the
-    short 60s negative TTL and re-hits Secrets Manager, while a cached
-    found-secret value is still honoured from the cache well past that
-    same age — it only expires at the long 3600s positive TTL."""
+    """Split-TTL: a cached non-armed record (``None`` = nothing stored)
+    expires after the short 60s negative TTL and re-hits Secrets Manager,
+    while a cached ARMED record (a whsec_ is present) is still honoured from
+    the cache well past that same age — it only expires at the longer 300s
+    positive TTL."""
     from core.services.credentials.stripe_edge import STRIPE_SECRET_CACHE
-    from routers.paperclip_trigger_proxy import _stripe_trigger_secret
+    from routers.paperclip_trigger_proxy import _stripe_trigger_cred
 
     owner_id, public_id = "u_1", PUBLIC_ID
-    stale_but_within_positive_ttl = time.monotonic() - 120  # > 60s, < 3600s
+    stale_but_within_positive_ttl = time.monotonic() - 120  # > 60s, < 300s
 
     # A cached negative older than the 60s negative TTL is treated as
     # expired — the store is re-read.
     STRIPE_SECRET_CACHE[(owner_id, public_id)] = (stale_but_within_positive_ttl, None)
     get_mock = AsyncMock(return_value=None)
     with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock):
-        result = await _stripe_trigger_secret(owner_id, public_id)
+        result = await _stripe_trigger_cred(owner_id, public_id)
     assert result is None
     assert get_mock.await_count == 1  # cache miss — re-fetched
 
-    # A cached positive of the same age is still within its (much longer)
+    # A cached armed record of the same age is still within its (longer)
     # positive TTL and is served straight from the cache.
-    STRIPE_SECRET_CACHE[(owner_id, public_id)] = (stale_but_within_positive_ttl, "whsec_cached")
+    STRIPE_SECRET_CACHE[(owner_id, public_id)] = (stale_but_within_positive_ttl, {"webhook_secret": "whsec_cached"})
     get_mock2 = AsyncMock(return_value={"webhook_secret": "whsec_should_not_be_read"})
     with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock2):
-        result = await _stripe_trigger_secret(owner_id, public_id)
-    assert result == "whsec_cached"
+        result = await _stripe_trigger_cred(owner_id, public_id)
+    assert result == {"webhook_secret": "whsec_cached"}
     get_mock2.assert_not_awaited()  # cache hit — no re-fetch
 
 
@@ -641,7 +717,7 @@ async def test_toctou_write_during_read_does_not_recache_stale_value():
     "nothing stored" verdict the invalidate just cleared — reopening the
     fail-open window the invalidate exists to close."""
     from core.services.credentials.stripe_edge import STRIPE_SECRET_CACHE, invalidate_stripe_secret_cache
-    from routers.paperclip_trigger_proxy import _stripe_trigger_secret
+    from routers.paperclip_trigger_proxy import _stripe_trigger_cred
 
     owner_id, public_id = "u_1", PUBLIC_ID
 
@@ -653,7 +729,7 @@ async def test_toctou_write_during_read_does_not_recache_stale_value():
         return None  # what THIS read saw before the write — now stale
 
     with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", AsyncMock(side_effect=_stale_get)):
-        result = await _stripe_trigger_secret(owner_id, public_id)
+        result = await _stripe_trigger_cred(owner_id, public_id)
 
     # The in-flight caller still gets its own (stale) read result...
     assert result is None
@@ -666,14 +742,14 @@ async def test_toctou_write_before_read_starts_is_cached_normally():
     """Sanity check the guard isn't overzealous: an ordinary read with no
     concurrent write in flight still caches its result as usual."""
     from core.services.credentials.stripe_edge import STRIPE_SECRET_CACHE
-    from routers.paperclip_trigger_proxy import _stripe_trigger_secret
+    from routers.paperclip_trigger_proxy import _stripe_trigger_cred
 
     owner_id, public_id = "u_1", PUBLIC_ID
     get_mock = AsyncMock(return_value={"webhook_secret": "whsec_fresh"})
     with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock):
-        result = await _stripe_trigger_secret(owner_id, public_id)
-    assert result == "whsec_fresh"
-    assert STRIPE_SECRET_CACHE[(owner_id, public_id)][1] == "whsec_fresh"
+        result = await _stripe_trigger_cred(owner_id, public_id)
+    assert result == {"webhook_secret": "whsec_fresh"}
+    assert STRIPE_SECRET_CACHE[(owner_id, public_id)][1] == {"webhook_secret": "whsec_fresh"}
 
 
 def test_stripe_secret_store_error_returns_503_not_500_and_is_not_cached(client):

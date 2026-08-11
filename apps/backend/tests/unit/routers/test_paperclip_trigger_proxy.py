@@ -26,16 +26,18 @@ SIBLING_ID = "fedcba987654fedcba987654"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    """Rate buckets live in hooks_proxy module state (shared helper) and
-    the binding cache in the trigger router — both must start empty or
-    the 60-POST tests pollute their neighbours."""
+    """Rate buckets live in hooks_proxy module state (shared helper), and
+    the binding + Stripe-whsec caches in the trigger router — all must
+    start empty or tests pollute their neighbours."""
     from routers import hooks_proxy, paperclip_trigger_proxy
 
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
+    paperclip_trigger_proxy._STRIPE_SECRET_CACHE.clear()
     yield
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
+    paperclip_trigger_proxy._STRIPE_SECRET_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -546,6 +548,78 @@ def test_stripe_edge_wrong_secret_returns_401(client):
         )
     assert r.status_code == 401
     assert captured == {}
+
+
+# ---------------------------------------------------------------------------
+# Stripe whsec lookup: caching + store failures
+# ---------------------------------------------------------------------------
+
+
+def test_stripe_secret_lookup_is_cached_across_fires(client):
+    """A stored whsec_ is fetched from Secrets Manager at most once per
+    TTL — repeat fires of the same trigger reuse the cached value rather
+    than making a live GetSecretValue call every time."""
+    captured: dict = {}
+    body = b'{"id":"evt_1"}'
+    header = _stripe_header(_STRIPE_SECRET, body, int(time.time()))
+    get_mock = AsyncMock(return_value={"webhook_secret": _STRIPE_SECRET})
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        for _ in range(3):
+            r = client.post(
+                f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+                content=body,
+                headers={"Content-Type": "application/json", "Stripe-Signature": header},
+            )
+            assert r.status_code == 202
+    assert get_mock.await_count == 1
+
+
+def test_no_whsec_lookup_is_also_cached_across_fires(client):
+    """The common case — an ordinary trigger with nothing stored — must be
+    free after the first fire too, not just the Stripe-armed case."""
+    captured: dict = {}
+    get_mock = AsyncMock(return_value=None)
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        for _ in range(3):
+            r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
+            assert r.status_code == 202
+    assert get_mock.await_count == 1
+
+
+def test_stripe_secret_store_error_returns_503_not_500_and_is_not_cached(client):
+    """A genuine Secrets Manager failure (throttle/network/IAM — anything
+    other than "definitively no secret", which integration_secret_store
+    already collapses to None) must never 500 and must never silently
+    treat the trigger as unsigned: it 503s, nothing is forwarded, and the
+    failure is NOT cached — a second fire retries against the store
+    rather than reusing a stale error."""
+    captured: dict = {}
+    get_mock = AsyncMock(side_effect=RuntimeError("Secrets Manager throttled"))
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock),
+        _stub_client(captured),
+    ):
+        r1 = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
+        r2 = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
+    assert r1.status_code == 503
+    assert r1.json() == {"detail": "stripe_verification_unavailable"}
+    assert r2.status_code == 503
+    assert captured == {}  # nothing ever reached upstream
+    assert get_mock.await_count == 2  # not cached — retried on the second fire
 
 
 # ---------------------------------------------------------------------------

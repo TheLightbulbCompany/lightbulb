@@ -74,6 +74,15 @@ by T3's guided_paste seed / T6's paste-secret endpoint). No stored secret
 forwards untouched, publicId remains its shared secret exactly as before
 Stripe edge verification existed. A stored secret == THIS specific fire
 must carry a valid ``Stripe-Signature``, checked before every forward.
+
+Every fire hits this lookup, so the resolved value (secret, or confirmed
+absent) is cached per-trigger the same way as the binding
+(``_STRIPE_SECRET_CACHE`` / ``_BINDING_CACHE``) — an uncached "nothing
+stored" would mean a live Secrets Manager call on every ordinary trigger's
+every fire. A genuine store failure (throttle, network, IAM — anything
+other than "definitively no secret") is never cached and never silently
+treated as "no secret": it 503s the fire rather than either 500ing or
+fail-opening a Stripe trigger through unverified.
 """
 
 import hashlib
@@ -123,14 +132,49 @@ def _binding_cached(owner_id: str, public_id: str) -> bool:
     return ts is not None and (time.monotonic() - ts) < _BINDING_TTL_SECONDS
 
 
+# The resolved whsec_ (or None = confirmed absent) for a (owner_id,
+# public_id), same shape/TTL pattern as _BINDING_CACHE. Every trigger fire
+# of every kind hits this path, so an uncached "nothing stored" (the
+# common case — every ordinary/unsigned trigger) would mean a live
+# Secrets Manager GetSecretValue on every single fire; caching the
+# negative result is what makes that free after the first lookup.
+# ponytail: caching the SECRET itself (not just presence) means a whsec_
+# rotation via T6's re-paste takes up to the TTL to take effect on this
+# process — fine for v1 (no rotation flow exists yet); shrink the TTL or
+# add explicit invalidation on write if that becomes a real workflow.
+_STRIPE_SECRET_TTL_SECONDS = 3600
+_STRIPE_SECRET_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
+
+
+class _StripeSecretStoreError(Exception):
+    """Secrets Manager errored while resolving a trigger's whsec_ — NOT
+    the same as "no secret stored" (that's ResourceNotFoundException,
+    already collapsed to None by integration_secret_store.get). The
+    caller turns this into a 503, never a 500 and never a silent
+    fail-open forward of an unverified Stripe fire."""
+
+
 async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
     """The stored whsec_ for THIS trigger, or None if the owner never
     pasted one (an ordinary trigger — including a deliberately-unsigned
     Phase 1 ``none`` one; see module docstring). Presence of a secret IS
     the "does this need Stripe edge verification" signal — no signingMode
-    heuristic, and nothing in this module ever WRITES this secret."""
-    cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
-    return cred.get(WEBHOOK_SECRET_FIELD) if cred else None
+    heuristic, and nothing in this module ever WRITES this secret.
+
+    Cached per (owner_id, public_id) — see _STRIPE_SECRET_CACHE. Raises
+    _StripeSecretStoreError (uncached) on a genuine store failure.
+    """
+    key = (owner_id, public_id)
+    cached = _STRIPE_SECRET_CACHE.get(key)
+    if cached is not None and (time.monotonic() - cached[0]) < _STRIPE_SECRET_TTL_SECONDS:
+        return cached[1]
+    try:
+        cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
+    except Exception as exc:  # noqa: BLE001 — any non-ResourceNotFound Secrets Manager failure
+        raise _StripeSecretStoreError from exc
+    secret = cred.get(WEBHOOK_SECRET_FIELD) if cred else None
+    _STRIPE_SECRET_CACHE[key] = (time.monotonic(), secret)
+    return secret
 
 
 def verify_stripe_signature(secret: str, raw_body: bytes, header: str, *, tolerance_s: int = 300, now: float) -> bool:
@@ -277,7 +321,15 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     # stored (T3/T6's guided-paste; read-only here). No stored secret means
     # this is an ordinary trigger — including a deliberately-unsigned Phase
     # 1 ``none`` one — and forwards untouched (see module docstring).
-    stripe_secret = await _stripe_trigger_secret(owner_id, public_id)
+    try:
+        stripe_secret = await _stripe_trigger_secret(owner_id, public_id)
+    except _StripeSecretStoreError:
+        return Response(
+            status_code=503,
+            headers={"Retry-After": "30"},
+            content=b'{"detail":"stripe_verification_unavailable"}',
+            media_type="application/json",
+        )
     if stripe_secret is not None:
         sig_header = request.headers.get("Stripe-Signature")
         if not sig_header or not verify_stripe_signature(stripe_secret, body, sig_header, now=time.time()):

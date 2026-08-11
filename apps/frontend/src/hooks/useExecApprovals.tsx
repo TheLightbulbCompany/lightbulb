@@ -93,7 +93,11 @@ export interface ExecApprovalRequest {
   /** Server-side expiry timestamp in ms. Used both for the live countdown
    *  and the auto-prune timer. */
   expiresAtMs: number;
-  /** When this approval was added to the local queue. */
+  /** Server-side creation timestamp in ms, when the event supplies one.
+   *  Paired with expiresAtMs (SAME server clock) it yields a skew-free
+   *  intended lifetime for the auto-prune timer — see autoPruneDelayMs. */
+  createdAtMs?: number;
+  /** When this approval was added to the local queue (browser clock). */
   enqueuedAtMs: number;
 }
 
@@ -137,6 +141,7 @@ interface RequestPayload {
     security?: string;
     ask?: string;
   };
+  createdAtMs?: number;
   expiresAtMs?: number;
 }
 
@@ -164,6 +169,46 @@ interface ResolvedPayload {
  *  OpenClaw's gateway emits this field, but we set a generous local fallback
  *  (10 min) so a malformed event still gets pruned eventually. */
 const DEFAULT_EXPIRY_MS = 10 * 60 * 1000;
+
+/** Grace added to the auto-prune delay so an approval sitting right at its
+ *  expiry boundary still renders (and stays actionable) briefly rather than
+ *  vanishing on the same tick it arrives. */
+const PRUNE_GRACE_MS = 500;
+
+/** Floor on the auto-prune delay used ONLY when we can't derive a server-clock
+ *  lifetime (no createdAtMs — e.g. exec approvals). It guarantees a browser
+ *  clock running ahead of the container can never prune a still-valid approval
+ *  before the operator can act. Residual: a genuinely-expired approval that is
+ *  replayed late lingers up to this long, then drops via the server's
+ *  "unknown/expired id" on the next resolve attempt (terminal_error). */
+const MIN_AUTOPRUNE_FLOOR_MS = 60 * 1000;
+
+/** Compute the local auto-prune delay for an approval.
+ *
+ *  The bug this avoids: `expiresAtMs - Date.now()` subtracts a BROWSER clock
+ *  (Date.now) from a CONTAINER clock (expiresAtMs). A browser running ahead of
+ *  the container shrinks — or zeroes — the delay and auto-prunes a live
+ *  approval before it can be acted on.
+ *
+ *  When the event carries a server creation timestamp, `expiresAtMs -
+ *  createdAtMs` is a pure server-clock delta (the intended lifetime) with no
+ *  cross-clock subtraction; the timer then counts down entirely on the
+ *  browser's own clock from receipt. Otherwise we fall back to the cross-clock
+ *  form but floor it, so skew can only ever keep a card too long, never drop a
+ *  live one too soon. */
+function autoPruneDelayMs(req: ExecApprovalRequest): number {
+  if (
+    typeof req.createdAtMs === "number" &&
+    Number.isFinite(req.createdAtMs) &&
+    req.expiresAtMs > req.createdAtMs
+  ) {
+    return req.expiresAtMs - req.createdAtMs + PRUNE_GRACE_MS;
+  }
+  return Math.max(
+    MIN_AUTOPRUNE_FLOOR_MS,
+    req.expiresAtMs - Date.now() + PRUNE_GRACE_MS,
+  );
+}
 
 /** Validate command spans against the command. Ported from upstream
  *  parseCommandSpans — drops out-of-range / malformed spans, returns
@@ -199,16 +244,19 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
   if (!p.id || !p.request?.command) return null;
   const nowMs = Date.now();
   // Only synthesize an expiry when the server omitted (or sent a malformed)
-  // timestamp. Server-supplied past timestamps must be preserved so that
-  // delayed/replayed events get pruned immediately by the local timer
-  // (Math.max(0, expiresAtMs - now + 500) → 500ms when in the past) rather
-  // than getting extended for another DEFAULT_EXPIRY_MS at the head of the
-  // queue with live buttons.
+  // timestamp. A valid server expiresAtMs (past or future) is preserved and
+  // fed to autoPruneDelayMs, which derives the auto-prune delay from a
+  // server-clock lifetime when createdAtMs is present (skew-free) and a
+  // floored fallback otherwise — never a raw Date.now cross-clock subtraction.
   const hasValidServerTimestamp =
     typeof p.expiresAtMs === "number" && Number.isFinite(p.expiresAtMs);
   const expiresAtMs = hasValidServerTimestamp
     ? p.expiresAtMs!
     : nowMs + DEFAULT_EXPIRY_MS;
+  const createdAtMs =
+    typeof p.createdAtMs === "number" && Number.isFinite(p.createdAtMs)
+      ? p.createdAtMs
+      : undefined;
   return {
     id: p.id,
     kind: "exec",
@@ -227,6 +275,7 @@ function parseRequest(payload: unknown): ExecApprovalRequest | null {
     security: p.request.security,
     ask: p.request.ask,
     expiresAtMs,
+    createdAtMs,
     enqueuedAtMs: nowMs,
   };
 }
@@ -242,13 +291,18 @@ function parsePluginRequest(payload: unknown): ExecApprovalRequest | null {
   if (!p.id || !title) return null;
   const nowMs = Date.now();
   // Mirror parseRequest's lenient expiry handling: only synthesize when the
-  // server omitted (or sent a malformed) timestamp; preserve past timestamps
-  // so replayed events prune immediately rather than getting re-extended.
+  // server omitted (or sent a malformed) timestamp. Plugin events carry a
+  // server createdAtMs, so autoPruneDelayMs gets a skew-free server-clock
+  // lifetime (expiresAtMs - createdAtMs) for the auto-prune timer.
   const hasValidServerTimestamp =
     typeof p.expiresAtMs === "number" && Number.isFinite(p.expiresAtMs);
   const expiresAtMs = hasValidServerTimestamp
     ? p.expiresAtMs!
     : nowMs + DEFAULT_EXPIRY_MS;
+  const createdAtMs =
+    typeof p.createdAtMs === "number" && Number.isFinite(p.createdAtMs)
+      ? p.createdAtMs
+      : undefined;
   return {
     id: p.id,
     kind: "plugin",
@@ -270,6 +324,7 @@ function parsePluginRequest(payload: unknown): ExecApprovalRequest | null {
       "deny",
     ],
     expiresAtMs,
+    createdAtMs,
     enqueuedAtMs: nowMs,
     pluginTitle: title,
     pluginDescription: p.request?.description ?? null,
@@ -407,11 +462,11 @@ export function useExecApprovals(): UseExecApprovalsReturn {
 
       // Schedule auto-prune at expiry. Matches OpenClaw's pattern at
       // ui/src/ui/app-gateway.ts — without this, a never-resolved
-      // approval sits in the queue indefinitely.
-      const delay = Math.max(0, req.expiresAtMs - Date.now() + 500);
+      // approval sits in the queue indefinitely. Delay is derived from a
+      // server-clock lifetime (skew-free) — see autoPruneDelayMs.
       const timer = setTimeout(
         () => removeFromQueue(req.id, "auto_pruned"),
-        delay,
+        autoPruneDelayMs(req),
       );
       timersRef.current.set(req.id, timer);
     });
@@ -429,10 +484,9 @@ export function useExecApprovals(): UseExecApprovalsReturn {
       if (trackedIdsRef.current.has(req.id)) return;
       trackedIdsRef.current.add(req.id);
       setQueue((prev) => [...prev, req]);
-      const delay = Math.max(0, req.expiresAtMs - Date.now() + 500);
       const timer = setTimeout(
         () => removeFromQueue(req.id, "auto_pruned"),
-        delay,
+        autoPruneDelayMs(req),
       );
       timersRef.current.set(req.id, timer);
     });

@@ -235,7 +235,10 @@ class _ColdMint:
         if entry is None:
             return None
         cookie, at = entry
-        if (time.time() - at) >= _COLD_MINT_BUFFER_SECONDS:
+        # monotonic: buffer age is an in-process elapsed check (stamped in
+        # mint(), compared here) that coalesces a cold-start burst; a wall-clock
+        # step must not extend or collapse the dedupe window.
+        if (time.monotonic() - at) >= _COLD_MINT_BUFFER_SECONDS:
             self._buf.pop(user_id, None)
             return None
         return cookie
@@ -248,7 +251,7 @@ class _ColdMint:
             cookie = await mint()
             if not cookie:
                 raise SessionCookieError("sign-in returned no session cookie")
-            self._buf[user_id] = (cookie, time.time())
+            self._buf[user_id] = (cookie, time.monotonic())
             return cookie
 
     def evict(self, user_id: str) -> None:

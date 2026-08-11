@@ -225,11 +225,16 @@ export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow, bill
     const now = Math.floor(Date.now() / 1000);
     // Unlike the trial map, the paid hold is a scalar with no date rollover to
     // self-heal it: if a Lambda crashed between reserve and settle/release, the
-    // leaked hold would suppress admission FOREVER. Every hold-changing write
-    // stamps reserved_updated_at; a hold older than the TTL (or with no stamp)
-    // is treated as leaked and RECLAIMED — reset to this request's estimate
-    // instead of accumulated — so the TTL bounds how long a leak can shrink
-    // the admittable balance.
+    // leaked hold would suppress admission FOREVER. reserved_updated_at tracks
+    // the age of the OLDEST outstanding hold: it is stamped only when the
+    // reserved balance goes from 0 → positive (a hold is born) or on reclaim,
+    // and is deliberately NOT re-stamped by later holds, releases, or settles
+    // (see paidRelease/paidSettle). If it were re-stamped on every write, a
+    // busy owner's leaked hold would never age past the TTL and would suppress
+    // its balance forever. A hold older than the TTL (or a positive reserved
+    // with no stamp) is treated as leaked and RECLAIMED — reset to this
+    // request's estimate instead of accumulated — so the TTL bounds how long a
+    // leak can shrink the admittable balance even under continuous load.
     const stale = reserved > 0 && (reservedAt === undefined || now - reservedAt > ttlSec);
     const effectiveReserved = stale ? 0 : reserved;
     if (remaining - effectiveReserved - estimate <= 0) return { ok: false };
@@ -245,13 +250,20 @@ export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow, bill
           ExpressionAttributeValues: { ":est": N(estimate), ":seen": N(reserved), ":now": N(now) },
         });
       } else {
+        // Stamp reserved_updated_at ONLY on the first outstanding hold
+        // (reserved 0 → positive). While reserved stays positive, leave the
+        // oldest hold's stamp in place so a leak keeps aging.
+        const firstHold = reserved === 0;
+        const values = { ":est": N(estimate), ":zero": N(0), ":seen": N(reserved) };
+        if (firstHold) values[":now"] = N(now);
         await ddb.updateItem({
           TableName: env.FAST_GATE_TABLE,
           Key: { owner_id: { S: ownerId } },
           UpdateExpression:
-            "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) + :est, reserved_updated_at = :now",
+            "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) + :est" +
+            (firstHold ? ", reserved_updated_at = :now" : ""),
           ConditionExpression: "attribute_not_exists(reserved_microcents) OR reserved_microcents = :seen",
-          ExpressionAttributeValues: { ":est": N(estimate), ":zero": N(0), ":seen": N(reserved), ":now": N(now) },
+          ExpressionAttributeValues: values,
         });
       }
       return { ok: true, hold: { ownerId, estimate, paid: true } };
@@ -267,14 +279,17 @@ export async function paidReserve(ddb, env, ownerId, estimate, fastGateRow, bill
 }
 
 export async function paidRelease(ddb, env, hold) {
+  // Does NOT touch reserved_updated_at: that stamp tracks the OLDEST
+  // outstanding hold (stamped at 0 → positive in paidReserve). Re-stamping on
+  // release would reset a busy owner's leak clock and hide leaked holds forever.
   try {
     await ddb.updateItem({
       TableName: env.FAST_GATE_TABLE,
       Key: { owner_id: { S: hold.ownerId } },
       UpdateExpression:
-        "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est, reserved_updated_at = :now",
+        "SET reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est",
       ConditionExpression: "attribute_exists(owner_id)",
-      ExpressionAttributeValues: { ":est": N(hold.estimate), ":zero": N(0), ":now": N(Math.floor(Date.now() / 1000)) },
+      ExpressionAttributeValues: { ":est": N(hold.estimate), ":zero": N(0) },
     });
   } catch (e) {
     if (!isConditionFail(e)) throw e; // no row (never reserved) — nothing to release
@@ -282,16 +297,17 @@ export async function paidRelease(ddb, env, hold) {
 }
 
 export async function paidSettle(ddb, env, hold, actual) {
+  // Like paidRelease, deliberately does NOT re-stamp reserved_updated_at — see
+  // paidReserve for why the stamp must track only the oldest hold's age.
   try {
     await ddb.updateItem({
       TableName: env.FAST_GATE_TABLE,
       Key: { owner_id: { S: hold.ownerId } },
       UpdateExpression:
         "SET remaining_microcents = if_not_exists(remaining_microcents, :zero) - :act, " +
-        "reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est, " +
-        "reserved_updated_at = :now",
+        "reserved_microcents = if_not_exists(reserved_microcents, :zero) - :est",
       ConditionExpression: "attribute_exists(owner_id)",
-      ExpressionAttributeValues: { ":act": N(actual), ":est": N(hold.estimate), ":zero": N(0), ":now": N(Math.floor(Date.now() / 1000)) },
+      ExpressionAttributeValues: { ":act": N(actual), ":est": N(hold.estimate), ":zero": N(0) },
     });
   } catch (e) {
     if (!isConditionFail(e)) throw e; // no fast-gate row → nothing to debit (allowed path)

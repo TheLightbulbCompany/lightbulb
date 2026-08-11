@@ -754,3 +754,45 @@ class TestValidateReturnUrl:
         ):
             ok, err = self._validate(url)
             assert err is not None and err.status_code == 400, f"{url} should be rejected"
+
+
+@patch("routers.marketplace_purchases.license_service.revoke", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.payout_service.refund_purchase", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.marketplace_repo.get_purchase", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.time.time")
+def test_refund_window_parses_created_at_as_utc_not_local(mock_time, mock_get, mock_refund, mock_revoke, client):
+    """The 7-day refund window must read created_at ("...Z") as UTC.
+
+    time.mktime would read the struct as LOCAL time, so on a non-UTC host the
+    computed age is off by the host's UTC offset. Pin a non-UTC TZ and a
+    purchase created 7d4h before "now": correct UTC math => expired (403);
+    the old local-time math (LA, UTC-7/8) would shave hours off the age and
+    wrongly allow the refund.
+    """
+    import calendar
+    import time as _time
+
+    from core.auth import AuthContext, get_current_user
+    from main import app
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Los_Angeles"
+    _time.tzset()
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="buyer1")
+    try:
+        now = calendar.timegm(_time.strptime("2026-06-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
+        mock_time.return_value = now
+        # 7 days + 4 hours before now, in UTC -> genuinely past the 7-day window.
+        mock_get.return_value = {"created_at": "2026-05-24T20:00:00Z"}
+
+        resp = client.post("/api/v1/marketplace/refund?purchase_id=p1")
+
+        assert resp.status_code == 403, resp.text
+        mock_refund.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        _time.tzset()

@@ -305,16 +305,38 @@ test("paid reserve: fresh hold still counts against balance → denial", async (
     (e) => e.code === "credit_exhausted"
   );
 });
-test("paid settle + release stamp reserved_updated_at", async () => {
+test("paid settle + release do NOT re-stamp reserved_updated_at (leak keeps aging)", async () => {
   const ddb = makeFakeDdb();
-  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "600000" } } };
+  // Two 300k holds outstanding; the oldest was stamped long ago (epoch 1000).
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "600000" }, reserved_updated_at: { N: "1000" } } };
   const hold = { ownerId: "u", estimate: 300000, plan: "paid", paid: true };
   await settle({ ddb, env: ENV, hold, tier: "sonnet", requestId: "r", usage: { inputTokens: 100000 } });
-  const stamped = readN(ddb._store.fg.u.reserved_updated_at);
-  assert.ok(stamped !== undefined && stamped > 0);
+  // Settle must NOT advance the oldest-hold clock — else a leaked sibling hold
+  // would never age past the TTL under continuous load.
+  assert.equal(readN(ddb._store.fg.u.reserved_updated_at), 1000);
+  assert.equal(readN(ddb._store.fg.u.reserved_microcents), 300000); // one hold freed
   await release({ ddb, env: ENV, hold });
   assert.equal(readN(ddb._store.fg.u.reserved_microcents), 0);
-  assert.ok(readN(ddb._store.fg.u.reserved_updated_at) >= stamped);
+  assert.equal(readN(ddb._store.fg.u.reserved_updated_at), 1000); // still untouched
+});
+test("paid reserve: a leaked hold is reclaimable even after a concurrent settle (under load)", async () => {
+  const ddb = makeFakeDdb();
+  // Leaked hold A (300k) stamped long ago (epoch 1000), plus a live hold B (300k).
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "600000" }, reserved_updated_at: { N: "1000" } } };
+  // Hold B settles — under the old code this re-stamped the row and hid A's age.
+  await settle({ ddb, env: ENV, hold: { ownerId: "u", estimate: 300000, plan: "paid", paid: true }, tier: "sonnet", requestId: "rB", usage: { inputTokens: 100000 } });
+  // A fresh request now still sees the stale stamp → reclaims the leaked hold A.
+  const { hold } = await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  assert.equal(hold.paid, true);
+  assert.equal(readN(ddb._store.fg.u.reserved_microcents), 300000); // reset to this estimate, leak reclaimed
+  assert.ok(readN(ddb._store.fg.u.reserved_updated_at) > 1000); // freshly stamped
+});
+test("paid reserve: first hold (reserved 0 → positive) stamps reserved_updated_at", async () => {
+  const ddb = makeFakeDdb();
+  ddb._store.fg = { u: { owner_id: { S: "u" }, remaining_microcents: { N: "1000000" }, reserved_microcents: { N: "0" } } };
+  await reserveOrThrow({ ddb, env: ENV, ownerId: "u", plan: "paid", billingRow: LEDGER, fastGateRow: ddb._store.fg.u, today: TODAY, nowSec: 0 });
+  assert.equal(readN(ddb._store.fg.u.reserved_microcents), 300000);
+  assert.ok(readN(ddb._store.fg.u.reserved_updated_at) > 0); // birth of the oldest hold is stamped
 });
 
 // ---- non-streaming usage extraction (Codex finding: JSON routes must debit) --

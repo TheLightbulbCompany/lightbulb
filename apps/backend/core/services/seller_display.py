@@ -49,18 +49,21 @@ async def resolve_display_name(seller_id: str) -> str:
     if not seller_id:
         return FALLBACK_NAME
 
-    now = time.time()
+    # monotonic: cache age is an in-process elapsed check (stamp and compare
+    # both live in this process's _cache), so use a clock immune to wall-clock
+    # steps rather than time.time().
+    now = time.monotonic()
     cached = _cache.get(seller_id)
     if cached and now - cached[1] < _TTL_SECONDS:
         return cached[0]
 
     async with _lock:
         cached = _cache.get(seller_id)
-        if cached and time.time() - cached[1] < _TTL_SECONDS:
+        if cached and time.monotonic() - cached[1] < _TTL_SECONDS:
             return cached[0]
 
         name = await _resolve_uncached(seller_id)
-        _cache[seller_id] = (name, time.time())
+        _cache[seller_id] = (name, time.monotonic())
         return name
 
 

@@ -166,7 +166,10 @@ _circuit_open_until: float = 0.0
 
 def _record_outcome(status_code: int) -> None:
     """Log a request outcome into the circuit breaker's sample windows."""
-    now = time.time()
+    # monotonic: these timestamps are only ever compared to each other within
+    # this process (sliding window + cool-down), never persisted or shown, so a
+    # wall-clock step (NTP) must not skew the window math.
+    now = time.monotonic()
     _recent_total.append(now)
     if status_code >= 500:
         _recent_5xx.append(now)
@@ -180,7 +183,7 @@ def _circuit_open() -> bool:
     same cool-down period short-circuit without recomputing the rate.
     """
     global _circuit_open_until
-    now = time.time()
+    now = time.monotonic()  # same monotonic clock as _record_outcome
     if now < _circuit_open_until:
         return True
     cutoff = now - _FAILURE_WINDOW_SECONDS

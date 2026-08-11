@@ -33,14 +33,21 @@ def write_event(
     user_agent: str,
     request_size: int,
     response_size: int,
+    kind: str = "container_hook",
 ) -> None:
-    """Persist one audit row. Failures are logged and swallowed."""
+    """Persist one audit row. Failures are logged and swallowed.
+
+    ``kind`` distinguishes the ingress: ``container_hook`` (hooks_proxy →
+    OpenClaw container) vs ``paperclip_trigger`` (paperclip_trigger_proxy →
+    Paperclip routine trigger).
+    """
     now_ms = int(time.time() * 1000)
     item: dict[str, Any] = {
         "owner_id": owner_id,
         "event_id": str(ULID()),
         "timestamp": now_ms,
         "hook_path": hook_path,
+        "kind": kind,
         "status_code": status_code,
         "source_ip": source_ip,
         "user_agent": user_agent[:_USER_AGENT_MAX],

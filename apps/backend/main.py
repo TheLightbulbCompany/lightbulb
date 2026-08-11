@@ -54,6 +54,7 @@ from routers import (
     orgs,
     paperclip_events,
     paperclip_proxy,
+    paperclip_trigger_proxy,
     platform_info,
     ses_inbound,
     settings_keys,
@@ -846,6 +847,10 @@ app.include_router(oauth.router, prefix="/api/v1")
 # and we forward to the per-user OpenClaw container. See routers/hooks_proxy.py
 # for the auth model and forwarded-header rewriting rationale.
 app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+# Tier-2 ingress: signed Paperclip routine-trigger fires at
+# /api/v1/hooks/t/{owner_id}/{public_id}. No edge auth — Paperclip verifies
+# the per-trigger signature upstream. See routers/paperclip_trigger_proxy.py.
+app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Platform-ops operator console + owner-scoped agent access (dual auth). See
 # routers/ops.py for the Clerk-admin OR platform_ops-token model.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])

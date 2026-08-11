@@ -24,6 +24,30 @@ def _stale_applying_cutoff() -> str:
     return (datetime.now(timezone.utc) - timedelta(seconds=STALE_APPLYING_SECONDS)).isoformat()
 
 
+def _status_condition(expected_statuses: list[str], applying_token: str | None = None):
+    """OR-chain of ``status == s`` over ``expected_statuses``.
+
+    When ``applying_token`` is given, the ``applying`` term additionally
+    requires ``applying_at == token`` — the OWNER fence. The stamped
+    ``applying_at`` value IS the claim's token (it advances on every stale
+    takeover), so a terminal write only lands if THIS applier still owns the
+    claim: an applier whose row was taken over (``applying_at`` re-stamped by
+    the new owner) finds its token no longer matches and no-ops — which is
+    correct, it lost the claim. ``pending``/``scheduled`` terms are never
+    fenced (callers can mark a row applied/failed without an applying hop).
+    """
+    terms = []
+    for s in expected_statuses:
+        if s == "applying" and applying_token is not None:
+            terms.append(Attr("status").eq("applying") & Attr("applying_at").eq(applying_token))
+        else:
+            terms.append(Attr("status").eq(s))
+    cond = terms[0]
+    for t in terms[1:]:
+        cond = cond | t
+    return cond
+
+
 def _get_table():
     return get_table("pending-updates")
 
@@ -132,35 +156,44 @@ async def set_status_conditional(
     expected_statuses: list[str],
     *,
     stale_takeover_seconds: int | None = None,
+    applying_token: str | None = None,
 ) -> bool:
     """Conditionally update status. Returns True on success, False if condition fails.
 
-    Transitioning TO 'applying' also stamps ``applying_at`` so a crash between
-    'applying' and the terminal mark_applied/mark_failed is detectable.
+    ``applying_token`` is the per-claim owner token (see ``_status_condition``),
+    used in BOTH directions:
 
-    ``stale_takeover_seconds`` additionally lets the write STEAL an 'applying'
-    row whose ``applying_at`` is older than that many seconds (or absent — a
-    pre-fix wedged row). Without it a crashed applier's row sits 'applying'
-    forever and 409s every future roll for the owner (CC-3); with it the next
-    apply re-claims the wedged row. The window kept in lockstep with
-    ``get_in_flight``, which stops counting exactly those stale rows.
+    * CLAIMING ('applying'): the token is STAMPED as ``applying_at`` (defaults
+      to ``now`` when omitted). Whoever holds this exact value owns the claim.
+      Transitioning to 'applying' always records ``applying_at`` so a crash
+      before the terminal mark_applied/mark_failed is detectable.
+    * FINALIZING (terminal write with 'applying' in ``expected_statuses``): the
+      token is REQUIRED to match the row's current ``applying_at``, so a stale
+      applier whose claim was taken over cannot finalize the row the new owner
+      now holds. Omit it for the pre-fix / tokenless callers (no fence).
+
+    ``stale_takeover_seconds`` additionally lets a CLAIM STEAL an 'applying' row
+    whose ``applying_at`` is older than that many seconds (or absent — a pre-fix
+    wedged row), re-stamping it with the new owner's token. Without it a crashed
+    applier's row sits 'applying' forever and 409s every future roll (CC-3); the
+    window is kept in lockstep with ``get_in_flight``, which stops counting
+    exactly those stale rows.
     """
     table = _get_table()
     now = utc_now_iso()
 
-    # Build condition: status must be one of expected_statuses
-    # DynamoDB doesn't support IN in ConditionExpression directly with update_item,
-    # so we build an OR chain.
-    condition = Attr("status").eq(expected_statuses[0])
-    for s in expected_statuses[1:]:
-        condition = condition | Attr("status").eq(s)
+    claiming = new_status == "applying"
+    # On a CLAIM the token is what we STAMP (not a fence on the prior value); on
+    # a terminal write it FENCES the 'applying' term on the current owner.
+    condition = _status_condition(expected_statuses, None if claiming else applying_token)
 
     update_expr = "SET #s = :new_status, updated_at = :now"
     values: dict = {":new_status": new_status, ":now": now}
 
-    if new_status == "applying":
-        # Same :now — updated_at and applying_at coincide on the transition.
-        update_expr += ", applying_at = :now"
+    if claiming:
+        stamped = applying_token if applying_token is not None else now
+        update_expr += ", applying_at = :aat"
+        values[":aat"] = stamped
         if stale_takeover_seconds is not None:
             cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_takeover_seconds)).isoformat()
             condition = condition | (
@@ -289,8 +322,14 @@ async def count_for_owner(owner_id: str) -> int:
             return total
 
 
-async def mark_applied(owner_id: str, update_id: str) -> bool:
-    """Mark an update as applied and set TTL for 30-day expiry."""
+async def mark_applied(owner_id: str, update_id: str, *, applying_token: str | None = None) -> bool:
+    """Mark an update as applied and set TTL for 30-day expiry.
+
+    ``applying_token`` OWNER-fences the flip (see ``_status_condition``): when
+    given, an 'applying' row is only marked applied if its ``applying_at`` still
+    matches — so a stale applier whose claim was taken over no-ops here instead
+    of finalizing the row the new owner holds. Omit it for the tokenless retry
+    pass (pending -> applied, never via 'applying')."""
     table = _get_table()
     now = utc_now_iso()
     ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)  # 30 days
@@ -314,7 +353,7 @@ async def mark_applied(owner_id: str, update_id: str) -> bool:
             # "applied" and stayed stuck in "applying" forever (the ECS change
             # had already taken effect). "pending"/"scheduled" stay for callers
             # that mark a row applied without an intervening "applying" hop.
-            ConditionExpression=Attr("status").is_in(["applying", "pending", "scheduled"]),
+            ConditionExpression=_status_condition(["applying", "pending", "scheduled"], applying_token),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -353,13 +392,18 @@ async def list_pending_by_type(update_type: str) -> list[dict]:
             return out
 
 
-async def mark_failed(owner_id: str, update_id: str, reason: str) -> bool:
+async def mark_failed(owner_id: str, update_id: str, reason: str, *, applying_token: str | None = None) -> bool:
     """Mark a pending row as failed with a truncated reason string.
 
     Used by the T13 retry pass when a Paperclip provisioning op
     raises a non-retryable exception (or hits an unknown ``op``).
     Sets a 30-day TTL like ``mark_applied`` so failed rows don't
     accumulate indefinitely.
+
+    ``applying_token`` OWNER-fences an 'applying' -> 'failed' flip (see
+    ``_status_condition``): a stale applier whose claim was taken over can't
+    record failure on the row the new owner now holds. Omit it for the tokenless
+    retry pass (pending -> failed).
     """
     table = _get_table()
     now = utc_now_iso()
@@ -378,7 +422,7 @@ async def mark_failed(owner_id: str, update_id: str, reason: str) -> bool:
                 ":now": now,
                 ":ttl": ttl_epoch,
             },
-            ConditionExpression=Attr("status").is_in(["pending", "scheduled", "applying"]),
+            ConditionExpression=_status_condition(["pending", "scheduled", "applying"], applying_token),
         )
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:

@@ -384,3 +384,58 @@ async def test_get_in_flight_excludes_stale_and_legacy_applying(dynamodb_table):
     results = await update_repo.get_in_flight("user_1")
     assert {r["description"] for r in results if "description" in r} == {"P", "FRESH"}
     assert all(r["update_id"] not in {"stale", "legacy"} for r in results)
+
+
+@pytest.mark.asyncio
+async def test_stale_applier_cannot_finalize_after_takeover(dynamodb_table):
+    """P1 owner-fence: a paused (not dead) applier A whose stale claim was taken
+    over by applier B must NOT be able to finalize the row B now owns. Every
+    terminal write is fenced on the applying_at token, so A's mark_applied /
+    applying->failed no-op once B re-stamped applying_at."""
+    from core.repositories import update_repo
+
+    item = await update_repo.create("user_1", "image_update", "roll", {"a": 1})
+    uid = item["update_id"]
+
+    # Applier A claims, but its applying_at is already old (A ran long / paused).
+    token_a = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
+    assert await update_repo.set_status_conditional(
+        "user_1", uid, "applying", ["pending", "scheduled"], applying_token=token_a
+    )
+
+    # Applier B takes over the stale claim with its own fresh token.
+    token_b = datetime.now(timezone.utc).isoformat()
+    assert await update_repo.set_status_conditional(
+        "user_1",
+        uid,
+        "applying",
+        ["pending", "scheduled"],
+        stale_takeover_seconds=update_repo.STALE_APPLYING_SECONDS,
+        applying_token=token_b,
+    )
+
+    # A resumes and tries to finalize — both terminal writes must NO-OP.
+    assert await update_repo.mark_applied("user_1", uid, applying_token=token_a) is False
+    assert (
+        await update_repo.set_status_conditional("user_1", uid, "failed", ["applying"], applying_token=token_a) is False
+    )
+    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": uid})["Item"]
+    assert row["status"] == "applying"  # still B's row
+    assert row["applying_at"] == token_b
+
+    # B (the real owner) finalizes successfully.
+    assert await update_repo.mark_applied("user_1", uid, applying_token=token_b) is True
+    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": uid})["Item"]
+    assert row["status"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_tokenless_mark_applied_still_works_from_pending(dynamodb_table):
+    """The retry pass marks pending -> applied with NO token; the owner fence
+    must not break that (pending/scheduled terms are never fenced)."""
+    from core.repositories import update_repo
+
+    item = await update_repo.create("user_1", "paperclip_provision", "retry", {"op": "archive_member"})
+    assert await update_repo.mark_applied("user_1", item["update_id"]) is True
+    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
+    assert row["status"] == "applied"

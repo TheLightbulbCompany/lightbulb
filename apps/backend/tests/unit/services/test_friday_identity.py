@@ -1004,42 +1004,53 @@ def test_migrate_add_webchat_section_noop_when_missing():
     assert friday_identity._migrate_add_webchat_section(ws, "user_abc", "uuid-f") is False
 
 
+class _HealWs(_MigrationWs):
+    """_MigrationWs plus the openclaw.json read the CEO resolver uses."""
+
+    def __init__(self, content, config):
+        super().__init__(content)
+        self.config = config
+
+    def read_openclaw_config(self, user_id):
+        return self.config
+
+
+def _config_with_agents(*agents):
+    """openclaw.json shaped like _build_agents_list writes it."""
+    return {
+        "agents": {"list": [{"id": agent_id, "params": {"paperclip": {"role": role}}} for agent_id, role in agents]}
+    }
+
+
 @pytest.mark.asyncio
-async def test_heal_seeded_files_runs_migrations_for_seeded_owner(monkeypatch):
-    """The fleet image-apply entry point: resolves Friday's uuid from the
-    PaperclipCompany row and runs the heal pass against that workspace."""
-    ws = _MigrationWs("# AGENTS.md\n\nOld playbook without the section.\n")
+async def test_heal_seeded_files_resolves_the_ceo_by_role_not_position():
+    """The reconcile path can leave Atlas ahead of Friday in seeded order, so
+    the CEO is resolved by ROLE from openclaw.json. Healing the wrong agent
+    would leave Friday stale AND write CEO text into Atlas's workspace."""
+    ws = _HealWs(
+        "# AGENTS.md\n\nOld playbook without the section.\n",
+        _config_with_agents(("uuid-atlas", "general"), ("uuid-friday", "ceo")),
+    )
 
-    class _Row:
-        seeded_agent_ids = ["uuid-friday", "uuid-atlas"]
-
-    class _Repo:
-        def __init__(self, table_name):
-            assert table_name == "paperclip-companies"
-
-        async def resolve_owner_row(self, owner_id):
-            return _Row()
-
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", _Repo)
     await friday_identity.heal_seeded_files(owner_id="user_abc", workspace=ws)
+
     path, content = ws.written
-    # seeded_agent_ids[0] is the CEO — the heal lands in Friday's workspace.
     assert path == "workspace-uuid-friday/AGENTS.md"
     assert "## Webchat sessions (no run id)" in content
 
 
 @pytest.mark.asyncio
-async def test_heal_seeded_files_skips_owners_without_a_seeded_row(monkeypatch):
-    ws = _MigrationWs("# AGENTS.md\n")
+async def test_heal_seeded_files_skips_when_no_ceo_in_config():
+    ws = _HealWs("# AGENTS.md\n", _config_with_agents(("uuid-atlas", "general")))
+    await friday_identity.heal_seeded_files(owner_id="user_abc", workspace=ws)
+    assert ws.written is None
 
-    class _Repo:
-        def __init__(self, table_name):
-            pass
 
-        async def resolve_owner_row(self, owner_id):
-            return None
-
-    monkeypatch.setattr("core.repositories.paperclip_repo.PaperclipRepo", _Repo)
+@pytest.mark.asyncio
+async def test_heal_seeded_files_skips_when_config_missing():
+    """Legacy pre-Paperclip owners (no config / no agents) have nothing to
+    heal — and a missing config must never raise into an image apply."""
+    ws = _HealWs("# AGENTS.md\n", None)
     await friday_identity.heal_seeded_files(owner_id="user_abc", workspace=ws)
     assert ws.written is None
 

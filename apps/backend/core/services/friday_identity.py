@@ -1052,6 +1052,38 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
 # ---------------------------------------------------------------------------
 
 
+def _resolve_ceo_agent_id(workspace: Workspace, owner_id: str) -> str | None:
+    """Friday's agent id, read from the owner's own ``openclaw.json``.
+
+    Deliberately NOT ``seeded_agent_ids[0]``: that list is append-ordered,
+    and the reconcile path in ``paperclip_provisioning.provision_org``
+    carries a previously-seeded Atlas forward BEFORE appending the
+    newly-created Friday — so index 0 is Atlas on exactly the owners whose
+    first provision half-failed. Healing against that id would leave Friday
+    stale AND write CEO playbook text into Atlas's workspace.
+
+    ``openclaw.json``'s ``agents.list[]`` carries each agent's Paperclip role
+    (``_build_agents_list`` → ``write_to_agent_entry``), so the CEO is
+    identified by role rather than position, from a file this path already
+    has in hand. Returns None when the config is missing/corrupt or lists no
+    CEO — the caller treats that as "nothing to heal".
+    """
+    from core.services.paperclip_meta import read_from_agent_entry
+
+    config = workspace.read_openclaw_config(owner_id)
+    if not isinstance(config, dict):
+        return None
+    agents = ((config.get("agents") or {}).get("list")) or []
+    if not isinstance(agents, list):
+        return None
+    for entry in agents:
+        if not isinstance(entry, dict):
+            continue
+        if read_from_agent_entry(entry).role == "ceo" and entry.get("id"):
+            return str(entry["id"])
+    return None
+
+
 async def heal_seeded_files(*, owner_id: str, workspace: Workspace) -> None:
     """Heal an EXISTING Friday workspace's seeded files without a provision.
 
@@ -1059,19 +1091,15 @@ async def heal_seeded_files(*, owner_id: str, workspace: Workspace) -> None:
     provision/config-rewrite path — a Track-2 image apply never rewrites
     configs, so without this entry point already-provisioned Fridays keep
     stale seeded playbook text until some unrelated reprovision. The
-    image-apply path calls this instead: it resolves Friday's UUID from the
-    PaperclipCompany row (``seeded_agent_ids[0]`` is the CEO, stamped at
-    provision) and runs the anchor-guarded heal pass.
+    image-apply path calls this instead: it resolves the CEO by ROLE from
+    the owner's ``openclaw.json`` (see ``_resolve_ceo_agent_id``) and runs
+    the anchor-guarded heal pass.
 
-    Best-effort: no row / no seeded ids → silent skip (legacy pre-Paperclip
-    owners have nothing to heal); never raises.
+    Best-effort: no config / no CEO entry → silent skip (legacy
+    pre-Paperclip owners have nothing to heal); never raises.
     """
-    from core.repositories.paperclip_repo import PaperclipRepo
-
     try:
-        repo = PaperclipRepo(table_name="paperclip-companies")
-        row = await repo.resolve_owner_row(owner_id)
-        friday_uuid = ((getattr(row, "seeded_agent_ids", None) or [None])[0]) if row else None
+        friday_uuid = _resolve_ceo_agent_id(workspace, owner_id)
         if not friday_uuid:
             return
         _run_heal_migrations(workspace, owner_id, friday_uuid)

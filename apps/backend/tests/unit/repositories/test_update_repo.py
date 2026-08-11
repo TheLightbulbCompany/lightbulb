@@ -302,20 +302,3 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
     # Row is finalized: status "applied", no longer pending.
     results = await update_repo.get_pending("user_1")
     assert len(results) == 0
-
-
-def test_is_stale_applying():
-    """Pure staleness predicate (CC-3): only an 'applying' row older than the
-    window is stale; fresh/other-status/no-timestamp rows are never stale."""
-    from core.repositories import update_repo
-
-    old = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
-    fresh = datetime.now(timezone.utc).isoformat()
-
-    assert update_repo.is_stale_applying({"status": "applying", "updated_at": old}) is True
-    # Fresh applying row = a live roll → NOT stale (must not be stomped).
-    assert update_repo.is_stale_applying({"status": "applying", "updated_at": fresh}) is False
-    # Non-applying rows are never stale-applying.
-    assert update_repo.is_stale_applying({"status": "pending", "updated_at": old}) is False
-    # No timestamp → conservative: treat as live, never stomp.
-    assert update_repo.is_stale_applying({"status": "applying"}) is False

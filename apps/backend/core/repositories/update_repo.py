@@ -2,48 +2,10 @@
 
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 
 from boto3.dynamodb.conditions import Attr, Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
-
-# An 'applying' row older than this is a crashed/replaced applier, not a live
-# roll: apply_update writes its config patch + issues the ECS re-register and
-# returns WITHOUT waiting for the new task to go healthy, so a real apply
-# finishes in seconds. 30 min is deliberately far past that — a row applying
-# this long is genuinely dead. Used ONLY by the admin force-apply path (see
-# is_stale_applying); there is intentionally NO automatic concurrent takeover.
-STALE_APPLYING_SECONDS = 30 * 60
-
-
-def is_stale_applying(row: dict) -> bool:
-    """True if ``row`` is wedged in 'applying' past ``STALE_APPLYING_SECONDS``.
-
-    Staleness is keyed on ``updated_at`` — set on the pending->applying
-    transition and NOT rewritten until the terminal mark_applied/mark_failed —
-    so its age is exactly how long the row has sat in 'applying'.
-
-    This exists for ONE caller: the admin force-apply guard, a human-triggered
-    action. A wedged 'applying' row otherwise 409s every future roll for the
-    owner forever (CC-3). We do NOT auto-take-over such a row anywhere on the
-    automatic (scheduled / owner-banner) paths: a paused-then-resumed applier
-    would still run its ECS side effects, and no DB fence can undo a side effect
-    that already fired. Clearing is gated behind an explicit operator force-apply
-    where a human owns the "the old applier is dead" judgement.
-
-    Conservative on a missing ``updated_at``: returns False (treat as live,
-    never stomp) — a genuinely-live legacy 'applying' row always carries a
-    recent ``updated_at`` from its own transition, so this only ever guards the
-    (unexpected) no-timestamp case.
-    """
-    if row.get("status") != "applying":
-        return False
-    updated_at = row.get("updated_at")
-    if not updated_at:
-        return False
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_APPLYING_SECONDS)).isoformat()
-    return updated_at < cutoff
 
 
 def _get_table():

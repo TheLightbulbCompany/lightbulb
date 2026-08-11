@@ -931,10 +931,19 @@ class PaperclipRepo:
         key = _org_create_claim_key(org_id)
         now = datetime.now(timezone.utc)
         token = uuid4().hex
+        # NOTE: the identity is stored under ``claimed_by``, NOT ``holder``.
+        # During a rolling deploy an OLD worker still runs the pre-token
+        # ``release_org_create_claim`` whose condition is ``holder = :h`` — and
+        # since the SAME admin re-polls with the same user_id, that stale release
+        # would delete THIS attempt's token-fenced claim (an ABA delete across
+        # versions). Omitting the ``holder`` attribute makes that old condition
+        # ``attribute_not_exists`` → false, so the cross-version stale release
+        # can no longer delete a token-fenced claim. ``claimed_by`` is kept only
+        # for observability; nothing conditions on it.
         item = {
             "user_id": key,
             "kind": "org_create_claim",
-            "holder": holder,
+            "claimed_by": holder,
             "claim_token": token,
             "claimed_at": now.isoformat(),
         }

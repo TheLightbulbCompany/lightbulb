@@ -365,6 +365,28 @@ async def test_org_create_claim_stale_straggler_cannot_release_newer_holder(repo
     assert await repo.try_acquire_org_create_claim("org_x", holder="b")
 
 
+async def test_org_create_claim_legacy_holder_release_cannot_delete_tokenized_claim(repo):
+    """Rolling-deploy safety: an OLD worker still runs the pre-token release
+    (ConditionExpression ``holder = :h``). A tokenized claim stores NO ``holder``
+    attribute (identity is under ``claimed_by``), so that legacy release can't
+    match — it cannot delete a newer token-fenced claim for the same admin."""
+    from core.repositories.paperclip_repo import _org_create_claim_key
+
+    token = await repo.try_acquire_org_create_claim("org_x", holder="admin_a")
+    assert token
+    table = repo._table()
+    key = _org_create_claim_key("org_x")
+    # Emulate the OLD worker's holder-only release for the SAME admin id.
+    with pytest.raises(table.meta.client.exceptions.ConditionalCheckFailedException):
+        table.delete_item(
+            Key={"user_id": key},
+            ConditionExpression="holder = :h",
+            ExpressionAttributeValues={":h": "admin_a"},
+        )
+    # The claim survived → a fresh caller still loses (no reopened create window).
+    assert await repo.try_acquire_org_create_claim("org_x", holder="admin_b") is None
+
+
 async def test_org_create_claim_sentinel_invisible_to_org_gsi_queries(repo):
     """The claim sentinel must NOT appear in any by-org-id GSI query — it omits
     org_id so it's never indexed. Otherwise it would corrupt find_org_owner /

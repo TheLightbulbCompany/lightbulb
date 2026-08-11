@@ -440,31 +440,8 @@ async def admin_container_force_apply_image_update(
     # modes disproportionate to that bounded, admin-only race.
     in_flight = await update_repo.get_in_flight(owner_id)
     conflicting = [u for u in in_flight if _rolls_task_def(u.get("changes"))]
-    # A row wedged in 'applying' past the stale window is a crashed/replaced
-    # applier, not a live roll — it must not 409 the owner's rolls FOREVER
-    # (CC-3). Force-apply is an explicit, admin-only action, so clear such rows
-    # (mark them failed) and proceed with a fresh roll. A FRESH 'applying' row
-    # (a genuinely in-flight roll) still blocks.
-    #
-    # We deliberately do NOT auto-take-over the stale row's update_id: force-apply
-    # creates a BRAND-NEW row, so there is never a second applier on the same row
-    # (no owner-token fencing needed). Residual: if the wedged applier was merely
-    # PAUSED (not dead) and resumes after 30 min, it can still fire ITS ECS side
-    # effect once — a side effect no DB write can undo. Accepted because 30 min in
-    # 'applying' means the task is gone (ECS would have replaced/OOM-killed it),
-    # and the operator is asserting a roll now by force-applying.
-    live_conflicts = []
-    for u in conflicting:
-        if update_repo.is_stale_applying(u):
-            await update_repo.mark_failed(
-                owner_id,
-                u.get("update_id", ""),
-                reason="stale 'applying' row cleared by admin force-apply (crashed applier)",
-            )
-        else:
-            live_conflicts.append(u)
-    if live_conflicts:
-        statuses = ", ".join(sorted({u.get("status", "?") for u in live_conflicts}))
+    if conflicting:
+        statuses = ", ".join(sorted({u.get("status", "?") for u in conflicting}))
         raise HTTPException(
             status_code=409,
             detail=(

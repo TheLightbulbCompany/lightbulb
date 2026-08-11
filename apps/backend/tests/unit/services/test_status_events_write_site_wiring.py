@@ -89,6 +89,17 @@ def billing_table():
             AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        # set_provider_choice marks the container for reprovision
+        # (container_repo.mark_needs_provision, #1676), a write to the containers
+        # table. Create it so the write lands; with no container row it no-ops
+        # (update_fields → ConditionalCheckFailed → None) and doesn't publish, so
+        # the single billing-owner publish this test asserts is preserved.
+        resource.create_table(
+            TableName="test-containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         with (
             patch("core.dynamodb._table_prefix", "test-"),
             patch("core.dynamodb._dynamodb_resource", resource),

@@ -1,5 +1,14 @@
-from pydantic import field_validator
+import logging
+import os
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+# ENVIRONMENT values that mean "this is a real, internet-reachable deployment"
+# (vs. "local" / "test" / unset for local dev + CI). Deployed envs must have the
+# security fences configured — see _validate_deployed_security below.
+_DEPLOYED_ENVIRONMENTS = frozenset({"dev", "staging", "prod"})
+_KNOWN_ENVIRONMENTS = _DEPLOYED_ENVIRONMENTS | frozenset({"local", "test"})
 
 
 class Settings(BaseSettings):
@@ -380,6 +389,63 @@ class Settings(BaseSettings):
         if "your-clerk-domain" in v:
             raise ValueError("CLERK_ISSUER not configured. Set the CLERK_ISSUER environment variable.")
         return v
+
+    @model_validator(mode="after")
+    def _validate_deployed_security(self) -> "Settings":
+        """Fail LOUD at boot rather than silently fail open in a deployment.
+
+        Several security fences default to the *insecure* value (WS impersonation
+        enforcement off) or hinge on ``ENVIRONMENT`` reading exactly ``"prod"``
+        (the debug routes + Clerk webhook signature guard fail open otherwise). A
+        dropped CDK variable would open these with no other signal, so assert the
+        invariants at construction — the app refuses to boot if they break.
+        """
+        raw = self.ENVIRONMENT
+        env = raw.strip().lower()
+
+        # Downstream guards compare ``settings.ENVIRONMENT == "prod"`` EXACTLY,
+        # so a non-canonical "PROD" / " prod " would pass the checks here yet
+        # fail open there. Require the canonical form.
+        if raw != env:
+            raise ValueError(f"ENVIRONMENT must be lowercase with no surrounding whitespace; got {raw!r}")
+        # Catch a typo'd ENVIRONMENT ("prd") that silently reads as non-prod.
+        if env and env not in _KNOWN_ENVIRONMENTS:
+            raise ValueError(f"ENVIRONMENT={raw!r} is not one of {sorted(_KNOWN_ENVIRONMENTS)}")
+
+        # The fence assertions below apply ONLY to the actual backend task. The
+        # Fargate metadata URI is always injected by the agent for the running
+        # container and is NEVER present locally, in CI, or in out-of-task
+        # operational CLIs (scripts.bedrock_gate_break_glass /
+        # scripts.reapply_openclaw_config set ENVIRONMENT=prod to target prod
+        # resources but don't serve /ws and needn't carry the WS secret).
+        if not os.environ.get("ECS_CONTAINER_METADATA_URI_V4"):
+            return self
+
+        # We ARE the deployed backend. ENVIRONMENT must say so (a non-deployed
+        # value here is a dropped CDK var that flips debug/webhook guards open).
+        if env not in _DEPLOYED_ENVIRONMENTS:
+            raise ValueError(
+                "Running in ECS Fargate but ENVIRONMENT is not a deployed value "
+                f"(got {raw!r}); refusing to boot to avoid fail-open debug/webhook guards."
+            )
+        # WS enforcement IS wired by the CDK (service-stack.ts sets
+        # WS_ENFORCE_INTERNAL_SECRET="true" + WS_INTERNAL_SECRET), so a missing
+        # value here is a REGRESSION — fail closed.
+        if not (self.WS_ENFORCE_INTERNAL_SECRET and self.WS_INTERNAL_SECRET):
+            raise ValueError(
+                "WS internal-caller enforcement must be ON with a secret in a deployed environment; "
+                "otherwise /ws/connect can be re-bound to another user via forged headers."
+            )
+        # CLERK_AUDIENCE is NOT wired yet, so requiring it would crash every
+        # backend deploy on boot. Enabling `aud` verification (SEC-8) needs a
+        # Clerk JWT-template audience configured and wired into the task def
+        # FIRST; until then, warn loudly rather than fail.
+        if not self.CLERK_AUDIENCE:
+            logging.getLogger(__name__).warning(
+                "CLERK_AUDIENCE is unset in a deployed environment — JWT 'aud' verification is "
+                "DISABLED; any token minted on this Clerk instance authenticates. Wire it (SEC-8)."
+            )
+        return self
 
     class Config:
         env_file = ".env"

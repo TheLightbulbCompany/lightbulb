@@ -753,6 +753,7 @@ class PaperclipRepo:
         last_error: Optional[str] = None,
         scheduled_purge_at: Optional[datetime] = None,
         not_if_status: Optional[PaperclipCompanyStatus] = None,
+        require_seeding_claim_id: Optional[str] = None,
         owner_id: Optional[str] = None,
     ) -> bool:
         """Update a row's status. Returns True iff the write landed.
@@ -763,6 +764,15 @@ class PaperclipRepo:
         an already-``active`` row to ``failed``: two overlapping ``provision_member``
         attempts for one member can race (e.g. /teams + /chat both reconciling),
         and the loser's failure path must not clobber the winner's active row.
+
+        ``require_seeding_claim_id`` additionally fences the write on the bare
+        seed-claim row's ``seeding_claim_id`` — the write is SKIPPED unless the
+        row EITHER carries no ``seeding_claim_id`` (it advanced past the bare
+        claim into a real ``provisioning``/``failed``/etc. row) OR its
+        ``seeding_claim_id`` matches. Without it, a stale seed holder's failure
+        path could flip a NEWER holder's live ``seeding`` row (a stolen claim)
+        to ``failed`` — the token ``try_acquire_seed_claim`` mints exists
+        precisely so the downgrade can be fenced on it.
 
         ``owner_id`` is the realtime-nudge broadcast key (org_id for orgs, else
         the personal user_id) -- the value frontend tabs register under. It is
@@ -790,11 +800,20 @@ class PaperclipRepo:
             "ExpressionAttributeNames": expr_names,
             "ExpressionAttributeValues": expr_values,
         }
+        conditions: list[str] = []
         if not_if_status is not None:
             # #s already maps to "status"; reuse it for the guard. Also require
             # the row to still exist (a deleted row shouldn't be re-created here).
-            kwargs["ConditionExpression"] = "attribute_exists(user_id) AND #s <> :guard"
+            conditions.append("attribute_exists(user_id) AND #s <> :guard")
             expr_values[":guard"] = not_if_status
+        if require_seeding_claim_id is not None:
+            # A row that advanced past the bare claim dropped seeding_claim_id;
+            # a bare claim keeps it. Fence only the bare-claim case on a match so
+            # a stale holder can't downgrade a newer holder's stolen claim.
+            conditions.append("(attribute_not_exists(seeding_claim_id) OR seeding_claim_id = :cid)")
+            expr_values[":cid"] = require_seeding_claim_id
+        if conditions:
+            kwargs["ConditionExpression"] = " AND ".join(conditions)
 
         table = self._table()
         try:
@@ -869,13 +888,23 @@ class PaperclipRepo:
         *,
         holder: str,
         stale_after_seconds: int = 600,
-    ) -> bool:
+    ) -> Optional[str]:
         """Strongly-consistent "I am creating this org's company" claim.
 
-        Returns True iff THIS caller now holds the claim — by winning a fresh
-        claim, or by stealing one whose holder went silent for longer than
-        ``stale_after_seconds``. Returns False when another caller holds a
-        non-stale claim.
+        Returns a fresh per-ATTEMPT fencing ``token`` iff THIS caller now holds
+        the claim — by winning a fresh claim, or by stealing one whose holder
+        went silent for longer than ``stale_after_seconds``. Returns None when
+        another caller holds a non-stale claim.
+
+        The token — NOT ``holder`` — is what ``release_org_create_claim`` fences
+        on. ``holder`` is the caller's ``user_id``, and the SAME admin re-polls
+        ``/container/status`` with the SAME user_id, so a holder-only release
+        fence is subject to ABA: after a hard-crashed holder's claim is stolen
+        by that same admin's later poll (a fresh attempt), a resurrected
+        straggler from the FIRST attempt would still match ``holder`` and delete
+        the live claim — reopening the create window that mints a duplicate
+        org / split workspace (the incident this claim exists to prevent).
+        A per-attempt token makes the straggler's release a clean no-op.
 
         Steal threshold rationale (why this is liveness evidence, not naive
         wall-time): the only operation a holder performs while holding the
@@ -901,10 +930,12 @@ class PaperclipRepo:
         """
         key = _org_create_claim_key(org_id)
         now = datetime.now(timezone.utc)
+        token = uuid4().hex
         item = {
             "user_id": key,
             "kind": "org_create_claim",
             "holder": holder,
+            "claim_token": token,
             "claimed_at": now.isoformat(),
         }
         table = self._table()
@@ -916,7 +947,7 @@ class PaperclipRepo:
                 Item=item,
                 ConditionExpression="attribute_not_exists(user_id)",
             )
-            return True
+            return token
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
@@ -932,9 +963,9 @@ class PaperclipRepo:
                     Item=item,
                     ConditionExpression="attribute_not_exists(user_id)",
                 )
-                return True
+                return token
             except table.meta.client.exceptions.ConditionalCheckFailedException:
-                return False
+                return None
 
         prev_claimed_at = existing.get("claimed_at", "")
         try:
@@ -942,10 +973,11 @@ class PaperclipRepo:
         except (ValueError, TypeError):
             age = float("inf")  # unparseable timestamp → treat as stale
         if age < stale_after_seconds:
-            return False
+            return None
 
         # Steal — overwrite only if claimed_at is unchanged since our read, so
-        # two concurrent stealers can't both win.
+        # two concurrent stealers can't both win. The put rewrites claim_token
+        # to THIS attempt's fresh token, invalidating any prior holder's release.
         try:
             await run_in_thread(
                 table.put_item,
@@ -953,16 +985,19 @@ class PaperclipRepo:
                 ConditionExpression="claimed_at = :prev",
                 ExpressionAttributeValues={":prev": prev_claimed_at},
             )
-            return True
+            return token
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return False
+            return None
 
-    async def release_org_create_claim(self, org_id: str, *, holder: str) -> None:
-        """Delete the per-org create claim iff we still hold it.
+    async def release_org_create_claim(self, org_id: str, *, token: str) -> None:
+        """Delete the per-org create claim iff ``token`` still holds it.
 
         Called on create FAILURE so the next poll can re-acquire and retry.
-        Guarded on ``holder`` so we never delete a claim another caller has
-        since stolen. Best-effort: a lost guard is a no-op.
+        Fenced on the per-ATTEMPT ``claim_token`` (returned by
+        ``try_acquire_org_create_claim``), NOT on ``holder``: the same admin
+        re-polls with the same user_id, so a holder-only fence let one
+        identity's stale straggler delete a newer attempt's live claim (ABA).
+        Best-effort: a lost fence is a no-op.
         """
         key = _org_create_claim_key(org_id)
         table = self._table()
@@ -970,8 +1005,8 @@ class PaperclipRepo:
             await run_in_thread(
                 table.delete_item,
                 Key={"user_id": key},
-                ConditionExpression="holder = :h",
-                ExpressionAttributeValues={":h": holder},
+                ConditionExpression="claim_token = :t",
+                ExpressionAttributeValues={":t": token},
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass

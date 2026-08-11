@@ -327,8 +327,16 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
 
     Returns True if applied, False if already being applied or failed precondition.
     """
-    # Step 1: conditional write
-    acquired = await update_repo.set_status_conditional(owner_id, update_id, "applying", ["pending", "scheduled"])
+    # Step 1: conditional write. Allow stealing a STALE 'applying' row (a
+    # crashed applier) via the takeover window so a wedged row can't 409 the
+    # owner's rolls forever (CC-3); a fresh 'applying' row still blocks.
+    acquired = await update_repo.set_status_conditional(
+        owner_id,
+        update_id,
+        "applying",
+        ["pending", "scheduled"],
+        stale_takeover_seconds=update_repo.STALE_APPLYING_SECONDS,
+    )
     if not acquired:
         logger.warning("Could not acquire update %s for owner %s (already applying?)", update_id, owner_id)
         return False

@@ -13,6 +13,11 @@ from typing import Any, Callable
 
 from core.config import settings
 from core.containers.config import memory_plugin_entries, workflow_plugin_entries
+from core.services.efs_file_lock import (
+    chown_uid_1000_best_effort,
+    get_file_lock,
+    open_lock_fd,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,23 +109,29 @@ async def _locked_rmw(
     renames a tempfile into place, and chowns to uid/gid 1000 if running
     as root. Releases the lock in a finally block. Logs success with
     ``log_context``.
+
+    Locking uses the shared two-layer discipline (see ``efs_file_lock``): a
+    per-owner in-process ``threading.Lock`` serializes threads in this worker
+    (POSIX ``fcntl`` is process-scoped, so it alone can't), and an exclusive
+    ``fcntl.lockf`` on a SEPARATE ``openclaw.json.lock`` file guards
+    cross-process writers. The file lock is deliberately NOT on openclaw.json
+    itself — the atomic ``os.rename`` swaps that inode out, so a lock held on
+    it would not fence a racing rename.
     """
     config_dir = os.path.join(_efs_mount_path, owner_id)
     config_path = os.path.join(config_dir, "openclaw.json")
     backup_path = os.path.join(config_dir, "openclaw.json.bak")
+    lock_path = os.path.join(config_dir, "openclaw.json.lock")
 
     def _do_rmw():
-        lock_fd = None
+        if not os.path.exists(config_path):
+            raise ConfigPatchError(f"Config not found for owner {owner_id}")
+        lock_fd = open_lock_fd(config_dir, lock_path)
         try:
-            try:
-                lock_fd = open(config_path, "r+")
-            except FileNotFoundError:
-                raise ConfigPatchError(f"Config not found for owner {owner_id}")
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
 
-            # Read from the same fd we hold the lock on (avoid TOCTOU + double-open).
-            lock_fd.seek(0)
-            current = json.load(lock_fd)
+            with open(config_path, "r") as f:
+                current = json.load(f)
 
             changed = mutate_fn(current)
             if not changed:
@@ -133,11 +144,7 @@ async def _locked_rmw(
             try:
                 with os.fdopen(fd, "w") as f:
                     json.dump(current, f, indent=2)
-                # Match OpenClaw container ownership (node uid=1000 gid=1000).
-                # Only chown if running as root (backend container runs as root,
-                # but tests run as the local user).
-                if os.getuid() == 0:
-                    os.chown(tmp_path, 1000, 1000)
+                chown_uid_1000_best_effort(tmp_path)
                 os.rename(tmp_path, config_path)
             except Exception:
                 os.unlink(tmp_path)
@@ -145,11 +152,14 @@ async def _locked_rmw(
 
             logger.info("openclaw.json for owner %s: %s", owner_id, log_context)
         finally:
-            if lock_fd:
-                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
+            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
 
-    await asyncio.to_thread(_do_rmw)
+    def _do_rmw_locked():
+        with get_file_lock(lock_path):
+            _do_rmw()
+
+    await asyncio.to_thread(_do_rmw_locked)
 
 
 def _ensure_channel_bindings_for_patch(cfg: dict, patch: dict) -> None:
@@ -960,47 +970,34 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
 
     No-op if ``new_jobs`` is empty.
 
-    Concurrency caveat: this matches the existing ``_locked_rmw`` pattern
-    used for ``openclaw.json``, which has two known races (also untreated
-    upstream) — the lock is held on the data file's inode, but the
-    atomic ``os.rename`` swaps the inode out, and ``fcntl.lockf`` is
-    process-wide on Linux/macOS so threads in the same process don't
-    contend. In practice both races have a narrow window and the failure
-    mode is "one concurrent writer's changes lost; user retries", which
-    is the same posture we accept for openclaw.json today. A future PR
-    should fix both with a shared lock-file helper rather than
-    half-fixing only this path. Tracked separately.
+    Uses the same shared two-layer lock as ``_locked_rmw`` (see
+    ``efs_file_lock``): a per-file in-process ``threading.Lock`` plus an
+    exclusive ``fcntl.lockf`` on a SEPARATE ``jobs.json.lock`` file — never
+    jobs.json itself, whose inode the atomic ``os.rename`` swaps out.
     """
     if not new_jobs:
         return
 
     cron_dir = os.path.join(_efs_mount_path, owner_id, "cron")
     jobs_path = os.path.join(cron_dir, "jobs.json")
+    lock_path = os.path.join(cron_dir, "jobs.json.lock")
 
     def _do():
         os.makedirs(cron_dir, exist_ok=True)
-        if os.getuid() == 0:
-            try:
-                os.chown(cron_dir, 1000, 1000)
-            except OSError:
-                pass
+        chown_uid_1000_best_effort(cron_dir)
         if not os.path.exists(jobs_path):
             with open(jobs_path, "w") as f:
                 json.dump({"version": 1, "jobs": []}, f)
-            if os.getuid() == 0:
-                try:
-                    os.chown(jobs_path, 1000, 1000)
-                except OSError:
-                    pass
+            chown_uid_1000_best_effort(jobs_path)
 
-        lock_fd = open(jobs_path, "r+")
+        lock_fd = open_lock_fd(cron_dir, lock_path)
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-            lock_fd.seek(0)
-            try:
-                data = json.load(lock_fd)
-            except json.JSONDecodeError:
-                data = {"version": 1, "jobs": []}
+            with open(jobs_path, "r") as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    data = {"version": 1, "jobs": []}
             if not isinstance(data, dict):
                 data = {"version": 1, "jobs": []}
             jobs = data.get("jobs")
@@ -1016,8 +1013,7 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
             try:
                 with os.fdopen(fd, "w") as f:
                     json.dump(data, f, indent=2)
-                if os.getuid() == 0:
-                    os.chown(tmp_path, 1000, 1000)
+                chown_uid_1000_best_effort(tmp_path)
                 os.rename(tmp_path, jobs_path)
             except Exception:
                 if os.path.exists(tmp_path):
@@ -1033,4 +1029,8 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
             fcntl.lockf(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
-    await asyncio.to_thread(_do)
+    def _do_locked():
+        with get_file_lock(lock_path):
+            _do()
+
+    await asyncio.to_thread(_do_locked)

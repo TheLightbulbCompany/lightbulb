@@ -219,7 +219,7 @@ async def test_gate_up_org_admin_join_only_never_creates_company():
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.provision_member = AsyncMock()
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
 
     with (
         patch(
@@ -361,7 +361,7 @@ async def test_org_admin_with_no_company_creates_it():
     Decided by company existence, not role."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.provision_member = AsyncMock()
@@ -393,7 +393,7 @@ async def test_org_admin_create_without_active_row_releases_claim():
     — otherwise the org is stranded behind a held claim with no company."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     # provision_org "succeeds" (no raise) but writes no row — simulate the
     # swallowed-409 path by having get_company_row report nothing active.
@@ -408,7 +408,7 @@ async def test_org_admin_create_without_active_row_releases_claim():
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
     ):
         await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
-    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
+    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", token="tok-1")
 
 
 @pytest.mark.asyncio
@@ -420,7 +420,7 @@ async def test_org_admin_create_personal_row_mismatch_releases_claim():
     org-indexed company."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     fake_provisioning.provision_org = AsyncMock()
     # Active row exists, but it belongs to the user's personal context.
@@ -436,7 +436,7 @@ async def test_org_admin_create_personal_row_mismatch_releases_claim():
         patch("core.services.user_provision.close_paperclip_provisioning", new=AsyncMock()),
     ):
         await _ensure_paperclip_for_org(org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True)
-    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
+    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", token="tok-1")
 
 
 @pytest.mark.asyncio
@@ -477,7 +477,7 @@ async def test_org_admin_create_failure_releases_claim():
     claim-release contract actually lives."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.release_org_create_claim = AsyncMock()
     boom = RuntimeError("paperclip down")
     fake_provisioning.provision_org = AsyncMock(side_effect=boom)
@@ -492,7 +492,7 @@ async def test_org_admin_create_failure_releases_claim():
             await _ensure_paperclip_for_org(
                 org_id="org_xyz", user_id="user_admin", email="a@example.com", is_admin=True
             )
-    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", holder="user_admin")
+    fake_provisioning.release_org_create_claim.assert_awaited_once_with("org_xyz", token="tok-1")
 
 
 @pytest.mark.asyncio
@@ -1319,7 +1319,7 @@ async def test_org_admin_no_billing_does_not_create_trial(_mock_create_trial_loc
     withheld."""
     fake_provisioning = MagicMock()
     fake_provisioning.find_org_owner = AsyncMock(return_value=None)
-    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value=True)
+    fake_provisioning.try_acquire_org_create_claim = AsyncMock(return_value="tok-1")
     fake_provisioning.provision_org = AsyncMock()
     fake_provisioning.get_company_row = AsyncMock(return_value=MagicMock(status="active", org_id="org_xyz"))
 

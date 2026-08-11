@@ -2,10 +2,26 @@
 
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from boto3.dynamodb.conditions import Attr, Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+
+# How long a row may sit in 'applying' before it is treated as a crashed applier
+# and made re-claimable / no-longer-in-flight. apply_update issues its config
+# patch + ECS re-register and returns without waiting for the new task to go
+# healthy, so a live apply is seconds; this is generous headroom over that.
+# ponytail: fixed TTL, tune if a legit apply ever runs longer.
+STALE_APPLYING_SECONDS = 15 * 60
+
+
+def _stale_applying_cutoff() -> str:
+    """ISO timestamp: rows whose ``applying_at`` is older than this are stale.
+
+    Compared lexically against ``applying_at`` (both are ``utc_now_iso``-format
+    UTC ISO strings, which sort chronologically)."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=STALE_APPLYING_SECONDS)).isoformat()
 
 
 def _get_table():
@@ -63,8 +79,8 @@ async def get_pending(owner_id: str) -> list[dict]:
 
 
 async def get_in_flight(owner_id: str) -> list[dict]:
-    """Return an owner's non-terminal updates: pending, scheduled, or the transient
-    'applying' state.
+    """Return an owner's non-terminal updates: pending, scheduled, or a FRESH
+    'applying' row.
 
     Superset of get_pending() (which omits 'applying'). Callers use it to enforce
     per-owner mutual exclusion on container rolls — apply_update's acquire is keyed
@@ -72,6 +88,12 @@ async def get_in_flight(owner_id: str) -> list[dict]:
     queued or mid-apply and must not have a second roll started concurrently.
     Callers decide which rows actually conflict (e.g. those whose ``changes`` rewrite
     the task-def) rather than trusting the update_type label.
+
+    A STALE 'applying' row (``applying_at`` older than ``STALE_APPLYING_SECONDS``,
+    or absent on a pre-fix wedged row) is deliberately EXCLUDED: it is a crashed
+    applier, not a live roll, and counting it would 409 every future roll for the
+    owner forever (CC-3). Those are exactly the rows ``set_status_conditional``'s
+    stale-takeover can re-claim, so the two stay in lockstep.
 
     Reads are strongly consistent: the guard must see a row written moments earlier
     (a just-queued update, or a concurrent apply that already flipped to
@@ -82,12 +104,16 @@ async def get_in_flight(owner_id: str) -> list[dict]:
     newer in-flight row onto a later page and hide it from the guard.
     """
     table = _get_table()
+    cutoff = _stale_applying_cutoff()
+    status_filter = Attr("status").is_in(["pending", "scheduled"]) | (
+        Attr("status").eq("applying") & Attr("applying_at").exists() & Attr("applying_at").gte(cutoff)
+    )
     items: list[dict] = []
     last_key: dict | None = None
     while True:
         kwargs: dict = {
             "KeyConditionExpression": Key("owner_id").eq(owner_id),
-            "FilterExpression": Attr("status").is_in(["pending", "scheduled", "applying"]),
+            "FilterExpression": status_filter,
             "ConsistentRead": True,
         }
         if last_key is not None:
@@ -104,8 +130,21 @@ async def set_status_conditional(
     update_id: str,
     new_status: str,
     expected_statuses: list[str],
+    *,
+    stale_takeover_seconds: int | None = None,
 ) -> bool:
-    """Conditionally update status. Returns True on success, False if condition fails."""
+    """Conditionally update status. Returns True on success, False if condition fails.
+
+    Transitioning TO 'applying' also stamps ``applying_at`` so a crash between
+    'applying' and the terminal mark_applied/mark_failed is detectable.
+
+    ``stale_takeover_seconds`` additionally lets the write STEAL an 'applying'
+    row whose ``applying_at`` is older than that many seconds (or absent — a
+    pre-fix wedged row). Without it a crashed applier's row sits 'applying'
+    forever and 409s every future roll for the owner (CC-3); with it the next
+    apply re-claims the wedged row. The window kept in lockstep with
+    ``get_in_flight``, which stops counting exactly those stale rows.
+    """
     table = _get_table()
     now = utc_now_iso()
 
@@ -116,13 +155,25 @@ async def set_status_conditional(
     for s in expected_statuses[1:]:
         condition = condition | Attr("status").eq(s)
 
+    update_expr = "SET #s = :new_status, updated_at = :now"
+    values: dict = {":new_status": new_status, ":now": now}
+
+    if new_status == "applying":
+        # Same :now — updated_at and applying_at coincide on the transition.
+        update_expr += ", applying_at = :now"
+        if stale_takeover_seconds is not None:
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_takeover_seconds)).isoformat()
+            condition = condition | (
+                Attr("status").eq("applying") & (Attr("applying_at").not_exists() | Attr("applying_at").lt(cutoff))
+            )
+
     try:
         await run_in_thread(
             table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
-            UpdateExpression="SET #s = :new_status, updated_at = :now",
+            UpdateExpression=update_expr,
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":new_status": new_status, ":now": now},
+            ExpressionAttributeValues=values,
             ConditionExpression=condition,
         )
         return True

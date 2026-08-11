@@ -182,6 +182,44 @@ async def test_update_status_not_if_status_applies_when_not_guarded(repo):
     assert retrieved.last_error == "boom"
 
 
+async def test_update_status_seeding_claim_fence_blocks_stale_holder(repo):
+    """A stale seed holder must not downgrade a NEWER holder's live seeding row.
+
+    The bare seeding row carries the winner's ``seeding_claim_id``; after a
+    stale steal it carries the NEW holder's id. The old holder's failure path
+    (``require_seeding_claim_id`` = its now-superseded id) must SKIP."""
+    # Holder "old" wins the bare claim.
+    assert await repo.try_acquire_seed_claim("u_seed", org_id="u_seed", claim_id="old") is True
+    # Holder "new" steals it (stale window 0) → row now carries claim_id "new".
+    assert await repo.try_acquire_seed_claim("u_seed", org_id="u_seed", claim_id="new", stale_after_seconds=0) is True
+
+    # The OLD holder's downgrade is fenced out → no-op, row stays seeding.
+    landed = await repo.update_status(
+        "u_seed", status="failed", last_error="old holder late error", require_seeding_claim_id="old"
+    )
+    assert landed is False
+    assert (await repo.get("u_seed")).status == "seeding"
+
+    # The current holder CAN downgrade with its own id.
+    landed = await repo.update_status(
+        "u_seed", status="failed", last_error="new holder gave up", require_seeding_claim_id="new"
+    )
+    assert landed is True
+    assert (await repo.get("u_seed")).status == "failed"
+
+
+async def test_update_status_seeding_claim_fence_allows_advanced_row(repo):
+    """Once a row advances past the bare claim it drops ``seeding_claim_id``, so
+    the fence's ``attribute_not_exists`` branch lets the write through — a real
+    failure on a provisioning row must still be recordable."""
+    await repo.put(_make_company(user_id="u_prov2", status="provisioning"))  # no seeding_claim_id
+    landed = await repo.update_status(
+        "u_prov2", status="failed", last_error="boom", require_seeding_claim_id="whatever"
+    )
+    assert landed is True
+    assert (await repo.get("u_prov2")).status == "failed"
+
+
 async def test_delete_removes_row(repo):
     await repo.put(_make_company(user_id="user_789"))
     await repo.delete("user_789")
@@ -268,42 +306,63 @@ async def test_count_org_members_post_delete_reflects_remaining(repo):
 
 
 async def test_org_create_claim_fresh_wins_then_second_caller_loses(repo):
-    """First caller wins the fresh claim; a second caller (fresh holder) loses
-    while the first holder is non-stale."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is False
+    """First caller wins the fresh claim (gets a token); a second caller (fresh
+    holder) loses (None) while the first holder is non-stale."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a")  # truthy token
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is None
 
 
 async def test_org_create_claim_is_per_org(repo):
     """Claims are independent per org_id."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
-    assert await repo.try_acquire_org_create_claim("org_y", holder="a") is True
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a")
+    assert await repo.try_acquire_org_create_claim("org_y", holder="a")
 
 
 async def test_org_create_claim_steals_when_stale(repo):
     """A holder that has gone silent past stale_after_seconds can be stolen,
     so a crash mid-create doesn't strand the org forever."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a")
     # Non-stale → loses.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=120) is False
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=120) is None
     # stale_after_seconds=0 → any existing claim is stale → steal succeeds.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=0) is True
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b", stale_after_seconds=0)
 
 
 async def test_org_create_claim_release_allows_reacquire(repo):
-    """Releasing on failure lets the next caller re-acquire a fresh claim."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
-    await repo.release_org_create_claim("org_x", holder="a")
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is True
+    """Releasing on failure (with the returned token) lets the next caller
+    re-acquire a fresh claim."""
+    token = await repo.try_acquire_org_create_claim("org_x", holder="a")
+    assert token
+    await repo.release_org_create_claim("org_x", token=token)
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b")
 
 
-async def test_org_create_claim_release_only_by_holder(repo):
-    """A non-holder cannot release the claim (guards against deleting a claim
-    another caller has stolen)."""
-    assert await repo.try_acquire_org_create_claim("org_x", holder="a") is True
-    await repo.release_org_create_claim("org_x", holder="someone_else")
-    # Still held by "a" → a fresh caller loses.
-    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is False
+async def test_org_create_claim_release_wrong_token_is_noop(repo):
+    """A release fenced on a WRONG token cannot delete the live claim."""
+    assert await repo.try_acquire_org_create_claim("org_x", holder="a")
+    await repo.release_org_create_claim("org_x", token="not-the-token")
+    # Still held → a fresh caller loses.
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is None
+
+
+async def test_org_create_claim_stale_straggler_cannot_release_newer_holder(repo):
+    """ABA guard: the SAME identity re-polls and steals its own stale claim
+    (fresh token), then the FIRST attempt's straggler tries to release with its
+    now-superseded token — it must be a no-op, not a deletion that reopens the
+    duplicate-create window."""
+    tok_first = await repo.try_acquire_org_create_claim("org_x", holder="a")
+    assert tok_first
+    # Same identity 'a' re-polls after the first attempt went stale and steals
+    # its own claim, minting a FRESH token.
+    tok_second = await repo.try_acquire_org_create_claim("org_x", holder="a", stale_after_seconds=0)
+    assert tok_second and tok_second != tok_first
+    # The first attempt's straggler releases with its stale token → no-op.
+    await repo.release_org_create_claim("org_x", token=tok_first)
+    # The live (second) claim must still hold → a fresh caller loses.
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b") is None
+    # The real holder can still release with its own token.
+    await repo.release_org_create_claim("org_x", token=tok_second)
+    assert await repo.try_acquire_org_create_claim("org_x", holder="b")
 
 
 async def test_org_create_claim_sentinel_invisible_to_org_gsi_queries(repo):

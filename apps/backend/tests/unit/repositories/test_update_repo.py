@@ -302,3 +302,85 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
     # Row is finalized: status "applied", no longer pending.
     results = await update_repo.get_pending("user_1")
     assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_applying_transition_stamps_applying_at(dynamodb_table):
+    """Transitioning a row to 'applying' records when it entered that state, so
+    a crashed applier can later be detected as stale (CC-3)."""
+    from core.repositories import update_repo
+
+    item = await update_repo.create("user_1", "image_update", "AP", {"a": 1})
+    ok = await update_repo.set_status_conditional("user_1", item["update_id"], "applying", ["pending"])
+    assert ok is True
+    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
+    assert row["status"] == "applying"
+    assert "applying_at" in row
+
+
+@pytest.mark.asyncio
+async def test_fresh_applying_blocks_takeover(dynamodb_table):
+    """A row that is freshly 'applying' (live roll in progress) must NOT be
+    stealable even when a stale-takeover window is offered."""
+    from core.repositories import update_repo
+
+    item = await update_repo.create("user_1", "image_update", "AP", {"a": 1})
+    await update_repo.set_status_conditional("user_1", item["update_id"], "applying", ["pending"])
+    # A second apply attempt offering a generous takeover window still loses,
+    # because applying_at is fresh (well within the window).
+    ok = await update_repo.set_status_conditional(
+        "user_1", item["update_id"], "applying", ["pending", "scheduled"], stale_takeover_seconds=900
+    )
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_stale_applying_is_reclaimable(dynamodb_table):
+    """A wedged 'applying' row (applying_at older than the takeover window) can
+    be re-claimed, and re-stamps applying_at — otherwise the crashed applier's
+    row 409s every future roll for the owner forever (CC-3)."""
+    from core.repositories import update_repo
+
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "user_1",
+            "update_id": "wedged",
+            "update_type": "image_update",
+            "status": "applying",
+            "applying_at": stale_at,
+        }
+    )
+    ok = await update_repo.set_status_conditional(
+        "user_1",
+        "wedged",
+        "applying",
+        ["pending", "scheduled"],
+        stale_takeover_seconds=update_repo.STALE_APPLYING_SECONDS,
+    )
+    assert ok is True
+    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": "wedged"})["Item"]
+    assert row["applying_at"] > stale_at  # re-stamped fresh
+
+
+@pytest.mark.asyncio
+async def test_get_in_flight_excludes_stale_and_legacy_applying(dynamodb_table):
+    """The mutual-exclusion guard must ignore a crashed applier: a stale
+    'applying' row (old applying_at) AND a pre-fix one (no applying_at) are both
+    excluded, while pending and a FRESH applying row are still counted."""
+    from core.repositories import update_repo
+
+    await update_repo.create("user_1", "image_update", "P", {"a": 1})  # pending
+    fresh = await update_repo.create("user_1", "image_update", "FRESH", {"b": 2})
+    await update_repo.set_status_conditional("user_1", fresh["update_id"], "applying", ["pending"])
+    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
+    dynamodb_table.put_item(
+        Item={"owner_id": "user_1", "update_id": "stale", "status": "applying", "applying_at": stale_at}
+    )
+    dynamodb_table.put_item(
+        Item={"owner_id": "user_1", "update_id": "legacy", "status": "applying"}  # no applying_at
+    )
+
+    results = await update_repo.get_in_flight("user_1")
+    assert {r["description"] for r in results if "description" in r} == {"P", "FRESH"}
+    assert all(r["update_id"] not in {"stale", "legacy"} for r in results)

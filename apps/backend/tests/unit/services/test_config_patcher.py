@@ -1993,3 +1993,24 @@ async def test_replace_provider_block_creates_web_search_path_when_missing(efs_d
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         cfg = json.load(f)
     assert cfg["tools"]["web"]["search"] == {"provider": "parallel-free"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
+    """Two layers of the shared lock must hold: the per-file threading.Lock
+    serializes same-process ``asyncio.to_thread`` writers, and the fcntl lock
+    lives on a SEPARATE .lock file so the atomic os.rename (inode swap) can't
+    discard it. With the old no-op lock (fcntl on the swapped inode, no thread
+    gate) concurrent read-modify-writes drop each other's appends.
+    """
+    import asyncio
+
+    n = 50
+    await asyncio.gather(*(append_to_openclaw_config_list("user_1", ["plugins", "list"], {"id": i}) for i in range(n)))
+
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        cfg = json.load(f)
+    got = sorted(entry["id"] for entry in cfg["plugins"]["list"])
+    assert got == list(range(n)), f"lost concurrent appends: {len(got)}/{n} landed"
+    # The lock is a dedicated sibling file, never openclaw.json itself.
+    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))

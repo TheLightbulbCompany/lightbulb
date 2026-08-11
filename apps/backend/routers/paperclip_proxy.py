@@ -422,6 +422,12 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     # open), and rollback would restore it unchanged. Block until the §3.6 data
     # migration has scrubbed historical revisions; unblock after.
     (None, re.compile(r"^api/agents/[^/]+/config-revisions/[^/]+/rollback/?$")),
+    # Join-request approve creates an agent from the STORED join-request's
+    # adapterType, falling back to "process" when it is null — a pre-fence row
+    # is a host-exec path. Isol8 does not use the external-agent-join flow
+    # (marketplace hire is the path), so block it; the §3.6 migration + the
+    # invite-accept filter cover new/existing rows.
+    (None, re.compile(r"^api/companies/[^/]+/join-requests/[^/]+/approve/?$")),
     # Adapter-inventory / docstring disclosure (mounted at root, not under /api).
     (None, re.compile(r"^llms/agent-configuration")),
     # Environment capability enumeration (info disclosure; creates/probes are

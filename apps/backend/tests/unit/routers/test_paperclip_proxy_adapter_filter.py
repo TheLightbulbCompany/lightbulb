@@ -240,6 +240,12 @@ def test_config_revision_rollback_is_blocked():
     assert _blocked("POST", "api/agents/a1/config-revisions/r1/rollback")
 
 
+def test_join_request_approve_is_blocked():
+    # Creates an agent from the stored join-request adapterType (null -> process
+    # for pre-fence rows); Isol8 doesn't use the external-agent-join flow.
+    assert _blocked("POST", "api/companies/c1/join-requests/jr1/approve")
+
+
 def test_compressed_request_body_is_rejected():
     # A gzip body hides adapterType from us while express.json() inflates it.
     payload = json.dumps({"adapterType": "process"}).encode()

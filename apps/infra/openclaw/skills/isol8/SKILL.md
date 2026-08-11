@@ -243,6 +243,11 @@ Rules:
 
   `PAPERCLIP_COMPANY_ID` is already in your environment. Pick something you'd
   put on a business card — short, real, no punctuation beyond hyphens.
+
+  Name it before your first **tasks** too, not just your first send: the
+  board's task-key prefix (`ACM-1`, `ACM-2`, …) is derived from the company
+  name, and a rename only re-derives it while the board is still empty. Tasks
+  created before the rename keep keys minted from the placeholder forever.
 - **Send it when you have something worth reading**, not to acknowledge that
   you started.
 

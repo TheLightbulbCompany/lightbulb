@@ -425,6 +425,68 @@ class TestContainerForceApplyImageUpdate:
         assert r1.json() == r2.json()
         assert mock_apply.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_stale_applying_conflict_is_cleared_and_proceeds(self, async_client, admin_env):
+        """CC-3: a row wedged in 'applying' past the stale window (a crashed
+        applier) must NOT 409 the owner's rolls forever. Force-apply — an
+        explicit admin action — CLEARS it (mark_failed) and proceeds with a
+        BRAND-NEW row (no same-row takeover, so no concurrent-applier hazard)."""
+        from datetime import datetime, timedelta, timezone
+
+        from core.repositories import update_repo
+
+        stale_at = (
+            datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 300)
+        ).isoformat()
+        stale_row = {
+            "update_id": "wedged",
+            "status": "applying",
+            "updated_at": stale_at,
+            "changes": {"new_image": "old:tag"},
+        }
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[stale_row])),
+            patch("routers.admin.update_repo.mark_failed", new=AsyncMock(return_value=True)) as mock_mark_failed,
+            patch("routers.admin.update_repo.create", new=AsyncMock(return_value=self._CREATED)),
+            patch("routers.admin.apply_update", new=AsyncMock(return_value=True)) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "new:tag"},
+            )
+        assert res.status_code == 200
+        # The wedged row was cleared, and a fresh roll proceeded.
+        mock_mark_failed.assert_awaited_once()
+        assert mock_mark_failed.await_args.args[1] == "wedged"
+        mock_apply.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fresh_applying_conflict_still_409s(self, async_client, admin_env):
+        """A FRESH 'applying' roll (recent updated_at) is a live roll: it must
+        still 409 and must NEVER be cleared."""
+        from datetime import datetime, timezone
+
+        fresh_row = {
+            "update_id": "live",
+            "status": "applying",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "changes": {"new_image": "old:tag"},
+        }
+        with (
+            patch("routers.admin.update_repo.get_in_flight", new=AsyncMock(return_value=[fresh_row])),
+            patch("routers.admin.update_repo.mark_failed", new=AsyncMock()) as mock_mark_failed,
+            patch("routers.admin.update_repo.create", new=AsyncMock()) as mock_create,
+            patch("routers.admin.apply_update", new=AsyncMock()) as mock_apply,
+        ):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/container/apply-image-update",
+                json={"new_image": "new:tag"},
+            )
+        assert res.status_code == 409
+        mock_mark_failed.assert_not_awaited()
+        mock_create.assert_not_awaited()
+        mock_apply.assert_not_awaited()
+
 
 class TestContainerReapplyConfig:
     """POST /api/v1/admin/users/{user_id}/container/reapply-config.

@@ -304,138 +304,18 @@ async def test_mark_applied_from_applying_state(dynamodb_table):
     assert len(results) == 0
 
 
-@pytest.mark.asyncio
-async def test_applying_transition_stamps_applying_at(dynamodb_table):
-    """Transitioning a row to 'applying' records when it entered that state, so
-    a crashed applier can later be detected as stale (CC-3)."""
+def test_is_stale_applying():
+    """Pure staleness predicate (CC-3): only an 'applying' row older than the
+    window is stale; fresh/other-status/no-timestamp rows are never stale."""
     from core.repositories import update_repo
 
-    item = await update_repo.create("user_1", "image_update", "AP", {"a": 1})
-    ok = await update_repo.set_status_conditional("user_1", item["update_id"], "applying", ["pending"])
-    assert ok is True
-    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
-    assert row["status"] == "applying"
-    assert "applying_at" in row
+    old = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
 
-
-@pytest.mark.asyncio
-async def test_fresh_applying_blocks_takeover(dynamodb_table):
-    """A row that is freshly 'applying' (live roll in progress) must NOT be
-    stealable even when a stale-takeover window is offered."""
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "image_update", "AP", {"a": 1})
-    await update_repo.set_status_conditional("user_1", item["update_id"], "applying", ["pending"])
-    # A second apply attempt offering a generous takeover window still loses,
-    # because applying_at is fresh (well within the window).
-    ok = await update_repo.set_status_conditional(
-        "user_1", item["update_id"], "applying", ["pending", "scheduled"], stale_takeover_seconds=900
-    )
-    assert ok is False
-
-
-@pytest.mark.asyncio
-async def test_stale_applying_is_reclaimable(dynamodb_table):
-    """A wedged 'applying' row (applying_at older than the takeover window) can
-    be re-claimed, and re-stamps applying_at — otherwise the crashed applier's
-    row 409s every future roll for the owner forever (CC-3)."""
-    from core.repositories import update_repo
-
-    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
-    dynamodb_table.put_item(
-        Item={
-            "owner_id": "user_1",
-            "update_id": "wedged",
-            "update_type": "image_update",
-            "status": "applying",
-            "applying_at": stale_at,
-        }
-    )
-    ok = await update_repo.set_status_conditional(
-        "user_1",
-        "wedged",
-        "applying",
-        ["pending", "scheduled"],
-        stale_takeover_seconds=update_repo.STALE_APPLYING_SECONDS,
-    )
-    assert ok is True
-    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": "wedged"})["Item"]
-    assert row["applying_at"] > stale_at  # re-stamped fresh
-
-
-@pytest.mark.asyncio
-async def test_get_in_flight_excludes_stale_and_legacy_applying(dynamodb_table):
-    """The mutual-exclusion guard must ignore a crashed applier: a stale
-    'applying' row (old applying_at) AND a pre-fix one (no applying_at) are both
-    excluded, while pending and a FRESH applying row are still counted."""
-    from core.repositories import update_repo
-
-    await update_repo.create("user_1", "image_update", "P", {"a": 1})  # pending
-    fresh = await update_repo.create("user_1", "image_update", "FRESH", {"b": 2})
-    await update_repo.set_status_conditional("user_1", fresh["update_id"], "applying", ["pending"])
-    stale_at = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
-    dynamodb_table.put_item(
-        Item={"owner_id": "user_1", "update_id": "stale", "status": "applying", "applying_at": stale_at}
-    )
-    dynamodb_table.put_item(
-        Item={"owner_id": "user_1", "update_id": "legacy", "status": "applying"}  # no applying_at
-    )
-
-    results = await update_repo.get_in_flight("user_1")
-    assert {r["description"] for r in results if "description" in r} == {"P", "FRESH"}
-    assert all(r["update_id"] not in {"stale", "legacy"} for r in results)
-
-
-@pytest.mark.asyncio
-async def test_stale_applier_cannot_finalize_after_takeover(dynamodb_table):
-    """P1 owner-fence: a paused (not dead) applier A whose stale claim was taken
-    over by applier B must NOT be able to finalize the row B now owns. Every
-    terminal write is fenced on the applying_at token, so A's mark_applied /
-    applying->failed no-op once B re-stamped applying_at."""
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "image_update", "roll", {"a": 1})
-    uid = item["update_id"]
-
-    # Applier A claims, but its applying_at is already old (A ran long / paused).
-    token_a = (datetime.now(timezone.utc) - timedelta(seconds=update_repo.STALE_APPLYING_SECONDS + 120)).isoformat()
-    assert await update_repo.set_status_conditional(
-        "user_1", uid, "applying", ["pending", "scheduled"], applying_token=token_a
-    )
-
-    # Applier B takes over the stale claim with its own fresh token.
-    token_b = datetime.now(timezone.utc).isoformat()
-    assert await update_repo.set_status_conditional(
-        "user_1",
-        uid,
-        "applying",
-        ["pending", "scheduled"],
-        stale_takeover_seconds=update_repo.STALE_APPLYING_SECONDS,
-        applying_token=token_b,
-    )
-
-    # A resumes and tries to finalize — both terminal writes must NO-OP.
-    assert await update_repo.mark_applied("user_1", uid, applying_token=token_a) is False
-    assert (
-        await update_repo.set_status_conditional("user_1", uid, "failed", ["applying"], applying_token=token_a) is False
-    )
-    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": uid})["Item"]
-    assert row["status"] == "applying"  # still B's row
-    assert row["applying_at"] == token_b
-
-    # B (the real owner) finalizes successfully.
-    assert await update_repo.mark_applied("user_1", uid, applying_token=token_b) is True
-    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": uid})["Item"]
-    assert row["status"] == "applied"
-
-
-@pytest.mark.asyncio
-async def test_tokenless_mark_applied_still_works_from_pending(dynamodb_table):
-    """The retry pass marks pending -> applied with NO token; the owner fence
-    must not break that (pending/scheduled terms are never fenced)."""
-    from core.repositories import update_repo
-
-    item = await update_repo.create("user_1", "paperclip_provision", "retry", {"op": "archive_member"})
-    assert await update_repo.mark_applied("user_1", item["update_id"]) is True
-    row = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
-    assert row["status"] == "applied"
+    assert update_repo.is_stale_applying({"status": "applying", "updated_at": old}) is True
+    # Fresh applying row = a live roll → NOT stale (must not be stomped).
+    assert update_repo.is_stale_applying({"status": "applying", "updated_at": fresh}) is False
+    # Non-applying rows are never stale-applying.
+    assert update_repo.is_stale_applying({"status": "pending", "updated_at": old}) is False
+    # No timestamp → conservative: treat as live, never stomp.
+    assert update_repo.is_stale_applying({"status": "applying"}) is False

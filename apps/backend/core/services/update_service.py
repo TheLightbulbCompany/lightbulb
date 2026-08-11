@@ -19,7 +19,6 @@ import asyncio
 import logging
 import time
 
-from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
@@ -328,23 +327,8 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
 
     Returns True if applied, False if already being applied or failed precondition.
     """
-    # Step 1: conditional write. Allow stealing a STALE 'applying' row (a
-    # crashed applier) via the takeover window so a wedged row can't 409 the
-    # owner's rolls forever (CC-3); a fresh 'applying' row still blocks.
-    #
-    # applying_token OWNS this claim: it is stamped as the row's applying_at and
-    # required on every terminal write below, so if a stale-takeover later hands
-    # the row to a NEW applier (re-stamping applying_at), THIS applier — if it
-    # was merely paused, not dead — can no longer finalize the row it lost.
-    applying_token = utc_now_iso()
-    acquired = await update_repo.set_status_conditional(
-        owner_id,
-        update_id,
-        "applying",
-        ["pending", "scheduled"],
-        stale_takeover_seconds=update_repo.STALE_APPLYING_SECONDS,
-        applying_token=applying_token,
-    )
+    # Step 1: conditional write
+    acquired = await update_repo.set_status_conditional(owner_id, update_id, "applying", ["pending", "scheduled"])
     if not acquired:
         logger.warning("Could not acquire update %s for owner %s (already applying?)", update_id, owner_id)
         return False
@@ -371,9 +355,7 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
             # if it ever happens the row was already flipped to "applying" — clear
             # it back to a terminal state so it can't wedge the owner's guard.
             logger.error("Update %s not found after acquiring lock (owner=%s)", update_id, owner_id)
-            await update_repo.set_status_conditional(
-                owner_id, update_id, "failed", ["applying"], applying_token=applying_token
-            )
+            await update_repo.set_status_conditional(owner_id, update_id, "failed", ["applying"])
             return False
 
         update = items[0]
@@ -434,7 +416,7 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
         # the status write is rejected, surface it rather than silently leaving
         # the row stuck in "applying" (the invisible-failure trap this hit when
         # mark_applied's condition did not accept the "applying" state).
-        marked = await update_repo.mark_applied(owner_id, update_id, applying_token=applying_token)
+        marked = await update_repo.mark_applied(owner_id, update_id)
         if not marked:
             logger.warning(
                 "Update %s changes took effect but status was not flipped to "
@@ -449,12 +431,9 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
 
     except Exception:
         logger.exception("Failed to apply update %s (owner=%s)", update_id, owner_id)
-        # Mark as failed — owner-fenced, so a stale applier that lost the claim
-        # to a takeover cannot record failure over the new owner's row.
+        # Mark as failed
         try:
-            await update_repo.set_status_conditional(
-                owner_id, update_id, "failed", ["applying"], applying_token=applying_token
-            )
+            await update_repo.set_status_conditional(owner_id, update_id, "failed", ["applying"])
         except Exception:
             logger.exception("Failed to mark update %s as failed", update_id)
         return False

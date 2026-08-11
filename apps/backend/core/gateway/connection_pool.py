@@ -91,18 +91,34 @@ _PING_TIMEOUT = 300
 # burned ~5 simultaneous handshake attempts.
 _RECONNECT_FLOOR_S = 5
 
-# How long the endpoint we recreated a connection AWAY from stays "superseded"
+# How long an endpoint we recreated a connection AWAY from stays "superseded"
 # — a resolution still pointing at it is treated as stale and cannot roll the
 # newer connection back onto the dead task. This is NOT the race timer: the race
-# it guards (concurrent callers straddling one task replacement, all serialized
-# on the pool lock) resolves in seconds. The record is stamped at DETACH and
-# overwritten at the next detach, so within a replacement it never expires under
-# a caller queued behind a slow ~20-40s connect(). The clock exists ONLY as the
-# IP-recycling backstop: if the VPC hands this owner's *next* task the exact same
-# /32 (rare; task lifetimes are minutes-to-hours), the stale record must lapse so
-# the recycled IP is trusted again. 5 minutes sits an order of magnitude above
-# worst-case connect()+lock-queue yet far below any recycling timescale.
+# it guards (concurrent callers straddling task replacements, all serialized on
+# the pool lock) resolves in seconds. Records are stamped at DETACH and kept as a
+# bounded HISTORY (not one slot), so a resolution straddling several fast
+# replacements stays fenced. The clock exists ONLY as the IP-recycling backstop:
+# if the VPC hands this owner's *next* task the exact same /32 (rare; task
+# lifetimes are minutes-to-hours), the stale record must lapse so the recycled IP
+# is trusted again. 5 minutes sits an order of magnitude above worst-case
+# connect()+lock-queue yet far below any recycling timescale.
+#
+# Residual ceiling: a stale resolution queued behind MANY serial cold connects on
+# the pool-wide lock (each ~20-40s) could in principle outlive even this window.
+# That queue only reaches minutes when a single backend task cold-dials a large
+# fleet after a deploy — the global-lock-across-handshake serialization is a
+# separate, tracked scalability limit (the in-process WS fanout note), not this
+# fence's to solve. Fully decoupling the fence from wall clock needs a
+# caller-carried resolve timestamp threaded through ~15 mostly-single-shot call
+# sites — disproportionate to a deploy-only deep tail whose worst case is a ≤300s
+# self-healing reconnect, versus the indefinite-timeout outage on main this whole
+# path fixes.
 _SUPERSEDED_IP_TTL_S = 300.0
+
+# Cap on the per-owner superseded-endpoint history. 8 covers far more consecutive
+# task replacements than any real churn strands in-flight resolutions for; the
+# oldest entry is evicted past this.
+_SUPERSEDED_HISTORY_MAX = 8
 
 # Auth-failure backoff, per user, alongside the reconnect floor. The gateway
 # locks a client IP+credential scope out for 5 minutes after 10 failed auth
@@ -2564,11 +2580,17 @@ class GatewayConnectionPool:
         # changed-IP recreate path). Strong refs kept so the fire-and-forget
         # close task isn't GC'd mid-drain.
         self._background_close_tasks: Set[asyncio.Task] = set()
-        # Per-owner (endpoint, monotonic_time) of the last connection we
+        # Per-owner {endpoint: monotonic_abandoned_at} history of connections we
         # recreated AWAY from. Fences the changed-IP recreate against a STALE
         # resolve (a concurrent request straddling a task replacement) rolling a
-        # newer connection back onto the dead task it replaced. TTL-bounded.
-        self._superseded_ip: Dict[str, tuple[str, float]] = {}
+        # newer connection back onto the dead task it replaced. A *history*, not a
+        # single slot: across two fast replacements (A→B→C) a resolution still
+        # carrying A must stay fenced even after B abandoned A's slot, else the
+        # A-carrying caller would detach the healthy C and dial dead A — and,
+        # worse, record C as superseded, wedging every later resolve of the real
+        # live task until the record lapses. Bounded to the last
+        # `_SUPERSEDED_HISTORY_MAX` endpoints and TTL-swept per entry.
+        self._superseded_ip: Dict[str, Dict[str, float]] = {}
 
     def is_user_connected(self, user_id: str) -> bool:
         """Whether the pool has a live, healthy gateway connection for this user.
@@ -2999,10 +3021,11 @@ class GatewayConnectionPool:
                     # the owner is left ABSENT with no live connection; a fence
                     # stamped only on success would fail OPEN, letting a concurrent
                     # caller that already resolved this dead IP recreate straight
-                    # onto it. Stamping here closes that window. The clock is the
-                    # recycling backstop, not the race timer (see _SUPERSEDED_IP_TTL_S),
-                    # so the ~20-40s connect() below cannot expire it mid-race.
-                    self._superseded_ip[user_id] = (conn.ip, time.monotonic())
+                    # onto it. Stamping here closes that window. Appended to a
+                    # bounded history (not overwritten) so a resolution straddling a
+                    # later replacement stays fenced too. The clock is the recycling
+                    # backstop, not the race timer (see _SUPERSEDED_IP_TTL_S).
+                    self._record_superseded_endpoint(user_id, conn.ip)
                     # Detach under the lock; drain + close OFF the lock so this
                     # owner's dead-socket teardown (~25s worst case) can't
                     # head-of-line-block ensure_connection for every other owner.
@@ -3067,23 +3090,42 @@ class GatewayConnectionPool:
                 self._clear_auth_backoff(user_id)
             return conn
 
-    def _is_superseded_endpoint(self, user_id: str, ip: str) -> bool:
-        """True if *ip* is the endpoint we last recreated a connection AWAY from —
-        a stale resolution that must not roll a newer connection back onto the
-        dead task, nor be dialed on the absent path. The record is stamped at
-        detach and overwritten at the next detach, so it cannot expire under a
-        caller queued behind the ~20-40s replacement dial. The
-        ``_SUPERSEDED_IP_TTL_S`` sweep is only the IP-recycling backstop: a record
-        older than the window lapses so a genuinely recycled IP is trusted again.
+    def _record_superseded_endpoint(self, user_id: str, ip: str) -> None:
+        """Append *ip* to this owner's superseded-endpoint history (bounded).
+
+        A history, not a single slot, so consecutive replacements (A→B→C) don't
+        drop A while a resolution still carrying A is in flight — dropping it lets
+        that caller detach the healthy C and wedge the owner (see the field
+        comment). Evicts the oldest entry past ``_SUPERSEDED_HISTORY_MAX``.
         """
-        rec = self._superseded_ip.get(user_id)
-        if rec is None:
+        hist = self._superseded_ip.setdefault(user_id, {})
+        hist[ip] = time.monotonic()
+        if len(hist) > _SUPERSEDED_HISTORY_MAX:
+            oldest = min(hist, key=hist.__getitem__)
+            del hist[oldest]
+
+    def _is_superseded_endpoint(self, user_id: str, ip: str) -> bool:
+        """True if *ip* is an endpoint we recreated a connection AWAY from and
+        still within the recycling backstop — a stale resolution that must not
+        roll a newer connection back onto the dead task, nor be dialed on the
+        absent path. The history holds every recently-abandoned endpoint (not just
+        the latest), so it cannot be overwritten out from under a straddling
+        caller. The ``_SUPERSEDED_IP_TTL_S`` sweep is only the IP-recycling
+        backstop: an entry older than the window lapses so a genuinely recycled IP
+        is trusted again.
+        """
+        hist = self._superseded_ip.get(user_id)
+        if not hist:
             return False
-        old_ip, when = rec
+        when = hist.get(ip)
+        if when is None:
+            return False
         if time.monotonic() - when >= _SUPERSEDED_IP_TTL_S:
-            self._superseded_ip.pop(user_id, None)
+            del hist[ip]
+            if not hist:
+                self._superseded_ip.pop(user_id, None)
             return False
-        return old_ip == ip
+        return True
 
     def _respect_reconnect_floor(self, user_id: str) -> None:
         """Raise if another reconnect for *user_id* fired within `_RECONNECT_FLOOR_S`.

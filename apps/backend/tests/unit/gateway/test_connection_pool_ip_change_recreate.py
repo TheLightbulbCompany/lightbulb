@@ -63,9 +63,9 @@ async def test_changed_ip_tears_down_and_recreates():
     pool._create_connection.assert_awaited_once()  # a new one was created
     assert got is fresh
     assert pool._connections["user_1"] is fresh
-    # The abandoned endpoint is recorded in the fence (stamped AFTER the
-    # replacement is installed) so a later stale resolve can't roll it back.
-    assert pool._superseded_ip["user_1"][0] == "10.0.0.1"
+    # The abandoned endpoint is recorded in the fence history (stamped at detach)
+    # so a later stale resolve can't roll it back.
+    assert "10.0.0.1" in pool._superseded_ip["user_1"]
     # Detached conn's frontend set is blanked so its background teardown can't
     # push a spurious GATEWAY_DOWN over the replacement's HEALTHY.
     assert old._frontend_connections == set()
@@ -117,7 +117,7 @@ async def test_stale_endpoint_does_not_roll_back_newer_connection():
     live = _FakeConn("10.0.0.2", connected=True, parked=False)
     pool._connections["user_1"] = live
     # ...and 10.0.0.1 was the endpoint we just recreated AWAY from (superseded).
-    pool._superseded_ip["user_1"] = ("10.0.0.1", time.monotonic())
+    pool._superseded_ip["user_1"] = {"10.0.0.1": time.monotonic()}
     pool._create_connection = AsyncMock()
 
     # A late request resolves the STALE old IP.
@@ -129,6 +129,31 @@ async def test_stale_endpoint_does_not_roll_back_newer_connection():
 
 
 @pytest.mark.asyncio
+async def test_superseded_history_survives_a_second_replacement():
+    """P1: across two fast replacements (A→B→C) a resolution still carrying the
+    FIRST abandoned IP (A) must stay fenced even though B has since abandoned its
+    own slot. A single-slot fence would have dropped A when B was recorded, so the
+    A-carrying caller would detach the healthy C, dial dead A, and — worse —
+    record C as superseded, wedging every later resolve of the real live task."""
+    pool = _bare_pool()
+    live = _FakeConn("10.0.0.3", connected=True, parked=False)  # C is current + healthy
+    pool._connections["user_1"] = live
+    # Both earlier endpoints are in the bounded history.
+    pool._superseded_ip["user_1"] = {
+        "10.0.0.1": time.monotonic(),  # A
+        "10.0.0.2": time.monotonic(),  # B
+    }
+    pool._create_connection = AsyncMock()
+
+    got = await pool.ensure_connection("user_1", "10.0.0.1", "tok")  # stale A
+
+    assert got is live  # pinned to C, not rolled back to A
+    pool._create_connection.assert_not_awaited()
+    live.close.assert_not_awaited()  # healthy C never detached
+    assert "10.0.0.3" not in pool._superseded_ip["user_1"]  # C never wrongly fenced
+
+
+@pytest.mark.asyncio
 async def test_superseded_endpoint_refused_on_absent_owner_not_dialed():
     """Finding 1: when a recreate detaches the old connection and the replacement
     dial then RAISES, the owner is left ABSENT but the stale-endpoint fence — now
@@ -137,7 +162,7 @@ async def test_superseded_endpoint_refused_on_absent_owner_not_dialed():
     dialed straight onto the dead task."""
     pool = _bare_pool()
     # Owner absent (replacement dial failed), fence recorded at the earlier detach.
-    pool._superseded_ip["user_1"] = ("10.0.0.1", time.monotonic())
+    pool._superseded_ip["user_1"] = {"10.0.0.1": time.monotonic()}
     pool._last_reconnect_at["user_1"] = time.monotonic() - 999  # floor not the cause
     pool._create_connection = AsyncMock()
 

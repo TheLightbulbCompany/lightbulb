@@ -41,6 +41,9 @@ def _pool(conn_svc=None) -> GatewayConnectionPool:
         conn_svc.count_live_chat_connections = AsyncMock(return_value=0)
         # No Paperclip run in flight — the stop ladder's operator veto.
         conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+        # No live gateway-liveness row anywhere — boot_reconcile passes
+        # closed_conn_token=None, so any token here would veto the stop.
+        conn_svc.get_live_gateway_conn_token = AsyncMock(return_value=None)
     return GatewayConnectionPool(management_api=None, conn_svc=conn_svc)
 
 
@@ -125,6 +128,7 @@ async def test_reconcile_never_stops_trial_owner_with_live_conn():
     conn_svc = MagicMock()
     conn_svc.count_live_chat_connections = AsyncMock(return_value=1)
     conn_svc.has_live_operator_connection = AsyncMock(return_value=False)
+    conn_svc.get_live_gateway_conn_token = AsyncMock(return_value=None)
     pool = _pool(conn_svc=conn_svc)
     stop = AsyncMock()
     rows = [{"owner_id": OWNER, "status": "running"}]

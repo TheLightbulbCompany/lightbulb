@@ -67,6 +67,8 @@ def _fake_connection(**overrides) -> SimpleNamespace:
         _parked=False,
         invalidate_recipients_cache=lambda: None,
         reset_run_state_dedup=lambda: None,
+        # close_user drains the connection's last liveness write after close().
+        drain_liveness_write=AsyncMock(),
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -287,7 +289,9 @@ async def test_grace_close_stops_trial_after_extended_grace(monkeypatch):
 
     pool = _pool()
     close_mock = AsyncMock()
-    pool._connections[OWNER] = SimpleNamespace(has_active_runs=False, _parked=False, close=close_mock)
+    pool._connections[OWNER] = SimpleNamespace(
+        has_active_runs=False, _parked=False, close=close_mock, drain_liveness_write=AsyncMock()
+    )
     stop = AsyncMock()
     with (
         _patch_billing(_trial_account()),
@@ -308,10 +312,15 @@ async def test_grace_close_run_in_flight_at_close_aborts_trial_stop(monkeypatch)
     pool can no longer see the run, so the decision must be taken here."""
     monkeypatch.setattr(connection_pool, "_GRACE_PERIOD", 0)
     monkeypatch.setattr(connection_pool, "_TRIAL_STOP_GRACE_S", 0)
+    # Ceiling lapses immediately with the run still active (the scenario this
+    # test names) — otherwise the active-run hold spins to the real 300s ceiling.
+    monkeypatch.setattr(connection_pool, "_PUSH_GRACE_CEILING_S", 0)
 
     pool = _pool()
     close_mock = AsyncMock()
-    pool._connections[OWNER] = SimpleNamespace(has_active_runs=True, _parked=False, close=close_mock)
+    pool._connections[OWNER] = SimpleNamespace(
+        has_active_runs=True, _parked=False, close=close_mock, drain_liveness_write=AsyncMock()
+    )
     stop = AsyncMock()
     with (
         _patch_billing(_trial_account()),
@@ -355,6 +364,8 @@ async def test_grace_close_arms_trial_stop_after_mixed_case_session_key_run_comp
     # always pops from it now.
     conn._run_completion_callbacks = {}
     conn._run_completion_tasks = set()
+    # close_user drains the last scheduled liveness write; __new__ skips __init__.
+    conn._pending_liveness_write = None
     conn.close = AsyncMock()
 
     async def fake_forward(message, target_member_id=None):
@@ -398,7 +409,9 @@ async def test_grace_close_paid_owner_never_stops(monkeypatch):
 
     pool = _pool()
     close_mock = AsyncMock()
-    pool._connections[OWNER] = SimpleNamespace(has_active_runs=False, _parked=False, close=close_mock)
+    pool._connections[OWNER] = SimpleNamespace(
+        has_active_runs=False, _parked=False, close=close_mock, drain_liveness_write=AsyncMock()
+    )
     stop = AsyncMock()
     with (
         _patch_billing({"subscription_status": "active"}),
@@ -419,7 +432,9 @@ async def test_grace_close_frontend_reconnect_before_ws_close_skips_everything(m
 
     pool = _pool()
     close_mock = AsyncMock()
-    pool._connections[OWNER] = SimpleNamespace(has_active_runs=False, _parked=False, close=close_mock)
+    pool._connections[OWNER] = SimpleNamespace(
+        has_active_runs=False, _parked=False, close=close_mock, drain_liveness_write=AsyncMock()
+    )
     pool._frontend_connections[OWNER] = {"reconnected"}
     stop = AsyncMock()
     with (
@@ -444,7 +459,9 @@ async def test_reconnect_during_extended_grace_cancels_stop(monkeypatch):
 
     pool = _pool()
     close_mock = AsyncMock()
-    pool._connections[OWNER] = SimpleNamespace(has_active_runs=False, _parked=False, close=close_mock)
+    pool._connections[OWNER] = SimpleNamespace(
+        has_active_runs=False, _parked=False, close=close_mock, drain_liveness_write=AsyncMock()
+    )
     stop = AsyncMock()
 
     with (
@@ -600,7 +617,9 @@ async def test_close_user_cancels_deadline_timer():
     pool.add_frontend_connection(OWNER, "conn-1")
     handle = pool._client_deadline_handles[OWNER]
     close_mock = AsyncMock()
-    pool._connections[OWNER] = SimpleNamespace(has_active_runs=False, _parked=False, close=close_mock)
+    pool._connections[OWNER] = SimpleNamespace(
+        has_active_runs=False, _parked=False, close=close_mock, drain_liveness_write=AsyncMock()
+    )
 
     await pool.close_user(OWNER)
 

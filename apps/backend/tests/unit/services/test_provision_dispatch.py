@@ -187,6 +187,8 @@ async def test_branch_a_transient_failure_leaves_row_untouched(monkeypatch, sfn)
 async def test_branch_a_stands_down_while_inline_attempt_live(monkeypatch, sfn):
     # The ~3s poll cadence re-enters dispatch while attempt 0 runs in this
     # process; Branch A must NOT hand the live claim to the state machine.
+    import threading
+
     name = provision_dispatch.execution_name("user_abc", "claimuuid-1234")
     row = {
         "status": "provisioning",
@@ -196,10 +198,14 @@ async def test_branch_a_stands_down_while_inline_attempt_live(monkeypatch, sfn):
     monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
     claim = AsyncMock(return_value=None)
     monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", claim)
-    gate = asyncio.Event()
+    # threading.Event, not asyncio.Event: the runner executes on the
+    # provision executor thread's own loop, so a test-loop asyncio primitive
+    # cannot be awaited there.
+    gate = threading.Event()
 
     async def blocked_runner(owner_id, claim_id, attempt_token):
-        await gate.wait()
+        while not gate.is_set():
+            await asyncio.sleep(0.005)
         return 0
 
     monkeypatch.setattr(provision_dispatch, "_runner_run", blocked_runner)
@@ -248,55 +254,34 @@ async def test_inline_crash_releases_claim_to_error(monkeypatch, sfn):
     release.assert_awaited_once()
     args, kwargs = release.await_args
     assert args == ("user_abc", claim_calls["claim"])
-    assert kwargs == {"last_error": "inline provision attempt crashed", "retryable": True}
+    # attempt_token fence: after an SFN takeover re-stamps the token, this
+    # release must silently no-op rather than clobber the machine-owned row.
+    assert kwargs == {
+        "last_error": "inline provision attempt crashed",
+        "retryable": True,
+        "attempt_token": provision_dispatch.inline_attempt_token(claim_calls["claim"]),
+    }
 
 
-async def test_handoff_cancels_inline_and_starts_execution(monkeypatch, sfn):
-    # Shutdown: cancel + await the attempt FIRST, then StartExecution with the
-    # deterministic name+input — no in-process straggler may outlive its SFN
-    # successor.
-    order = []
-    gate = asyncio.Event()
+async def test_inline_attempt_runs_off_the_server_loop(monkeypatch, sfn):
+    # The runner's call tree contains sync network/EFS I/O; the attempt must
+    # execute on the dedicated provision executor's thread with its own loop,
+    # never on the server's.
+    import threading
 
-    async def blocked_runner(owner_id, claim_id, attempt_token):
-        try:
-            await gate.wait()
-        except asyncio.CancelledError:
-            order.append("cancelled")
-            raise
+    seen = {}
+
+    async def recording_runner(owner_id, claim_id, attempt_token):
+        seen["thread"] = threading.current_thread().name
+        seen["loop"] = asyncio.get_running_loop()
         return 0
 
-    monkeypatch.setattr(provision_dispatch, "_runner_run", blocked_runner)
-    sfn.start_execution.side_effect = lambda **kw: order.append("started")
+    monkeypatch.setattr(provision_dispatch, "_runner_run", recording_runner)
+    server_loop = asyncio.get_running_loop()
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
-    await asyncio.sleep(0)  # let the attempt reach its await
-    await provision_dispatch.handoff_inflight_provisions()
-    assert order == ["cancelled", "started"]
-    kwargs = sfn.start_execution.call_args.kwargs
-    assert kwargs["name"] == provision_dispatch.execution_name("user_abc", "claimuuid-1234")
-    assert kwargs["input"] == provision_dispatch.execution_input("user_abc", "claimuuid-1234")
-    assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
-
-
-async def test_handoff_start_failure_leaves_row_for_branch_a(monkeypatch, sfn):
-    # A failed handoff StartExecution must not touch the row: the stamped
-    # claim+name make the next poll's Branch A re-issue the self-heal.
-    gate = asyncio.Event()
-
-    async def blocked_runner(owner_id, claim_id, attempt_token):
-        await gate.wait()
-        return 0
-
-    monkeypatch.setattr(provision_dispatch, "_runner_run", blocked_runner)
-    release = AsyncMock()
-    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
-    sfn.start_execution.side_effect = ClientError(
-        {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "StartExecution"
-    )
-    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
-    await asyncio.sleep(0)
-    await provision_dispatch.handoff_inflight_provisions()  # must not raise
-    release.assert_not_awaited()
+    await _await_inline("user_abc")
+    assert seen["thread"].startswith("inline-provision")
+    assert seen["loop"] is not server_loop
 
 
 async def test_ddb_read_failure_is_swallowed_and_starts_nothing(monkeypatch, sfn):

@@ -2,9 +2,14 @@
 
 THE single provisioning funnel. A fresh claim runs the provision runner
 IN-PROCESS as attempt 0 (``_run_inline`` — the backend and the SFN
-provisioner task share one image/env/role, and the runner is a plain
-coroutine with no detached tasks), skipping the ~30s ECS cold-launch the
-state machine pays per attempt. The state machine remains the durable
+provisioner task share one image/env/role), skipping the ~30s ECS
+cold-launch the state machine pays per attempt. The attempt executes on a
+DEDICATED thread with its own event loop (``_PROVISION_EXECUTOR``): the
+runner's call tree still contains synchronous network/EFS I/O (boto3
+calls outside ``to_thread``, the 5s gateway TCP probe, NFS file writes)
+that was harmless in the standalone provisioner process but would stall
+the backend's event loop — thread isolation removes the whole class
+instead of auditing call sites. The state machine remains the durable
 owner of everything after attempt 0:
 
 - **Inline failure** (exit 10/11, or a crash): the runner has already
@@ -12,17 +17,17 @@ owner of everything after attempt 0:
   intact, so the next status poll lands on Branch A below and hands the
   SAME claim to the state machine — retries stay SFN-owned, paced by the
   machine's own Wait states, never by the poll.
-- **Backend shutdown** (deploy roll): the lifespan hook calls
-  ``handoff_inflight_provisions`` — cancel the inline task, await it, then
-  StartExecution with the deterministic name+input. Crash-without-SIGTERM
-  is the same Branch A "never started" leg it always was.
-- **Cross-instance overlap** (two backend tasks during a rolling deploy):
-  another instance's Branch A re-issue may start the machine while this
-  instance's inline attempt is mid-flight. The inline attempt runs under a
+- **Backend death** (deploy roll or crash): the row still reads
+  ``provisioning`` with the stamped name and no execution started — the
+  pre-existing Branch A "never started" leg, reached from the next ~3s
+  status poll on a surviving instance. No shutdown hook: a thread cannot
+  be cancelled, and the fence below already bounds any straggler.
+- **Overlap** (two backend tasks during a rolling deploy, or a takeover
+  racing a still-draining attempt): the inline attempt runs under a
   DISTINCT attempt token (``inline_attempt_token``), so the SFN runner's
   first-act ``claim_attempt`` re-stamp fences the inline straggler out at
-  its next checkpoint — the same hazard-1 fence that already orders SFN
-  retries (no dual-run window, spec §7).
+  its next fenced checkpoint — the same hazard-1 fence that already
+  orders SFN retries (no dual-run window, spec §7).
 
 Dispatch stays crash-safe by execution NAME: the claim write stamps the name
 atomically (container_repo), and StartExecution is idempotent for STANDARD
@@ -55,6 +60,7 @@ import asyncio
 import json
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 from botocore.exceptions import ClientError
@@ -184,6 +190,13 @@ async def _dispatch_inner(owner_id: str) -> None:
 # attempt's own finally.
 _INLINE_ATTEMPTS: dict[str, tuple[str, asyncio.Task]] = {}
 
+# Dedicated executor so minutes-long provisions never occupy the event loop's
+# shared default executor (whose threads back every asyncio.to_thread call in
+# the process).
+# ponytail: fixed 8-thread cap — the 9th concurrent signup queues here instead
+# of provisioning; raise or shard if signup bursts ever exceed it.
+_PROVISION_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="inline-provision")
+
 
 def inline_attempt_token(claim_id: str) -> str:
     # DISTINCT from the SFN's attempt-0 token (claim_id itself) so an SFN
@@ -210,10 +223,19 @@ async def _runner_run(owner_id: str, claim_id: str, attempt_token: str) -> int:
     return await run_provision(owner_id, claim_id, attempt_token=attempt_token)
 
 
+def _run_inline_thread(owner_id: str, claim_id: str) -> int:
+    # A fresh event loop on the executor thread: the runner's sync I/O blocks
+    # THIS loop, never the server's, and the loop's own default executor backs
+    # the runner's internal to_thread calls (no shared-pool deadlock).
+    return asyncio.run(_runner_run(owner_id, claim_id, inline_attempt_token(claim_id)))
+
+
 async def _run_inline(owner_id: str, claim_id: str) -> None:
     bind_log_context(user_id=owner_id)
     try:
-        code = await _runner_run(owner_id, claim_id, inline_attempt_token(claim_id))
+        code = await asyncio.get_running_loop().run_in_executor(
+            _PROVISION_EXECUTOR, _run_inline_thread, owner_id, claim_id
+        )
         if code == 0:
             emit_provision_metric("inline_ok")
         else:
@@ -227,17 +249,20 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
                 owner_id,
                 code,
             )
-    except asyncio.CancelledError:
-        raise  # shutdown handoff owns the successor dispatch
     except Exception:  # noqa: BLE001 — run() classifies internally; this is the belt
         logger.exception("inline provision attempt crashed for owner %s", owner_id)
         emit_provision_metric("inline_failed")
         try:
+            # Fenced on the inline attempt token: if the state machine has
+            # already taken this claim over (its runner re-stamped the token),
+            # this release silently no-ops instead of flipping the SFN-owned
+            # row back to error mid-attempt.
             await container_repo.release_provision_to_error(
                 owner_id,
                 claim_id,
                 last_error="inline provision attempt crashed",
                 retryable=True,
+                attempt_token=inline_attempt_token(claim_id),
             )
         except Exception:  # noqa: BLE001 — release is best-effort
             logger.exception("inline provision: release failed for owner %s", owner_id)
@@ -245,30 +270,6 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
         entry = _INLINE_ATTEMPTS.get(owner_id)
         if entry and entry[0] == claim_id:
             _INLINE_ATTEMPTS.pop(owner_id, None)
-
-
-async def handoff_inflight_provisions() -> None:
-    """Shutdown hook (main.py lifespan): hand every live inline attempt to the
-    state machine before the process exits. Cancel first and AWAIT the
-    cancellation, so no in-process straggler outlives its StartExecution
-    successor; if StartExecution itself fails, the row still holds the stamped
-    claim+name and the next poll's Branch A re-issue self-heals."""
-    for owner_id, (claim_id, task) in list(_INLINE_ATTEMPTS.items()):
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001 — the attempt is dead either way
-                logger.exception("inline provision handoff: attempt for owner %s errored on cancel", owner_id)
-        outcome = await _start(owner_id, claim_id)
-        emit_provision_metric("inline_handoff")
-        logger.info(
-            "inline provision handoff for owner %s: StartExecution outcome=%s",
-            owner_id,
-            outcome,
-        )
 
 
 async def _start(owner_id: str, claim_id: str) -> str:

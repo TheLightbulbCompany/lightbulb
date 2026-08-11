@@ -27,7 +27,7 @@ export const NAV_ACTIONS: CommandPaletteAction[] = [
   { id: "go-issues", label: "Issues", path: teamsPanelUrl("issues"), Icon: CircleDot, keywords: ["tasks", "tickets"] },
   // Approvals fold into the inbox "Needs attention" band — same target.
   { id: "go-approvals", label: "Approvals", path: teamsPanelUrl("inbox"), Icon: ClipboardCheck },
-  { id: "go-routines", label: "Routines", path: teamsPanelUrl("routines"), Icon: Repeat, keywords: ["cron", "schedule"] },
+  { id: "go-routines", label: "Automations", path: teamsPanelUrl("routines"), Icon: Repeat, keywords: ["cron", "schedule", "routines"] },
   { id: "go-goals", label: "Goals", path: teamsPanelUrl("goals"), Icon: Target },
   { id: "go-projects", label: "Projects", path: teamsPanelUrl("projects"), Icon: FolderOpen },
   { id: "go-activity", label: "Activity", path: teamsPanelUrl("activity"), Icon: History, keywords: ["events", "log"] },

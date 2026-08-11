@@ -37,7 +37,7 @@ const COMPANY_SECTIONS: { label: string | null; items: Item[] }[] = [
     label: "Work",
     items: [
       { panel: `${TEAMS_PANEL_PREFIX}issues`, label: "Tasks", Icon: ListTodo },
-      { panel: `${TEAMS_PANEL_PREFIX}routines`, label: "Routines", Icon: Repeat },
+      { panel: `${TEAMS_PANEL_PREFIX}routines`, label: "Automations", Icon: Repeat },
       { panel: `${TEAMS_PANEL_PREFIX}goals`, label: "Goals", Icon: Target },
       { panel: `${TEAMS_PANEL_PREFIX}projects`, label: "Projects", Icon: FolderKanban },
     ],

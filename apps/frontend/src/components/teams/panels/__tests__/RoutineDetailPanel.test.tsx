@@ -71,7 +71,7 @@ describe("RoutineDetailPanel", () => {
     expect(
       screen.getByRole("heading", { name: "Nightly digest" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Routines" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Automations" })).toHaveAttribute(
       "href",
       "/chat?panel=teams-routines",
     );

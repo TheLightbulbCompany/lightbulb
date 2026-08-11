@@ -262,9 +262,9 @@ describe("RoutinesPanel", () => {
     });
     render(<RoutinesPanel />);
 
-    // "New routine" is both the masthead button and the dialog heading; click
-    // the button (role) to open, then fill the fields.
-    await user.click(screen.getByRole("button", { name: "New routine" }));
+    // "New automation" is both the masthead button and the dialog heading;
+    // click the button (role) to open, then fill the fields.
+    await user.click(screen.getByRole("button", { name: "New automation" }));
     fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Weekly review" },
     });
@@ -329,7 +329,7 @@ describe("RoutinesPanel", () => {
     });
     render(<RoutinesPanel />);
 
-    await user.click(screen.getByRole("button", { name: "New routine" }));
+    await user.click(screen.getByRole("button", { name: "New automation" }));
     // The schedule field is the rung-picker's default; picking "Any other
     // app" swaps it out for the webhook fields.
     await user.click(screen.getByRole("radio", { name: "Any other app" }));
@@ -361,7 +361,7 @@ describe("RoutinesPanel", () => {
     const user = userEvent.setup();
     render(<RoutinesPanel />);
 
-    await user.click(screen.getByRole("button", { name: "New routine" }));
+    await user.click(screen.getByRole("button", { name: "New automation" }));
     fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Whatever" },
     });
@@ -371,6 +371,38 @@ describe("RoutinesPanel", () => {
     expect(screen.getByText("Create")).toBeDisabled();
     await user.click(screen.getByText("Create"));
     expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it("rung picker: roving tabindex + arrow keys move selection and focus (WAI-ARIA APG radiogroup)", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+
+    // Default rung is "On a schedule" — the only tab stop; every other rung
+    // is out of the tab order (roving tabindex), not five separate stops.
+    const schedule = screen.getByRole("radio", { name: "On a schedule" });
+    const agentWatch = screen.getByRole("radio", { name: /My agent watches it/ });
+    const connectedApp = screen.getByRole("radio", { name: /A connected app/ });
+    expect(schedule).toHaveAttribute("tabindex", "0");
+    expect(agentWatch).toHaveAttribute("tabindex", "-1");
+
+    // ArrowRight/ArrowDown moves forward: "On a schedule" -> "My agent watches it".
+    fireEvent.keyDown(schedule, { key: "ArrowRight" });
+    expect(agentWatch).toHaveAttribute("aria-checked", "true");
+    expect(agentWatch).toHaveAttribute("tabindex", "0");
+    expect(schedule).toHaveAttribute("aria-checked", "false");
+    expect(schedule).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(agentWatch);
+
+    // Wraps at the end: one more ArrowDown from the last rung lands on the first.
+    fireEvent.keyDown(agentWatch, { key: "ArrowDown" });
+    expect(connectedApp).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(connectedApp);
+
+    // ArrowLeft/ArrowUp moves backward, wrapping the other way.
+    fireEvent.keyDown(connectedApp, { key: "ArrowUp" });
+    expect(agentWatch).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(agentWatch);
   });
 });
 

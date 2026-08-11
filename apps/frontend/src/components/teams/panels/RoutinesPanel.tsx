@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
 import { ArrowUpDown, Check, Repeat } from "lucide-react";
 import {
@@ -473,11 +473,11 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
   return (
     <div className="editorial-page flex flex-col gap-6 p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
       <PanelMasthead
-        overline="Routines"
-        title="Routines"
+        overline="Automations"
+        title="Automations"
         actions={
           <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-            New routine
+            New automation
           </EditorialButton>
         }
       />
@@ -861,6 +861,10 @@ function CreateRoutineDialog({
 }) {
   const { post } = useTeamsApi();
   const [rung, setRung] = useState<StartRung>("schedule");
+  // Roving tabindex for the rung radiogroup (WAI-ARIA APG pattern): only the
+  // checked radio is a tab stop; Arrow keys move both the selection and DOM
+  // focus between rungs, wrapping at the ends.
+  const rungRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [title, setTitle] = useState("");
   const [cron, setCron] = useState("0 9 * * *");
   const [signingMode, setSigningMode] = useState("bearer");
@@ -889,6 +893,23 @@ function CreateRoutineDialog({
     title.trim() !== "" &&
     !comingSoon &&
     (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
+
+  function moveRung(delta: 1 | -1) {
+    const i = START_RUNGS.findIndex((r) => r.value === rung);
+    const next = (i + delta + START_RUNGS.length) % START_RUNGS.length;
+    setRung(START_RUNGS[next].value);
+    rungRefs.current[next]?.focus();
+  }
+
+  function onRungKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      e.preventDefault();
+      moveRung(1);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      moveRung(-1);
+    }
+  }
 
   async function submit() {
     if (!canSubmit) return;
@@ -969,7 +990,7 @@ function CreateRoutineDialog({
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title="New routine"
+      title="New automation"
     >
       <div className="flex flex-col gap-3">
         <div className="block">
@@ -980,13 +1001,18 @@ function CreateRoutineDialog({
             role="radiogroup"
             aria-label="What should start this?"
             className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-5"
+            onKeyDown={onRungKeyDown}
           >
-            {START_RUNGS.map((r) => (
+            {START_RUNGS.map((r, i) => (
               <button
                 key={r.value}
+                ref={(el) => {
+                  rungRefs.current[i] = el;
+                }}
                 type="button"
                 role="radio"
                 aria-checked={rung === r.value}
+                tabIndex={rung === r.value ? 0 : -1}
                 onClick={() => setRung(r.value)}
                 className={cn(
                   "rounded border px-2 py-2 text-left text-xs transition-colors",

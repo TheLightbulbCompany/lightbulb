@@ -10,7 +10,7 @@ const ALL_LABELS = [
   "Search",
   "Inbox",
   "Tasks",
-  "Routines",
+  "Automations",
   "Goals",
   "Projects",
   "Org chart",
@@ -39,7 +39,7 @@ describe("CompanyNav", () => {
   });
   it("marks the active item with the forest accent", () => {
     render(<CompanyNav activePanel="teams-routines" />);
-    const btn = screen.getByText("Routines").closest("button");
+    const btn = screen.getByText("Automations").closest("button");
     expect(btn?.className).toMatch(/forest/);
   });
   it("owns no scroll region — the shared .sidebar-scroll wrapper owns the single scroll", () => {

@@ -42,7 +42,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   "org-chart": "Org Chart",
   inbox: "Inbox",
   issues: "Tasks",
-  routines: "Routines",
+  routines: "Automations",
   goals: "Goals",
   projects: "Projects",
   activity: "Activity",
@@ -53,7 +53,7 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
 
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
   "issue-detail": "Task",
-  "routine-detail": "Routine",
+  "routine-detail": "Automation",
   "project-detail": "Project",
   "goal-detail": "Goal",
   "run-detail": "Run",

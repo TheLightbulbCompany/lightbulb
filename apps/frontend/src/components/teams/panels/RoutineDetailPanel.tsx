@@ -412,7 +412,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("routines"))}
             className="hover:underline"
           >
-            Routines
+            Automations
           </Link>
           <ChevronRight className="h-3 w-3" />
           <span className="truncate" style={{ color: "var(--ink-soft)" }}>

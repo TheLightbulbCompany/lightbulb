@@ -59,14 +59,12 @@ export interface Connection {
    * Same registry `inbound` block as `can_trigger`, but carrying event IDS
    * (not just labels) plus the hookup mode — the Add-flow's "A connected
    * app" rung (Phase 2 T6) needs both to submit `POST
-   * /automations/from-integration {provider, event_id}` and to know whether
-   * to show a repo field before submit (`webhook_registration === "auto"`,
-   * e.g. GitHub) vs a guided paste-secret flow after (`"guided_paste"`,
-   * e.g. Stripe). `null`/absent when the provider isn't wired as a trigger
-   * source.
+   * /automations/from-integration {provider, event_id}` and to drive the
+   * guided paste-secret flow after (`"guided_paste"`, e.g. Stripe).
+   * `null`/absent when the provider isn't wired as a trigger source.
    */
   inbound?: {
-    webhook_registration: "auto" | "guided_paste";
+    webhook_registration: "guided_paste";
     events: { id: string; label: string }[];
   } | null;
 }

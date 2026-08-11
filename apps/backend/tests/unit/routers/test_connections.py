@@ -273,10 +273,10 @@ class TestListConnections:
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
     async def test_inbound_carries_event_ids_and_registration_mode(self, mock_repo, async_client):
-        # Task 6: the Add-flow needs event IDS (not just labels) plus whether
-        # registration is guided_paste (Stripe) or auto (GitHub) to decide
-        # whether to show a repo field before submit. `can_trigger` (labels
-        # only) stays untouched for the Integrations card.
+        # Task 6: the Add-flow needs event IDS (not just labels) plus the
+        # registration mode (guided_paste) to submit
+        # POST /automations/from-integration. `can_trigger` (labels only)
+        # stays untouched for the Integrations card.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
@@ -288,13 +288,7 @@ class TestListConnections:
                 {"id": "customer.subscription.deleted", "label": "Subscription canceled"},
             ],
         }
-        assert by_key["github"]["inbound"] == {
-            "webhook_registration": "auto",
-            "events": [
-                {"id": "workflow_run", "label": "On workflow run updates"},
-                {"id": "issues", "label": "On any issue activity"},
-            ],
-        }
+        # google (and github — auto-register deferred) declare no `inbound`.
         assert by_key["google"]["inbound"] is None
 
 

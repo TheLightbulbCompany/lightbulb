@@ -34,7 +34,7 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         assert response.json()["guided"] is True
-        mock_seed.assert_awaited_once_with("user_test_123", "stripe", "invoice.payment_failed", repo=None)
+        mock_seed.assert_awaited_once_with("user_test_123", "stripe", "invoice.payment_failed")
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)

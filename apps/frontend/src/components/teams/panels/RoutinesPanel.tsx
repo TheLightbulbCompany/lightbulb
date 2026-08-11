@@ -853,8 +853,7 @@ const COMING_SOON_COPY: Partial<Record<StartRung, string>> = {
 // POST /automations/from-integration's response (core/services/
 // inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
 // paste the proxy URL into the provider's own dashboard (Stripe) and then
-// paste back the signing secret it hands them; !guided -> we already
-// registered the webhook for them (GitHub) and there's nothing left to do.
+// paste back the signing secret it hands them.
 interface FromIntegrationResult {
   routine_id: string;
   trigger_public_id: string;
@@ -904,7 +903,6 @@ function CreateRoutineDialog({
   // description: the registry template supplies all of that server-side).
   const [connProvider, setConnProvider] = useState<string | null>(null);
   const [connEventId, setConnEventId] = useState<string | null>(null);
-  const [connRepo, setConnRepo] = useState("");
   const [connResult, setConnResult] = useState<FromIntegrationResult | null>(
     null,
   );
@@ -920,9 +918,6 @@ function CreateRoutineDialog({
   const selectedConnection =
     triggerableConnections.find((c) => c.provider === connProvider) ?? null;
   const connEvents = selectedConnection?.inbound?.events ?? [];
-  // "auto" registration (GitHub) needs a repo BEFORE we can register the
-  // hook; "guided_paste" (Stripe) has nothing to collect up front.
-  const needsRepo = selectedConnection?.inbound?.webhook_registration === "auto";
 
   const comingSoon = COMING_SOON_COPY[rung] != null;
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
@@ -934,9 +929,7 @@ function CreateRoutineDialog({
       replayWindowNum <= 86400);
   const canSubmit =
     rung === "connected_app"
-      ? connProvider != null &&
-        connEventId != null &&
-        (!needsRepo || connRepo.trim() !== "")
+      ? connProvider != null && connEventId != null
       : title.trim() !== "" &&
         !comingSoon &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
@@ -960,18 +953,16 @@ function CreateRoutineDialog({
 
   // "A connected app" — one call seeds BOTH the routine and its trigger from
   // the registry template (core/services/inbound_triggers.py), so none of
-  // the title/assignee/description fields the other two rungs use apply
-  // here. `repo` is only sent for an auto-registration provider (GitHub).
+  // the title/assignee/description fields the other two rungs use apply here.
   async function submitConnectedApp() {
     if (!connProvider || !connEventId) return;
     setSubmitting(true);
     setErr(null);
     try {
-      const body: { provider: string; event_id: string; repo?: string } = {
+      const body = {
         provider: connProvider,
         event_id: connEventId,
       };
-      if (needsRepo) body.repo = connRepo.trim();
       const result = (await automationsApi.post(
         "/automations/from-integration",
         body,
@@ -1306,23 +1297,6 @@ function CreateRoutineDialog({
                     placeholder="Select an event…"
                   />
                 </div>
-              </label>
-            )}
-            {needsRepo && (
-              <label className="block">
-                <span className="text-sm text-[var(--ink-soft)]">
-                  Repository
-                </span>
-                <input
-                  value={connRepo}
-                  onChange={(e) => setConnRepo(e.target.value)}
-                  placeholder="owner/repo"
-                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
-                />
-                <span className="text-xs text-[var(--mute)]">
-                  {selectedConnection?.display_name} registers the webhook on
-                  this repo automatically.
-                </span>
               </label>
             )}
           </>

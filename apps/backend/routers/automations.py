@@ -78,7 +78,6 @@ router = APIRouter(prefix="/automations", tags=["automations"])
 class FromIntegrationBody(BaseModel):
     provider: str
     event_id: str
-    repo: str | None = None
 
 
 class WebhookSecretBody(BaseModel):
@@ -101,7 +100,7 @@ async def from_integration(
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id)
     try:
-        return await seed_trigger_routine(owner_id, body.provider, body.event_id, repo=body.repo)
+        return await seed_trigger_routine(owner_id, body.provider, body.event_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

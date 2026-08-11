@@ -1,6 +1,6 @@
 """Tests for the Teams Work BFF — Routines + Goals + Projects."""
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -988,80 +988,6 @@ def test_delete_routine_trigger_is_open_to_trial(client, admin, monkeypatch):
         trigger_id="tr_1",
         session_cookie="cookie",
     )
-
-
-# ---------------------------------------------------------------------------
-# GitHub webhook hook cleanup on delete (Codex P2 finding)
-#
-# Auto-registration (core.services.inbound_triggers._auto_register_webhook)
-# retains the registered hook's id + repo keyed by the trigger's publicId —
-# a routine/trigger delete must unregister it or the hook keeps delivering to
-# a dead proxy forever.
-# ---------------------------------------------------------------------------
-
-
-def test_delete_routine_trigger_cleans_up_its_github_hook(client, admin, monkeypatch):
-    """publicId is resolved via get_routine (the only projection that carries
-    it — list_routines doesn't) and matched against the DELETE path's
-    trigger_id; only THIS trigger's hook is cleaned up, not a sibling's."""
-    admin.get_routine = AsyncMock(
-        return_value={
-            "id": "r1",
-            "triggers": [
-                {"id": "tr_1", "kind": "webhook", "publicId": "pub_1"},
-                {"id": "tr_other", "kind": "webhook", "publicId": "pub_other"},
-            ],
-        }
-    )
-    cleanup = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.cleanup_github_hook", cleanup)
-
-    r = client.delete(
-        "/api/v1/teams/routines/r1/triggers/tr_1",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    cleanup.assert_awaited_once_with("o1", "pub_1")
-    admin.delete_routine_trigger.assert_awaited_once()
-
-
-def test_delete_routine_cleans_up_every_github_hook_on_it(client, admin, monkeypatch):
-    """Deleting a whole routine unregisters GitHub hooks for EVERY webhook
-    trigger it carries — a schedule trigger (no publicId) is skipped."""
-    admin.get_routine = AsyncMock(
-        return_value={
-            "id": "r1",
-            "triggers": [
-                {"id": "tr_1", "kind": "webhook", "publicId": "pub_1"},
-                {"id": "tr_2", "kind": "webhook", "publicId": "pub_2"},
-                {"id": "tr_3", "kind": "schedule"},
-            ],
-        }
-    )
-    cleanup = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.cleanup_github_hook", cleanup)
-
-    r = client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
-    assert r.status_code == 200
-    assert cleanup.await_args_list == [call("o1", "pub_1"), call("o1", "pub_2")]
-    admin.delete_routine.assert_awaited_once()
-
-
-def test_delete_trigger_github_hook_cleanup_lookup_failure_never_blocks_the_delete(client, admin, monkeypatch):
-    """A get_routine failure while resolving publicId for cleanup must never
-    block the delete it's running ahead of — same fail-open posture as the
-    nightly-CEO identity lookup."""
-    admin.get_routine = AsyncMock(side_effect=RuntimeError("paperclip down"))
-    cleanup = AsyncMock()
-    monkeypatch.setattr("routers.teams.work.cleanup_github_hook", cleanup)
-
-    r = client.delete(
-        "/api/v1/teams/routines/r1/triggers/tr_1",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    cleanup.assert_not_awaited()
-    admin.delete_routine_trigger.assert_awaited_once()
 
 
 def test_rotate_routine_trigger_secret_is_open_and_returns_material(client, admin):

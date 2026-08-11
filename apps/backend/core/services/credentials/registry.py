@@ -223,15 +223,14 @@ class Inbound(BaseModel):
     Integrations card's "Can trigger" line — see the Automations Phase 2 plan.
     """
 
-    # "auto" — Isol8 registers the webhook itself (e.g. GitHub, via its API +
-    # a stored token). "guided_paste" — the provider has no register-a-webhook
-    # API reachable with what we hold, so the owner pastes the proxy URL into
-    # the provider's own dashboard (Stripe).
-    webhook_registration: Literal["auto", "guided_paste"]
+    # "guided_paste" — the provider has no register-a-webhook API reachable
+    # with what we hold, so the owner pastes the proxy URL into the provider's
+    # own dashboard (Stripe). (An "auto" shape — Isol8 registers the webhook
+    # itself via the provider's API — returns with the generic-rail follow-up.)
+    webhook_registration: Literal["guided_paste"]
     # Registry-level marker interpreted by the trigger proxy + seed service —
     # NOT a Paperclip signing enum. "stripe_edge" verifies HMAC at the Isol8
-    # edge (Paperclip trigger's own signingMode stays "none"); "github_hmac"
-    # lets Paperclip verify natively.
+    # edge (the Paperclip trigger's own signingMode stays "none").
     signing_mode: str
     events: list[InboundEvent]
     template: InboundTemplate

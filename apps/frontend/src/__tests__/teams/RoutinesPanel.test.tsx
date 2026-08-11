@@ -464,15 +464,6 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     };
   }
 
-  const GITHUB = connection({
-    provider: "github",
-    display_name: "GitHub",
-    inbound: {
-      webhook_registration: "auto",
-      events: [{ id: "workflow_run", label: "Workflow run completed" }],
-    },
-  });
-
   beforeEach(() => {
     mockAutomationsPost.mockResolvedValue({});
     mockAutomationsPut.mockResolvedValue({ status: "stored" });
@@ -489,7 +480,6 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
   it("lists only connected providers that declare inbound events", async () => {
     connectionsData = [
       connection(),
-      GITHUB,
       // Connected but no inbound events -> not trigger-capable.
       connection({ provider: "acme", display_name: "Acme", inbound: null, can_trigger: [] }),
       // Has inbound events but not connected -> not offered.
@@ -499,7 +489,6 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     expect(await screen.findByRole("option", { name: "Stripe" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "GitHub" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Acme" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Slack" })).not.toBeInTheDocument();
   });
@@ -611,47 +600,6 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(doneButton).toBeEnabled();
   });
 
-  it("auto (GitHub): shows a repo field before submit, sends {provider,event_id,repo}, and shows 'Registered'", async () => {
-    connectionsData = [GITHUB];
-    mockAutomationsPost.mockResolvedValue({
-      routine_id: "rt_2",
-      trigger_public_id: "pub_2",
-      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_2",
-      guided: false,
-    });
-    const user = await openConnectedAppRung();
-
-    await user.click(screen.getAllByRole("combobox")[0]);
-    await user.click(await screen.findByRole("option", { name: "GitHub" }));
-
-    // The repo field appears BEFORE submit for an auto-registration provider.
-    const repoField = screen.getByLabelText(/repository/i);
-    await user.type(repoField, "acme/widgets");
-
-    await user.click(screen.getAllByRole("combobox")[1]);
-    await user.click(await screen.findByRole("option", { name: "Workflow run completed" }));
-
-    await user.click(screen.getByText("Create"));
-
-    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
-    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
-      provider: "github",
-      event_id: "workflow_run",
-      repo: "acme/widgets",
-    });
-
-    // Exact match — the dialog title/description also contain the substring
-    // "registered", so a loose regex would match more than one node.
-    expect(await screen.findByText("Registered.")).toBeInTheDocument();
-    // No signing-secret paste step for an auto-registered provider.
-    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
-
-    // Auto (GitHub) results are already fully armed — Done is never gated.
-    const doneButton = screen.getByRole("button", { name: "Done" });
-    expect(doneButton).toBeEnabled();
-    await user.click(doneButton);
-    expect(mockMutate).toHaveBeenCalled();
-  });
 });
 
 describe("RoutinesPanel sort", () => {

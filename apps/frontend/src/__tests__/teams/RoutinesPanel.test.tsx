@@ -61,10 +61,12 @@ describe("RoutinesPanel", () => {
     agentsData = { agents: AGENTS };
   });
 
-  it("renders the routine title and cron from the upstream shape", () => {
+  it("renders the routine title and a plain-English trigger sentence from the upstream shape", () => {
     render(<RoutinesPanel />);
     expect(screen.getByText("Daily standup")).toBeInTheDocument();
-    expect(screen.getByText(/0 9 \* \* \*/)).toBeInTheDocument();
+    // The row subtitle reads as a sentence ("on a schedule — ...") instead of
+    // the raw cron expression — see triggerSentence.
+    expect(screen.getByText(/on a schedule — Every day at 09:00/)).toBeInTheDocument();
   });
 
   it("resolves the assignee id to the agent display name", () => {
@@ -72,6 +74,26 @@ describe("RoutinesPanel", () => {
     // "Friday" (resolved name) shows in the row subtitle; the raw id "a1" does not.
     expect(screen.getByText(/Friday/)).toBeInTheDocument();
     expect(screen.queryByText(/agent a1/)).not.toBeInTheDocument();
+  });
+
+  it("shows the auto-paused row indicator only for a breaker-tripped routine, not a hand-pause", () => {
+    routinesData = {
+      routines: [
+        routine({
+          id: "rt-auto",
+          title: "Breaker-tripped digest",
+          status: "paused",
+          autoPausedAt: "2026-08-10T08:00:00Z",
+          consecutiveFailureCount: 4,
+        }),
+        routine({ id: "rt-hand", title: "Weekly report", status: "paused", autoPausedAt: null }),
+      ],
+    };
+    render(<RoutinesPanel />);
+    // Both rows render "Paused" via the toggle label; only the breaker-tripped
+    // row also carries the distinct amber "auto-paused" affordance (titled, so
+    // it's unambiguous from any incidental "auto-paused" substring elsewhere).
+    expect(screen.getAllByTitle(/auto-paused after repeated failures/i)).toHaveLength(1);
   });
 
   it("falls back to the legacy flat shape (name / cron / agent_id / enabled)", () => {
@@ -88,7 +110,7 @@ describe("RoutinesPanel", () => {
     };
     render(<RoutinesPanel />);
     expect(screen.getByText("Legacy routine")).toBeInTheDocument();
-    expect(screen.getByText(/0 8 \* \* \*/)).toBeInTheDocument();
+    expect(screen.getByText(/on a schedule — Every day at 08:00/)).toBeInTheDocument();
     // Legacy agent_id resolves through the same roster map.
     expect(screen.getByText(/Atlas/)).toBeInTheDocument();
   });
@@ -240,9 +262,9 @@ describe("RoutinesPanel", () => {
     });
     render(<RoutinesPanel />);
 
-    // "New routine" is both the masthead button and the dialog heading; click
-    // the button (role) to open, then fill the fields.
-    await user.click(screen.getByRole("button", { name: "New routine" }));
+    // "New automation" is both the masthead button and the dialog heading;
+    // click the button (role) to open, then fill the fields.
+    await user.click(screen.getByRole("button", { name: "New automation" }));
     fireEvent.change(screen.getByLabelText("Title"), {
       target: { value: "Weekly review" },
     });
@@ -296,6 +318,92 @@ describe("RoutinesPanel", () => {
     expect(tb.cron_expression).toBe("0 10 * * 1");
     expect(tb.timezone).toBeTruthy();
   });
+
+  it("'Any other app' rung: POSTs a webhook trigger and shows the one-time URL + secret", async () => {
+    const user = userEvent.setup();
+    mockPost.mockResolvedValueOnce({ id: "rt3" }).mockResolvedValueOnce({
+      secretMaterial: {
+        webhookUrl: "https://api.isol8.co/hooks/abc",
+        webhookSecret: "whsec_123",
+      },
+    });
+    render(<RoutinesPanel />);
+
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    // The schedule field is the rung-picker's default; picking "Any other
+    // app" swaps it out for the webhook fields.
+    await user.click(screen.getByRole("radio", { name: "Any other app" }));
+    expect(screen.queryByLabelText(/^Schedule$/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Inbound orders" },
+    });
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledTimes(2);
+    });
+    const [triggerPath, triggerBody] = mockPost.mock.calls[1];
+    expect(triggerPath).toBe("/routines/rt3/triggers");
+    const tb = triggerBody as Record<string, unknown>;
+    expect(tb.kind).toBe("webhook");
+    expect(tb.signing_mode).toBe("bearer");
+
+    // The one-time secret dialog replaces the create form.
+    expect(await screen.findByText("https://api.isol8.co/hooks/abc")).toBeInTheDocument();
+    expect(screen.getByText("whsec_123")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(mockMutate).toHaveBeenCalled();
+  });
+
+  it("coming-soon rungs disable Create and show the inline affordance", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "Whatever" },
+    });
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+
+    expect(screen.getByText(/Coming soon/)).toBeInTheDocument();
+    expect(screen.getByText("Create")).toBeDisabled();
+    await user.click(screen.getByText("Create"));
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  it("rung picker: roving tabindex + arrow keys move selection and focus (WAI-ARIA APG radiogroup)", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+
+    // Default rung is "On a schedule" — the only tab stop; every other rung
+    // is out of the tab order (roving tabindex), not five separate stops.
+    const schedule = screen.getByRole("radio", { name: "On a schedule" });
+    const agentWatch = screen.getByRole("radio", { name: /My agent watches it/ });
+    const connectedApp = screen.getByRole("radio", { name: /A connected app/ });
+    expect(schedule).toHaveAttribute("tabindex", "0");
+    expect(agentWatch).toHaveAttribute("tabindex", "-1");
+
+    // ArrowRight/ArrowDown moves forward: "On a schedule" -> "My agent watches it".
+    fireEvent.keyDown(schedule, { key: "ArrowRight" });
+    expect(agentWatch).toHaveAttribute("aria-checked", "true");
+    expect(agentWatch).toHaveAttribute("tabindex", "0");
+    expect(schedule).toHaveAttribute("aria-checked", "false");
+    expect(schedule).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(agentWatch);
+
+    // Wraps at the end: one more ArrowDown from the last rung lands on the first.
+    fireEvent.keyDown(agentWatch, { key: "ArrowDown" });
+    expect(connectedApp).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(connectedApp);
+
+    // ArrowLeft/ArrowUp moves backward, wrapping the other way.
+    fireEvent.keyDown(connectedApp, { key: "ArrowUp" });
+    expect(agentWatch).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(agentWatch);
+  });
 });
 
 describe("RoutinesPanel sort", () => {
@@ -322,7 +430,7 @@ describe("RoutinesPanel sort", () => {
     const user = userEvent.setup();
     render(<RoutinesPanel />);
     // The sort menu is a Radix Popover → needs userEvent + portalled options.
-    await user.click(screen.getByRole("button", { name: /sort routines/i }));
+    await user.click(screen.getByRole("button", { name: /sort automations/i }));
     // Re-select the already-active "Name" → flips to descending. The active
     // option's accessible name carries the direction arrow ("Name↑"), so match
     // on the prefix rather than an exact string.

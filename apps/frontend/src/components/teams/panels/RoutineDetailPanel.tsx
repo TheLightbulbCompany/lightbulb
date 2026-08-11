@@ -30,6 +30,14 @@ import {
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
+import { describeCron } from "@/components/teams/shared/cron-readable";
+import { SecretField } from "@/components/teams/shared/components/SecretField";
+import {
+  SIGNING_MODE_OPTIONS,
+  REPLAY_WINDOW_SIGNING_MODES,
+  DEFAULT_REPLAY_WINDOW_SEC,
+} from "@/components/teams/shared/webhookSigning";
 import { cn } from "@/lib/utils";
 import {
   handleShellLinkClick,
@@ -42,6 +50,7 @@ import type {
   RoutineDetail,
   RoutineRevision,
   RoutineRun,
+  RoutineTriggerSecretMaterial,
   RoutineTriggerSummary,
   RoutineVariable,
   RoutineVariableType,
@@ -153,18 +162,25 @@ function DialogError({ message }: { message: string | null }) {
   );
 }
 
-// A status swatch + label, modeled on goals/GoalStatusIcon.
+// A status swatch + label, modeled on goals/GoalStatusIcon. `autoPaused`
+// renders the same paused (amber) swatch but FILLED — like the active dot —
+// plus a distinct title, so a breaker auto-pause reads differently from a
+// hand-pause (hollow ring, plain "Paused" label) at a glance.
 function RoutineStatusIcon({
   status,
+  autoPaused,
   showLabel,
   className,
 }: {
   status: string;
+  autoPaused?: boolean;
   showLabel?: boolean;
   className?: string;
 }) {
   const swatchColor = routineStatusColor[status] ?? routineStatusColorDefault;
   const isActive = status === "active";
+  const filled = isActive || autoPaused;
+  const label = autoPaused ? "Auto-paused after repeated failures" : statusLabel(status);
   const circle = (
     <span
       className={cn(
@@ -172,10 +188,10 @@ function RoutineStatusIcon({
         className,
       )}
       style={{ color: swatchColor, borderColor: swatchColor }}
-      aria-label={statusLabel(status)}
-      title={statusLabel(status)}
+      aria-label={label}
+      title={label}
     >
-      {isActive && (
+      {filled && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
       )}
     </span>
@@ -184,7 +200,7 @@ function RoutineStatusIcon({
   return (
     <span className="inline-flex items-center gap-1.5">
       {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm">{autoPaused ? "Auto-paused" : statusLabel(status)}</span>
     </span>
   );
 }
@@ -258,7 +274,8 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   >(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [rotatedSecret, setRotatedSecret] = useState<string | null>(null);
+  const [rotatedSecret, setRotatedSecret] = useState<RoutineTriggerSecretMaterial | null>(null);
+  const [createdWebhook, setCreatedWebhook] = useState<RoutineTriggerSecretMaterial | null>(null);
 
   async function refresh(): Promise<void> {
     await Promise.all([mutate?.(), mutateRuns?.(), mutateRevisions?.()]);
@@ -293,11 +310,15 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
 
   async function rotateSecret(triggerId: string): Promise<void> {
     await run(async () => {
-      const res = await post<{ secretMaterial?: string | null }>(
+      // The wire shape is an OBJECT (RoutineTriggerSecretMaterial), not a bare
+      // string — mirrors the create-trigger response below. Rendering it
+      // directly as a JSX child (rather than through SecretField) is what
+      // used to crash React 19 with "Objects are not valid as a React child".
+      const res = await post<{ secretMaterial?: RoutineTriggerSecretMaterial | null }>(
         `/routines/${routineId}/triggers/${triggerId}/rotate-secret`,
         {},
       );
-      setRotatedSecret(res?.secretMaterial ?? "(rotated — no secret returned)");
+      if (res?.secretMaterial) setRotatedSecret(res.secretMaterial);
       await refresh();
     });
   }
@@ -305,11 +326,21 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   async function restoreRevision(revisionId: string): Promise<void> {
     if (
       typeof window !== "undefined" &&
-      !window.confirm("Restore the routine to this revision?")
+      !window.confirm("Restore the automation to this revision?")
     )
       return;
     await run(async () => {
       await post(`/routines/${routineId}/revisions/${revisionId}/restore`, {});
+      await refresh();
+    });
+  }
+
+  // Same status-mutation path RoutinesPanel's enable/disable toggle uses
+  // (PATCH { status }) — the Resume affordance on the auto-pause banner is
+  // just that toggle fired from the detail view.
+  async function patchStatus(status: string): Promise<void> {
+    await run(async () => {
+      await patch(`/routines/${routineId}`, { status });
       await refresh();
     });
   }
@@ -335,7 +366,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         className="flex h-full flex-col items-center justify-center p-8 text-sm"
         style={{ color: "var(--danger)" }}
       >
-        <p>Failed to load routine.</p>
+        <p>Failed to load automation.</p>
         {error?.message && (
           <p className="mt-1" style={{ color: "var(--mute)" }}>
             {error.message}
@@ -354,7 +385,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           color: "var(--mute)",
         }}
       >
-        Routine not found.
+        Automation not found.
       </div>
     );
   }
@@ -385,7 +416,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             onClick={(e) => handleShellLinkClick(e, teamsPanelUrl("routines"))}
             className="hover:underline"
           >
-            Routines
+            Automations
           </Link>
           <ChevronRight className="h-3 w-3" />
           <span className="truncate" style={{ color: "var(--ink-soft)" }}>
@@ -418,12 +449,44 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
               setActionError(null);
               setEditing(true);
             }}
-            aria-label="Edit routine"
+            aria-label="Edit automation"
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
             Edit
           </EditorialButton>
         </div>
+
+        {/* Circuit-breaker auto-pause banner: the routine stopped firing on
+            its own after repeated failed runs. Distinct from a hand-pause
+            (no banner there) — see isAutoPaused. */}
+        {isAutoPaused(routine) && (
+          <div
+            role="status"
+            className="rounded-lg border px-4 py-3 text-sm flex items-center justify-between gap-3"
+            style={{
+              borderColor: "color-mix(in srgb, var(--warn) 40%, transparent)",
+              backgroundColor: "color-mix(in srgb, var(--warn) 12%, transparent)",
+              color: "var(--warn)",
+            }}
+          >
+            <span>
+              Auto-paused after {routine.consecutiveFailureCount ?? "repeated"} failed runs
+              {routine.autoPauseReason ? ` (${routine.autoPauseReason})` : ""}. Fix the
+              cause, then resume.
+            </span>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setActionError(null);
+                void patchStatus("active");
+              }}
+            >
+              Resume
+            </EditorialButton>
+          </div>
+        )}
 
         {/* Main-column banner for errors from the inline actions (delete /
             rotate / restore). When an edit dialog is open it renders the error
@@ -466,9 +529,14 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     {t.kind}
                   </span>
                   {t.cronExpression && (
-                    <span className="font-mono text-xs text-[var(--ink)]">
-                      {t.cronExpression}
-                    </span>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs text-[var(--ink)]">
+                        {describeCron(t.cronExpression)}
+                      </span>
+                      <span className="font-mono text-xs text-[var(--mute)]">
+                        {t.cronExpression}
+                      </span>
+                    </div>
                   )}
                   {t.timezone && (
                     <span className="text-xs text-[var(--mute)]">{t.timezone}</span>
@@ -645,7 +713,11 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         <dl className="flex flex-col">
           <PropertyRow label="Status">
             {routine.status ? (
-              <RoutineStatusIcon status={routine.status} showLabel />
+              <RoutineStatusIcon
+                status={routine.status}
+                autoPaused={isAutoPaused(routine)}
+                showLabel
+              />
             ) : (
               <span data-empty="true" style={EMPTY_DASH_STYLE}>
                 —
@@ -725,7 +797,13 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           onSubmit={async (body) => {
             const ok = await run(async () => {
               if (triggerDialog.mode === "add") {
-                await post(`/routines/${routineId}/triggers`, body);
+                const res = await post<{ secretMaterial?: RoutineTriggerSecretMaterial | null }>(
+                  `/routines/${routineId}/triggers`,
+                  body,
+                );
+                // A webhook create returns the URL + secret exactly once — a
+                // schedule trigger has none, so `secretMaterial` is absent/null.
+                if (res?.secretMaterial) setCreatedWebhook(res.secretMaterial);
               } else {
                 await patch(
                   `/routines/${routineId}/triggers/${triggerDialog.trigger.id}`,
@@ -737,6 +815,29 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             if (ok) setTriggerDialog(null);
           }}
         />
+      )}
+
+      {createdWebhook != null && (
+        <EditorialDialog
+          open
+          onOpenChange={(o) => !o && setCreatedWebhook(null)}
+          title="Webhook created"
+          description="Copy the URL and secret now — the secret is shown only once."
+          footer={
+            <EditorialButton
+              variant="primary"
+              size="sm"
+              onClick={() => setCreatedWebhook(null)}
+            >
+              Done
+            </EditorialButton>
+          }
+        >
+          <div className="flex flex-col gap-3">
+            <SecretField label="Webhook URL" value={createdWebhook.webhookUrl} />
+            <SecretField label="Webhook secret" value={createdWebhook.webhookSecret} />
+          </div>
+        </EditorialDialog>
       )}
 
       {rotatedSecret != null && (
@@ -755,12 +856,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             </EditorialButton>
           }
         >
-          <code
-            className="block break-all rounded px-3 py-2 font-mono text-sm"
-            style={{ background: "var(--cream-deeper)", color: "var(--ink)" }}
-          >
-            {rotatedSecret}
-          </code>
+          <SecretField label="Webhook secret" value={rotatedSecret.webhookSecret} />
         </EditorialDialog>
       )}
     </div>
@@ -929,7 +1025,7 @@ function EditRoutineDialog({
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title="Edit routine"
+      title="Edit automation"
       footer={
         <>
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
@@ -1122,7 +1218,7 @@ function VarDefaultInput({
   );
 }
 
-/* ── add / edit schedule trigger dialog ───────────────────────────────────── */
+/* ── add / edit trigger dialog (schedule or webhook) ──────────────────────── */
 
 interface TriggerSubmitBody {
   kind?: string;
@@ -1133,6 +1229,8 @@ interface TriggerSubmitBody {
   // survive serialization and reach the backend.
   label?: string | null;
   enabled?: boolean;
+  signing_mode?: string;
+  replay_window_sec?: number;
 }
 
 function TriggerDialog({
@@ -1162,12 +1260,33 @@ function TriggerDialog({
   const [timezone, setTimezone] = useState(initialTz);
   const [label, setLabel] = useState(trigger?.label ?? "");
   const [enabled, setEnabled] = useState(trigger?.enabled !== false);
+  // Trigger kind — only choosable in "add" mode (a Plus button). Edit only
+  // reaches this dialog for an existing schedule trigger (the Pencil affordance
+  // is gated to `t.kind === "schedule"`), so kind is fixed there.
+  const [kind, setKind] = useState<string>(mode === "add" ? "schedule" : trigger?.kind ?? "schedule");
+  const [signingMode, setSigningMode] = useState("bearer");
+  const [replayWindowSec, setReplayWindowSec] = useState(String(DEFAULT_REPLAY_WINDOW_SEC));
+  const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
+  const replayWindowNum = Number(replayWindowSec);
+  const replayWindowValid =
+    !showReplayWindow || (Number.isFinite(replayWindowNum) && replayWindowNum >= 30 && replayWindowNum <= 86400);
 
-  const canSubmit = cron.trim() !== "" && timezone.trim() !== "";
+  const canSubmit =
+    kind === "schedule" ? cron.trim() !== "" && timezone.trim() !== "" : replayWindowValid;
 
   async function submit() {
     if (!canSubmit) return;
     if (mode === "add") {
+      if (kind === "webhook") {
+        await onSubmit({
+          kind: "webhook",
+          signing_mode: signingMode,
+          replay_window_sec: showReplayWindow ? replayWindowNum : undefined,
+          label: label.trim() || undefined,
+          enabled,
+        });
+        return;
+      }
       await onSubmit({
         kind: "schedule",
         cron_expression: cron.trim(),
@@ -1200,7 +1319,9 @@ function TriggerDialog({
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title={mode === "add" ? "Add schedule" : "Edit schedule"}
+      title={
+        mode === "edit" ? "Edit schedule" : kind === "webhook" ? "Add webhook" : "Add schedule"
+      }
       footer={
         <>
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
@@ -1219,27 +1340,83 @@ function TriggerDialog({
     >
       <div className="flex flex-col gap-3">
         <DialogError message={error} />
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
-          <input
-            value={cron}
-            onChange={(e) => setCron(e.target.value)}
-            placeholder="0 9 * * *"
-            className={cn(INPUT_CLASS, "font-mono")}
-          />
-          <span className="text-xs text-[var(--mute)]">
-            Cron expression — when the routine fires.
-          </span>
-        </label>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Timezone</span>
-          <input
-            value={timezone}
-            onChange={(e) => setTimezone(e.target.value)}
-            placeholder="UTC"
-            className={INPUT_CLASS}
-          />
-        </label>
+        {mode === "add" && (
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">Trigger type</span>
+            <select
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+              className={INPUT_CLASS}
+            >
+              <option value="schedule">Schedule</option>
+              <option value="webhook">Webhook</option>
+            </select>
+          </label>
+        )}
+        {kind === "schedule" ? (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
+              <input
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                placeholder="0 9 * * *"
+                className={cn(INPUT_CLASS, "font-mono")}
+              />
+              <span className="text-xs text-[var(--mute)]">
+                Cron expression — when the automation fires.
+              </span>
+            </label>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Timezone</span>
+              <input
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                placeholder="UTC"
+                className={INPUT_CLASS}
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Signing mode</span>
+              <select
+                value={signingMode}
+                onChange={(e) => setSigningMode(e.target.value)}
+                className={INPUT_CLASS}
+              >
+                {SIGNING_MODE_OPTIONS.map(([value, optLabel]) => (
+                  <option key={value} value={value}>
+                    {optLabel}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-[var(--mute)]">
+                The external app signs each request with this secret; Isol8
+                verifies it.
+              </span>
+            </label>
+            {showReplayWindow && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Replay window (seconds)
+                </span>
+                <input
+                  type="number"
+                  min={30}
+                  max={86400}
+                  value={replayWindowSec}
+                  onChange={(e) => setReplayWindowSec(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+                <span className="text-xs text-[var(--mute)]">
+                  How long a signed delivery stays valid (30–86400s).
+                </span>
+              </label>
+            )}
+          </>
+        )}
         <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Label (optional)</span>
           <input

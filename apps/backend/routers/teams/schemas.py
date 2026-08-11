@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -281,21 +281,43 @@ class PatchRoutineBody(_Strict):
 class CreateRoutineTriggerBody(_Strict):
     """Body for ``POST /teams/routines/{id}/triggers``.
 
-    Schedule-only subset of upstream's ``createRoutineTriggerSchema``
-    (paperclip/packages/shared/src/validators/routine.ts). The
-    Teams create dialog only wires the ``schedule`` kind (cron); webhook /
-    api triggers are deferred. ``kind`` is fixed to ``schedule`` so the
-    discriminated union resolves cleanly upstream.
+    Mirrors upstream's ``createRoutineTriggerSchema`` discriminated union
+    (paperclip/packages/shared/src/validators/routine.ts): ``kind`` selects
+    ``schedule`` (cron), ``webhook`` (signing config), or ``api``. The Teams
+    create dialog wires schedule + webhook; ``api`` triggers still have no UI
+    but are accepted here so the union stays in sync with upstream instead of
+    422ing a legitimate kind.
+
+    ``cron_expression`` is Optional at the type level (kind now varies) but
+    still required in practice for a schedule trigger — enforced by
+    ``_require_cron_for_schedule`` below so an empty body doesn't silently
+    create a cron-less schedule trigger. ``signing_mode`` / ``replay_window_sec``
+    are the webhook branch's knobs, mirroring the same constraints
+    ``UpdateRoutineTriggerBody`` already enforces (Paperclip's four signing
+    modes, 30–86400s replay window) so junk 422s locally instead of
+    round-tripping to upstream.
     """
 
-    kind: str = Field(default="schedule", pattern=r"^schedule$")
-    cron_expression: str = Field(min_length=1, max_length=200)
+    kind: str = Field(default="schedule", pattern=r"^(schedule|webhook|api)$")
+    cron_expression: Optional[str] = Field(default=None, min_length=1, max_length=200)
     timezone: str = Field(default="UTC", min_length=1, max_length=64)
     label: Optional[str] = Field(default=None, max_length=120)
     # A2: schedule triggers may be created already disabled (upstream
     # ``baseTriggerSchema.enabled`` defaults true) — lets the detail UI stage a
-    # trigger without arming it. Still schedule-only: a webhook kind 422s here.
+    # trigger without arming it.
     enabled: Optional[bool] = None
+    # Webhook-only — Paperclip's createRoutineTriggerSchema "webhook" branch.
+    # Stripped server-side by upstream's non-strict schema for other kinds, so
+    # forwarding them unconditionally is safe; still constrained here for the
+    # local-422 defense-in-depth the rest of this file uses.
+    signing_mode: Optional[str] = Field(default=None, pattern=r"^(bearer|hmac_sha256|github_hmac|none)$")
+    replay_window_sec: Optional[int] = Field(default=None, ge=30, le=86_400)
+
+    @model_validator(mode="after")
+    def _require_cron_for_schedule(self) -> "CreateRoutineTriggerBody":
+        if self.kind == "schedule" and not self.cron_expression:
+            raise ValueError("cron_expression is required for a schedule trigger")
+        return self
 
 
 class UpdateRoutineTriggerBody(_Strict):

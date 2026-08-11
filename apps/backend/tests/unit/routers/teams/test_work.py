@@ -145,11 +145,52 @@ def test_create_routine_trigger(client, admin):
     assert body["timezone"] == "UTC"
 
 
-def test_create_routine_trigger_rejects_non_schedule(client, admin):
-    """The trigger body is schedule-only — a webhook kind 422s."""
+def test_create_trigger_body_accepts_webhook_signing():
+    """``CreateRoutineTriggerBody`` un-defers the webhook kind: signing_mode /
+    replay_window_sec forward to Paperclip's camelCase wire shape."""
+    from routers.teams.schemas import CreateRoutineTriggerBody
+
+    body = CreateRoutineTriggerBody(kind="webhook", signing_mode="hmac_sha256", replay_window_sec=300)
+    dumped = body.model_dump(exclude_none=True, by_alias=True)
+    assert dumped["kind"] == "webhook"
+    assert dumped["signingMode"] == "hmac_sha256"
+    assert dumped["replayWindowSec"] == 300
+
+
+def test_create_routine_trigger_accepts_webhook(client, admin):
+    """POST /teams/routines/{id}/triggers now creates a webhook trigger too —
+    signing config forwards, and no cron/timezone leaks into the body."""
     r = client.post(
         "/api/v1/teams/routines/r1/triggers",
-        json={"kind": "webhook", "cron_expression": "0 9 * * *"},
+        json={"kind": "webhook", "signing_mode": "hmac_sha256", "replay_window_sec": 300},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, r.text
+    body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert body["kind"] == "webhook"
+    assert body["signingMode"] == "hmac_sha256"
+    assert body["replayWindowSec"] == 300
+    assert "cronExpression" not in body
+
+
+def test_create_routine_trigger_rejects_invalid_kind(client, admin):
+    """The trigger kind union is still closed — junk 422s locally instead of
+    round-tripping to upstream."""
+    r = client.post(
+        "/api/v1/teams/routines/r1/triggers",
+        json={"kind": "cron"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_create_routine_trigger_requires_cron_for_schedule(client, admin):
+    """``kind`` defaults to schedule, so an empty body must still 422 rather
+    than silently create a cron-less schedule trigger (cron_expression had to
+    become Optional at the type level once ``kind`` could vary)."""
+    r = client.post(
+        "/api/v1/teams/routines/r1/triggers",
+        json={"kind": "schedule"},
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422

@@ -105,6 +105,6 @@ describe("RoutineDetailPanel", () => {
       mutate: vi.fn(),
     });
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.getByText(/routine not found/i)).toBeInTheDocument();
+    expect(screen.getByText(/automation not found/i)).toBeInTheDocument();
   });
 });

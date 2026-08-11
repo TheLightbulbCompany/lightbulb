@@ -483,6 +483,17 @@ export interface RoutineTriggerSummary {
   // signed webhook trigger has a secret to rotate).
   signingMode?: string | null;
   publicId?: string | null;
+  // Webhook replay-window (seconds) — only meaningful for a signed webhook
+  // (signingMode "bearer" | "hmac_sha256"); null/omitted otherwise.
+  replayWindowSec?: number | null;
+}
+
+/** The one-time secret material a webhook trigger create/rotate returns
+ * (upstream ``RoutineTriggerSecretMaterial``) — the URL + secret are shown
+ * exactly once and never retrievable again after the dialog closes. */
+export interface RoutineTriggerSecretMaterial {
+  webhookUrl: string;
+  webhookSecret: string;
 }
 
 /**
@@ -515,6 +526,13 @@ export interface RoutineDetail {
   // surfaced in the detail page's Properties aside.
   createdAt?: string | null;
   updatedAt?: string | null;
+  // Circuit-breaker auto-pause state (upstream shared/routine.ts). Set together
+  // when the breaker trips a routine to `status: "paused"` after repeated
+  // failed runs — distinct from a human pausing it by hand, which leaves
+  // `autoPausedAt` null. See `isAutoPaused` in shared/lib/routineHealth.ts.
+  autoPausedAt?: string | null;
+  consecutiveFailureCount?: number | null;
+  autoPauseReason?: string | null;
 }
 
 /** A routine run (upstream RoutineRunSummary subset). `status`/`source` are free strings. */

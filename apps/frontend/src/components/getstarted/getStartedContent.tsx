@@ -52,13 +52,13 @@ export const ARTICLES: Article[] = [
     body: (<>
       <p className={P}>Everything happens in one workspace. The left sidebar is your map.</p>
       <p className={P}><b>My agents</b> — your roster (Friday, Atlas, hired specialists). Click one to chat.</p>
-      <p className={P}><b>Company panels</b> — Dashboard, Inbox, Tasks, Routines, Goals, Projects, Org chart, Skills, Activity: how the team’s work is tracked.</p>
+      <p className={P}><b>Company panels</b> — Dashboard, Inbox, Tasks, Automations, Goals, Projects, Org chart, Skills, Activity: how the team’s work is tracked.</p>
       <p className={P}><b>Marketplace · Browse / Publish</b> — hire ready-made agents, or publish your own.</p>
       <p className={P}><b>Settings</b> (the gear) — Profile, Billing, Channels, Marketplace, Skills, Connections.</p>
     </>),
   },
   { id: "company-panels", tag: "The work", title: "Company panels",
-    body: (<><p className={P}>The Company section is where your team’s work lives. <b>Inbox</b> and <b>Tasks</b> hold the jobs agents pick up; <b>Routines</b> and <b>Goals</b> set recurring and longer-horizon work; <b>Org chart</b>, <b>Skills</b> and <b>Activity</b> show how the team is shaped and what it’s been doing.</p></>) },
+    body: (<><p className={P}>The Company section is where your team’s work lives. <b>Inbox</b> and <b>Tasks</b> hold the jobs agents pick up; <b>Automations</b> and <b>Goals</b> set recurring and longer-horizon work; <b>Org chart</b>, <b>Skills</b> and <b>Activity</b> show how the team is shaped and what it’s been doing.</p></>) },
   { id: "marketplace", tag: "Grow your team", title: "The marketplace",
     body: (<><p className={P}>Open <b>Browse</b> to hire a ready-made specialist — it’s deployed straight into your roster. Open <b>Publish</b> to package one of your own agents and share it with the community. Friday and Atlas can’t be published; everything else can.</p></>) },
   { id: "channels", tag: "Reach", title: "Channels",

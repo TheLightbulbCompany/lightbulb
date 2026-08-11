@@ -93,14 +93,20 @@ async def create_routine_trigger(
     body: CreateRoutineTriggerBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Attach a schedule trigger (cron) to a routine.
+    """Attach a trigger (schedule cron, or webhook) to a routine.
 
-    The cron schedule lives on a separate trigger, not the routine row —
-    the create dialog calls this after creating the routine itself.
+    The schedule/webhook config lives on a separate trigger, not the routine
+    row — the create dialog calls this after creating the routine itself.
+    A webhook trigger forwards ``signing_mode`` / ``replay_window_sec`` and
+    Paperclip returns the one-time ``{trigger, secretMaterial}`` — the caller
+    must display ``secretMaterial.webhookUrl`` / ``webhookSecret`` immediately,
+    it is never shown again (rotate is the only way to see a new one later).
 
-    Gated separately from ``create_routine``: the trigger IS the schedule, so an
-    ungated trigger endpoint would let a trial owner attach autonomy to a routine
-    that already exists (e.g. one seeded before the gate, or created upstream).
+    Gated separately from ``create_routine``: the trigger IS the autonomy lever
+    (a schedule fires on its own; a webhook lets an external caller fire the
+    routine), so an ungated trigger endpoint would let a trial owner attach
+    autonomy to a routine that already exists (e.g. one seeded before the
+    gate, or created upstream).
     """
     await require_always_on_entitlement(ctx.owner_id)
     return await _agents._admin().create_routine_trigger(

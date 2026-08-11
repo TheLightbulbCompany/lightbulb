@@ -125,6 +125,13 @@ class GatewayAuthBackoff(RuntimeError):
     """
 
 
+class _GatewayReaderClosed(Exception):
+    """Sentinel handed to ``_on_reader_loop_exit`` when the reader loop ends on
+    a CLEAN peer close (``ConnectionClosedOK`` ends the ``async for`` WITHOUT
+    raising), so the teardown log distinguishes a graceful close from a genuine
+    transport error while still routing through the same teardown path."""
+
+
 # How stale `last_event_at` on an active run must be before the parked
 # connection counts as "agent appears stuck" for observability. Set by spec
 # §6 — we don't ESCALATE on this (deferred follow-up); we only
@@ -2201,9 +2208,19 @@ class GatewayConnection:
         except asyncio.CancelledError:
             return
         except Exception as e:
-            if self._closed:
-                return
-            self._on_reader_loop_exit(e)
+            if not self._closed:
+                self._on_reader_loop_exit(e)
+            return
+        # Clean close: the `async for` ends WITHOUT raising when the peer closes
+        # the socket normally (websockets yields ConnectionClosedOK, which the
+        # async iterator swallows to stop iteration — e.g. a graceful OpenClaw
+        # restart sends a 1000/1001 close frame). The `except Exception` branch
+        # never runs, so without this the pending RPCs hang the full timeout,
+        # the DDB liveness row stays "connected" for its whole freshness window,
+        # and no GATEWAY_DOWN reaches the UI. Route the normal exit through the
+        # same teardown as the error path.
+        if not self._closed:
+            self._on_reader_loop_exit(_GatewayReaderClosed("gateway closed the connection"))
 
     def _on_reader_loop_exit(self, exc: BaseException) -> None:
         """Decide between PARKED and DEAD when the reader loop dies.
@@ -2813,11 +2830,22 @@ class GatewayConnectionPool:
         pairing ``agents.create``/``agents.update`` calls).
         """
         conn = await self.ensure_connection(user_id, ip, token)
-        await conn.send_rpc(req_id, method, params)
+        # Trust boundary: `req_id` is client-chosen (the caller echoes it back to
+        # that same client verbatim) and is NOT unique across the tabs /
+        # org-members sharing this one per-owner connection — two callers can
+        # pick the same id, and routers/channels.py even ships a constant one.
+        # The pending-futures map (`_pending_rpcs`) is per-owner, so a duplicate
+        # id silently overwrites one caller's future and crosses their responses.
+        # Mint a fresh wire id per call so the on-the-wire id (hence the
+        # `_pending_rpcs` key) can never collide across callers; the caller still
+        # echoes its own req_id to its client independently, so this is invisible
+        # downstream.
+        wire_id = f"{req_id}-{uuid.uuid4().hex}"
+        await conn.send_rpc(wire_id, method, params)
         try:
             if timeout is not None:
-                return await conn.wait_for_response(req_id, timeout=timeout)
-            return await conn.wait_for_response(req_id)
+                return await conn.wait_for_response(wire_id, timeout=timeout)
+            return await conn.wait_for_response(wire_id)
         except Exception:
             put_metric("gateway.rpc.error", dimensions={"method": method})
             raise
@@ -2846,18 +2874,30 @@ class GatewayConnectionPool:
             if self._closing:
                 raise GatewayReconnectThrottled("pool is shutting down")
             conn = self._connections.get(user_id)
-            # Always adopt the freshly-resolved endpoint. Container task IPs are
-            # ephemeral (every ECS task replacement changes them); a parked/stale
-            # connection still holds the previous task's IP, so reopen() would
-            # otherwise re-dial a dead address forever.
+            # A CHANGED task IP is proof of ECS task replacement — task IPs are
+            # ephemeral (every deploy / OOM / health-restart / reprovision hands
+            # out a new one). The prior connection can still report is_connected
+            # (the local websocket state flag reads OPEN for up to the ping
+            # timeout because the old task's ENI vanished with no FIN), so
+            # *reusing* it would time out every RPC against a dead address — the
+            # prod outage this guards. Merely adopting `conn.ip = ip` does NOT
+            # help when the socket still looks OPEN and neither the parked nor
+            # the stale branch below fires; the connection is handed back as-is
+            # and every RPC on it dies. Tear it down and recreate against the
+            # fresh endpoint. (Gated by the reconnect floor like the other repair
+            # paths, so a discover_ip that flaps during a rolling-deploy overlap
+            # can't thrash the socket.)
             if conn is not None and conn.ip != ip:
                 logger.info(
-                    "Gateway endpoint changed for user=%s %s -> %s — adopting before reconnect",
+                    "Gateway endpoint changed for user=%s %s -> %s — recreating connection",
                     user_id,
                     conn.ip,
                     ip,
                 )
-                conn.ip = ip
+                self._respect_reconnect_floor(user_id)
+                await conn.close()
+                self._connections.pop(user_id, None)
+                conn = None
             if conn is not None and conn._parked:
                 self._respect_auth_backoff(user_id)
                 self._respect_reconnect_floor(user_id)

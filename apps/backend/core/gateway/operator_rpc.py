@@ -137,7 +137,13 @@ async def perform_signed_connect(
                 f"Container row for owner {owner_id} missing operator_priv_key_enc "
                 "(pre-4.5 provision — reprovision required)"
             )
-        seed_bytes = kms_secrets.decrypt_bytes(
+        # KMS Decrypt is a SYNCHRONOUS boto3 call. This handshake runs on the
+        # connect hot path (held under the pool's single lock), so calling it
+        # inline blocks the whole event loop for the round trip — one slow KMS
+        # response stalls every user on this backend task. Offload to a worker
+        # thread. (GW-2a.)
+        seed_bytes = await asyncio.to_thread(
+            kms_secrets.decrypt_bytes,
             enc_seed,
             encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
         )

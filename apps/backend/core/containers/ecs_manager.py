@@ -1995,7 +1995,11 @@ class EcsManager:
         if not service_name:
             return container, None
 
-        ip = self.discover_ip(service_name)
+        # discover_ip is a SYNCHRONOUS boto3 Cloud Map call; resolve_running_container
+        # is on the /container/status + chat send hot path. Offload so a slow
+        # Cloud Map response can't block the event loop for every other request.
+        # (GW-2a.)
+        ip = await asyncio.to_thread(self.discover_ip, service_name)
         if not ip:
             # DDB row says provisioning/running but ECS has no running task
             # for the service. Either the task is still pulling the image
@@ -2017,7 +2021,9 @@ class EcsManager:
         # process is in NFS deadlock. Log loudly so the next iteration of
         # this bug shows up immediately in CloudWatch Insights:
         #   filter ip_unhealthy=true and ddb_status="running"
-        if container.get("status") == "running" and not self.is_healthy(ip):
+        # is_healthy opens a blocking TCP socket (5s timeout) — offload it too so
+        # a wedged container's dead listener can't stall the loop. (GW-2a.)
+        if container.get("status") == "running" and not await asyncio.to_thread(self.is_healthy, ip):
             logger.warning(
                 "resolve_running_container ip_unhealthy=true user=%s service=%s ip=%s last_handshake=%s",
                 user_id,

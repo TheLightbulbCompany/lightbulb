@@ -273,6 +273,41 @@ class TestPerformSignedConnect:
         assert ei.value.details["requestId"] == "req-42"
 
     @pytest.mark.asyncio
+    async def test_decrypt_runs_off_the_event_loop_thread(self, operator_seed):
+        """GW-2a: the synchronous KMS Decrypt must run in a worker thread, not
+        inline on the connect hot path (which is held under the pool's single
+        lock and would otherwise block the whole event loop for the round trip)."""
+        import threading
+
+        main_thread = threading.current_thread()
+        seen: dict = {}
+
+        def fake_decrypt(enc, *, encryption_context=None):
+            seen["thread"] = threading.current_thread()
+            return operator_seed
+
+        ws = AsyncMock()
+        ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "n"}}),
+                json.dumps({"ok": True}),
+            ]
+        )
+        with (
+            patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as mock_get,
+            patch("core.crypto.kms_secrets.decrypt_bytes", side_effect=fake_decrypt),
+        ):
+            mock_get.return_value = {
+                "owner_id": "test-user",
+                "operator_priv_key_enc": "opaque-blob",
+                "gateway_token": "t",
+            }
+            await operator_rpc.perform_signed_connect(ws, owner_id="test-user", token="t")
+
+        assert seen.get("thread") is not None
+        assert seen["thread"] is not main_thread
+
+    @pytest.mark.asyncio
     async def test_identity_override_skips_container_row_load(self, operator_seed):
         """An explicit identity (the pairing probe signing as a Paperclip
         agent's device) must bypass the DDB+KMS backend-device load entirely

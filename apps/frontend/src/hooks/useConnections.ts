@@ -49,6 +49,12 @@ export interface Connection {
    *   - "skill" → a bundled skill reads the credential.
    */
   actor?: "cli" | "mcp" | "skill" | "nango_proxy";
+  /**
+   * Inbound face: event labels this provider can fire as an Automations
+   * trigger (registry `inbound`, Phase 2). Empty/absent when the provider
+   * isn't (yet) wired as a trigger source.
+   */
+  can_trigger?: string[];
 }
 
 interface ConnectionsResponse {

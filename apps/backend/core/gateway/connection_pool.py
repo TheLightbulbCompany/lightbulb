@@ -2956,6 +2956,14 @@ class GatewayConnectionPool:
                 # owner's dead-socket teardown (~25s worst case) can't
                 # head-of-line-block ensure_connection for every other owner.
                 self._connections.pop(user_id, None)
+                # The replacement created below shares this owner's frontend
+                # connection set (passed by reference into every GatewayConnection).
+                # Blank the detached connection's copy so its background teardown
+                # can't fan out a spurious GATEWAY_DOWN to the UI *after* the fresh
+                # connection reports HEALTHY — the two emits are otherwise
+                # unordered. The pool's shared set (and thus the new conn's) is
+                # untouched.
+                conn._frontend_connections = set()
                 self._close_detached(conn)
                 conn = None
             if conn is not None and conn._parked:

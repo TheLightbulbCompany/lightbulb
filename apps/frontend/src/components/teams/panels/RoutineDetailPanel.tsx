@@ -1393,8 +1393,8 @@ function TriggerDialog({
                 ))}
               </select>
               <span className="text-xs text-[var(--mute)]">
-                How Isol8 signs the callback — the caller verifies with the secret
-                shown once this trigger is created.
+                The external app signs each request with this secret; Isol8
+                verifies it.
               </span>
             </label>
             {showReplayWindow && (

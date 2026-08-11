@@ -74,6 +74,26 @@ describe("RoutinesPanel", () => {
     expect(screen.queryByText(/agent a1/)).not.toBeInTheDocument();
   });
 
+  it("shows the auto-paused row indicator only for a breaker-tripped routine, not a hand-pause", () => {
+    routinesData = {
+      routines: [
+        routine({
+          id: "rt-auto",
+          title: "Breaker-tripped digest",
+          status: "paused",
+          autoPausedAt: "2026-08-10T08:00:00Z",
+          consecutiveFailureCount: 4,
+        }),
+        routine({ id: "rt-hand", title: "Weekly report", status: "paused", autoPausedAt: null }),
+      ],
+    };
+    render(<RoutinesPanel />);
+    // Both rows render "Paused" via the toggle label; only the breaker-tripped
+    // row also carries the distinct amber "auto-paused" affordance (titled, so
+    // it's unambiguous from any incidental "auto-paused" substring elsewhere).
+    expect(screen.getAllByTitle(/auto-paused after repeated failures/i)).toHaveLength(1);
+  });
+
   it("falls back to the legacy flat shape (name / cron / agent_id / enabled)", () => {
     routinesData = {
       routines: [

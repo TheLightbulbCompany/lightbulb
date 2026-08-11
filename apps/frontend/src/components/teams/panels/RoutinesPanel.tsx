@@ -23,7 +23,7 @@ import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
-import { isAutoPaused } from "@/components/teams/panels/RoutineDetailPanel";
+import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import type {
   CompanyAgent,
   RoutineVariable,
@@ -69,7 +69,7 @@ interface Routine {
   createdAt?: string | null;
   updatedAt?: string | null;
   prompt?: string;
-  // Circuit-breaker auto-pause state — see isAutoPaused in RoutineDetailPanel.
+  // Circuit-breaker auto-pause state — see isAutoPaused in shared/lib/routineHealth.
   autoPausedAt?: string | null;
   consecutiveFailureCount?: number | null;
   autoPauseReason?: string | null;

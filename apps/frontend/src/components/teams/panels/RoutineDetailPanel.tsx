@@ -30,6 +30,7 @@ import {
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
+import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { cn } from "@/lib/utils";
 import {
   handleShellLinkClick,
@@ -91,14 +92,6 @@ const VAR_TYPE_OPTIONS: ReadonlyArray<readonly [RoutineVariableType, string]> = 
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-// The circuit breaker trips a routine to `status: "paused"` after repeated
-// failed runs and stamps `autoPausedAt`; a human pause via the toggle/edit
-// dialog never sets that field. This is the single source of truth both the
-// list row and the detail banner use to tell the two apart.
-export function isAutoPaused(r: { status?: string | null; autoPausedAt?: string | null }): boolean {
-  return r.status === "paused" && !!r.autoPausedAt;
 }
 
 // Human copy for a blocked-gate 402 (routines_require_subscription): the shared

@@ -8,7 +8,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SWRResponse } from "swr";
-import { RoutineDetailPanel, isAutoPaused } from "../RoutineDetailPanel";
+import { RoutineDetailPanel } from "../RoutineDetailPanel";
+import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 
 type ReadStub = Partial<SWRResponse<unknown, Error>>;
 let reads: Record<string, ReadStub> = {};

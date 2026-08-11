@@ -134,26 +134,6 @@ def _paperclip_dispatch_hosts() -> set[str]:
     return hosts
 
 
-async def _reject_paperclip_direct_mount(scope: Scope, send: Send) -> None:
-    """Reject a direct hit on the internal Paperclip-proxy mount.
-
-    The proxy is only reachable through :class:`HostDispatcherMiddleware`'s
-    host-dispatch rewrite; a request that names the sentinel prefix directly is
-    refused (404 for HTTP, handshake close for WebSocket).
-    """
-    if scope["type"] == "websocket":
-        await send({"type": "websocket.close", "code": 4404})
-        return
-    await send(
-        {
-            "type": "http.response.start",
-            "status": 404,
-            "headers": [(b"content-type", b"text/plain; charset=utf-8")],
-        }
-    )
-    await send({"type": "http.response.body", "body": b"Not Found"})
-
-
 class HostDispatcherMiddleware:
     """Pure ASGI middleware that rewrites the request scope path with a
     sentinel prefix when the request arrives at a Paperclip-proxy host.
@@ -177,16 +157,6 @@ class HostDispatcherMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
-            return
-
-        # The sentinel prefix is INTERNAL: it only ever appears on scopes this
-        # middleware rewrites (below) and hands downstream — the rewritten scope
-        # goes to ``self.app``, never back through here. So an *inbound* request
-        # whose path already carries the prefix is a direct hit on the internal
-        # mount (e.g. ``api.isol8.co/__paperclip_proxy__/api/...``), which would
-        # bypass host dispatch and any host-scoped edge control. Refuse it.
-        if scope.get("path", "").startswith(PAPERCLIP_PROXY_PREFIX):
-            await _reject_paperclip_direct_mount(scope, send)
             return
 
         # Walk the raw header list (case-insensitive bytes keys) rather

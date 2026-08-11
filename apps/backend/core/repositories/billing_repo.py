@@ -534,6 +534,14 @@ async def set_provider_choice(
         ReturnValues="ALL_NEW",
     )
     publish_status_changed(owner_id)
+    # A provider switch is the one config write whose effect lives in
+    # the ECS task definition (secrets/env shape), so a wake of a
+    # stopped container must run the FULL provision once to apply it.
+    # Lazy import: container_repo is a sibling; no cycle back here.
+    from core.repositories import container_repo
+
+    await container_repo.mark_needs_provision(owner_id)
+
     return response["Attributes"]
 
 

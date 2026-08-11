@@ -1296,6 +1296,28 @@ class EcsManager:
                 "A provider change is reprovisioning this container; it will come back on its own.",
             )
 
+        # 4. TASK-DEF-SHAPED CONFIG CHANGE PENDING (``needs_provision``). A
+        #    provider switch made while the container was ALREADY stopped
+        #    leaves no ``stop_reason`` breadcrumb — guard 3's signal exists
+        #    only when change_provider itself stopped a running box. The
+        #    marker (written by ``billing_repo.set_provider_choice``) is the
+        #    row-state signal that the REGISTERED task definition is stale;
+        #    a direct start would boot the old shape (old secrets/env/AIP
+        #    wiring) and silently drop the switch. Refusing here covers
+        #    every direct-start door at once — the wake verb, agent-mail
+        #    delivery, POST /container/start — and each falls back to (or
+        #    the user's next status poll triggers) the full executor, which
+        #    re-registers the task def and clears the marker with its
+        #    terminal running write. The executor's own start runs with
+        #    force=True, so the full path can never deadlock on this guard.
+        if container and container.get("needs_provision"):
+            put_metric("container.start.refused", dimensions={"reason": START_REFUSED_REPROVISIONING})
+            raise ContainerStartRefused(
+                START_REFUSED_REPROVISIONING,
+                user_id,
+                "A configuration change is being applied; the container will come back on its own.",
+            )
+
         # ONE read covering both ways a free-tier owner runs out of runway.
         # Checking only the cap here would let an EXPIRED trial wake its own
         # container through this path — the gate refuses it, this would not.
@@ -3103,6 +3125,12 @@ class EcsManager:
                         "status": "running",
                         "substatus": "gateway_healthy",
                         "task_arn": task_arn,
+                        # A completed provision (either path) has applied the
+                        # current task def + EFS config — the wake fast-path
+                        # marker is spent. The DIRECT scale-up path never
+                        # reaches here with the marker set: the wake verb
+                        # routes marked rows through the SFN executor.
+                        "needs_provision": False,
                     }
                     if claim_id is not None:
                         # Terminal SUCCESS: atomically RELEASE the lease with

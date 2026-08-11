@@ -1086,6 +1086,28 @@ class TestStartUserServiceGuards:
         mock_ecs_client.update_service.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_needs_provision_marker_refuses_direct_start(self, manager, mock_ecs_client, monkeypatch):
+        """A provider switch made while the box was ALREADY parked leaves no
+        stop_reason breadcrumb — the needs_provision marker is the row-state
+        signal that the registered task def is stale. Every direct-start door
+        (wake verb, agent mail, POST /container/start) must refuse and route
+        to the full executor, whose force=True start bypasses this guard."""
+        from core.containers.ecs_manager import START_REFUSED_REPROVISIONING
+
+        self._billing(monkeypatch, subscription_status="active", spent_microcents=0)
+        row = _make_container_dict(status="stopped")
+        row["stop_reason"] = "trial_idle"
+        row["needs_provision"] = True
+        self._container(monkeypatch, row)
+
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(ContainerStartRefused) as exc:
+                await manager.start_user_service("user_test_123")
+
+        assert exc.value.reason == START_REFUSED_REPROVISIONING
+        mock_ecs_client.update_service.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_manually_stopped_row_still_starts(self, manager, mock_ecs_client, monkeypatch):
         """Control: an admin/manual stop (stop_reason="manual") keeps the
         direct-restart door open — only the reprovision window is fenced."""

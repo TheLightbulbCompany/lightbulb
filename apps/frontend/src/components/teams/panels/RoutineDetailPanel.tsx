@@ -31,6 +31,7 @@ import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
+import { describeCron } from "@/components/teams/shared/cron-readable";
 import { cn } from "@/lib/utils";
 import {
   handleShellLinkClick,
@@ -546,9 +547,14 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                     {t.kind}
                   </span>
                   {t.cronExpression && (
-                    <span className="font-mono text-xs text-[var(--ink)]">
-                      {t.cronExpression}
-                    </span>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs text-[var(--ink)]">
+                        {describeCron(t.cronExpression)}
+                      </span>
+                      <span className="font-mono text-xs text-[var(--mute)]">
+                        {t.cronExpression}
+                      </span>
+                    </div>
                   )}
                   {t.timezone && (
                     <span className="text-xs text-[var(--mute)]">{t.timezone}</span>

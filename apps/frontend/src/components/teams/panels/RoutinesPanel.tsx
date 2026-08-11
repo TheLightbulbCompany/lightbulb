@@ -24,6 +24,7 @@ import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
+import { describeCron } from "@/components/teams/shared/cron-readable";
 import type {
   CompanyAgent,
   RoutineVariable,
@@ -376,7 +377,13 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
               {routineName(r)}
             </div>
             <div className="text-xs text-[var(--mute)]">
-              {cron ? <span className="font-mono">{cron}</span> : "No schedule"}
+              {cron ? (
+                <span>
+                  {describeCron(cron)} <span className="font-mono text-[var(--mute)]">({cron})</span>
+                </span>
+              ) : (
+                "No schedule"
+              )}
               {" · "}
               {agentName(routineAgentId(r))}
               {next ? ` · next ${next}` : ""}

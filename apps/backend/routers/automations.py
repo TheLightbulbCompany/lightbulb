@@ -17,19 +17,31 @@ companion: once the owner has pasted the proxy URL into their own Stripe
 Dashboard, Stripe hands them a signing secret, and the frontend posts it
 here. Storing it is what flips the trigger from "ordinary/unsigned" to
 "Stripe edge-verified" in ``routers/paperclip_trigger_proxy.py`` — so the
-write MUST invalidate that router's cached whsec_ lookup immediately, or a
-just-armed (or just-rotated) trigger keeps forwarding UNSIGNED for up to
-that cache's TTL. See ``core/services/credentials/stripe_edge.py``.
+write MUST invalidate that router's cached whsec_ lookup immediately, so a
+just-armed (or just-rotated) trigger isn't left forwarding UNSIGNED any
+longer than that cache's TTL bounds it to. See
+``core/services/credentials/stripe_edge.py`` for the exact guarantee (an
+immediate invalidate on a single-task deployment; a 60s-bounded window on a
+multi-task fleet where the write and a later fire land on different tasks).
 
-Before storing, it verifies ``public_id`` actually resolves to a webhook
-trigger in the CALLER's own Paperclip company — reusing the exact binding
-lookup ``routers/paperclip_trigger_proxy.py`` uses to gate a fire. Today
-this is inert defense-in-depth (``owner_id`` is self-derived from the
-caller's own auth, so a write can only ever land in the caller's own
-Secrets Manager namespace, and the proxy's own read path re-checks the
-binding independently) — but it's a webhook-secret write endpoint, it
-should confirm ownership like the proxy does, and a foreign/typo'd
-``public_id`` should 404 instead of silently reporting success.
+Before storing, it verifies two things about ``public_id``:
+
+1. It actually resolves to a webhook trigger in the CALLER's own Paperclip
+   company — reusing the same binding lookup ``routers/paperclip_trigger_proxy.py``
+   uses to gate a fire. Today this ownership check is inert
+   defense-in-depth (``owner_id`` is self-derived from the caller's own
+   auth, so a write can only ever land in the caller's own Secrets Manager
+   namespace, and the proxy's own read path re-checks the binding
+   independently) — but it's a webhook-secret write endpoint, it should
+   confirm ownership like the proxy does, and a foreign/typo'd
+   ``public_id`` should 404 instead of silently reporting success.
+2. The trigger's own Paperclip ``signingMode`` is ``"none"`` — the marker
+   every ``stripe_edge`` registry provider arms its trigger with (Stripe
+   edge verification happens at the Isol8 proxy instead of natively in
+   Paperclip). A trigger signed some other way (``github_hmac``, or a
+   Phase-1 hmac scheme) is rejected: pasting a Stripe whsec_ onto it would
+   silently brick it rather than arm anything, since that trigger's real
+   signing scheme is never consulted by this whsec_.
 """
 
 from __future__ import annotations
@@ -97,9 +109,11 @@ async def set_webhook_secret(
     once the owner has the ``whsec_`` Stripe showed them).
 
     404s on a ``public_id`` that isn't a webhook trigger in the caller's own
-    company (see the module docstring). Invalidates the trigger proxy's
-    cached lookup immediately after the store — see the module docstring
-    for why that ordering is load-bearing.
+    company; 400s if it IS one but isn't a ``stripe_edge`` trigger (its
+    Paperclip ``signingMode`` isn't ``"none"``) — see the module docstring
+    for both. Invalidates the trigger proxy's cached lookup immediately
+    after the store — see the module docstring for why that ordering is
+    load-bearing.
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
@@ -109,14 +123,18 @@ async def set_webhook_secret(
     if not public_id.isalnum() or len(public_id) > 64:
         raise HTTPException(status_code=400, detail="invalid_public_id")
 
-    if not paperclip_trigger_proxy._binding_cached(owner_id, public_id):
-        try:
-            bound = await paperclip_trigger_proxy._resolve_trigger_binding(owner_id, public_id)
-        except Exception as exc:  # noqa: BLE001 — fail CLOSED on resolver trouble, same as the proxy
-            logger.warning("automations: trigger binding resolve failed owner=%s err=%s", owner_id, exc)
-            raise HTTPException(status_code=503, detail="trigger_resolution_unavailable") from exc
-        if not bound:
-            raise HTTPException(status_code=404, detail="unknown_trigger")
+    try:
+        found, signing_mode = await paperclip_trigger_proxy._resolve_trigger_signing_mode(owner_id, public_id)
+    except Exception as exc:  # noqa: BLE001 — fail CLOSED on resolver trouble, same as the proxy
+        logger.warning("automations: trigger binding resolve failed owner=%s err=%s", owner_id, exc)
+        raise HTTPException(status_code=503, detail="trigger_resolution_unavailable") from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="unknown_trigger")
+    if signing_mode != "none":
+        # Only stripe_edge triggers are armed with Paperclip signingMode
+        # "none" — a trigger signed some other way doesn't need, and must
+        # never receive, a pasted Stripe whsec_ (see module docstring).
+        raise HTTPException(status_code=400, detail="not_a_stripe_edge_trigger")
 
     await integration_secret_store.put(
         owner_id,

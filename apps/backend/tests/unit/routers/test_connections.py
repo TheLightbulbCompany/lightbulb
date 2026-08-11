@@ -291,8 +291,8 @@ class TestListConnections:
         assert by_key["github"]["inbound"] == {
             "webhook_registration": "auto",
             "events": [
-                {"id": "workflow_run", "label": "Workflow run completed"},
-                {"id": "issues", "label": "Issue opened"},
+                {"id": "workflow_run", "label": "On workflow run updates"},
+                {"id": "issues", "label": "On any issue activity"},
             ],
         }
         assert by_key["google"]["inbound"] is None

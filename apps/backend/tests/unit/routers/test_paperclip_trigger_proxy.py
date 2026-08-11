@@ -598,6 +598,36 @@ def test_no_whsec_lookup_is_also_cached_across_fires(client):
     assert get_mock.await_count == 1
 
 
+async def test_negative_cache_expires_after_short_ttl_positive_persists_to_long_ttl():
+    """Split-TTL: a cached ``None`` ("nothing stored") expires after the
+    short 60s negative TTL and re-hits Secrets Manager, while a cached
+    found-secret value is still honoured from the cache well past that
+    same age — it only expires at the long 3600s positive TTL."""
+    from core.services.credentials.stripe_edge import STRIPE_SECRET_CACHE
+    from routers.paperclip_trigger_proxy import _stripe_trigger_secret
+
+    owner_id, public_id = "u_1", PUBLIC_ID
+    stale_but_within_positive_ttl = time.monotonic() - 120  # > 60s, < 3600s
+
+    # A cached negative older than the 60s negative TTL is treated as
+    # expired — the store is re-read.
+    STRIPE_SECRET_CACHE[(owner_id, public_id)] = (stale_but_within_positive_ttl, None)
+    get_mock = AsyncMock(return_value=None)
+    with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock):
+        result = await _stripe_trigger_secret(owner_id, public_id)
+    assert result is None
+    assert get_mock.await_count == 1  # cache miss — re-fetched
+
+    # A cached positive of the same age is still within its (much longer)
+    # positive TTL and is served straight from the cache.
+    STRIPE_SECRET_CACHE[(owner_id, public_id)] = (stale_but_within_positive_ttl, "whsec_cached")
+    get_mock2 = AsyncMock(return_value={"webhook_secret": "whsec_should_not_be_read"})
+    with patch("routers.paperclip_trigger_proxy.integration_secret_store.get", get_mock2):
+        result = await _stripe_trigger_secret(owner_id, public_id)
+    assert result == "whsec_cached"
+    get_mock2.assert_not_awaited()  # cache hit — no re-fetch
+
+
 def test_stripe_secret_store_error_returns_503_not_500_and_is_not_cached(client):
     """A genuine Secrets Manager failure (throttle/network/IAM — anything
     other than "definitively no secret", which integration_secret_store

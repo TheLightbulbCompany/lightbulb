@@ -544,6 +544,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
       await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
     ).toBeInTheDocument();
     const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
+    expect(secretField).toHaveAttribute("type", "password");
     await user.type(secretField, "whsec_abc123");
     await user.click(screen.getByRole("button", { name: /save secret/i }));
 

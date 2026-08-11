@@ -76,13 +76,16 @@ Stripe edge verification existed. A stored secret == THIS specific fire
 must carry a valid ``Stripe-Signature``, checked before every forward.
 
 Every fire hits this lookup, so the resolved value (secret, or confirmed
-absent) is cached per-trigger the same way as the binding
-(``_STRIPE_SECRET_CACHE`` / ``_BINDING_CACHE``) — an uncached "nothing
-stored" would mean a live Secrets Manager call on every ordinary trigger's
-every fire. A genuine store failure (throttle, network, IAM — anything
-other than "definitively no secret") is never cached and never silently
-treated as "no secret": it 503s the fire rather than either 500ing or
-fail-opening a Stripe trigger through unverified.
+absent) is cached per-trigger (``_STRIPE_SECRET_CACHE``) — an uncached
+"nothing stored" would mean a live Secrets Manager call on every ordinary
+trigger's every fire. Unlike the long-lived ``_BINDING_CACHE`` (ownership
+never migrates, so a long TTL is safe), a confirmed-absent secret gets a
+short 60s TTL, not the found-secret hour — see
+``core/services/credentials/stripe_edge.py`` for why. A genuine store
+failure (throttle, network, IAM — anything other than "definitively no
+secret") is never cached and never silently treated as "no secret": it
+503s the fire rather than either 500ing or fail-opening a Stripe trigger
+through unverified.
 """
 
 import hashlib
@@ -100,6 +103,9 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.credentials import integration_secret_store
 from core.services.credentials.stripe_edge import (
     STRIPE_SECRET_CACHE as _STRIPE_SECRET_CACHE,
+)
+from core.services.credentials.stripe_edge import (
+    STRIPE_SECRET_NEGATIVE_TTL_SECONDS as _STRIPE_SECRET_NEGATIVE_TTL_SECONDS,
 )
 from core.services.credentials.stripe_edge import (
     STRIPE_SECRET_TTL_SECONDS as _STRIPE_SECRET_TTL_SECONDS,
@@ -142,18 +148,24 @@ def _binding_cached(owner_id: str, public_id: str) -> bool:
 
 
 # The resolved whsec_ (or None = confirmed absent) for a (owner_id,
-# public_id), same shape/TTL pattern as _BINDING_CACHE. Every trigger fire
-# of every kind hits this path, so an uncached "nothing stored" (the
-# common case — every ordinary/unsigned trigger) would mean a live
-# Secrets Manager GetSecretValue on every single fire; caching the
-# negative result is what makes that free after the first lookup.
+# public_id), same dict/cache shape as _BINDING_CACHE but a SPLIT TTL:
+# a positive hit (secret found) lives for _STRIPE_SECRET_TTL_SECONDS (an
+# hour); a negative hit ("nothing stored") lives for only
+# _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (60s). Every trigger fire of every
+# kind hits this path, so an uncached "nothing stored" (the common case —
+# every ordinary/unsigned trigger) would mean a live Secrets Manager
+# GetSecretValue on every single fire; caching the negative result is what
+# makes that free after the first lookup — the short negative TTL keeps
+# that cheap case cheap while still bounding how long a just-armed trigger
+# can be treated as unsigned.
 #
 # Owned by ``core.services.credentials.stripe_edge`` (imported above by
 # reference, not copied) so the webhook-secret WRITE path
 # (``routers/automations.py``) can invalidate it via
-# ``stripe_edge.invalidate_stripe_secret_cache`` right after every store —
-# without that a just-armed or just-rotated trigger stays fail-open
-# (forwarded unsigned) for up to the TTL below.
+# ``stripe_edge.invalidate_stripe_secret_cache`` right after every store.
+# On a single task that's immediate; on a multi-task fleet a sibling task's
+# stale negative verdict is bounded by the 60s negative TTL rather than the
+# hour-long positive one.
 
 
 class _StripeSecretStoreError(Exception):
@@ -171,13 +183,19 @@ async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
     the "does this need Stripe edge verification" signal — no signingMode
     heuristic, and nothing in this module ever WRITES this secret.
 
-    Cached per (owner_id, public_id) — see _STRIPE_SECRET_CACHE. Raises
-    _StripeSecretStoreError (uncached) on a genuine store failure.
+    Cached per (owner_id, public_id) with a SPLIT TTL — a found secret for
+    _STRIPE_SECRET_TTL_SECONDS, a confirmed-absent one for the much shorter
+    _STRIPE_SECRET_NEGATIVE_TTL_SECONDS (see the cache's module-level
+    comment for why). Raises _StripeSecretStoreError (uncached) on a
+    genuine store failure.
     """
     key = (owner_id, public_id)
     cached = _STRIPE_SECRET_CACHE.get(key)
-    if cached is not None and (time.monotonic() - cached[0]) < _STRIPE_SECRET_TTL_SECONDS:
-        return cached[1]
+    if cached is not None:
+        cached_at, cached_secret = cached
+        ttl = _STRIPE_SECRET_TTL_SECONDS if cached_secret is not None else _STRIPE_SECRET_NEGATIVE_TTL_SECONDS
+        if (time.monotonic() - cached_at) < ttl:
+            return cached_secret
     try:
         cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
     except Exception as exc:  # noqa: BLE001 — any non-ResourceNotFound Secrets Manager failure
@@ -224,13 +242,17 @@ async def _company_id_for_owner(owner_id: str) -> str | None:
     return row.company_id if row is not None and row.status == "active" else None
 
 
-async def _lookup_binding(owner_id: str, public_id: str) -> bool:
-    """Ask Paperclip whether ``public_id`` is a webhook trigger in the
-    owner's company. The routines LIST omits publicId, so we fetch the
-    detail of each routine that carries a webhook trigger."""
+async def _lookup_trigger_detail(owner_id: str, public_id: str) -> dict | None:
+    """Ask Paperclip for the webhook-trigger dict matching ``public_id`` in
+    the owner's company (``kind``, ``publicId``, ``signingMode``, ...), or
+    None if no such trigger exists there. The routines LIST omits publicId,
+    so we fetch the detail of each routine that carries a webhook trigger.
+    Shared by ``_lookup_binding`` (bool projection, used by the fire route's
+    hot path) and ``_resolve_trigger_signing_mode`` (used by the
+    webhook-secret PUT, ``routers/automations.py``, to also read signingMode)."""
     company_id = await _company_id_for_owner(owner_id)
     if not company_id:
-        return False
+        return None
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         cookie = await get_admin_session_cookie(http)
         client = PaperclipAdminClient(http_client=http)
@@ -241,8 +263,14 @@ async def _lookup_binding(owner_id: str, public_id: str) -> bool:
             detail = await client.get_routine(session_cookie=cookie, routine_id=routine["id"])
             for trig in detail.get("triggers") or []:
                 if trig.get("kind") == "webhook" and trig.get("publicId") == public_id:
-                    return True
-    return False
+                    return trig
+    return None
+
+
+async def _lookup_binding(owner_id: str, public_id: str) -> bool:
+    """Ask Paperclip whether ``public_id`` is a webhook trigger in the
+    owner's company."""
+    return await _lookup_trigger_detail(owner_id, public_id) is not None
 
 
 async def _resolve_trigger_binding(owner_id: str, public_id: str) -> bool:
@@ -259,6 +287,40 @@ async def _resolve_trigger_binding(owner_id: str, public_id: str) -> bool:
     if found:
         _BINDING_CACHE[(owner_id, public_id)] = time.monotonic()
     return found
+
+
+async def _resolve_trigger_signing_mode(owner_id: str, public_id: str) -> tuple[bool, str | None]:
+    """Verify the owner↔trigger binding AND return the trigger's own
+    Paperclip ``signingMode`` in one lookup — used by the webhook-secret PUT
+    (``routers/automations.py``) to refuse arming a Stripe-edge whsec_ onto
+    a trigger that isn't ``signingMode: "none"``. Only a ``stripe_edge``
+    registry provider arms its trigger with Paperclip signingMode "none"
+    (verification happens at the Isol8 edge instead — see
+    ``core/services/credentials/stripe_edge.py``); a trigger already signed
+    some other way (``github_hmac``, or a Phase-1 hmac scheme) does not
+    need — and must never receive — a pasted Stripe whsec_, which would
+    otherwise silently brick it (the trigger would keep verifying its own
+    real scheme while the pasted secret is never consulted).
+
+    Returns ``(found, signing_mode)`` — ``found=False`` means no webhook
+    trigger with this publicId exists in the owner's company (caller
+    404s); ``signing_mode`` is only meaningful when ``found`` is True.
+    Raises on upstream failure, same as ``_resolve_trigger_binding``.
+    Retries once on an expired admin session. On a match, also populates
+    ``_BINDING_CACHE`` — the same positive-binding side effect
+    ``_resolve_trigger_binding`` has, so a subsequent fire on this trigger
+    skips a redundant resolve."""
+    try:
+        detail = await _lookup_trigger_detail(owner_id, public_id)
+    except PaperclipApiError as e:
+        if e.status_code != 401:
+            raise
+        invalidate_admin_session()
+        detail = await _lookup_trigger_detail(owner_id, public_id)
+    if detail is None:
+        return False, None
+    _BINDING_CACHE[(owner_id, public_id)] = time.monotonic()
+    return True, detail.get("signingMode")
 
 
 @router.post("/t/{owner_id}/{public_id}")

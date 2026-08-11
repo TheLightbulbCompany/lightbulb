@@ -240,6 +240,30 @@ async def test_seed_trigger_routine_github_missing_token_rolls_back_routine():
 
 
 @pytest.mark.asyncio
+async def test_seed_trigger_routine_github_missing_secret_material_rolls_back_routine():
+    """If Paperclip's create_routine_trigger returns no secretMaterial.secret
+    (None), registering the GitHub hook anyway would create a secret-less
+    hook that 401s every real event forever while this call still reports
+    success. Must raise instead of silently proceeding, and roll back the
+    routine it already created — same as any other auto-register failure."""
+    admin = _fake_admin(routine_id="rt_orphan_secret")
+    admin.create_routine_trigger = AsyncMock(
+        return_value={"trigger": {"publicId": "pub_1"}, "secretMaterial": {"secret": None}}
+    )
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _github_token(),
+        pytest.raises(ValueError, match="no trigger secret"),
+    ):
+        await seed_trigger_routine("owner_1", "github", "workflow_run", repo="acme/widgets")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_secret"
+
+
+@pytest.mark.asyncio
 async def test_seed_trigger_routine_github_api_error_rolls_back_routine():
     admin = _fake_admin(routine_id="rt_orphan_api")
     p_repo, p_cookie, p_client = _env(admin)

@@ -1116,6 +1116,7 @@ function CreateRoutineDialog({
                   Paste your {providerName} signing secret
                 </span>
                 <input
+                  type="password"
                   value={whsecInput}
                   onChange={(e) => setWhsecInput(e.target.value)}
                   placeholder="whsec_..."

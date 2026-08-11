@@ -137,6 +137,13 @@ async def _auto_register_webhook(
     if not repo:
         raise ValueError(f"{provider_key!r} requires a repo to auto-register a webhook")
 
+    # A github_hmac trigger is only verifiable if the hook we register
+    # actually carries a secret — a None here (Paperclip returned no
+    # secretMaterial) would register a secret-less GitHub hook that 401s
+    # every real event forever while this call still reports success.
+    if trigger_secret is None:
+        raise ValueError(f"no trigger secret to arm the {provider_key} webhook with")
+
     credential = await integration_secret_store.get(owner_id, provider_key)
     token = (credential or {}).get("token") or (credential or {}).get("access_token")
     if not token:

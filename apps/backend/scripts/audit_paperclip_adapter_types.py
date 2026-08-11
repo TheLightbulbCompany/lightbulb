@@ -32,8 +32,17 @@ of a revision (a repaired agent's ``before_config`` is the rollback target).
 Read-only AUDIT by default; ``--apply`` performs the quarantine. Requires AWS SSO
 (``aws sso login --profile isol8-admin``).
 
+OPERATIONAL NOTE: run this AFTER the proxy fence (#1673) is deployed — it prevents
+NEW dangerous approvals from being created, so the dangerous set is FIXED and only
+shrinks. A standalone script cannot lock out an approve transaction that has read a
+dangerous row but not yet committed, so ``--apply``'s converged pass is ADVISORY;
+run it in a quiet window and CONFIRM with a follow-up dry-run audit (re-run --apply
+if a straggler approval committed mid-run). It converges because the dangerous set
+can't grow once the fence is live.
+
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod --apply
+    cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod   # confirm clean
 """
 
 from __future__ import annotations
@@ -288,10 +297,15 @@ def main() -> None:
             _quarantine(client, db_arn, secret_arn, f)
             print(f"  terminated [agents] id={f.row_id}")
         if not apprs and not agents:
-            print("Done — apply pass is clean. Re-run without --apply to confirm.")
+            # ADVISORY, not a guarantee: a standalone script can't lock out an
+            # approve transaction that read a dangerous row but hasn't committed,
+            # so it could mint an agent just after this pass. Because the fence
+            # (#1673) prevents NEW dangerous approvals, the dangerous set is fixed
+            # and shrinking — so CONFIRM with a follow-up dry-run audit (below).
+            print("Apply passes converged. CONFIRM by re-running WITHOUT --apply until the audit reports clean.")
             return
         print(f"  pass {attempt}: {len(apprs)} approval(s) + {len(agents)} agent(s) neutralized; rescanning...")
-    print("⚠ Still finding dangerous rows after 3 passes — likely concurrent approvals in flight. Re-run --apply.")
+    print("⚠ Still finding dangerous rows after 3 passes — concurrent approvals in flight. Re-run --apply.")
 
 
 if __name__ == "__main__":

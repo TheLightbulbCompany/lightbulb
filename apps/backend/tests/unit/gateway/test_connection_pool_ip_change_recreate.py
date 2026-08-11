@@ -21,6 +21,7 @@ from core.gateway.connection_pool import GatewayConnectionPool, GatewayReconnect
 class _FakeConn:
     def __init__(self, ip: str, *, connected: bool = True, parked: bool = False):
         self.ip = ip
+        self.user_id = "user_1"
         self.is_connected = connected
         self._parked = parked
         self.close = AsyncMock()
@@ -76,6 +77,32 @@ async def test_changed_ip_tears_down_and_recreates():
     # The terminal liveness delete is DRAINED inside the background task (close()
     # only schedules it), so a task finishing before shutdown can't orphan the
     # write and leave the detached dead connection's row falsely "ready".
+    old.drain_liveness_write.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_detached_close_drains_liveness_even_when_close_raises():
+    """close() schedules the terminal liveness delete UP FRONT, then can raise in
+    its ws teardown. The background task must still drain that write (from a
+    finally) or shutdown orphans it and the dead detached row reads 'ready'."""
+    pool = _bare_pool()
+    old = _FakeConn("10.0.0.1")
+    old.close = AsyncMock(side_effect=RuntimeError("ws close blew up"))
+    pool._connections["user_1"] = old
+
+    fresh = _FakeConn("10.0.0.2")
+
+    async def fake_create(user_id, ip, token):
+        pool._connections[user_id] = fresh
+        return fresh
+
+    pool._create_connection = AsyncMock(side_effect=fake_create)
+
+    got = await pool.ensure_connection("user_1", "10.0.0.2", "tok")
+    assert got is fresh
+    await asyncio.gather(*pool._background_close_tasks)
+    old.close.assert_awaited_once()
+    # Drained despite close() raising — the write is landed, not orphaned.
     old.drain_liveness_write.assert_awaited_once()
 
 

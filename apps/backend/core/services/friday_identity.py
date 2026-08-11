@@ -432,14 +432,9 @@ arrives in the wake text:
   (`POST /api/issues/{{issueId}}/checkout`) to claim it. If it returns
   `409 Conflict`, another agent owns it — **never retry a 409**; pick a
   different task.
-- Checkout requires a run id, so it works ONLY in heartbeat runs. From
-  webchat, never attempt it: plain field edits (title, priority, assignee
-  — the update helper's flags) on issues that aren't `in_progress` need no
-  run id — just make them. To *start* work from webchat, assign the issue
-  and set status `todo` in one update; that dispatches a real heartbeat
-  run, which checks out properly. If a call fails asking for a run id, you
-  used a wake-only call in webchat — switch to these paths and tell
-  {owner_display} what you did; never tell them you "need a run id".
+- Checkout requires a run id and exists ONLY in heartbeat runs — see
+  "Webchat sessions (no run id)" below for what to do (and not do) when
+  you are chatting with {owner_display} instead.
 - Set `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on every mutating call
   (create, update, comment, checkout, release) for audit — but only when a
   wake gave you a run id. With no run id, omit the header entirely; **never
@@ -660,10 +655,46 @@ On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
 """
 
 
-# Append the nightly section to the playbook. Concatenated (not interpolated)
-# so its literal `$...` / `[...]` / `<...>` tokens survive _render_templates'
-# ``.format`` untouched.
-_AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION
+# The webchat capability section. Same contract as _NIGHTLY_WAKE_SECTION:
+# brace-free and owner-neutral, so it is (a) appended to _AGENTS_TEMPLATE via
+# plain concatenation (safe through ``.format``) and (b) reused verbatim by
+# the migration that heals already-provisioned Fridays whose write-if-missing
+# AGENTS.md still carries the unconditional checkout mandate — the text that
+# produced the webchat "Agent run id required" relay to an owner. Deliberately
+# outcome-level (no helper flag names): the pinned image's paperclip skill
+# documents the exact commands its bundled helper supports, and this text must
+# stay true across image versions.
+_WEBCHAT_HEADING = "## Webchat sessions (no run id)"
+
+_WEBCHAT_SECTION = """\
+
+## Webchat sessions (no run id)
+
+Chatting with your owner in the app is NOT a heartbeat: there is no
+PAPERCLIP_RUN_ID and no checkout there, by design. Any checkout mandate in
+this playbook applies to heartbeat runs only. In webchat:
+
+- Plain field edits (title, priority, assignee) on issues that are not
+  `in_progress` need no run id — just make them, using the write commands
+  the paperclip skill documents.
+- Never attempt checkout or release from webchat. They are refused without
+  a run id, and that refusal is not a platform error.
+- To START work on an issue, set its assignee and status `todo` in one
+  update. That dispatches a real heartbeat run for the assignee (yourself
+  included), and that run checks out properly. Starting a run spends
+  money — do it when your owner asks for the work now, not to park plans.
+- An `in_progress` issue belongs to its live run — comment instead of
+  editing its fields; comments stay open and wake the assignee.
+- If a call fails asking for a run id, you used a wake-only call in
+  webchat. Switch to the paths above and tell your owner what you did —
+  never tell them you "need a run id".
+"""
+
+
+# Append the nightly + webchat sections to the playbook. Concatenated (not
+# interpolated) so their literal `$...` / `[...]` / `<...>` tokens survive
+# _render_templates' ``.format`` untouched.
+_AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION + _WEBCHAT_SECTION
 
 
 _MEMORY_TEMPLATE = """\
@@ -822,6 +853,32 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     if _SELF_GROUNDING_HEADING in content:
         return False
     new_content = content.rstrip("\n") + "\n" + _SELF_GROUNDING_SECTION
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
+
+
+def _migrate_add_webchat_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Append the ``## Webchat sessions (no run id)`` section to an EXISTING
+    AGENTS.md that predates it.
+
+    AGENTS.md is seeded write-if-missing, so already-provisioned Fridays keep
+    the unconditional checkout mandate forever — the text that had a webchat
+    Friday attempt checkout, hit "Agent run id required", and relay run-id
+    mechanics to its owner. The section explicitly scopes any checkout
+    mandate elsewhere in the playbook to heartbeat runs, so old vintages of
+    that bullet are overridden without surgical matching across their
+    wordings. Same shape as ``_migrate_add_nightly_section``: append only
+    when the heading is ABSENT, touch nothing else. Returns True when a
+    rewrite happened.
+    """
+    rel_path = f"workspace-{agent_uuid}/AGENTS.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
+        return False
+    if _WEBCHAT_HEADING in content:
+        return False
+    new_content = content.rstrip("\n") + "\n" + _WEBCHAT_SECTION
     workspace.write_file(owner_id, rel_path, new_content)
     return True
 
@@ -1058,6 +1115,24 @@ async def pre_stage_friday_identity(
         put_metric("friday_identity.soul_md_grounding_migrate_error")
         logger.warning(
             "friday_identity: SOUL.md grounding migration failed for owner=%s: %s",
+            owner_id,
+            exc,
+        )
+
+    # Heal pre-webchat-section AGENTS.md the same way: append the webchat
+    # capability section when it's absent, overriding the old unconditional
+    # checkout mandate for existing Fridays. Best-effort.
+    try:
+        if _migrate_add_webchat_section(workspace, owner_id, friday_uuid):
+            put_metric("friday_identity.agents_md_webchat_migrated")
+            logger.info(
+                "friday_identity: appended webchat section to AGENTS.md for owner=%s",
+                owner_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.agents_md_webchat_migrate_error")
+        logger.warning(
+            "friday_identity: AGENTS.md webchat-section migration failed for owner=%s: %s",
             owner_id,
             exc,
         )

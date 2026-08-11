@@ -967,6 +967,43 @@ def test_agents_md_contains_nightly_section_and_dual_condition():
     assert "do not invent new work" in agents_md.lower() or "never invent work" in agents_md.lower()
 
 
+# ---------------------------------------------------------------------------
+# Webchat capability section — checkout is heartbeat-only; webchat edits and
+# assign-to-start need no run id, and run-id mechanics never reach the owner.
+# ---------------------------------------------------------------------------
+
+
+def test_agents_md_contains_webchat_section_after_render():
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    assert "## Webchat sessions (no run id)" in agents_md
+    assert "Never attempt checkout or release from webchat" in agents_md
+    # The owner never hears about run ids.
+    assert 'never tell them you "need a run id"' in agents_md
+
+
+def test_migrate_add_webchat_section_appends_when_absent():
+    ws = _MigrationWs("# AGENTS.md\n\nOld playbook without the section.\n")
+    assert friday_identity._migrate_add_webchat_section(ws, "user_abc", "uuid-f") is True
+    path, content = ws.written
+    assert path == "workspace-uuid-f/AGENTS.md"
+    assert content.startswith("# AGENTS.md")
+    assert "## Webchat sessions (no run id)" in content
+    # The old playbook survives untouched above the appended section.
+    assert "Old playbook without the section." in content
+
+
+def test_migrate_add_webchat_section_noop_when_present():
+    rendered = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    ws = _MigrationWs(rendered)
+    assert friday_identity._migrate_add_webchat_section(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_add_webchat_section_noop_when_missing():
+    ws = _MigrationWs(None)
+    assert friday_identity._migrate_add_webchat_section(ws, "user_abc", "uuid-f") is False
+
+
 def test_agents_md_wake_reason_list_includes_issue_assigned():
     agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
     assert "issue_assigned" in agents_md

@@ -173,7 +173,10 @@ def _query_agents(client, db_arn, secret_arn) -> list[dict]:
         client,
         db_arn,
         secret_arn,
-        f"SELECT id, company_id, name, adapter_type FROM agents WHERE adapter_type NOT IN {_SAFE_SQL}",
+        # `NULL NOT IN (...)` is UNKNOWN in SQL, which would silently omit a NULL
+        # adapter_type row — but the classifier treats None as dangerous, so match it.
+        f"SELECT id, company_id, name, adapter_type FROM agents "
+        f"WHERE adapter_type IS NULL OR adapter_type NOT IN {_SAFE_SQL}",
     )
     return _rows(resp, ["id", "company_id", "name", "adapter_type"])
 

@@ -483,6 +483,17 @@ export interface RoutineTriggerSummary {
   // signed webhook trigger has a secret to rotate).
   signingMode?: string | null;
   publicId?: string | null;
+  // Webhook replay-window (seconds) — only meaningful for a signed webhook
+  // (signingMode "bearer" | "hmac_sha256"); null/omitted otherwise.
+  replayWindowSec?: number | null;
+}
+
+/** The one-time secret material a webhook trigger create/rotate returns
+ * (upstream ``RoutineTriggerSecretMaterial``) — the URL + secret are shown
+ * exactly once and never retrievable again after the dialog closes. */
+export interface RoutineTriggerSecretMaterial {
+  webhookUrl: string;
+  webhookSecret: string;
 }
 
 /**

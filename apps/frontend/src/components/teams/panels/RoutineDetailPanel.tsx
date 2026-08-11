@@ -20,7 +20,7 @@
 
 import { useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
-import { ChevronRight, History, KeyRound, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronRight, Copy, History, KeyRound, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import Link from "next/link";
 import {
   EditorialButton,
@@ -43,6 +43,7 @@ import type {
   RoutineDetail,
   RoutineRevision,
   RoutineRun,
+  RoutineTriggerSecretMaterial,
   RoutineTriggerSummary,
   RoutineVariable,
   RoutineVariableType,
@@ -238,6 +239,34 @@ function PropertyRow({
 
 const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
 
+// A copy-to-clipboard row for a one-time secret value. Mirrors the
+// reveal/copy idiom in settings/WebhooksPanel.tsx (Copy icon button next to
+// the value); no reveal toggle here since the value is already shown once,
+// not fetched-then-masked like the persisted webhook token there.
+function SecretField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm text-[var(--ink-soft)]">{label}</span>
+        <button
+          type="button"
+          aria-label={`Copy ${label}`}
+          onClick={() => navigator.clipboard.writeText(value)}
+          className="text-[var(--mute)] hover:text-[var(--ink)]"
+        >
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </div>
+      <code
+        className="mt-1 block break-all rounded px-3 py-2 font-mono text-sm"
+        style={{ background: "var(--cream-deeper)", color: "var(--ink)" }}
+      >
+        {value}
+      </code>
+    </div>
+  );
+}
+
 export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const { read, post, patch, del } = useTeamsApi();
   const {
@@ -267,6 +296,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rotatedSecret, setRotatedSecret] = useState<string | null>(null);
+  const [createdWebhook, setCreatedWebhook] = useState<RoutineTriggerSecretMaterial | null>(null);
 
   async function refresh(): Promise<void> {
     await Promise.all([mutate?.(), mutateRuns?.(), mutateRevisions?.()]);
@@ -779,7 +809,13 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
           onSubmit={async (body) => {
             const ok = await run(async () => {
               if (triggerDialog.mode === "add") {
-                await post(`/routines/${routineId}/triggers`, body);
+                const res = await post<{ secretMaterial?: RoutineTriggerSecretMaterial | null }>(
+                  `/routines/${routineId}/triggers`,
+                  body,
+                );
+                // A webhook create returns the URL + secret exactly once — a
+                // schedule trigger has none, so `secretMaterial` is absent/null.
+                if (res?.secretMaterial) setCreatedWebhook(res.secretMaterial);
               } else {
                 await patch(
                   `/routines/${routineId}/triggers/${triggerDialog.trigger.id}`,
@@ -791,6 +827,29 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             if (ok) setTriggerDialog(null);
           }}
         />
+      )}
+
+      {createdWebhook != null && (
+        <EditorialDialog
+          open
+          onOpenChange={(o) => !o && setCreatedWebhook(null)}
+          title="Webhook created"
+          description="Copy the URL and secret now — the secret is shown only once."
+          footer={
+            <EditorialButton
+              variant="primary"
+              size="sm"
+              onClick={() => setCreatedWebhook(null)}
+            >
+              Done
+            </EditorialButton>
+          }
+        >
+          <div className="flex flex-col gap-3">
+            <SecretField label="Webhook URL" value={createdWebhook.webhookUrl} />
+            <SecretField label="Webhook secret" value={createdWebhook.webhookSecret} />
+          </div>
+        </EditorialDialog>
       )}
 
       {rotatedSecret != null && (
@@ -1176,7 +1235,7 @@ function VarDefaultInput({
   );
 }
 
-/* ── add / edit schedule trigger dialog ───────────────────────────────────── */
+/* ── add / edit trigger dialog (schedule or webhook) ──────────────────────── */
 
 interface TriggerSubmitBody {
   kind?: string;
@@ -1187,7 +1246,22 @@ interface TriggerSubmitBody {
   // survive serialization and reach the backend.
   label?: string | null;
   enabled?: boolean;
+  signing_mode?: string;
+  replay_window_sec?: number;
 }
+
+// Webhook signing modes Paperclip's createRoutineTriggerSchema accepts
+// (paperclip/packages/shared/src/constants.ts ROUTINE_TRIGGER_SIGNING_MODES).
+// Only bearer/hmac_sha256 carry a replay window — github_hmac verifies via
+// GitHub's own delivery-id scheme and "none" has no signature to replay-guard.
+const SIGNING_MODE_OPTIONS: ReadonlyArray<readonly [string, string]> = [
+  ["bearer", "Bearer token"],
+  ["hmac_sha256", "HMAC (SHA-256)"],
+  ["github_hmac", "GitHub HMAC"],
+  ["none", "None (unsigned)"],
+];
+const REPLAY_WINDOW_SIGNING_MODES = new Set(["bearer", "hmac_sha256"]);
+const DEFAULT_REPLAY_WINDOW_SEC = 300;
 
 function TriggerDialog({
   mode,
@@ -1216,12 +1290,33 @@ function TriggerDialog({
   const [timezone, setTimezone] = useState(initialTz);
   const [label, setLabel] = useState(trigger?.label ?? "");
   const [enabled, setEnabled] = useState(trigger?.enabled !== false);
+  // Trigger kind — only choosable in "add" mode (a Plus button). Edit only
+  // reaches this dialog for an existing schedule trigger (the Pencil affordance
+  // is gated to `t.kind === "schedule"`), so kind is fixed there.
+  const [kind, setKind] = useState<string>(mode === "add" ? "schedule" : trigger?.kind ?? "schedule");
+  const [signingMode, setSigningMode] = useState("bearer");
+  const [replayWindowSec, setReplayWindowSec] = useState(String(DEFAULT_REPLAY_WINDOW_SEC));
+  const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
+  const replayWindowNum = Number(replayWindowSec);
+  const replayWindowValid =
+    !showReplayWindow || (Number.isFinite(replayWindowNum) && replayWindowNum >= 30 && replayWindowNum <= 86400);
 
-  const canSubmit = cron.trim() !== "" && timezone.trim() !== "";
+  const canSubmit =
+    kind === "schedule" ? cron.trim() !== "" && timezone.trim() !== "" : replayWindowValid;
 
   async function submit() {
     if (!canSubmit) return;
     if (mode === "add") {
+      if (kind === "webhook") {
+        await onSubmit({
+          kind: "webhook",
+          signing_mode: signingMode,
+          replay_window_sec: showReplayWindow ? replayWindowNum : undefined,
+          label: label.trim() || undefined,
+          enabled,
+        });
+        return;
+      }
       await onSubmit({
         kind: "schedule",
         cron_expression: cron.trim(),
@@ -1254,7 +1349,9 @@ function TriggerDialog({
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
-      title={mode === "add" ? "Add schedule" : "Edit schedule"}
+      title={
+        mode === "edit" ? "Edit schedule" : kind === "webhook" ? "Add webhook" : "Add schedule"
+      }
       footer={
         <>
           <EditorialButton variant="secondary" size="sm" onClick={onClose}>
@@ -1273,27 +1370,83 @@ function TriggerDialog({
     >
       <div className="flex flex-col gap-3">
         <DialogError message={error} />
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
-          <input
-            value={cron}
-            onChange={(e) => setCron(e.target.value)}
-            placeholder="0 9 * * *"
-            className={cn(INPUT_CLASS, "font-mono")}
-          />
-          <span className="text-xs text-[var(--mute)]">
-            Cron expression — when the routine fires.
-          </span>
-        </label>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Timezone</span>
-          <input
-            value={timezone}
-            onChange={(e) => setTimezone(e.target.value)}
-            placeholder="UTC"
-            className={INPUT_CLASS}
-          />
-        </label>
+        {mode === "add" && (
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">Trigger type</span>
+            <select
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+              className={INPUT_CLASS}
+            >
+              <option value="schedule">Schedule</option>
+              <option value="webhook">Webhook</option>
+            </select>
+          </label>
+        )}
+        {kind === "schedule" ? (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Schedule</span>
+              <input
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                placeholder="0 9 * * *"
+                className={cn(INPUT_CLASS, "font-mono")}
+              />
+              <span className="text-xs text-[var(--mute)]">
+                Cron expression — when the routine fires.
+              </span>
+            </label>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Timezone</span>
+              <input
+                value={timezone}
+                onChange={(e) => setTimezone(e.target.value)}
+                placeholder="UTC"
+                className={INPUT_CLASS}
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Signing mode</span>
+              <select
+                value={signingMode}
+                onChange={(e) => setSigningMode(e.target.value)}
+                className={INPUT_CLASS}
+              >
+                {SIGNING_MODE_OPTIONS.map(([value, optLabel]) => (
+                  <option key={value} value={value}>
+                    {optLabel}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-[var(--mute)]">
+                How Isol8 signs the callback — the caller verifies with the secret
+                shown once this trigger is created.
+              </span>
+            </label>
+            {showReplayWindow && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Replay window (seconds)
+                </span>
+                <input
+                  type="number"
+                  min={30}
+                  max={86400}
+                  value={replayWindowSec}
+                  onChange={(e) => setReplayWindowSec(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+                <span className="text-xs text-[var(--mute)]">
+                  How long a signed delivery stays valid (30–86400s).
+                </span>
+              </label>
+            )}
+          </>
+        )}
         <label className="block">
           <span className="text-sm text-[var(--ink-soft)]">Label (optional)</span>
           <input

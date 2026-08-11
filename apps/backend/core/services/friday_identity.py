@@ -998,9 +998,90 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
     }
 
 
+def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) -> None:
+    """The append-heal pass for an EXISTING Friday's seeded files.
+
+    Every migration is anchor-/heading-guarded and idempotent; each failure
+    is isolated so one bad file never blocks the others. Called from
+    ``pre_stage_friday_identity`` (provision/config-rewrite path) and from
+    ``heal_seeded_files`` (fleet image-apply path).
+    """
+    migrations = (
+        (
+            _migrate_legacy_user_md,
+            "friday_identity.user_md_migrated",
+            "friday_identity.user_md_migrate_error",
+            "migrated legacy plan/provider lines in USER.md",
+        ),
+        (
+            _migrate_add_nightly_section,
+            "friday_identity.agents_md_nightly_migrated",
+            "friday_identity.agents_md_nightly_migrate_error",
+            "appended nightly-wake section to AGENTS.md",
+        ),
+        (
+            _migrate_add_soul_grounding,
+            "friday_identity.soul_md_grounding_migrated",
+            "friday_identity.soul_md_grounding_migrate_error",
+            "appended self-grounding section to SOUL.md",
+        ),
+        (
+            _migrate_add_webchat_section,
+            "friday_identity.agents_md_webchat_migrated",
+            "friday_identity.agents_md_webchat_migrate_error",
+            "appended webchat section to AGENTS.md",
+        ),
+    )
+    for migrate, ok_metric, err_metric, what in migrations:
+        try:
+            if migrate(workspace, owner_id, friday_uuid):
+                put_metric(ok_metric)
+                logger.info("friday_identity: %s for owner=%s", what, owner_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+            put_metric(err_metric)
+            logger.warning(
+                "friday_identity: heal migration (%s) failed for owner=%s: %s",
+                what,
+                owner_id,
+                exc,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
+
+
+async def heal_seeded_files(*, owner_id: str, workspace: Workspace) -> None:
+    """Heal an EXISTING Friday workspace's seeded files without a provision.
+
+    ``pre_stage_friday_identity`` runs the same migrations, but only on the
+    provision/config-rewrite path — a Track-2 image apply never rewrites
+    configs, so without this entry point already-provisioned Fridays keep
+    stale seeded playbook text until some unrelated reprovision. The
+    image-apply path calls this instead: it resolves Friday's UUID from the
+    PaperclipCompany row (``seeded_agent_ids[0]`` is the CEO, stamped at
+    provision) and runs the anchor-guarded heal pass.
+
+    Best-effort: no row / no seeded ids → silent skip (legacy pre-Paperclip
+    owners have nothing to heal); never raises.
+    """
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    try:
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        row = await repo.resolve_owner_row(owner_id)
+        friday_uuid = ((getattr(row, "seeded_agent_ids", None) or [None])[0]) if row else None
+        if not friday_uuid:
+            return
+        _run_heal_migrations(workspace, owner_id, friday_uuid)
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.heal_error")
+        logger.warning(
+            "friday_identity: heal_seeded_files failed for owner=%s: %s",
+            owner_id,
+            exc,
+        )
 
 
 async def pre_stage_friday_identity(
@@ -1066,76 +1147,10 @@ async def pre_stage_friday_identity(
             exc,
         )
 
-    # Heal pre-facts workspaces before the write-if-missing loop (which
-    # no-ops on existing files): replace the legacy hardcoded plan/provider
-    # seed lines with the facts-file pointer. Best-effort.
-    try:
-        if _migrate_legacy_user_md(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.user_md_migrated")
-            logger.info(
-                "friday_identity: migrated legacy plan/provider lines in USER.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.user_md_migrate_error")
-        logger.warning(
-            "friday_identity: USER.md legacy-line migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
-
-    # Heal pre-nightly-loop AGENTS.md: the seed loop below is
-    # write-if-missing and won't touch an existing AGENTS.md, so append the
-    # nightly-wake section when it's absent. Best-effort.
-    try:
-        if _migrate_add_nightly_section(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.agents_md_nightly_migrated")
-            logger.info(
-                "friday_identity: appended nightly-wake section to AGENTS.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.agents_md_nightly_migrate_error")
-        logger.warning(
-            "friday_identity: AGENTS.md nightly-section migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
-
-    # Heal pre-grounding SOUL.md the same way: append the platform
-    # self-knowledge section when it's absent. Best-effort.
-    try:
-        if _migrate_add_soul_grounding(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.soul_md_grounding_migrated")
-            logger.info(
-                "friday_identity: appended self-grounding section to SOUL.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.soul_md_grounding_migrate_error")
-        logger.warning(
-            "friday_identity: SOUL.md grounding migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
-
-    # Heal pre-webchat-section AGENTS.md the same way: append the webchat
-    # capability section when it's absent, overriding the old unconditional
-    # checkout mandate for existing Fridays. Best-effort.
-    try:
-        if _migrate_add_webchat_section(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.agents_md_webchat_migrated")
-            logger.info(
-                "friday_identity: appended webchat section to AGENTS.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.agents_md_webchat_migrate_error")
-        logger.warning(
-            "friday_identity: AGENTS.md webchat-section migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
+    # Heal existing seeded files before the write-if-missing loop (which
+    # no-ops on existing files). Shared with the fleet image-apply path via
+    # heal_seeded_files.
+    _run_heal_migrations(workspace, owner_id, friday_uuid)
 
     written: list[str] = []
     skipped: list[str] = []

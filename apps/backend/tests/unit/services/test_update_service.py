@@ -55,20 +55,27 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
     ecs._size_for_owner = AsyncMock(return_value=("512", "2048"))
     ecs.resize_user_container = AsyncMock(side_effect=lambda *a, **k: order.append("resize"))
     migrate = AsyncMock(side_effect=lambda *a, **k: order.append("migrate"))
+    heal = AsyncMock(side_effect=lambda *a, **k: order.append("heal"))
 
     with (
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
+        patch.object(update_service, "heal_seeded_files", heal),
         patch("core.dynamodb.get_table", return_value=MagicMock()),
         patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
     migrate.assert_awaited_once_with(owner_id)
+    # An image roll also heals seeded workspace files — the only routine
+    # fleet-wide touch-point for already-provisioned Fridays.
+    heal.assert_awaited_once()
+    assert heal.await_args.kwargs["owner_id"] == owner_id
     ecs.resize_user_container.assert_awaited_once()
-    assert order == ["migrate", "resize"]
+    assert order == ["migrate", "heal", "resize"]
 
 
 async def _apply_image_only_update(owner_id, update_id, size):
@@ -91,9 +98,11 @@ async def _apply_image_only_update(owner_id, update_id, size):
     with (
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
+        patch.object(update_service, "heal_seeded_files", AsyncMock()),
         patch("core.dynamodb.get_table", return_value=MagicMock()),
         patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
@@ -141,10 +150,12 @@ async def test_apply_update_skips_migration_for_resize_only_update():
     ecs = MagicMock()
     ecs.resize_user_container = AsyncMock()
     migrate = AsyncMock()
+    heal = AsyncMock()
 
     with (
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
+        patch.object(update_service, "heal_seeded_files", heal),
         patch("core.dynamodb.get_table", return_value=MagicMock()),
         patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
@@ -153,6 +164,7 @@ async def test_apply_update_skips_migration_for_resize_only_update():
 
     assert result is True
     migrate.assert_not_awaited()
+    heal.assert_not_awaited()
     ecs.resize_user_container.assert_awaited_once()
 
 

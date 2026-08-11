@@ -1,9 +1,11 @@
 """The deployed-environment security assertions on Settings.
 
-Each fence below has an INSECURE default (WS impersonation enforcement off,
-Clerk ``aud`` skipped when CLERK_AUDIENCE is None) or is gated on ENVIRONMENT
-reading exactly ``"prod"`` (debug routes + Clerk webhook guard). A dropped CDK
-variable would open them with no other signal, so Settings refuses to construct.
+The WS fence has an INSECURE default (impersonation enforcement off), and the
+debug routes + Clerk webhook guard hinge on ENVIRONMENT reading exactly "prod".
+A dropped CDK var would open these with no other signal, so Settings refuses to
+construct — but ONLY for the actual backend task (detected via the Fargate
+metadata URI), so out-of-task operational CLIs that set ENVIRONMENT=prod still
+import cleanly.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from core.config import Settings
 
 # A minimal non-placeholder CLERK_ISSUER so the sibling validator doesn't fire.
 _ISSUER = "https://real.clerk.accounts.dev"
+_FARGATE = "ECS_CONTAINER_METADATA_URI_V4"
 
 
 def _settings(**overrides):
@@ -24,52 +27,28 @@ def _settings(**overrides):
     return Settings(**base)
 
 
+@pytest.fixture
+def in_fargate(monkeypatch):
+    """Simulate running inside the backend ECS Fargate task."""
+    monkeypatch.setenv(_FARGATE, "http://169.254.170.2/v4/abc")
+
+
+# ---- Non-backend contexts (local dev, CI, operational CLIs) never assert ----
+
+
 @pytest.mark.parametrize("env", ["", "local", "test"])
 def test_non_deployed_env_skips_security_checks(env):
-    # Local dev / CI need not set the deployment fences.
     _settings(ENVIRONMENT=env, WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUDIENCE=None)
 
 
-def test_deployed_requires_ws_enforcement():
-    with pytest.raises(ValueError, match="WS internal-caller"):
-        _settings(
-            ENVIRONMENT="prod",
-            WS_ENFORCE_INTERNAL_SECRET=False,
-            WS_INTERNAL_SECRET="",
-            CLERK_AUDIENCE="aud",
-        )
+def test_out_of_task_cli_with_prod_env_and_no_ws_is_ok():
+    # scripts.bedrock_gate_break_glass / reapply_openclaw_config set
+    # ENVIRONMENT=prod to target prod but run outside Fargate and carry no WS
+    # secret — they must import cleanly, or the break-glass tool is bricked.
+    _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUDIENCE=None)
 
 
-def test_deployed_requires_ws_secret_even_when_enforced():
-    with pytest.raises(ValueError, match="WS internal-caller"):
-        _settings(
-            ENVIRONMENT="prod",
-            WS_ENFORCE_INTERNAL_SECRET=True,
-            WS_INTERNAL_SECRET="",
-            CLERK_AUDIENCE="aud",
-        )
-
-
-def test_deployed_missing_clerk_audience_warns_not_raises(caplog):
-    # CLERK_AUDIENCE is not wired in the CDK yet; a hard failure here would crash
-    # every backend deploy on boot. It must warn, not raise.
-    with caplog.at_level(logging.WARNING):
-        _settings(
-            ENVIRONMENT="prod",
-            WS_ENFORCE_INTERNAL_SECRET=True,
-            WS_INTERNAL_SECRET="s",
-            CLERK_AUDIENCE=None,
-        )
-    assert any("CLERK_AUDIENCE is unset" in r.message for r in caplog.records)
-
-
-def test_deployed_fully_configured_ok():
-    _settings(
-        ENVIRONMENT="staging",
-        WS_ENFORCE_INTERNAL_SECRET=True,
-        WS_INTERNAL_SECRET="s",
-        CLERK_AUDIENCE="aud",
-    )
+# ---- ENVIRONMENT value hygiene (applies everywhere) ----
 
 
 def test_unknown_environment_rejected():
@@ -77,19 +56,39 @@ def test_unknown_environment_rejected():
         _settings(ENVIRONMENT="prd")
 
 
-def test_fargate_without_deployed_env_rejected(monkeypatch):
-    # The metadata URI is injected by the Fargate agent — present here means we
-    # ARE deployed, so a non-deployed ENVIRONMENT is a dropped CDK var.
-    monkeypatch.setenv("ECS_CONTAINER_METADATA_URI_V4", "http://169.254.170.2/v4/abc")
+@pytest.mark.parametrize("raw", ["PROD", " prod ", "Prod"])
+def test_non_canonical_environment_rejected(raw):
+    # Downstream guards compare == "prod" exactly, so a non-canonical value would
+    # boot while exposing debug routes.
+    with pytest.raises(ValueError, match="lowercase"):
+        _settings(ENVIRONMENT=raw)
+
+
+# ---- The deployed backend task (Fargate) must have the fences wired ----
+
+
+def test_fargate_without_deployed_env_rejected(in_fargate):
     with pytest.raises(ValueError, match="Fargate"):
         _settings(ENVIRONMENT="")
 
 
-def test_fargate_with_deployed_env_ok(monkeypatch):
-    monkeypatch.setenv("ECS_CONTAINER_METADATA_URI_V4", "http://169.254.170.2/v4/abc")
-    _settings(
-        ENVIRONMENT="prod",
-        WS_ENFORCE_INTERNAL_SECRET=True,
-        WS_INTERNAL_SECRET="s",
-        CLERK_AUDIENCE="aud",
-    )
+def test_fargate_requires_ws_enforcement(in_fargate):
+    with pytest.raises(ValueError, match="WS internal-caller"):
+        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=False, WS_INTERNAL_SECRET="", CLERK_AUDIENCE="aud")
+
+
+def test_fargate_requires_ws_secret_even_when_enforced(in_fargate):
+    with pytest.raises(ValueError, match="WS internal-caller"):
+        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="", CLERK_AUDIENCE="aud")
+
+
+def test_fargate_missing_clerk_audience_warns_not_raises(in_fargate, caplog):
+    # CLERK_AUDIENCE is not wired in the CDK yet; a hard failure here would crash
+    # every backend deploy on boot. It must warn, not raise.
+    with caplog.at_level(logging.WARNING):
+        _settings(ENVIRONMENT="prod", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="s", CLERK_AUDIENCE=None)
+    assert any("CLERK_AUDIENCE is unset" in r.message for r in caplog.records)
+
+
+def test_fargate_fully_configured_ok(in_fargate):
+    _settings(ENVIRONMENT="staging", WS_ENFORCE_INTERNAL_SECRET=True, WS_INTERNAL_SECRET="s", CLERK_AUDIENCE="aud")

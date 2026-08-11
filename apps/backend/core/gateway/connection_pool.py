@@ -2888,6 +2888,15 @@ class GatewayConnectionPool:
         async def _run() -> None:
             try:
                 await conn.close()
+                # close() only SCHEDULES the terminal liveness delete. This task
+                # removes itself from `_background_close_tasks` the moment it
+                # returns, so a task that finishes before shutdown is already gone
+                # from the set close_all() drains — its queued delete would then be
+                # orphaned and cancelled by lifespan teardown, leaving the detached
+                # (dead) connection's row falsely "ready" for the freshness window.
+                # Land it here, exactly as close_user does, so the write completes
+                # before this task ends whether or not shutdown observes it.
+                await conn.drain_liveness_write()
             except Exception:
                 logger.exception("Background close failed for user %s", conn.user_id)
 

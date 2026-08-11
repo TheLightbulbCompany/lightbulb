@@ -24,6 +24,7 @@ class _FakeConn:
         self.is_connected = connected
         self._parked = parked
         self.close = AsyncMock()
+        self.drain_liveness_write = AsyncMock()
         # Shared per-owner frontend set (a live GatewayConnection is handed this
         # by reference); the recreate path must blank the detached copy.
         self._frontend_connections = {"conn-abc"}
@@ -72,6 +73,10 @@ async def test_changed_ip_tears_down_and_recreates():
     # The stale (dead-IP) socket is torn down in the BACKGROUND (off the lock).
     await asyncio.gather(*pool._background_close_tasks)
     old.close.assert_awaited_once()
+    # The terminal liveness delete is DRAINED inside the background task (close()
+    # only schedules it), so a task finishing before shutdown can't orphan the
+    # write and leave the detached dead connection's row falsely "ready".
+    old.drain_liveness_write.assert_awaited_once()
 
 
 @pytest.mark.asyncio

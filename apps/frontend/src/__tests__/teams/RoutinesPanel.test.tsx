@@ -394,54 +394,37 @@ describe("RoutinesPanel", () => {
     expect(mockMutate).toHaveBeenCalled();
   });
 
-  it("coming-soon rungs disable Create and show the inline affordance", async () => {
-    const user = userEvent.setup();
-    render(<RoutinesPanel />);
-
-    await user.click(screen.getByRole("button", { name: "New automation" }));
-    fireEvent.change(screen.getByLabelText("Title"), {
-      target: { value: "Whatever" },
-    });
-    // "A connected app" is wired (T6) — the still-unbuilt rungs are email and
-    // agent-watches.
-    await user.click(screen.getByRole("radio", { name: /My agent watches it/ }));
-
-    expect(screen.getByText(/Coming soon/)).toBeInTheDocument();
-    expect(screen.getByText("Create")).toBeDisabled();
-    await user.click(screen.getByText("Create"));
-    expect(mockPost).not.toHaveBeenCalled();
-  });
-
   it("rung picker: roving tabindex + arrow keys move selection and focus (WAI-ARIA APG radiogroup)", async () => {
     const user = userEvent.setup();
     render(<RoutinesPanel />);
     await user.click(screen.getByRole("button", { name: "New automation" }));
 
-    // Default rung is "On a schedule" — the only tab stop; every other rung
-    // is out of the tab order (roving tabindex), not five separate stops.
-    const schedule = screen.getByRole("radio", { name: "On a schedule" });
-    const agentWatch = screen.getByRole("radio", { name: /My agent watches it/ });
+    // Rungs, in order: "A connected app", "Any other app", "On a schedule".
+    // Default rung is "On a schedule" (the last) — the only tab stop; every
+    // other rung is out of the tab order (roving tabindex).
     const connectedApp = screen.getByRole("radio", { name: /A connected app/ });
+    const webhook = screen.getByRole("radio", { name: "Any other app" });
+    const schedule = screen.getByRole("radio", { name: "On a schedule" });
     expect(schedule).toHaveAttribute("tabindex", "0");
-    expect(agentWatch).toHaveAttribute("tabindex", "-1");
+    expect(connectedApp).toHaveAttribute("tabindex", "-1");
 
-    // ArrowRight/ArrowDown moves forward: "On a schedule" -> "My agent watches it".
+    // ArrowRight from the last rung wraps forward to the first.
     fireEvent.keyDown(schedule, { key: "ArrowRight" });
-    expect(agentWatch).toHaveAttribute("aria-checked", "true");
-    expect(agentWatch).toHaveAttribute("tabindex", "0");
+    expect(connectedApp).toHaveAttribute("aria-checked", "true");
+    expect(connectedApp).toHaveAttribute("tabindex", "0");
     expect(schedule).toHaveAttribute("aria-checked", "false");
     expect(schedule).toHaveAttribute("tabindex", "-1");
-    expect(document.activeElement).toBe(agentWatch);
-
-    // Wraps at the end: one more ArrowDown from the last rung lands on the first.
-    fireEvent.keyDown(agentWatch, { key: "ArrowDown" });
-    expect(connectedApp).toHaveAttribute("aria-checked", "true");
     expect(document.activeElement).toBe(connectedApp);
 
-    // ArrowLeft/ArrowUp moves backward, wrapping the other way.
-    fireEvent.keyDown(connectedApp, { key: "ArrowUp" });
-    expect(agentWatch).toHaveAttribute("aria-checked", "true");
-    expect(document.activeElement).toBe(agentWatch);
+    // ArrowDown continues forward to the middle rung.
+    fireEvent.keyDown(connectedApp, { key: "ArrowDown" });
+    expect(webhook).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(webhook);
+
+    // ArrowUp moves backward.
+    fireEvent.keyDown(webhook, { key: "ArrowUp" });
+    expect(connectedApp).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(connectedApp);
   });
 });
 

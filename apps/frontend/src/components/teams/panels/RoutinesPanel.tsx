@@ -824,31 +824,22 @@ function SortMenu({
   );
 }
 
-/* ── create dialog: "what should start this?" five-rung picker ──────────── */
+/* ── create dialog: "what should start this?" trigger-type picker ───────── */
 
-// The five ways a routine can be kicked off (spec Phase 1d). Only "schedule"
-// and "webhook" are wired to a real trigger today — the rest are visible,
-// selectable, and explain themselves as not-yet-built rather than being
-// hidden (requestable-not-hidden; delivered in Phase 2/4).
-type StartRung = "connected_app" | "webhook" | "email" | "schedule" | "agent_watch";
+// The three ways a routine can be kicked off today. (Email intake and
+// agent-watch triggers are on the roadmap but deliberately not surfaced here —
+// a picker padded with disabled "coming soon" options is clutter, not a
+// feature; they'll appear when they actually work.)
+type StartRung = "connected_app" | "webhook" | "schedule";
 
 const START_RUNGS: ReadonlyArray<{
   value: StartRung;
   label: string;
-  comingSoon?: boolean;
 }> = [
   { value: "connected_app", label: "A connected app" },
   { value: "webhook", label: "Any other app" },
-  { value: "email", label: "An email arrives", comingSoon: true },
   { value: "schedule", label: "On a schedule" },
-  { value: "agent_watch", label: "My agent watches it", comingSoon: true },
 ];
-
-const COMING_SOON_COPY: Partial<Record<StartRung, string>> = {
-  email: "Coming soon — for now forward the email to your agent.",
-  agent_watch:
-    "Coming soon — for now use “Any other app” to trigger this automation.",
-};
 
 // POST /automations/from-integration's response (core/services/
 // inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
@@ -919,7 +910,6 @@ function CreateRoutineDialog({
     triggerableConnections.find((c) => c.provider === connProvider) ?? null;
   const connEvents = selectedConnection?.inbound?.events ?? [];
 
-  const comingSoon = COMING_SOON_COPY[rung] != null;
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);
   const replayWindowValid =
@@ -931,7 +921,6 @@ function CreateRoutineDialog({
     rung === "connected_app"
       ? connProvider != null && connEventId != null
       : title.trim() !== "" &&
-        !comingSoon &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
   function moveRung(delta: 1 | -1) {
@@ -1183,7 +1172,7 @@ function CreateRoutineDialog({
           <div
             role="radiogroup"
             aria-label="What should start this?"
-            className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-5"
+            className="mt-1 grid grid-cols-3 gap-1.5"
             onKeyDown={onRungKeyDown}
           >
             {START_RUNGS.map((r, i) => (
@@ -1213,14 +1202,6 @@ function CreateRoutineDialog({
                 }
               >
                 {r.label}
-                {r.comingSoon && (
-                  <span
-                    className="ml-1 text-[10px] uppercase tracking-wide"
-                    style={{ color: "var(--mute)" }}
-                  >
-                    soon
-                  </span>
-                )}
               </button>
             ))}
           </div>
@@ -1354,20 +1335,6 @@ function CreateRoutineDialog({
               </label>
             )}
           </>
-        )}
-
-        {comingSoon && (
-          <div
-            role="note"
-            className="rounded border px-3 py-2 text-sm"
-            style={{
-              borderColor: "var(--edge)",
-              background: "var(--cream-deeper)",
-              color: "var(--ink-soft)",
-            }}
-          >
-            {COMING_SOON_COPY[rung]}
-          </div>
         )}
 
         {rung !== "connected_app" && (

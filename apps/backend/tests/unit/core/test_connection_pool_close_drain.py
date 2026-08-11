@@ -38,6 +38,10 @@ def _make_conn():
     conn._billing_tasks = set()
     conn._push_tasks = set()
     conn._run_completion_tasks = set()
+    # close() calls _reject_pending_run_completions, which reads this registry;
+    # a __new__-built double must mirror every attribute the close path touches
+    # (real GatewayConnection.__init__ sets both this and _run_completion_tasks).
+    conn._run_completion_callbacks = {}
     conn._grace_task = None
     conn._parked_watchdog_task = None
     conn._reader_task = None

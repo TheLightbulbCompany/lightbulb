@@ -61,21 +61,19 @@ trigger:
 secret that Paperclip's engine can't ingest, so a registry provider that
 declares ``inbound.signing_mode: stripe_edge`` (see
 ``core/services/credentials/registry.py``) gets its trigger armed by the
-seed service with Paperclip ``signingMode: "none"`` — the fork's own
-``firePublicTrigger`` performs ZERO verification for that mode ("the
-publicId in the URL acts as a shared secret"). That makes the Isol8 edge
-the ONLY signature check a Stripe-sourced fire gets, so it must run before
-every forward, not just when a header happens to show up.
-
-There is no per-trigger "provider" field to look up (T3's seed service
-adds no side table). The cleanest signal already sitting in hand is the
-trigger's own Paperclip ``signingMode``, fetched by the SAME binding
-lookup (``_lookup_binding``) that verifies owner↔trigger ownership —
-``signingMode == "none"`` is unique to stripe_edge triggers today, so it
-is cached alongside the binding (``_TRIGGER_SIGNING_MODE_CACHE``) and
-checked via ``_requires_stripe_edge``. A trigger whose signingMode is
-anything else (bearer/hmac_sha256/github_hmac) is untouched by this
-branch — Paperclip's own verification stands as before.
+seed service with Paperclip ``signingMode: "none"``. That is NOT a
+Stripe-only marker, though — "None (unsigned)" is also a first-class,
+user-selectable Phase 1 webhook option (``webhookSigning.ts``,
+``SIGNING_MODE_OPTIONS``) for any trigger the owner deliberately leaves
+unsigned. So the discriminator here is NOT signingMode: it's whether a
+per-trigger Stripe whsec_ has actually been stored
+(``core/services/credentials/stripe_edge.py``,
+``integration_secret_store`` keyed by ``(owner_id, public_id)``, written
+by T3's guided_paste seed / T6's paste-secret endpoint). No stored secret
+== an ordinary trigger (including a deliberately-unsigned Phase 1 one) —
+forwards untouched, publicId remains its shared secret exactly as before
+Stripe edge verification existed. A stored secret == THIS specific fire
+must carry a valid ``Stripe-Signature``, checked before every forward.
 """
 
 import hashlib
@@ -91,6 +89,7 @@ from core.config import settings
 from core.repositories import billing_repo, hook_event_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.credentials import integration_secret_store
+from core.services.credentials.stripe_edge import WEBHOOK_SECRET_FIELD, stripe_trigger_secret_provider
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.provision_gate import has_always_on_entitlement
@@ -118,23 +117,20 @@ _FORWARDED_HEADERS = (
 _BINDING_TTL_SECONDS = 3600
 _BINDING_CACHE: dict[tuple[str, str], float] = {}
 
-# The bound trigger's own Paperclip signingMode, stashed by the SAME lookup
-# that populates _BINDING_CACHE (see module docstring's "Stripe edge
-# verification" section). No TTL of its own — it lives exactly as long as
-# the binding does, since a public_id's signingMode never changes in place.
-_TRIGGER_SIGNING_MODE_CACHE: dict[tuple[str, str], str] = {}
-
 
 def _binding_cached(owner_id: str, public_id: str) -> bool:
     ts = _BINDING_CACHE.get((owner_id, public_id))
     return ts is not None and (time.monotonic() - ts) < _BINDING_TTL_SECONDS
 
 
-def _requires_stripe_edge(owner_id: str, public_id: str) -> bool:
-    """True when the bound trigger's Paperclip signingMode is "none" —
-    unresolved/anything else -> False, leaving normal (Paperclip-verified)
-    triggers untouched."""
-    return _TRIGGER_SIGNING_MODE_CACHE.get((owner_id, public_id)) == "none"
+async def _stripe_trigger_secret(owner_id: str, public_id: str) -> str | None:
+    """The stored whsec_ for THIS trigger, or None if the owner never
+    pasted one (an ordinary trigger — including a deliberately-unsigned
+    Phase 1 ``none`` one; see module docstring). Presence of a secret IS
+    the "does this need Stripe edge verification" signal — no signingMode
+    heuristic, and nothing in this module ever WRITES this secret."""
+    cred = await integration_secret_store.get(owner_id, stripe_trigger_secret_provider(public_id))
+    return cred.get(WEBHOOK_SECRET_FIELD) if cred else None
 
 
 def verify_stripe_signature(secret: str, raw_body: bytes, header: str, *, tolerance_s: int = 300, now: float) -> bool:
@@ -191,7 +187,6 @@ async def _lookup_binding(owner_id: str, public_id: str) -> bool:
             detail = await client.get_routine(session_cookie=cookie, routine_id=routine["id"])
             for trig in detail.get("triggers") or []:
                 if trig.get("kind") == "webhook" and trig.get("publicId") == public_id:
-                    _TRIGGER_SIGNING_MODE_CACHE[(owner_id, public_id)] = trig.get("signingMode") or ""
                     return True
     return False
 
@@ -278,14 +273,14 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     # and stripe_edge verification (below) signs it too.
     body = await request.body()
 
-    # Stripe edge verification — the ONLY signature check a stripe_edge
-    # trigger gets (see module docstring). The whsec_ is read-only here;
-    # writing it is the guided-connect flow (Automations Phase 2, T3/T6).
-    if _requires_stripe_edge(owner_id, public_id):
+    # Stripe edge verification — ONLY when a per-trigger whsec_ has been
+    # stored (T3/T6's guided-paste; read-only here). No stored secret means
+    # this is an ordinary trigger — including a deliberately-unsigned Phase
+    # 1 ``none`` one — and forwards untouched (see module docstring).
+    stripe_secret = await _stripe_trigger_secret(owner_id, public_id)
+    if stripe_secret is not None:
         sig_header = request.headers.get("Stripe-Signature")
-        cred = await integration_secret_store.get(owner_id, "stripe") if sig_header else None
-        secret = cred.get("webhook_secret") if cred else None
-        if not sig_header or not secret or not verify_stripe_signature(secret, body, sig_header, now=time.time()):
+        if not sig_header or not verify_stripe_signature(stripe_secret, body, sig_header, now=time.time()):
             raise HTTPException(status_code=401, detail="invalid_stripe_signature")
 
     if not settings.PAPERCLIP_INTERNAL_URL:

@@ -43,8 +43,15 @@ can't grow once the fence is live.
 ``--apply`` neutralizes PERSISTED state: terminating an agent stops FUTURE wakeups,
 and rejecting an approval stops it minting an agent. It does NOT stop a run that is
 already executing a dangerous adapter on the host. So the REQUIRED final step after
-a non-clean ``--apply`` is to RESTART the Paperclip Fargate task
-(``isol8-{env}-paperclip``) — that kills every in-flight adapter process / socket.
+a non-clean ``--apply`` is to force a new deployment of the Paperclip ECS service
+``isol8-{env}-paperclip-server`` — that kills every in-flight adapter process /
+socket. Use the exact command in apps/infra/paperclip/RUNBOOK.md (the cluster is a
+shared ARN passed there):
+
+    aws ecs update-service --cluster <cluster-arn> \
+        --service isol8-{env}-paperclip-server --force-new-deployment \
+        --profile isol8-admin --region us-east-1
+
 Then re-run the dry-run audit to confirm clean.
 
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod

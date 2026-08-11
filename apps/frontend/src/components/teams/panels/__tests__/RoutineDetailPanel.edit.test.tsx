@@ -132,7 +132,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     });
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /rotate secret/i }));
+    await user.click(screen.getByRole("button", { name: /rotate to a new random secret/i }));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/routines/r1/triggers/wh1/rotate-secret", {}),
     );
@@ -158,7 +158,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
       },
     });
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.queryByRole("button", { name: /rotate secret/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /rotate to a new random secret/i })).not.toBeInTheDocument();
   });
 
   it("renders revisions and restores one via POST", async () => {

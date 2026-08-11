@@ -309,6 +309,20 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   }
 
   async function rotateSecret(triggerId: string): Promise<void> {
+    // Rotating mints a NEW RANDOM secret. That's right when YOU control the
+    // sender (you copy the new secret into it), but it silently breaks a
+    // provider-imposed secret: a Stripe endpoint keeps signing with its own
+    // whsec_, so once this trigger holds a random secret every event 401s —
+    // and Stripe can't be pointed at a random secret. Warn before the swap.
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Generate a new random signing secret? The current one is invalidated " +
+          "immediately, and any sender still signing with it — including a Stripe " +
+          "webhook (which signs with its own secret) — will stop verifying until updated.",
+      )
+    )
+      return;
     await run(async () => {
       // The wire shape is an OBJECT (RoutineTriggerSecretMaterial), not a bare
       // string — mirrors the create-trigger response below. Rendering it
@@ -571,8 +585,8 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       disabled={busy}
                       onClick={() => rotateSecret(t.id)}
                       className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Rotate secret for ${t.label ?? "webhook"}`}
-                      title="Rotate secret"
+                      aria-label={`Rotate to a new random secret for ${t.label ?? "webhook"}`}
+                      title="Rotate to a new random secret"
                     >
                       <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>

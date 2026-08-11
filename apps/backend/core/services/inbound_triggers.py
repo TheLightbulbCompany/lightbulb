@@ -1,0 +1,233 @@
+"""Seed a real webhook-triggered Paperclip routine from a registry-declared
+inbound integration event — the backend seam behind "connect Stripe -> pick
+'payment failed' -> get a pre-filled automation."
+
+Composes the same two-call ``create_routine`` -> ``create_routine_trigger``
+sequence ``core/services/agent_routine_provisioning.py`` uses for scheduled
+routines (reuses its routine-body builder directly), driven by the registry
+(``core/services/credentials/registry.py``) instead of a hardcoded spec list.
+
+Two ``inbound.webhook_registration`` shapes:
+  - ``"guided_paste"`` (Stripe, live today) — Isol8 has no reachable
+    register-a-webhook API for this provider (creating a Stripe endpoint
+    needs a restricted API key we don't hold), so the owner pastes the
+    returned ``proxy_url`` into the provider's own dashboard, then pastes
+    the ``whsec_`` it hands back via ``PUT /automations/{public_id}/webhook-
+    secret`` (``routers/automations.py``) — THAT write is what actually arms
+    Stripe-edge verification in ``routers/paperclip_trigger_proxy.py``. This
+    module never touches that secret store; it only creates the routine +
+    trigger and returns the URL + copy.
+  - ``"auto"`` (GitHub, Task 4) — Isol8 registers the webhook itself via the
+    provider's own API. Not implemented here — ``_auto_register_webhook`` is
+    the seam T4 fills in; every provider live in the registry today is
+    guided_paste, so this branch is exercised by nothing yet.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+
+from core.auth import is_org_owner_id
+from core.config import settings
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.agent_routine_provisioning import _build_routine_body
+from core.services.credentials import registry
+from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.paperclip_admin_session import get_admin_session_cookie
+
+logger = logging.getLogger(__name__)
+
+# Registry `inbound.signing_mode` -> the trigger's OWN Paperclip `signingMode`.
+# "stripe_edge" arms Paperclip with "none" because verification happens at the
+# Isol8 edge instead (routers/paperclip_trigger_proxy.py); "github_hmac" lets
+# Paperclip verify natively. Registry-level marker, never forwarded to
+# Paperclip verbatim — see registry.Inbound's docstring.
+_PAPERCLIP_SIGNING_MODE = {"stripe_edge": "none", "github_hmac": "github_hmac"}
+
+# Stripe-edge verification tolerates a 300s clock skew
+# (paperclip_trigger_proxy.verify_stripe_signature's default `tolerance_s`) —
+# matching the trigger's own replay window keeps the two numbers from
+# drifting apart for the one signing_mode that uses both.
+_DEFAULT_REPLAY_WINDOW_SEC = 300
+
+
+async def _company_id_for_owner(owner_id: str) -> str | None:
+    """Same resolution ``routers.paperclip_trigger_proxy._company_id_for_owner``
+    uses, duplicated here rather than imported across the router/service
+    boundary (services must not depend on routers)."""
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    if is_org_owner_id(owner_id):
+        return await repo.get_org_company_id(owner_id)
+    row = await repo.get(owner_id)
+    return row.company_id if row is not None and row.status == "active" else None
+
+
+def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, label: str) -> dict[str, Any]:
+    """The webhook-kind create_routine_trigger body — the ``kind="webhook"``
+    counterpart to ``agent_routine_provisioning.build_dormant_trigger_body``'s
+    ``kind="schedule"``. Always enabled (upstream's own default): unlike a
+    scheduled routine there is no "arm it later" step here — the trigger is
+    live as soon as it exists, gated instead by whether the sender can reach
+    it (guided_paste needs the owner to actually paste the URL into their
+    dashboard first)."""
+    return {
+        "kind": "webhook",
+        "signingMode": signing_mode,
+        "replayWindowSec": replay_window_sec,
+        "label": label,
+    }
+
+
+async def _auto_register_webhook(
+    *,
+    owner_id: str,
+    provider_key: str,
+    repo: str | None,
+    proxy_url: str,
+    trigger_secret: str | None,
+) -> None:
+    """Seam for the ``webhook_registration: "auto"`` branch (GitHub, Task 4):
+    register the webhook with the provider's own API (e.g.
+    ``POST /repos/{repo}/hooks`` with ``config.secret = trigger_secret``) so
+    the provider starts sending signed events with no owner paste step.
+    Not implemented in Task 3 — no live registry provider uses "auto" yet.
+    """
+    raise NotImplementedError(f"auto webhook registration not implemented for provider={provider_key!r}")
+
+
+async def seed_trigger_routine(
+    owner_id: str,
+    provider_key: str,
+    event_id: str,
+    *,
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """Create a routine + webhook trigger pre-filled from ``provider_key``'s
+    registry ``inbound`` declaration, for the event named ``event_id``.
+
+    Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions}``.
+    ``instructions`` carries the guided-paste copy (Stripe today) or is
+    ``None`` once an ``auto`` provider lands (Task 4).
+
+    Raises ``ValueError`` for any caller-facing input problem (unknown
+    provider/event, provider not wired as a trigger source, no active
+    Paperclip company, no resolvable suggested agent) — the router maps
+    these to a 4xx. Raises ``RuntimeError`` on a malformed upstream
+    response (Paperclip is expected to always return an id / publicId).
+    """
+    provider = registry.get_provider(provider_key)
+    inbound = provider.inbound
+    if inbound is None:
+        raise ValueError(f"{provider_key!r} is not wired as an Automations trigger source")
+
+    event = next((e for e in inbound.events if e.id == event_id), None)
+    if event is None:
+        raise ValueError(f"unknown event {event_id!r} for provider {provider_key!r}")
+
+    paperclip_signing_mode = _PAPERCLIP_SIGNING_MODE.get(inbound.signing_mode)
+    if paperclip_signing_mode is None:
+        raise ValueError(f"unsupported inbound.signing_mode {inbound.signing_mode!r}")
+
+    # Only "friday" is used by any live registry template today (Stripe's).
+    # Extend this when a second suggested_agent shows up.
+    if inbound.template.suggested_agent != "friday":
+        raise ValueError(f"no agent resolver for suggested_agent={inbound.template.suggested_agent!r}")
+
+    company_id = await _company_id_for_owner(owner_id)
+    if not company_id:
+        raise ValueError(f"no active Paperclip company for owner {owner_id!r}")
+
+    title = inbound.template.title.format(event_label=event.label)
+    description = inbound.template.starter_prompt.format(event_label=event.label)
+
+    # Lazy import: keeps this module's load light and sidesteps a cycle —
+    # same convention agent_export.py uses for the identical import.
+    from core.services.company_deploy_service import _find_friday_id
+
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        cookie = await get_admin_session_cookie(http)
+        admin = PaperclipAdminClient(http_client=http)
+
+        agents = await admin.list_agents(session_cookie=cookie, company_id=company_id)
+        agent_id = _find_friday_id(agents)
+        if agent_id is None:
+            raise ValueError(f"no CEO agent (Friday) found in company {company_id!r}")
+
+        routine = await admin.create_routine(
+            session_cookie=cookie,
+            company_id=company_id,
+            body=_build_routine_body(title=title, description=description, agent_id=agent_id),
+        )
+        routine_id = routine.get("id") if isinstance(routine, dict) else None
+        if not routine_id:
+            raise RuntimeError("create_routine returned no id")
+
+        trigger_resp = await admin.create_routine_trigger(
+            session_cookie=cookie,
+            routine_id=routine_id,
+            body=_build_webhook_trigger_body(
+                signing_mode=paperclip_signing_mode,
+                replay_window_sec=_DEFAULT_REPLAY_WINDOW_SEC,
+                label=title,
+            ),
+        )
+
+    trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
+    public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
+    if not public_id:
+        raise RuntimeError("create_routine_trigger returned no trigger.publicId")
+
+    proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+
+    if inbound.webhook_registration == "guided_paste":
+        logger.info(
+            "inbound_triggers: seeded guided_paste routine=%s trigger=%s owner=%s provider=%s event=%s",
+            routine_id,
+            public_id,
+            owner_id,
+            provider_key,
+            event_id,
+        )
+        return {
+            "routine_id": routine_id,
+            "trigger_public_id": public_id,
+            "proxy_url": proxy_url,
+            "guided": True,
+            "instructions": (
+                f"In your {provider.display_name} dashboard, add a webhook endpoint "
+                f"pointed at {proxy_url} listening for the '{event.label}' event "
+                f"({event.id}). Paste the signing secret it gives you back into Isol8 "
+                "to finish arming this automation."
+            ),
+        }
+
+    if inbound.webhook_registration == "auto":
+        secret_material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
+        trigger_secret = secret_material.get("secret") if isinstance(secret_material, dict) else None
+        await _auto_register_webhook(
+            owner_id=owner_id,
+            provider_key=provider_key,
+            repo=repo,
+            proxy_url=proxy_url,
+            trigger_secret=trigger_secret,
+        )
+        logger.info(
+            "inbound_triggers: seeded auto routine=%s trigger=%s owner=%s provider=%s event=%s",
+            routine_id,
+            public_id,
+            owner_id,
+            provider_key,
+            event_id,
+        )
+        return {
+            "routine_id": routine_id,
+            "trigger_public_id": public_id,
+            "proxy_url": proxy_url,
+            "guided": False,
+            "instructions": None,
+        }
+
+    raise ValueError(f"unknown inbound.webhook_registration {inbound.webhook_registration!r}")

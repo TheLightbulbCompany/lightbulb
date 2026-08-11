@@ -98,7 +98,16 @@ from core.config import settings
 from core.repositories import billing_repo, hook_event_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.credentials import integration_secret_store
-from core.services.credentials.stripe_edge import WEBHOOK_SECRET_FIELD, stripe_trigger_secret_provider
+from core.services.credentials.stripe_edge import (
+    STRIPE_SECRET_CACHE as _STRIPE_SECRET_CACHE,
+)
+from core.services.credentials.stripe_edge import (
+    STRIPE_SECRET_TTL_SECONDS as _STRIPE_SECRET_TTL_SECONDS,
+)
+from core.services.credentials.stripe_edge import (
+    WEBHOOK_SECRET_FIELD,
+    stripe_trigger_secret_provider,
+)
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from core.services.provision_gate import has_always_on_entitlement
@@ -138,12 +147,13 @@ def _binding_cached(owner_id: str, public_id: str) -> bool:
 # common case — every ordinary/unsigned trigger) would mean a live
 # Secrets Manager GetSecretValue on every single fire; caching the
 # negative result is what makes that free after the first lookup.
-# ponytail: caching the SECRET itself (not just presence) means a whsec_
-# rotation via T6's re-paste takes up to the TTL to take effect on this
-# process — fine for v1 (no rotation flow exists yet); shrink the TTL or
-# add explicit invalidation on write if that becomes a real workflow.
-_STRIPE_SECRET_TTL_SECONDS = 3600
-_STRIPE_SECRET_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
+#
+# Owned by ``core.services.credentials.stripe_edge`` (imported above by
+# reference, not copied) so the webhook-secret WRITE path
+# (``routers/automations.py``) can invalidate it via
+# ``stripe_edge.invalidate_stripe_secret_cache`` right after every store —
+# without that a just-armed or just-rotated trigger stays fail-open
+# (forwarded unsigned) for up to the TTL below.
 
 
 class _StripeSecretStoreError(Exception):

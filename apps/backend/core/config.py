@@ -1,5 +1,13 @@
-from pydantic import field_validator
+import os
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
+
+# ENVIRONMENT values that mean "this is a real, internet-reachable deployment"
+# (vs. "local" / "test" / unset for local dev + CI). Deployed envs must have the
+# security fences configured — see _validate_deployed_security below.
+_DEPLOYED_ENVIRONMENTS = frozenset({"dev", "staging", "prod"})
+_KNOWN_ENVIRONMENTS = _DEPLOYED_ENVIRONMENTS | frozenset({"local", "test"})
 
 
 class Settings(BaseSettings):
@@ -380,6 +388,46 @@ class Settings(BaseSettings):
         if "your-clerk-domain" in v:
             raise ValueError("CLERK_ISSUER not configured. Set the CLERK_ISSUER environment variable.")
         return v
+
+    @model_validator(mode="after")
+    def _validate_deployed_security(self) -> "Settings":
+        """Fail LOUD at boot rather than silently fail open in a deployment.
+
+        Several security fences are gated on env vars whose defaults are the
+        *insecure* value (WS impersonation enforcement off, Clerk ``aud`` skipped
+        when ``CLERK_AUDIENCE`` is None) or on ``ENVIRONMENT`` reading ``"prod"``
+        (the debug routes + Clerk webhook signature guard fail open otherwise).
+        A dropped CDK variable would open these with no other signal, so assert
+        the invariants at construction — the app refuses to boot if they break.
+        """
+        env = self.ENVIRONMENT.strip().lower()
+
+        # Catch a typo'd ENVIRONMENT ("prd") that silently reads as non-prod.
+        if env and env not in _KNOWN_ENVIRONMENTS:
+            raise ValueError(f"ENVIRONMENT={self.ENVIRONMENT!r} is not one of {sorted(_KNOWN_ENVIRONMENTS)}")
+
+        # Running in ECS Fargate ⇒ we ARE deployed (the metadata URI is always
+        # injected by the Fargate agent, never present locally / in CI). A
+        # non-deployed ENVIRONMENT here means the CDK var was dropped, which
+        # would flip the debug routes + webhook guard to fail-open.
+        if os.environ.get("ECS_CONTAINER_METADATA_URI_V4") and env not in _DEPLOYED_ENVIRONMENTS:
+            raise ValueError(
+                "Running in ECS Fargate but ENVIRONMENT is not a deployed value "
+                f"(got {self.ENVIRONMENT!r}); refusing to boot to avoid fail-open debug/webhook guards."
+            )
+
+        if env in _DEPLOYED_ENVIRONMENTS:
+            if not (self.WS_ENFORCE_INTERNAL_SECRET and self.WS_INTERNAL_SECRET):
+                raise ValueError(
+                    "WS internal-caller enforcement must be ON with a secret in a deployed environment; "
+                    "otherwise /ws/connect can be re-bound to another user via forged headers."
+                )
+            if not self.CLERK_AUDIENCE:
+                raise ValueError(
+                    "CLERK_AUDIENCE must be set in a deployed environment; otherwise JWT 'aud' "
+                    "verification is skipped and any token minted on the same Clerk instance authenticates."
+                )
+        return self
 
     class Config:
         env_file = ".env"

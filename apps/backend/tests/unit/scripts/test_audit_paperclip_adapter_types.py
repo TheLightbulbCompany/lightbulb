@@ -47,9 +47,19 @@ def test_classify_approvals_only_pending_hire_with_dangerous_payload():
         {"id": "p3", "company_id": "c1", "type": "hire_agent", "status": "pending", "adapter_type": "openclaw_gateway"},
         {"id": "p4", "company_id": "c1", "type": "hire_agent", "status": "approved", "adapter_type": "process"},
         {"id": "p5", "company_id": "c1", "type": "budget_increase", "status": "pending", "adapter_type": None},
+        # Activate branch: agentId set, adapterType deliberately absent — a legit
+        # marketplace hire of an already-created (filtered) agent. Must NOT flag.
+        {
+            "id": "p6",
+            "company_id": "c1",
+            "type": "hire_agent",
+            "status": "pending",
+            "adapter_type": None,
+            "agent_id": "ag_1",
+        },
     ]
     found = classify_approvals(rows)
-    # null + process on pending/revision hire flagged; gateway/approved/non-hire ignored.
+    # null + process CREATE-branch hires flagged; gateway/approved/non-hire/activate ignored.
     assert {f.row_id for f in found} == {"p1", "p2"}
     assert all(f.remediable for f in found)
 

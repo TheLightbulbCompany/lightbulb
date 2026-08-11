@@ -82,12 +82,19 @@ def classify_agents(rows: list[dict]) -> list[Finding]:
 
 
 def classify_approvals(rows: list[dict]) -> list[Finding]:
-    """rows: [{id, company_id, type, status, adapter_type}] — pending hire approvals."""
+    """rows: [{id, company_id, type, status, adapter_type, agent_id}] — pending hire approvals.
+
+    An approval carrying ``payload.agentId`` ACTIVATES an already-created (and
+    therefore already-filtered) agent — approve calls ``activatePendingApproval``,
+    not the create branch — and deliberately omits adapterType. Those are safe;
+    only the create branch (no agentId) with a dangerous/null type is a threat.
+    """
     return [
         Finding("approvals", r["id"], r.get("company_id", ""), r.get("status", ""), r.get("adapter_type"), True)
         for r in rows
         if r.get("type") == "hire_agent"
         and r.get("status") in ("pending", "revision_requested")
+        and not r.get("agent_id")
         and is_dangerous(r.get("adapter_type"))
     ]
 
@@ -154,11 +161,15 @@ def _query_approvals(client, db_arn, secret_arn) -> list[dict]:
         client,
         db_arn,
         secret_arn,
-        "SELECT id, company_id, type, status, payload->>'adapterType' AS adapter_type FROM approvals "
+        "SELECT id, company_id, type, status, payload->>'adapterType' AS adapter_type, "
+        "payload->>'agentId' AS agent_id FROM approvals "
         "WHERE type = 'hire_agent' AND status IN ('pending', 'revision_requested') "
+        # payload.agentId set => approve ACTIVATES that pre-created agent (safe); only the
+        # create branch (no agentId) defaults a null adapterType to process.
+        "AND payload->>'agentId' IS NULL "
         f"AND (payload->>'adapterType' IS NULL OR payload->>'adapterType' NOT IN {_SAFE_SQL})",
     )
-    return _rows(resp, ["id", "company_id", "type", "status", "adapter_type"])
+    return _rows(resp, ["id", "company_id", "type", "status", "adapter_type", "agent_id"])
 
 
 def _query_join_requests(client, db_arn, secret_arn) -> list[dict]:

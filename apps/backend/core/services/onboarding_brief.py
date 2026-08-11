@@ -176,17 +176,22 @@ def project_name_for(first_name: str) -> str:
 
 # The naming ask sits IN the kickoff body, BEFORE the board ask — not in the
 # closing steps where it used to live. Two things freeze from the company's
-# name at first use: the board's issue prefix (Paperclip re-derives it on
-# rename only while the board has minted nothing) and the email subdomain
+# name: the board's issue prefix (Paperclip re-derives it on rename only while
+# the board has minted nothing — fork v2026.8-isol8.4) and the email subdomain
 # (minted on the first send, no delete path). Naming after the tasks landed is
 # what left boards permanently keyed off the signup placeholder — three
 # letters of the owner's email local part.
+#
+# The wording deliberately promises only "minted early and permanent", not the
+# re-derivation mechanics: this text deploys with the backend, ahead of the
+# Paperclip image pin that adds rename re-derivation, and must stay true on
+# both sides of that flip.
 _NAMING_STEP_SENTENCE = (
     "Before you put anything on the board, check the company's name — if it is "
     "still a placeholder rather than a real business name, rename it now: the "
-    "board's task keys and my email address are both minted from whatever the "
-    "company is called when they are first used and cannot be changed after, so "
-    "pick something you would put on a business card."
+    "name feeds identifiers that are minted early and can never be changed — "
+    "the board's task-key prefix and the subdomain of my email address — so "
+    "settle the name first and pick something you would put on a business card."
 )
 
 # No idea given ("I don't know yet — you pick"): there is no brief to lead

@@ -93,6 +93,14 @@ function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// The circuit breaker trips a routine to `status: "paused"` after repeated
+// failed runs and stamps `autoPausedAt`; a human pause via the toggle/edit
+// dialog never sets that field. This is the single source of truth both the
+// list row and the detail banner use to tell the two apart.
+export function isAutoPaused(r: { status?: string | null; autoPausedAt?: string | null }): boolean {
+  return r.status === "paused" && !!r.autoPausedAt;
+}
+
 // Human copy for a blocked-gate 402 (routines_require_subscription): the shared
 // API client only promotes a STRING `detail` to `ApiError.message`, so a
 // structured `{blocked, code, message}` body would surface as a stringified
@@ -153,18 +161,25 @@ function DialogError({ message }: { message: string | null }) {
   );
 }
 
-// A status swatch + label, modeled on goals/GoalStatusIcon.
+// A status swatch + label, modeled on goals/GoalStatusIcon. `autoPaused`
+// renders the same paused (amber) swatch but FILLED — like the active dot —
+// plus a distinct title, so a breaker auto-pause reads differently from a
+// hand-pause (hollow ring, plain "Paused" label) at a glance.
 function RoutineStatusIcon({
   status,
+  autoPaused,
   showLabel,
   className,
 }: {
   status: string;
+  autoPaused?: boolean;
   showLabel?: boolean;
   className?: string;
 }) {
   const swatchColor = routineStatusColor[status] ?? routineStatusColorDefault;
   const isActive = status === "active";
+  const filled = isActive || autoPaused;
+  const label = autoPaused ? "Auto-paused after repeated failures" : statusLabel(status);
   const circle = (
     <span
       className={cn(
@@ -172,10 +187,10 @@ function RoutineStatusIcon({
         className,
       )}
       style={{ color: swatchColor, borderColor: swatchColor }}
-      aria-label={statusLabel(status)}
-      title={statusLabel(status)}
+      aria-label={label}
+      title={label}
     >
-      {isActive && (
+      {filled && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
       )}
     </span>
@@ -184,7 +199,7 @@ function RoutineStatusIcon({
   return (
     <span className="inline-flex items-center gap-1.5">
       {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm">{autoPaused ? "Auto-paused" : statusLabel(status)}</span>
     </span>
   );
 }
@@ -314,6 +329,16 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
     });
   }
 
+  // Same status-mutation path RoutinesPanel's enable/disable toggle uses
+  // (PATCH { status }) — the Resume affordance on the auto-pause banner is
+  // just that toggle fired from the detail view.
+  async function patchStatus(status: string): Promise<void> {
+    await run(async () => {
+      await patch(`/routines/${routineId}`, { status });
+      await refresh();
+    });
+  }
+
   if (isLoading && !routine) {
     return (
       <div
@@ -424,6 +449,38 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             Edit
           </EditorialButton>
         </div>
+
+        {/* Circuit-breaker auto-pause banner: the routine stopped firing on
+            its own after repeated failed runs. Distinct from a hand-pause
+            (no banner there) — see isAutoPaused. */}
+        {isAutoPaused(routine) && (
+          <div
+            role="status"
+            className="rounded-lg border px-4 py-3 text-sm flex items-center justify-between gap-3"
+            style={{
+              borderColor: "color-mix(in srgb, var(--warn) 40%, transparent)",
+              backgroundColor: "color-mix(in srgb, var(--warn) 12%, transparent)",
+              color: "var(--warn)",
+            }}
+          >
+            <span>
+              Auto-paused after {routine.consecutiveFailureCount ?? "repeated"} failed runs
+              {routine.autoPauseReason ? ` (${routine.autoPauseReason})` : ""}. Fix the
+              cause, then resume.
+            </span>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                setActionError(null);
+                void patchStatus("active");
+              }}
+            >
+              Resume
+            </EditorialButton>
+          </div>
+        )}
 
         {/* Main-column banner for errors from the inline actions (delete /
             rotate / restore). When an edit dialog is open it renders the error
@@ -645,7 +702,11 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         <dl className="flex flex-col">
           <PropertyRow label="Status">
             {routine.status ? (
-              <RoutineStatusIcon status={routine.status} showLabel />
+              <RoutineStatusIcon
+                status={routine.status}
+                autoPaused={isAutoPaused(routine)}
+                showLabel
+              />
             ) : (
               <span data-empty="true" style={EMPTY_DASH_STYLE}>
                 —

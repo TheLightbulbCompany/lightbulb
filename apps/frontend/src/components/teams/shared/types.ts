@@ -515,6 +515,13 @@ export interface RoutineDetail {
   // surfaced in the detail page's Properties aside.
   createdAt?: string | null;
   updatedAt?: string | null;
+  // Circuit-breaker auto-pause state (upstream shared/routine.ts). Set together
+  // when the breaker trips a routine to `status: "paused"` after repeated
+  // failed runs — distinct from a human pausing it by hand, which leaves
+  // `autoPausedAt` null. See `isAutoPaused` in RoutineDetailPanel.tsx.
+  autoPausedAt?: string | null;
+  consecutiveFailureCount?: number | null;
+  autoPauseReason?: string | null;
 }
 
 /** A routine run (upstream RoutineRunSummary subset). `status`/`source` are free strings. */

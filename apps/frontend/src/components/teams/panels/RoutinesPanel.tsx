@@ -23,6 +23,7 @@ import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
+import { isAutoPaused } from "@/components/teams/panels/RoutineDetailPanel";
 import type {
   CompanyAgent,
   RoutineVariable,
@@ -68,6 +69,10 @@ interface Routine {
   createdAt?: string | null;
   updatedAt?: string | null;
   prompt?: string;
+  // Circuit-breaker auto-pause state — see isAutoPaused in RoutineDetailPanel.
+  autoPausedAt?: string | null;
+  consecutiveFailureCount?: number | null;
+  autoPauseReason?: string | null;
 }
 
 /* ── field accessors (tolerant of upstream + legacy shapes) ──────────────── */
@@ -384,12 +389,28 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       key: "enabled",
       header: "Status",
       cell: (r) => (
-        <RoutineToggle
-          enabled={routineEnabled(r)}
-          disabled={busy === r.id}
-          onToggle={(next) => toggle(r, next)}
-          label={routineName(r)}
-        />
+        <div className="flex items-center gap-2">
+          <RoutineToggle
+            enabled={routineEnabled(r)}
+            disabled={busy === r.id}
+            onToggle={(next) => toggle(r, next)}
+            label={routineName(r)}
+          />
+          {isAutoPaused(r) && (
+            <span
+              className="inline-flex items-center gap-1 text-xs"
+              style={{ color: "var(--warn)" }}
+              title="Auto-paused after repeated failures"
+            >
+              <span
+                aria-hidden="true"
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ backgroundColor: "var(--warn)" }}
+              />
+              auto-paused
+            </span>
+          )}
+        </div>
       ),
     },
     {

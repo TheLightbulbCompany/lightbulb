@@ -400,8 +400,9 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     (None, re.compile(r"^_plugins/")),  # plugin-served static JS (XSS to loader)
     # Environments: SSH driver + probes are outbound-from-host SSRF. Reads pass.
     ({"POST", "PATCH", "DELETE"}, re.compile(r"^api/(?:companies/[^/]+/)?environments(?:/|$)")),
-    # Unauthenticated tenant-controlled outbound HEAD.
-    (None, re.compile(r"^api/invites/[^/]+/test-resolution$")),
+    # Unauthenticated tenant-controlled outbound HEAD. Trailing-slash-safe:
+    # Express non-strict routing treats ``/foo`` and ``/foo/`` identically.
+    (None, re.compile(r"^api/invites/[^/]+/test-resolution/?$")),
     # Paperclip's own auth surface — Isol8 injects a service-account cookie.
     (None, re.compile(r"^api/auth(?:/|$)")),
     # Instance-wide admin: settings, DB backups, cross-tenant scheduler list.
@@ -413,8 +414,14 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     ({"DELETE"}, re.compile(r"^api/companies/[^/]+/?$")),
     (None, re.compile(r"^api/companies/import")),
     (None, re.compile(r"^api/companies/[^/]+/imports(?:/|$)")),
-    # claude_local-only subprocess login.
-    (None, re.compile(r"^api/agents/[^/]+/claude-login$")),
+    # claude_local-only subprocess login (trailing-slash-safe).
+    (None, re.compile(r"^api/agents/[^/]+/claude-login/?$")),
+    # Config-revision rollback restores a STORED adapterConfig snapshot with no
+    # request-body adapterType. A revision predating this fence could carry a
+    # non-gateway adapter (incl. one an attacker planted while the proxy was
+    # open), and rollback would restore it unchanged. Block until the §3.6 data
+    # migration has scrubbed historical revisions; unblock after.
+    (None, re.compile(r"^api/agents/[^/]+/config-revisions/[^/]+/rollback/?$")),
     # Adapter-inventory / docstring disclosure (mounted at root, not under /api).
     (None, re.compile(r"^llms/agent-configuration")),
     # Environment capability enumeration (info disclosure; creates/probes are
@@ -464,7 +471,9 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _assert_paperclip_request_allowed(method: str, path: str, body: bytes) -> None:
+def _assert_paperclip_request_allowed(
+    method: str, path: str, body: bytes, *, content_encoding: str | None = None
+) -> None:
     """Reject a proxied request that could reach a non-gateway adapter.
 
     Raises ``HTTPException(403)`` on a disallowed route/body; returns ``None``
@@ -488,6 +497,12 @@ def _assert_paperclip_request_allowed(method: str, path: str, body: bytes) -> No
 
     if method not in {"POST", "PUT", "PATCH"}:
         return
+
+    # A compressed request body would hide adapterType from us while Paperclip's
+    # express.json() (inflate=true by default) still decodes and processes it
+    # upstream. No Isol8 client sends compressed request bodies — refuse them.
+    if content_encoding and content_encoding.strip().lower() not in ("", "identity"):
+        raise HTTPException(status_code=403, detail="Encoded request body not permitted")
 
     data = _parse_json_object(body)
     adapter_type = _str_or_none(data.get("adapterType")) if data else None
@@ -1504,7 +1519,12 @@ async def proxy(path: str, request: Request) -> Response:
         # Adapter-surface gate: reject anything that could reach a non-gateway
         # adapter (host shell / SSRF) or an adapter-management route before it
         # leaves for the shared Paperclip task. Raises HTTPException(403).
-        _assert_paperclip_request_allowed(request.method, path, body_bytes)
+        _assert_paperclip_request_allowed(
+            request.method,
+            path,
+            body_bytes,
+            content_encoding=request.headers.get("content-encoding"),
+        )
 
         async def _forward(session_cookie: str) -> httpx.Response:
             return await client.request(

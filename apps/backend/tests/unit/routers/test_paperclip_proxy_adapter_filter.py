@@ -228,6 +228,33 @@ def test_case_variant_path_does_not_bypass_denylist():
     assert _blocked("POST", "Api/Adapters/Install")
 
 
+def test_trailing_slash_variant_does_not_bypass_denylist():
+    # Express non-strict routing treats /foo and /foo/ identically.
+    assert _blocked("POST", "api/agents/a1/claude-login/")
+    assert _blocked("GET", "api/invites/tok/test-resolution/")
+
+
+def test_config_revision_rollback_is_blocked():
+    # Rollback restores a stored snapshot that may carry a pre-fence non-gateway
+    # adapter; no request-body adapterType to inspect.
+    assert _blocked("POST", "api/agents/a1/config-revisions/r1/rollback")
+
+
+def test_compressed_request_body_is_rejected():
+    # A gzip body hides adapterType from us while express.json() inflates it.
+    payload = json.dumps({"adapterType": "process"}).encode()
+    with pytest.raises(HTTPException) as exc:
+        _assert_paperclip_request_allowed("PATCH", "api/agents/a1", payload, content_encoding="gzip")
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("encoding", [None, "", "identity"])
+def test_uncompressed_encodings_pass(encoding):
+    # A normal (unencoded) gateway write must still go through.
+    body = json.dumps({"adapterType": "openclaw_gateway"}).encode()
+    _assert_paperclip_request_allowed("POST", "api/companies/c1/agents", body, content_encoding=encoding)
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

@@ -433,13 +433,13 @@ arrives in the wake text:
   `409 Conflict`, another agent owns it — **never retry a 409**; pick a
   different task.
 - Checkout requires a run id, so it works ONLY in heartbeat runs. From
-  webchat, never attempt it: plain field edits (`PATCH` title, description,
-  priority, assignee) on issues that aren't `in_progress` need no run id —
-  just make them. To *start* work from webchat, assign the issue and set
-  status `todo`; that dispatches a real heartbeat run, which checks out
-  properly. If a call fails asking for a run id, you used a wake-only call
-  in webchat — switch to these paths and tell {owner_display} what you
-  did; never tell them you "need a run id".
+  webchat, never attempt it: plain field edits (title, priority, assignee
+  — the update helper's flags) on issues that aren't `in_progress` need no
+  run id — just make them. To *start* work from webchat, assign the issue
+  and set status `todo` in one update; that dispatches a real heartbeat
+  run, which checks out properly. If a call fails asking for a run id, you
+  used a wake-only call in webchat — switch to these paths and tell
+  {owner_display} what you did; never tell them you "need a run id".
 - Set `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on every mutating call
   (create, update, comment, checkout, release) for audit — but only when a
   wake gave you a run id. With no run id, omit the header entirely; **never

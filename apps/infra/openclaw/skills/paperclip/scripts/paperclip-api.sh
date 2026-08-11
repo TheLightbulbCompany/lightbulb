@@ -37,12 +37,18 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       POST /api/issues/{id}/comments   body: { body }
       Reads the markdown comment body from stdin (required).
 
-  update <issueId> [--status STATUS] [--blocked-by "id1,id2"]
-      PATCH /api/issues/{id}           body: { status?, comment?, blockedByIssueIds? }
-      Reads an optional markdown comment from stdin. At least one of
-      --status / --blocked-by / a stdin comment is required.
+  update <issueId> [--status STATUS] [--title T] [--priority P]
+         [--assignee <agentId>] [--blocked-by "id1,id2"]
+      PATCH /api/issues/{id}           body: { status?, title?, priority?,
+                                              assigneeAgentId?, comment?,
+                                              blockedByIssueIds? }
+      Reads an optional markdown comment from stdin. At least one flag or a
+      stdin comment is required.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
       --blocked-by replaces the blocker set; pass --blocked-by "" to clear it.
+      --assignee + --status todo is the webchat way to START work: it
+      dispatches a heartbeat run for the assignee (see the skill's
+      "Webchat and interactive sessions" section).
 
   checkout <issueId> [--agent-id ID] [--expect "s1,s2,..."]
       POST /api/issues/{id}/checkout   body: { agentId, expectedStatuses }
@@ -326,11 +332,14 @@ cmd_update() {
   local issue_id="${1:-}"
   shift || true
   [[ -n "$issue_id" ]] || die 'update: missing <issueId>.'
-  local status=""
+  local status="" title="" priority="" assignee=""
   local blocked_by="" blocked_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --status) status="${2:-}"; shift 2 ;;
+      --title) title="${2:-}"; shift 2 ;;
+      --priority) priority="${2:-}"; shift 2 ;;
+      --assignee) assignee="${2:-}"; shift 2 ;;
       --blocked-by) blocked_by="${2:-}"; blocked_set=1; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       *) die "update: unknown argument: $1" ;;
@@ -339,17 +348,23 @@ cmd_update() {
 
   local comment
   comment="$(read_stdin)"
-  [[ -n "$status" || -n "$comment" || "$blocked_set" == "1" ]] \
-    || die 'update: pass --status, --blocked-by, and/or a stdin comment.'
+  [[ -n "$status" || -n "$title" || -n "$priority" || -n "$assignee" || -n "$comment" || "$blocked_set" == "1" ]] \
+    || die 'update: pass --status, --title, --priority, --assignee, --blocked-by, and/or a stdin comment.'
 
   local payload
   payload="$(
     jq -nc \
       --arg status "$status" \
+      --arg title "$title" \
+      --arg priority "$priority" \
+      --arg assignee "$assignee" \
       --arg comment "$comment" \
       --arg blockedBy "$blocked_by" \
       --argjson blockedSet "$blocked_set" '
       (if $status == "" then {} else {status: $status} end)
+      + (if $title == "" then {} else {title: $title} end)
+      + (if $priority == "" then {} else {priority: $priority} end)
+      + (if $assignee == "" then {} else {assigneeAgentId: $assignee} end)
       + (if $comment == "" then {} else {comment: $comment} end)
       + (if $blockedSet == 1
          then {blockedByIssueIds: ($blockedBy | split(",") | map(select(length > 0)))}

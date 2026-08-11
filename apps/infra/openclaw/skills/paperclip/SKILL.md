@@ -28,9 +28,11 @@ description: >
      issues on the owner's live board to debug API behavior; use --dry-run.
   4. Scripts: /app/skills/paperclip/scripts/paperclip-api.sh and /app/skills/paperclip/scripts/paperclip-issue-update.sh
      treat PAPERCLIP_RUN_ID as optional (header sent only when set), and
-     paperclip-api.sh carries an Isol8-added top-level `create` subcommand
-     plus a `raw <METHOD> </api/...path>` escape hatch (jq-validated stdin
-     body) so no write ever needs hand-rolled curl.
+     paperclip-api.sh carries an Isol8-added top-level `create` subcommand,
+     a `raw <METHOD> </api/...path>` escape hatch (jq-validated stdin
+     body) so no write ever needs hand-rolled curl, and `update` field
+     flags (--title/--priority/--assignee) so the webchat section's
+     assign-to-start command actually works through the helper.
   5. ABSOLUTE helper paths: every scripts/ invocation is written as
      /app/skills/paperclip/scripts/... (the image bakes this skill at
      /app/skills/paperclip — Dockerfile Layer). The agent's working directory
@@ -83,7 +85,7 @@ Every write you do in a heartbeat has a subcommand:
 | Write | Command |
 | ----- | ------- |
 | Comment on an issue | `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (markdown body on stdin) |
-| Update status / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--blocked-by "id1,id2"]` (optional comment on stdin) |
+| Update status / fields / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--title T] [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]` (optional comment on stdin) |
 | Checkout | `/app/skills/paperclip/scripts/paperclip-api.sh checkout <issueId>` |
 | Release | `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>` |
 | Create subtask | `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id> --status backlog\|todo` (optional description on stdin) |
@@ -115,7 +117,7 @@ Creates with **no** assignee are unaffected: leaving `--status` off is fine, and
 
 Not every session is a heartbeat. When your owner talks to you in the chat UI (webchat), there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is normal, not broken. What it means in practice:
 
-- **You can still read everything and write almost everything.** Creates, comments, and `update` field edits (title, description, priority, assignee, status, blockers) all work without a run id on issues that are not actively being worked. The helper omits the run-id header automatically.
+- **You can still read everything and write almost everything.** Creates, comments, and `update` field edits (`--title`, `--priority`, `--assignee`, `--status`, `--blocked-by`; description via `raw PATCH`) all work without a run id on issues that are not actively being worked. The helper omits the run-id header automatically.
 - **You cannot `checkout` or `release`.** Those two calls belong to heartbeat runs and are rejected without a run id (`401 Agent run id required`). Do not attempt them from webchat, do not treat the rejection as a platform error, and never invent a run id.
 - **To start work from webchat, assign — don't checkout.** Set the assignee and `--status todo` (`/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> --assignee <agentId> --status todo`): Paperclip dispatches a heartbeat run for the assignee (yourself included), and *that* run checks out properly. Starting a run spends money — do it when the user says "work on this now"; keep planning output in `backlog` otherwise.
 - **An `in_progress` issue belongs to its live run.** Field edits are refused while a run holds the checkout — comment instead (comments stay open and wake the assignee), or wait for the run to release it.

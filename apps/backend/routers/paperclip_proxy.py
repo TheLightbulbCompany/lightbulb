@@ -352,8 +352,247 @@ def _filter_request_headers(req: Request) -> dict[str, str]:
         lower = name.lower()
         if lower in _HOP_BY_HOP_HEADERS or lower in {"host", "authorization", "cookie", "content-length"}:
             continue
+        # Never relay Paperclip's own trusted-header identity family. Paperclip
+        # will honour x-paperclip-cloud-tenant-token + x-paperclip-cloud-user-id
+        # / -user-email / -stack-role as a *self-asserted* identity (see
+        # paperclip/server/src/middleware/auth.ts), and x-paperclip-run-id is
+        # likewise client-forgeable. Isol8 supplies the real identity via the
+        # server-minted Better Auth session cookie only, so a browser must never
+        # be able to smuggle these upstream.
+        if lower.startswith("x-paperclip-"):
+            continue
         out[name] = value
     return out
+
+
+# ---------------------------------------------------------------------------
+# Adapter-surface request filter — see docs/audit-2026-05-02-paperclip-routes.md
+#
+# The shared Paperclip Fargate task holds every tenant's Aurora master creds and
+# is IMDS-reachable. Its `process` / `http` / `*_local` adapters execute shell
+# (or make arbitrary outbound connections) ON that host, so any tenant who can
+# persist a non-gateway adapter — or reach an adapter-management / host-exec
+# route — gets cross-tenant compromise. Only a *remote gateway* adapter is safe:
+# the agent runs in the tenant's own OpenClaw container, never on this host.
+#
+# This proxy is the SOLE gate for the direct create+hire routes. The deployed
+# fork's create/hire handlers call assertKnownAdapterType, which only checks the
+# adapter is *registered* (`process` is) — NOT that it is allowlisted. (The
+# invite/join paths DO enforce openclaw_gateway upstream; we still filter them
+# defensively.) Follow-ups this PR does NOT cover, tracked in the audit doc:
+# the openclaw_gateway URL SSRF (§3.1, needs host-network egress rules) and the
+# §4 adapter-plugin-store pre-disable.
+# ---------------------------------------------------------------------------
+
+# Isol8 runs OpenClaw only. `hermes_gateway` is a second remote-gateway adapter
+# the fork supports and would be equally host-safe, but it is deliberately
+# excluded until Isol8 ships a Hermes flow — add it here if that changes.
+_ALLOWED_ADAPTER_TYPES = frozenset({"openclaw_gateway"})
+
+# Each entry is (methods, pattern); methods=None matches every method. `path`
+# is matched WITHOUT its leading slash (e.g. "api/companies/x/agents").
+_BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
+    # Adapter registry: npm install / uninstall / reload / toggle — host mutation
+    # + inventory disclosure of the dangerous adapters. Isol8 owns agent-create.
+    (None, re.compile(r"^api/adapters(?:/|$)")),
+    # Plugin system: install (npm on host), config eval, tool exec, info leak.
+    (None, re.compile(r"^api/plugins(?:/|$)")),
+    (None, re.compile(r"^_plugins/")),  # plugin-served static JS (XSS to loader)
+    # Environments: SSH driver + probes are outbound-from-host SSRF. Reads pass.
+    ({"POST", "PATCH", "DELETE"}, re.compile(r"^api/(?:companies/[^/]+/)?environments(?:/|$)")),
+    # Unauthenticated tenant-controlled outbound HEAD. Trailing-slash-safe:
+    # Express non-strict routing treats ``/foo`` and ``/foo/`` identically.
+    (None, re.compile(r"^api/invites/[^/]+/test-resolution/?$")),
+    # Paperclip's own auth surface — Isol8 injects a service-account cookie.
+    (None, re.compile(r"^api/auth(?:/|$)")),
+    # Instance-wide admin: settings, DB backups, cross-tenant scheduler list.
+    (None, re.compile(r"^api/instance(?:/|$)")),
+    (None, re.compile(r"^api/admin(?:/|$)")),
+    # Company lifecycle is Isol8-owned; portability import carries agent bundles
+    # (adapterType nested per-agent — blocked wholesale rather than walked).
+    ({"POST"}, re.compile(r"^api/companies/?$")),
+    ({"DELETE"}, re.compile(r"^api/companies/[^/]+/?$")),
+    (None, re.compile(r"^api/companies/import")),
+    (None, re.compile(r"^api/companies/[^/]+/imports(?:/|$)")),
+    # claude_local-only subprocess login (trailing-slash-safe).
+    (None, re.compile(r"^api/agents/[^/]+/claude-login/?$")),
+    # Config-revision rollback restores a STORED adapterConfig snapshot with no
+    # request-body adapterType. A revision predating this fence could carry a
+    # non-gateway adapter (incl. one an attacker planted while the proxy was
+    # open), and rollback would restore it unchanged. Block until the §3.6 data
+    # migration has scrubbed historical revisions; unblock after.
+    (None, re.compile(r"^api/agents/[^/]+/config-revisions/[^/]+/rollback/?$")),
+    # Join-request approve creates an agent from the STORED join-request's
+    # adapterType, falling back to "process" when it is null — a pre-fence row
+    # is a host-exec path. Isol8 does not use the external-agent-join flow
+    # (marketplace hire is the path), so block it; the §3.6 migration + the
+    # invite-accept filter cover new/existing rows.
+    (None, re.compile(r"^api/companies/[^/]+/join-requests/[^/]+/approve/?$")),
+    # Adapter-inventory / docstring disclosure (mounted at root, not under /api).
+    (None, re.compile(r"^llms/agent-configuration")),
+    # Environment capability enumeration (info disclosure; creates/probes are
+    # blocked above, reads pass, but capabilities leak the host's driver set).
+    (None, re.compile(r"^api/(?:companies/[^/]+/)?environments/(?:[^/]+/)?capabilities")),
+)
+
+# `:type`-scoped adapter routes (models / detect-model / config-schema /
+# ui-parser) — several shell out on the host. Allowed only for a gateway type.
+_ADAPTER_TYPE_ROUTE = re.compile(r"^api/(?:companies/[^/]+/)?adapters/(?P<type>[^/]+)/")
+
+# Routes that PERSIST a new agent's adapterType. A missing value defaults to
+# "process" upstream, so these must carry an allowlisted type *explicitly*.
+_ADAPTER_CREATE_ROUTES = (
+    re.compile(r"^api/companies/[^/]+/agents/?$"),
+    re.compile(r"^api/companies/[^/]+/agent-hires/?$"),
+)
+
+# Invite accept persists an *agent* join's adapterType; a missing one is stored
+# as null and defaults to "process" when the join-request is later approved.
+_INVITE_ACCEPT_ROUTES = (re.compile(r"^api/invites/[^/]+/accept/?$"),)
+
+# Approval create/resubmit carry the hire's adapterType NESTED at
+# ``payload.adapterType``; ``/approve`` applies it with a ``?? "process"``
+# fallback (paperclip services/approvals.ts). The top-level check misses these.
+# Resubmit is separate because it need not repeat ``type`` and REPLACES the
+# stored payload, so a payload that merely omits adapterType still resets it.
+_APPROVAL_CREATE_ROUTES = (re.compile(r"^api/companies/[^/]+/approvals/?$"),)
+_APPROVAL_RESUBMIT_ROUTES = (re.compile(r"^api/approvals/[^/]+/resubmit/?$"),)
+
+
+def _parse_json_object(body: bytes) -> dict | None:
+    """Parse ``body`` as a JSON object, or ``None`` if it isn't one.
+
+    A non-JSON / non-object body carries no forgeable adapterType field. This is
+    the LENIENT parse; the filter itself fails closed on an unparseable body that
+    declares ``application/json`` (see ``_assert_paperclip_request_allowed``).
+    """
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001 — a non-JSON body carries no adapterType
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _require_nested_gateway(payload: object) -> None:
+    """Reject unless ``payload`` is a dict whose adapterType is allowlisted."""
+    nested = _str_or_none(payload.get("adapterType")) if isinstance(payload, dict) else None
+    if nested is None or nested not in _ALLOWED_ADAPTER_TYPES:
+        raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+
+def _assert_paperclip_request_allowed(
+    method: str,
+    path: str,
+    body: bytes,
+    *,
+    content_type: str | None = None,
+    content_encoding: str | None = None,
+) -> None:
+    """Reject a proxied request that could reach a non-gateway adapter.
+
+    Raises ``HTTPException(403)`` on a disallowed route/body; returns ``None``
+    otherwise. See the threat-model block above.
+    """
+    # Match routes case-INSENSITIVELY: the deployed Paperclip fork runs Express
+    # with its default (case-insensitive) routing, so ``/API/Companies/.../Agents``
+    # resolves to the same handler — a lowercase-only denylist would miss it. The
+    # adapterType VALUE checks below stay case-sensitive (the upstream adapter
+    # registry lookup is exact, so a case-variant type fails there anyway).
+    method = method.upper()
+    p = path.lower()
+
+    # CANONICAL-PATH GUARD. The ASGI-decoded ``path`` must be exactly the path
+    # httpx forwards to Paperclip. When httpx joins ``base_url`` + ``/{path}`` it
+    # applies RFC-3986 resolution — percent-decoding, ``?``/``#`` splitting,
+    # ``.``/``..`` dot-segment removal, and leading-``//`` authority handling —
+    # so matching the *pre-join* path lets any of those transforms route the
+    # request to a DIFFERENT upstream handler than we inspect (every such gap
+    # defaulted the create route to the ``process`` adapter). Rather than chase
+    # each transform, reject anything non-canonical up front: a leading slash, an
+    # empty (``//``) / ``.`` / ``..`` segment, a delimiter, a stray percent, a
+    # backslash, or a control byte. Legit Teams paths — a slash-free ``api/…``
+    # with at most dotted file segments (``ui-parser.js``) — contain none.
+    if (
+        p.startswith("/")
+        or "//" in p
+        or any(c in p for c in ("?", "#", "%", "\\"))
+        or any(seg in (".", "..") for seg in p.split("/"))
+        or any(ord(ch) < 0x20 for ch in p)
+    ):
+        raise HTTPException(status_code=403, detail="Malformed path")
+
+    for methods, pattern in _BLOCKED_ROUTES:
+        if (methods is None or method in methods) and pattern.match(p):
+            raise HTTPException(status_code=403, detail="Route not permitted")
+
+    type_route = _ADAPTER_TYPE_ROUTE.match(p)
+    if type_route and type_route.group("type") not in _ALLOWED_ADAPTER_TYPES:
+        raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+    if method not in {"POST", "PUT", "PATCH"}:
+        return
+
+    # A compressed request body would hide adapterType from us while Paperclip's
+    # express.json() (inflate=true by default) still decodes and processes it
+    # upstream. No Isol8 client sends compressed request bodies — refuse them.
+    if content_encoding and content_encoding.strip().lower() not in ("", "identity"):
+        raise HTTPException(status_code=403, detail="Encoded request body not permitted")
+
+    # Parse the body. Fail CLOSED on an unparseable ``application/json`` body:
+    # our strict json.loads rejects e.g. invalid UTF-8 that Express's lenient
+    # decoder would repair and process, so "can't inspect it" must not become
+    # "allow it".
+    content_is_json = (content_type or "").split(";", 1)[0].strip().lower() == "application/json"
+    data: dict | None = None
+    if body:
+        try:
+            parsed = json.loads(body)
+            data = parsed if isinstance(parsed, dict) else None
+        except Exception:  # noqa: BLE001
+            if content_is_json:
+                raise HTTPException(status_code=403, detail="Unparseable JSON body")
+            data = None
+    adapter_type = _str_or_none(data.get("adapterType")) if data else None
+
+    # Direct create/hire: a missing adapterType defaults to "process" upstream.
+    if adapter_type is None and any(r.match(p) for r in _ADAPTER_CREATE_ROUTES):
+        raise HTTPException(status_code=403, detail="adapterType required")
+    # Any write naming a non-allowlisted type at the top level.
+    if adapter_type is not None and adapter_type not in _ALLOWED_ADAPTER_TYPES:
+        raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+    if data is None:
+        return
+
+    # Invite accept: an agent join with no adapterType stores null -> "process".
+    if data.get("requestType") == "agent" and any(r.match(p) for r in _INVITE_ACCEPT_ROUTES):
+        if adapter_type not in _ALLOWED_ADAPTER_TYPES:
+            raise HTTPException(status_code=403, detail="adapterType required")
+
+    # Approval CREATE: the hire's adapterType is nested at payload.adapterType,
+    # and approve applies it with a "process" fallback. Require gateway on any
+    # hire-shaped create body.
+    if any(r.match(p) for r in _APPROVAL_CREATE_ROUTES):
+        payload = data.get("payload")
+        is_hire = data.get("type") == "hire_agent" or (
+            isinstance(payload, dict) and ("adapterType" in payload or "adapterConfig" in payload)
+        )
+        if is_hire:
+            _require_nested_gateway(payload)
+
+    # Approval RESUBMIT replaces the stored payload and need not repeat `type`,
+    # so a payload without adapterType resets it to "process" on approve. Any
+    # resubmit carrying a payload must name a gateway adapter.
+    if any(r.match(p) for r in _APPROVAL_RESUBMIT_ROUTES):
+        payload = data.get("payload")
+        if isinstance(payload, dict):
+            _require_nested_gateway(payload)
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -1334,6 +1573,17 @@ async def proxy(path: str, request: Request) -> Response:
         upstream_url = f"/{path}"
         body_bytes = await request.body()
 
+        # Adapter-surface gate: reject anything that could reach a non-gateway
+        # adapter (host shell / SSRF) or an adapter-management route before it
+        # leaves for the shared Paperclip task. Raises HTTPException(403).
+        _assert_paperclip_request_allowed(
+            request.method,
+            path,
+            body_bytes,
+            content_type=request.headers.get("content-type"),
+            content_encoding=request.headers.get("content-encoding"),
+        )
+
         async def _forward(session_cookie: str) -> httpx.Response:
             return await client.request(
                 method=request.method,
@@ -1509,6 +1759,15 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
     leg is also a WebSocket and we relay frames bidirectionally instead
     of round-tripping a single request/response.
     """
+    # Defence-in-depth: the adapter-management / host-exec routes are HTTP, not
+    # WS, but never let a WS upgrade reach one either. GET semantics — the body
+    # and create-route rules don't apply to an upgrade, only the route denylist.
+    try:
+        _assert_paperclip_request_allowed("GET", path, b"")
+    except HTTPException:
+        await websocket.close(code=4403, reason="Route not permitted")
+        return
+
     # ---- Step 1: Extract + validate session ----
     # Prefer the proxy session cookie (``isol8_paperclip``) over Clerk's
     # ``__session``. The HTTP bootstrap establishes the proxy cookie before

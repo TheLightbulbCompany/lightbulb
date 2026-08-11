@@ -45,23 +45,25 @@ and rejecting an approval stops it minting an agent. It does NOT stop a run that
 already executing a dangerous adapter on the host. So the REQUIRED final step after
 a non-clean ``--apply`` is to force a new deployment of the Paperclip ECS service
 ``isol8-{env}-paperclip-server`` — that kills every in-flight adapter process /
-socket. Use the exact command in apps/infra/paperclip/RUNBOOK.md (the cluster is a
-shared ARN passed there):
+socket. CAPTURE the running task ARNs first, force the deploy, then VERIFY the new
+rollout actually completed: ``wait services-stable`` alone is NOT sufficient (it
+also succeeds after a circuit-breaker ROLLBACK that leaves the old compromised task
+alive). Substitute the shared cluster ARN (see apps/infra/paperclip/RUNBOOK.md):
 
-    aws ecs update-service --cluster <cluster-arn> \
-        --service isol8-{env}-paperclip-server --force-new-deployment \
-        --profile isol8-admin --region us-east-1
-    # update-service only STARTS the rollout (old + new tasks overlap). `wait
-    # services-stable` is necessary but NOT sufficient — it also succeeds after a
-    # circuit-breaker ROLLBACK, which leaves the OLD compromised task running:
-    aws ecs wait services-stable --cluster <cluster-arn> \
-        --services isol8-{env}-paperclip-server --profile isol8-admin --region us-east-1
+    CL=<cluster-arn>; SVC=isol8-{env}-paperclip-server; P="--profile isol8-admin --region us-east-1"
+    OLD=$(aws ecs list-tasks --cluster $CL --service-name $SVC --desired-status RUNNING $P \
+        --query 'taskArns' --output text)
+    aws ecs update-service --cluster $CL --service $SVC --force-new-deployment $P
+    aws ecs wait services-stable --cluster $CL --services $SVC $P
+    # PRIMARY deployment must read COMPLETED (not FAILED / a rollback):
+    aws ecs describe-services --cluster $CL --services $SVC $P \
+        --query "services[0].deployments[?status=='PRIMARY'].rolloutState" --output text
+    # and every pre-deployment task ARN must now be STOPPED:
+    for t in $OLD; do aws ecs describe-tasks --cluster $CL --tasks $t $P \
+        --query 'tasks[0].lastStatus' --output text; done   # each must print STOPPED
 
-Follow the RUNBOOK's deployment-verification procedure (apps/infra/paperclip/RUNBOOK.md:
-inspect the new deployment's ``rolloutState`` == COMPLETED and confirm the
-pre-deployment task ARNs have STOPPED — a rollback leaves them alive). Only once
-the forced deployment is confirmed complete should you re-run the dry-run audit to
-confirm clean.
+Only once rolloutState==COMPLETED AND all pre-deployment tasks are STOPPED should you
+re-run the dry-run audit to confirm clean.
 
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod --apply

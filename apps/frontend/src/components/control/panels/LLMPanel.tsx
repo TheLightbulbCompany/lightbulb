@@ -144,6 +144,112 @@ function ChatGPTOAuthBlock({
   );
 }
 
+function CodingHarnessBlock() {
+  // Second, independent ChatGPT sign-in dedicated to the OpenCode coding
+  // harness. Sharing the provider's token chain is not an option — OpenAI
+  // refresh tokens rotate on use, and two holders of one chain invalidate
+  // each other. autoStart:false — opening the panel must not begin a
+  // device-code session; the button does.
+  const { state, start, disconnect } = useChatGPTOAuth({
+    basePath: "/oauth/chatgpt/harness",
+    autoStart: false,
+  });
+  const [busy, setBusy] = useState(false);
+  // Ticks while a code is pending so the expired affordance appears on its
+  // own — the device code lives ~15 minutes, and the poll loop reports
+  // "pending" forever on an expired session, so without this the card would
+  // wait indefinitely with no way to get a new code.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (state.status !== "pending") return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [state.status]);
+
+  const handleDisconnect = async () => {
+    setBusy(true);
+    try {
+      await disconnect();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={ACTION_CARD} data-testid="coding-harness-block">
+      <span className={EYEBROW}>Coding harness</span>
+      {state.status === "completed" && (
+        <>
+          <p className="text-sm text-[var(--ink)]">
+            OpenCode is connected. Your agents can delegate coding work using
+            your ChatGPT subscription.
+          </p>
+          <button
+            onClick={handleDisconnect}
+            disabled={busy}
+            className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm disabled:opacity-50"
+          >
+            {busy ? "Disconnecting…" : "Disconnect"}
+          </button>
+        </>
+      )}
+      {state.status === "pending" && (
+        <>
+          <p className="text-sm text-[var(--ink)]">
+            Open{" "}
+            <a
+              href={state.verificationUri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              {state.verificationUri}
+            </a>{" "}
+            and enter this code:
+          </p>
+          <p className="font-mono text-lg tracking-widest text-[var(--ink)]">{state.userCode}</p>
+          {state.expiresAt - now <= 0 ? (
+            <>
+              <p className="text-xs text-[var(--danger)]">
+                This code expired. Get a new one to finish connecting.
+              </p>
+              <button
+                onClick={() => void start()}
+                className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+              >
+                Get a new code
+              </button>
+            </>
+          ) : (
+            <p className="text-xs text-[var(--mute)]">
+              Waiting for you to finish signing in — this updates automatically.
+            </p>
+          )}
+        </>
+      )}
+      {(state.status === "idle" || state.status === "error") && (
+        <>
+          <p className="text-sm text-[var(--mute)]">
+            Let your agents write code with OpenCode, powered by the ChatGPT
+            subscription you already have. Requires one extra sign-in: the
+            harness keeps its own credential so it never interferes with your
+            main connection.
+          </p>
+          {state.status === "error" && (
+            <p className="text-sm text-[var(--danger)]">{state.message}</p>
+          )}
+          <button
+            onClick={() => void start()}
+            className="self-start rounded-md border border-[var(--edge)] text-[var(--ink)] hover:bg-[var(--cream-deeper)] px-3 py-1.5 text-sm"
+          >
+            {state.status === "error" ? "Try again" : "Connect coding harness"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ByoKeyBlock({
   byoProvider,
   onReplaced,
@@ -443,11 +549,14 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
       </div>
 
       {user.provider_choice === "chatgpt_oauth" && (
-        <ChatGPTOAuthBlock
-          onDisconnected={() => mutate()}
-          onChangeProvider={openModal}
-          dotColor={dotColor}
-        />
+        <>
+          <ChatGPTOAuthBlock
+            onDisconnected={() => mutate()}
+            onChangeProvider={openModal}
+            dotColor={dotColor}
+          />
+          <CodingHarnessBlock />
+        </>
       )}
 
       {user.provider_choice === "byo_key" && user.byo_provider && (

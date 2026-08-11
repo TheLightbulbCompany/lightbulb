@@ -2141,6 +2141,21 @@ class EcsManager:
         # docs/superpowers/specs/2026-06-24-oauth-reprovision-stale-token-design.md.
         await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
 
+        # Also stage the OpenCode harness credential when a dedicated harness
+        # grant exists. Best-effort and write-if-missing: the harness is
+        # optional (absence = owner never connected it), and OpenCode owns the
+        # live rotating file once written — overwriting it with the stale DDB
+        # seed would kill the chain (see pre_stage_opencode_auth).
+        from core.containers.workspace import pre_stage_opencode_auth
+        from core.services.oauth_service import PURPOSE_HARNESS
+
+        try:
+            harness_tokens = await get_decrypted_tokens(user_id=token_owner, bound_to=user_id, purpose=PURPOSE_HARNESS)
+            if harness_tokens:
+                await pre_stage_opencode_auth(user_id=user_id, oauth_tokens=harness_tokens, overwrite=False)
+        except Exception:
+            logger.exception("opencode harness auth staging failed for %s", user_id)
+
     async def provision_user_container(
         self,
         user_id: str,

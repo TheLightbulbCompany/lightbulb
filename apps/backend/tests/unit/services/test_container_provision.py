@@ -133,11 +133,25 @@ async def test_pre_stage_oauth_reads_connector_writes_owner():
             "core.containers.workspace.pre_stage_auth_profile_store",
             new=AsyncMock(),
         ) as write,
+        patch(
+            "core.containers.workspace.pre_stage_opencode_auth",
+            new=AsyncMock(),
+        ) as write_harness,
     ):
         await EcsManager._pre_stage_oauth_for_user(mgr, "org_1", token_owner_id="user_a")
-    read.assert_awaited_once_with(user_id="user_a", bound_to="org_1")
+    # Two reads off the connector's rows: the provider row, then the harness
+    # (#harness) row for the OpenCode credential self-heal.
+    assert read.await_count == 2
+    provider_read, harness_read = read.await_args_list
+    assert provider_read.kwargs == {"user_id": "user_a", "bound_to": "org_1"}
+    assert harness_read.kwargs == {"user_id": "user_a", "bound_to": "org_1", "purpose": "harness"}
     write.assert_awaited_once()
     assert write.call_args.kwargs["user_id"] == "org_1"
+    # Harness write also lands on the CONTAINER owner's EFS path, and never
+    # overwrites a live rotating auth.json.
+    write_harness.assert_awaited_once()
+    assert write_harness.call_args.kwargs["user_id"] == "org_1"
+    assert write_harness.call_args.kwargs["overwrite"] is False
 
 
 # ---------------------------------------------------------------------------

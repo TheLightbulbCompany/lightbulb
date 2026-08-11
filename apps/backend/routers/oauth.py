@@ -22,13 +22,14 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
-from core.containers.workspace import delete_auth_profile_store
+from core.containers.workspace import delete_auth_profile_store, delete_opencode_auth, pre_stage_opencode_auth
 from core.repositories import billing_repo
 from core.services.container_auth import (
     push_oauth_credential_to_container,
     revoke_provider_auth_in_container,
 )
 from core.services.oauth_service import (
+    PURPOSE_HARNESS,
     DevicePollPending,
     DevicePollResult,
     OAuthAlreadyActiveError,
@@ -36,6 +37,7 @@ from core.services.oauth_service import (
     OAuthExchangeFailedError,
     caller_may_manage_connector,
     get_decrypted_tokens_consistent,
+    has_active_oauth,
     poll_device_code,
     request_device_code,
     resolve_token_owner,
@@ -185,6 +187,158 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     return {"status": "completed", "account_id": result.account_id}
 
 
+# --- OpenCode coding harness (second, dedicated OAuth grant) ---------------
+#
+# Same ChatGPT account, INDEPENDENT token chain. The provider chain and the
+# harness chain must never share tokens (rotating refresh tokens; two holders
+# race into refresh_token_reused — see oauth_service.HARNESS_ROW_SUFFIX). The
+# flow mirrors the provider endpoints exactly; completion stages OpenCode's
+# auth.json onto EFS instead of pushing into the container's provider store.
+# Connection state IS the EFS file — the container config advertises the
+# opencode harness for every chatgpt_oauth owner unconditionally, so there is
+# no config patch on connect/disconnect.
+
+
+@router.get(
+    "/harness/status",
+    summary="Whether the workspace has a coding-harness OAuth grant",
+)
+async def harness_status(ctx: AuthContext = Depends(get_current_user)):
+    owner_id = resolve_owner_id(ctx)
+    token_owner = await resolve_token_owner(owner_id=owner_id) if ctx.is_org_context else ctx.user_id
+    tokens = await get_decrypted_tokens_consistent(user_id=token_owner, bound_to=owner_id, purpose=PURPOSE_HARNESS)
+    return {
+        "connected": tokens is not None,
+        "account_id": (tokens or {}).get("account_id"),
+    }
+
+
+@router.post(
+    "/harness/start",
+    summary="Begin a coding-harness OAuth device-code session",
+    description=(
+        "Second device-code grant on the owner's ChatGPT account, dedicated "
+        "to the OpenCode coding harness. Same user-facing shape as /start."
+    ),
+)
+async def harness_start(ctx: AuthContext = Depends(get_current_user)):
+    if ctx.is_org_context:
+        await _require_org_oauth_owner(ctx)
+    try:
+        result = await request_device_code(
+            user_id=ctx.user_id,
+            bound_owner_id=resolve_owner_id(ctx),
+            purpose=PURPOSE_HARNESS,
+        )
+    except OAuthAlreadyActiveError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except OAuthBoundElsewhereError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    except OAuthExchangeFailedError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {
+        "user_code": result.user_code,
+        "verification_uri": result.verification_uri,
+        "expires_in": result.expires_in,
+        "interval": result.interval,
+    }
+
+
+@router.post(
+    "/harness/poll",
+    summary="Poll the coding-harness device-code session",
+)
+async def harness_poll(ctx: AuthContext = Depends(get_current_user)):
+    # No owner gate — same reasoning as /poll: authorization and binding were
+    # both fixed at /harness/start under the owner gate and ride the pending
+    # row through to completion.
+    try:
+        result = await poll_device_code(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+    except OAuthExchangeFailedError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    if result is DevicePollPending:
+        return {"status": "pending"}
+    assert isinstance(result, DevicePollResult)
+    # Stage the fresh grant as OpenCode's auth.json. This IS the connect:
+    # the container config already advertises the harness, and OpenCode reads
+    # this file (via XDG_DATA_HOME on EFS) at spawn. Genuine fresh-token event,
+    # so overwrite a previous chain if one exists. Consistent read so we see
+    # the tokens poll_device_code just wrote.
+    tokens = await get_decrypted_tokens_consistent(
+        user_id=ctx.user_id, bound_to=result.bound_owner_id, purpose=PURPOSE_HARNESS
+    )
+    if tokens:
+        try:
+            await pre_stage_opencode_auth(user_id=result.bound_owner_id, oauth_tokens=tokens)
+        except Exception as e:
+            # A completed poll with no staged file would be a lie: for an
+            # already-running workspace nothing else writes this file until
+            # some future provision event, so status/UI would show Connected
+            # while every spawn fails. Revoke the just-activated row (a fresh
+            # /harness/start works after this — no active-row 409) and
+            # surface the failure so the UI lands in its retry branch.
+            logger.exception("opencode auth staging failed for %s", result.bound_owner_id)
+            await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+            raise HTTPException(
+                status_code=502,
+                detail="Connecting the coding harness failed while saving the credential — try again.",
+            ) from e
+    return {"status": "completed", "account_id": result.account_id}
+
+
+@router.post(
+    "/harness/disconnect",
+    summary="Revoke the coding-harness OAuth grant",
+)
+async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
+    if ctx.is_org_context:
+        await _require_org_oauth_owner(ctx)
+    owner_id = resolve_owner_id(ctx)
+    # Only a grant bound to THIS workspace may be disconnected here. The
+    # harness row is keyed on the HUMAN (one row per human), so without this
+    # check a human who connected an ORG's harness could nuke that org-bound
+    # row from their personal workspace context — deleting the org's tracked
+    # grant while its EFS credential survives. A row bound elsewhere reads as
+    # not-connected for this workspace, which is also what /harness/status
+    # reports, so answering "disconnected" is truthful. Strongly-consistent:
+    # this answer gates a delete, and an EC miss right after /harness/poll's
+    # write would report "disconnected" while leaving row + file behind.
+    if not await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS, consistent=True):
+        return {"status": "disconnected"}
+    # EFS first, row second, and a failed unlink is a failed disconnect: the
+    # file IS the credential (the config advertises the harness
+    # unconditionally, so a surviving auth.json stays spawnable). Deleting
+    # the row first would report "disconnected" over a live credential.
+    # With this ordering a failure leaves the row intact, /harness/status
+    # keeps saying connected (truthful), and the user retries.
+    try:
+        await delete_opencode_auth(user_id=owner_id)
+    except OSError as e:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not remove the harness credential — try disconnecting again.",
+        ) from e
+    await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+    # Second unlink AFTER the row is gone: a provision/recovery overlapping
+    # this disconnect can read the still-active row in the window between the
+    # first unlink and the revoke and re-stage the file from the DDB seed
+    # (write-if-missing sees it absent). With the row deleted nothing can
+    # READ tokens to re-stage again, so this sweep closes the read-side race.
+    # Deliberately NOT fenced further: a worker that already holds tokens in
+    # memory and writes after this sweep leaves an orphan file — accepted
+    # residual (needs a provision racing a disconnect AND stalling across the
+    # whole request; the orphan holds the stale DDB seed, and orphan
+    # secrets on this path are an operator-sweep concern per the
+    # change_provider cleanup contract). A cross-system lock spanning DDB and
+    # EFS is not worth that edge. Best-effort — the primary unlink already
+    # succeeded; a failure here is worth a log, not a 502.
+    try:
+        await delete_opencode_auth(user_id=owner_id)
+    except OSError:
+        logger.exception("post-revoke opencode auth sweep failed for owner %s", owner_id)
+    return {"status": "disconnected"}
+
+
 @router.post(
     "/disconnect",
     summary="Revoke the workspace's stored ChatGPT OAuth tokens",
@@ -219,6 +373,28 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     # gateway to drop it via models.authLogout so disconnect revokes the live
     # token immediately — best-effort, a no-op if the container is cold.
     await revoke_provider_auth_in_container(owner_id)
+    # The coding-harness grant leaves with the main connection: clearing
+    # provider_choice below hides the harness management card, so a surviving
+    # #harness row + auth.json would be a live credential with no UI to
+    # revoke it (and the running config keeps advertising opencode until
+    # reprovision). Best-effort like the rest of this cleanup chain — the
+    # provider disconnect above is the authoritative act, and a reconnect
+    # re-offers the grant in the wizard. Binding-checked for the same reason
+    # as /harness/disconnect (a row bound to a different workspace is not
+    # ours to delete), and FILE first, row second: the file is the live
+    # credential, so if the unlink fails the row must survive with it —
+    # row-and-file stay consistent, and a later disconnect retry from the
+    # right context can still find and clean the grant.
+    try:
+        if await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS, consistent=True):
+            await delete_opencode_auth(user_id=owner_id)
+            await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+            # Post-revoke sweep: closes the window where an overlapping
+            # provision re-staged the file from the then-still-active row
+            # (see harness_disconnect).
+            await delete_opencode_auth(user_id=owner_id)
+    except Exception:
+        logger.exception("harness cleanup failed during disconnect for owner %s", owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to
     # onboarding to pick a provider. Without this, the wizard sees
     # provider_choice=chatgpt_oauth on a billing row with no auth.json and the

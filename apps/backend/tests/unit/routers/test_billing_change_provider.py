@@ -220,6 +220,8 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
         llm_task_model,
         web_search_provider,
         tool_search_mode,
+        acp_block,
+        acpx_entry,
     ):
         # Hot swap into chatgpt_oauth — shape pinned by the personal hot-path
         # test; here we only care that the org claim + connector write happen.
@@ -351,8 +353,11 @@ async def test_org_switch_away_revokes_owner_tokens_and_owner_keyed_file(
 
     assert resp.status_code == 200, resp.text
     # Tokens are keyed on the recorded human owner, not the org_id and not the
-    # (possibly different) switching admin.
-    mock_revoke.assert_awaited_once_with(user_id="user_a")
+    # (possibly different) switching admin. TWO rows leave with the provider:
+    # the provider chain, then the coding-harness grant.
+    assert mock_revoke.await_count == 2
+    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_a"}
+    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_a", "purpose": "harness"}
     # The EFS auth-profiles.json lives under the CONTAINER OWNER (org_id).
     mock_delete_auth.assert_awaited_once_with(user_id="org_test_456")
 
@@ -450,8 +455,58 @@ async def test_personal_switch_away_still_revokes(
         )
 
     assert resp.status_code == 200, resp.text
-    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
+    assert mock_revoke.await_count == 2
+    assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
+    assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
     mock_delete_auth.assert_awaited_once_with(user_id="user_test_123")
+
+
+@pytest.mark.asyncio
+async def test_switch_away_keeps_harness_row_when_unlink_fails(
+    async_client,
+    cold_reprovision,
+):
+    """Harness cleanup on switch-away is FILE first, row second: a failed
+    EFS unlink must keep the #harness row so the surviving credential stays
+    tracked (a later disconnect/wipe can still find it). The switch itself
+    still succeeds — the cleanup chain is best-effort by design."""
+    chatgpt_account = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "stripe_subscription_id": "sub_x",
+        "subscription_status": "active",
+        "provider_choice": "chatgpt_oauth",
+    }
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value=chatgpt_account),
+        ),
+        patch(
+            "core.repositories.billing_repo.set_provider_choice",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.oauth_service.revoke_user_oauth",
+            new=AsyncMock(return_value=None),
+        ) as mock_revoke,
+        patch(
+            "core.containers.workspace.delete_auth_profile_store",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.containers.workspace.delete_opencode_auth",
+            new=AsyncMock(side_effect=OSError("efs io")),
+        ),
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/provider",
+            json={"provider_choice": "bedrock_claude"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    # Only the provider row was revoked — the harness revoke never ran.
+    mock_revoke.assert_awaited_once_with(user_id="user_test_123")
 
 
 @pytest.mark.asyncio
@@ -569,7 +624,7 @@ async def test_change_provider_clears_oauth_when_leaving_chatgpt(
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "ok"
-    mock_revoke.assert_awaited_once()
+    assert mock_revoke.await_count == 2  # provider chain + harness grant
     mock_delete_auth.assert_awaited_once()
 
 
@@ -683,6 +738,8 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         llm_task_model,
         web_search_provider,
         tool_search_mode,
+        acp_block,
+        acpx_entry,
     ):
         call_order.append("replace")
         # The chatgpt_oauth branch sets ``models.providers`` to {} and the
@@ -724,6 +781,14 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # Same for toolSearch: never written for chatgpt_oauth at provision,
         # so the swap must delete any stale embedded-runtime key.
         assert tool_search_mode is None
+        # The harness set follows the provider: a bedrock owner arriving on
+        # chatgpt_oauth swaps claude → opencode, and the acpx agents map must
+        # ride along (the patcher's plugins.entries rebuild would otherwise
+        # drop the acpx entry entirely, stranding the harness until a cold
+        # reprovision).
+        assert acp_block["allowedAgents"] == ["opencode"]
+        assert acp_block["defaultAgent"] == "opencode"
+        assert acpx_entry["acpx"]["config"]["agents"]["opencode"]["command"] == "env"
 
     with (
         patch(
@@ -829,7 +894,7 @@ async def test_change_provider_chatgpt_to_bedrock_takes_cold_path(async_client, 
     cold_reprovision.drain_then_dispatch_provision.assert_called_once()
     mock_replace.assert_not_awaited()
     # Side-effect cleanup for leaving chatgpt_oauth must still run.
-    mock_revoke.assert_awaited_once()
+    assert mock_revoke.await_count == 2  # provider chain + harness grant
     mock_delete_auth.assert_awaited_once()
 
 

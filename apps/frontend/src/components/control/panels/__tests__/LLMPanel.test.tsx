@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { LLMPanel } from "../LLMPanel";
 
@@ -34,12 +34,26 @@ vi.mock("@/lib/notify", () => ({
 }));
 
 const mockDisconnect = vi.fn();
+// The harness card calls the same hook with basePath "/oauth/chatgpt/harness"
+// (second OAuth grant). Separate spies + a seedable state so tests can drive
+// the harness card through idle/pending/completed without touching the
+// provider block's mock.
+const mockHarnessDisconnect = vi.fn();
+const mockHarnessStart = vi.fn();
+const mockHarnessState = vi.fn(() => ({ status: "idle" }) as unknown);
 vi.mock("@/hooks/useChatGPTOAuth", () => ({
-  useChatGPTOAuth: () => ({
-    disconnect: mockDisconnect,
-    state: { status: "idle" },
-    start: vi.fn(),
-  }),
+  useChatGPTOAuth: (opts?: { basePath?: string }) =>
+    opts?.basePath === "/oauth/chatgpt/harness"
+      ? {
+          disconnect: mockHarnessDisconnect,
+          state: mockHarnessState(),
+          start: mockHarnessStart,
+        }
+      : {
+          disconnect: mockDisconnect,
+          state: { status: "idle" },
+          start: vi.fn(),
+        },
 }));
 
 // models.authStatus drives the live provider-health dot. Each test seeds a
@@ -376,5 +390,70 @@ describe("LLMPanel", () => {
     expect(mockRpcMutation.mock.invocationCallOrder[0]).toBeLessThan(
       mockReadMutate.mock.invocationCallOrder[0],
     );
+  });
+});
+
+describe("CodingHarnessBlock", () => {
+  beforeEach(() => {
+    mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
+    mockAuthStatusData.mockReturnValue(undefined);
+    mockHarnessStart.mockReset();
+    mockHarnessDisconnect.mockReset();
+    mockHarnessState.mockReset();
+    mockHarnessState.mockReturnValue({ status: "idle" });
+  });
+
+  it("renders only for chatgpt_oauth owners", () => {
+    render(<LLMPanel />);
+    expect(screen.getByTestId("coding-harness-block")).toBeInTheDocument();
+
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    render(<LLMPanel />);
+    expect(screen.getAllByTestId("coding-harness-block")).toHaveLength(1);
+  });
+
+  it("idle: Connect button fires start, never auto-starts", () => {
+    render(<LLMPanel />);
+    expect(mockHarnessStart).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /connect coding harness/i }));
+    expect(mockHarnessStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("pending: shows the user code and verification link", () => {
+    mockHarnessState.mockReturnValue({
+      status: "pending",
+      userCode: "HARN-1234",
+      verificationUri: "https://auth.openai.com/codex/device",
+      expiresAt: Date.now() + 900_000,
+    });
+    render(<LLMPanel />);
+    expect(screen.getByText("HARN-1234")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "https://auth.openai.com/codex/device" }),
+    ).toHaveAttribute("href", "https://auth.openai.com/codex/device");
+  });
+
+  it("pending + expired code: offers Get a new code instead of waiting forever", () => {
+    mockHarnessState.mockReturnValue({
+      status: "pending",
+      userCode: "HARN-1234",
+      verificationUri: "https://auth.openai.com/codex/device",
+      expiresAt: Date.now() - 1000,
+    });
+    render(<LLMPanel />);
+    expect(screen.getByText(/this code expired/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /get a new code/i }));
+    expect(mockHarnessStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("completed: Disconnect calls the harness disconnect, not the provider's", async () => {
+    mockHarnessState.mockReturnValue({ status: "completed", accountId: "acc_h" });
+    mockHarnessDisconnect.mockResolvedValueOnce(undefined);
+    render(<LLMPanel />);
+    const block = screen.getByTestId("coding-harness-block");
+    const button = within(block).getByRole("button", { name: /disconnect/i });
+    fireEvent.click(button);
+    await waitFor(() => expect(mockHarnessDisconnect).toHaveBeenCalledTimes(1));
+    expect(mockDisconnect).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@
 import { useApi } from "@/lib/api";
 import {
   useChatGPTOAuth as useChatGPTOAuthShared,
+  type ChatGPTOAuthOptions,
   type OAuthState,
 } from "@isol8/shared";
 
@@ -11,9 +12,10 @@ import {
 // the web platform wrapper: it supplies the real useApi() client and
 // preserves the historical no-arg call signature + OAuthState export so
 // every existing web consumer (ChatGPTOAuthStep, LLMPanel, ChangeProviderModal)
-// keeps working unchanged.
+// keeps working unchanged. The opts param serves the coding-harness card
+// (second grant, explicit start).
 export type { OAuthState };
 
-export function useChatGPTOAuth() {
-  return useChatGPTOAuthShared(useApi());
+export function useChatGPTOAuth(opts?: ChatGPTOAuthOptions) {
+  return useChatGPTOAuthShared(useApi(), opts);
 }

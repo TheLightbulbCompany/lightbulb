@@ -18,10 +18,10 @@ _TOKEN = "tok-acp-test"
     "provider_choice,byo_provider,expected",
     [
         ("bedrock_claude", None, ["claude"]),
-        # acpx's codex-auth-bridge only writes Codex credentials from
-        # CODEX_API_KEY/OPENAI_API_KEY — it never reads the ChatGPT OAuth we
-        # stage — so a subscription-OAuth owner can authenticate no harness.
-        ("chatgpt_oauth", None, []),
+        # OpenCode authenticates against a ChatGPT subscription via the
+        # dedicated harness grant's auth.json on EFS. Advertised
+        # unconditionally — connection state never gates the config.
+        ("chatgpt_oauth", None, ["opencode"]),
         ("byo_key", "anthropic", ["claude"]),
         ("byo_key", "openai", ["codex"]),
         # No Google credential path today -> no harness; unknown combos -> none.
@@ -78,12 +78,23 @@ def test_acp_omitted_by_default():
     assert "acpx" not in config["plugins"]["entries"]
 
 
-def test_acp_omitted_for_chatgpt_oauth_even_when_enabled():
-    """No harness can authenticate against a ChatGPT subscription, so the block
-    is withheld rather than advertising a spawn that always 401s."""
+def test_acp_emitted_for_chatgpt_oauth_with_opencode_agent():
+    """chatgpt_oauth owners get the OpenCode harness, registered through the
+    acpx agents map (it is not an acpx builtin) with XDG_DATA_HOME scoped to
+    the spawned process so the auth store lands on EFS."""
     config = _build("chatgpt_oauth", acp_enabled=True)
-    assert "acp" not in config
-    assert "acpx" not in config["plugins"]["entries"]
+    assert config["acp"]["allowedAgents"] == ["opencode"]
+    assert config["acp"]["defaultAgent"] == "opencode"
+    agents = config["plugins"]["entries"]["acpx"]["config"]["agents"]
+    assert agents["opencode"]["command"] == "env"
+    assert agents["opencode"]["args"][-2:] == ["opencode", "acp"]
+    assert agents["opencode"]["args"][0].startswith("XDG_DATA_HOME=/home/node/.openclaw/")
+
+
+def test_acp_agents_map_absent_for_builtin_harnesses():
+    """claude/codex are acpx builtins — no agents map entry for them."""
+    config = _build("byo_key", "openai", acp_enabled=True)
+    assert "agents" not in config["plugins"]["entries"]["acpx"]["config"]
 
 
 def test_acp_emitted_when_enabled_byo_anthropic():

@@ -17,10 +17,13 @@ Two ``inbound.webhook_registration`` shapes:
     Stripe-edge verification in ``routers/paperclip_trigger_proxy.py``. This
     module never touches that secret store; it only creates the routine +
     trigger and returns the URL + copy.
-  - ``"auto"`` (GitHub, Task 4) — Isol8 registers the webhook itself via the
-    provider's own API. Not implemented here — ``_auto_register_webhook`` is
-    the seam T4 fills in; every provider live in the registry today is
-    guided_paste, so this branch is exercised by nothing yet.
+  - ``"auto"`` (GitHub) — Isol8 registers the webhook itself via the
+    provider's own API (``_auto_register_webhook``, ``POST
+    /repos/{repo}/hooks``) using the owner's stored GitHub token, so there is
+    no owner paste step at all. If registration fails (missing repo, no
+    token, GitHub API error), the routine+trigger already created upstream
+    are rolled back — see ``_auto_register_webhook``'s docstring — so a
+    failed GitHub setup never leaves an orphaned, unreachable routine.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_routine_provisioning import _build_routine_body
-from core.services.credentials import registry
+from core.services.credentials import integration_secret_store, registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
@@ -81,6 +84,16 @@ def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, la
     }
 
 
+_GITHUB_API_BASE = "https://api.github.com"
+
+
+def _github_client_factory() -> httpx.AsyncClient:
+    """Build the GitHub API HTTP client. Module-level so tests can swap in a
+    stub transport — same convention ``routers/hooks_proxy.py``'s
+    ``_client_factory`` uses."""
+    return httpx.AsyncClient(timeout=15.0)
+
+
 async def _auto_register_webhook(
     *,
     owner_id: str,
@@ -88,14 +101,54 @@ async def _auto_register_webhook(
     repo: str | None,
     proxy_url: str,
     trigger_secret: str | None,
+    events: list[str],
 ) -> None:
     """Seam for the ``webhook_registration: "auto"`` branch (GitHub, Task 4):
-    register the webhook with the provider's own API (e.g.
-    ``POST /repos/{repo}/hooks`` with ``config.secret = trigger_secret``) so
-    the provider starts sending signed events with no owner paste step.
-    Not implemented in Task 3 — no live registry provider uses "auto" yet.
+    register the webhook with the provider's own API so it starts sending
+    signed events with no owner paste step.
+
+    Only GitHub is live today: ``POST /repos/{repo}/hooks`` with
+    ``Authorization: Bearer <token>`` (the token from
+    ``integration_secret_store.get(owner_id, "github")`` — the same
+    OAuth-app-issued token ``materializers/gh_cli.py`` reads, hence the
+    identical ``.get("token") or .get("access_token")`` fallback: the
+    paste rail and the direct_oauth rail key the credential dict
+    differently). ``config.secret`` is the Paperclip-generated trigger
+    secret (``trigger_resp["secretMaterial"]["secret"]``) — one shared
+    value signs both sides, since the trigger itself is armed with
+    Paperclip ``signingMode: "github_hmac"``.
+
+    Raises ``ValueError`` on any failure (missing repo, missing/absent
+    token, or a non-2xx from GitHub) — the caller (``seed_trigger_routine``)
+    treats that uniformly as "roll back the routine+trigger we just
+    created and surface a clear error", so there is no reason to
+    distinguish a caller mistake from an upstream failure here.
     """
-    raise NotImplementedError(f"auto webhook registration not implemented for provider={provider_key!r}")
+    if not repo:
+        raise ValueError(f"{provider_key!r} requires a repo to auto-register a webhook")
+
+    credential = await integration_secret_store.get(owner_id, provider_key)
+    token = (credential or {}).get("token") or (credential or {}).get("access_token")
+    if not token:
+        raise ValueError(f"no {provider_key} credential for owner {owner_id!r} — connect {provider_key} first")
+
+    async with _github_client_factory() as http:
+        resp = await http.post(
+            f"{_GITHUB_API_BASE}/repos/{repo}/hooks",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "web",
+                "active": True,
+                "events": events,
+                "config": {"url": proxy_url, "secret": trigger_secret, "content_type": "json"},
+            },
+        )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise ValueError(
+            f"GitHub webhook registration failed for repo={repo!r}: {exc.response.status_code} {exc.response.text}"
+        ) from exc
 
 
 async def seed_trigger_routine(
@@ -147,6 +200,10 @@ async def seed_trigger_routine(
     # same convention agent_export.py uses for the identical import.
     from core.services.company_deploy_service import _find_friday_id
 
+    # Stays open through the "auto" branch below (not just routine+trigger
+    # creation): a failed GitHub auto-register needs `admin`/`cookie` alive to
+    # roll back the routine it just created via the SAME session, not a fresh
+    # one.
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         cookie = await get_admin_session_cookie(http)
         admin = PaperclipAdminClient(http_client=http)
@@ -175,59 +232,80 @@ async def seed_trigger_routine(
             ),
         )
 
-    trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
-    public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
-    if not public_id:
-        raise RuntimeError("create_routine_trigger returned no trigger.publicId")
+        trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
+        public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
+        if not public_id:
+            raise RuntimeError("create_routine_trigger returned no trigger.publicId")
 
-    proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+        proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
 
-    if inbound.webhook_registration == "guided_paste":
-        logger.info(
-            "inbound_triggers: seeded guided_paste routine=%s trigger=%s owner=%s provider=%s event=%s",
-            routine_id,
-            public_id,
-            owner_id,
-            provider_key,
-            event_id,
-        )
-        return {
-            "routine_id": routine_id,
-            "trigger_public_id": public_id,
-            "proxy_url": proxy_url,
-            "guided": True,
-            "instructions": (
-                f"In your {provider.display_name} dashboard, add a webhook endpoint "
-                f"pointed at {proxy_url} listening for the '{event.label}' event "
-                f"({event.id}). Paste the signing secret it gives you back into Isol8 "
-                "to finish arming this automation."
-            ),
-        }
+        if inbound.webhook_registration == "guided_paste":
+            logger.info(
+                "inbound_triggers: seeded guided_paste routine=%s trigger=%s owner=%s provider=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                provider_key,
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": True,
+                "instructions": (
+                    f"In your {provider.display_name} dashboard, add a webhook endpoint "
+                    f"pointed at {proxy_url} listening for the '{event.label}' event "
+                    f"({event.id}). Paste the signing secret it gives you back into Isol8 "
+                    "to finish arming this automation."
+                ),
+            }
 
-    if inbound.webhook_registration == "auto":
-        secret_material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
-        trigger_secret = secret_material.get("secret") if isinstance(secret_material, dict) else None
-        await _auto_register_webhook(
-            owner_id=owner_id,
-            provider_key=provider_key,
-            repo=repo,
-            proxy_url=proxy_url,
-            trigger_secret=trigger_secret,
-        )
-        logger.info(
-            "inbound_triggers: seeded auto routine=%s trigger=%s owner=%s provider=%s event=%s",
-            routine_id,
-            public_id,
-            owner_id,
-            provider_key,
-            event_id,
-        )
-        return {
-            "routine_id": routine_id,
-            "trigger_public_id": public_id,
-            "proxy_url": proxy_url,
-            "guided": False,
-            "instructions": None,
-        }
+        if inbound.webhook_registration == "auto":
+            secret_material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
+            trigger_secret = secret_material.get("secret") if isinstance(secret_material, dict) else None
+            try:
+                await _auto_register_webhook(
+                    owner_id=owner_id,
+                    provider_key=provider_key,
+                    repo=repo,
+                    proxy_url=proxy_url,
+                    trigger_secret=trigger_secret,
+                    events=[e.id for e in inbound.events],
+                )
+            except Exception as exc:
+                # The routine + webhook trigger both already exist upstream at
+                # this point. If the provider's own webhook never gets
+                # registered, that pair is an orphan the owner can't see or
+                # clean up — not armed guided (no instructions were ever
+                # returned) and not armed auto (no sender knows the URL).
+                # Unwind it: same best-effort-delete-then-reraise shape
+                # `agent_routine_provisioning._arm_enabled_routine` uses for
+                # its own post-create trigger failure.
+                try:
+                    await admin.delete_routine(routine_id=routine_id, session_cookie=cookie)
+                except Exception:
+                    logger.exception(
+                        "inbound_triggers: rollback delete_routine failed for routine=%s owner=%s provider=%s",
+                        routine_id,
+                        owner_id,
+                        provider_key,
+                    )
+                raise ValueError(f"failed to auto-register {provider_key} webhook: {exc}") from exc
+            logger.info(
+                "inbound_triggers: seeded auto routine=%s trigger=%s owner=%s provider=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                provider_key,
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": None,
+            }
 
-    raise ValueError(f"unknown inbound.webhook_registration {inbound.webhook_registration!r}")
+        raise ValueError(f"unknown inbound.webhook_registration {inbound.webhook_registration!r}")

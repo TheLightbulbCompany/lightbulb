@@ -3,11 +3,16 @@
 Mirrors the ``_resolver_env`` fake-collaborator idiom from
 ``test_paperclip_trigger_proxy.py``: patch ``PaperclipRepo`` (company
 resolution), ``get_admin_session_cookie``, and ``PaperclipAdminClient`` so
-nothing here touches a real Paperclip deployment.
+nothing here touches a real Paperclip deployment. GitHub's auto-register HTTP
+call is faked with an ``httpx.MockTransport``-backed client swapped in for
+``_github_client_factory`` — same convention ``test_paperclip_trigger_proxy.py``
+uses for its own ``_client_factory``, since respx mismatches httpx 0.28 URLs.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from core.services.inbound_triggers import seed_trigger_routine
@@ -20,6 +25,7 @@ def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1"):
     admin.create_routine_trigger = AsyncMock(
         return_value={"trigger": {"publicId": public_id}, "secretMaterial": {"secret": "s"}}
     )
+    admin.delete_routine = AsyncMock(return_value={})
     return admin
 
 
@@ -79,8 +85,10 @@ async def test_seed_trigger_routine_builds_expected_bodies():
 
 @pytest.mark.asyncio
 async def test_seed_trigger_routine_bails_when_provider_has_no_inbound():
+    # google has no `inbound:` block. (github DOES as of Task 4 — see the
+    # github-specific tests below — so it can no longer stand in here.)
     with pytest.raises(ValueError, match="not wired as an Automations trigger source"):
-        await seed_trigger_routine("owner_1", "github", "workflow_run")
+        await seed_trigger_routine("owner_1", "google", "whatever")
 
 
 @pytest.mark.asyncio
@@ -119,4 +127,96 @@ async def test_seed_trigger_routine_no_friday_agent_found():
     p_repo, p_cookie, p_client = _env(admin)
     with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="no CEO agent"):
         await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
-    admin.create_routine.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# GitHub auto-registration (Task 4) — webhook_registration: "auto"
+# ---------------------------------------------------------------------------
+
+
+class _StubGitHubTransport(httpx.AsyncBaseTransport):
+    def __init__(self, captured: dict, *, status: int = 201, content: bytes = b'{"id": 123}'):
+        self.captured = captured
+        self.status = status
+        self.content = content
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.captured["url"] = str(request.url)
+        self.captured["body"] = request.content
+        self.captured["headers"] = dict(request.headers)
+        return httpx.Response(self.status, content=self.content)
+
+
+def _stub_github_client(captured: dict, **kw):
+    transport = _StubGitHubTransport(captured, **kw)
+    return patch(
+        "core.services.inbound_triggers._github_client_factory",
+        lambda: httpx.AsyncClient(transport=transport),
+    )
+
+
+def _github_token(token: str | None = "tok_gh"):
+    value = {"access_token": token} if token else None
+    return patch("core.services.inbound_triggers.integration_secret_store.get", AsyncMock(return_value=value))
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_github_auto_registers_webhook():
+    admin = _fake_admin(routine_id="rt_gh", public_id="pub_gh")
+    p_repo, p_cookie, p_client = _env(admin)
+    captured: dict = {}
+    with p_repo, p_cookie, p_client, _github_token(), _stub_github_client(captured):
+        out = await seed_trigger_routine("owner_1", "github", "workflow_run", repo="acme/widgets")
+
+    assert out["guided"] is False
+    assert out["instructions"] is None
+    assert out["proxy_url"].endswith("/api/v1/hooks/t/owner_1/pub_gh")
+
+    assert captured["url"] == "https://api.github.com/repos/acme/widgets/hooks"
+    assert captured["headers"]["authorization"] == "Bearer tok_gh"
+    body = json.loads(captured["body"])
+    assert body["name"] == "web"
+    assert body["active"] is True
+    assert body["config"]["url"] == out["proxy_url"]
+    assert body["config"]["secret"] == "s"  # secretMaterial.secret from _fake_admin
+    assert body["config"]["content_type"] == "json"
+    assert set(body["events"]) >= {"workflow_run"}
+    admin.delete_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_github_missing_repo_rolls_back_routine():
+    admin = _fake_admin(routine_id="rt_orphan_repo")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="repo"):
+        await seed_trigger_routine("owner_1", "github", "workflow_run")  # no repo=
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_repo"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_github_missing_token_rolls_back_routine():
+    admin = _fake_admin(routine_id="rt_orphan_token")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _github_token(None), pytest.raises(ValueError, match="no github credential"):
+        await seed_trigger_routine("owner_1", "github", "workflow_run", repo="acme/widgets")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_token"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_github_api_error_rolls_back_routine():
+    admin = _fake_admin(routine_id="rt_orphan_api")
+    p_repo, p_cookie, p_client = _env(admin)
+    captured: dict = {}
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _github_token(),
+        _stub_github_client(captured, status=422, content=b'{"message":"Hook already exists"}'),
+        pytest.raises(ValueError, match="GitHub webhook registration failed"),
+    ):
+        await seed_trigger_routine("owner_1", "github", "workflow_run", repo="acme/widgets")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_api"

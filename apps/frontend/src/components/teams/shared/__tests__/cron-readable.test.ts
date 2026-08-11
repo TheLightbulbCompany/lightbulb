@@ -9,4 +9,8 @@ describe("describeCron", () => {
     expect(describeCron("0 7 * * 1-5")).toBe("Every weekday at 07:00"));
   it("unparseable falls back", () =>
     expect(describeCron("*/13 3 5 6 2")).toBe("*/13 3 5 6 2"));
+  it("out-of-range minute falls back", () =>
+    expect(describeCron("75 8 * * *")).toBe("75 8 * * *"));
+  it("out-of-range hour falls back", () =>
+    expect(describeCron("0 25 * * *")).toBe("0 25 * * *"));
 });

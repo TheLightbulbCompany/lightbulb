@@ -39,8 +39,13 @@ export function describeCron(expr: string): string {
     return expr;
   }
 
+  const m = parseInt(minute, 10);
+  if (isNaN(m) || m < 0 || m > 59) {
+    return expr;
+  }
+
   const hh = String(h).padStart(2, "0");
-  const mm = String(parseInt(minute, 10)).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
   const timeStr = `${hh}:${mm}`;
 
   // Parse dayOfWeek

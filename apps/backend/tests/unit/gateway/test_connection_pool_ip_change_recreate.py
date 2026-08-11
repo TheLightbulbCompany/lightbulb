@@ -129,6 +129,24 @@ async def test_stale_endpoint_does_not_roll_back_newer_connection():
 
 
 @pytest.mark.asyncio
+async def test_superseded_endpoint_refused_on_absent_owner_not_dialed():
+    """Finding 1: when a recreate detaches the old connection and the replacement
+    dial then RAISES, the owner is left ABSENT but the stale-endpoint fence — now
+    stamped at detach — still names the dead IP. A concurrent caller bearing that
+    IP reaches the absent path (no live conn to pin to); it must be REFUSED, not
+    dialed straight onto the dead task."""
+    pool = _bare_pool()
+    # Owner absent (replacement dial failed), fence recorded at the earlier detach.
+    pool._superseded_ip["user_1"] = ("10.0.0.1", time.monotonic())
+    pool._last_reconnect_at["user_1"] = time.monotonic() - 999  # floor not the cause
+    pool._create_connection = AsyncMock()
+
+    with pytest.raises(GatewayReconnectThrottled):
+        await pool.ensure_connection("user_1", "10.0.0.1", "tok")
+    pool._create_connection.assert_not_awaited()  # never dialed the dead endpoint
+
+
+@pytest.mark.asyncio
 async def test_reconnect_floor_applies_during_changed_ip_repair():
     """After a detach the owner is ABSENT from _connections, so a queued caller
     reaches the create path with no preceding branch; the floor must still apply

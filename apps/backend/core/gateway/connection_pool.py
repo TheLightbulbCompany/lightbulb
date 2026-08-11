@@ -93,10 +93,16 @@ _RECONNECT_FLOOR_S = 5
 
 # How long the endpoint we recreated a connection AWAY from stays "superseded"
 # — a resolution still pointing at it is treated as stale and cannot roll the
-# newer connection back onto the dead task. Comfortably longer than the worst
-# resolve→decide staleness (discover + a 5s health probe + lock wait) yet short
-# enough that a genuinely recycled IP is trusted again soon after.
-_SUPERSEDED_IP_TTL_S = 30.0
+# newer connection back onto the dead task. This is NOT the race timer: the race
+# it guards (concurrent callers straddling one task replacement, all serialized
+# on the pool lock) resolves in seconds. The record is stamped at DETACH and
+# overwritten at the next detach, so within a replacement it never expires under
+# a caller queued behind a slow ~20-40s connect(). The clock exists ONLY as the
+# IP-recycling backstop: if the VPC hands this owner's *next* task the exact same
+# /32 (rare; task lifetimes are minutes-to-hours), the stale record must lapse so
+# the recycled IP is trusted again. 5 minutes sits an order of magnitude above
+# worst-case connect()+lock-queue yet far below any recycling timescale.
+_SUPERSEDED_IP_TTL_S = 300.0
 
 # Auth-failure backoff, per user, alongside the reconnect floor. The gateway
 # locks a client IP+credential scope out for 5 minutes after 10 failed auth
@@ -2961,12 +2967,6 @@ class GatewayConnectionPool:
             # throttle the very reconnect that just passed) — yet a create that
             # runs WITHOUT a preceding branch (an absent owner) still gets gated.
             floor_checked = False
-            # Endpoint we're recreating AWAY from. Recorded into the stale-endpoint
-            # fence AFTER the replacement is installed (below), not here — connect()
-            # can legitimately take >30s (open + two handshake recvs + health verify),
-            # so stamping before the dial could expire the window while a stale caller
-            # waits on the lock.
-            superseded_old_ip = None
             if conn is not None and conn.ip != ip:
                 if self._is_superseded_endpoint(user_id, ip):
                     # `ip` is an endpoint we recreated AWAY from within the race
@@ -2994,9 +2994,15 @@ class GatewayConnectionPool:
                     )
                     self._respect_reconnect_floor(user_id)
                     floor_checked = True
-                    # Remember the endpoint we're abandoning; the fence record is
-                    # stamped after the replacement is installed (see below).
-                    superseded_old_ip = conn.ip
+                    # Stamp the stale-endpoint fence at DETACH, before the dial —
+                    # not after a successful install. If _create_connection raises,
+                    # the owner is left ABSENT with no live connection; a fence
+                    # stamped only on success would fail OPEN, letting a concurrent
+                    # caller that already resolved this dead IP recreate straight
+                    # onto it. Stamping here closes that window. The clock is the
+                    # recycling backstop, not the race timer (see _SUPERSEDED_IP_TTL_S),
+                    # so the ~20-40s connect() below cannot expire it mid-race.
+                    self._superseded_ip[user_id] = (conn.ip, time.monotonic())
                     # Detach under the lock; drain + close OFF the lock so this
                     # owner's dead-socket teardown (~25s worst case) can't
                     # head-of-line-block ensure_connection for every other owner.
@@ -3027,6 +3033,21 @@ class GatewayConnectionPool:
                 await conn.close()
                 conn = None
             if conn is None:
+                # A stale caller can reach the absent path bearing a SUPERSEDED IP:
+                # a preceding recreate detached the old connection and its dial then
+                # raised (owner now absent), or the caller was queued behind that
+                # sequence. Its IP is the dead endpoint we just abandoned — there is
+                # no live connection to pin it to (the changed-ip branch above only
+                # fires when one exists), so dialing it would recreate the outage.
+                # Refuse; the caller's reconnect loop re-resolves the current task.
+                if self._is_superseded_endpoint(user_id, ip):
+                    logger.info(
+                        "Refusing superseded endpoint %s for absent user=%s — re-resolve",
+                        ip,
+                        user_id,
+                    )
+                    put_metric("gateway.connection", dimensions={"event": "stale_endpoint_refused"})
+                    raise GatewayReconnectThrottled("stale endpoint; re-resolve")
                 self._respect_auth_backoff(user_id)
                 # A detach above (or a prior repair whose own re-create failed)
                 # leaves the owner ABSENT, so a queued caller reaches this path
@@ -3044,18 +3065,16 @@ class GatewayConnectionPool:
                     self._record_auth_failure(user_id, exc.retry_after_ms)
                     raise
                 self._clear_auth_backoff(user_id)
-                # Start the stale-endpoint fence NOW — the replacement is installed,
-                # so the 30s window measures "since the new connection went live",
-                # which is what a lock-waiting stale caller races against.
-                if superseded_old_ip is not None:
-                    self._superseded_ip[user_id] = (superseded_old_ip, time.monotonic())
             return conn
 
     def _is_superseded_endpoint(self, user_id: str, ip: str) -> bool:
-        """True if *ip* is an endpoint we recreated a connection AWAY from within
-        ``_SUPERSEDED_IP_TTL_S`` — a stale resolution that must not roll a newer
-        connection back onto the dead task it replaced. Expired records are swept
-        so a genuinely recycled IP is trusted again after the window.
+        """True if *ip* is the endpoint we last recreated a connection AWAY from —
+        a stale resolution that must not roll a newer connection back onto the
+        dead task, nor be dialed on the absent path. The record is stamped at
+        detach and overwritten at the next detach, so it cannot expire under a
+        caller queued behind the ~20-40s replacement dial. The
+        ``_SUPERSEDED_IP_TTL_S`` sweep is only the IP-recycling backstop: a record
+        older than the window lapses so a genuinely recycled IP is trusted again.
         """
         rec = self._superseded_ip.get(user_id)
         if rec is None:

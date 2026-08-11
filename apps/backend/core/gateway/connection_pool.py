@@ -91,6 +91,13 @@ _PING_TIMEOUT = 300
 # burned ~5 simultaneous handshake attempts.
 _RECONNECT_FLOOR_S = 5
 
+# How long the endpoint we recreated a connection AWAY from stays "superseded"
+# — a resolution still pointing at it is treated as stale and cannot roll the
+# newer connection back onto the dead task. Comfortably longer than the worst
+# resolve→decide staleness (discover + a 5s health probe + lock wait) yet short
+# enough that a genuinely recycled IP is trusted again soon after.
+_SUPERSEDED_IP_TTL_S = 30.0
+
 # Auth-failure backoff, per user, alongside the reconnect floor. The gateway
 # locks a client IP+credential scope out for 5 minutes after 10 failed auth
 # attempts in 60s (AUTH_RATE_LIMITED); the 5s floor alone allows 12
@@ -2551,6 +2558,11 @@ class GatewayConnectionPool:
         # changed-IP recreate path). Strong refs kept so the fire-and-forget
         # close task isn't GC'd mid-drain.
         self._background_close_tasks: Set[asyncio.Task] = set()
+        # Per-owner (endpoint, monotonic_time) of the last connection we
+        # recreated AWAY from. Fences the changed-IP recreate against a STALE
+        # resolve (a concurrent request straddling a task replacement) rolling a
+        # newer connection back onto the dead task it replaced. TTL-bounded.
+        self._superseded_ip: Dict[str, tuple[str, float]] = {}
 
     def is_user_connected(self, user_id: str) -> bool:
         """Whether the pool has a live, healthy gateway connection for this user.
@@ -2944,31 +2956,59 @@ class GatewayConnectionPool:
             # fresh endpoint. (Gated by the reconnect floor like the other repair
             # paths, so a discover_ip that flaps during a rolling-deploy overlap
             # can't thrash the socket.)
+            # Tracks whether a branch below already consulted the reconnect floor,
+            # so the shared create path doesn't double-check it (which would
+            # throttle the very reconnect that just passed) — yet a create that
+            # runs WITHOUT a preceding branch (an absent owner) still gets gated.
+            floor_checked = False
             if conn is not None and conn.ip != ip:
-                logger.info(
-                    "Gateway endpoint changed for user=%s %s -> %s — recreating connection",
-                    user_id,
-                    conn.ip,
-                    ip,
-                )
-                self._respect_reconnect_floor(user_id)
-                # Detach under the lock; drain + close OFF the lock so this
-                # owner's dead-socket teardown (~25s worst case) can't
-                # head-of-line-block ensure_connection for every other owner.
-                self._connections.pop(user_id, None)
-                # The replacement created below shares this owner's frontend
-                # connection set (passed by reference into every GatewayConnection).
-                # Blank the detached connection's copy so its background teardown
-                # can't fan out a spurious GATEWAY_DOWN to the UI *after* the fresh
-                # connection reports HEALTHY — the two emits are otherwise
-                # unordered. The pool's shared set (and thus the new conn's) is
-                # untouched.
-                conn._frontend_connections = set()
-                self._close_detached(conn)
-                conn = None
+                if self._is_superseded_endpoint(user_id, ip):
+                    # `ip` is an endpoint we recreated AWAY from within the race
+                    # window — a STALE resolution that predates the newer
+                    # connection now installed (concurrent callers straddling a
+                    # task replacement, made worse because the dead task's health
+                    # probe can burn a full 5s). Honoring it would tear down the
+                    # newer HEALTHY connection and dial the dead task, recreating
+                    # the very outage this recreate exists to close. Pin to the
+                    # live endpoint so no path below dials the dead task.
+                    logger.info(
+                        "Ignoring stale endpoint %s for user=%s — superseded by live %s",
+                        ip,
+                        user_id,
+                        conn.ip,
+                    )
+                    put_metric("gateway.connection", dimensions={"event": "stale_endpoint_ignored"})
+                    ip = conn.ip
+                else:
+                    logger.info(
+                        "Gateway endpoint changed for user=%s %s -> %s — recreating connection",
+                        user_id,
+                        conn.ip,
+                        ip,
+                    )
+                    self._respect_reconnect_floor(user_id)
+                    floor_checked = True
+                    # Record the endpoint we're abandoning so a later, staler
+                    # resolution still pointing at it can't roll this forward.
+                    self._superseded_ip[user_id] = (conn.ip, time.monotonic())
+                    # Detach under the lock; drain + close OFF the lock so this
+                    # owner's dead-socket teardown (~25s worst case) can't
+                    # head-of-line-block ensure_connection for every other owner.
+                    self._connections.pop(user_id, None)
+                    # The replacement created below shares this owner's frontend
+                    # connection set (passed by reference into every GatewayConnection).
+                    # Blank the detached connection's copy so its background teardown
+                    # can't fan out a spurious GATEWAY_DOWN to the UI *after* the fresh
+                    # connection reports HEALTHY — the two emits are otherwise
+                    # unordered. The pool's shared set (and thus the new conn's) is
+                    # untouched.
+                    conn._frontend_connections = set()
+                    self._close_detached(conn)
+                    conn = None
             if conn is not None and conn._parked:
                 self._respect_auth_backoff(user_id)
                 self._respect_reconnect_floor(user_id)
+                floor_checked = True
                 try:
                     await conn.reopen()
                 except GatewayConnectAuthError as exc:
@@ -2977,10 +3017,21 @@ class GatewayConnectionPool:
                 self._clear_auth_backoff(user_id)
             elif conn is not None and not conn.is_connected:
                 self._respect_reconnect_floor(user_id)
+                floor_checked = True
                 await conn.close()
                 conn = None
             if conn is None:
                 self._respect_auth_backoff(user_id)
+                # A detach above (or a prior repair whose own re-create failed)
+                # leaves the owner ABSENT, so a queued caller reaches this path
+                # with no preceding branch. Without the floor here, repeated fast
+                # connect failures (connection refused) would storm the container
+                # at the frontend's sub-second reconnect cadence. Gate on the
+                # floor unless a branch already did — but only when this owner has
+                # reconnected before (a floor stamp exists), so a genuine
+                # first-ever connection is never made to wait.
+                if not floor_checked and user_id in self._last_reconnect_at:
+                    self._respect_reconnect_floor(user_id)
                 try:
                     conn = await self._create_connection(user_id, ip, token)
                 except GatewayConnectAuthError as exc:
@@ -2988,6 +3039,21 @@ class GatewayConnectionPool:
                     raise
                 self._clear_auth_backoff(user_id)
             return conn
+
+    def _is_superseded_endpoint(self, user_id: str, ip: str) -> bool:
+        """True if *ip* is an endpoint we recreated a connection AWAY from within
+        ``_SUPERSEDED_IP_TTL_S`` — a stale resolution that must not roll a newer
+        connection back onto the dead task it replaced. Expired records are swept
+        so a genuinely recycled IP is trusted again after the window.
+        """
+        rec = self._superseded_ip.get(user_id)
+        if rec is None:
+            return False
+        old_ip, when = rec
+        if time.monotonic() - when >= _SUPERSEDED_IP_TTL_S:
+            self._superseded_ip.pop(user_id, None)
+            return False
+        return old_ip == ip
 
     def _respect_reconnect_floor(self, user_id: str) -> None:
         """Raise if another reconnect for *user_id* fired within `_RECONNECT_FLOOR_S`.

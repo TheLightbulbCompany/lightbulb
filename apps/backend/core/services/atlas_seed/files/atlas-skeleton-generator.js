@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 const REQUIRED_HEADING_NEVER_DOES = 'What [Agent] Never Does — Non-Negotiable';
 const REQUIRED_PRD_TEMPLATE = 'As a {{agent_name}}, I should {{action}} so that {{outcome}}';
@@ -677,6 +678,37 @@ function writeDisk(buildId, agentName, artifacts) {
     return err;
   }
 
+  // Schema-gate the PROMOTE: validate the staged openclaw.json BEFORE the
+  // atomic mv, so a rejected config never occupies the destination — otherwise
+  // a corrected retry hits destination_exists and the build wedges. Staging is
+  // cleaned so the retry regenerates from scratch. Fail-open (no openclaw bin)
+  // is inherited from validateStagedConfig.
+  const stagedCfg = [
+    path.join(stagingDir, 'workspace', 'openclaw.json'),
+    path.join(stagingDir, 'openclaw.json')
+  ].find(p => fs.existsSync(p));
+  const schemaCheck = stagedCfg ? validateStagedConfig(stagedCfg) : { valid: true, issues: [] };
+  if (!schemaCheck.valid) {
+    let cleanupError = null;
+    try {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    } catch (ce) { cleanupError = ce.message; }
+    const err = {
+      success: false,
+      error: 'schema_validation_failed',
+      message: 'Staged openclaw.json violates the installed OpenClaw schema. Nothing was promoted; fix schema_issues and rebuild.',
+      schema_issues: schemaCheck.issues,
+      build_id: buildId,
+      staging_dir: stagingDir,
+      destination_dir: destDir,
+      staged_file_hashes: stagedHashes,
+      cleanup_succeeded: !cleanupError,
+      cleanup_error: cleanupError
+    };
+    process.stderr.write(JSON.stringify(err) + '\n');
+    return err;
+  }
+
   // Atomic mv via rename(2)
   try {
     fs.renameSync(stagingDir, destDir);
@@ -720,6 +752,34 @@ function writeDisk(buildId, agentName, artifacts) {
   }
 }
 
+// Schema-validate a staged openclaw.json against the INSTALLED OpenClaw's own
+// zod schema (`openclaw config validate --json` on OPENCLAW_CONFIG_PATH). The
+// agent-entry schema is .strict(), so an invented key silently bricks the
+// config reload at deploy time — catch it here, before register. Fail-OPEN
+// when the openclaw bin is absent (local dev / tests): the server-side
+// register sanitizer remains the backstop there.
+function validateStagedConfig(cfgPath) {
+  try {
+    execFileSync('openclaw', ['config', 'validate', '--json'], {
+      env: { ...process.env, OPENCLAW_CONFIG_PATH: cfgPath },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30000
+    });
+    return { valid: true, issues: [] };
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      return { valid: true, issues: [], skipped: 'openclaw bin not found' };
+    }
+    try {
+      const parsed = JSON.parse(e.stdout);
+      return { valid: false, issues: parsed.issues || [] };
+    } catch (pe) {
+      return { valid: false, issues: [{ path: '', message: String(e.message || e) }] };
+    }
+  }
+}
+
 function verifyWrite(buildId, agentName) {
   const agentsRoot = process.env.ISOL8_AGENTS_DIR || path.join(os.homedir(), '.openclaw', 'agents');
   const destDir = path.join(agentsRoot, agentName);
@@ -748,15 +808,38 @@ function verifyWrite(buildId, agentName) {
   }
   _walk(destDir, '');
   const observedFileCount = Object.keys(observedHashes).length;
-  return {
-    success: true,
+
+  // Schema check on the staged openclaw.json. workspace/ is the canonical
+  // location; the staging root covers the legacy flat layout (same candidates
+  // writeDisk resolves the agent name from). A failing check flips success to
+  // false so the register gate in build.lobster blocks on the exact issue list.
+  let schemaCheck = { valid: true, issues: [] };
+  for (const candidate of [
+    path.join(destDir, 'workspace', 'openclaw.json'),
+    path.join(destDir, 'openclaw.json')
+  ]) {
+    if (fs.existsSync(candidate)) {
+      schemaCheck = validateStagedConfig(candidate);
+      break;
+    }
+  }
+
+  const result = {
+    success: schemaCheck.valid,
     build_id: buildId,
     agent_name: agentName,
     destination_dir: destDir,
     file_count: observedFileCount,
     observed_hashes: observedHashes,
+    schema_issues: schemaCheck.issues,
     verified_at: new Date().toISOString()
   };
+  if (schemaCheck.skipped) result.schema_check_skipped = schemaCheck.skipped;
+  if (!schemaCheck.valid) {
+    result.error = 'schema_validation_failed';
+    result.message = 'Staged openclaw.json violates the installed OpenClaw schema. Fix schema_issues and re-verify before register.';
+  }
+  return result;
 }
 
 function loadManifest(agentName) {
@@ -809,6 +892,7 @@ module.exports = {
   generateScriptArchetype,
   draftToFastIo,
   writeDisk,
+  validateStagedConfig,
   verifyWrite,
   loadManifest,
   _flattenTriggers,

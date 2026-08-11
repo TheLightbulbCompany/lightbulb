@@ -182,10 +182,18 @@ steps:
     on_error: continue
 
   # Step 6.13a — Verify-failure notification. When the gate WAS approved (write was
-  #            attempted) but verify-write failed (atomic rename / hash mismatch), no
-  #            bridge call is made and needs_rollback is false — so without this the
-  #            build would stall silently. verify_failed is gated on gate-approval so a
-  #            deliberate gate REJECTION (write never attempted) does NOT notify here.
+  #            attempted) but verify-write failed (atomic rename / hash mismatch /
+  #            schema violation), no bridge call is made and needs_rollback is false —
+  #            so without this the build would stall silently. verify_failed is gated
+  #            on gate-approval so a deliberate gate REJECTION (write never attempted)
+  #            does NOT notify here. Reads verify-write AND file-generate directly
+  #            (not build-status, which reduces them to booleans) so the notification
+  #            carries the error kind + the exact schema_issues[] — a generic "retry"
+  #            with the issues dropped means a blind retry reproduces the same
+  #            violation. write-disk schema-gates the PROMOTE (nothing invalid is
+  #            renamed into place), so a schema refusal surfaces at verify as
+  #            destination_dir_missing with the issue list in file-generate's
+  #            stdout — pull issues from whichever step caught them.
   #            (No on_error: a throwing -next must halt before -save, not wipe the queue.)
   - id: verify-fail-load
     condition: $build-status.json.verify_failed
@@ -195,14 +203,27 @@ steps:
     condition: $build-status.json.verify_failed
     command: >
       node -e 'const n=JSON.parse(process.env.NOTIFS||"null")||[];
+        const v=JSON.parse(process.env.VERIFY||"null")||{};
+        const w=JSON.parse(process.env.WRITE||"null")||{};
+        const src=(w.schema_issues&&w.schema_issues.length)?w:v;
+        const iss=src.schema_issues||[];
+        const shown=iss.slice(0,5).map(i=>(i.path||"(config)")+": "+i.message);
+        const more=iss.length>5?(" (+"+(iss.length-5)+" more)"):"";
+        const detail=iss.length
+          ? "Schema validation failed: "+shown.join(" | ")+more+". Nothing was promoted or registered; fix the config and rebuild."
+          : "No files on disk or hash mismatch. Retry the build.";
         n.push({kind:"build_verify_failed", channel:"atlas-approvals",
           build_id:process.env.LOBSTER_ARG_BUILD_ID,
           agent_name:process.env.LOBSTER_ARG_AGENT_NAME,
-          summary:"File-write verification failed (no files on disk or hash mismatch) for agent "+process.env.LOBSTER_ARG_AGENT_NAME+". No bridge call was made and no agent was created. Retry the build.",
+          error:src.error||null,
+          schema_issues:iss.slice(0,5),
+          summary:"File-write verification failed ("+(src.error||"unknown")+") for agent "+process.env.LOBSTER_ARG_AGENT_NAME+". "+detail+" No bridge call was made and no agent was created.",
           created_at:new Date().toISOString()});
         process.stdout.write(JSON.stringify(n));'
     env:
       NOTIFS: $verify-fail-load.stdout
+      VERIFY: $verify-write.stdout
+      WRITE: $file-generate.stdout
 
   - id: verify-fail-save
     condition: $build-status.json.verify_failed

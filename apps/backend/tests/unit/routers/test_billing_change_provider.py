@@ -248,6 +248,14 @@ async def test_org_owner_can_switch_to_chatgpt_oauth_and_is_recorded(
             "core.services.config_patcher.replace_provider_block",
             new=AsyncMock(side_effect=_replace),
         ),
+        # change_provider clears the reprovision marker via
+        # container_repo.update_fields (needs_provision=False); with no moto
+        # containers table this hits real DynamoDB. Stub it — this test asserts
+        # on provider recording, not the marker write.
+        patch(
+            "core.repositories.container_repo.update_fields",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         resp = await async_client_org_admin.post(
             "/api/v1/billing/provider",
@@ -819,6 +827,14 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
             "core.services.provision_dispatch.dispatch_provision",
             new=AsyncMock(),
         ) as mock_bg,
+        # The hot path clears the reprovision marker via
+        # container_repo.update_fields(needs_provision=False); with no moto
+        # containers table this hits real DynamoDB. Stub it — this test asserts
+        # the no-restart config-patch behaviour, not the marker write.
+        patch(
+            "core.repositories.container_repo.update_fields",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         resp = await async_client.post(
             "/api/v1/billing/provider",

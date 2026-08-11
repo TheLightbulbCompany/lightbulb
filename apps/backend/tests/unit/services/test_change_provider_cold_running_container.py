@@ -142,9 +142,13 @@ def cold_change_env(containers_table):
     created: list = []
     row = _billing_row()
 
-    async def _commit_choice(owner_id, *, provider_choice, byo_provider, connector_user_id=None):
+    async def _commit_choice(
+        owner_id, *, provider_choice, byo_provider, connector_user_id=None, requires_reprovision=True
+    ):
         # Mirror billing_repo.set_provider_choice: the dispatched
         # dispatch_provision re-reads the row and must see the NEW choice.
+        # requires_reprovision accepted (the revert path passes it) but ignored —
+        # the stub doesn't model the container-marking side effect.
         row["provider_choice"] = provider_choice
         row["byo_provider"] = byo_provider
 

@@ -35,6 +35,19 @@ def dynamodb_table():
         )
         table.meta.client.get_waiter("table_exists").wait(TableName="test-billing-accounts")
 
+        # set_provider_choice marks the container for reprovision
+        # (container_repo.mark_needs_provision, added in #1676), which writes the
+        # containers table. Create it so that write reaches a real table; with no
+        # container row it no-ops gracefully (update_fields → ConditionalCheckFailed
+        # → None), the intended behaviour for these billing-only tests.
+        client.create_table(
+            TableName="test-containers",
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "owner_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        client.Table("test-containers").meta.client.get_waiter("table_exists").wait(TableName="test-containers")
+
         with (
             patch("core.dynamodb._table_prefix", "test-"),
             patch("core.dynamodb._dynamodb_resource", client),

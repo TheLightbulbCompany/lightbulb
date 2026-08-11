@@ -415,6 +415,11 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     (None, re.compile(r"^api/companies/[^/]+/imports(?:/|$)")),
     # claude_local-only subprocess login.
     (None, re.compile(r"^api/agents/[^/]+/claude-login$")),
+    # Adapter-inventory / docstring disclosure (mounted at root, not under /api).
+    (None, re.compile(r"^llms/agent-configuration")),
+    # Environment capability enumeration (info disclosure; creates/probes are
+    # blocked above, reads pass, but capabilities leak the host's driver set).
+    (None, re.compile(r"^api/(?:companies/[^/]+/)?environments/(?:[^/]+/)?capabilities")),
 )
 
 # `:type`-scoped adapter routes (models / detect-model / config-schema /
@@ -428,13 +433,23 @@ _ADAPTER_CREATE_ROUTES = (
     re.compile(r"^api/companies/[^/]+/agent-hires/?$"),
 )
 
+# Invite accept persists an *agent* join's adapterType; a missing one is stored
+# as null and defaults to "process" when the join-request is later approved.
+_INVITE_ACCEPT_ROUTES = (re.compile(r"^api/invites/[^/]+/accept/?$"),)
 
-def _top_level_adapter_type(body: bytes) -> str | None:
-    """Best-effort read of a top-level ``adapterType`` from a JSON body.
+# Approval create / resubmit carry the hire's adapterType NESTED at
+# ``payload.adapterType``; ``/approve`` applies it with a ``?? "process"``
+# fallback (paperclip services/approvals.ts). The top-level check misses these.
+_APPROVAL_ROUTES = (
+    re.compile(r"^api/companies/[^/]+/approvals/?$"),
+    re.compile(r"^api/approvals/[^/]+/resubmit/?$"),
+)
 
-    Returns ``None`` for a non-JSON / non-object body or an absent/non-string
-    field. The caller distinguishes "absent" (create routes reject) from
-    "present but not allowlisted" (every route rejects).
+
+def _parse_json_object(body: bytes) -> dict | None:
+    """Parse ``body`` as a JSON object, or ``None`` if it isn't one.
+
+    A non-JSON / non-object body carries no forgeable adapterType field.
     """
     if not body:
         return None
@@ -442,10 +457,11 @@ def _top_level_adapter_type(body: bytes) -> str | None:
         data = json.loads(body)
     except Exception:  # noqa: BLE001 — a non-JSON body carries no adapterType
         return None
-    if isinstance(data, dict):
-        value = data.get("adapterType")
-        return value if isinstance(value, str) else None
-    return None
+    return data if isinstance(data, dict) else None
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def _assert_paperclip_request_allowed(method: str, path: str, body: bytes) -> None:
@@ -454,7 +470,12 @@ def _assert_paperclip_request_allowed(method: str, path: str, body: bytes) -> No
     Raises ``HTTPException(403)`` on a disallowed route/body; returns ``None``
     otherwise. See the threat-model block above.
     """
-    p = path.lstrip("/")
+    # Match routes case-INSENSITIVELY: the deployed Paperclip fork runs Express
+    # with its default (case-insensitive) routing, so ``/API/Companies/.../Agents``
+    # resolves to the same handler — a lowercase-only denylist would miss it. The
+    # adapterType VALUE checks below stay case-sensitive (the upstream adapter
+    # registry lookup is exact, so a case-variant type fails there anyway).
+    p = path.lstrip("/").lower()
     method = method.upper()
 
     for methods, pattern in _BLOCKED_ROUTES:
@@ -465,13 +486,41 @@ def _assert_paperclip_request_allowed(method: str, path: str, body: bytes) -> No
     if type_route and type_route.group("type") not in _ALLOWED_ADAPTER_TYPES:
         raise HTTPException(status_code=403, detail="Adapter not permitted")
 
-    if method in {"POST", "PUT", "PATCH"}:
-        adapter_type = _top_level_adapter_type(body)
-        is_create = any(pattern.match(p) for pattern in _ADAPTER_CREATE_ROUTES)
-        if is_create and adapter_type is None:
+    if method not in {"POST", "PUT", "PATCH"}:
+        return
+
+    data = _parse_json_object(body)
+    adapter_type = _str_or_none(data.get("adapterType")) if data else None
+
+    # Direct create/hire: a missing adapterType defaults to "process" upstream.
+    if adapter_type is None and any(r.match(p) for r in _ADAPTER_CREATE_ROUTES):
+        raise HTTPException(status_code=403, detail="adapterType required")
+    # Any write naming a non-allowlisted type at the top level.
+    if adapter_type is not None and adapter_type not in _ALLOWED_ADAPTER_TYPES:
+        raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+    if data is None:
+        return
+
+    # Invite accept: an agent join with no adapterType stores null -> "process".
+    if data.get("requestType") == "agent" and any(r.match(p) for r in _INVITE_ACCEPT_ROUTES):
+        if adapter_type not in _ALLOWED_ADAPTER_TYPES:
             raise HTTPException(status_code=403, detail="adapterType required")
-        if adapter_type is not None and adapter_type not in _ALLOWED_ADAPTER_TYPES:
-            raise HTTPException(status_code=403, detail="Adapter not permitted")
+
+    # Approval create/resubmit: the hire's adapterType is nested at
+    # payload.adapterType, and approve applies it with a "process" fallback.
+    # Require an allowlisted type on any hire-shaped body — present-and-wrong
+    # OR absent both reject.
+    if any(r.match(p) for r in _APPROVAL_ROUTES):
+        payload = data.get("payload")
+        payload = payload if isinstance(payload, dict) else None
+        is_hire = data.get("type") == "hire_agent" or (
+            payload is not None and ("adapterType" in payload or "adapterConfig" in payload)
+        )
+        if is_hire:
+            nested = _str_or_none(payload.get("adapterType")) if payload else None
+            if nested is None or nested not in _ALLOWED_ADAPTER_TYPES:
+                raise HTTPException(status_code=403, detail="Adapter not permitted")
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:

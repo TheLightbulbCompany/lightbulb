@@ -21,7 +21,7 @@ from routers.paperclip_proxy import (
     _ALLOWED_ADAPTER_TYPES,
     _assert_paperclip_request_allowed,
     _filter_request_headers,
-    _top_level_adapter_type,
+    _parse_json_object,
 )
 
 
@@ -160,20 +160,97 @@ def test_non_json_body_on_write_route_passes():
 
 
 # ---------------------------------------------------------------
-# _top_level_adapter_type helper
+# Nested payload.adapterType — approvals create / resubmit
 # ---------------------------------------------------------------
 
 
-def test_top_level_adapter_type_reads_string():
-    assert _top_level_adapter_type(b'{"adapterType":"openclaw_gateway"}') == "openclaw_gateway"
+@pytest.mark.parametrize("path", ["api/companies/c1/approvals", "api/approvals/ap1/resubmit"])
+def test_approval_hire_with_nested_process_adapter_is_blocked(path):
+    # The RCE via the approvals path: adapterType nested under payload, applied
+    # on /approve with a "process" fallback.
+    body = json.dumps(
+        {"type": "hire_agent", "payload": {"adapterType": "process", "adapterConfig": {"command": "/bin/sh"}}}
+    ).encode()
+    assert _blocked("POST", path, body)
+
+
+def test_approval_hire_missing_nested_adapter_is_blocked():
+    # Absent nested adapterType defaults to "process" on approve.
+    body = json.dumps({"type": "hire_agent", "payload": {"agentName": "x", "adapterConfig": {}}}).encode()
+    assert _blocked("POST", "api/companies/c1/approvals", body)
+
+
+def test_approval_hire_with_nested_gateway_adapter_is_allowed():
+    body = json.dumps({"type": "hire_agent", "payload": {"adapterType": "openclaw_gateway"}}).encode()
+    assert not _blocked("POST", "api/companies/c1/approvals", body)
+
+
+def test_non_hire_approval_without_payload_passes():
+    # A non-hire approval (no adapter surface) must not be caught.
+    body = json.dumps({"type": "budget_increase", "decisionNote": "ok"}).encode()
+    assert not _blocked("POST", "api/companies/c1/approvals", body)
+
+
+# ---------------------------------------------------------------
+# Invite accept (agent join) — defence-in-depth
+# ---------------------------------------------------------------
+
+
+def test_invite_accept_agent_missing_adapter_is_blocked():
+    body = json.dumps({"requestType": "agent", "agentName": "x"}).encode()
+    assert _blocked("POST", "api/invites/tok/accept", body)
+
+
+def test_invite_accept_agent_non_gateway_is_blocked():
+    body = json.dumps({"requestType": "agent", "adapterType": "process"}).encode()
+    assert _blocked("POST", "api/invites/tok/accept", body)
+
+
+def test_invite_accept_agent_gateway_is_allowed():
+    body = json.dumps({"requestType": "agent", "adapterType": "openclaw_gateway"}).encode()
+    assert not _blocked("POST", "api/invites/tok/accept", body)
+
+
+def test_invite_accept_human_join_needs_no_adapter():
+    body = json.dumps({"requestType": "human", "name": "Jo"}).encode()
+    assert not _blocked("POST", "api/invites/tok/accept", body)
+
+
+# ---------------------------------------------------------------
+# Case-insensitive route matching (Express default) + new blocked routes
+# ---------------------------------------------------------------
+
+
+def test_case_variant_path_does_not_bypass_denylist():
+    # Express resolves /API/Companies/.../Agents to the same handler; a
+    # lowercase-only denylist would miss the mixed-case create.
+    assert _blocked("POST", "API/Companies/c1/Agents", json.dumps({"adapterType": "process"}).encode())
+    assert _blocked("POST", "Api/Adapters/Install")
 
 
 @pytest.mark.parametrize(
-    "body",
-    [b"", b"{}", b'{"other":1}', b"not-json", b'["adapterType"]', b'{"adapterType":123}'],
+    "method,path",
+    [
+        ("GET", "llms/agent-configuration.txt"),  # adapter inventory disclosure
+        ("GET", "api/companies/c1/environments/capabilities"),  # driver-set disclosure
+    ],
 )
-def test_top_level_adapter_type_returns_none(body):
-    assert _top_level_adapter_type(body) is None
+def test_info_disclosure_routes_are_blocked(method, path):
+    assert _blocked(method, path)
+
+
+# ---------------------------------------------------------------
+# _parse_json_object helper
+# ---------------------------------------------------------------
+
+
+def test_parse_json_object_reads_dict():
+    assert _parse_json_object(b'{"adapterType":"openclaw_gateway"}') == {"adapterType": "openclaw_gateway"}
+
+
+@pytest.mark.parametrize("body", [b"", b"not-json", b'["adapterType"]', b"123"])
+def test_parse_json_object_returns_none_for_non_object(body):
+    assert _parse_json_object(body) is None
 
 
 def test_allowlist_is_gateway_only():

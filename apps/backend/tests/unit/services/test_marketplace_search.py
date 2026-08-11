@@ -186,8 +186,9 @@ async def test_drafts_excluded_via_in_python_filter(mock_table):
 
 @pytest.mark.asyncio
 async def test_cache_ttl_avoids_rescan(mock_table, monkeypatch):
+    # Cache age is measured with a monotonic clock (immune to wall-clock steps).
     fake_now = [1000.0]
-    monkeypatch.setattr(marketplace_search.time, "time", lambda: fake_now[0])
+    monkeypatch.setattr(marketplace_search.time, "monotonic", lambda: fake_now[0])
 
     await marketplace_search.search(query=None)
     assert mock_table.scan.call_count == 1

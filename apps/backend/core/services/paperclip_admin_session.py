@@ -71,7 +71,9 @@ class _AdminSessionState:
         self._password: str | None = None
 
     def is_cookie_fresh(self) -> bool:
-        return self._cookie is not None and (time.time() - self._cookie_acquired_at) < _SESSION_TTL_SECONDS
+        # monotonic: session age is an in-process elapsed check (stamped in
+        # get_admin_session_cookie, compared here), immune to wall-clock steps.
+        return self._cookie is not None and (time.monotonic() - self._cookie_acquired_at) < _SESSION_TTL_SECONDS
 
     def invalidate(self) -> None:
         self._cookie = None
@@ -140,7 +142,7 @@ async def get_admin_session_cookie(http_client: httpx.AsyncClient) -> str:
             raise RuntimeError("Better Auth sign-in for admin returned no Set-Cookie session token")
 
         _state._cookie = cookie
-        _state._cookie_acquired_at = time.time()
+        _state._cookie_acquired_at = time.monotonic()
         logger.info(
             "paperclip_admin_session: acquired admin session cookie for %s",
             _state._email,

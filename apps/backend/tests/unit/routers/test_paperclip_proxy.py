@@ -183,13 +183,14 @@ def test_circuit_breaker_recloses_after_cooldown_window(monkeypatch):
         _record_outcome(503)
     assert _circuit_open() is True
 
-    # Fast-forward time past the cool-down. We monkey-patch
-    # ``time.time`` inside the proxy module so the cool-down + the
-    # rate-window cutoff both shift.
+    # Fast-forward time past the cool-down. The breaker now measures its
+    # windows with a monotonic clock (immune to wall-clock steps), so we
+    # monkey-patch ``time.monotonic`` inside the proxy module — the cool-down
+    # + the rate-window cutoff both shift.
     import routers.paperclip_proxy as proxy_mod
 
-    fake_now = time.time() + _OPEN_STATE_SECONDS + _FAILURE_WINDOW_SECONDS + 1
-    monkeypatch.setattr(proxy_mod.time, "time", lambda: fake_now)
+    fake_now = time.monotonic() + _OPEN_STATE_SECONDS + _FAILURE_WINDOW_SECONDS + 1
+    monkeypatch.setattr(proxy_mod.time, "monotonic", lambda: fake_now)
 
     # All the recorded 5xx samples are now older than the window,
     # so the rate calc returns 0/0 and we skip re-opening.

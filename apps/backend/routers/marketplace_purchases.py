@@ -5,6 +5,7 @@ listings into their existing OpenClaw container via the deploy endpoint
 in marketplace_listings. There is no CLI installer.
 """
 
+import calendar
 import time
 from typing import Annotated
 
@@ -355,7 +356,10 @@ async def refund(
     if not purchase:
         raise HTTPException(status_code=404, detail="purchase not found")
     created_iso = purchase["created_at"]
-    age_seconds = time.time() - time.mktime(time.strptime(created_iso, "%Y-%m-%dT%H:%M:%SZ"))
+    # created_at is stored UTC ("...Z"); calendar.timegm reads the struct as
+    # UTC. time.mktime would read it as LOCAL time, skewing the window by the
+    # host's UTC offset on any non-UTC host.
+    age_seconds = time.time() - calendar.timegm(time.strptime(created_iso, "%Y-%m-%dT%H:%M:%SZ"))
     if age_seconds > 7 * 24 * 60 * 60:
         raise HTTPException(status_code=403, detail="refund window expired (7 days)")
 

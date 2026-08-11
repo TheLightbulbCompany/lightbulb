@@ -61,7 +61,9 @@ async def _refresh_cache() -> list[dict[str, Any]]:
     global _CACHE, _CACHE_TIMESTAMP
     items = await marketplace_repo.scan_all_listings()
     _CACHE = items
-    _CACHE_TIMESTAMP = time.time()
+    # monotonic: cache age is an in-process elapsed check (stamped here,
+    # compared in _get_snapshot), immune to wall-clock steps.
+    _CACHE_TIMESTAMP = time.monotonic()
     return items
 
 
@@ -74,7 +76,7 @@ async def _get_snapshot() -> list[dict[str, Any]]:
     count); upgrade to an asyncio.Lock around _refresh_cache() if scan
     amplification ever matters at scale.
     """
-    if _CACHE is None or (time.time() - _CACHE_TIMESTAMP) > _CACHE_TTL_SECONDS:
+    if _CACHE is None or (time.monotonic() - _CACHE_TIMESTAMP) > _CACHE_TTL_SECONDS:
         return await _refresh_cache()
     return _CACHE
 

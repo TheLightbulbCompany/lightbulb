@@ -515,7 +515,7 @@ async def test_try_claim_checkout_slot_first_claim_wins(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    assert await billing_repo.try_claim_checkout_slot("slot_owner")  # returns a claim token
 
 
 @pytest.mark.asyncio
@@ -523,8 +523,8 @@ async def test_try_claim_checkout_slot_blocks_within_ttl(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is False
+    assert await billing_repo.try_claim_checkout_slot("slot_owner")
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is None
 
 
 @pytest.mark.asyncio
@@ -536,24 +536,40 @@ async def test_try_claim_checkout_slot_self_heals_after_ttl(dynamodb_table, monk
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    assert await billing_repo.try_claim_checkout_slot("slot_owner")
     real_now = time.time()
     monkeypatch.setattr(billing_repo, "time", SimpleNamespace(time=lambda: real_now + 91))
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    assert await billing_repo.try_claim_checkout_slot("slot_owner")
 
 
 @pytest.mark.asyncio
-async def test_release_checkout_slot_allows_immediate_reclaim(dynamodb_table):
+async def test_release_checkout_slot_with_token_allows_immediate_reclaim(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
-    await billing_repo.release_checkout_slot("slot_owner")
-    assert await billing_repo.try_claim_checkout_slot("slot_owner") is True
+    token = await billing_repo.try_claim_checkout_slot("slot_owner")
+    assert token
+    await billing_repo.release_checkout_slot("slot_owner", token=token)
+    assert await billing_repo.try_claim_checkout_slot("slot_owner")
 
 
 @pytest.mark.asyncio
-async def test_try_claim_checkout_slot_no_row_returns_false(dynamodb_table):
+async def test_release_checkout_slot_wrong_token_is_noop(dynamodb_table):
+    """The ABA fence: a stale holder's release with the wrong token must NOT
+    clear a newer holder's claim (this is what double-charged)."""
     from core.repositories import billing_repo
 
-    assert await billing_repo.try_claim_checkout_slot("ghost_owner") is False
+    await billing_repo.create_if_not_exists(owner_id="slot_owner", stripe_customer_id="cus_s", owner_type="personal")
+    token = await billing_repo.try_claim_checkout_slot("slot_owner")
+    assert token
+    # A different request's failure-path release, carrying a stale token.
+    await billing_repo.release_checkout_slot("slot_owner", token="not-the-holders-token")
+    # The live claim survived — the slot is still held.
+    assert await billing_repo.try_claim_checkout_slot("slot_owner") is None
+
+
+@pytest.mark.asyncio
+async def test_try_claim_checkout_slot_no_row_returns_none(dynamodb_table):
+    from core.repositories import billing_repo
+
+    assert await billing_repo.try_claim_checkout_slot("ghost_owner") is None

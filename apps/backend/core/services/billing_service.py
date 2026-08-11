@@ -281,7 +281,8 @@ async def create_flat_fee_checkout(
     # before either pending-checkout marker lands. Self-expires (90s) so a
     # crashed request can't wedge the owner; the router maps this error to
     # a 409.
-    if not await billing_repo.try_claim_checkout_slot(owner_id):
+    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
+    if not claim_token:
         raise BillingServiceError("checkout_in_progress")
 
     metadata: dict = {"owner_id": owner_id}
@@ -379,8 +380,9 @@ async def create_flat_fee_checkout(
         )
     except Exception:
         # No session exists — free the slot so the user's immediate retry
-        # doesn't wait out the claim TTL.
-        await billing_repo.release_checkout_slot(owner_id)
+        # doesn't wait out the claim TTL. Fenced on our own token so a hung
+        # create that failed here can't clobber a concurrent re-claim.
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         raise
     # The marker is load-bearing: after the 90s claim TTL lapses, an
     # UNRECORDED open session is invisible to every guard while staying
@@ -400,7 +402,7 @@ async def create_flat_fee_checkout(
             # its URL.
             logger.exception("Failed to expire unrecorded checkout session %s", session.id)
         try:
-            await billing_repo.release_checkout_slot(owner_id)
+            await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         except Exception:
             # Claim self-expires in 90s; the retry just waits it out.
             logger.exception("Failed to release checkout slot for owner %s", owner_id)
@@ -752,7 +754,8 @@ async def create_ultra_upgrade(
     # concurrent checkout sessions (distinct idempotency keys would otherwise
     # each mint a completable session before either pending-checkout marker
     # lands). Self-expires (90s); the router maps this error to a 409.
-    if not await billing_repo.try_claim_checkout_slot(owner_id):
+    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
+    if not claim_token:
         raise BillingServiceError("checkout_in_progress")
 
     # ``purpose="ultra"`` rides the subscription metadata so the webhook records
@@ -786,8 +789,8 @@ async def create_ultra_upgrade(
         )
     except Exception:
         # No session exists — free the slot so an immediate retry doesn't wait
-        # out the claim TTL.
-        await billing_repo.release_checkout_slot(owner_id)
+        # out the claim TTL. Fenced on our own token (see create_flat_fee_checkout).
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         raise
     # Fail CLOSED on a marker-write failure (mirrors create_flat_fee_checkout):
     # an unrecorded open session is invisible to every guard once the claim TTL
@@ -804,7 +807,7 @@ async def create_ultra_upgrade(
         except Exception:
             logger.exception("Failed to expire unrecorded checkout session %s", session.id)
         try:
-            await billing_repo.release_checkout_slot(owner_id)
+            await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         except Exception:
             logger.exception("Failed to release checkout slot for owner %s", owner_id)
         raise BillingServiceError("checkout_unavailable")

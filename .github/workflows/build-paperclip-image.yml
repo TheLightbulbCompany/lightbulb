@@ -110,6 +110,22 @@ jobs:
 
           sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
 
+      # Same permanent-storage problem as build-openclaw-image.yml — see the
+      # long comment there. This job also runs on a self-hosted runner and also
+      # strands `IMAGE_REF` + `IMAGE_REF-soci-staging` in nerdctl's `default`
+      # namespace, where `docker system prune` will never find them.
+      - name: Reclaim container storage
+        if: always()
+        env:
+          IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        run: |
+          set -uo pipefail
+          sudo nerdctl rmi -f "${IMAGE_REF}" "${IMAGE_REF}-soci-staging" 2>/dev/null || true
+          docker image rm -f "${IMAGE_REF}" 2>/dev/null || true
+          docker builder prune -af --filter until=168h 2>&1 | tail -2 || true
+          echo "disk after reclaim:"
+          df -h / | tail -1
+
       - name: Summary
         run: |
           echo "## Built image" >> "$GITHUB_STEP_SUMMARY"

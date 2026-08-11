@@ -162,6 +162,32 @@ jobs:
           # immutability conflict.
           sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
 
+      # On a SELF-HOSTED runner the container stores are not thrown away with
+      # the VM, so anything this job leaves behind is permanent. The SOCI step
+      # above leaves THREE copies of a ~16 GB image per run: the docker-built
+      # one in containerd's `moby` namespace, plus `IMAGE_REF` and
+      # `IMAGE_REF-soci-staging` in `default` (nerdctl's namespace). Nothing
+      # collected them, and critically `docker system prune` cannot — it only
+      # knows about `moby`. Roughly 200 builds accumulated 614 images and grew
+      # /var/lib/containerd to 732 GB, filling the runner box's disk until
+      # builds began failing (run #196 attempt 2, 2026-08-11).
+      #
+      # `if: always()` because a build that fails partway through the convert
+      # is exactly the case that used to strand the most bytes.
+      - name: Reclaim container storage
+        if: always()
+        env:
+          IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        run: |
+          set -uo pipefail
+          # nerdctl's `default` namespace — both tags the convert produced.
+          sudo nerdctl rmi -f "${IMAGE_REF}" "${IMAGE_REF}-soci-staging" 2>/dev/null || true
+          # Docker's own copy plus the layer cache this build populated.
+          docker image rm -f "${IMAGE_REF}" 2>/dev/null || true
+          docker builder prune -af --filter until=168h 2>&1 | tail -2 || true
+          echo "disk after reclaim:"
+          df -h / | tail -1
+
       - name: Summary
         run: |
           echo "## Built image" >> "$GITHUB_STEP_SUMMARY"

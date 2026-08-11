@@ -141,3 +141,175 @@ class TestRequestWake:
         result, dispatch = await _explicit(None)
         assert result.outcome == "no_row"
         dispatch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Wake fast path — direct scale-up for cleanly stopped rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stopped_clean_row_takes_the_direct_scaleup_fast_path(monkeypatch):
+    """A stopped row with no needs_provision marker wakes via
+    start_user_service (one update_service call), NOT the SFN executor —
+    the provisioner VM cold-launch is ~90-120s of overhead for a wake."""
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock()
+    dispatched = AsyncMock()
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", return_value=None),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "started"
+    manager.start_user_service.assert_awaited_once_with("u1")
+    dispatched.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_needs_provision_marker_routes_the_wake_through_the_full_executor():
+    """A task-def-shaped config change (provider switch) marked the row —
+    the next wake must run the FULL provision once to apply it."""
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock()
+    dispatched = AsyncMock()
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", return_value=None),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped", "needs_provision": True}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+        patch("core.services.container_wake.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "dispatched"
+    manager.start_user_service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_failure_falls_back_to_the_full_executor():
+    """The wake must never be lost to the optimization: any fast-path
+    failure (gate re-check refusal, ECS hiccup) falls back to dispatch."""
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock(side_effect=RuntimeError("ecs blip"))
+    dispatched = AsyncMock()
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", return_value=None),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+        patch("core.services.container_wake.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "dispatched"
+    manager.start_user_service.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_errored_row_always_takes_the_full_executor():
+    """A failed provision needs the runner (config rewrite, task-def
+    re-register, fenced retries) — never a bare scale-up."""
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock()
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", return_value=None),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "error"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "dispatched"
+    manager.start_user_service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_cap_refusal_blocks_instead_of_dispatching():
+    """A cap refusal raised by the chokepoint's own re-check is a POLICY
+    outcome — dispatching would bypass it (the SFN runner starts with
+    force=True). The wake must surface the structured gate card."""
+    from core.containers.ecs_manager import START_REFUSED_CAP, ContainerStartRefused
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock(side_effect=ContainerStartRefused(START_REFUSED_CAP, "u1", "capped"))
+    dispatched = AsyncMock()
+    gate = MagicMock()
+    gate.to_payload.return_value = {"code": "trial_daily_cap"}
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", side_effect=[None, gate]),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "blocked"
+    assert result.gate_payload == {"code": "trial_daily_cap"}
+    dispatched.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_reprovision_refusal_falls_through_to_dispatch():
+    """A needs_provision refusal raced our row read — the full provision IS
+    the remedy, so this one refusal DOES route to dispatch."""
+    from core.containers.ecs_manager import START_REFUSED_REPROVISIONING, ContainerStartRefused
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock(
+        side_effect=ContainerStartRefused(START_REFUSED_REPROVISIONING, "u1", "config pending")
+    )
+    dispatched = AsyncMock()
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", return_value=None),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+        patch("core.services.container_wake.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "dispatched"

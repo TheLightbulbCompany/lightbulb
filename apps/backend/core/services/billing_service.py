@@ -1426,6 +1426,13 @@ async def change_provider(
                     "path": "hot",
                 },
             )
+            # The switch turned out task-def-neutral (applied in place, no
+            # restart) — clear the marker set_provider_choice stamped before
+            # the hot/cold split was decided, or the NEXT wake would take a
+            # pointless full provision.
+            from core.repositories import container_repo as _container_repo
+
+            await _container_repo.update_fields(owner_id, {"needs_provision": False})
             return {
                 "status": "ok",
                 "provider_choice": provider_choice,
@@ -1594,6 +1601,10 @@ async def change_provider(
             provider_choice=restore_choice,
             byo_provider=current_byo,
             connector_user_id=recorded_connector if restore_choice == "chatgpt_oauth" else None,
+            # Restoring the provider the container is ACTUALLY running —
+            # the registered task def already matches; marking would cost a
+            # pointless full provision on the next wake.
+            requires_reprovision=False,
         )
         await write_owner_facts(
             owner_id,

@@ -489,6 +489,7 @@ async def set_provider_choice(
     provider_choice: str,
     byo_provider: str | None,
     connector_user_id: str | None = None,
+    requires_reprovision: bool = True,
 ) -> dict:
     """Persist the provider choice on a billing row.
 
@@ -510,6 +511,19 @@ async def set_provider_choice(
     Raises:
         ValueError: unknown provider_choice.
     """
+    # Mark the container BEFORE committing the billing write, and only for
+    # switches that change the task-def shape (the cold path). Ordering is
+    # the failure-safety: a marked row with an UNCHANGED provider merely
+    # costs one unnecessary full provision on the next wake; an unmarked
+    # row with a CHANGED provider boots the stale task def — the dangerous
+    # state. The hot-swap path (task-def-neutral by construction) passes
+    # requires_reprovision=False and never marks.
+    # Lazy import: container_repo is a sibling; no cycle back here.
+    if requires_reprovision:
+        from core.repositories import container_repo
+
+        await container_repo.mark_needs_provision(owner_id)
+
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
 

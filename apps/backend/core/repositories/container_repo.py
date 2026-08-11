@@ -1328,6 +1328,19 @@ def is_provision_claim_stale(container: dict | None) -> bool:
     return int(claimed_at) < int(time.time()) - PROVISION_CLAIM_STALE_S
 
 
+async def mark_needs_provision(owner_id: str) -> None:
+    """Mark the owner's container as needing a FULL provision on its next
+    wake: something task-definition-shaped changed (today: a provider
+    switch — the one config write whose effect lives in the task def, not
+    in EFS/secret values that a plain boot re-reads). The wake verb routes
+    a marked row through the SFN executor (which re-registers the task def
+    and rewrites openclaw.json) instead of the direct scale-up fast path;
+    the full provision's terminal running write clears the marker. No-op
+    when no row exists — a first provision is always full.
+    """
+    await update_fields(owner_id, {"needs_provision": True})
+
+
 async def update_status(owner_id: str, status: str, substatus: str | None = None) -> dict | None:
     fields = {"status": status, "substatus": substatus}
     return await update_fields(owner_id, fields)

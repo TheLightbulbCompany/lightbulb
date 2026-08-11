@@ -51,6 +51,11 @@ shared ARN passed there):
     aws ecs update-service --cluster <cluster-arn> \
         --service isol8-{env}-paperclip-server --force-new-deployment \
         --profile isol8-admin --region us-east-1
+    # update-service only STARTS the rollout (old + new tasks overlap, and the
+    # circuit breaker can roll back), so WAIT for it to stabilize before trusting
+    # the audit — otherwise the compromised task may still be running / rolled back:
+    aws ecs wait services-stable --cluster <cluster-arn> \
+        --services isol8-{env}-paperclip-server --profile isol8-admin --region us-east-1
 
 Then re-run the dry-run audit to confirm clean.
 

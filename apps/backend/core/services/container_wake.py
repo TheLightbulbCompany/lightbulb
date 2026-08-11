@@ -94,16 +94,43 @@ async def request_wake(owner_id: str, *, reason: str, is_admin: bool) -> WakeRes
     if status == "stopped" and not container.get("needs_provision"):
         try:
             from core.containers import get_ecs_manager
+            from core.containers.ecs_manager import (
+                START_REFUSED_CONVERTING,
+                START_REFUSED_REPROVISIONING,
+                ContainerStartRefused,
+            )
 
             await get_ecs_manager().start_user_service(owner_id)
             wake_policy.note_wake_dispatched(door="wake_endpoint", intent=reason)
             logger.info("container wake fast-path started owner=%s reason=%s", owner_id, reason)
             return WakeResult(outcome="started")
+        except ContainerStartRefused as refusal:
+            # The chokepoint's re-check refused DELIBERATELY — state moved
+            # between our gates above and the start. These are POLICY
+            # outcomes, never fodder for the dispatch fallback: the SFN
+            # runner starts with force=True, so dispatching here would wake
+            # a container the policy just refused (cap/conversion bypass).
+            if refusal.reason == START_REFUSED_REPROVISIONING:
+                # A config change landed mid-wake — the full provision IS
+                # the remedy; fall through to dispatch below.
+                logger.info(
+                    "container wake fast-path deferred to full provision owner=%s (config change pending)",
+                    owner_id,
+                )
+            elif refusal.reason == START_REFUSED_CONVERTING:
+                return WakeResult(outcome="converting")
+            else:
+                # Cap / expiry raced our earlier gate read — surface the
+                # same structured card every other refused door renders.
+                gate = provision_gate.gate_for_trial_reason(refusal.reason, role)
+                return WakeResult(
+                    outcome="blocked",
+                    gate_payload=gate.to_payload() if gate is not None else None,
+                )
         except Exception:
-            # ANY fast-path failure falls back to the full executor — the
-            # wake must never be lost to an optimization. (A gate refusal
-            # raised by the chokepoint's own re-check lands here too; the
-            # dispatch's provision gate re-evaluates and blocks properly.)
+            # An OPERATIONAL fast-path failure (ECS hiccup) falls back to
+            # the full executor — the wake must never be lost to an
+            # optimization.
             logger.exception("container wake fast-path failed owner=%s — falling back to dispatch", owner_id)
 
     # stopped-with-marker / error / stale-lease / fast-path failure:

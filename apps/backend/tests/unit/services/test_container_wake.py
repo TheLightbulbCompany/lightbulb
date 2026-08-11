@@ -253,3 +253,63 @@ async def test_errored_row_always_takes_the_full_executor():
 
     assert result.outcome == "dispatched"
     manager.start_user_service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_cap_refusal_blocks_instead_of_dispatching():
+    """A cap refusal raised by the chokepoint's own re-check is a POLICY
+    outcome — dispatching would bypass it (the SFN runner starts with
+    force=True). The wake must surface the structured gate card."""
+    from core.containers.ecs_manager import START_REFUSED_CAP, ContainerStartRefused
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock(side_effect=ContainerStartRefused(START_REFUSED_CAP, "u1", "capped"))
+    dispatched = AsyncMock()
+    gate = MagicMock()
+    gate.to_payload.return_value = {"code": "trial_daily_cap"}
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", side_effect=[None, gate]),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "blocked"
+    assert result.gate_payload == {"code": "trial_daily_cap"}
+    dispatched.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_reprovision_refusal_falls_through_to_dispatch():
+    """A needs_provision refusal raced our row read — the full provision IS
+    the remedy, so this one refusal DOES route to dispatch."""
+    from core.containers.ecs_manager import START_REFUSED_REPROVISIONING, ContainerStartRefused
+    from core.services import container_wake
+
+    manager = MagicMock()
+    manager.start_user_service = AsyncMock(
+        side_effect=ContainerStartRefused(START_REFUSED_REPROVISIONING, "u1", "config pending")
+    )
+    dispatched = AsyncMock()
+    with (
+        patch("core.services.provision_gate.gate_for_trial_reason", return_value=None),
+        patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)),
+        patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)),
+        patch(
+            "core.repositories.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u1", "status": "stopped"}),
+        ),
+        patch("core.containers.get_ecs_manager", return_value=manager),
+        patch("core.services.container_wake.dispatch_provision", dispatched),
+        patch("core.services.container_wake.asyncio.create_task", side_effect=lambda c: c.close()),
+    ):
+        result = await container_wake.request_wake("u1", reason="interaction", is_admin=True)
+
+    assert result.outcome == "dispatched"

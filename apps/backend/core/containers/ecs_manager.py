@@ -1310,7 +1310,7 @@ class EcsManager:
         #    re-registers the task def and clears the marker with its
         #    terminal running write. The executor's own start runs with
         #    force=True, so the full path can never deadlock on this guard.
-        if container and container.get("needs_provision"):
+        if container and container.get("status") == "stopped" and container.get("needs_provision"):
             put_metric("container.start.refused", dimensions={"reason": START_REFUSED_REPROVISIONING})
             raise ContainerStartRefused(
                 START_REFUSED_REPROVISIONING,

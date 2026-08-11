@@ -8,6 +8,7 @@ Exposes:
 """
 
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -90,7 +91,12 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
             pool = get_gateway_pool()
             status = await pool.send_rpc(
                 user_id=owner_id,
-                req_id=f"links-me-{owner_id}",
+                # Unique per call — a constant id (this was previously
+                # `links-me-{owner_id}`) collides in the per-owner pending-RPC
+                # map when two of the owner's tabs probe at once. The pool now
+                # namespaces the wire id defensively too, but don't ship a
+                # constant one for future direct callers to trip over.
+                req_id=f"links-me-{uuid.uuid4().hex}",
                 method="channels.status",
                 params={"probe": True},
                 ip=ip,

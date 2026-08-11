@@ -91,6 +91,35 @@ _PING_TIMEOUT = 300
 # burned ~5 simultaneous handshake attempts.
 _RECONNECT_FLOOR_S = 5
 
+# How long an endpoint we recreated a connection AWAY from stays "superseded"
+# — a resolution still pointing at it is treated as stale and cannot roll the
+# newer connection back onto the dead task. This is NOT the race timer: the race
+# it guards (concurrent callers straddling task replacements, all serialized on
+# the pool lock) resolves in seconds. Records are stamped at DETACH and kept as a
+# bounded HISTORY (not one slot), so a resolution straddling several fast
+# replacements stays fenced. The clock exists ONLY as the IP-recycling backstop:
+# if the VPC hands this owner's *next* task the exact same /32 (rare; task
+# lifetimes are minutes-to-hours), the stale record must lapse so the recycled IP
+# is trusted again. 5 minutes sits an order of magnitude above worst-case
+# connect()+lock-queue yet far below any recycling timescale.
+#
+# Residual ceiling: a stale resolution queued behind MANY serial cold connects on
+# the pool-wide lock (each ~20-40s) could in principle outlive even this window.
+# That queue only reaches minutes when a single backend task cold-dials a large
+# fleet after a deploy — the global-lock-across-handshake serialization is a
+# separate, tracked scalability limit (the in-process WS fanout note), not this
+# fence's to solve. Fully decoupling the fence from wall clock needs a
+# caller-carried resolve timestamp threaded through ~15 mostly-single-shot call
+# sites — disproportionate to a deploy-only deep tail whose worst case is a ≤300s
+# self-healing reconnect, versus the indefinite-timeout outage on main this whole
+# path fixes.
+_SUPERSEDED_IP_TTL_S = 300.0
+
+# Cap on the per-owner superseded-endpoint history. 8 covers far more consecutive
+# task replacements than any real churn strands in-flight resolutions for; the
+# oldest entry is evicted past this.
+_SUPERSEDED_HISTORY_MAX = 8
+
 # Auth-failure backoff, per user, alongside the reconnect floor. The gateway
 # locks a client IP+credential scope out for 5 minutes after 10 failed auth
 # attempts in 60s (AUTH_RATE_LIMITED); the 5s floor alone allows 12
@@ -123,6 +152,13 @@ class GatewayAuthBackoff(RuntimeError):
     catch both — that conflation latched bootstrap dispatch at ``failed`` on a
     5-second cooldown.
     """
+
+
+class _GatewayReaderClosed(Exception):
+    """Sentinel handed to ``_on_reader_loop_exit`` when the reader loop ends on
+    a CLEAN peer close (``ConnectionClosedOK`` ends the ``async for`` WITHOUT
+    raising), so the teardown log distinguishes a graceful close from a genuine
+    transport error while still routing through the same teardown path."""
 
 
 # How stale `last_event_at` on an active run must be before the parked
@@ -1524,6 +1560,26 @@ class GatewayConnection:
         self._run_completion_tasks.add(task)
         task.add_done_callback(self._run_completion_tasks.discard)
 
+    def _reject_pending_run_completions(self, reason: str) -> None:
+        """Fire every still-registered run-completion observer as errored.
+
+        A registered-but-unfired callback (bootstrap_dispatcher's
+        dispatched→delivered/failed move) is silently dropped when this
+        connection is torn down: the terminal chat event can never arrive on a
+        dead/replaced socket, and bootstrap_dispatcher deliberately does NOT
+        re-arm post-connect, so onboarding would stick at `dispatched` forever.
+        Reconcile them as errored — mirrors how pending RPCs are rejected on the
+        same teardown paths — so the observer marks the run failed and a later
+        onboarding generation / human can recover. Reuses ``_dispatch_run_completion``
+        (pop + fire as a tracked task), so it can never double-fire a callback a
+        real terminal already consumed.
+        """
+        if not self._run_completion_callbacks:
+            return
+        payload = {"errorMessage": reason}
+        for run_id in list(self._run_completion_callbacks):
+            self._dispatch_run_completion(run_id, "error", payload)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -2201,9 +2257,19 @@ class GatewayConnection:
         except asyncio.CancelledError:
             return
         except Exception as e:
-            if self._closed:
-                return
-            self._on_reader_loop_exit(e)
+            if not self._closed:
+                self._on_reader_loop_exit(e)
+            return
+        # Clean close: the `async for` ends WITHOUT raising when the peer closes
+        # the socket normally (websockets yields ConnectionClosedOK, which the
+        # async iterator swallows to stop iteration — e.g. a graceful OpenClaw
+        # restart sends a 1000/1001 close frame). The `except Exception` branch
+        # never runs, so without this the pending RPCs hang the full timeout,
+        # the DDB liveness row stays "connected" for its whole freshness window,
+        # and no GATEWAY_DOWN reaches the UI. Route the normal exit through the
+        # same teardown as the error path.
+        if not self._closed:
+            self._on_reader_loop_exit(_GatewayReaderClosed("gateway closed the connection"))
 
     def _on_reader_loop_exit(self, exc: BaseException) -> None:
         """Decide between PARKED and DEAD when the reader loop dies.
@@ -2272,6 +2338,10 @@ class GatewayConnection:
         # Durable liveness signal (R4 kill): the reader loop died with no
         # active runs, so is_alive is now False.
         self._note_gateway_liveness(connected=False)
+        # No terminal event can arrive on a dead reader — reconcile pending
+        # completion observers so a bootstrap kickoff doesn't stick at
+        # `dispatched` (see _reject_pending_run_completions).
+        self._reject_pending_run_completions("Gateway connection lost")
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2332,6 +2402,9 @@ class GatewayConnection:
                 # Durable liveness signal (R4 kill): escalating past parked
                 # to dead is the other path is_alive can flip False.
                 self._note_gateway_liveness(connected=False)
+                # Same reconcile as the dead-reader path: the run we just gave up
+                # on will never emit its terminal, so fire its completion observer.
+                self._reject_pending_run_completions("Gateway connection lost")
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2401,6 +2474,12 @@ class GatewayConnection:
                     "Error waiting for push tasks during close for user %s",
                     self.user_id,
                 )
+        # Reconcile any still-registered completion observers as errored BEFORE
+        # the drain below, so a bootstrap kickoff whose terminal event can never
+        # arrive on this closing socket doesn't strand onboarding at `dispatched`.
+        # Firing them here (not after the drain) means their DDB writes are
+        # awaited by the same drain as the already-fired ones.
+        self._reject_pending_run_completions("Gateway connection closed")
         # Drain in-flight run-completion observer tasks (INV-5 bootstrap
         # dispatcher) too, so teardown doesn't cancel a DDB completion write
         # mid-flight -- mirrors the push-dispatch drain above.
@@ -2497,6 +2576,21 @@ class GatewayConnectionPool:
         # exponential hold. A successful connect clears both.
         self._auth_backoff_until: Dict[str, float] = {}
         self._auth_failures: Dict[str, int] = {}
+        # Detached connections being drained+closed off the pool lock (the
+        # changed-IP recreate path). Strong refs kept so the fire-and-forget
+        # close task isn't GC'd mid-drain.
+        self._background_close_tasks: Set[asyncio.Task] = set()
+        # Per-owner {endpoint: monotonic_abandoned_at} history of connections we
+        # recreated AWAY from. Fences the changed-IP recreate against a STALE
+        # resolve (a concurrent request straddling a task replacement) rolling a
+        # newer connection back onto the dead task it replaced. A *history*, not a
+        # single slot: across two fast replacements (A→B→C) a resolution still
+        # carrying A must stay fenced even after B abandoned A's slot, else the
+        # A-carrying caller would detach the healthy C and dial dead A — and,
+        # worse, record C as superseded, wedging every later resolve of the real
+        # live task until the record lapses. Bounded to the last
+        # `_SUPERSEDED_HISTORY_MAX` endpoints and TTL-swept per entry.
+        self._superseded_ip: Dict[str, Dict[str, float]] = {}
 
     def is_user_connected(self, user_id: str) -> bool:
         """Whether the pool has a live, healthy gateway connection for this user.
@@ -2781,6 +2875,39 @@ class GatewayConnectionPool:
         self._connections[user_id] = conn
         return conn
 
+    def _close_detached(self, conn: GatewayConnection) -> None:
+        """Drain + close a connection already removed from the pool, OFF the lock.
+
+        ``close()`` spends up to ~25s draining billing/push/completion tasks +
+        pending RPCs + the ws-close timeout; holding the pool-wide ``_lock``
+        across that head-of-line-blocks ``ensure_connection`` for every other
+        owner. The changed-IP recreate path detaches the dead connection under
+        the lock and hands its teardown here so it finishes in the background.
+        """
+
+        async def _run() -> None:
+            try:
+                await conn.close()
+            except Exception:
+                logger.exception("Background close failed for user %s", conn.user_id)
+            finally:
+                # close() SCHEDULES the terminal liveness delete up front (line
+                # ~2456, before the ws teardown that can raise), then this task
+                # removes itself from `_background_close_tasks` the moment it ends —
+                # so a task finishing before shutdown is already gone from the set
+                # close_all() drains, and its queued delete would be orphaned and
+                # cancelled by lifespan teardown, leaving the detached (dead)
+                # connection's row falsely "ready". Drain in `finally` so the write
+                # lands even when close() raised AFTER scheduling it.
+                try:
+                    await conn.drain_liveness_write()
+                except Exception:
+                    logger.exception("Background liveness drain failed for user %s", conn.user_id)
+
+        task = asyncio.create_task(_run())
+        self._background_close_tasks.add(task)
+        task.add_done_callback(self._background_close_tasks.discard)
+
     async def send_rpc(
         self,
         user_id: str,
@@ -2813,11 +2940,22 @@ class GatewayConnectionPool:
         pairing ``agents.create``/``agents.update`` calls).
         """
         conn = await self.ensure_connection(user_id, ip, token)
-        await conn.send_rpc(req_id, method, params)
+        # Trust boundary: `req_id` is client-chosen (the caller echoes it back to
+        # that same client verbatim) and is NOT unique across the tabs /
+        # org-members sharing this one per-owner connection — two callers can
+        # pick the same id, and routers/channels.py even ships a constant one.
+        # The pending-futures map (`_pending_rpcs`) is per-owner, so a duplicate
+        # id silently overwrites one caller's future and crosses their responses.
+        # Mint a fresh wire id per call so the on-the-wire id (hence the
+        # `_pending_rpcs` key) can never collide across callers; the caller still
+        # echoes its own req_id to its client independently, so this is invisible
+        # downstream.
+        wire_id = f"{req_id}-{uuid.uuid4().hex}"
+        await conn.send_rpc(wire_id, method, params)
         try:
             if timeout is not None:
-                return await conn.wait_for_response(req_id, timeout=timeout)
-            return await conn.wait_for_response(req_id)
+                return await conn.wait_for_response(wire_id, timeout=timeout)
+            return await conn.wait_for_response(wire_id)
         except Exception:
             put_metric("gateway.rpc.error", dimensions={"method": method})
             raise
@@ -2846,21 +2984,79 @@ class GatewayConnectionPool:
             if self._closing:
                 raise GatewayReconnectThrottled("pool is shutting down")
             conn = self._connections.get(user_id)
-            # Always adopt the freshly-resolved endpoint. Container task IPs are
-            # ephemeral (every ECS task replacement changes them); a parked/stale
-            # connection still holds the previous task's IP, so reopen() would
-            # otherwise re-dial a dead address forever.
+            # A CHANGED task IP is proof of ECS task replacement — task IPs are
+            # ephemeral (every deploy / OOM / health-restart / reprovision hands
+            # out a new one). The prior connection can still report is_connected
+            # (the local websocket state flag reads OPEN for up to the ping
+            # timeout because the old task's ENI vanished with no FIN), so
+            # *reusing* it would time out every RPC against a dead address — the
+            # prod outage this guards. Merely adopting `conn.ip = ip` does NOT
+            # help when the socket still looks OPEN and neither the parked nor
+            # the stale branch below fires; the connection is handed back as-is
+            # and every RPC on it dies. Tear it down and recreate against the
+            # fresh endpoint. (Gated by the reconnect floor like the other repair
+            # paths, so a discover_ip that flaps during a rolling-deploy overlap
+            # can't thrash the socket.)
+            # Tracks whether a branch below already consulted the reconnect floor,
+            # so the shared create path doesn't double-check it (which would
+            # throttle the very reconnect that just passed) — yet a create that
+            # runs WITHOUT a preceding branch (an absent owner) still gets gated.
+            floor_checked = False
             if conn is not None and conn.ip != ip:
-                logger.info(
-                    "Gateway endpoint changed for user=%s %s -> %s — adopting before reconnect",
-                    user_id,
-                    conn.ip,
-                    ip,
-                )
-                conn.ip = ip
+                if self._is_superseded_endpoint(user_id, ip):
+                    # `ip` is an endpoint we recreated AWAY from within the race
+                    # window — a STALE resolution that predates the newer
+                    # connection now installed (concurrent callers straddling a
+                    # task replacement, made worse because the dead task's health
+                    # probe can burn a full 5s). Honoring it would tear down the
+                    # newer HEALTHY connection and dial the dead task, recreating
+                    # the very outage this recreate exists to close. Pin to the
+                    # live endpoint so no path below dials the dead task.
+                    logger.info(
+                        "Ignoring stale endpoint %s for user=%s — superseded by live %s",
+                        ip,
+                        user_id,
+                        conn.ip,
+                    )
+                    put_metric("gateway.connection", dimensions={"event": "stale_endpoint_ignored"})
+                    ip = conn.ip
+                else:
+                    logger.info(
+                        "Gateway endpoint changed for user=%s %s -> %s — recreating connection",
+                        user_id,
+                        conn.ip,
+                        ip,
+                    )
+                    self._respect_reconnect_floor(user_id)
+                    floor_checked = True
+                    # Stamp the stale-endpoint fence at DETACH, before the dial —
+                    # not after a successful install. If _create_connection raises,
+                    # the owner is left ABSENT with no live connection; a fence
+                    # stamped only on success would fail OPEN, letting a concurrent
+                    # caller that already resolved this dead IP recreate straight
+                    # onto it. Stamping here closes that window. Appended to a
+                    # bounded history (not overwritten) so a resolution straddling a
+                    # later replacement stays fenced too. The clock is the recycling
+                    # backstop, not the race timer (see _SUPERSEDED_IP_TTL_S).
+                    self._record_superseded_endpoint(user_id, conn.ip)
+                    # Detach under the lock; drain + close OFF the lock so this
+                    # owner's dead-socket teardown (~25s worst case) can't
+                    # head-of-line-block ensure_connection for every other owner.
+                    self._connections.pop(user_id, None)
+                    # The replacement created below shares this owner's frontend
+                    # connection set (passed by reference into every GatewayConnection).
+                    # Blank the detached connection's copy so its background teardown
+                    # can't fan out a spurious GATEWAY_DOWN to the UI *after* the fresh
+                    # connection reports HEALTHY — the two emits are otherwise
+                    # unordered. The pool's shared set (and thus the new conn's) is
+                    # untouched.
+                    conn._frontend_connections = set()
+                    self._close_detached(conn)
+                    conn = None
             if conn is not None and conn._parked:
                 self._respect_auth_backoff(user_id)
                 self._respect_reconnect_floor(user_id)
+                floor_checked = True
                 try:
                     await conn.reopen()
                 except GatewayConnectAuthError as exc:
@@ -2869,10 +3065,36 @@ class GatewayConnectionPool:
                 self._clear_auth_backoff(user_id)
             elif conn is not None and not conn.is_connected:
                 self._respect_reconnect_floor(user_id)
+                floor_checked = True
                 await conn.close()
                 conn = None
             if conn is None:
+                # A stale caller can reach the absent path bearing a SUPERSEDED IP:
+                # a preceding recreate detached the old connection and its dial then
+                # raised (owner now absent), or the caller was queued behind that
+                # sequence. Its IP is the dead endpoint we just abandoned — there is
+                # no live connection to pin it to (the changed-ip branch above only
+                # fires when one exists), so dialing it would recreate the outage.
+                # Refuse; the caller's reconnect loop re-resolves the current task.
+                if self._is_superseded_endpoint(user_id, ip):
+                    logger.info(
+                        "Refusing superseded endpoint %s for absent user=%s — re-resolve",
+                        ip,
+                        user_id,
+                    )
+                    put_metric("gateway.connection", dimensions={"event": "stale_endpoint_refused"})
+                    raise GatewayReconnectThrottled("stale endpoint; re-resolve")
                 self._respect_auth_backoff(user_id)
+                # A detach above (or a prior repair whose own re-create failed)
+                # leaves the owner ABSENT, so a queued caller reaches this path
+                # with no preceding branch. Without the floor here, repeated fast
+                # connect failures (connection refused) would storm the container
+                # at the frontend's sub-second reconnect cadence. Gate on the
+                # floor unless a branch already did — but only when this owner has
+                # reconnected before (a floor stamp exists), so a genuine
+                # first-ever connection is never made to wait.
+                if not floor_checked and user_id in self._last_reconnect_at:
+                    self._respect_reconnect_floor(user_id)
                 try:
                     conn = await self._create_connection(user_id, ip, token)
                 except GatewayConnectAuthError as exc:
@@ -2880,6 +3102,43 @@ class GatewayConnectionPool:
                     raise
                 self._clear_auth_backoff(user_id)
             return conn
+
+    def _record_superseded_endpoint(self, user_id: str, ip: str) -> None:
+        """Append *ip* to this owner's superseded-endpoint history (bounded).
+
+        A history, not a single slot, so consecutive replacements (A→B→C) don't
+        drop A while a resolution still carrying A is in flight — dropping it lets
+        that caller detach the healthy C and wedge the owner (see the field
+        comment). Evicts the oldest entry past ``_SUPERSEDED_HISTORY_MAX``.
+        """
+        hist = self._superseded_ip.setdefault(user_id, {})
+        hist[ip] = time.monotonic()
+        if len(hist) > _SUPERSEDED_HISTORY_MAX:
+            oldest = min(hist, key=hist.__getitem__)
+            del hist[oldest]
+
+    def _is_superseded_endpoint(self, user_id: str, ip: str) -> bool:
+        """True if *ip* is an endpoint we recreated a connection AWAY from and
+        still within the recycling backstop — a stale resolution that must not
+        roll a newer connection back onto the dead task, nor be dialed on the
+        absent path. The history holds every recently-abandoned endpoint (not just
+        the latest), so it cannot be overwritten out from under a straddling
+        caller. The ``_SUPERSEDED_IP_TTL_S`` sweep is only the IP-recycling
+        backstop: an entry older than the window lapses so a genuinely recycled IP
+        is trusted again.
+        """
+        hist = self._superseded_ip.get(user_id)
+        if not hist:
+            return False
+        when = hist.get(ip)
+        if when is None:
+            return False
+        if time.monotonic() - when >= _SUPERSEDED_IP_TTL_S:
+            del hist[ip]
+            if not hist:
+                self._superseded_ip.pop(user_id, None)
+            return False
+        return True
 
     def _respect_reconnect_floor(self, user_id: str) -> None:
         """Raise if another reconnect for *user_id* fired within `_RECONNECT_FLOOR_S`.
@@ -3499,6 +3758,14 @@ class GatewayConnectionPool:
                     "%d grace task(s) still pending at shutdown (normal when parked in a grace sleep)",
                     len(pending),
                 )
+        # Drain any detached background closes (changed-IP recreate) still in
+        # flight: they were popped from `_connections`, so the snapshot above
+        # missed them, yet they carry the same billing/liveness drains shutdown
+        # must not abandon. Bounded like the grace drain — a wedged close keeps
+        # running rather than being cancelled mid-cleanup.
+        bg = [t for t in self._background_close_tasks if not t.done()]
+        if bg:
+            await asyncio.wait(bg, timeout=5.0)
         # Flush queued frontend frames (close() above enqueues final
         # status_change frames) so shutdown doesn't cancel deliveries mid-send.
         try:

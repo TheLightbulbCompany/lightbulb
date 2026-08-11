@@ -213,7 +213,13 @@ class TestGatewayConnectionPool:
         pool._connections["user-1"] = mock_conn
         result = await pool.send_rpc("user-1", "req-2", "agents.list", {}, "10.0.0.1", "tok")
         assert result == {"data": 1}
-        mock_conn.send_rpc.assert_called_once_with("req-2", "agents.list", {})
+        # The pool mints a fresh, unique wire id per call — the client req_id is
+        # namespaced (kept as a prefix for debuggability) and is never used as
+        # the raw pending-RPC key, so two callers with the same client id can't
+        # collide. (GW-3.)
+        wire_id, sent_method, sent_params = mock_conn.send_rpc.call_args[0]
+        assert wire_id.startswith("req-2-")
+        assert (sent_method, sent_params) == ("agents.list", {})
 
     @pytest.mark.asyncio
     async def test_send_rpc_forwards_explicit_timeout(self, pool):
@@ -231,7 +237,11 @@ class TestGatewayConnectionPool:
         result = await pool.send_rpc("user-1", "req-t", "agents.create", {}, "10.0.0.1", "tok", timeout=90)
 
         assert result == {"ok": True}
-        mock_conn.wait_for_response.assert_called_once_with("req-t", timeout=90)
+        # send + wait must share the SAME minted wire id, and the timeout must
+        # still be forwarded on it. (GW-3.)
+        wire_id = mock_conn.send_rpc.call_args[0][0]
+        assert wire_id.startswith("req-t-")
+        mock_conn.wait_for_response.assert_called_once_with(wire_id, timeout=90)
 
     @pytest.mark.asyncio
     async def test_send_rpc_omits_timeout_by_default(self, pool):
@@ -249,24 +259,57 @@ class TestGatewayConnectionPool:
         result = await pool.send_rpc("user-1", "req-d", "agents.list", {}, "10.0.0.1", "tok")
 
         assert result == {"ok": True}
-        mock_conn.wait_for_response.assert_called_once_with("req-d")
+        # No timeout kwarg at all (preserves wait_for_response's own default),
+        # but still on the minted wire id. (GW-3.)
+        wire_id = mock_conn.send_rpc.call_args[0][0]
+        assert wire_id.startswith("req-d-")
+        mock_conn.wait_for_response.assert_called_once_with(wire_id)
 
     @pytest.mark.asyncio
-    async def test_send_rpc_adopts_fresh_ip_on_parked_reopen(self, pool):
-        """A parked connection must adopt the freshly-resolved IP before reopen,
-        so a container task replacement (new IP) can't wedge it on the dead old IP."""
+    async def test_send_rpc_recreates_on_changed_ip_even_when_parked(self, pool):
+        """A CHANGED task IP is proof of task replacement, so even a parked
+        connection (which normally reopens to preserve run state) is torn down
+        and recreated against the fresh endpoint — the parked run is on a dead
+        task and cannot be preserved, and reopening to a new IP would resurrect
+        stale run state against a fresh task that never had it. (GW-1.)"""
         parked = AsyncMock(spec=GatewayConnection)
         parked.ip = "10.0.0.1"  # stale: previous task
+        parked._parked = True
+        parked.is_connected = False
+        parked._frontend_connections = set()
+        pool._connections["user-1"] = parked
+
+        new_conn = AsyncMock(spec=GatewayConnection)
+        new_conn._frontend_connections = set()
+        new_conn.wait_for_response = AsyncMock(return_value={"ok": True})
+
+        with patch.object(pool, "_create_connection", return_value=new_conn) as create:
+            result = await pool.send_rpc("user-1", "r", "agents.list", {}, "10.0.0.2", "tok")
+
+        parked.reopen.assert_not_called()
+        create.assert_awaited_once()
+        assert result == {"ok": True}
+        # Torn down in the BACKGROUND (off the lock) — drain the close task.
+        await asyncio.gather(*pool._background_close_tasks)
+        parked.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_rpc_reopens_parked_on_unchanged_ip(self, pool):
+        """A parked connection on the SAME IP (a transient ping-timeout during a
+        long turn, task still alive) must reopen — preserving run state — not
+        recreate. Only a CHANGED IP forces the teardown. (GW-1.)"""
+        parked = AsyncMock(spec=GatewayConnection)
+        parked.ip = "10.0.0.1"
         parked._parked = True
         parked.is_connected = False
         parked.wait_for_response = AsyncMock(return_value={"ok": True})
         parked._frontend_connections = set()
         pool._connections["user-1"] = parked
 
-        result = await pool.send_rpc("user-1", "r", "agents.list", {}, "10.0.0.2", "tok")
+        result = await pool.send_rpc("user-1", "r", "agents.list", {}, "10.0.0.1", "tok")
 
-        assert parked.ip == "10.0.0.2"  # adopted the fresh IP before reopen
         parked.reopen.assert_awaited_once()
+        parked.close.assert_not_called()
         assert result == {"ok": True}
 
     @pytest.mark.asyncio

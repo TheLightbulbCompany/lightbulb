@@ -1,3 +1,4 @@
+import logging
 import os
 
 from pydantic import field_validator, model_validator
@@ -417,15 +418,22 @@ class Settings(BaseSettings):
             )
 
         if env in _DEPLOYED_ENVIRONMENTS:
+            # WS enforcement IS wired by the CDK (service-stack.ts sets
+            # WS_ENFORCE_INTERNAL_SECRET="true" + WS_INTERNAL_SECRET), so a
+            # missing value here is a REGRESSION — fail closed.
             if not (self.WS_ENFORCE_INTERNAL_SECRET and self.WS_INTERNAL_SECRET):
                 raise ValueError(
                     "WS internal-caller enforcement must be ON with a secret in a deployed environment; "
                     "otherwise /ws/connect can be re-bound to another user via forged headers."
                 )
+            # CLERK_AUDIENCE is NOT wired yet, so requiring it would crash every
+            # backend deploy on boot. Enabling `aud` verification (SEC-8) needs a
+            # Clerk JWT-template audience configured and wired into the task def
+            # FIRST; until then, warn loudly rather than fail.
             if not self.CLERK_AUDIENCE:
-                raise ValueError(
-                    "CLERK_AUDIENCE must be set in a deployed environment; otherwise JWT 'aud' "
-                    "verification is skipped and any token minted on the same Clerk instance authenticates."
+                logging.getLogger(__name__).warning(
+                    "CLERK_AUDIENCE is unset in a deployed environment — JWT 'aud' verification is "
+                    "DISABLED; any token minted on this Clerk instance authenticates. Wire it (SEC-8)."
                 )
         return self
 

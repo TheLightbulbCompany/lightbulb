@@ -8,6 +8,8 @@ variable would open them with no other signal, so Settings refuses to construct.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from core.config import Settings
@@ -48,14 +50,17 @@ def test_deployed_requires_ws_secret_even_when_enforced():
         )
 
 
-def test_deployed_requires_clerk_audience():
-    with pytest.raises(ValueError, match="CLERK_AUDIENCE"):
+def test_deployed_missing_clerk_audience_warns_not_raises(caplog):
+    # CLERK_AUDIENCE is not wired in the CDK yet; a hard failure here would crash
+    # every backend deploy on boot. It must warn, not raise.
+    with caplog.at_level(logging.WARNING):
         _settings(
             ENVIRONMENT="prod",
             WS_ENFORCE_INTERNAL_SECRET=True,
             WS_INTERNAL_SECRET="s",
             CLERK_AUDIENCE=None,
         )
+    assert any("CLERK_AUDIENCE is unset" in r.message for r in caplog.records)
 
 
 def test_deployed_fully_configured_ok():

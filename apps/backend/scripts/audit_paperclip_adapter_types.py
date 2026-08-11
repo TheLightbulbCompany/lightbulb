@@ -40,6 +40,13 @@ run it in a quiet window and CONFIRM with a follow-up dry-run audit (re-run --ap
 if a straggler approval committed mid-run). It converges because the dangerous set
 can't grow once the fence is live.
 
+``--apply`` neutralizes PERSISTED state: terminating an agent stops FUTURE wakeups,
+and rejecting an approval stops it minting an agent. It does NOT stop a run that is
+already executing a dangerous adapter on the host. So the REQUIRED final step after
+a non-clean ``--apply`` is to RESTART the Paperclip Fargate task
+(``isol8-{env}-paperclip``) — that kills every in-flight adapter process / socket.
+Then re-run the dry-run audit to confirm clean.
+
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod --apply
     cd apps/backend && uv run python -m scripts.audit_paperclip_adapter_types --env prod   # confirm clean

@@ -84,6 +84,25 @@ def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, la
     }
 
 
+async def _rollback_routine(
+    admin: PaperclipAdminClient, *, routine_id: str, cookie: str, owner_id: str, provider_key: str
+) -> None:
+    """Best-effort delete of a routine orphaned by a later step in
+    ``seed_trigger_routine`` failing (trigger create/validation, or the
+    GitHub auto-register call). Never masks the caller's own error — only
+    logs its own failure — so every call site still re-raises the original
+    exception right after this returns."""
+    try:
+        await admin.delete_routine(routine_id=routine_id, session_cookie=cookie)
+    except Exception:
+        logger.exception(
+            "inbound_triggers: rollback delete_routine failed for routine=%s owner=%s provider=%s",
+            routine_id,
+            owner_id,
+            provider_key,
+        )
+
+
 _GITHUB_API_BASE = "https://api.github.com"
 
 
@@ -114,9 +133,11 @@ async def _auto_register_webhook(
     identical ``.get("token") or .get("access_token")`` fallback: the
     paste rail and the direct_oauth rail key the credential dict
     differently). ``config.secret`` is the Paperclip-generated trigger
-    secret (``trigger_resp["secretMaterial"]["secret"]``) — one shared
-    value signs both sides, since the trigger itself is armed with
-    Paperclip ``signingMode: "github_hmac"``.
+    secret (``trigger_resp["secretMaterial"]["webhookSecret"]`` —
+    ``RoutineTriggerSecretMaterial`` is ``{webhookUrl, webhookSecret}``,
+    never a bare ``"secret"`` key) — one shared value signs both sides,
+    since the trigger itself is armed with Paperclip
+    ``signingMode: "github_hmac"``.
 
     The registered hook subscribes to ONLY ``event_id`` — the single event
     the caller selected — never the provider's whole ``inbound.events``
@@ -139,8 +160,9 @@ async def _auto_register_webhook(
 
     # A github_hmac trigger is only verifiable if the hook we register
     # actually carries a secret — a None here (Paperclip returned no
-    # secretMaterial) would register a secret-less GitHub hook that 401s
-    # every real event forever while this call still reports success.
+    # secretMaterial, or no secretMaterial.webhookSecret) would register a
+    # secret-less GitHub hook that 401s every real event forever while this
+    # call still reports success.
     if trigger_secret is None:
         raise ValueError(f"no trigger secret to arm the {provider_key} webhook with")
 
@@ -239,20 +261,32 @@ async def seed_trigger_routine(
         if not routine_id:
             raise RuntimeError("create_routine returned no id")
 
-        trigger_resp = await admin.create_routine_trigger(
-            session_cookie=cookie,
-            routine_id=routine_id,
-            body=_build_webhook_trigger_body(
-                signing_mode=paperclip_signing_mode,
-                replay_window_sec=_DEFAULT_REPLAY_WINDOW_SEC,
-                label=title,
-            ),
-        )
+        try:
+            trigger_resp = await admin.create_routine_trigger(
+                session_cookie=cookie,
+                routine_id=routine_id,
+                body=_build_webhook_trigger_body(
+                    signing_mode=paperclip_signing_mode,
+                    replay_window_sec=_DEFAULT_REPLAY_WINDOW_SEC,
+                    label=title,
+                ),
+            )
 
-        trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
-        public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
-        if not public_id:
-            raise RuntimeError("create_routine_trigger returned no trigger.publicId")
+            trigger = trigger_resp.get("trigger") if isinstance(trigger_resp, dict) else None
+            public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
+            if not public_id:
+                raise RuntimeError("create_routine_trigger returned no trigger.publicId")
+        except Exception:
+            # The routine already exists upstream at this point. If the
+            # trigger call itself throws (timeout, upstream error) or comes
+            # back without a usable publicId, that routine is an orphan the
+            # owner can't see or arm — same failure shape the "auto"
+            # webhook-registration branch below unwinds. Unwind it here too,
+            # for BOTH the guided and auto branches, before re-raising.
+            await _rollback_routine(
+                admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+            )
+            raise
 
         proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
 
@@ -280,7 +314,12 @@ async def seed_trigger_routine(
 
         if inbound.webhook_registration == "auto":
             secret_material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
-            trigger_secret = secret_material.get("secret") if isinstance(secret_material, dict) else None
+            # RoutineTriggerSecretMaterial is {webhookUrl, webhookSecret} —
+            # NEVER a bare "secret" key. Reading the wrong key here means
+            # `trigger_secret` is always None on a real response, which trips
+            # the not-None guard in `_auto_register_webhook` and rolls back
+            # EVERY GitHub auto-registration.
+            trigger_secret = secret_material.get("webhookSecret") if isinstance(secret_material, dict) else None
             try:
                 await _auto_register_webhook(
                     owner_id=owner_id,
@@ -299,15 +338,9 @@ async def seed_trigger_routine(
                 # Unwind it: same best-effort-delete-then-reraise shape
                 # `agent_routine_provisioning._arm_enabled_routine` uses for
                 # its own post-create trigger failure.
-                try:
-                    await admin.delete_routine(routine_id=routine_id, session_cookie=cookie)
-                except Exception:
-                    logger.exception(
-                        "inbound_triggers: rollback delete_routine failed for routine=%s owner=%s provider=%s",
-                        routine_id,
-                        owner_id,
-                        provider_key,
-                    )
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
                 raise ValueError(f"failed to auto-register {provider_key} webhook: {exc}") from exc
             logger.info(
                 "inbound_triggers: seeded auto routine=%s trigger=%s owner=%s provider=%s event=%s",

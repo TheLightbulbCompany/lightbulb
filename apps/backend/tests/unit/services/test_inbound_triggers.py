@@ -23,7 +23,10 @@ def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1"):
     admin.list_agents = AsyncMock(return_value=[{"id": friday_id, "role": "ceo"}])
     admin.create_routine = AsyncMock(return_value={"id": routine_id})
     admin.create_routine_trigger = AsyncMock(
-        return_value={"trigger": {"publicId": public_id}, "secretMaterial": {"secret": "s"}}
+        return_value={
+            "trigger": {"publicId": public_id},
+            "secretMaterial": {"webhookUrl": "https://example.test/hook", "webhookSecret": "s"},
+        }
     )
     admin.delete_routine = AsyncMock(return_value={})
     return admin
@@ -130,6 +133,34 @@ async def test_seed_trigger_routine_no_friday_agent_found():
     admin.create_routine.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_trigger_create_failure_rolls_back_routine():
+    """create_routine_trigger throwing (timeout, upstream error) must not
+    leave the routine it already created orphaned — this happens BEFORE the
+    guided/auto branch split, so the rollback has to cover both."""
+    admin = _fake_admin(routine_id="rt_orphan_trigger")
+    admin.create_routine_trigger = AsyncMock(side_effect=RuntimeError("upstream 500"))
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(RuntimeError, match="upstream 500"):
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_trigger"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_trigger_missing_public_id_rolls_back_routine():
+    """A malformed create_routine_trigger response (no trigger.publicId) is
+    also a trigger-create failure — the routine it already created must be
+    rolled back the same way an outright exception would be."""
+    admin = _fake_admin(routine_id="rt_orphan_malformed")
+    admin.create_routine_trigger = AsyncMock(return_value={"trigger": {}})
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(RuntimeError, match="no trigger.publicId"):
+        await seed_trigger_routine("owner_1", "github", "workflow_run", repo="acme/widgets")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_malformed"
+
+
 # ---------------------------------------------------------------------------
 # GitHub auto-registration (Task 4) — webhook_registration: "auto"
 # ---------------------------------------------------------------------------
@@ -179,7 +210,7 @@ async def test_seed_trigger_routine_github_auto_registers_webhook():
     assert body["name"] == "web"
     assert body["active"] is True
     assert body["config"]["url"] == out["proxy_url"]
-    assert body["config"]["secret"] == "s"  # secretMaterial.secret from _fake_admin
+    assert body["config"]["secret"] == "s"  # secretMaterial.webhookSecret from _fake_admin
     assert body["config"]["content_type"] == "json"
     # ONLY the selected event, never the provider's whole inbound.events list
     # — see _auto_register_webhook's docstring for why (cross-firing routines).
@@ -241,14 +272,15 @@ async def test_seed_trigger_routine_github_missing_token_rolls_back_routine():
 
 @pytest.mark.asyncio
 async def test_seed_trigger_routine_github_missing_secret_material_rolls_back_routine():
-    """If Paperclip's create_routine_trigger returns no secretMaterial.secret
-    (None), registering the GitHub hook anyway would create a secret-less
-    hook that 401s every real event forever while this call still reports
-    success. Must raise instead of silently proceeding, and roll back the
-    routine it already created — same as any other auto-register failure."""
+    """If Paperclip's create_routine_trigger returns no
+    secretMaterial.webhookSecret (None), registering the GitHub hook anyway
+    would create a secret-less hook that 401s every real event forever while
+    this call still reports success. Must raise instead of silently
+    proceeding, and roll back the routine it already created — same as any
+    other auto-register failure."""
     admin = _fake_admin(routine_id="rt_orphan_secret")
     admin.create_routine_trigger = AsyncMock(
-        return_value={"trigger": {"publicId": "pub_1"}, "secretMaterial": {"secret": None}}
+        return_value={"trigger": {"publicId": "pub_1"}, "secretMaterial": {"webhookUrl": "u", "webhookSecret": None}}
     )
     p_repo, p_cookie, p_client = _env(admin)
     with (

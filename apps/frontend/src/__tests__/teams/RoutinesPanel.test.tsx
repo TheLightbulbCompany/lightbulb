@@ -543,6 +543,14 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(
       await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
     ).toBeInTheDocument();
+
+    // Done is gated until the whsec is saved — dismissing here would leave
+    // an active, unsigned automation with no UI left to arm it.
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeDisabled();
+    await user.click(doneButton);
+    expect(mockMutate).not.toHaveBeenCalled();
+
     const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
     expect(secretField).toHaveAttribute("type", "password");
     await user.type(secretField, "whsec_abc123");
@@ -552,6 +560,11 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(mockAutomationsPut).toHaveBeenCalledWith("/automations/pub_1/webhook-secret", {
       webhook_secret: "whsec_abc123",
     });
+
+    // Once saved, Done is enabled and closes the dialog.
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
   });
 
   it("auto (GitHub): shows a repo field before submit, sends {provider,event_id,repo}, and shows 'Registered'", async () => {
@@ -588,6 +601,12 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(await screen.findByText("Registered.")).toBeInTheDocument();
     // No signing-secret paste step for an auto-registered provider.
     expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+
+    // Auto (GitHub) results are already fully armed — Done is never gated.
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
   });
 });
 

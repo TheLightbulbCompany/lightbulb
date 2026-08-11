@@ -1086,10 +1086,16 @@ function CreateRoutineDialog({
   if (connResult) {
     const providerName =
       selectedConnection?.display_name ?? connProvider ?? "the app";
+    // Guided (Stripe) results aren't armed until the owner pastes the whsec
+    // back via saveWebhookSecret — closing before that leaves an active,
+    // unsigned automation with no UI left to finish it (the detail panel
+    // treats a "none"-signing trigger as non-rotatable). Auto (GitHub)
+    // results are already fully armed by the time this dialog shows.
+    const mustSaveSecretFirst = connResult.guided && !whsecSaved;
     return (
       <EditorialDialog
         open
-        onOpenChange={(o) => !o && onCreated()}
+        onOpenChange={(o) => !o && !mustSaveSecretFirst && onCreated()}
         title={connResult.guided ? "Finish setup" : "Automation registered"}
         description={
           connResult.guided
@@ -1097,7 +1103,17 @@ function CreateRoutineDialog({
             : `${providerName} registered the webhook automatically — this automation is live.`
         }
         footer={
-          <EditorialButton variant="primary" size="sm" onClick={onCreated}>
+          <EditorialButton
+            variant="primary"
+            size="sm"
+            onClick={onCreated}
+            disabled={mustSaveSecretFirst}
+            title={
+              mustSaveSecretFirst
+                ? "Save the signing secret first"
+                : undefined
+            }
+          >
             Done
           </EditorialButton>
         }

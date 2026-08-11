@@ -2,7 +2,8 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
-import { ArrowUpDown, Check, Repeat } from "lucide-react";
+import { ArrowUpDown, Blocks, Cable, Check, Clock, Repeat } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   EditorialButton,
   EditorialDialog,
@@ -835,10 +836,27 @@ type StartRung = "connected_app" | "webhook" | "schedule";
 const START_RUNGS: ReadonlyArray<{
   value: StartRung;
   label: string;
+  hint: string;
+  icon: LucideIcon;
 }> = [
-  { value: "connected_app", label: "A connected app" },
-  { value: "webhook", label: "Any other app" },
-  { value: "schedule", label: "On a schedule" },
+  {
+    value: "connected_app",
+    label: "A connected app",
+    hint: "When something happens in Stripe, GitHub, or another app you've connected.",
+    icon: Blocks,
+  },
+  {
+    value: "webhook",
+    label: "Any other app",
+    hint: "Give any service a signed URL to call when its event fires.",
+    icon: Cable,
+  },
+  {
+    value: "schedule",
+    label: "On a schedule",
+    hint: "Run automatically on a repeating cadence — hourly, daily, weekly.",
+    icon: Clock,
+  },
 ];
 
 // POST /automations/from-integration's response (core/services/
@@ -1164,46 +1182,72 @@ function CreateRoutineDialog({
       onOpenChange={(o) => !o && onClose()}
       title="New automation"
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-4">
         <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">
-            What should start this?
+          <span className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
+            What starts this?
           </span>
           <div
             role="radiogroup"
-            aria-label="What should start this?"
-            className="mt-1 grid grid-cols-3 gap-1.5"
+            aria-label="What starts this automation?"
+            className="mt-2 flex flex-col gap-1.5"
             onKeyDown={onRungKeyDown}
           >
-            {START_RUNGS.map((r, i) => (
-              <button
-                key={r.value}
-                ref={(el) => {
-                  rungRefs.current[i] = el;
-                }}
-                type="button"
-                role="radio"
-                aria-checked={rung === r.value}
-                tabIndex={rung === r.value ? 0 : -1}
-                onClick={() => setRung(r.value)}
-                className={cn(
-                  "rounded border px-2 py-2 text-left text-xs transition-colors",
-                  rung === r.value
-                    ? "border-[var(--forest)] text-[var(--ink)]"
-                    : "border-[var(--edge)] text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
-                )}
-                style={
-                  rung === r.value
-                    ? {
-                        background:
-                          "color-mix(in srgb, var(--forest) 8%, transparent)",
-                      }
-                    : undefined
-                }
-              >
-                {r.label}
-              </button>
-            ))}
+            {START_RUNGS.map((r, i) => {
+              const Icon = r.icon;
+              const active = rung === r.value;
+              return (
+                <button
+                  key={r.value}
+                  ref={(el) => {
+                    rungRefs.current[i] = el;
+                  }}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  tabIndex={active ? 0 : -1}
+                  onClick={() => setRung(r.value)}
+                  className={cn(
+                    "flex items-start gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-colors",
+                    active
+                      ? "border-[var(--forest)] bg-[var(--forest-tint)]"
+                      : "border-[var(--edge)] hover:bg-[var(--cream-deeper)]",
+                  )}
+                >
+                  <span
+                    className="mt-px flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                    style={{
+                      background: active
+                        ? "color-mix(in srgb, var(--forest) 12%, transparent)"
+                        : "var(--cream-deeper)",
+                      color: active ? "var(--forest)" : "var(--mute)",
+                    }}
+                  >
+                    <Icon size={15} strokeWidth={1.75} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className={cn(
+                        "block text-sm font-medium",
+                        active ? "text-[var(--ink)]" : "text-[var(--ink-soft)]",
+                      )}
+                    >
+                      {r.label}
+                    </span>
+                    <span className="block text-xs leading-snug text-[var(--mute)]">
+                      {r.hint}
+                    </span>
+                  </span>
+                  {active && (
+                    <Check
+                      size={16}
+                      strokeWidth={2}
+                      className="mt-px shrink-0 text-[var(--forest)]"
+                    />
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
         {/* Title/Assignee only apply to the schedule/webhook rungs — the

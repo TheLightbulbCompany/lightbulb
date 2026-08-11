@@ -369,7 +369,7 @@ describe("RoutinesPanel", () => {
     await user.click(screen.getByRole("button", { name: "New automation" }));
     // The schedule field is the rung-picker's default; picking "Any other
     // app" swaps it out for the webhook fields.
-    await user.click(screen.getByRole("radio", { name: "Any other app" }));
+    await user.click(screen.getByRole("radio", { name: /Any other app/ }));
     expect(screen.queryByLabelText(/^Schedule$/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Title"), {
@@ -403,8 +403,8 @@ describe("RoutinesPanel", () => {
     // Default rung is "On a schedule" (the last) — the only tab stop; every
     // other rung is out of the tab order (roving tabindex).
     const connectedApp = screen.getByRole("radio", { name: /A connected app/ });
-    const webhook = screen.getByRole("radio", { name: "Any other app" });
-    const schedule = screen.getByRole("radio", { name: "On a schedule" });
+    const webhook = screen.getByRole("radio", { name: /Any other app/ });
+    const schedule = screen.getByRole("radio", { name: /On a schedule/ });
     expect(schedule).toHaveAttribute("tabindex", "0");
     expect(connectedApp).toHaveAttribute("tabindex", "-1");
 

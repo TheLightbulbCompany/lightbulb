@@ -323,9 +323,15 @@ async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
     # this disconnect can read the still-active row in the window between the
     # first unlink and the revoke and re-stage the file from the DDB seed
     # (write-if-missing sees it absent). With the row deleted nothing can
-    # re-stage again, so this sweep closes the race. Best-effort — the
-    # primary unlink already succeeded; a failure here means a file appeared
-    # in a millisecond window, worth a log, not a 502.
+    # READ tokens to re-stage again, so this sweep closes the read-side race.
+    # Deliberately NOT fenced further: a worker that already holds tokens in
+    # memory and writes after this sweep leaves an orphan file — accepted
+    # residual (needs a provision racing a disconnect AND stalling across the
+    # whole request; the orphan holds the stale DDB seed, and orphan
+    # secrets on this path are an operator-sweep concern per the
+    # change_provider cleanup contract). A cross-system lock spanning DDB and
+    # EFS is not worth that edge. Best-effort — the primary unlink already
+    # succeeded; a failure here is worth a log, not a 502.
     try:
         await delete_opencode_auth(user_id=owner_id)
     except OSError:

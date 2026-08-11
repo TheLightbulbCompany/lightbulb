@@ -3033,6 +3033,26 @@ class EcsManager:
 
                 service_name = container["service_name"]
 
+                if claim_id is not None:
+                    # Pure lease-refresh checkpoint (fields=None), FIRST in
+                    # every iteration so no waiting path can skip it — the
+                    # no-primary-deployment retry `continue` below bypassed a
+                    # later placement. The boot window can run ~12 minutes
+                    # with no other leased write, which let the lease read
+                    # stale while this poller was alive — and /recover's
+                    # active-lease stand-down keys on exactly that freshness.
+                    # A dead runner stops heartbeating within one tick, so
+                    # the 300s crash-recovery TTL is unchanged; a takeover
+                    # surfaces here as ProvisionSuperseded (handler below)
+                    # one tick sooner than the next real write would have.
+                    await container_repo.update_container_leased(
+                        user_id,
+                        claim_id,
+                        None,
+                        generation=generation,
+                        attempt_token=attempt_token,
+                    )
+
                 # One describe_services per iteration covers both concerns:
                 # 1. primary deployment id -> startedBy filter for list_tasks
                 # 2. primary deployment rolloutState -> failure detection

@@ -376,3 +376,59 @@ class TestContainerRecover:
         mock_dispatch_provision.assert_not_called()
         mock_container_repo.update_status.assert_not_called()
         mock_container_repo.update_error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recover_stands_down_on_an_active_provision_lease(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+    ):
+        """A provisioning row whose lease heartbeat is fresh is OWNED by a live
+        SFN run — recover must not probe its half-booted gateway, write
+        status="error" over it, or dispatch a competitor (the 2026-08-10
+        conversion incident: four recover stomps during one provision)."""
+        mock_container_repo.is_provision_claim_stale = lambda c: False
+        mock_ecs_manager.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "owner_id": "user_test_123",
+                    "status": "provisioning",
+                    "substatus": "task_running",
+                    "provision_claim_id": "claim-1",
+                    "gateway_token": "tok",
+                },
+                "10.0.1.5",
+            )
+        )
+
+        response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "already_recovering"
+        mock_call_gateway_rpc.assert_not_called()
+        mock_dispatch_provision.assert_not_called()
+        mock_container_repo.update_status.assert_not_called()
+        mock_container_repo.update_error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recover_proceeds_on_a_stale_provision_lease(
+        self, async_client, mock_ecs_manager, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision
+    ):
+        """A stale lease means the runner died — recover stays a recovery
+        path for wedged provisions and falls through to its normal branches."""
+        mock_container_repo.is_provision_claim_stale = lambda c: True
+        mock_ecs_manager.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "owner_id": "user_test_123",
+                    "status": "provisioning",
+                    "substatus": "claimed",
+                    "provision_claim_id": "claim-1",
+                    "gateway_token": "tok",
+                },
+                "10.0.1.5",
+            )
+        )
+
+        response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 200
+        assert response.json()["action"] != "already_recovering"

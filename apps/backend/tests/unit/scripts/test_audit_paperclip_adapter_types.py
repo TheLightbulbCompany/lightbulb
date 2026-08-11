@@ -57,10 +57,20 @@ def test_classify_approvals_only_pending_hire_with_dangerous_payload():
             "adapter_type": None,
             "agent_id": "ag_1",
         },
+        # Empty-string agentId is FALSY upstream -> still the create branch -> must flag.
+        {
+            "id": "p7",
+            "company_id": "c1",
+            "type": "hire_agent",
+            "status": "pending",
+            "adapter_type": None,
+            "agent_id": "",
+        },
     ]
     found = classify_approvals(rows)
-    # null + process CREATE-branch hires flagged; gateway/approved/non-hire/activate ignored.
-    assert {f.row_id for f in found} == {"p1", "p2"}
+    # null/process CREATE-branch hires flagged (incl. empty agentId);
+    # gateway/approved/non-hire/truthy-activate ignored.
+    assert {f.row_id for f in found} == {"p1", "p2", "p7"}
     assert all(f.remediable for f in found)
 
 

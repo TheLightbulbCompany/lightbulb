@@ -164,9 +164,10 @@ def _query_approvals(client, db_arn, secret_arn) -> list[dict]:
         "SELECT id, company_id, type, status, payload->>'adapterType' AS adapter_type, "
         "payload->>'agentId' AS agent_id FROM approvals "
         "WHERE type = 'hire_agent' AND status IN ('pending', 'revision_requested') "
-        # payload.agentId set => approve ACTIVATES that pre-created agent (safe); only the
-        # create branch (no agentId) defaults a null adapterType to process.
-        "AND payload->>'agentId' IS NULL "
+        # A truthy payload.agentId => approve ACTIVATES that pre-created agent (safe). The
+        # upstream branch is a truthiness check, so an EMPTY-string agentId still takes the
+        # create branch (null adapterType -> process); match that (not just IS NULL).
+        "AND (payload->>'agentId' IS NULL OR payload->>'agentId' = '') "
         f"AND (payload->>'adapterType' IS NULL OR payload->>'adapterType' NOT IN {_SAFE_SQL})",
     )
     return _rows(resp, ["id", "company_id", "type", "status", "adapter_type", "agent_id"])

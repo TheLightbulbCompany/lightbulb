@@ -452,7 +452,13 @@ async def get_decrypted_tokens(
     return json.loads(plain.decode())
 
 
-async def has_active_oauth(*, user_id: str, bound_to: str | None = None, purpose: str = PURPOSE_PROVIDER) -> bool:
+async def has_active_oauth(
+    *,
+    user_id: str,
+    bound_to: str | None = None,
+    purpose: str = PURPOSE_PROVIDER,
+    consistent: bool = False,
+) -> bool:
     """Whether an ACTIVE OAuth row exists for ``user_id`` bound to ``bound_to`` —
     a connection-state check that does NOT decrypt the token blob.
 
@@ -460,8 +466,13 @@ async def has_active_oauth(*, user_id: str, bound_to: str | None = None, purpose
     only needs to know a connection exists, so it should not lean on the stored
     secret (which is a stale bootstrap seed once the container owns the live,
     rotating token). Keeps the connected-flag decoupled from the secret.
+
+    ``consistent=True`` forces a strongly-consistent read — required by
+    callers whose answer gates a DELETE (the disconnect binding probes): an
+    eventually-consistent miss right after /harness/poll's write would report
+    "disconnected" while leaving both the row and the staged file behind.
     """
-    row = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}).get("Item")
+    row = _table().get_item(Key={"user_id": _row_key(user_id, purpose)}, ConsistentRead=consistent).get("Item")
     if not row or row.get("state") != "active":
         return False
     return _row_belongs_to(row, bound_to)

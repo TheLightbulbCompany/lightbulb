@@ -300,8 +300,10 @@ async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
     # row from their personal workspace context — deleting the org's tracked
     # grant while its EFS credential survives. A row bound elsewhere reads as
     # not-connected for this workspace, which is also what /harness/status
-    # reports, so answering "disconnected" is truthful.
-    if not await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS):
+    # reports, so answering "disconnected" is truthful. Strongly-consistent:
+    # this answer gates a delete, and an EC miss right after /harness/poll's
+    # write would report "disconnected" while leaving row + file behind.
+    if not await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS, consistent=True):
         return {"status": "disconnected"}
     # EFS first, row second, and a failed unlink is a failed disconnect: the
     # file IS the credential (the config advertises the harness
@@ -317,6 +319,17 @@ async def harness_disconnect(ctx: AuthContext = Depends(get_current_user)):
             detail="Could not remove the harness credential — try disconnecting again.",
         ) from e
     await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+    # Second unlink AFTER the row is gone: a provision/recovery overlapping
+    # this disconnect can read the still-active row in the window between the
+    # first unlink and the revoke and re-stage the file from the DDB seed
+    # (write-if-missing sees it absent). With the row deleted nothing can
+    # re-stage again, so this sweep closes the race. Best-effort — the
+    # primary unlink already succeeded; a failure here means a file appeared
+    # in a millisecond window, worth a log, not a 502.
+    try:
+        await delete_opencode_auth(user_id=owner_id)
+    except OSError:
+        logger.exception("post-revoke opencode auth sweep failed for owner %s", owner_id)
     return {"status": "disconnected"}
 
 
@@ -367,9 +380,13 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     # row-and-file stay consistent, and a later disconnect retry from the
     # right context can still find and clean the grant.
     try:
-        if await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS):
+        if await has_active_oauth(user_id=ctx.user_id, bound_to=owner_id, purpose=PURPOSE_HARNESS, consistent=True):
             await delete_opencode_auth(user_id=owner_id)
             await revoke_user_oauth(user_id=ctx.user_id, purpose=PURPOSE_HARNESS)
+            # Post-revoke sweep: closes the window where an overlapping
+            # provision re-staged the file from the then-still-active row
+            # (see harness_disconnect).
+            await delete_opencode_auth(user_id=owner_id)
     except Exception:
         logger.exception("harness cleanup failed during disconnect for owner %s", owner_id)
     # Clear provider_choice so the next /chat visit routes the owner back to

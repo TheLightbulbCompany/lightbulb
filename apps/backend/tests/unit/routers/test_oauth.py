@@ -177,7 +177,9 @@ async def test_disconnect_skips_harness_bound_to_another_workspace(async_client)
     ):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
-    mock_probe.assert_awaited_once_with(user_id="user_test_123", bound_to="user_test_123", purpose="harness")
+    mock_probe.assert_awaited_once_with(
+        user_id="user_test_123", bound_to="user_test_123", purpose="harness", consistent=True
+    )
     mock_revoke.assert_awaited_once_with(user_id="user_test_123")  # provider only
     mock_delete_oc.assert_not_awaited()
 
@@ -214,7 +216,10 @@ async def test_disconnect_personal_unchanged(async_client):
     assert mock_revoke.await_args_list[0].kwargs == {"user_id": "user_test_123"}
     assert mock_revoke.await_args_list[1].kwargs == {"user_id": "user_test_123", "purpose": "harness"}
     mock_delete.assert_awaited_once_with(user_id="user_test_123")
-    mock_delete_oc.assert_awaited_once_with(user_id="user_test_123")
+    # Unlink runs twice: before the revoke (primary) and after it (the sweep
+    # that closes the overlapping-provision re-stage window).
+    assert mock_delete_oc.await_count == 2
+    assert all(c.kwargs == {"user_id": "user_test_123"} for c in mock_delete_oc.await_args_list)
     mock_clear.assert_awaited_once_with("user_test_123")
 
 

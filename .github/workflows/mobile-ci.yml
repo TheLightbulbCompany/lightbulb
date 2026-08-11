@@ -18,6 +18,13 @@ on:
   # build + TestFlight submit in mobile-release.yml (tag `mobile-v*` / dispatch,
   # self-hosted macOS runner), JS-only OTA in mobile-ota.yml (merge to main).
 
+# Supersede in-flight runs for the same PR. `github.ref` is refs/pull/<n>/merge
+# here (pull_request only), so the group is per-PR and PRs never cancel each
+# other. The release lanes above keep their own serialized groups.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   NODE_VERSION: "20"
 

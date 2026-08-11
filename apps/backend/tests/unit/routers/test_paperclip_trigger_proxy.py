@@ -8,6 +8,9 @@ the trigger via the instance-admin binding resolver before any
 entitlement it names is honoured.
 """
 
+import hashlib
+import hmac
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -24,15 +27,17 @@ SIBLING_ID = "fedcba987654fedcba987654"
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     """Rate buckets live in hooks_proxy module state (shared helper) and
-    the binding cache in the trigger router — both must start empty or
-    the 60-POST tests pollute their neighbours."""
+    the binding + signing-mode caches in the trigger router — all must
+    start empty or the 60-POST tests pollute their neighbours."""
     from routers import hooks_proxy, paperclip_trigger_proxy
 
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
+    paperclip_trigger_proxy._TRIGGER_SIGNING_MODE_CACHE.clear()
     yield
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
+    paperclip_trigger_proxy._TRIGGER_SIGNING_MODE_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +87,25 @@ def _stub_client(captured: dict, **kw):
         "routers.paperclip_trigger_proxy._client_factory",
         lambda: httpx.AsyncClient(transport=transport),
     )
+
+
+# ---------------------------------------------------------------------------
+# Stripe edge signature verification (known-vector)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_stripe_signature_valid_and_tampered():
+    from routers.paperclip_trigger_proxy import verify_stripe_signature
+
+    secret = "whsec_test"
+    body = b'{"id":"evt_1"}'
+    t = int(time.time())
+    sig = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    hdr = f"t={t},v1={sig}"
+    assert verify_stripe_signature(secret, body, hdr, now=t) is True
+    assert verify_stripe_signature(secret, b'{"id":"evt_2"}', hdr, now=t) is False  # tampered body
+    assert verify_stripe_signature(secret, body, hdr, now=t + 400) is False  # stale
+    assert verify_stripe_signature("whsec_wrong", body, hdr, now=t) is False  # wrong secret
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +266,31 @@ async def test_resolver_returns_false_without_company_row():
         assert await mod._resolve_trigger_binding("u_nobody", PUBLIC_ID) is False
 
 
+async def test_resolver_caches_signing_mode_for_stripe_edge_trigger():
+    """The real Paperclip lookup (not a test double) must populate
+    _TRIGGER_SIGNING_MODE_CACHE, so _requires_stripe_edge works off a
+    fresh (uncached) binding resolve, not just a mocked one."""
+    from routers import paperclip_trigger_proxy as mod
+
+    routines = [{"id": "r_hook", "triggers": [{"kind": "webhook"}]}]
+    details = {"r_hook": {"triggers": [{"kind": "webhook", "publicId": PUBLIC_ID, "signingMode": "none"}]}}
+    p_repo, p_cookie, p_client, _ = _resolver_env(routines, details)
+    with p_repo, p_cookie, p_client:
+        assert await mod._resolve_trigger_binding("u_1", PUBLIC_ID) is True
+    assert mod._requires_stripe_edge("u_1", PUBLIC_ID) is True
+
+
+async def test_resolver_non_stripe_signing_mode_not_flagged():
+    from routers import paperclip_trigger_proxy as mod
+
+    routines = [{"id": "r_hook", "triggers": [{"kind": "webhook"}]}]
+    details = {"r_hook": {"triggers": [{"kind": "webhook", "publicId": PUBLIC_ID, "signingMode": "github_hmac"}]}}
+    p_repo, p_cookie, p_client, _ = _resolver_env(routines, details)
+    with p_repo, p_cookie, p_client:
+        assert await mod._resolve_trigger_binding("u_1", PUBLIC_ID) is True
+    assert mod._requires_stripe_edge("u_1", PUBLIC_ID) is False
+
+
 async def test_resolver_uses_org_lookup_for_org_owner():
     from routers import paperclip_trigger_proxy as mod
 
@@ -341,6 +390,164 @@ def test_missing_paperclip_url_returns_503(client, monkeypatch):
     with _mock_billing("active"), _mock_binding(True):
         r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
     assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Stripe edge verification (proxy integration)
+# ---------------------------------------------------------------------------
+
+
+def _mock_stripe_edge(required: bool):
+    return patch("routers.paperclip_trigger_proxy._requires_stripe_edge", return_value=required)
+
+
+def _mock_stripe_secret(secret: str | None):
+    cred = {"webhook_secret": secret} if secret else None
+    return patch(
+        "routers.paperclip_trigger_proxy.integration_secret_store.get",
+        AsyncMock(return_value=cred),
+    )
+
+
+def _stripe_header(secret: str, body: bytes, t: int) -> str:
+    sig = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    return f"t={t},v1={sig}"
+
+
+_STRIPE_SECRET = "whsec_test"
+
+
+def test_stripe_edge_valid_signature_forwards(client):
+    """A stripe_edge trigger with a correctly-signed Stripe-Signature
+    forwards verbatim, same as any other verified trigger."""
+    captured: dict = {}
+    body = b'{"id":"evt_1","type":"invoice.payment_failed"}'
+    t = int(time.time())
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_edge(True),
+        _mock_stripe_secret(_STRIPE_SECRET),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": _stripe_header(_STRIPE_SECRET, body, t),
+            },
+        )
+    assert r.status_code == 202
+    assert captured["body"] == body  # forwarded byte-verbatim
+
+
+def test_stripe_edge_tampered_body_returns_401(client):
+    """Signature computed over a different body than the one that
+    actually arrives — must be rejected, nothing forwarded."""
+    captured: dict = {}
+    signed_body = b'{"id":"evt_1"}'
+    tampered_body = b'{"id":"evt_1","amount":999999}'
+    t = int(time.time())
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_edge(True),
+        _mock_stripe_secret(_STRIPE_SECRET),
+        _stub_client(captured),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=tampered_body,
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": _stripe_header(_STRIPE_SECRET, signed_body, t),
+            },
+        )
+    assert r.status_code == 401
+    assert captured == {}
+
+
+def test_stripe_edge_stale_timestamp_returns_401(client):
+    """A signature outside the replay tolerance is rejected even if the
+    HMAC itself is correct for that (old) timestamp."""
+    captured: dict = {}
+    body = b'{"id":"evt_1"}'
+    stale_t = int(time.time()) - 400
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_edge(True),
+        _mock_stripe_secret(_STRIPE_SECRET),
+        _stub_client(captured),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": _stripe_header(_STRIPE_SECRET, body, stale_t),
+            },
+        )
+    assert r.status_code == 401
+    assert captured == {}
+
+
+def test_stripe_edge_missing_whsec_returns_401(client):
+    """No stored whsec_ for this owner (never connected the guided flow) —
+    fail closed rather than skip verification."""
+    captured: dict = {}
+    body = b'{"id":"evt_1"}'
+    t = int(time.time())
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_edge(True),
+        _mock_stripe_secret(None),
+        _stub_client(captured),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": _stripe_header(_STRIPE_SECRET, body, t),
+            },
+        )
+    assert r.status_code == 401
+    assert captured == {}
+
+
+def test_stripe_edge_missing_header_returns_401(client):
+    """A stripe_edge trigger's upstream Paperclip signingMode is "none" —
+    the publicId alone would otherwise be a bare shared secret. Omitting
+    the header entirely must not be treated as "skip verification"."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_edge(True),
+        _stub_client(captured),
+    ):
+        r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
+    assert r.status_code == 401
+    assert captured == {}
+
+
+def test_non_stripe_trigger_is_unaffected_by_edge_check(client):
+    """A normal (non-stripe_edge) trigger forwards with no Stripe-Signature
+    at all — the branch is a no-op when _requires_stripe_edge is False."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _mock_stripe_edge(False),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
+    assert r.status_code == 202
 
 
 # ---------------------------------------------------------------------------

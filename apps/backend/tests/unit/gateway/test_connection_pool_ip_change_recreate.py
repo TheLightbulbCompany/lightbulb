@@ -34,6 +34,7 @@ def _bare_pool() -> GatewayConnectionPool:
     pool._last_reconnect_at = {}
     pool._auth_backoff_until = {}
     pool._auth_failures = {}
+    pool._background_close_tasks = set()
     return pool
 
 
@@ -54,10 +55,44 @@ async def test_changed_ip_tears_down_and_recreates():
 
     got = await pool.ensure_connection("user_1", "10.0.0.2", "tok")
 
-    old.close.assert_awaited_once()  # the stale (dead-IP) socket was torn down
-    pool._create_connection.assert_awaited_once()  # and a new one was created
+    pool._create_connection.assert_awaited_once()  # a new one was created
     assert got is fresh
     assert pool._connections["user_1"] is fresh
+    # The stale (dead-IP) socket is torn down in the BACKGROUND (off the lock).
+    await asyncio.gather(*pool._background_close_tasks)
+    old.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_changed_ip_does_not_hold_lock_across_close():
+    """P1-2: close() drains for up to ~25s; it must run OFF the pool lock so it
+    can't head-of-line-block ensure_connection for every other owner."""
+    pool = _bare_pool()
+    hang = asyncio.Event()
+    old = _FakeConn("10.0.0.1")
+
+    async def slow_close():
+        await hang.wait()
+
+    old.close = AsyncMock(side_effect=slow_close)
+    pool._connections["user_1"] = old
+
+    fresh = _FakeConn("10.0.0.2")
+
+    async def fake_create(user_id, ip, token):
+        pool._connections[user_id] = fresh
+        return fresh
+
+    pool._create_connection = AsyncMock(side_effect=fake_create)
+
+    # Returns promptly even though the old connection's close is still draining.
+    got = await asyncio.wait_for(pool.ensure_connection("user_1", "10.0.0.2", "tok"), timeout=1)
+    assert got is fresh
+    assert not pool._lock.locked()  # lock released despite the drain in flight
+    assert pool._background_close_tasks  # close is running in the background
+
+    hang.set()
+    await asyncio.gather(*pool._background_close_tasks)
 
 
 @pytest.mark.asyncio

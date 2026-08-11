@@ -1531,6 +1531,26 @@ class GatewayConnection:
         self._run_completion_tasks.add(task)
         task.add_done_callback(self._run_completion_tasks.discard)
 
+    def _reject_pending_run_completions(self, reason: str) -> None:
+        """Fire every still-registered run-completion observer as errored.
+
+        A registered-but-unfired callback (bootstrap_dispatcher's
+        dispatched→delivered/failed move) is silently dropped when this
+        connection is torn down: the terminal chat event can never arrive on a
+        dead/replaced socket, and bootstrap_dispatcher deliberately does NOT
+        re-arm post-connect, so onboarding would stick at `dispatched` forever.
+        Reconcile them as errored — mirrors how pending RPCs are rejected on the
+        same teardown paths — so the observer marks the run failed and a later
+        onboarding generation / human can recover. Reuses ``_dispatch_run_completion``
+        (pop + fire as a tracked task), so it can never double-fire a callback a
+        real terminal already consumed.
+        """
+        if not self._run_completion_callbacks:
+            return
+        payload = {"errorMessage": reason}
+        for run_id in list(self._run_completion_callbacks):
+            self._dispatch_run_completion(run_id, "error", payload)
+
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
 
@@ -2289,6 +2309,10 @@ class GatewayConnection:
         # Durable liveness signal (R4 kill): the reader loop died with no
         # active runs, so is_alive is now False.
         self._note_gateway_liveness(connected=False)
+        # No terminal event can arrive on a dead reader — reconcile pending
+        # completion observers so a bootstrap kickoff doesn't stick at
+        # `dispatched` (see _reject_pending_run_completions).
+        self._reject_pending_run_completions("Gateway connection lost")
         for req_id, future in list(self._pending_rpcs.items()):
             if not future.done():
                 future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2349,6 +2373,9 @@ class GatewayConnection:
                 # Durable liveness signal (R4 kill): escalating past parked
                 # to dead is the other path is_alive can flip False.
                 self._note_gateway_liveness(connected=False)
+                # Same reconcile as the dead-reader path: the run we just gave up
+                # on will never emit its terminal, so fire its completion observer.
+                self._reject_pending_run_completions("Gateway connection lost")
                 for req_id, future in list(self._pending_rpcs.items()):
                     if not future.done():
                         future.set_exception(RuntimeError("Gateway connection lost"))
@@ -2418,6 +2445,12 @@ class GatewayConnection:
                     "Error waiting for push tasks during close for user %s",
                     self.user_id,
                 )
+        # Reconcile any still-registered completion observers as errored BEFORE
+        # the drain below, so a bootstrap kickoff whose terminal event can never
+        # arrive on this closing socket doesn't strand onboarding at `dispatched`.
+        # Firing them here (not after the drain) means their DDB writes are
+        # awaited by the same drain as the already-fired ones.
+        self._reject_pending_run_completions("Gateway connection closed")
         # Drain in-flight run-completion observer tasks (INV-5 bootstrap
         # dispatcher) too, so teardown doesn't cancel a DDB completion write
         # mid-flight -- mirrors the push-dispatch drain above.
@@ -2514,6 +2547,10 @@ class GatewayConnectionPool:
         # exponential hold. A successful connect clears both.
         self._auth_backoff_until: Dict[str, float] = {}
         self._auth_failures: Dict[str, int] = {}
+        # Detached connections being drained+closed off the pool lock (the
+        # changed-IP recreate path). Strong refs kept so the fire-and-forget
+        # close task isn't GC'd mid-drain.
+        self._background_close_tasks: Set[asyncio.Task] = set()
 
     def is_user_connected(self, user_id: str) -> bool:
         """Whether the pool has a live, healthy gateway connection for this user.
@@ -2798,6 +2835,26 @@ class GatewayConnectionPool:
         self._connections[user_id] = conn
         return conn
 
+    def _close_detached(self, conn: GatewayConnection) -> None:
+        """Drain + close a connection already removed from the pool, OFF the lock.
+
+        ``close()`` spends up to ~25s draining billing/push/completion tasks +
+        pending RPCs + the ws-close timeout; holding the pool-wide ``_lock``
+        across that head-of-line-blocks ``ensure_connection`` for every other
+        owner. The changed-IP recreate path detaches the dead connection under
+        the lock and hands its teardown here so it finishes in the background.
+        """
+
+        async def _run() -> None:
+            try:
+                await conn.close()
+            except Exception:
+                logger.exception("Background close failed for user %s", conn.user_id)
+
+        task = asyncio.create_task(_run())
+        self._background_close_tasks.add(task)
+        task.add_done_callback(self._background_close_tasks.discard)
+
     async def send_rpc(
         self,
         user_id: str,
@@ -2895,8 +2952,11 @@ class GatewayConnectionPool:
                     ip,
                 )
                 self._respect_reconnect_floor(user_id)
-                await conn.close()
+                # Detach under the lock; drain + close OFF the lock so this
+                # owner's dead-socket teardown (~25s worst case) can't
+                # head-of-line-block ensure_connection for every other owner.
                 self._connections.pop(user_id, None)
+                self._close_detached(conn)
                 conn = None
             if conn is not None and conn._parked:
                 self._respect_auth_backoff(user_id)
@@ -3539,6 +3599,14 @@ class GatewayConnectionPool:
                     "%d grace task(s) still pending at shutdown (normal when parked in a grace sleep)",
                     len(pending),
                 )
+        # Drain any detached background closes (changed-IP recreate) still in
+        # flight: they were popped from `_connections`, so the snapshot above
+        # missed them, yet they carry the same billing/liveness drains shutdown
+        # must not abandon. Bounded like the grace drain — a wedged close keeps
+        # running rather than being cancelled mid-cleanup.
+        bg = [t for t in self._background_close_tasks if not t.done()]
+        if bg:
+            await asyncio.wait(bg, timeout=5.0)
         # Flush queued frontend frames (close() above enqueues final
         # status_change frames) so shutdown doesn't cancel deliveries mid-send.
         try:

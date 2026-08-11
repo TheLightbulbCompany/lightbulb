@@ -332,6 +332,7 @@ async def test_shutdown_fences_new_dials_and_snapshots_late_inserts():
     pool._connections = {}
     pool._frontend_connections = {}
     pool._grace_tasks = {}
+    pool._background_close_tasks = set()
     closed = []
 
     async def fake_close_user(uid):

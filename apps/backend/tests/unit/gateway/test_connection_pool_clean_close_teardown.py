@@ -34,6 +34,8 @@ async def test_clean_close_rejects_pending_and_marks_liveness_down():
     conn._closed = False
     conn._parked = False
     conn._active_runs = {}
+    conn._run_completion_callbacks = {}
+    conn._run_completion_tasks = set()
 
     pending = asyncio.get_running_loop().create_future()
     conn._pending_rpcs = {"r1": pending}

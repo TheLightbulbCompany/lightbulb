@@ -286,10 +286,12 @@ class TestGatewayConnectionPool:
         with patch.object(pool, "_create_connection", return_value=new_conn) as create:
             result = await pool.send_rpc("user-1", "r", "agents.list", {}, "10.0.0.2", "tok")
 
-        parked.close.assert_awaited_once()  # torn down, not reopened
         parked.reopen.assert_not_called()
         create.assert_awaited_once()
         assert result == {"ok": True}
+        # Torn down in the BACKGROUND (off the lock) — drain the close task.
+        await asyncio.gather(*pool._background_close_tasks)
+        parked.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_send_rpc_reopens_parked_on_unchanged_ip(self, pool):

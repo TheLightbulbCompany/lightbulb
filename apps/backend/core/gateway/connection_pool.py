@@ -2961,6 +2961,12 @@ class GatewayConnectionPool:
             # throttle the very reconnect that just passed) — yet a create that
             # runs WITHOUT a preceding branch (an absent owner) still gets gated.
             floor_checked = False
+            # Endpoint we're recreating AWAY from. Recorded into the stale-endpoint
+            # fence AFTER the replacement is installed (below), not here — connect()
+            # can legitimately take >30s (open + two handshake recvs + health verify),
+            # so stamping before the dial could expire the window while a stale caller
+            # waits on the lock.
+            superseded_old_ip = None
             if conn is not None and conn.ip != ip:
                 if self._is_superseded_endpoint(user_id, ip):
                     # `ip` is an endpoint we recreated AWAY from within the race
@@ -2988,9 +2994,9 @@ class GatewayConnectionPool:
                     )
                     self._respect_reconnect_floor(user_id)
                     floor_checked = True
-                    # Record the endpoint we're abandoning so a later, staler
-                    # resolution still pointing at it can't roll this forward.
-                    self._superseded_ip[user_id] = (conn.ip, time.monotonic())
+                    # Remember the endpoint we're abandoning; the fence record is
+                    # stamped after the replacement is installed (see below).
+                    superseded_old_ip = conn.ip
                     # Detach under the lock; drain + close OFF the lock so this
                     # owner's dead-socket teardown (~25s worst case) can't
                     # head-of-line-block ensure_connection for every other owner.
@@ -3038,6 +3044,11 @@ class GatewayConnectionPool:
                     self._record_auth_failure(user_id, exc.retry_after_ms)
                     raise
                 self._clear_auth_backoff(user_id)
+                # Start the stale-endpoint fence NOW — the replacement is installed,
+                # so the 30s window measures "since the new connection went live",
+                # which is what a lock-waiting stale caller races against.
+                if superseded_old_ip is not None:
+                    self._superseded_ip[user_id] = (superseded_old_ip, time.monotonic())
             return conn
 
     def _is_superseded_endpoint(self, user_id: str, ip: str) -> bool:

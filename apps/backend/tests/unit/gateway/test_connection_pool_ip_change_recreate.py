@@ -63,6 +63,9 @@ async def test_changed_ip_tears_down_and_recreates():
     pool._create_connection.assert_awaited_once()  # a new one was created
     assert got is fresh
     assert pool._connections["user_1"] is fresh
+    # The abandoned endpoint is recorded in the fence (stamped AFTER the
+    # replacement is installed) so a later stale resolve can't roll it back.
+    assert pool._superseded_ip["user_1"][0] == "10.0.0.1"
     # Detached conn's frontend set is blanked so its background teardown can't
     # push a spurious GATEWAY_DOWN over the replacement's HEALTHY.
     assert old._frontend_connections == set()

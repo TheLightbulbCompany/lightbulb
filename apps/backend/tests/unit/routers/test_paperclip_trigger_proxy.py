@@ -584,3 +584,85 @@ def test_trigger_buckets_are_independent_of_container_hook_bucket(client):
         client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
     assert len(hooks_proxy._RATE_BUCKETS_PER_OWNER[f"trigger:{PUBLIC_ID}"]) == 1
     assert "u_1" not in hooks_proxy._RATE_BUCKETS_PER_OWNER
+
+
+# ---------------------------------------------------------------------------
+# Registry-declared provider signature headers (Sentry / Linear / Attio)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "provider_header",
+    ["Sentry-Hook-Signature", "Linear-Signature", "Attio-Signature"],
+)
+def test_provider_signature_header_copied_to_paperclip_signature(client, provider_header):
+    """Raw-body HMAC providers sign under their own header name; the proxy
+    copies whichever registry-declared header a delivery carries into
+    ``X-Paperclip-Signature`` so Paperclip's github_hmac mode reads it. The
+    provider's original header is not in the forward allowlist and is
+    dropped."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b'{"action":"created"}',
+            headers={"Content-Type": "application/json", provider_header: "cafef00d"},
+        )
+    assert r.status_code == 202
+    h = captured["headers"]
+    assert h["x-paperclip-signature"] == "cafef00d"
+    assert provider_header.lower() not in h
+
+
+def test_caller_paperclip_signature_not_clobbered_by_provider_header(client):
+    """A caller that already sends X-Paperclip-Signature (a hand-wired
+    sender using Paperclip's own convention) keeps its value even when a
+    provider-named header is also present — the more specific source wins."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "X-Paperclip-Signature": "caller-sig",
+                "Linear-Signature": "provider-sig",
+            },
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["x-paperclip-signature"] == "caller-sig"
+
+
+def test_stripe_split_takes_precedence_over_provider_header(client):
+    """Never expected in a real delivery, but the precedence is pinned:
+    the Stripe t=,v1= split wins over a generic provider header copy."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": "t=99,v1=stripesig",
+                "Sentry-Hook-Signature": "sentrysig",
+            },
+        )
+    assert r.status_code == 202
+    h = captured["headers"]
+    assert h["x-paperclip-signature"] == "stripesig"
+    assert h["x-paperclip-timestamp"] == "99"

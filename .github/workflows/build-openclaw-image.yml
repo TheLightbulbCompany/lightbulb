@@ -1,4 +1,15 @@
 name: build-openclaw-image
+
+# One image build at a time. The self-hosted CI box runs several runner
+# instances on ONE VM, so two builds landing together put it under enough
+# memory pressure to kill buildkit mid-layer ("error reading from server:
+# EOF") and BOTH fail — seen 2026-08-12 03:55 on wsl-1 and wsl-4. Queue
+# instead of racing; never cancel, because each build publishes a distinct
+# tag that a promotion may already point at.
+concurrency:
+  group: build-openclaw-image
+  cancel-in-progress: false
+
 on:
   push:
     branches:

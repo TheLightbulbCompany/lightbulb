@@ -842,7 +842,7 @@ const START_RUNGS: ReadonlyArray<{
   {
     value: "connected_app",
     label: "A connected app",
-    hint: "When something happens in Stripe, GitHub, or another app you've connected.",
+    hint: "When something happens in a connected app like Stripe.",
     icon: Blocks,
   },
   {

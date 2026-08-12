@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>isol8 — signed out</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --page:#faf7f2;
+  --ink:#1a1a1a; --ink-soft:#3d3d3d; --mute:#767061;
+  --forest:#06402B; --forest-deep:#042c1d; --forest-soft:#4a9e74; --forest-tint:#e6efe9;
+  --serif:Georgia,'Times New Roman',serif;
+  --sans:'DM Sans',ui-sans-serif,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6}
+main{overflow-x:clip;width:100%}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--forest);outline-offset:4px}
+.grain{position:fixed;inset:0;z-index:100;pointer-events:none;opacity:.035;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>")}
+
+h1,h2,h3,h4{font-family:var(--serif);font-weight:400;letter-spacing:-.022em;margin:0;font-style:normal}
+.wrap{max-width:1240px;margin:0 auto;padding:0 44px}
+.tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);margin:0 0 22px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;height:48px;padding:0 28px;border-radius:999px;
+  font-size:14px;font-weight:500;cursor:pointer;background:var(--forest);color:var(--page);border:0;
+  font-family:var(--sans);transition:background .35s var(--ease),transform .35s var(--ease)}
+.btn:hover{background:var(--forest-deep);transform:translateY(-2px)}
+.btn:disabled{opacity:.4;pointer-events:none}
+.btn-sm{height:34px;padding:0 17px;font-size:13px}
+.arrow{font-size:14px;color:var(--forest);font-weight:500;white-space:nowrap;background:none;border:0;
+  cursor:pointer;font-family:var(--sans);padding:0}
+.arrow:hover{text-decoration:underline;text-underline-offset:3px}
+.quiet{font-size:13px;color:var(--mute);background:none;border:0;cursor:pointer;font-family:var(--sans);padding:0}
+.quiet:hover{color:var(--forest)}
+
+.logo{font-family:var(--serif);font-weight:700;color:var(--ink);white-space:nowrap;display:inline-block}
+.logo i{font-style:normal}
+.logo i:nth-child(1){letter-spacing:.125em}
+.logo i:nth-child(2){letter-spacing:.149em}
+.logo i:nth-child(3){letter-spacing:.106em}
+.logo i:nth-child(4){letter-spacing:.070em}
+.logo i:nth-child(5){letter-spacing:0}
+.swap{display:inline-block;position:relative;overflow:hidden;vertical-align:bottom}
+.swap>span{display:block;transition:transform .55s var(--ease)}
+.swap>span+span{position:absolute;inset:0;transform:translateY(100%)}
+a:hover .swap>span{transform:translateY(-100%)}
+a:hover .swap>span+span{transform:translateY(0)}
+
+nav{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(250,247,242,.85);backdrop-filter:blur(14px)}
+.nav-in{max-width:1240px;margin:0 auto;padding:17px 44px;display:flex;align-items:center;gap:30px}
+.nav-links{display:flex;gap:28px;margin-left:auto;font-size:14px;color:var(--ink-soft)}
+.nav-links a:hover{color:var(--forest)}
+
+/* ══ the funnel, now the hero ══
+   same three beats as FirstRunFunnel.tsx — path choice, then the branch input —
+   with the email step inserted before sign-in. */
+.intake{padding:150px 0 0;display:grid;place-items:center;text-align:center;min-height:78vh}
+.intake-in{width:100%;max-width:560px}
+
+.orb-wrap{position:relative;height:190px;display:grid;place-items:center;margin-bottom:6px}
+.orb{width:280px;aspect-ratio:1;border-radius:50%;pointer-events:none;filter:blur(6px);
+  background:radial-gradient(circle at 44% 42%,
+    rgba(6,64,43,.20) 0%, rgba(74,158,116,.16) 34%, rgba(6,64,43,.07) 58%,
+    rgba(6,64,43,.02) 72%, transparent 80%);
+  animation:orb-breathe 11s ease-in-out infinite}
+@keyframes orb-breathe{
+  0%,100%{transform:scale(1) translate(0,0);opacity:.9}
+  50%    {transform:scale(1.075) translate(1.2%,-1.6%);opacity:1}
+}
+.orb-lbl{position:absolute;bottom:2px;margin:0;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.24em;text-transform:uppercase;color:var(--mute)}
+
+.step{display:none}
+.step.on{display:block}
+.q{font-size:clamp(30px,3.6vw,44px);line-height:1.1;margin:0}
+.hint{margin:16px auto 0;font-size:16px;color:var(--ink-soft);max-width:44ch}
+
+/* the two paths, as the same quiet rows the marketplace uses */
+.paths{display:grid;gap:2px;margin-top:44px;text-align:left}
+.path{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:center;padding:22px 4px;
+  background:none;border:0;cursor:pointer;font-family:var(--sans);width:100%;text-align:left;
+  transition:padding .25s var(--ease)}
+.path:hover{padding-left:14px}
+.path h3{font-size:21px;transition:color .25s var(--ease)}
+.path:hover h3{color:var(--forest)}
+.path p{margin:3px 0 0;font-size:13px;color:var(--mute)}
+.path .go{color:var(--forest);font-size:18px;opacity:0;transform:translateX(-6px);
+  transition:opacity .25s var(--ease),transform .25s var(--ease)}
+.path:hover .go{opacity:1;transform:none}
+
+.field{margin-top:40px;text-align:left}
+.field input,.field textarea{width:100%;background:none;border:0;border-bottom:1px solid rgba(6,64,43,.28);
+  font-family:var(--serif);font-size:22px;color:var(--ink);padding:12px 2px;resize:none;
+  transition:border-color .3s var(--ease)}
+.field input::placeholder,.field textarea::placeholder{color:#b9b2a3}
+.field input:focus,.field textarea:focus{outline:none;border-color:var(--forest)}
+.field label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--mute);margin-bottom:6px}
+.field + .field{margin-top:28px}
+.row-act{margin-top:38px;display:flex;gap:22px;align-items:center;flex-wrap:wrap}
+
+/* progress: three rules that fill, no step counter text */
+.prog{display:flex;gap:6px;justify-content:center;margin-top:52px}
+.prog i{width:34px;height:2px;background:rgba(6,64,43,.16);display:block;transition:background .5s var(--ease)}
+.prog i.on{background:var(--forest)}
+
+.mini{margin-top:26px;font-size:13px;color:var(--mute)}
+.mini a{color:var(--forest);font-weight:500}
+
+/* generation: a live log, then the plan with the tail withheld */
+.log{list-style:none;margin:34px 0 0;padding:0;display:grid;gap:10px;text-align:left;
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;color:var(--mute);min-height:88px}
+.log li{opacity:0}
+.log li.on{opacity:1}
+.log li b{font-weight:400;color:var(--forest)}
+.plan{opacity:0;pointer-events:none;margin-top:16px}
+.plan.on{opacity:1;pointer-events:auto}
+.plan-hd{font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--mute);margin:0 0 18px;text-align:left}
+.moves{list-style:none;counter-reset:m;margin:0;padding:0;display:grid;gap:22px;text-align:left}
+/* exactly two grid children per row: the counter, then one text box. keeping
+   <b> and <span> as separate children pushed the description into the 26px
+   counter column and broke it to one word per line. */
+.moves li{counter-increment:m;display:grid;grid-template-columns:26px minmax(0,1fr);gap:16px;align-items:baseline}
+.moves li::before{content:counter(m);font-family:var(--mono);font-size:11px;color:var(--mute)}
+.moves b{font-family:var(--serif);font-weight:400;font-size:19px;display:block}
+.moves span{display:block;font-size:13px;color:var(--mute);margin-top:4px;max-width:46ch}
+/* the withheld tail: readable enough to want, not enough to use */
+.moves li.locked b{filter:blur(4.6px);opacity:.5;user-select:none}
+.moves li.locked::before{opacity:.4}
+
+/* ══ the roster block carries over unchanged ══ */
+.block{padding:150px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:96px;align-items:center}
+.block--flip .block-txt{order:2}
+.block h3{font-size:clamp(26px,2.6vw,34px);line-height:1.16;max-width:20ch}
+.block p{margin:20px 0 0;font-size:16px;color:var(--ink-soft);max-width:44ch}
+.stage{position:relative;height:440px;width:100%}
+.stage svg{position:absolute;inset:0;width:100%;height:100%}
+.web-line{stroke:rgba(6,64,43,.24);stroke-width:1.1;fill:none}
+.web-line.hot{stroke:var(--forest-soft);stroke-width:2}
+.node{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:7px}
+.puck{width:40px;height:40px;border-radius:13px;background:var(--page);display:flex;align-items:center;
+  justify-content:center;font-family:var(--mono);font-size:12px;font-weight:500;color:var(--forest);
+  box-shadow:inset 0 0 0 1.3px rgba(6,64,43,.42)}
+.puck--lead{width:56px;height:56px;border-radius:18px;background:var(--forest);color:var(--page);
+  font-size:15px;box-shadow:none}
+.nm{font-size:10.5px;color:var(--ink-soft);white-space:nowrap}
+
+.links{padding:170px 0 130px;display:grid;gap:18px;justify-items:start}
+.links a{font-family:var(--serif);font-size:clamp(32px,4.2vw,50px);letter-spacing:-.024em;line-height:1.06;
+  transition:color .4s var(--ease)}
+.links a:hover{color:var(--forest)}
+footer{padding:0 0 64px;font-size:13px;color:var(--mute)}
+.foot-in{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
+.foot-links{display:flex;gap:24px}
+.foot-links a:hover{color:var(--forest)}
+
+@media(max-width:900px){
+  .block{grid-template-columns:1fr;gap:52px;padding-top:110px}
+  .block--flip .block-txt{order:0}
+  .intake{padding-top:118px;min-height:0}
+  .links{padding:112px 0 90px}
+}
+@media(max-width:820px){
+  .wrap,.nav-in{padding-left:22px;padding-right:22px}
+  .nav-links{display:none}
+  .stage{height:360px}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+<main>
+
+<nav>
+  <div class="nav-in">
+    <a href="#" class="logo" style="font-size:19px"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+    <div class="nav-links">
+      <a href="#"><span class="swap"><span>Marketplace</span><span aria-hidden="true">Marketplace</span></span></a>
+      <a href="how-it-works.html"><span class="swap"><span>How it works</span><span aria-hidden="true">How it works</span></span></a>
+      <a href="pricing.html"><span class="swap"><span>Pricing</span><span aria-hidden="true">Pricing</span></span></a>
+    </div>
+    <a href="#" class="arrow">Sign in →</a>
+  </div>
+</nav>
+
+<!-- ══ THE FUNNEL IS THE HERO ══ -->
+<section class="intake wrap">
+  <div class="intake-in">
+
+    <div class="orb-wrap">
+      <div class="orb" aria-hidden="true"></div>
+      <p class="orb-lbl">Friday</p>
+    </div>
+
+    <!-- step 1 — path choice (FirstRunFunnel step 1, verbatim) -->
+    <div class="step on" id="s-choose">
+      <h1 class="q">Let&rsquo;s get started.</h1>
+      <p class="hint">Tell your CEO about your business — she&rsquo;ll research it and lay out your next moves.</p>
+      <div class="paths">
+        <button class="path" data-path="new">
+          <div><h3>Start something new</h3><p>Start from scratch</p></div>
+          <span class="go">→</span>
+        </button>
+        <button class="path" data-path="grow">
+          <div><h3>Grow my business</h3><p>Already have a business</p></div>
+          <span class="go">→</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- step 2a — new -->
+    <div class="step" id="s-new">
+      <h1 class="q">What&rsquo;s your idea?</h1>
+      <div class="field">
+        <label for="idea">Your idea</label>
+        <textarea id="idea" rows="2" placeholder="A ceramics studio that ships nationwide"></textarea>
+      </div>
+      <div class="field">
+        <label for="who">Who&rsquo;s it for (optional)</label>
+        <input id="who" placeholder="Interior designers and small hotels">
+      </div>
+      <div class="row-act">
+        <button class="btn" id="new-next">Continue →</button>
+        <button class="quiet" id="nopick">I don&rsquo;t know yet — you pick</button>
+        <button class="quiet" data-back>Back</button>
+      </div>
+    </div>
+
+    <!-- step 2b — grow -->
+    <div class="step" id="s-grow">
+      <h1 class="q">What&rsquo;s your company&rsquo;s website?</h1>
+      <div class="field">
+        <label for="site">Website</label>
+        <input id="site" placeholder="northwindceramics.com">
+      </div>
+      <div class="row-act">
+        <button class="btn" id="grow-next">Continue →</button>
+        <button class="quiet" data-back>Back</button>
+      </div>
+    </div>
+
+    <!-- step 3 — generation runs immediately, before any email or account -->
+    <div class="step" id="s-gen">
+      <h1 class="q" id="gen-q">Friday is reading up.</h1>
+      <ul class="log" id="log"></ul>
+
+      <div class="plan" id="plan">
+        <p class="plan-hd">Your first moves</p>
+        <ol class="moves">
+          <li><div><b>Name it and take the handle</b><span>Check the name across the register and the socials, then claim them</span></div></li>
+          <li><div><b>Find the first fifty buyers</b><span>Build the list, then write the opener Stitch will send</span></div></li>
+          <li class="locked"><div><b>Price it against the market</b></div></li>
+          <li class="locked"><div><b>Set up the money side</b></div></li>
+          <li class="locked"><div><b>Decide who to hire first</b></div></li>
+        </ol>
+        <div class="row-act" style="justify-content:center">
+          <button class="btn" id="want">Get the whole plan →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- step 4 — email unlocks the rest. purely additive: no account yet. -->
+    <div class="step" id="s-email">
+      <h1 class="q">Where should Friday send the rest?</h1>
+      <p class="hint">She&rsquo;ll finish the plan and email you all of it. No card, no account yet.</p>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" inputmode="email" placeholder="you@company.com">
+      </div>
+      <div class="row-act">
+        <button class="btn" id="send">Send me the plan →</button>
+        <button class="quiet" data-back>Back</button>
+      </div>
+    </div>
+
+    <!-- step 5 — sign up, and the work actually starts -->
+    <div class="step" id="s-done">
+      <h1 class="q">It&rsquo;s on its way.</h1>
+      <p class="hint" id="done-line">The full plan is heading to your inbox.</p>
+      <p class="hint" style="margin-top:14px">Sign up and Friday stops writing plans and starts doing the work — with the roster, your own private container, and everything she just laid out already loaded.</p>
+      <div class="row-act" style="justify-content:center">
+        <a href="#" class="btn">Create my account →</a>
+        <a href="#" class="quiet">I&rsquo;ll just read the email</a>
+      </div>
+    </div>
+
+    <div class="prog" id="prog" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
+    <p class="mini" id="mini">Already have an account? <a href="#">Sign in</a></p>
+
+  </div>
+</section>
+
+<!-- the roster block, unchanged from the approved page -->
+<section class="block block--flip wrap" id="roster">
+  <div class="block-txt">
+    <p class="tag">The Roster</p>
+    <h3>Run the business on agents.</h3>
+    <p>Sales, support, finance, scheduling — the work that fills your week. Friday turns a goal into a set of jobs and hands each one to whoever owns it. This is the roster running isol8 today.</p>
+  </div>
+  <div class="block-vis"><div class="stage" id="stage"></div></div>
+</section>
+
+<section class="links wrap">
+  <a href="how-it-works.html">How it works</a>
+  <a href="pricing.html">Pricing</a>
+  <a href="blog.html">Blog</a>
+  <a href="faq.html">FAQ</a>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <a href="#" class="logo" style="font-size:16px;color:var(--mute)"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+    <div class="foot-links"><a href="pricing.html">Pricing</a><a href="faq.html">FAQ</a><a href="#">Privacy</a></div>
+    <span>© 2026 isol8</span>
+  </div>
+</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+<script>
+const reduced=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const NS="http://www.w3.org/2000/svg";
+
+/* ── the funnel state machine ──
+   mirrors FirstRunFunnel.tsx: path ("new"|"grow"), the branch input, an
+   optional detail, and the same localStorage draft key so a refresh mid-flow
+   does not lose what was typed. */
+const KEY="isol8_first_run_draft_v1";
+const S=Object.assign({path:null,input:"",detail:"",email:"",noIdea:false},
+  (()=>{try{return JSON.parse(localStorage.getItem(KEY))||{}}catch{return{}}})());
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch{}};
+
+const steps=[...document.querySelectorAll(".step")];
+const prog=[...document.querySelectorAll("#prog i")];
+const mini=document.getElementById("mini");
+let cur="s-choose", history=[];
+
+function show(id,{back=false}={}){
+  if(id===cur) return;
+  if(!back) history.push(cur);
+  const from=document.getElementById(cur), to=document.getElementById(id);
+  cur=id;
+  const stage={"s-choose":0,"s-new":1,"s-grow":1,"s-gen":1,"s-email":2,"s-done":2}[id];
+  prog.forEach((p,i)=>p.classList.toggle("on",i<=stage));
+  mini.style.display = id==="s-done" ? "none" : "";
+  if(reduced){from.classList.remove("on");to.classList.add("on");return}
+  gsap.to(from,{opacity:0,y:-10,duration:.28,ease:"power2.in",onComplete:()=>{
+    from.classList.remove("on"); gsap.set(from,{opacity:1,y:0});
+    to.classList.add("on");
+    gsap.fromTo(to,{opacity:0,y:14},{opacity:1,y:0,duration:.6,ease:"expo.out"});
+  }});
+}
+
+document.querySelectorAll(".path").forEach(b=>b.addEventListener("click",()=>{
+  S.path=b.dataset.path; S.noIdea=false; save();
+  show(S.path==="new"?"s-new":"s-grow");
+}));
+document.querySelectorAll("[data-back]").forEach(b=>b.addEventListener("click",()=>{
+  const prev=history.pop()||"s-choose"; show(prev,{back:true});
+}));
+
+const idea=document.getElementById("idea"), who=document.getElementById("who"),
+      site=document.getElementById("site"), email=document.getElementById("email");
+idea.value=S.path==="new"?(S.input||""):""; who.value=S.detail||"";
+site.value=S.path==="grow"?(S.input||""):""; email.value=S.email||"";
+
+document.getElementById("new-next").addEventListener("click",()=>{
+  S.input=idea.value.trim(); S.detail=who.value.trim(); S.noIdea=false; save();
+  if(!S.input){idea.focus();return}
+  generate();
+});
+document.getElementById("nopick").addEventListener("click",()=>{
+  /* the absent idea IS the signal — same as the real funnel's noIdea mode */
+  S.input=""; S.noIdea=true; save(); generate();
+});
+document.getElementById("grow-next").addEventListener("click",()=>{
+  S.input=site.value.trim(); save();
+  if(!S.input){site.focus();return}
+  generate();
+});
+
+/* ── generation runs on the answer alone: no email, no account ──
+   in the real thing this is a lead-scoped job, NOT Friday's kickoff — that
+   still needs a container and stays exactly where it is today. */
+const LOG=document.getElementById("log"), PLAN=document.getElementById("plan");
+function generate(){
+  show("s-gen");
+  const subject = S.noIdea ? "a business worth starting"
+                : S.path==="grow" ? S.input : S.input;
+  document.getElementById("gen-q").textContent =
+    S.path==="grow" ? "Friday is reading your site." : "Friday is thinking it through.";
+  const steps=[
+    "reading <b>"+esc(subject).slice(0,52)+"</b>",
+    "checking who already does this",
+    "sizing the first market",
+    "drafting the first moves"
+  ];
+  LOG.innerHTML=steps.map(s=>"<li>· "+s+"</li>").join("");
+  PLAN.classList.remove("on");
+  const items=[...LOG.children];
+  if(reduced){ items.forEach(i=>i.classList.add("on")); PLAN.classList.add("on"); return }
+  items.forEach((li,i)=>setTimeout(()=>{
+    li.classList.add("on");
+    gsap.fromTo(li,{opacity:0,x:-8},{opacity:1,x:0,duration:.45,ease:"expo.out"});
+  }, 220+i*620));
+  setTimeout(()=>{
+    PLAN.classList.add("on");
+    gsap.fromTo("#plan",{opacity:0,y:16},{opacity:1,y:0,duration:.7,ease:"expo.out"});
+    gsap.from(".moves li",{opacity:0,y:12,duration:.5,ease:"expo.out",stagger:.08});
+  }, 220+items.length*620+260);
+}
+function esc(s){return String(s).replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]))}
+document.getElementById("want").addEventListener("click",()=>show("s-email"));
+document.getElementById("send").addEventListener("click",()=>{
+  const v=email.value.trim();
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)){email.focus();return}
+  S.email=v; save();
+  document.getElementById("done-line").textContent =
+    "The full plan is heading to "+v+".";
+  show("s-done");
+});
+
+/* ── the roster constellation (display only here) ── */
+const NODES=[
+ {id:"F",n:"Friday",x:50,y:50,lead:1},{id:"Ops",n:"Platform Ops",x:50,y:8},
+ {id:"L",n:"Lens",x:26,y:14},{id:"Th",n:"Thread",x:74,y:14},
+ {id:"E",n:"Echo",x:10,y:34},{id:"St",n:"Stitch",x:90,y:34},
+ {id:"V",n:"Vera",x:14,y:64},{id:"PA",n:"Product Analytics",x:86,y:64},
+ {id:"T",n:"Tally",x:28,y:86},{id:"O",n:"Ora",x:72,y:86},
+ {id:"A",n:"Atlas",x:50,y:94},{id:"P",n:"Pulse",x:36,y:38},{id:"J",n:"Jarvis",x:64,y:38}
+];
+const IX={}; NODES.forEach((n,i)=>IX[n.id]=i);
+const EDGES=[["F","Ops"],["F","L"],["F","Th"],["F","E"],["F","St"],["F","V"],["F","PA"],["F","T"],["F","O"],["F","A"],["F","P"],["F","J"],
+ ["Ops","Th"],["Th","St"],["St","PA"],["PA","O"],["O","A"],["A","T"],["T","V"],["V","E"],["E","L"],["L","Ops"],["J","St"],["J","L"],["P","V"],["P","T"]]
+ .map(([a,b])=>[IX[a],IX[b]]);
+const stage=document.getElementById("stage");
+const svg=document.createElementNS(NS,"svg");
+svg.setAttribute("viewBox","0 0 100 100"); svg.setAttribute("preserveAspectRatio","none");
+svg.setAttribute("aria-hidden","true");
+const lns=EDGES.map(([a,b])=>{
+  const l=document.createElementNS(NS,"line");
+  l.setAttribute("class","web-line"); l.setAttribute("vector-effect","non-scaling-stroke");
+  l.setAttribute("x1",NODES[a].x); l.setAttribute("y1",NODES[a].y);
+  l.setAttribute("x2",NODES[b].x); l.setAttribute("y2",NODES[b].y);
+  svg.appendChild(l); return l;
+});
+stage.appendChild(svg);
+NODES.forEach(n=>{
+  const el=document.createElement("div");
+  el.className="node"; el.style.left=n.x+"%"; el.style.top=n.y+"%";
+  el.innerHTML='<span class="puck'+(n.lead?" puck--lead":"")+'">'+n.id+'</span><span class="nm">'+n.n+'</span>';
+  stage.appendChild(el);
+});
+if(!reduced) setInterval(()=>{
+  const k=Math.floor(Math.random()*12);
+  lns[k].classList.add("hot"); setTimeout(()=>lns[k].classList.remove("hot"),820);
+},900);
+
+if(!reduced){
+  gsap.from(".orb-wrap",{opacity:0,scale:.92,duration:1.3,ease:"expo.out"});
+  gsap.from("#s-choose .q",{opacity:0,y:18,duration:.8,ease:"expo.out",delay:.15});
+  gsap.from("#s-choose .hint",{opacity:0,y:16,duration:.8,ease:"expo.out",delay:.28});
+  gsap.from(".path",{opacity:0,y:16,duration:.7,ease:"expo.out",stagger:.08,delay:.4});
+}
+</script>
+</body>
+</html>

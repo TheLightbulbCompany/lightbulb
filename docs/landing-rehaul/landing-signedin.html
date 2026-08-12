@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>isol8 — signed in</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --page:#faf7f2;
+  --ink:#1a1a1a; --ink-soft:#3d3d3d; --mute:#767061;
+  --forest:#06402B; --forest-deep:#042c1d; --forest-soft:#4a9e74; --forest-tint:#e6efe9;
+  --serif:Georgia,'Times New Roman',serif;
+  --sans:'DM Sans',ui-sans-serif,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6}
+main{overflow-x:clip;width:100%}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--forest);outline-offset:4px}
+.grain{position:fixed;inset:0;z-index:100;pointer-events:none;opacity:.035;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>")}
+
+h1,h2,h3,h4{font-family:var(--serif);font-weight:400;letter-spacing:-.022em;margin:0;font-style:normal}
+.wrap{max-width:1240px;margin:0 auto;padding:0 44px}
+.tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);margin:0 0 22px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;height:46px;padding:0 26px;border-radius:999px;
+  font-size:14px;font-weight:500;cursor:pointer;background:var(--forest);color:var(--page);
+  transition:background .35s var(--ease),transform .35s var(--ease)}
+.btn:hover{background:var(--forest-deep);transform:translateY(-2px)}
+.btn-sm{height:34px;padding:0 17px;font-size:13px}
+.arrow{font-size:14px;color:var(--forest);font-weight:500;white-space:nowrap}
+.arrow:hover{text-decoration:underline;text-underline-offset:3px}
+
+.logo{font-family:var(--serif);font-weight:700;color:var(--ink);white-space:nowrap;display:inline-block}
+.logo i{font-style:normal}
+.logo i:nth-child(1){letter-spacing:.125em}
+.logo i:nth-child(2){letter-spacing:.149em}
+.logo i:nth-child(3){letter-spacing:.106em}
+.logo i:nth-child(4){letter-spacing:.070em}
+.logo i:nth-child(5){letter-spacing:0}
+.swap{display:inline-block;position:relative;overflow:hidden;vertical-align:bottom}
+.swap>span{display:block;transition:transform .55s var(--ease)}
+.swap>span+span{position:absolute;inset:0;transform:translateY(100%)}
+a:hover .swap>span{transform:translateY(-100%)}
+a:hover .swap>span+span{transform:translateY(0)}
+
+nav{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(250,247,242,.85);backdrop-filter:blur(14px)}
+.nav-in{max-width:1240px;margin:0 auto;padding:17px 44px;display:flex;align-items:center;gap:30px}
+.nav-links{display:flex;gap:28px;margin-left:auto;font-size:14px;color:var(--ink-soft)}
+.nav-links a:hover{color:var(--forest)}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--forest);color:var(--page);
+  display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:500}
+
+/* ══ signed-in hero: pick up exactly where they left off ══ */
+.resume{padding:172px 0 0;display:grid;grid-template-columns:1.06fr .94fr;gap:88px;align-items:start}
+.resume h1{font-size:clamp(30px,3.4vw,44px);line-height:1.1;max-width:22ch}
+.resume .sub{margin:20px 0 0;font-size:17px;color:var(--ink-soft);max-width:44ch}
+.resume-act{margin-top:34px;display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+
+/* the thing they were last on — one soft surface, no outline */
+.last{background:rgba(6,64,43,.042);border-radius:22px;padding:28px 30px;margin-top:40px;
+  transition:background .4s var(--ease),transform .4s var(--ease);display:block}
+.last:hover{background:rgba(6,64,43,.062);transform:translateY(-2px)}
+.last-hd{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.mono-puck{width:30px;height:30px;border-radius:10px;background:var(--page);display:grid;place-items:center;
+  font-family:var(--mono);font-size:11px;font-weight:500;color:var(--forest);
+  box-shadow:inset 0 0 0 1.2px rgba(6,64,43,.34);flex-shrink:0}
+.who{font-family:var(--mono);font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--mute);margin:0}
+.live{width:6px;height:6px;border-radius:50%;background:var(--forest-soft);margin-left:auto;
+  animation:blink 2.6s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.last h3{font-size:21px;line-height:1.32;margin:0}
+.last .meta{margin:12px 0 0;font-size:13px;color:var(--mute)}
+.last .cta{margin-top:18px;font-size:14px;font-weight:500;color:var(--forest)}
+
+/* right column: what happened while they were gone */
+.away h2{font-size:20px;margin-bottom:26px}
+.feed{display:grid;gap:26px}
+.ev{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:baseline}
+.ev h4{font-size:17px;transition:color .35s var(--ease)}
+.ev p{margin:3px 0 0;font-size:13px;color:var(--mute)}
+.ev .when{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;color:var(--mute);white-space:nowrap}
+a.ev:hover h4{color:var(--forest)}
+.away-foot{margin-top:34px}
+
+/* awaiting you */
+.pending{padding:150px 0 0}
+.pending h2{font-size:clamp(26px,2.6vw,34px);margin-bottom:44px}
+.appr{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{background:rgba(6,64,43,.042);border-radius:20px;padding:24px 26px;
+  transition:background .4s var(--ease),transform .4s var(--ease)}
+.card:hover{background:rgba(6,64,43,.062);transform:translateY(-2px)}
+.card-hd{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.q{font-family:var(--serif);font-size:19px;line-height:1.35;margin:0 0 22px;max-width:30ch}
+.acts{display:flex;gap:12px;align-items:center}
+.yes{display:inline-flex;align-items:center;height:34px;padding:0 18px;border-radius:999px;
+  background:var(--forest);color:var(--page);font-size:13px;font-weight:500;transition:background .3s var(--ease)}
+.card:hover .yes{background:var(--forest-deep)}
+.no{font-size:13px;color:var(--mute)}
+
+.links{padding:170px 0 130px;display:grid;gap:18px;justify-items:start}
+.links a{font-family:var(--serif);font-size:clamp(32px,4.2vw,50px);letter-spacing:-.024em;line-height:1.06;
+  transition:color .4s var(--ease)}
+.links a:hover{color:var(--forest)}
+footer{padding:0 0 64px;font-size:13px;color:var(--mute)}
+.foot-in{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
+.foot-links{display:flex;gap:24px}
+.foot-links a:hover{color:var(--forest)}
+
+@media(max-width:900px){
+  .resume{grid-template-columns:1fr;gap:60px;padding-top:126px}
+  .appr{grid-template-columns:1fr}
+  .pending{padding-top:110px}
+  .links{padding:112px 0 90px}
+}
+@media(max-width:820px){
+  .wrap,.nav-in{padding-left:22px;padding-right:22px}
+  .nav-links{display:none}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+<main>
+
+<nav>
+  <div class="nav-in">
+    <a href="#" class="logo" style="font-size:19px"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+    <div class="nav-links">
+      <a href="#"><span class="swap"><span>Chat</span><span aria-hidden="true">Chat</span></span></a>
+      <a href="#"><span class="swap"><span>Teams</span><span aria-hidden="true">Teams</span></span></a>
+      <a href="#"><span class="swap"><span>Marketplace</span><span aria-hidden="true">Marketplace</span></span></a>
+    </div>
+    <span class="avatar">AK</span>
+  </div>
+</nav>
+
+<!-- ══ SIGNED IN: the page becomes the last thing they were doing ══ -->
+<section class="resume wrap">
+  <div>
+    <h1>Welcome back, Aden. Friday kept going.</h1>
+    <p class="sub">Three agents worked while you were away, and two decisions are waiting on you.</p>
+    <div class="resume-act">
+      <a href="#" class="btn">Resume where you left off →</a>
+      <a href="#" class="arrow">Open Teams inbox</a>
+    </div>
+
+    <a href="#" class="last">
+      <div class="last-hd">
+        <span class="mono-puck">St</span>
+        <p class="who">Stitch · sales · in progress</p>
+        <span class="live"></span>
+      </div>
+      <h3>Source 40 sales leads for the Q3 push</h3>
+      <p class="meta">Last opened 14 hours ago · 26 of 40 found · 3 drafts ready for review</p>
+      <p class="cta">Pick this back up →</p>
+    </a>
+  </div>
+
+  <div class="away">
+    <h2>While you were away</h2>
+    <div class="feed">
+      <a href="#" class="ev">
+        <div><h4>Echo</h4><p>Wrote up the Northwind call and filed three action items</p></div>
+        <span class="when">2h</span>
+      </a>
+      <a href="#" class="ev">
+        <div><h4>Tally</h4><p>Reconciled 62 transactions, flagged one duplicate</p></div>
+        <span class="when">6h</span>
+      </a>
+      <a href="#" class="ev">
+        <div><h4>Ora</h4><p>Held Thursday 2pm for the designer intro call</p></div>
+        <span class="when">9h</span>
+      </a>
+      <a href="#" class="ev">
+        <div><h4>Atlas</h4><p>Suggested hiring a support agent — roster gap</p></div>
+        <span class="when">1d</span>
+      </a>
+    </div>
+    <div class="away-foot"><a href="#" class="arrow">See everything Friday did →</a></div>
+  </div>
+</section>
+
+<section class="pending wrap">
+  <h2>Two decisions are yours.</h2>
+  <div class="appr">
+    <div class="card">
+      <div class="card-hd">
+        <span class="mono-puck">St</span>
+        <p class="who">Stitch · sales</p>
+        <span class="live"></span>
+      </div>
+      <p class="q">Send the 14-lead outreach batch for Thursday?</p>
+      <div class="acts"><span class="yes">Approve</span><span class="no">Request changes</span></div>
+    </div>
+    <div class="card">
+      <div class="card-hd">
+        <span class="mono-puck">T</span>
+        <p class="who">Tally · finance</p>
+        <span class="live"></span>
+      </div>
+      <p class="q">Reconcile 62 transactions and close the week?</p>
+      <div class="acts"><span class="yes">Approve</span><span class="no">Request changes</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="links wrap">
+  <a href="#">Your roster</a>
+  <a href="#">Marketplace</a>
+  <a href="pricing.html">Billing</a>
+  <a href="faq.html">Help</a>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <a href="#" class="logo" style="font-size:16px;color:var(--mute)"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+    <div class="foot-links"><a href="pricing.html">Billing</a><a href="faq.html">Help</a><a href="#">Sign out</a></div>
+    <span>© 2026 isol8</span>
+  </div>
+</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+<script>
+if(!matchMedia("(prefers-reduced-motion: reduce)").matches){
+  gsap.timeline()
+    .from(".resume h1",{opacity:0,y:20,duration:.9,ease:"expo.out"},.1)
+    .from(".resume .sub",{opacity:0,y:18,duration:.8,ease:"expo.out"},.24)
+    .from(".resume-act",{opacity:0,y:18,duration:.8,ease:"expo.out"},.36)
+    .from(".last",{opacity:0,y:22,duration:.9,ease:"expo.out"},.44)
+    .from(".away h2",{opacity:0,y:16,duration:.7,ease:"expo.out"},.4)
+    .from(".ev",{opacity:0,y:16,duration:.6,ease:"expo.out",stagger:.07},.5)
+    .from(".away-foot",{opacity:0,duration:.6,ease:"expo.out"},.85);
+}
+</script>
+</body>
+</html>

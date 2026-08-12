@@ -5,13 +5,21 @@ into Next.js.** Open `landing.html` in a browser to review; the four nav/link
 destinations are real pages in this folder so the flow is clickable.
 
 ```
-landing.html      the page under review
+landing.html            the page under review
+landing-onboard.html    the funnel on the landing page, signed out
+landing-signedin.html   the same page once signed in
 how-it-works.html
 pricing.html
 blog.html
 faq.html
-_page.css         shared shell for the four sub-pages
+_page.css               shared shell for the four sub-pages
 ```
+
+`landing-onboard.html` and `landing-signedin.html` are the build accompanying
+`docs/superpowers/specs/2026-08-12-landing-page-onboarding-design.md`. The funnel
+is interactive end to end — pick a path, type an answer, watch generation run,
+enter an email — and it persists to the same `isol8_first_run_draft_v1` key the
+real funnel uses, so a mid-flow refresh restores your answers.
 
 ## What changed versus the current landing page
 

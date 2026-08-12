@@ -30,7 +30,9 @@ is won against the row, its only side effect is ``StartExecution``; the actual
 (``scripts.provision_runner``), out of process, which reads the (already
 committed) provider off the billing row. So these tests drive the REAL
 conditional write (moto) end-to-end through change_provider and pin the FIXED
-behavior at the dispatch boundary (``start_execution``):
+behavior at the dispatch boundary (``_spawn_inline`` — post-inline-fast-path,
+a won claim runs attempt 0 as a backend child process; ``start_execution`` is
+now only Branch A's handoff, and must stay silent on these happy paths):
 
   * RUNNING row  -> stop-first flips the row to "stopped", the SAME dispatch
     then wins the claim and STARTS a provision execution (the runner applies
@@ -124,16 +126,16 @@ def cold_change_env(containers_table):
     so one patch serves change_provider's guard read AND
     dispatch_provision's resolve_provider_choice read.
     """
-    # Post-SFN, provisioning is a durable Step Functions execution: the
-    # dispatched dispatch_provision funnels to provision_dispatch, whose only
-    # side effect (once the single-flight claim is won against the real moto
-    # row) is StartExecution. provision_user_container now runs in a SEPARATE
-    # one-shot ECS task (scripts.provision_runner) -- out of process -- so the
-    # dispatch boundary this test pins is start_execution, not an in-process
-    # provision_user_container call. The NEW provider is applied by the runner
-    # off the (already-committed) billing row; the test asserts the dispatch
-    # fired + the row committed the new choice.
+    # The dispatched dispatch_provision funnels to provision_dispatch, whose
+    # only side effect once the single-flight claim is won against the real
+    # moto row is to spawn attempt 0 -- a provision_runner CHILD PROCESS of
+    # the backend, not an in-process provision_user_container call and no
+    # longer StartExecution. So the boundary these tests pin is _spawn_inline.
+    # The NEW provider is applied by the runner off the (already-committed)
+    # billing row; the test asserts the dispatch fired + the row committed the
+    # new choice.
     fake_sfn = MagicMock()
+    fake_spawn = MagicMock()
     fake_sfn.start_execution.return_value = {
         "executionArn": "arn:aws:states:us-east-1:1:execution/prov/exec-1",
         "startDate": 0,
@@ -190,11 +192,20 @@ def cold_change_env(containers_table):
             new=lambda coro: created.append(coro) or MagicMock(),
         ),
         # The SFN dispatch boundary: start_execution is reached ONLY if the
-        # single-flight claim is won against the real moto row.
+        # single-flight claim is won against the real moto row. Kept because
+        # Branch A (a stamped, still-owned claim) still hands off to the
+        # machine — these tests assert it stays SILENT on the happy path.
         patch("core.services.provision_dispatch._client", return_value=fake_sfn),
+        # THE dispatch boundary these tests pin. Post-inline-fast-path, a won
+        # claim runs attempt 0 as a backend child process instead of calling
+        # StartExecution, so _spawn_inline — not start_execution — is what
+        # "a provision was dispatched" means. Recorded rather than executed:
+        # the real one would fork a provision_runner subprocess.
+        patch("core.services.provision_dispatch._spawn_inline", new=fake_spawn),
     ):
         yield {
             "sfn": fake_sfn,
+            "spawn": fake_spawn,
             "manager": real_manager,
             "created": created,
             "table": containers_table,
@@ -238,10 +249,10 @@ async def test_cold_provider_change_on_running_container_reprovisions(cold_chang
     await env["created"][1]
 
     # Stop-first means the row was "stopped" by the time the claim ran: the
-    # claim is WON and an SFN provision execution is dispatched (StartExecution)
+    # claim is WON and attempt 0 is dispatched (an inline runner subprocess)
     # — the runner applies the committed new provider off the billing row. The
     # fix's whole point: the running-row change is no longer a silent no-op.
-    env["sfn"].start_execution.assert_called_once()
+    env["spawn"].assert_called_once()
 
     # The row reflects a genuinely-claimed reprovision, not a silent stand-down:
     # try_claim_provision stamped it "provisioning" with a real fencing token.
@@ -269,7 +280,7 @@ async def test_cold_provider_change_on_stopped_container_applies_new_provider(co
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    env["sfn"].start_execution.assert_called_once()
+    env["spawn"].assert_called_once()
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row["status"] == "provisioning"
@@ -309,7 +320,7 @@ async def test_cold_provider_change_with_no_container_still_provisions(cold_chan
     # The no-row claim path (attribute_not_exists) is won and an SFN execution
     # is dispatched — the container is created from scratch by the runner with
     # the NEW provider, exactly what the pre-F1 bare dispatch did for this case.
-    env["sfn"].start_execution.assert_called_once()
+    env["spawn"].assert_called_once()
 
     row = env["table"].get_item(Key={"owner_id": "user_cold"}).get("Item")
     assert row is not None and row["status"] == "provisioning"
@@ -342,8 +353,11 @@ async def test_poll_claim_between_stop_and_drain_task_is_not_clobbered(cold_chan
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    # The drain task's dispatch LOST the lease to the poll's claim: no SFN
-    # execution started (single-flight — exactly one executor).
+    # The drain task's dispatch LOST the lease to the poll's claim: NOTHING
+    # provisioned — no inline attempt spawned and no SFN execution started
+    # (single-flight — exactly one executor). This is the fence this file
+    # exists for; it now lands on _spawn_inline.
+    env["spawn"].assert_not_called()
     env["sfn"].start_execution.assert_not_called()
 
     # The poll's claim survived untouched — still provisioning, same token.
@@ -394,7 +408,7 @@ async def test_cold_provider_change_stop_failure_reverts_commit_and_retry_works(
     assert len(env["created"]) == 2
     await env["created"][1]
 
-    env["sfn"].start_execution.assert_called_once()
+    env["spawn"].assert_called_once()
     assert result["provider_choice"] == "byo_key"
 
 
@@ -453,7 +467,7 @@ async def test_cold_change_fences_out_in_flight_poll_wake_claim(cold_change_env)
     await env["created"][0]
     assert len(env["created"]) == 2
     await env["created"][1]
-    env["sfn"].start_execution.assert_called_once()
+    env["spawn"].assert_called_once()
     assert result["provider_choice"] == "byo_key"
 
 

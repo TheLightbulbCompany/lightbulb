@@ -56,8 +56,30 @@ trigger:
 
 **Audit.** Same posture as ``hooks_proxy``: best-effort row to
 ``hook-events`` (kind="paperclip_trigger").
+
+**Provider signature-header normalization.** Verification is NATIVE — this
+proxy holds no secret and does no verification. Paperclip's own
+``hmac_sha256`` mode signs ``{timestamp}.{body}`` (Stripe's exact scheme) and
+verifies against the trigger's stored secret, which is armed with the
+provider's own ``whsec_`` (``PUT /automations/{public_id}/webhook-secret`` ->
+Paperclip's rotate-secret with a caller-supplied value). The proxy's only
+provider-specific job is a header shim: Stripe packs its timestamp and
+signature into ONE ``Stripe-Signature: t=,v1=`` header, whereas Paperclip
+reads them from separate ``X-Paperclip-Timestamp`` / ``X-Paperclip-Signature``
+headers — so it splits the former into the latter (see
+``_normalize_stripe_signature``). It also derives an ``Idempotency-Key`` from
+the Stripe event id (Stripe sends none, and its delivery retries reuse the
+id) so Paperclip dedupes retries to a single run. A ``github_hmac`` provider
+needs no shim — its ``X-Hub-Signature-256`` already matches.
+
+An unarmed trigger (secret not yet pasted) **fails closed for free**:
+Paperclip verifies against its own random placeholder secret, which the
+provider's signature cannot match, so nothing fires until the real secret is
+armed. There is no per-trigger secret lookup, cache, or edge verification in
+this proxy anymore — all of that moved into Paperclip.
 """
 
+import json
 import logging
 import time
 
@@ -101,6 +123,30 @@ def _binding_cached(owner_id: str, public_id: str) -> bool:
     return ts is not None and (time.monotonic() - ts) < _BINDING_TTL_SECONDS
 
 
+def _normalize_stripe_signature(header: str) -> tuple[str | None, str | None]:
+    """Split a Stripe ``Stripe-Signature: t=<unixSeconds>,v1=<hexHmac>`` header
+    into ``(timestamp, signature)`` for Paperclip's native ``hmac_sha256`` mode,
+    which reads them from separate ``X-Paperclip-Timestamp`` /
+    ``X-Paperclip-Signature`` headers. Returns ``(None, None)`` on a malformed
+    header. Only the FIRST ``v1`` is used: during a Stripe endpoint-secret
+    rotation Stripe briefly sends a ``v1`` per active secret and Paperclip's
+    single-signature check verifies against one — a narrow, self-healing window
+    (Stripe retries; it resolves once the old secret is removed).
+
+    # ponytail: first-v1 only; multi-signature verify would need a Paperclip
+    # mode change — not worth it for the rare rotation window.
+    """
+    t: str | None = None
+    v1: str | None = None
+    for part in header.split(","):
+        key, _, value = part.strip().partition("=")
+        if key == "t" and t is None:
+            t = value or None
+        elif key == "v1" and v1 is None:
+            v1 = value or None
+    return t, v1
+
+
 async def _company_id_for_owner(owner_id: str) -> str | None:
     repo = PaperclipRepo(table_name="paperclip-companies")
     if is_org_owner_id(owner_id):
@@ -109,13 +155,18 @@ async def _company_id_for_owner(owner_id: str) -> str | None:
     return row.company_id if row is not None and row.status == "active" else None
 
 
-async def _lookup_binding(owner_id: str, public_id: str) -> bool:
-    """Ask Paperclip whether ``public_id`` is a webhook trigger in the
-    owner's company. The routines LIST omits publicId, so we fetch the
-    detail of each routine that carries a webhook trigger."""
+async def _lookup_trigger_detail(owner_id: str, public_id: str) -> dict | None:
+    """Ask Paperclip for the webhook-trigger dict matching ``public_id`` in
+    the owner's company (``kind``, ``publicId``, ``signingMode``, ...), or
+    None if no such trigger exists there. The routines LIST omits publicId,
+    so we fetch the detail of each routine that carries a webhook trigger.
+    Shared by ``_lookup_binding`` (bool projection, used by the fire route's
+    hot path) and ``_resolve_trigger_binding`` (used by the webhook-secret
+    PUT, ``routers/automations.py``, to verify ownership before that
+    endpoint checks its own stripe-edge-seeded marker)."""
     company_id = await _company_id_for_owner(owner_id)
     if not company_id:
-        return False
+        return None
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         cookie = await get_admin_session_cookie(http)
         client = PaperclipAdminClient(http_client=http)
@@ -126,8 +177,14 @@ async def _lookup_binding(owner_id: str, public_id: str) -> bool:
             detail = await client.get_routine(session_cookie=cookie, routine_id=routine["id"])
             for trig in detail.get("triggers") or []:
                 if trig.get("kind") == "webhook" and trig.get("publicId") == public_id:
-                    return True
-    return False
+                    return trig
+    return None
+
+
+async def _lookup_binding(owner_id: str, public_id: str) -> bool:
+    """Ask Paperclip whether ``public_id`` is a webhook trigger in the
+    owner's company."""
+    return await _lookup_trigger_detail(owner_id, public_id) is not None
 
 
 async def _resolve_trigger_binding(owner_id: str, public_id: str) -> bool:
@@ -208,6 +265,27 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
             media_type="application/json",
         )
 
+    # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
+    body = await request.body()
+
+    # Provider header normalization (see module docstring). Verification is
+    # native in Paperclip; the proxy only ADAPTS Stripe's combined
+    # ``Stripe-Signature: t=,v1=`` into the separate ``X-Paperclip-*`` headers
+    # Paperclip's hmac_sha256 mode reads, and derives an idempotency key from
+    # the event id (Stripe sends none and its retries reuse it). No secret and
+    # no verification live here.
+    stripe_ts: str | None = None
+    stripe_v1: str | None = None
+    stripe_event_id: str | None = None
+    stripe_sig = request.headers.get("Stripe-Signature")
+    if stripe_sig:
+        stripe_ts, stripe_v1 = _normalize_stripe_signature(stripe_sig)
+        try:
+            payload = json.loads(body)
+            stripe_event_id = payload.get("id") if isinstance(payload, dict) else None
+        except ValueError:
+            stripe_event_id = None
+
     if not settings.PAPERCLIP_INTERNAL_URL:
         return Response(
             status_code=503,
@@ -215,11 +293,17 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
             media_type="application/json",
         )
 
-    # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
-    body = await request.body()
     headers = {h: request.headers[h] for h in _FORWARDED_HEADERS if h in request.headers}
     headers["X-Forwarded-For"] = _extract_caller_ip(request)
     headers["X-Forwarded-Proto"] = "https"
+    # Feed Paperclip's hmac_sha256 mode the split Stripe timestamp + signature,
+    # and the derived idempotency key (so Stripe's delivery retries dedupe to a
+    # single routine run). A caller-supplied Idempotency-Key is never overridden.
+    if stripe_ts and stripe_v1:
+        headers["X-Paperclip-Timestamp"] = stripe_ts
+        headers["X-Paperclip-Signature"] = stripe_v1
+    if stripe_event_id and "Idempotency-Key" not in headers:
+        headers["Idempotency-Key"] = stripe_event_id
 
     base = settings.PAPERCLIP_INTERNAL_URL.rstrip("/")
     target = f"{base}/api/routine-triggers/public/{public_id}/fire"

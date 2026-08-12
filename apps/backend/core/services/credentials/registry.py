@@ -206,6 +206,39 @@ class Requires(BaseModel):
     config: list[str] = Field(default_factory=list)
 
 
+class InboundEvent(BaseModel):
+    id: str
+    label: str
+
+
+class InboundTemplate(BaseModel):
+    title: str
+    suggested_agent: str
+    starter_prompt: str
+
+
+class Inbound(BaseModel):
+    """Declares this provider as a 1-click Automations trigger source. Consumed
+    by the seed service (`create_routine` + `create_routine_trigger`) and the
+    Integrations card's "Can trigger" line — see the Automations Phase 2 plan.
+    """
+
+    # "guided_paste" — the provider has no register-a-webhook API reachable
+    # with what we hold, so the owner pastes the proxy URL into the provider's
+    # own dashboard (Stripe). (An "auto" shape — Isol8 registers the webhook
+    # itself via the provider's API — returns with the generic-rail follow-up.)
+    webhook_registration: Literal["guided_paste"]
+    # A NATIVE Paperclip signingMode ("hmac_sha256" | "github_hmac" | "bearer"
+    # | "none"), passed straight through to the created trigger — Paperclip
+    # verifies the provider's signature natively against the trigger's secret
+    # (armed with the provider's own value via PUT .../webhook-secret). Stripe
+    # uses "hmac_sha256" (its `{t}.{body}` scheme); the trigger proxy only
+    # normalizes Stripe's combined signature header into what that mode reads.
+    signing_mode: str
+    events: list[InboundEvent]
+    template: InboundTemplate
+
+
 class Provider(BaseModel):
     key: str
     display_name: str
@@ -268,6 +301,9 @@ class Provider(BaseModel):
     # default region.
     aws_sts: AwsStsSpec | None = None
     validation: ValidateSpec | None = Field(default=None, alias="validate")
+    # 1-click Automations trigger source declaration. None = this provider is
+    # not (yet) wired as a webhook trigger source. See Inbound docstring.
+    inbound: Inbound | None = None
 
     # populate_by_name lets us pass either the `validate` alias (YAML) or the
     # `validation` field name (Python construction) when building a Provider.

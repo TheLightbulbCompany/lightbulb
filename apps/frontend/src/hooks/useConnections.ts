@@ -49,6 +49,24 @@ export interface Connection {
    *   - "skill" → a bundled skill reads the credential.
    */
   actor?: "cli" | "mcp" | "skill" | "nango_proxy";
+  /**
+   * Inbound face: event labels this provider can fire as an Automations
+   * trigger (registry `inbound`, Phase 2). Empty/absent when the provider
+   * isn't (yet) wired as a trigger source.
+   */
+  can_trigger?: string[];
+  /**
+   * Same registry `inbound` block as `can_trigger`, but carrying event IDS
+   * (not just labels) plus the hookup mode — the Add-flow's "A connected
+   * app" rung (Phase 2 T6) needs both to submit `POST
+   * /automations/from-integration {provider, event_id}` and to drive the
+   * guided paste-secret flow after (`"guided_paste"`, e.g. Stripe).
+   * `null`/absent when the provider isn't wired as a trigger source.
+   */
+  inbound?: {
+    webhook_registration: "guided_paste";
+    events: { id: string; label: string }[];
+  } | null;
 }
 
 interface ConnectionsResponse {

@@ -20,7 +20,16 @@
 
 import { useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
-import { ChevronRight, History, KeyRound, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  History,
+  KeyRound,
+  KeySquare,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import {
   EditorialButton,
@@ -29,6 +38,7 @@ import {
 } from "@/components/teams/shell";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useApi } from "@/lib/api";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { describeCron } from "@/components/teams/shared/cron-readable";
@@ -248,6 +258,10 @@ const EMPTY_DASH_STYLE = { color: "var(--mute)" } as const;
 
 export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const { read, post, patch, del } = useTeamsApi();
+  // The webhook-secret endpoint (routers/automations.py) is mounted under
+  // /api/v1, not the Teams BFF `post`/`patch` above proxy through — mirrors
+  // RoutinesPanel's saveWebhookSecret.
+  const automationsApi = useApi();
   const {
     data: routine,
     isLoading,
@@ -276,6 +290,9 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [rotatedSecret, setRotatedSecret] = useState<RoutineTriggerSecretMaterial | null>(null);
   const [createdWebhook, setCreatedWebhook] = useState<RoutineTriggerSecretMaterial | null>(null);
+  const [secretDialogTrigger, setSecretDialogTrigger] = useState<RoutineTriggerSummary | null>(
+    null,
+  );
 
   async function refresh(): Promise<void> {
     await Promise.all([mutate?.(), mutateRuns?.(), mutateRevisions?.()]);
@@ -309,6 +326,20 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   }
 
   async function rotateSecret(triggerId: string): Promise<void> {
+    // Rotating mints a NEW RANDOM secret. That's right when YOU control the
+    // sender (you copy the new secret into it), but it silently breaks a
+    // provider-imposed secret: a Stripe endpoint keeps signing with its own
+    // whsec_, so once this trigger holds a random secret every event 401s —
+    // and Stripe can't be pointed at a random secret. Warn before the swap.
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Generate a new random signing secret? The current one is invalidated " +
+          "immediately, and any sender still signing with it — including a Stripe " +
+          "webhook (which signs with its own secret) — will stop verifying until updated.",
+      )
+    )
+      return;
     await run(async () => {
       // The wire shape is an OBJECT (RoutineTriggerSecretMaterial), not a bare
       // string — mirrors the create-trigger response below. Rendering it
@@ -491,7 +522,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         {/* Main-column banner for errors from the inline actions (delete /
             rotate / restore). When an edit dialog is open it renders the error
             itself, so suppress the banner to avoid a duplicate message. */}
-        {actionError && !editing && !triggerDialog && (
+        {actionError && !editing && !triggerDialog && !secretDialogTrigger && (
           <DialogError message={actionError} />
         )}
 
@@ -571,10 +602,25 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       disabled={busy}
                       onClick={() => rotateSecret(t.id)}
                       className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
-                      aria-label={`Rotate secret for ${t.label ?? "webhook"}`}
-                      title="Rotate secret"
+                      aria-label={`Rotate to a new random secret for ${t.label ?? "webhook"}`}
+                      title="Rotate to a new random secret"
                     >
                       <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  )}
+                  {triggerHasSecret(t) && t.publicId && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setActionError(null);
+                        setSecretDialogTrigger(t);
+                      }}
+                      className="text-[var(--mute)] hover:text-[var(--ink)] disabled:opacity-50"
+                      aria-label={`Set signing secret for ${t.label ?? "webhook"}`}
+                      title="Set signing secret"
+                    >
+                      <KeySquare className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
                   )}
                   <button
@@ -858,6 +904,29 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         >
           <SecretField label="Webhook secret" value={rotatedSecret.webhookSecret} />
         </EditorialDialog>
+      )}
+
+      {secretDialogTrigger && (
+        <SetSigningSecretDialog
+          submitting={busy}
+          error={actionError}
+          onClose={() => setSecretDialogTrigger(null)}
+          onSave={async (value) => {
+            const ok = await run(async () => {
+              // Arms/updates the trigger's secret with a SPECIFIC
+              // provider-issued value (e.g. a Stripe endpoint's whsec_) —
+              // distinct from rotateSecret above, which mints a random one.
+              // Same wire endpoint RoutinesPanel's guided create-flow uses,
+              // but reached under /api/v1 via automationsApi, not the Teams BFF.
+              await automationsApi.put(
+                `/automations/${secretDialogTrigger.publicId}/webhook-secret`,
+                { webhook_secret: value.trim() },
+              );
+              await refresh();
+            });
+            if (ok) setSecretDialogTrigger(null);
+          }}
+        />
       )}
     </div>
   );
@@ -1432,6 +1501,66 @@ function TriggerDialog({
             onChange={(e) => setEnabled(e.target.checked)}
           />
           Enabled
+        </label>
+      </div>
+    </EditorialDialog>
+  );
+}
+
+/* ── set signing secret dialog ─────────────────────────────────────────── */
+
+// The post-creation path to arm/update a webhook trigger's secret with a
+// SPECIFIC provider-issued value (e.g. a Stripe endpoint's whsec_) — additive
+// to rotateSecret above, which mints a random one instead. A provider that
+// signs with its own secret can never be pointed at a random one, so this is
+// the only way to (re-)arm a trigger whose sender is out of our control.
+function SetSigningSecretDialog({
+  submitting,
+  error,
+  onClose,
+  onSave,
+}: {
+  submitting: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSave: (value: string) => void | Promise<void>;
+}) {
+  const [value, setValue] = useState("");
+  const canSave = value.trim() !== "";
+
+  return (
+    <EditorialDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="Set signing secret"
+      description="Paste the signing secret your provider issued (e.g. a Stripe endpoint's whsec_). Paperclip verifies incoming webhooks against it."
+      footer={
+        <>
+          <EditorialButton variant="secondary" size="sm" onClick={onClose}>
+            Cancel
+          </EditorialButton>
+          <EditorialButton
+            variant="primary"
+            size="sm"
+            onClick={() => onSave(value)}
+            disabled={submitting || !canSave}
+          >
+            {submitting ? "Saving…" : "Save"}
+          </EditorialButton>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <DialogError message={error} />
+        <label className="block">
+          <span className="text-sm text-[var(--ink-soft)]">Signing secret</span>
+          <input
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="whsec_..."
+            className={cn(INPUT_CLASS, "font-mono")}
+          />
         </label>
       </div>
     </EditorialDialog>

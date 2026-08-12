@@ -32,6 +32,40 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   }),
 }));
 
+// T6: the "A connected app" rung talks directly to the app API (automations
+// endpoints are mounted under /api/v1, not the Teams BFF), so it goes through
+// useApi(), not useTeamsApi(). Preserve every other export (ApiError,
+// BACKEND_URL, ...) via importOriginal so nothing else that imports @/lib/api
+// breaks.
+const mockAutomationsPost = vi.fn();
+const mockAutomationsPut = vi.fn();
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    useApi: () => ({
+      get: vi.fn(),
+      post: mockAutomationsPost,
+      put: mockAutomationsPut,
+      patch: vi.fn(),
+      del: vi.fn(),
+    }),
+  };
+});
+
+let connectionsData: unknown[] = [];
+vi.mock("@/hooks/useConnections", () => ({
+  useConnections: () => ({
+    connections: connectionsData,
+    isLoading: false,
+    error: undefined,
+    mutate: vi.fn(),
+    connectPaste: vi.fn(),
+    startOAuth: vi.fn(),
+    disconnect: vi.fn(),
+  }),
+}));
+
 import { RoutinesPanel } from "@/components/teams/panels/RoutinesPanel";
 
 // An upstream-shaped routine row (RoutineListItem subset).
@@ -57,6 +91,9 @@ describe("RoutinesPanel", () => {
     mockPatch.mockReset();
     mockDel.mockReset();
     mockRead.mockClear();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    connectionsData = [];
     routinesData = { routines: [routine()] };
     agentsData = { agents: AGENTS };
   });
@@ -332,7 +369,7 @@ describe("RoutinesPanel", () => {
     await user.click(screen.getByRole("button", { name: "New automation" }));
     // The schedule field is the rung-picker's default; picking "Any other
     // app" swaps it out for the webhook fields.
-    await user.click(screen.getByRole("radio", { name: "Any other app" }));
+    await user.click(screen.getByRole("radio", { name: /Any other app/ }));
     expect(screen.queryByLabelText(/^Schedule$/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Title"), {
@@ -357,53 +394,195 @@ describe("RoutinesPanel", () => {
     expect(mockMutate).toHaveBeenCalled();
   });
 
-  it("coming-soon rungs disable Create and show the inline affordance", async () => {
-    const user = userEvent.setup();
-    render(<RoutinesPanel />);
-
-    await user.click(screen.getByRole("button", { name: "New automation" }));
-    fireEvent.change(screen.getByLabelText("Title"), {
-      target: { value: "Whatever" },
-    });
-    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
-
-    expect(screen.getByText(/Coming soon/)).toBeInTheDocument();
-    expect(screen.getByText("Create")).toBeDisabled();
-    await user.click(screen.getByText("Create"));
-    expect(mockPost).not.toHaveBeenCalled();
-  });
-
   it("rung picker: roving tabindex + arrow keys move selection and focus (WAI-ARIA APG radiogroup)", async () => {
     const user = userEvent.setup();
     render(<RoutinesPanel />);
     await user.click(screen.getByRole("button", { name: "New automation" }));
 
-    // Default rung is "On a schedule" — the only tab stop; every other rung
-    // is out of the tab order (roving tabindex), not five separate stops.
-    const schedule = screen.getByRole("radio", { name: "On a schedule" });
-    const agentWatch = screen.getByRole("radio", { name: /My agent watches it/ });
+    // Rungs, in order: "A connected app", "Any other app", "On a schedule".
+    // Default rung is "On a schedule" (the last) — the only tab stop; every
+    // other rung is out of the tab order (roving tabindex).
     const connectedApp = screen.getByRole("radio", { name: /A connected app/ });
+    const webhook = screen.getByRole("radio", { name: /Any other app/ });
+    const schedule = screen.getByRole("radio", { name: /On a schedule/ });
     expect(schedule).toHaveAttribute("tabindex", "0");
-    expect(agentWatch).toHaveAttribute("tabindex", "-1");
+    expect(connectedApp).toHaveAttribute("tabindex", "-1");
 
-    // ArrowRight/ArrowDown moves forward: "On a schedule" -> "My agent watches it".
+    // ArrowRight from the last rung wraps forward to the first.
     fireEvent.keyDown(schedule, { key: "ArrowRight" });
-    expect(agentWatch).toHaveAttribute("aria-checked", "true");
-    expect(agentWatch).toHaveAttribute("tabindex", "0");
+    expect(connectedApp).toHaveAttribute("aria-checked", "true");
+    expect(connectedApp).toHaveAttribute("tabindex", "0");
     expect(schedule).toHaveAttribute("aria-checked", "false");
     expect(schedule).toHaveAttribute("tabindex", "-1");
-    expect(document.activeElement).toBe(agentWatch);
-
-    // Wraps at the end: one more ArrowDown from the last rung lands on the first.
-    fireEvent.keyDown(agentWatch, { key: "ArrowDown" });
-    expect(connectedApp).toHaveAttribute("aria-checked", "true");
     expect(document.activeElement).toBe(connectedApp);
 
-    // ArrowLeft/ArrowUp moves backward, wrapping the other way.
-    fireEvent.keyDown(connectedApp, { key: "ArrowUp" });
-    expect(agentWatch).toHaveAttribute("aria-checked", "true");
-    expect(document.activeElement).toBe(agentWatch);
+    // ArrowDown continues forward to the middle rung.
+    fireEvent.keyDown(connectedApp, { key: "ArrowDown" });
+    expect(webhook).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(webhook);
+
+    // ArrowUp moves backward.
+    fireEvent.keyDown(webhook, { key: "ArrowUp" });
+    expect(connectedApp).toHaveAttribute("aria-checked", "true");
+    expect(document.activeElement).toBe(connectedApp);
   });
+});
+
+describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
+  function connection(overrides: Record<string, unknown> = {}) {
+    return {
+      provider: "stripe",
+      display_name: "Stripe",
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: ["Invoice payment failed", "Charge refunded"],
+      inbound: {
+        webhook_registration: "guided_paste",
+        events: [
+          { id: "invoice.payment_failed", label: "Invoice payment failed" },
+          { id: "charge.refunded", label: "Charge refunded" },
+        ],
+      },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsPost.mockResolvedValue({});
+    mockAutomationsPut.mockResolvedValue({ status: "stored" });
+  });
+
+  async function openConnectedAppRung() {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    return user;
+  }
+
+  it("lists only connected providers that declare inbound events", async () => {
+    connectionsData = [
+      connection(),
+      // Connected but no inbound events -> not trigger-capable.
+      connection({ provider: "acme", display_name: "Acme", inbound: null, can_trigger: [] }),
+      // Has inbound events but not connected -> not offered.
+      connection({ provider: "slack", display_name: "Slack", status: "disconnected" }),
+    ];
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    expect(await screen.findByRole("option", { name: "Stripe" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Acme" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Slack" })).not.toBeInTheDocument();
+  });
+
+  it("choosing a provider populates the event dropdown from its inbound events", async () => {
+    connectionsData = [connection()];
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+
+    await user.click(screen.getAllByRole("combobox")[1]);
+    expect(await screen.findByRole("option", { name: "Invoice payment failed" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Charge refunded" })).toBeInTheDocument();
+  });
+
+  it("guided (Stripe): submits {provider,event_id}, then shows the proxy URL + a signing-secret field that PUTs it", async () => {
+    connectionsData = [connection()];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+      instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "stripe",
+      event_id: "invoice.payment_failed",
+    });
+
+    expect(
+      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+    ).toBeInTheDocument();
+
+    // Done is gated until the whsec is saved — dismissing here would leave
+    // an active, unsigned automation with no UI left to arm it.
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeDisabled();
+    await user.click(doneButton);
+    expect(mockMutate).not.toHaveBeenCalled();
+
+    const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
+    expect(secretField).toHaveAttribute("type", "password");
+    await user.type(secretField, "whsec_abc123");
+    await user.click(screen.getByRole("button", { name: /save secret/i }));
+
+    await waitFor(() => expect(mockAutomationsPut).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPut).toHaveBeenCalledWith("/automations/pub_1/webhook-secret", {
+      webhook_secret: "whsec_abc123",
+    });
+
+    // Once saved, Done is enabled and closes the dialog.
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+  });
+
+  it("guided (Stripe): a whsec save failure renders inline in the finish dialog and stays retryable", async () => {
+    connectionsData = [connection()];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+      instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
+    });
+    mockAutomationsPut.mockRejectedValueOnce(new Error("Secret rejected by server"));
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+    await user.click(screen.getByText("Create"));
+    await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1");
+
+    const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
+    await user.type(secretField, "whsec_bad");
+    await user.click(screen.getByRole("button", { name: /save secret/i }));
+
+    // The failure is rendered INSIDE this finish dialog — previously it was
+    // swallowed into `err` state that only the earlier (now-unmounted) form
+    // step rendered, leaving the user stuck with no explanation and Done
+    // still disabled.
+    expect(
+      await screen.findByText(/secret rejected by server/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Secret saved.")).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeDisabled();
+
+    // Retryable: fixing the input and saving again succeeds and clears the
+    // error.
+    mockAutomationsPut.mockResolvedValueOnce({ status: "stored" });
+    await user.click(screen.getByRole("button", { name: /save secret/i }));
+    await waitFor(() => expect(mockAutomationsPut).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Secret saved.")).toBeInTheDocument();
+    expect(screen.queryByText(/secret rejected by server/i)).not.toBeInTheDocument();
+    expect(doneButton).toBeEnabled();
+  });
+
 });
 
 describe("RoutinesPanel sort", () => {

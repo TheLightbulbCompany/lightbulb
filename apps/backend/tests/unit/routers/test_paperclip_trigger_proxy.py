@@ -23,9 +23,9 @@ SIBLING_ID = "fedcba987654fedcba987654"
 
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    """Rate buckets live in hooks_proxy module state (shared helper) and
+    """Rate buckets live in hooks_proxy module state (shared helper), and
     the binding cache in the trigger router — both must start empty or
-    the 60-POST tests pollute their neighbours."""
+    tests pollute their neighbours."""
     from routers import hooks_proxy, paperclip_trigger_proxy
 
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
@@ -341,6 +341,115 @@ def test_missing_paperclip_url_returns_503(client, monkeypatch):
     with _mock_billing("active"), _mock_binding(True):
         r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
     assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Stripe signature-header normalization (native verification — Paperclip
+# does the actual verifying; the proxy only shims Stripe's combined
+# ``Stripe-Signature: t=,v1=`` header into Paperclip's split
+# ``X-Paperclip-Timestamp`` / ``X-Paperclip-Signature`` headers, and derives
+# an Idempotency-Key from the Stripe event id).
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_stripe_signature_splits_timestamp_and_first_v1():
+    from routers.paperclip_trigger_proxy import _normalize_stripe_signature
+
+    assert _normalize_stripe_signature("t=123,v1=abc") == ("123", "abc")
+    assert _normalize_stripe_signature("t=123,v1=abc,v1=def") == ("123", "abc")  # first v1 only
+    assert _normalize_stripe_signature("v1=abc") == (None, "abc")  # missing t
+    assert _normalize_stripe_signature("t=123") == ("123", None)  # missing v1
+    assert _normalize_stripe_signature("") == (None, None)
+    assert _normalize_stripe_signature("garbage") == (None, None)
+
+
+def test_stripe_signature_header_splits_into_paperclip_headers(client):
+    """A ``Stripe-Signature: t=,v1=`` header is split into the separate
+    ``X-Paperclip-Timestamp`` / ``X-Paperclip-Signature`` headers Paperclip's
+    native hmac_sha256 mode reads. No verification happens here — Paperclip
+    verifies (or rejects) it upstream."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"{}",
+            headers={"Content-Type": "application/json", "Stripe-Signature": "t=123,v1=deadbeef"},
+        )
+    assert r.status_code == 202
+    h = captured["headers"]
+    assert h["x-paperclip-timestamp"] == "123"
+    assert h["x-paperclip-signature"] == "deadbeef"
+
+
+def test_stripe_event_id_becomes_idempotency_key(client):
+    """A fire carrying a Stripe-Signature header derives an Idempotency-Key
+    from the body's event id, so Stripe's delivery retries (which reuse the
+    ``evt_...`` id and send no idempotency header of their own) dedupe to a
+    single routine run upstream."""
+    captured: dict = {}
+    body = b'{"id":"evt_abc"}'
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={"Content-Type": "application/json", "Stripe-Signature": "t=123,v1=deadbeef"},
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["idempotency-key"] == "evt_abc"
+
+
+def test_caller_idempotency_key_not_overridden_by_stripe_event_id(client):
+    """A caller-supplied Idempotency-Key must not be clobbered by the
+    derived Stripe event id — the derivation only fills the gap Stripe
+    itself leaves."""
+    captured: dict = {}
+    body = b'{"id":"evt_abc"}'
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "Stripe-Signature": "t=123,v1=deadbeef",
+                "Idempotency-Key": "caller-x",
+            },
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["idempotency-key"] == "caller-x"
+
+
+def test_no_stripe_signature_forwards_without_injected_headers(client):
+    """No Stripe-Signature header at all (a non-Stripe trigger, e.g.
+    github_hmac or an unsigned one) forwards with no injected
+    ``X-Paperclip-*`` or Idempotency-Key headers."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={"id": "evt_should_not_matter"})
+    assert r.status_code == 202
+    h = captured["headers"]
+    assert "x-paperclip-timestamp" not in h
+    assert "x-paperclip-signature" not in h
+    assert "idempotency-key" not in h
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,43 @@ describe("ConnectionsList — delivery receipts", () => {
   });
 });
 
+describe("ConnectionsList — inbound trigger capability", () => {
+  beforeEach(() => {
+    h.connections = [];
+  });
+
+  it("shows a Can trigger line when the provider declares inbound events", () => {
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "connected",
+        can_trigger: ["Invoice payment failed", "Charge refunded"],
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText(/can trigger/i)).toBeInTheDocument();
+    expect(screen.getByText(/invoice payment failed, charge refunded/i)).toBeInTheDocument();
+  });
+
+  it("renders no Can trigger line when the provider has no inbound events", () => {
+    h.connections = [
+      {
+        provider: "acme",
+        display_name: "Acme",
+        acquisition: "paste_token",
+        status: "connected",
+        can_trigger: [],
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.queryByText(/can trigger/i)).toBeNull();
+  });
+});
+
 describe("ConnectionsList — integration kind badges", () => {
   beforeEach(() => {
     h.connections = [];

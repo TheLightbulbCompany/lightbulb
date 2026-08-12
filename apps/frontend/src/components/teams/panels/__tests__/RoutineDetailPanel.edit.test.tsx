@@ -24,6 +24,24 @@ vi.mock("@/hooks/useTeamsApi", () => ({
   }),
 }));
 
+// Set-signing-secret goes through /api/v1 (useApi), not the Teams BFF above.
+// Keep the module's other exports (notably ApiError, which notifyConversionGate
+// — used by this component's `run` helper — imports from "@/lib/api") intact
+// via importOriginal.
+const apiPut = vi.fn();
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    useApi: () => ({
+      get: vi.fn(),
+      post: vi.fn(),
+      put: apiPut,
+      del: vi.fn(),
+    }),
+  };
+});
+
 function seedReads(overrides: Record<string, ReadStub> = {}) {
   reads = {
     "/routines/r1": {
@@ -72,6 +90,7 @@ beforeEach(() => {
   post.mockResolvedValue({});
   patch.mockResolvedValue({});
   del.mockResolvedValue({});
+  apiPut.mockResolvedValue({});
   vi.spyOn(window, "confirm").mockReturnValue(true);
 });
 
@@ -132,13 +151,42 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     });
     const user = userEvent.setup();
     render(<RoutineDetailPanel routineId="r1" />);
-    await user.click(screen.getByRole("button", { name: /rotate secret/i }));
+    await user.click(screen.getByRole("button", { name: /rotate to a new random secret/i }));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith("/routines/r1/triggers/wh1/rotate-secret", {}),
     );
     // Renders via SecretField (label + copyable secret value) without throwing.
     expect(await screen.findByText("Webhook secret")).toBeInTheDocument();
     expect(await screen.findByText("whsec_new_123")).toBeInTheDocument();
+  });
+
+  it("sets a signing secret to a specific value via PUT /automations/{publicId}/webhook-secret", async () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Hook routine",
+          status: "active",
+          triggers: [
+            { id: "wh1", kind: "webhook", signingMode: "hmac_sha256", publicId: "pub_1", enabled: true },
+          ],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /set signing secret/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("Signing secret"), "whsec_stripe_abc");
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+    await waitFor(() =>
+      expect(apiPut).toHaveBeenCalledWith("/automations/pub_1/webhook-secret", {
+        webhook_secret: "whsec_stripe_abc",
+      }),
+    );
   });
 
   it("hides the rotate button for an unsigned webhook (signingMode none)", async () => {
@@ -158,7 +206,7 @@ describe("RoutineDetailPanel — editable (A2)", () => {
       },
     });
     render(<RoutineDetailPanel routineId="r1" />);
-    expect(screen.queryByRole("button", { name: /rotate secret/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /rotate to a new random secret/i })).not.toBeInTheDocument();
   });
 
   it("renders revisions and restores one via POST", async () => {

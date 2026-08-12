@@ -106,6 +106,11 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                   </span>
                 </p>
               )}
+              {connection.can_trigger && connection.can_trigger.length > 0 && (
+                <p className="text-xs text-[var(--mute)] mt-0.5">
+                  Can trigger: {connection.can_trigger.join(", ")}
+                </p>
+              )}
               {connection.actor === "cli" && (
                 <p className="text-xs text-[var(--mute)] mt-0.5">
                   Works through the agent&apos;s command line — it won&apos;t appear in the

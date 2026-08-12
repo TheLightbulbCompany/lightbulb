@@ -32,6 +32,7 @@ from routers import (
     agent_builder,
     agent_mail_relay,
     agent_mail_send,
+    automations,
     billing,
     channels,
     config,
@@ -833,6 +834,11 @@ app.include_router(connections.oauth_router, prefix="/api/v1", tags=["connection
 
 # Per-agent Google-account assignment (list accounts + bind/unbind an agent)
 app.include_router(google_accounts.router, prefix="/api/v1", tags=["google-accounts"])
+
+# 1-click Automations trigger seeding (connect an app, pick an event, get a
+# pre-filled webhook-triggered routine) + the Stripe guided-paste whsec_
+# write. See routers/automations.py.
+app.include_router(automations.router, prefix="/api/v1", tags=["automations"])
 
 # Workspace file browser (EFS agent workspace)
 app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])

@@ -2,7 +2,8 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
-import { ArrowUpDown, Check, Repeat } from "lucide-react";
+import { ArrowUpDown, Blocks, Cable, Check, Clock, Repeat } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import {
   EditorialButton,
   EditorialDialog,
@@ -21,6 +22,8 @@ import {
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useApi } from "@/lib/api";
+import { useConnections } from "@/hooks/useConnections";
 import { cn } from "@/lib/utils";
 import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
@@ -822,33 +825,51 @@ function SortMenu({
   );
 }
 
-/* ── create dialog: "what should start this?" five-rung picker ──────────── */
+/* ── create dialog: "what should start this?" trigger-type picker ───────── */
 
-// The five ways a routine can be kicked off (spec Phase 1d). Only "schedule"
-// and "webhook" are wired to a real trigger today — the rest are visible,
-// selectable, and explain themselves as not-yet-built rather than being
-// hidden (requestable-not-hidden; delivered in Phase 2/4).
-type StartRung = "connected_app" | "webhook" | "email" | "schedule" | "agent_watch";
+// The three ways a routine can be kicked off today. (Email intake and
+// agent-watch triggers are on the roadmap but deliberately not surfaced here —
+// a picker padded with disabled "coming soon" options is clutter, not a
+// feature; they'll appear when they actually work.)
+type StartRung = "connected_app" | "webhook" | "schedule";
 
 const START_RUNGS: ReadonlyArray<{
   value: StartRung;
   label: string;
-  comingSoon?: boolean;
+  hint: string;
+  icon: LucideIcon;
 }> = [
-  { value: "connected_app", label: "A connected app", comingSoon: true },
-  { value: "webhook", label: "Any other app" },
-  { value: "email", label: "An email arrives", comingSoon: true },
-  { value: "schedule", label: "On a schedule" },
-  { value: "agent_watch", label: "My agent watches it", comingSoon: true },
+  {
+    value: "connected_app",
+    label: "A connected app",
+    hint: "When something happens in a connected app like Stripe.",
+    icon: Blocks,
+  },
+  {
+    value: "webhook",
+    label: "Any other app",
+    hint: "Give any service a signed URL to call when its event fires.",
+    icon: Cable,
+  },
+  {
+    value: "schedule",
+    label: "On a schedule",
+    hint: "Run automatically on a repeating cadence — hourly, daily, weekly.",
+    icon: Clock,
+  },
 ];
 
-const COMING_SOON_COPY: Partial<Record<StartRung, string>> = {
-  connected_app:
-    "Coming soon — for now use “Any other app” to trigger this automation.",
-  email: "Coming soon — for now forward the email to your agent.",
-  agent_watch:
-    "Coming soon — for now use “Any other app” to trigger this automation.",
-};
+// POST /automations/from-integration's response (core/services/
+// inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
+// paste the proxy URL into the provider's own dashboard (Stripe) and then
+// paste back the signing secret it hands them.
+interface FromIntegrationResult {
+  routine_id: string;
+  trigger_public_id: string;
+  proxy_url: string;
+  guided: boolean;
+  instructions?: string | null;
+}
 
 function CreateRoutineDialog({
   agents,
@@ -860,6 +881,11 @@ function CreateRoutineDialog({
   onCreated: () => void;
 }) {
   const { post } = useTeamsApi();
+  // The connected-app rung talks straight to the app API — automations
+  // endpoints (routers/automations.py) are mounted under /api/v1, not the
+  // Teams BFF that `post` above proxies through.
+  const automationsApi = useApi();
+  const { connections } = useConnections();
   const [rung, setRung] = useState<StartRung>("schedule");
   // Roving tabindex for the rung radiogroup (WAI-ARIA APG pattern): only the
   // checked radio is a tab stop; Arrow keys move both the selection and DOM
@@ -881,7 +907,27 @@ function CreateRoutineDialog({
   const [createdWebhook, setCreatedWebhook] =
     useState<RoutineTriggerSecretMaterial | null>(null);
 
-  const comingSoon = COMING_SOON_COPY[rung] != null;
+  // "A connected app" rung state — a provider + one of its events, submitted
+  // straight to POST /automations/from-integration (no title/assignee/
+  // description: the registry template supplies all of that server-side).
+  const [connProvider, setConnProvider] = useState<string | null>(null);
+  const [connEventId, setConnEventId] = useState<string | null>(null);
+  const [connResult, setConnResult] = useState<FromIntegrationResult | null>(
+    null,
+  );
+  const [whsecInput, setWhsecInput] = useState("");
+  const [whsecSubmitting, setWhsecSubmitting] = useState(false);
+  const [whsecSaved, setWhsecSaved] = useState(false);
+
+  // Trigger-capable = connected AND the registry declares inbound events for
+  // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
+  const triggerableConnections = connections.filter(
+    (c) => c.status === "connected" && (c.inbound?.events.length ?? 0) > 0,
+  );
+  const selectedConnection =
+    triggerableConnections.find((c) => c.provider === connProvider) ?? null;
+  const connEvents = selectedConnection?.inbound?.events ?? [];
+
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);
   const replayWindowValid =
@@ -890,9 +936,10 @@ function CreateRoutineDialog({
       replayWindowNum >= 30 &&
       replayWindowNum <= 86400);
   const canSubmit =
-    title.trim() !== "" &&
-    !comingSoon &&
-    (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
+    rung === "connected_app"
+      ? connProvider != null && connEventId != null
+      : title.trim() !== "" &&
+        (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
   function moveRung(delta: 1 | -1) {
     const i = START_RUNGS.findIndex((r) => r.value === rung);
@@ -911,8 +958,57 @@ function CreateRoutineDialog({
     }
   }
 
+  // "A connected app" — one call seeds BOTH the routine and its trigger from
+  // the registry template (core/services/inbound_triggers.py), so none of
+  // the title/assignee/description fields the other two rungs use apply here.
+  async function submitConnectedApp() {
+    if (!connProvider || !connEventId) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const body = {
+        provider: connProvider,
+        event_id: connEventId,
+      };
+      const result = (await automationsApi.post(
+        "/automations/from-integration",
+        body,
+      )) as FromIntegrationResult;
+      setConnResult(result);
+    } catch (e) {
+      if (notifyConversionGate(e) === null) {
+        setErr(gateMessage(e));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function saveWebhookSecret() {
+    if (!connResult || whsecInput.trim() === "") return;
+    setWhsecSubmitting(true);
+    setErr(null);
+    try {
+      await automationsApi.put(
+        `/automations/${connResult.trigger_public_id}/webhook-secret`,
+        { webhook_secret: whsecInput.trim() },
+      );
+      setWhsecSaved(true);
+    } catch (e) {
+      if (notifyConversionGate(e) === null) {
+        setErr(gateMessage(e));
+      }
+    } finally {
+      setWhsecSubmitting(false);
+    }
+  }
+
   async function submit() {
     if (!canSubmit) return;
+    if (rung === "connected_app") {
+      await submitConnectedApp();
+      return;
+    }
     setSubmitting(true);
     setErr(null);
     try {
@@ -986,85 +1082,250 @@ function CreateRoutineDialog({
     );
   }
 
+  if (connResult) {
+    const providerName =
+      selectedConnection?.display_name ?? connProvider ?? "the app";
+    // Guided (Stripe) results aren't armed until the owner pastes the whsec
+    // back via saveWebhookSecret — closing before that leaves an active,
+    // unsigned automation with no UI left to finish it (the detail panel
+    // treats a "none"-signing trigger as non-rotatable). Auto (GitHub)
+    // results are already fully armed by the time this dialog shows.
+    const mustSaveSecretFirst = connResult.guided && !whsecSaved;
+    return (
+      <EditorialDialog
+        open
+        onOpenChange={(o) => !o && !mustSaveSecretFirst && onCreated()}
+        title={connResult.guided ? "Finish setup" : "Automation registered"}
+        description={
+          connResult.guided
+            ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
+            : `${providerName} registered the webhook automatically — this automation is live.`
+        }
+        footer={
+          <EditorialButton
+            variant="primary"
+            size="sm"
+            onClick={onCreated}
+            disabled={mustSaveSecretFirst}
+            title={
+              mustSaveSecretFirst
+                ? "Save the signing secret first"
+                : undefined
+            }
+          >
+            Done
+          </EditorialButton>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <SecretField label="Webhook URL" value={connResult.proxy_url} />
+          {connResult.instructions && (
+            <p className="text-xs text-[var(--mute)]">
+              {connResult.instructions}
+            </p>
+          )}
+          {connResult.guided ? (
+            <>
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Paste your {providerName} signing secret
+                </span>
+                <input
+                  type="password"
+                  value={whsecInput}
+                  onChange={(e) => setWhsecInput(e.target.value)}
+                  placeholder="whsec_..."
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
+                />
+              </label>
+              {whsecSaved ? (
+                <p className="text-sm" style={{ color: "var(--forest)" }}>
+                  Secret saved.
+                </p>
+              ) : (
+                <EditorialButton
+                  variant="secondary"
+                  size="sm"
+                  disabled={whsecSubmitting || whsecInput.trim() === ""}
+                  onClick={saveWebhookSecret}
+                >
+                  {whsecSubmitting ? "Saving…" : "Save secret"}
+                </EditorialButton>
+              )}
+            </>
+          ) : (
+            <p className="text-sm" style={{ color: "var(--forest)" }}>
+              Registered.
+            </p>
+          )}
+          {err && (
+            <div
+              className="text-[var(--danger)] text-sm rounded px-3 py-2"
+              style={{
+                border:
+                  "1px solid color-mix(in srgb, var(--danger) 20%, transparent)",
+                background:
+                  "color-mix(in srgb, var(--danger) 6%, transparent)",
+              }}
+            >
+              {err}
+            </div>
+          )}
+        </div>
+      </EditorialDialog>
+    );
+  }
+
   return (
     <EditorialDialog
       open
       onOpenChange={(o) => !o && onClose()}
       title="New automation"
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-4">
         <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">
-            What should start this?
+          <span className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
+            What starts this?
           </span>
           <div
             role="radiogroup"
-            aria-label="What should start this?"
-            className="mt-1 grid grid-cols-2 gap-1.5 sm:grid-cols-5"
+            aria-label="What starts this automation?"
+            className="mt-2 flex flex-col gap-1.5"
             onKeyDown={onRungKeyDown}
           >
-            {START_RUNGS.map((r, i) => (
-              <button
-                key={r.value}
-                ref={(el) => {
-                  rungRefs.current[i] = el;
-                }}
-                type="button"
-                role="radio"
-                aria-checked={rung === r.value}
-                tabIndex={rung === r.value ? 0 : -1}
-                onClick={() => setRung(r.value)}
-                className={cn(
-                  "rounded border px-2 py-2 text-left text-xs transition-colors",
-                  rung === r.value
-                    ? "border-[var(--forest)] text-[var(--ink)]"
-                    : "border-[var(--edge)] text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
-                )}
-                style={
-                  rung === r.value
-                    ? {
-                        background:
-                          "color-mix(in srgb, var(--forest) 8%, transparent)",
-                      }
-                    : undefined
-                }
-              >
-                {r.label}
-                {r.comingSoon && (
+            {START_RUNGS.map((r, i) => {
+              const Icon = r.icon;
+              const active = rung === r.value;
+              return (
+                <button
+                  key={r.value}
+                  ref={(el) => {
+                    rungRefs.current[i] = el;
+                  }}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  tabIndex={active ? 0 : -1}
+                  onClick={() => setRung(r.value)}
+                  className={cn(
+                    "flex items-start gap-3 rounded-[var(--radius)] border px-3 py-2.5 text-left transition-colors",
+                    active
+                      ? "border-[var(--forest)] bg-[var(--forest-tint)]"
+                      : "border-[var(--edge)] hover:bg-[var(--cream-deeper)]",
+                  )}
+                >
                   <span
-                    className="ml-1 text-[10px] uppercase tracking-wide"
-                    style={{ color: "var(--mute)" }}
+                    className="mt-px flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
+                    style={{
+                      background: active
+                        ? "color-mix(in srgb, var(--forest) 12%, transparent)"
+                        : "var(--cream-deeper)",
+                      color: active ? "var(--forest)" : "var(--mute)",
+                    }}
                   >
-                    soon
+                    <Icon size={15} strokeWidth={1.75} />
                   </span>
-                )}
-              </button>
-            ))}
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className={cn(
+                        "block text-sm font-medium",
+                        active ? "text-[var(--ink)]" : "text-[var(--ink-soft)]",
+                      )}
+                    >
+                      {r.label}
+                    </span>
+                    <span className="block text-xs leading-snug text-[var(--mute)]">
+                      {r.hint}
+                    </span>
+                  </span>
+                  {active && (
+                    <Check
+                      size={16}
+                      strokeWidth={2}
+                      className="mt-px shrink-0 text-[var(--forest)]"
+                    />
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Title</span>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
-          />
-        </label>
-        {/* Agent picker replaces the old raw "Agent ID" text input — the same
-            editorial AssigneePicker the issues surface uses. Assignee is
-            optional upstream (a routine can be created unassigned). */}
-        <div className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
-          <div className="mt-1">
-            <AssigneePicker
-              agents={agents}
-              selectedAgentId={agentId}
-              onChange={setAgentId}
-              variant="inline"
-              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
-            />
-          </div>
-        </div>
+        {/* Title/Assignee only apply to the schedule/webhook rungs — the
+            connected-app rung's registry template supplies both server-side
+            (POST /automations/from-integration). */}
+        {rung !== "connected_app" && (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Title</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+              />
+            </label>
+            {/* Agent picker replaces the old raw "Agent ID" text input — the
+                same editorial AssigneePicker the issues surface uses.
+                Assignee is optional upstream (a routine can be created
+                unassigned). */}
+            <div className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
+              <div className="mt-1">
+                <AssigneePicker
+                  agents={agents}
+                  selectedAgentId={agentId}
+                  onChange={setAgentId}
+                  variant="inline"
+                  className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+                />
+              </div>
+            </div>
+          </>
+        )}
+
+        {rung === "connected_app" && (
+          <>
+            <label className="block">
+              <span className="text-sm text-[var(--ink-soft)]">
+                Connected app
+              </span>
+              <div className="mt-1">
+                <EditorialSelect
+                  options={triggerableConnections.map((c) => ({
+                    value: c.provider,
+                    label: c.display_name,
+                  }))}
+                  value={connProvider ?? undefined}
+                  onValueChange={(next) => {
+                    setConnProvider(next);
+                    setConnEventId(null);
+                  }}
+                  placeholder={
+                    triggerableConnections.length === 0
+                      ? "No connected apps can trigger automations yet"
+                      : "Select an app…"
+                  }
+                  disabled={triggerableConnections.length === 0}
+                />
+              </div>
+            </label>
+            {selectedConnection && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">Event</span>
+                <div className="mt-1">
+                  <EditorialSelect
+                    options={connEvents.map((e) => ({
+                      value: e.id,
+                      label: e.label,
+                    }))}
+                    value={connEventId ?? undefined}
+                    onValueChange={setConnEventId}
+                    placeholder="Select an event…"
+                  />
+                </div>
+              </label>
+            )}
+          </>
+        )}
 
         {rung === "schedule" && (
           <label className="block">
@@ -1120,29 +1381,19 @@ function CreateRoutineDialog({
           </>
         )}
 
-        {comingSoon && (
-          <div
-            role="note"
-            className="rounded border px-3 py-2 text-sm"
-            style={{
-              borderColor: "var(--edge)",
-              background: "var(--cream-deeper)",
-              color: "var(--ink-soft)",
-            }}
-          >
-            {COMING_SOON_COPY[rung]}
-          </div>
+        {rung !== "connected_app" && (
+          <label className="block">
+            <span className="text-sm text-[var(--ink-soft)]">
+              Description
+            </span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
+              rows={3}
+            />
+          </label>
         )}
-
-        <label className="block">
-          <span className="text-sm text-[var(--ink-soft)]">Description</span>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 text-[var(--ink)]"
-            rows={3}
-          />
-        </label>
         {err && (
           <div
             className="text-[var(--danger)] text-sm rounded px-3 py-2"

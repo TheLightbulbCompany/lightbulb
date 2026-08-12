@@ -255,6 +255,42 @@ class TestListConnections:
         assert by_key["google"]["byo_required"] is True
         assert "requires_bedrock" not in by_key["google"]
 
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_can_trigger_reflects_registry_inbound_events(self, mock_repo, async_client):
+        # stripe declares `inbound` (T1) -> can_trigger is its event labels.
+        # google declares no `inbound` -> can_trigger is empty.
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["stripe"]["can_trigger"] == [
+            "Invoice payment failed",
+            "Charge refunded",
+            "Subscription canceled",
+        ]
+        assert by_key["google"]["can_trigger"] == []
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    async def test_inbound_carries_event_ids_and_registration_mode(self, mock_repo, async_client):
+        # Task 6: the Add-flow needs event IDS (not just labels) plus the
+        # registration mode (guided_paste) to submit
+        # POST /automations/from-integration. `can_trigger` (labels only)
+        # stays untouched for the Integrations card.
+        mock_repo.list_for_owner = AsyncMock(return_value=[])
+        response = await async_client.get("/api/v1/connections")
+        by_key = {c["provider"]: c for c in response.json()["connections"]}
+        assert by_key["stripe"]["inbound"] == {
+            "webhook_registration": "guided_paste",
+            "events": [
+                {"id": "invoice.payment_failed", "label": "Invoice payment failed"},
+                {"id": "charge.refunded", "label": "Charge refunded"},
+                {"id": "customer.subscription.deleted", "label": "Subscription canceled"},
+            ],
+        }
+        # google (and github — auto-register deferred) declare no `inbound`.
+        assert by_key["google"]["inbound"] is None
+
 
 class TestEnvGatedProvider:
     """A provider with an `environments` list (Instagram: [local, dev]) is

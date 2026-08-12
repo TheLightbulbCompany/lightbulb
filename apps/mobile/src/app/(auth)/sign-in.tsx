@@ -1,4 +1,5 @@
 import { useSignIn, useSignInWithApple, useSSO } from "@clerk/clerk-expo";
+import * as AppleAuthentication from "expo-apple-authentication";
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
@@ -144,27 +145,33 @@ export default function SignIn() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Text style={styles.logo}>isol8</Text>
-      {Platform.OS === "ios" && (
-        <Pressable
-          style={[
-            styles.appleButton,
-            (!isLoaded || anySubmitting) && styles.buttonDisabled,
-          ]}
-          onPress={onAppleSignIn}
-          disabled={!isLoaded || anySubmitting}
-          accessibilityRole="button"
-          accessibilityLabel="Continue with Apple"
-        >
-          {appleSubmitting ? (
+      {/* Apple's own button component, NOT a look-alike. Rejected under
+          guideline 4 (2026-08-12) for drawing the mark as a U+F8FF text glyph:
+          the logo artwork has to come from Apple, which for React Native means
+          AppleAuthenticationButton (it renders the native ASAuthorization
+          button). Its label/artwork/localization are Apple's — the only
+          styling we own is type, corner radius, and size.
+          While the native sheet is up it is swapped for a same-sized busy
+          placeholder: the native button has no `disabled` prop, so this is
+          also what stops a second tap racing the first. */}
+      {Platform.OS === "ios" &&
+        (appleSubmitting ? (
+          <View style={[styles.appleButton, styles.appleButtonBusy]}>
             <ActivityIndicator color={colors.white} />
-          ) : (
-            <>
-              <Text style={styles.appleMark}></Text>
-              <Text style={styles.appleButtonText}>Continue with Apple</Text>
-            </>
-          )}
-        </Pressable>
-      )}
+          </View>
+        ) : (
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={
+              AppleAuthentication.AppleAuthenticationButtonType.CONTINUE
+            }
+            buttonStyle={
+              AppleAuthentication.AppleAuthenticationButtonStyle.BLACK
+            }
+            cornerRadius={radii.lg}
+            style={styles.appleButton}
+            onPress={onAppleSignIn}
+          />
+        ))}
       <Pressable
         style={[
           styles.googleButton,
@@ -249,25 +256,19 @@ const styles = StyleSheet.create({
   },
   // Apple's HIG: their button must have equal-or-greater prominence than
   // other third-party sign-in buttons — black fill, listed first.
+  // AppleAuthenticationButton is a NATIVE view with no intrinsic size, so an
+  // explicit height is required or it lays out at zero and looks missing. 46
+  // matches the Google button below (spacing.md × 2 + a 22 line-height).
   appleButton: {
-    flexDirection: "row",
+    height: 46,
+    width: "100%",
+  },
+  // Busy stand-in shown while the native sheet is up — same box, Apple's black.
+  appleButtonBusy: {
     justifyContent: "center",
     alignItems: "center",
-    gap: spacing.sm,
     backgroundColor: "#000000",
     borderRadius: radii.lg,
-    paddingVertical: spacing.md,
-  },
-  appleMark: {
-    color: "#ffffff",
-    fontSize: 17,
-    lineHeight: 22,
-  },
-  appleButtonText: {
-    color: "#ffffff",
-    fontFamily: fonts.dmSansMedium,
-    fontSize: 15,
-    lineHeight: 22,
   },
   googleButton: {
     flexDirection: "row",

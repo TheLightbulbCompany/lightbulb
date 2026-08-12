@@ -1,4 +1,15 @@
 name: build-paperclip-image
+
+# Shares ONE group with build-openclaw-image.yml, deliberately using the same
+# literal string: both publish through the same containerd store on the same
+# box, and running them together raced buildkit into
+# "error reading from server: EOF". Separate groups would not serialize them.
+# Never cancel — each build publishes a distinct tag a promotion may already
+# point at, so a superseded run must still finish (same rule as openclaw).
+concurrency:
+  group: isol8-image-build
+  cancel-in-progress: false
+
 on:
   push:
     branches:
@@ -16,7 +27,11 @@ permissions:
 jobs:
   build-and-push:
     name: Build and push extended Paperclip image
-    runs-on: ubuntu-latest
+    # Same reasoning as build-openclaw-image.yml: SOCI convert needs the disk
+    # and the warm store that hosted runners do not have. List form including
+    # `self-hosted`, never a bare label — `self-hosted` alone also matches the
+    # MacBook, which cannot build a Linux image.
+    runs-on: [self-hosted, Linux, X64, isol8-wsl]
     timeout-minutes: 30
     steps:
       - name: Checkout

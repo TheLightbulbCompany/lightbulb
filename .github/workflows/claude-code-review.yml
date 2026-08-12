@@ -15,6 +15,11 @@ concurrency:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
+    # Without this the job inherits GitHub's 6-hour default. A hung review is
+    # indistinguishable from a dead runner until it bills six hours; observed
+    # claude-review jobs sitting in `Run Claude Code Review` with a null
+    # conclusion for 10+ minutes during the 2026-08-11 incident.
+    timeout-minutes: 20
     permissions:
       contents: read
       # write (was read) so the review can actually post inline comments +

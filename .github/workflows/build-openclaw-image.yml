@@ -6,7 +6,10 @@ name: build-openclaw-image
 # raced it into buildkit OOM; on hosted runners each build gets its own VM,
 # but the no-cancel tag guarantee stands on its own.)
 concurrency:
-  group: build-openclaw-image
+  # Shared with build-paperclip-image.yml — same literal string on purpose, so
+  # the two image builds serialize against EACH OTHER, not just against
+  # themselves. They contend for one containerd store on one box.
+  group: isol8-image-build
   cancel-in-progress: false
 
 on:
@@ -66,14 +69,20 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: boot-chain-smoke
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    # 30m was sized for the self-hosted box, which kept a warm layer cache and
-    # finished in ~3m. Hosted runners start cold every time, so this ~7.8 GB
-    # image is rebuilt from scratch on every run — including the `doctor`
-    # compile-cache bake. Run 31562288851 was still in `Build image` at 25m and
-    # would have been killed mid-build for no reason other than the old cap.
-    # This is a hang bound, not a runtime budget.
-    timeout-minutes: 90
+    # Back on the box. Hosted cannot build this image: run 31563621620 spent 64
+    # minutes in `Build image` and then died with "The hosted runner lost
+    # communication with the server" — the ~7.8 GB compressed / 24.4 GB unpacked
+    # image against a hosted runner's ~14 GB guaranteed free, even after the
+    # Reclaim disk step. That failure is what left #1707 unbuilt.
+    #
+    # Always a LIST including `self-hosted`, never a bare label and never a
+    # `vars.*` indirection: a single global switch is what sent a 40 GB build to
+    # a 14 GB runner, and `self-hosted` alone would also match the MacBook.
+    # boot-chain-smoke deliberately stays on ubuntu-latest above, so the gate
+    # still runs when this box is down.
+    runs-on: [self-hosted, Linux, X64, isol8-wsl]
+    # Warm layer cache here finishes in ~3m; 45m is a hang bound, not a budget.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4

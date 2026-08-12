@@ -176,6 +176,40 @@ class TestSetWebhookSecret:
         assert response.status_code == 503
 
     @pytest.mark.asyncio
+    async def test_expired_admin_session_retried_then_succeeds(self, async_client):
+        """A 401 from the lookup (expired admin session) invalidates the cached
+        session and retries once — same posture as the fire proxy — so a
+        transient expiry doesn't surface as a 503 the owner has to retry."""
+        from core.services.paperclip_admin_client import PaperclipApiError
+
+        public_id = "pubabc123456"
+        lookup = AsyncMock(
+            side_effect=[
+                PaperclipApiError("unauthorized", 401, {}),
+                {"id": "trig_internal_1", "publicId": public_id, "kind": "webhook"},
+            ]
+        )
+        with (
+            patch("routers.automations.paperclip_trigger_proxy._lookup_trigger_detail", lookup),
+            patch("routers.automations.invalidate_admin_session") as mock_invalidate,
+            patch("routers.automations.get_admin_session_cookie", AsyncMock(return_value="s=1")),
+            patch("routers.automations.PaperclipAdminClient") as mock_client_cls,
+        ):
+            mock_admin = mock_client_cls.return_value
+            mock_admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
+            response = await async_client.put(
+                f"/api/v1/automations/{public_id}/webhook-secret",
+                json={"webhook_secret": "whsec_abc123"},
+            )
+
+        assert response.status_code == 200
+        assert lookup.await_count == 2
+        mock_invalidate.assert_called_once()
+        mock_admin.rotate_routine_trigger_secret.assert_awaited_once_with(
+            session_cookie="s=1", trigger_id="trig_internal_1", secret="whsec_abc123"
+        )
+
+    @pytest.mark.asyncio
     async def test_malformed_public_id_400s_before_any_lookup(self, async_client):
         with patch(
             "routers.automations.paperclip_trigger_proxy._lookup_trigger_detail",

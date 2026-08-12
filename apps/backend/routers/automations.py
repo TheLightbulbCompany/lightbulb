@@ -41,14 +41,31 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.services.inbound_triggers import seed_trigger_routine
-from core.services.paperclip_admin_client import PaperclipAdminClient
-from core.services.paperclip_admin_session import get_admin_session_cookie
+from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
+from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from routers import paperclip_trigger_proxy
 from routers.teams._guards import require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/automations", tags=["automations"])
+
+
+async def _resolve_trigger_id(owner_id: str, public_id: str) -> str | None:
+    """Resolve ``public_id`` -> the internal trigger id in the caller's own
+    Paperclip company, or None if no such webhook trigger exists there.
+
+    Retries once on an expired admin session (401) — same posture as the fire
+    proxy's ``_resolve_trigger_binding``, so a transient session expiry doesn't
+    surface as a 503 the owner has to manually retry."""
+    try:
+        trigger = await paperclip_trigger_proxy._lookup_trigger_detail(owner_id, public_id)
+    except PaperclipApiError as exc:
+        if exc.status_code != 401:
+            raise
+        invalidate_admin_session()
+        trigger = await paperclip_trigger_proxy._lookup_trigger_detail(owner_id, public_id)
+    return trigger.get("id") if trigger else None
 
 
 class FromIntegrationBody(BaseModel):
@@ -105,11 +122,10 @@ async def set_webhook_secret(
         raise HTTPException(status_code=400, detail="invalid_public_id")
 
     try:
-        trigger = await paperclip_trigger_proxy._lookup_trigger_detail(owner_id, public_id)
+        trigger_id = await _resolve_trigger_id(owner_id, public_id)
     except Exception as exc:  # noqa: BLE001 — fail CLOSED on resolver trouble, same as the proxy
         logger.warning("automations: trigger resolve failed owner=%s err=%s", owner_id, exc)
         raise HTTPException(status_code=503, detail="trigger_resolution_unavailable") from exc
-    trigger_id = trigger.get("id") if trigger else None
     if not trigger_id:
         raise HTTPException(status_code=404, detail="unknown_trigger")
 

@@ -601,6 +601,26 @@ RUN set -eux; \
     done
 
 
+# ---- Layer 18: pre-populated V8 compile cache ----
+# The fork enables Node's compile cache on every CLI start
+# (src/entry.compile-cache.ts) but defaults its base to os.tmpdir() —
+# container-ephemeral, so every cold start recompiles the whole import graph
+# (doctor pays it first, then the gateway process pays it again). The cache
+# subdirectory key is <base>/openclaw/<pkg version>/<package.json mtimeMs-size>
+# — all three components frozen at image build — so a cache populated HERE
+# lands at the exact path both boot-time processes resolve at runtime. The
+# warm run is a throwaway-state doctor pass (imports the state-migration,
+# config-snapshot, and plugin-plan graphs); runtime processes add whatever it
+# missed. Must run AFTER the last /app mutation (Layer 17) so compiled
+# modules match what ships.
+ENV NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
+RUN set -eux; \
+    mkdir -p /var/tmp/openclaw-compile-cache; \
+    OPENCLAW_STATE_DIR=/tmp/compile-warm HOME=/tmp/compile-warm-home \
+      timeout 120 node /app/openclaw.mjs doctor --non-interactive < /dev/null || true; \
+    rm -rf /tmp/compile-warm /tmp/compile-warm-home; \
+    chown -R node:node /var/tmp/openclaw-compile-cache
+
 # ---- Litestream + local-SQLite boot chain ----
 # Every environment runs this chain — the per-env storage gate was removed once
 # dev proved the layout, so any tag pinned in openclaw-version.json MUST be

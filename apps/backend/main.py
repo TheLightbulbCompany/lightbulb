@@ -468,6 +468,13 @@ async def lifespan(app: FastAPI):
 
     try:
         async with asyncio.timeout(20):
+            # First: hand any in-flight inline provision to the state machine
+            # (terminate the runner child, then StartExecution) — it must land
+            # before the SIGKILL window; everything below is process-local
+            # cleanup.
+            from core.services.provision_dispatch import handoff_inflight_provisions
+
+            await handoff_inflight_provisions()
             system_health.BACKGROUND_TASKS.clear()
             # Worker: graceful stop (finish current iteration); gauge: stateless hard-cancel.
             request_worker_stop()

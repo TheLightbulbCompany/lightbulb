@@ -24,7 +24,7 @@ env:
 jobs:
   lint-and-build:
     name: Lint & Build
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,9 +32,10 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          # Per-job install dir: concurrent jobs on the shared self-hosted
-          # runner home race the default ~/setup-pnpm (ENOTEMPTY on rmdir)
-          # when this workflow and mobile-ci fire on the same PR.
+          # Per-job install dir. Kept from the self-hosted era, where jobs
+          # shared one runner home and raced the default ~/setup-pnpm
+          # (ENOTEMPTY on rmdir) when this and mobile-ci fired on the same
+          # PR. Harmless on hosted runners; left in place, not load-bearing.
           dest: ${{ runner.temp }}/setup-pnpm
 
       - name: Setup Node.js

@@ -47,7 +47,9 @@ concurrency:
 jobs:
   ota-update:
     name: Publish OTA update (production channel)
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on:
+      - self-hosted
+      - macos-desktop
     timeout-minutes: 30
     defaults:
       run:

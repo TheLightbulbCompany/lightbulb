@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   claude-review:
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       # write (was read) so the review can actually post inline comments +

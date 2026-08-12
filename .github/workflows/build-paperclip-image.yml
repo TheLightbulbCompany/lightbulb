@@ -24,6 +24,20 @@ jobs:
         with:
           fetch-depth: 1
 
+      # `soci convert` builds its ztocs under /tmp on the root volume while
+      # BOTH the docker overlay2 copy and the containerd copy of the image are
+      # already resident, so peak usage is several times the 1.5 GB pushed
+      # size. A hosted runner starts with ~14 GB free and that was not enough:
+      # run 31560625232 failed with "no space left on device" mid-ztoc. The
+      # `Reclaim container storage` step at the end of this job cannot help —
+      # it runs AFTER the convert. Free the space up front instead.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/local/share/powershell \
+                      /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Read version metadata
         id: meta
         run: |
@@ -110,10 +124,11 @@ jobs:
 
           sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
 
-      # Same permanent-storage problem as build-openclaw-image.yml — see the
-      # long comment there. This job also runs on a self-hosted runner and also
-      # strands `IMAGE_REF` + `IMAGE_REF-soci-staging` in nerdctl's `default`
-      # namespace, where `docker system prune` will never find them.
+      # Vestigial since this job moved to hosted runners, where the whole VM is
+      # discarded at job end. Kept because it is `if: always()` and harmless,
+      # and it still reports the post-convert disk figure. It is NOT what keeps
+      # the convert from running out of space — that is the `Reclaim disk` step
+      # up top, which runs before anything allocates.
       - name: Reclaim container storage
         if: always()
         env:

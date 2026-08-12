@@ -1,5 +1,13 @@
-"""One-shot container-provision runner, executed as an ECS task by the
-isol8-{env}-provision Step Functions state machine (never by the backend).
+"""One-shot container-provision runner.
+
+Two invocation modes, same code path and the same exit-code ABI:
+- INLINE (the fast path): the backend's dispatcher runs this module as a
+  CHILD PROCESS of the backend task as attempt 0
+  (``provision_dispatch._run_inline``), skipping the ~30s ECS task
+  cold-launch entirely.
+- SFN (the durable path): executed as an ECS task by the isol8-{env}-provision
+  Step Functions state machine — for retries after a failed inline attempt,
+  and for claims the backend could not finish (crash / deploy handoff).
 
 Exit codes are the machine's ABI (spec §7 / design doc §3): 0 provisioned+
 healthy, 10 deterministic failure (no retry), 11 transient failure (machine
@@ -214,7 +222,10 @@ async def run(owner_id: str, claim_id: str) -> int:
     # Attempt-token fencing (hazard 1, spec §7): every attempt -- including
     # attempt 0, where this is a same-value no-op re-assertion -- re-stamps
     # the row's provision_attempt_token BEFORE any other checkpoint. See
-    # container_repo.claim_attempt.
+    # container_repo.claim_attempt. The inline dispatcher sets the env var to
+    # its own distinct token (provision_dispatch.inline_attempt_token) so a
+    # later SFN takeover of the same claim fences an inline straggler out at
+    # its next checkpoint.
     attempt_token = os.environ.get("PROVISION_ATTEMPT_TOKEN") or claim_id
     try:
         await container_repo.claim_attempt(owner_id, claim_id, attempt_token)

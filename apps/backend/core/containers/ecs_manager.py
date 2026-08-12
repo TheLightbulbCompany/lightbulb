@@ -3141,7 +3141,10 @@ class EcsManager:
                     elif now - no_placement_since >= SPOT_PLACEMENT_FALLBACK_S:
                         spot_fallback_done = True
                         self._fallback_service_to_on_demand(service_name, user_id)
-                if task_arn and ip and self.is_healthy(ip):
+                # to_thread: the 5s TCP connect must not stall the backend
+                # event loop — this poller runs detached in-process for
+                # wake/resize transitions.
+                if task_arn and ip and await asyncio.to_thread(self.is_healthy, ip):
                     running_fields = {
                         "status": "running",
                         "substatus": "gateway_healthy",

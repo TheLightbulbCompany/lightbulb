@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>isol8</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --page:#faf7f2;
+  --ink:#1a1a1a; --ink-soft:#3d3d3d; --mute:#767061;
+  --forest:#06402B; --forest-deep:#042c1d; --forest-soft:#4a9e74; --forest-tint:#e6efe9;
+  --serif:Georgia,'Times New Roman',serif;
+  --sans:'DM Sans',ui-sans-serif,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--page);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.6}
+main{overflow-x:clip;width:100%}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--forest);outline-offset:4px}
+
+.grain{position:fixed;inset:0;z-index:100;pointer-events:none;opacity:.035;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>")}
+.cur{position:fixed;top:0;left:0;width:11px;height:11px;border-radius:50%;background:var(--forest);z-index:99;
+  pointer-events:none;opacity:0;mix-blend-mode:multiply;
+  transition:opacity .3s var(--ease),width .35s var(--ease),height .35s var(--ease)}
+.cur.on{opacity:.9}.cur.big{width:46px;height:46px;opacity:.16}
+@media(hover:none){.cur{display:none}}
+
+h1,h2,h3,h4{font-family:var(--serif);font-weight:400;letter-spacing:-.022em;margin:0;font-style:normal}
+.wrap{max-width:1240px;margin:0 auto;padding:0 44px}
+.tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);
+  margin:0 0 22px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;height:46px;padding:0 26px;border-radius:999px;
+  font-size:14px;font-weight:500;cursor:pointer;background:var(--forest);color:var(--page);
+  transition:background .4s var(--ease),transform .4s var(--ease)}
+.btn:hover{background:var(--forest-deep);transform:translateY(-2px)}
+.btn-sm{height:34px;padding:0 17px;font-size:13px}
+.arrow{font-size:14px;color:var(--forest);font-weight:500;white-space:nowrap}
+.arrow:hover{text-decoration:underline;text-underline-offset:3px}
+
+/* wordmark — per-pair optical tracking, measured against the standalone 8 mark */
+.logo{font-family:var(--serif);font-weight:700;color:var(--ink);white-space:nowrap;display:inline-block}
+.logo i{font-style:normal}
+.logo i:nth-child(1){letter-spacing:.125em}
+.logo i:nth-child(2){letter-spacing:.149em}
+.logo i:nth-child(3){letter-spacing:.106em}
+.logo i:nth-child(4){letter-spacing:.070em}
+.logo i:nth-child(5){letter-spacing:0}
+
+/* duplicated-label hover swap */
+.swap{display:inline-block;position:relative;overflow:hidden;vertical-align:bottom}
+.swap>span{display:block;transition:transform .55s var(--ease)}
+.swap>span+span{position:absolute;inset:0;transform:translateY(100%)}
+a:hover .swap>span{transform:translateY(-100%)}
+a:hover .swap>span+span{transform:translateY(0)}
+
+nav{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(250,247,242,.85);backdrop-filter:blur(14px)}
+.nav-in{max-width:1240px;margin:0 auto;padding:17px 44px;display:flex;align-items:center;gap:30px}
+.nav-links{display:flex;gap:28px;margin-left:auto;font-size:14px;color:var(--ink-soft)}
+.nav-links a:hover{color:var(--forest)}
+
+/* ══ hero: statement left, Friday right ══ */
+.hero{padding:186px 0 0;display:grid;grid-template-columns:1.04fr .96fr;gap:70px;align-items:center}
+.hero-stm{font-size:clamp(34px,4.1vw,56px);line-height:1.08;max-width:20ch}
+.hero-stm .ln{display:block;overflow:hidden}
+.hero-stm .ln>span{display:block}
+.hero-sub{margin:32px 0 0;font-size:17px;color:var(--ink-soft);max-width:44ch}
+.hero-act{margin-top:36px;display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+
+/* Friday — a soft breathing orb, the same one the landing page already used:
+   a forest radial with a green mid-stop, blurred, swelling on a slow cycle. */
+.friday{position:relative;height:min(56vh,470px);display:grid;place-items:center}
+.orb{width:min(500px,42vw);aspect-ratio:1;border-radius:50%;pointer-events:none;filter:blur(6px);
+  background:radial-gradient(circle at 44% 42%,
+    rgba(6,64,43,.20) 0%, rgba(74,158,116,.16) 34%, rgba(6,64,43,.07) 58%,
+    rgba(6,64,43,.02) 72%, transparent 80%);
+  animation:orb-breathe 11s ease-in-out infinite}
+@keyframes orb-breathe{
+  0%,100%{transform:scale(1) translate(0,0);opacity:.9}
+  50%    {transform:scale(1.075) translate(1.2%,-1.6%);opacity:1}
+}
+.friday-lbl{position:absolute;bottom:8%;left:50%;transform:translateX(-50%);margin:0;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--mute)}
+
+/* ══ product blocks ══ */
+.block{padding:150px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:96px;align-items:center}
+.block--flip .block-txt{order:2}
+.block h3{font-size:clamp(26px,2.6vw,34px);line-height:1.16;max-width:20ch}
+.block p{margin:20px 0 0;font-size:16px;color:var(--ink-soft);max-width:44ch}
+.block .arrow{display:inline-block;margin-top:26px}
+
+/* marketplace list */
+.list{display:grid;gap:26px}
+.row{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:baseline}
+.row h4{font-size:18px;transition:color .35s var(--ease)}
+.row p{margin:3px 0 0;font-size:13px;color:var(--mute)}
+.row .act{font-size:13px;font-weight:500;color:var(--forest)}
+a.row:hover h4{color:var(--forest)}
+
+/* the roster constellation */
+.stage{position:relative;height:440px;width:100%}
+.stage svg{position:absolute;inset:0;width:100%;height:100%}
+.web-line{stroke:rgba(6,64,43,.24);stroke-width:1.1;fill:none;stroke-dasharray:120;
+  transition:stroke .5s var(--ease),stroke-width .5s var(--ease),stroke-opacity .3s var(--ease)}
+.web-line.hot{stroke:var(--forest-soft);stroke-width:2}
+.web-line.dim{stroke-opacity:.3}
+.node{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;
+  gap:7px;background:none;border:0;padding:0;font:inherit;cursor:pointer;transition:opacity .35s var(--ease)}
+.node.dim{opacity:.3}
+.puck{width:40px;height:40px;border-radius:13px;background:var(--page);display:flex;align-items:center;
+  justify-content:center;font-family:var(--mono);font-size:12px;font-weight:500;color:var(--forest);
+  box-shadow:inset 0 0 0 1.3px rgba(6,64,43,.42);
+  transition:box-shadow .3s var(--ease),background .3s var(--ease),transform .3s var(--ease)}
+.node:hover .puck{box-shadow:inset 0 0 0 1.3px var(--forest);background:var(--forest-tint);transform:translateY(-2px)}
+.node.on .puck{box-shadow:inset 0 0 0 1.3px var(--forest);background:var(--forest-tint)}
+.puck--lead{width:56px;height:56px;border-radius:18px;background:var(--forest);color:var(--page);
+  font-size:15px;box-shadow:none}
+.nm{font-size:10.5px;color:var(--ink-soft);white-space:nowrap}
+.pulse{position:absolute;width:6px;height:6px;border-radius:50%;background:var(--forest-soft);
+  transform:translate(-50%,-50%);pointer-events:none}
+.readout{margin:20px 0 0;min-height:44px;font-size:13px;color:var(--ink-soft)}
+.readout b{font-family:var(--serif);font-weight:400;font-size:16px;color:var(--ink)}
+
+/* approvals */
+.appr{display:grid;gap:18px}
+.card{background:rgba(6,64,43,.042);border-radius:20px;padding:24px 26px;
+  transition:background .4s var(--ease),transform .4s var(--ease)}
+.card:hover{background:rgba(6,64,43,.062);transform:translateY(-2px)}
+.card-hd{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.mono-puck{width:30px;height:30px;border-radius:10px;background:var(--page);display:grid;place-items:center;
+  font-family:var(--mono);font-size:11px;font-weight:500;color:var(--forest);
+  box-shadow:inset 0 0 0 1.2px rgba(6,64,43,.34);flex-shrink:0}
+.who{font-family:var(--mono);font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--mute);margin:0}
+.live{width:6px;height:6px;border-radius:50%;background:var(--forest-soft);margin-left:auto;
+  animation:blink 2.6s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.q{font-family:var(--serif);font-size:20px;line-height:1.35;margin:0 0 24px;max-width:30ch}
+.acts{display:flex;gap:12px;align-items:center}
+.yes{display:inline-flex;align-items:center;height:34px;padding:0 18px;border-radius:999px;
+  background:var(--forest);color:var(--page);font-size:13px;font-weight:500;transition:background .3s var(--ease)}
+.card:hover .yes{background:var(--forest-deep)}
+.no{font-size:13px;color:var(--mute)}
+
+/* the pages, as big words */
+.links{padding:180px 0 130px;display:grid;gap:18px;justify-items:start}
+.links a{font-family:var(--serif);font-size:clamp(32px,4.2vw,50px);letter-spacing:-.024em;line-height:1.06;
+  transition:color .4s var(--ease)}
+.links a:hover{color:var(--forest)}
+
+footer{padding:0 0 64px;font-size:13px;color:var(--mute)}
+.foot-in{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
+.foot-links{display:flex;gap:24px}
+.foot-links a:hover{color:var(--forest)}
+
+@media(max-width:900px){
+  .block{grid-template-columns:1fr;gap:52px;padding-top:110px}
+  .block--flip .block-txt{order:0}
+  .hero{grid-template-columns:1fr;gap:44px;padding-top:132px}
+  .friday{height:min(42vh,340px);order:-1}
+  .orb{width:min(360px,74vw)}
+  .hero-stm{max-width:none}
+  .links{padding:112px 0 90px}
+}
+@media(max-width:820px){
+  .wrap,.nav-in{padding-left:22px;padding-right:22px}
+  .nav-links{display:none}
+  .stage{height:360px}
+  .puck{width:34px;height:34px;border-radius:11px;font-size:10px}
+  .puck--lead{width:46px;height:46px;font-size:13px}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.cur{display:none}}
+</style>
+</head>
+<body>
+<div class="grain"></div>
+<div class="cur" id="cur"></div>
+<main>
+
+<nav>
+  <div class="nav-in">
+    <a href="#" class="logo" style="font-size:19px"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+    <div class="nav-links">
+      <a href="#marketplace"><span class="swap"><span>Marketplace</span><span aria-hidden="true">Marketplace</span></span></a>
+      <a href="how-it-works.html"><span class="swap"><span>How it works</span><span aria-hidden="true">How it works</span></span></a>
+      <a href="pricing.html"><span class="swap"><span>Pricing</span><span aria-hidden="true">Pricing</span></span></a>
+    </div>
+    <a href="#" class="btn btn-sm">Start free</a>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <div class="hero-txt">
+    <h1 class="hero-stm" id="stm" data-text="The AI-native company that runs the work while you sleep."></h1>
+    <p class="hero-sub" id="sub">Hire agents for the operations that fill your week. They run in your own private cloud, coordinated by Friday, and stop for you before anything risky.</p>
+    <div class="hero-act" id="act">
+      <a href="#" class="btn">Start 14 days free</a>
+      <a href="#marketplace" class="arrow">See the marketplace →</a>
+    </div>
+  </div>
+
+  <div class="friday" id="friday">
+    <div class="orb" aria-hidden="true"></div>
+    <p class="friday-lbl">Friday</p>
+  </div>
+</header>
+
+<!-- 1 ─ marketplace -->
+<section class="block wrap" id="marketplace">
+  <div class="block-txt">
+    <p class="tag">Marketplace</p>
+    <h3>Hire a specialist in one click.</h3>
+    <p>Every listing is a working agent, not a template — it arrives knowing its job, its tools and the shape of its work. Add one and Friday folds it into the roster the same day.</p>
+    <a href="#" class="arrow">Browse all agents →</a>
+  </div>
+  <div class="block-vis"><div class="list" id="hire"></div></div>
+</section>
+
+<!-- 2 ─ the roster -->
+<section class="block block--flip wrap" id="roster">
+  <div class="block-txt">
+    <p class="tag">The Roster</p>
+    <h3>Run the business on agents.</h3>
+    <p>Sales, support, finance, scheduling — the work that fills your week. Friday turns a goal into a set of jobs and hands each one to whoever owns it. This is the roster running isol8 today.</p>
+    <div class="readout" id="readout">Hover any agent to see what it owns.</div>
+  </div>
+  <div class="block-vis"><div class="stage" id="stage"></div></div>
+</section>
+
+<!-- 3 ─ approvals -->
+<section class="block wrap">
+  <div class="block-txt">
+    <p class="tag">Approvals</p>
+    <h3>You keep the final say.</h3>
+    <p>Agents work on their own and stop before anything risky — money moving, a message to a customer, a change going live. You approve in a line, from wherever you already are.</p>
+    <a href="faq.html" class="arrow">Read the FAQ →</a>
+  </div>
+  <div class="block-vis">
+    <div class="appr">
+      <div class="card">
+        <div class="card-hd">
+          <span class="mono-puck">St</span>
+          <p class="who">Stitch · sales</p>
+          <span class="live"></span>
+        </div>
+        <p class="q">Send the 14-lead outreach batch for Thursday?</p>
+        <div class="acts"><span class="yes">Approve</span><span class="no">Request changes</span></div>
+      </div>
+      <div class="card">
+        <div class="card-hd">
+          <span class="mono-puck">T</span>
+          <p class="who">Tally · finance</p>
+          <span class="live"></span>
+        </div>
+        <p class="q">Reconcile 62 transactions and close the week?</p>
+        <div class="acts"><span class="yes">Approve</span><span class="no">Request changes</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="links wrap">
+  <a href="how-it-works.html"><span class="swap"><span>How it works</span><span aria-hidden="true">How it works</span></span></a>
+  <a href="pricing.html"><span class="swap"><span>Pricing</span><span aria-hidden="true">Pricing</span></span></a>
+  <a href="blog.html"><span class="swap"><span>Blog</span><span aria-hidden="true">Blog</span></span></a>
+  <a href="faq.html"><span class="swap"><span>FAQ</span><span aria-hidden="true">FAQ</span></span></a>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <a href="#" class="logo" style="font-size:16px;color:var(--mute)"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+    <div class="foot-links">
+      <a href="pricing.html">Pricing</a><a href="blog.html">Blog</a><a href="faq.html">FAQ</a><a href="#">Privacy</a><a href="#">Terms</a>
+    </div>
+    <span>© 2026 isol8</span>
+  </div>
+</footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/ScrollTrigger.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lenis@1/dist/lenis.min.js"></script>
+<script>
+const reduced=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const NS="http://www.w3.org/2000/svg";
+gsap.registerPlugin(ScrollTrigger);
+
+/* line-masked headline reveal, done by hand: words are measured after layout,
+   grouped into real lines by offsetTop, then each line is masked and raised. */
+const stm=document.getElementById("stm");
+stm.innerHTML=stm.dataset.text.split(" ").map(w=>"<w>"+w+"</w>").join(" ");
+function makeLines(el){
+  const words=[...el.querySelectorAll("w")], rows=new Map();
+  words.forEach(w=>{
+    const t=Math.round(w.offsetTop);
+    if(!rows.has(t)) rows.set(t,[]);
+    rows.get(t).push(w.textContent);
+  });
+  el.innerHTML=[...rows.values()].map(r=>'<span class="ln"><span>'+r.join(" ")+"</span></span>").join("");
+  return [...el.querySelectorAll(".ln>span")];
+}
+const lines=makeLines(stm);
+
+/* marketplace rows */
+const HIRE=[{n:"Stitch",r:"Sales"},{n:"Tally",r:"Finance"},{n:"Ora",r:"Scheduling"},
+            {n:"Lens",r:"Research"},{n:"Echo",r:"Meeting recap"}];
+document.getElementById("hire").innerHTML=HIRE.map(a=>
+  '<a href="#" class="row"><div><h4><span class="swap"><span>'+a.n+'</span>'+
+  '<span aria-hidden="true">'+a.n+'</span></span></h4><p>'+a.r+'</p></div>'+
+  '<span class="act">Hire</span></a>').join("");
+
+/* ══ the roster constellation — coordinates as authored in Team.tsx ══ */
+const NODES=[
+ {id:"F",n:"Friday",r:"CEO / orchestrator",x:50,y:50,lead:1,v:"Turns company goals into work and brings a human in when judgement matters."},
+ {id:"Ops",n:"Platform Ops",r:"Reliability",x:50,y:8,v:"Keeps the platform healthy and turns production signals into follow-up tasks."},
+ {id:"L",n:"Lens",r:"Research",x:26,y:14,v:"Reads the strongest sources and writes a clear cited summary."},
+ {id:"Th",n:"Thread",r:"Support",x:74,y:14,v:"Turns customer conversations into clear threads and follow-up."},
+ {id:"E",n:"Echo",r:"Meeting recap",x:10,y:34,v:"Turns meetings into recaps, decisions and action items."},
+ {id:"St",n:"Stitch",r:"Sales",x:90,y:34,v:"Finds qualified buyers and drafts the outreach."},
+ {id:"V",n:"Vera",r:"Review",x:14,y:64,v:"Reviews work and catches risk before anything public ships."},
+ {id:"PA",n:"Product Analytics",r:"Metrics",x:86,y:64,v:"Keeps company metrics readable so the team sees what changed."},
+ {id:"T",n:"Tally",r:"Finance",x:28,y:86,v:"Keeps books current with reconciliation and tax-prep support."},
+ {id:"O",n:"Ora",r:"Scheduling",x:72,y:86,v:"Coordinates meetings and protects the calendar."},
+ {id:"A",n:"Atlas",r:"Recruiter",x:50,y:94,v:"Designs the next specialist when Friday sees a gap."},
+ {id:"P",n:"Pulse",r:"Monitoring",x:36,y:38,v:"Watches for changes and wakes the right agent."},
+ {id:"J",n:"Jarvis",r:"Engineering",x:64,y:38,v:"Builds and verifies changes, then hands them back with evidence."}
+];
+const IX={}; NODES.forEach((n,i)=>{IX[n.id]=i;n.base={x:n.x,y:n.y};});
+const EDGES=[["F","Ops"],["F","L"],["F","Th"],["F","E"],["F","St"],["F","V"],["F","PA"],["F","T"],["F","O"],["F","A"],["F","P"],["F","J"],
+ ["Ops","Th"],["Th","St"],["St","PA"],["PA","O"],["O","A"],["A","T"],["T","V"],["V","E"],["E","L"],["L","Ops"],["J","St"],["J","L"],["P","V"],["P","T"]]
+ .map(([a,b])=>[IX[a],IX[b]]);
+
+const stage=document.getElementById("stage"), readout=document.getElementById("readout");
+const svg=document.createElementNS(NS,"svg");
+svg.setAttribute("viewBox","0 0 100 100");
+svg.setAttribute("preserveAspectRatio","none");
+svg.setAttribute("aria-hidden","true");
+const lns=EDGES.map(()=>{
+  const l=document.createElementNS(NS,"line");
+  l.setAttribute("class","web-line"); l.setAttribute("vector-effect","non-scaling-stroke");
+  svg.appendChild(l); return l;
+});
+stage.appendChild(svg);
+NODES.forEach((n,i)=>{
+  const el=document.createElement(n.lead?"div":"button");
+  el.className="node"; el.style.left=n.x+"%"; el.style.top=n.y+"%";
+  if(!n.lead) el.type="button";
+  el.innerHTML='<span class="puck'+(n.lead?" puck--lead":"")+'">'+n.id+'</span><span class="nm">'+n.n+'</span>';
+  if(!n.lead){
+    el.addEventListener("pointerenter",e=>{if(e.pointerType!=="touch")pick(i)});
+    el.addEventListener("pointerleave",e=>{if(e.pointerType!=="touch")pick(null)});
+    el.addEventListener("focus",()=>pick(i)); el.addEventListener("blur",()=>pick(null));
+    el.addEventListener("click",()=>pick(active===i?null:i));
+  }
+  n.el=el; stage.appendChild(el);
+});
+let active=null;
+function pick(i){
+  active=i;
+  NODES.forEach((m,j)=>{m.el.classList.toggle("dim",i!==null&&j!==i&&j!==0);m.el.classList.toggle("on",j===i)});
+  lns.forEach((l,k)=>{const [a,b]=EDGES[k],hit=i!==null&&(a===i||b===i);
+    l.classList.toggle("hot",hit);l.classList.toggle("dim",i!==null&&!hit)});
+  const n=i===null?null:NODES[i];
+  readout.innerHTML=n?"<b>"+n.n+"</b> — "+n.r+". "+n.v:"Hover any agent to see what it owns.";
+}
+let mx=-999,my=-999;
+stage.addEventListener("pointermove",e=>{
+  const r=stage.getBoundingClientRect();
+  mx=(e.clientX-r.left)/r.width*100; my=(e.clientY-r.top)/r.height*100;
+});
+stage.addEventListener("pointerleave",()=>{mx=my=-999});
+function layout(){
+  for(let i=1;i<NODES.length;i++){
+    const n=NODES[i]; let dx=0,dy=0;
+    if(mx>-500){
+      const vx=n.base.x-mx,vy=n.base.y-my,d=Math.hypot(vx,vy);
+      if(d<22){const f=(1-d/22)*2.6;dx=vx/(d||1)*f;dy=vy/(d||1)*f;}
+    }
+    n.x+=(n.base.x+dx-n.x)*.09; n.y+=(n.base.y+dy-n.y)*.09;
+    n.el.style.left=n.x+"%"; n.el.style.top=n.y+"%";
+  }
+  EDGES.forEach(([a,b],k)=>{
+    lns[k].setAttribute("x1",NODES[a].x);lns[k].setAttribute("y1",NODES[a].y);
+    lns[k].setAttribute("x2",NODES[b].x);lns[k].setAttribute("y2",NODES[b].y);
+  });
+}
+layout();
+function firePulse(){
+  if(active!==null)return;
+  const k=Math.floor(Math.random()*12),[a,b]=EDGES[k];
+  lns[k].classList.add("hot"); setTimeout(()=>lns[k].classList.remove("hot"),820);
+  const d=document.createElement("span"); d.className="pulse"; stage.appendChild(d);
+  gsap.fromTo(d,{left:NODES[a].x+"%",top:NODES[a].y+"%",opacity:1},
+    {left:NODES[b].x+"%",top:NODES[b].y+"%",opacity:0,duration:.85,ease:"sine.out",onComplete:()=>d.remove()});
+}
+
+/* smooth scroll, driven through GSAP's ticker */
+if(!reduced && window.Lenis){
+  const lenis=new Lenis({lerp:.09,smoothWheel:true});
+  lenis.on("scroll",ScrollTrigger.update);
+  gsap.ticker.add(t=>lenis.raf(t*1000));
+  gsap.ticker.lagSmoothing(0);
+}
+/* lerped cursor */
+if(!reduced && matchMedia("(hover:hover)").matches){
+  const cur=document.getElementById("cur");
+  const sx=gsap.quickSetter(cur,"x","px"),sy=gsap.quickSetter(cur,"y","px");
+  let cx=innerWidth/2,cy=innerHeight/2,tx=cx,ty=cy;
+  addEventListener("pointermove",e=>{tx=e.clientX;ty=e.clientY;cur.classList.add("on")},{passive:true});
+  document.querySelectorAll("a,button").forEach(el=>{
+    el.addEventListener("pointerenter",()=>cur.classList.add("big"));
+    el.addEventListener("pointerleave",()=>cur.classList.remove("big"));
+  });
+  gsap.ticker.add(()=>{cx+=(tx-cx)*.16;cy+=(ty-cy)*.16;sx(cx-5.5);sy(cy-5.5);});
+}
+
+if(!reduced){
+  gsap.timeline()
+    .from(lines,{yPercent:108,duration:1,ease:"expo.out",stagger:.09},.15)
+    .from("#friday",{opacity:0,scale:.92,duration:1.3,ease:"expo.out"},.3)
+    .from("#sub",{opacity:0,y:20,duration:.8,ease:"expo.out"},.55)
+    .from("#act",{opacity:0,y:20,duration:.8,ease:"expo.out"},.68);
+
+  gsap.utils.toArray(".block").forEach(b=>{
+    gsap.from(b.querySelectorAll(".tag,h3,p,.arrow,.readout"),
+      {opacity:0,y:22,duration:.8,ease:"expo.out",stagger:.07,
+       scrollTrigger:{trigger:b,start:"top 78%"}});
+    const vis=b.querySelector(".block-vis");
+    if(vis) gsap.from(vis,{opacity:0,y:28,duration:.9,ease:"expo.out",
+      scrollTrigger:{trigger:b,start:"top 78%"}});
+  });
+  gsap.fromTo(".web-line",{strokeDashoffset:120},
+    {strokeDashoffset:0,duration:1,ease:"expo.out",stagger:.03,
+     scrollTrigger:{trigger:"#stage",start:"top 82%"}});
+  gsap.utils.toArray(".links a").forEach(el=>gsap.from(el,
+    {opacity:0,y:22,duration:.8,ease:"expo.out",scrollTrigger:{trigger:el,start:"top 92%"}}));
+
+  gsap.ticker.add(layout);
+  setInterval(firePulse,900);
+}
+</script>
+</body>
+</html>

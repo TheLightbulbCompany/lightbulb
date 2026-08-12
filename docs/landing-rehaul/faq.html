@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ — isol8</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="_page.css">
+</head>
+<body>
+<div class="amb"></div>
+<div class="page">
+
+<nav><div class="nav-in">
+  <a href="C4-refined.html" class="logo"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+  <a href="C4-refined.html" class="back">← Back</a>
+</div></nav>
+
+<header class="hd wrap">
+  <p class="mono">faq</p>
+  <h1 style="margin-top:14px">Before you start.</h1>
+  <p class="lede">The questions people actually ask. If yours isn't here, support@isol8.co reaches a human.</p>
+</header>
+
+<main class="wrap">
+  <div id="faq"></div>
+
+  <div class="cta">
+    <h2>Still deciding?</h2>
+    <p style="color:var(--ink-soft);margin:12px 0 26px;max-width:46ch">Fourteen days free, no card required. Hire one agent and give it something real.</p>
+    <a href="#" class="btn">Start 14 days free</a>
+  </div>
+</main>
+
+<footer><div class="wrap foot-in">
+  <a href="C4-refined.html" class="logo" style="font-size:16px;color:var(--mute)"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+  <span>© 2026 isol8</span>
+</div></footer>
+</div>
+
+<script>
+const FAQ=[
+ ["Can isol8 really run my business?","It runs the operational work your business is made of — sales outreach, customer support, finance ops, reporting, scheduling — autonomously and in the background. You set the goals and approve anything risky; the agents do the doing. Most founders start by handing off one workflow, then keep going until the week runs itself."],
+ ["What is an agent?","An agent is an AI that doesn't just chat — it takes action. It can read your emails, update your CRM, schedule meetings, search the web, and run multi-step tasks on its own. Think of it as a digital employee that works 24/7 and gets sharper the more you use it."],
+ ["What is a pod, and is my data safe?","A pod is your own private, isolated container in the cloud — it's where your agents live and run. No other user can access your pod, your conversations, or your files. Your data never leaves your container and is never used to train models."],
+ ["How is this different from ChatGPT or Claude?","ChatGPT and Claude are chat interfaces — you ask a question, you get an answer, and it forgets you. isol8 gives you persistent agents that connect to your actual tools, remember your preferences, and take real actions across your workflows. Less a chatbot, more an AI team embedded in how you work."],
+ ["Can I talk to my agents on Slack, WhatsApp, or Discord?","Yes. Connect your agents to Slack, WhatsApp, Discord, and Telegram, then message them the way you'd message a coworker — they respond, take action, and follow up from the app you're already in."],
+ ["Can my agents run tasks on a schedule?","Yes. Set up recurring work — a daily report, an inbox sweep every morning, a weekly sync between tools — and your agents handle it in the background with no manual step."],
+ ["What do the three prices mean?","The product is the same on all three; only how you pay for inference differs. $50/month if you sign in with your own ChatGPT account. $50/month if you bring an OpenAI or Anthropic API key and pay that provider directly. $70 at checkout for the Claude path — $50 for the month plus $20 of starting Claude credits, charged together."],
+ ["Can I cancel anytime?","Yes, cancel anytime with no penalty. Your pod and data are preserved for 30 days after cancellation."]
+];
+document.getElementById("faq").innerHTML=FAQ.map(([q,a])=>'<details><summary>'+q+'</summary><p>'+a+'</p></details>').join("");
+</script>
+</body>
+</html>

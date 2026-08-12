@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pricing — isol8</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="_page.css">
+<style>
+.tier{display:grid;grid-template-columns:132px 1fr;gap:30px;align-items:baseline;padding:34px 0}
+.tier+.tier{border-top:1px solid var(--hair)}
+.tier .amt{font-family:var(--serif);font-size:46px;line-height:1;color:var(--forest)}
+.tier .amt sup{font-size:.42em;top:-.7em;position:relative}
+.tier h3{margin:0}
+.tier p{margin:6px 0 0;font-size:15px;color:var(--ink-soft);max-width:46ch}
+.tier .sub{font-size:13px;color:var(--mute);margin-top:8px}
+@media(max-width:700px){.tier{grid-template-columns:1fr;gap:8px}}
+</style>
+</head>
+<body>
+<div class="amb"></div>
+<div class="page">
+
+<nav><div class="nav-in">
+  <a href="landing.html" class="logo"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+  <a href="landing.html" class="back">← Back</a>
+</div></nav>
+
+<header class="hd wrap">
+  <p class="mono">pricing</p>
+  <h1 style="margin-top:14px">One product. Three ways to pay for the thinking.</h1>
+  <p class="lede">Every plan is the same isol8 — your own private container, unlimited agents from the marketplace, every channel. The only difference is where the model inference comes from and who bills you for it.</p>
+</header>
+
+<main class="wrap">
+  <div class="tier">
+    <span class="amt"><sup>$</sup>50</span>
+    <div>
+      <h3>Sign in with ChatGPT</h3>
+      <p>Fifty dollars a month to isol8, and inference runs on the ChatGPT subscription you already pay for.</p>
+      <p class="sub">You sign in to OpenAI after checkout. Personal accounts only — an organisation's inference can't be backed by one member's ChatGPT plan.</p>
+    </div>
+  </div>
+
+  <div class="tier">
+    <span class="amt"><sup>$</sup>50</span>
+    <div>
+      <h3>Bring your own key</h3>
+      <p>Fifty dollars a month to isol8. Add an OpenAI or Anthropic API key and that provider bills you directly for usage.</p>
+      <p class="sub">Your key is encrypted at rest and only ever used by your own container.</p>
+    </div>
+  </div>
+
+  <div class="tier">
+    <span class="amt"><sup>$</sup>70</span>
+    <div>
+      <h3>Powered by Claude</h3>
+      <p>Fifty dollars a month plus twenty dollars of starting Claude credits — charged together in one checkout, so there is no second step and no surprise.</p>
+      <p class="sub">Credits are consumed as your agents work, and you top up whenever you choose. This is the only plan that needs funded credits before your container will start.</p>
+    </div>
+  </div>
+
+  <div class="cta">
+    <h2>Fourteen days free, on any plan.</h2>
+    <p style="color:var(--ink-soft);margin:12px 0 26px;max-width:48ch">No card required to start. Cancel anytime — your pod and data are preserved for 30 days afterwards.</p>
+    <a href="#" class="btn">Start 14 days free</a>
+  </div>
+</main>
+
+<footer><div class="wrap foot-in">
+  <a href="landing.html" class="logo" style="font-size:16px;color:var(--mute)"><i>I</i><i>S</i><i>O</i><i>L</i><i>8</i></a>
+  <span>© 2026 isol8</span>
+</div></footer>
+</div>
+</body>
+</html>

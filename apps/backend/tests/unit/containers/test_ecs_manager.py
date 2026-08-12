@@ -2248,8 +2248,17 @@ class TestWaitForRunningFencedWrites:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock()
             mock_repo.release_provision_to_error = AsyncMock()
+            # The per-iteration lease heartbeat is the FIRST await of every
+            # tick. Left as a bare MagicMock it raises TypeError, which the
+            # loop's `except Exception` swallows into a `continue` — and with
+            # asyncio.sleep patched out that is an infinite tight loop, so the
+            # test hangs instead of failing.
+            mock_repo.update_container_leased = AsyncMock()
 
-            await manager.wait_for_running("user_test_123", claim_id="claim-1", generation="gen-1")
+            await asyncio.wait_for(
+                manager.wait_for_running("user_test_123", claim_id="claim-1", generation="gen-1"),
+                timeout=5,
+            )
 
             mock_repo.update_fields.assert_not_called()
             mock_repo.release_provision_to_error.assert_called_once()

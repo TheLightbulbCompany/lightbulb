@@ -614,10 +614,19 @@ RUN set -eux; \
 # missed. Must run AFTER the last /app mutation (Layer 17) so compiled
 # modules match what ships.
 ENV NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
+# The warm pass is deliberately CHEAP. It used to run `doctor`, which holds a
+# ~760MB heap: when two image builds landed on the same self-hosted runner at
+# once, that peak killed buildkit ("error reading from server: EOF") and both
+# builds failed. `--help` compiles the entry + CLI graph — the part BOTH
+# boot-time processes pay first — under a hard 256MB heap cap and a 60s
+# timeout, so the layer can never be the reason a build dies. Node validates
+# cache entries per file, so a partial cache is a partial win, never a wrong
+# load.
 RUN set -eux; \
     mkdir -p /var/tmp/openclaw-compile-cache; \
+    NODE_OPTIONS=--max-old-space-size=256 \
     OPENCLAW_STATE_DIR=/tmp/compile-warm HOME=/tmp/compile-warm-home \
-      timeout 120 node /app/openclaw.mjs doctor --non-interactive < /dev/null || true; \
+      timeout 60 node /app/openclaw.mjs --help < /dev/null > /dev/null 2>&1 || true; \
     rm -rf /tmp/compile-warm /tmp/compile-warm-home; \
     chown -R node:node /var/tmp/openclaw-compile-cache
 

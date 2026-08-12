@@ -1,11 +1,10 @@
 name: build-openclaw-image
 
-# One image build at a time. The self-hosted CI box runs several runner
-# instances on ONE VM, so two builds landing together put it under enough
-# memory pressure to kill buildkit mid-layer ("error reading from server:
-# EOF") and BOTH fail — seen 2026-08-12 03:55 on wsl-1 and wsl-4. Queue
-# instead of racing; never cancel, because each build publishes a distinct
-# tag that a promotion may already point at.
+# One image build at a time. Never cancel: each build publishes a distinct
+# tag that a promotion may already point at, so a superseded run must still
+# finish. (This group was added when builds shared one self-hosted VM and
+# raced it into buildkit OOM; on hosted runners each build gets its own VM,
+# but the no-cancel tag guarantee stands on its own.)
 concurrency:
   group: build-openclaw-image
   cancel-in-progress: false
@@ -47,8 +46,7 @@ permissions:
 jobs:
   # 400+ lines of POSIX sh that migrates and can delete an owner's SQLite state.
   # It had a real smoke harness and nothing ran it — a case was asserting
-  # nothing for weeks, undetected. ubuntu-latest (not CI_RUNNER) because it
-  # needs only sh + sqlite3 and should not queue behind the self-hosted backlog.
+  # nothing for weeks, undetected.
   boot-chain-smoke:
     name: local-sqlite boot chain smoke tests
     runs-on: ubuntu-latest
@@ -68,13 +66,23 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: boot-chain-smoke
     if: github.event_name != 'pull_request'
-    runs-on: ${{ vars.CI_RUNNER }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      # The extended image is ~7.8 GB compressed and the SOCI path holds three
+      # copies at once (docker overlay2, the containerd store it's loaded into,
+      # and the convert staging ref). A hosted runner starts with ~14 GB free,
+      # so drop preinstalled toolchains this build never touches.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/.ghcup /usr/local/share/powershell
+          df -h /
 
       - name: Read version metadata
         id: meta

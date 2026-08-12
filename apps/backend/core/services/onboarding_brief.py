@@ -174,6 +174,26 @@ def project_name_for(first_name: str) -> str:
 # instead of the user's own ask.
 # ---------------------------------------------------------------------------
 
+# The naming ask sits IN the kickoff body, BEFORE the board ask — not in the
+# closing steps where it used to live. Two things freeze from the company's
+# name: the board's issue prefix (Paperclip re-derives it on rename only while
+# the board has minted nothing — fork v2026.8-isol8.4) and the email subdomain
+# (minted on the first send, no delete path). Naming after the tasks landed is
+# what left boards permanently keyed off the signup placeholder — three
+# letters of the owner's email local part.
+#
+# The wording deliberately promises only "minted early and permanent", not the
+# re-derivation mechanics: this text deploys with the backend, ahead of the
+# Paperclip image pin that adds rename re-derivation, and must stay true on
+# both sides of that flip.
+_NAMING_STEP_SENTENCE = (
+    "Before you put anything on the board, check the company's name — if it is "
+    "still a placeholder rather than a real business name, rename it now: the "
+    "name feeds identifiers that are minted early and can never be changed — "
+    "the board's task-key prefix and the subdomain of my email address — so "
+    "settle the name first and pick something you would put on a business card."
+)
+
 # No idea given ("I don't know yet — you pick"): there is no brief to lead
 # with, so the visible first message still reads in the user's voice and still
 # carries the same research → write-up → three-next-moves-on-the-board ask the
@@ -188,9 +208,10 @@ def project_name_for(first_name: str) -> str:
 # makes the (nondeterministic) good round-2 behavior deterministic.
 FIRST_RUN_NO_BRIEF_MESSAGE = (
     "I'm not sure what to build yet — take a look and pick something promising for "
-    "me, then dig into it, write up what you find, and put my three best next moves "
-    "in the backlog. Don't start any of them yet — just tell me which to tackle "
-    "first. I'm watching."
+    "me, then dig into it and write up what you find. "
+    f"{_NAMING_STEP_SENTENCE} "
+    "Then put my three best next moves in the backlog. Don't start any of them yet "
+    "— just tell me which to tackle first. I'm watching."
 )
 
 
@@ -258,18 +279,13 @@ _INTEGRATIONS_STEP = (
 # The description is fixed separately; this removes the dependency on discovery
 # entirely for the one send that must not be missed.
 #
-# The naming step comes FIRST and is not decoration: the address is minted from
-# the company's name on the FIRST send, and `company_slug_repo` has no delete
-# path, so whatever it is called at that moment is permanent. "If it is still a
-# placeholder" is deliberate — by the time this runs the owner may already have
-# named it (a real org's Clerk name carries through), and renaming a good name
-# to a worse one is the failure mode on the other side.
+# The naming ask used to lead these closing steps; it moved up into the
+# kickoff body (_NAMING_STEP_SENTENCE) so the rename lands BEFORE the board's
+# first task mints the issue prefix — the email subdomain was never the only
+# thing frozen by the name. By the time this send runs, the company is named.
 _CLOSING_STEPS = (
-    "\n\nTwo more things before you stop. First, check the company's name and, "
-    "if it is still a placeholder rather than a real business name, give it one "
-    "— that name becomes the subdomain of my email address and cannot be "
-    "changed afterwards, so pick something you would put on a business card. "
-    "Then email me a short note in your own voice about what you found:\n"
+    "\n\nOne more thing before you stop: email me a short note in your own "
+    "voice about what you found:\n"
     "printf '%s' \"<your note>\" | /app/skills/isol8/scripts/isol8-owner-email.sh "
     '--subject "<subject>"\n'
     "That script is how you send email here — there is no Gmail, himalaya, or "
@@ -294,9 +310,10 @@ def build_first_run_message(brief_text: str | None) -> str:
         return FIRST_RUN_NO_BRIEF_MESSAGE + _INTEGRATIONS_STEP + _CLOSING_STEPS
     return (
         (
-            f"I'm starting {brief}. Dig into the business and market, write it up, and put "
-            "my three best next moves in the backlog — don't start any of them yet, just "
-            "tell me which to tackle first. I'm watching."
+            f"I'm starting {brief}. Dig into the business and market and write it up. "
+            f"{_NAMING_STEP_SENTENCE} "
+            "Then put my three best next moves in the backlog — don't start any of them "
+            "yet, just tell me which to tackle first. I'm watching."
         )
         + _INTEGRATIONS_STEP
         + _CLOSING_STEPS

@@ -428,10 +428,13 @@ arrives in the wake text:
 
 **Hard rules from the Paperclip skill doctrine:**
 
-- Before doing real work on an issue, check it out
+- In a **heartbeat run**, check an issue out before doing real work on it
   (`POST /api/issues/{{issueId}}/checkout`) to claim it. If it returns
   `409 Conflict`, another agent owns it — **never retry a 409**; pick a
   different task.
+- Checkout requires a run id and exists ONLY in heartbeat runs — see
+  "Webchat sessions (no run id)" below for what to do (and not do) when
+  you are chatting with {owner_display} instead.
 - Set `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on every mutating call
   (create, update, comment, checkout, release) for audit — but only when a
   wake gave you a run id. With no run id, omit the header entirely; **never
@@ -652,10 +655,46 @@ On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
 """
 
 
-# Append the nightly section to the playbook. Concatenated (not interpolated)
-# so its literal `$...` / `[...]` / `<...>` tokens survive _render_templates'
-# ``.format`` untouched.
-_AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION
+# The webchat capability section. Same contract as _NIGHTLY_WAKE_SECTION:
+# brace-free and owner-neutral, so it is (a) appended to _AGENTS_TEMPLATE via
+# plain concatenation (safe through ``.format``) and (b) reused verbatim by
+# the migration that heals already-provisioned Fridays whose write-if-missing
+# AGENTS.md still carries the unconditional checkout mandate — the text that
+# produced the webchat "Agent run id required" relay to an owner. Deliberately
+# outcome-level (no helper flag names): the pinned image's paperclip skill
+# documents the exact commands its bundled helper supports, and this text must
+# stay true across image versions.
+_WEBCHAT_HEADING = "## Webchat sessions (no run id)"
+
+_WEBCHAT_SECTION = """\
+
+## Webchat sessions (no run id)
+
+Chatting with your owner in the app is NOT a heartbeat: there is no
+PAPERCLIP_RUN_ID and no checkout there, by design. Any checkout mandate in
+this playbook applies to heartbeat runs only. In webchat:
+
+- Plain field edits (title, priority, assignee) on issues that are not
+  `in_progress` need no run id — just make them, using the write commands
+  the paperclip skill documents.
+- Never attempt checkout or release from webchat. They are refused without
+  a run id, and that refusal is not a platform error.
+- To START work on an issue, set its assignee and status `todo` in one
+  update. That dispatches a real heartbeat run for the assignee (yourself
+  included), and that run checks out properly. Starting a run spends
+  money — do it when your owner asks for the work now, not to park plans.
+- An `in_progress` issue belongs to its live run — comment instead of
+  editing its fields; comments stay open and wake the assignee.
+- If a call fails asking for a run id, you used a wake-only call in
+  webchat. Switch to the paths above and tell your owner what you did —
+  never tell them you "need a run id".
+"""
+
+
+# Append the nightly + webchat sections to the playbook. Concatenated (not
+# interpolated) so their literal `$...` / `[...]` / `<...>` tokens survive
+# _render_templates' ``.format`` untouched.
+_AGENTS_TEMPLATE = _AGENTS_TEMPLATE + _NIGHTLY_WAKE_SECTION + _WEBCHAT_SECTION
 
 
 _MEMORY_TEMPLATE = """\
@@ -818,6 +857,32 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     return True
 
 
+def _migrate_add_webchat_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """Append the ``## Webchat sessions (no run id)`` section to an EXISTING
+    AGENTS.md that predates it.
+
+    AGENTS.md is seeded write-if-missing, so already-provisioned Fridays keep
+    the unconditional checkout mandate forever — the text that had a webchat
+    Friday attempt checkout, hit "Agent run id required", and relay run-id
+    mechanics to its owner. The section explicitly scopes any checkout
+    mandate elsewhere in the playbook to heartbeat runs, so old vintages of
+    that bullet are overridden without surgical matching across their
+    wordings. Same shape as ``_migrate_add_nightly_section``: append only
+    when the heading is ABSENT, touch nothing else. Returns True when a
+    rewrite happened.
+    """
+    rel_path = f"workspace-{agent_uuid}/AGENTS.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
+        return False
+    if _WEBCHAT_HEADING in content:
+        return False
+    new_content = content.rstrip("\n") + "\n" + _WEBCHAT_SECTION
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
+
+
 def _render_templates(profile: dict) -> dict[str, str]:
     """Render the seed files from a resolved profile dict.
 
@@ -933,9 +998,118 @@ async def _resolve_owner_profile(owner_id: str) -> dict:
     }
 
 
+def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) -> None:
+    """The append-heal pass for an EXISTING Friday's seeded files.
+
+    Every migration is anchor-/heading-guarded and idempotent; each failure
+    is isolated so one bad file never blocks the others. Called from
+    ``pre_stage_friday_identity`` (provision/config-rewrite path) and from
+    ``heal_seeded_files`` (fleet image-apply path).
+    """
+    migrations = (
+        (
+            _migrate_legacy_user_md,
+            "friday_identity.user_md_migrated",
+            "friday_identity.user_md_migrate_error",
+            "migrated legacy plan/provider lines in USER.md",
+        ),
+        (
+            _migrate_add_nightly_section,
+            "friday_identity.agents_md_nightly_migrated",
+            "friday_identity.agents_md_nightly_migrate_error",
+            "appended nightly-wake section to AGENTS.md",
+        ),
+        (
+            _migrate_add_soul_grounding,
+            "friday_identity.soul_md_grounding_migrated",
+            "friday_identity.soul_md_grounding_migrate_error",
+            "appended self-grounding section to SOUL.md",
+        ),
+        (
+            _migrate_add_webchat_section,
+            "friday_identity.agents_md_webchat_migrated",
+            "friday_identity.agents_md_webchat_migrate_error",
+            "appended webchat section to AGENTS.md",
+        ),
+    )
+    for migrate, ok_metric, err_metric, what in migrations:
+        try:
+            if migrate(workspace, owner_id, friday_uuid):
+                put_metric(ok_metric)
+                logger.info("friday_identity: %s for owner=%s", what, owner_id)
+        except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+            put_metric(err_metric)
+            logger.warning(
+                "friday_identity: heal migration (%s) failed for owner=%s: %s",
+                what,
+                owner_id,
+                exc,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
+
+
+def _resolve_ceo_agent_id(workspace: Workspace, owner_id: str) -> str | None:
+    """Friday's agent id, read from the owner's own ``openclaw.json``.
+
+    Deliberately NOT ``seeded_agent_ids[0]``: that list is append-ordered,
+    and the reconcile path in ``paperclip_provisioning.provision_org``
+    carries a previously-seeded Atlas forward BEFORE appending the
+    newly-created Friday — so index 0 is Atlas on exactly the owners whose
+    first provision half-failed. Healing against that id would leave Friday
+    stale AND write CEO playbook text into Atlas's workspace.
+
+    ``openclaw.json``'s ``agents.list[]`` carries each agent's Paperclip role
+    (``_build_agents_list`` → ``write_to_agent_entry``), so the CEO is
+    identified by role rather than position, from a file this path already
+    has in hand. Returns None when the config is missing/corrupt or lists no
+    CEO — the caller treats that as "nothing to heal".
+    """
+    from core.services.paperclip_meta import read_from_agent_entry
+
+    config = workspace.read_openclaw_config(owner_id)
+    if not isinstance(config, dict):
+        return None
+    agents = ((config.get("agents") or {}).get("list")) or []
+    if not isinstance(agents, list):
+        return None
+    for entry in agents:
+        if not isinstance(entry, dict):
+            continue
+        if read_from_agent_entry(entry).role == "ceo" and entry.get("id"):
+            return str(entry["id"])
+    return None
+
+
+async def heal_seeded_files(*, owner_id: str, workspace: Workspace) -> None:
+    """Heal an EXISTING Friday workspace's seeded files without a provision.
+
+    ``pre_stage_friday_identity`` runs the same migrations, but only on the
+    provision/config-rewrite path — a Track-2 image apply never rewrites
+    configs, so without this entry point already-provisioned Fridays keep
+    stale seeded playbook text until some unrelated reprovision. The
+    image-apply path calls this instead: it resolves the CEO by ROLE from
+    the owner's ``openclaw.json`` (see ``_resolve_ceo_agent_id``) and runs
+    the anchor-guarded heal pass.
+
+    Best-effort: no config / no CEO entry → silent skip (legacy
+    pre-Paperclip owners have nothing to heal); never raises.
+    """
+    try:
+        friday_uuid = _resolve_ceo_agent_id(workspace, owner_id)
+        if not friday_uuid:
+            return
+        _run_heal_migrations(workspace, owner_id, friday_uuid)
+    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
+        put_metric("friday_identity.heal_error")
+        logger.warning(
+            "friday_identity: heal_seeded_files failed for owner=%s: %s",
+            owner_id,
+            exc,
+        )
 
 
 async def pre_stage_friday_identity(
@@ -1001,58 +1175,10 @@ async def pre_stage_friday_identity(
             exc,
         )
 
-    # Heal pre-facts workspaces before the write-if-missing loop (which
-    # no-ops on existing files): replace the legacy hardcoded plan/provider
-    # seed lines with the facts-file pointer. Best-effort.
-    try:
-        if _migrate_legacy_user_md(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.user_md_migrated")
-            logger.info(
-                "friday_identity: migrated legacy plan/provider lines in USER.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.user_md_migrate_error")
-        logger.warning(
-            "friday_identity: USER.md legacy-line migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
-
-    # Heal pre-nightly-loop AGENTS.md: the seed loop below is
-    # write-if-missing and won't touch an existing AGENTS.md, so append the
-    # nightly-wake section when it's absent. Best-effort.
-    try:
-        if _migrate_add_nightly_section(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.agents_md_nightly_migrated")
-            logger.info(
-                "friday_identity: appended nightly-wake section to AGENTS.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.agents_md_nightly_migrate_error")
-        logger.warning(
-            "friday_identity: AGENTS.md nightly-section migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
-
-    # Heal pre-grounding SOUL.md the same way: append the platform
-    # self-knowledge section when it's absent. Best-effort.
-    try:
-        if _migrate_add_soul_grounding(workspace, owner_id, friday_uuid):
-            put_metric("friday_identity.soul_md_grounding_migrated")
-            logger.info(
-                "friday_identity: appended self-grounding section to SOUL.md for owner=%s",
-                owner_id,
-            )
-    except Exception as exc:  # noqa: BLE001 — best-effort, log + continue
-        put_metric("friday_identity.soul_md_grounding_migrate_error")
-        logger.warning(
-            "friday_identity: SOUL.md grounding migration failed for owner=%s: %s",
-            owner_id,
-            exc,
-        )
+    # Heal existing seeded files before the write-if-missing loop (which
+    # no-ops on existing files). Shared with the fleet image-apply path via
+    # heal_seeded_files.
+    _run_heal_migrations(workspace, owner_id, friday_uuid)
 
     written: list[str] = []
     skipped: list[str] = []

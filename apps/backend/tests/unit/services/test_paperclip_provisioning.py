@@ -476,6 +476,10 @@ async def test_provision_org_reconcile_does_not_reseed_atlas(monkeypatch):
     assert "atlas_id_1" in seeded
     assert "friday_new_id" in seeded
     assert "atlas_id_2" not in seeded
+    # Friday goes FIRST even here, where Atlas was carried forward from the
+    # failed attempt: paperclip_repo projects `friday_agent_id` as index 0, so
+    # appending would hand the owner-send path Atlas's id.
+    assert seeded[0] == "friday_new_id"
 
 
 @pytest.mark.asyncio

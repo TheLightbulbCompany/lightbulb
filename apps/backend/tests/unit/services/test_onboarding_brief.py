@@ -160,8 +160,8 @@ def test_first_run_message_grow_brief_reads_naturally():
 
 def test_first_run_message_no_brief_falls_back_to_the_you_pick_default():
     # startswith, not equality: every kickoff now carries the closing steps
-    # (name the company, then email the owner). The fallback body itself is
-    # unchanged — it just isn't the whole message any more.
+    # (email the owner). The fallback body itself is unchanged — it just isn't
+    # the whole message any more.
     assert build_first_run_message(None).startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
     assert build_first_run_message("").startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
     assert build_first_run_message("   ").startswith(FIRST_RUN_NO_BRIEF_MESSAGE)
@@ -345,3 +345,16 @@ def test_kickoff_says_the_name_becomes_the_address():
 
     msg = build_first_run_message("a coffee subscription business").lower()
     assert "email address" in msg or "address" in msg
+
+
+def test_kickoff_names_the_company_before_the_board():
+    """The issue prefix freezes when the first task is minted, and Paperclip
+    only re-derives it on rename while the board is still empty — so the
+    naming ask must come BEFORE the backlog ask on both kickoff paths, or
+    every board keys its tasks off the signup placeholder (PRA-1 instead of
+    GOO-1)."""
+    from core.services.onboarding_brief import build_first_run_message
+
+    for brief in ("a coffee subscription business", None):
+        msg = build_first_run_message(brief)
+        assert msg.index("company's name") < msg.index("three best next moves")

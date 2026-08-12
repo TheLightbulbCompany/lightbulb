@@ -28,9 +28,11 @@ description: >
      issues on the owner's live board to debug API behavior; use --dry-run.
   4. Scripts: /app/skills/paperclip/scripts/paperclip-api.sh and /app/skills/paperclip/scripts/paperclip-issue-update.sh
      treat PAPERCLIP_RUN_ID as optional (header sent only when set), and
-     paperclip-api.sh carries an Isol8-added top-level `create` subcommand
-     plus a `raw <METHOD> </api/...path>` escape hatch (jq-validated stdin
-     body) so no write ever needs hand-rolled curl.
+     paperclip-api.sh carries an Isol8-added top-level `create` subcommand,
+     a `raw <METHOD> </api/...path>` escape hatch (jq-validated stdin
+     body) so no write ever needs hand-rolled curl, and `update` field
+     flags (--title/--priority/--assignee) so the webchat section's
+     assign-to-start command actually works through the helper.
   5. ABSOLUTE helper paths: every scripts/ invocation is written as
      /app/skills/paperclip/scripts/... (the image bakes this skill at
      /app/skills/paperclip — Dockerfile Layer). The agent's working directory
@@ -46,11 +48,17 @@ description: >
      until it escalates to `blocked`. Upstream's docs are silent on this, so
      an agent filing a few assigned tasks in one heartbeat starts a run storm.
      Keep both the helper default and the doc wording on re-vendor.
+  7. Webchat capability section ("Webchat and interactive sessions"): upstream
+     documents only the heartbeat worldview; Isol8 owners drive agents from a
+     live chat surface daily. Added after a first-run Friday, asked in webchat
+     to adjust tasks it had just created, tried to checkout, got "Agent run id
+     required", and relayed that to the owner — instead of just PATCHing the
+     fields, or assigning + `todo` to start a real run.
 -->
 
 # Paperclip Skill
 
-You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
+You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously. You may also find yourself talking to your owner in a live **webchat session**, which is not a heartbeat — see "Webchat and interactive sessions" below for what changes there.
 
 ## Terminology
 
@@ -77,7 +85,7 @@ Every write you do in a heartbeat has a subcommand:
 | Write | Command |
 | ----- | ------- |
 | Comment on an issue | `/app/skills/paperclip/scripts/paperclip-api.sh comment <issueId>` (markdown body on stdin) |
-| Update status / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--blocked-by "id1,id2"]` (optional comment on stdin) |
+| Update status / fields / comment / blockers | `/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> [--status S] [--title T] [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]` (optional comment on stdin) |
 | Checkout | `/app/skills/paperclip/scripts/paperclip-api.sh checkout <issueId>` |
 | Release | `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>` |
 | Create subtask | `/app/skills/paperclip/scripts/paperclip-api.sh subtask <companyId> --title T --parent <id> --goal <id> --status backlog\|todo` (optional description on stdin) |
@@ -104,6 +112,16 @@ Omitting `--status` on an assigned create is **not neutral**: Paperclip's API si
 Planning output — "here are your next three moves", a decomposition, a proposal — goes to **`backlog`**. Only file to `todo` when starting the work *now* is the thing being asked for.
 
 Creates with **no** assignee are unaffected: leaving `--status` off is fine, and lands the issue in `backlog`.
+
+## Webchat and interactive sessions (no run id)
+
+Not every session is a heartbeat. When your owner talks to you in the chat UI (webchat), there is **no `PAPERCLIP_RUN_ID` and no checkout** — that is normal, not broken. What it means in practice:
+
+- **You can still read everything and write almost everything.** Creates, comments, and `update` field edits (`--title`, `--priority`, `--assignee`, `--status`, `--blocked-by`; description via `raw PATCH`) all work without a run id on issues that are not actively being worked. The helper omits the run-id header automatically.
+- **You cannot `checkout` or `release`.** Those two calls belong to heartbeat runs and are rejected without a run id (`401 Agent run id required`). Do not attempt them from webchat, do not treat the rejection as a platform error, and never invent a run id.
+- **To start work from webchat, assign — don't checkout.** Set the assignee and `--status todo` (`/app/skills/paperclip/scripts/paperclip-api.sh update <issueId> --assignee <agentId> --status todo`): Paperclip dispatches a heartbeat run for the assignee (yourself included), and *that* run checks out properly. Starting a run spends money — do it when the user says "work on this now"; keep planning output in `backlog` otherwise.
+- **An `in_progress` issue belongs to its live run.** Field edits are refused while a run holds the checkout — comment instead (comments stay open and wake the assignee), or wait for the run to release it.
+- **Never surface run-id mechanics to the user.** "I need a paperclip run id" is not something a user can act on. If a call fails wanting a run id, you used a wake-only call in webchat — switch to the paths above and tell the user what you *did*, not what the API wanted.
 
 ## The Heartbeat Procedure
 
@@ -135,7 +153,7 @@ Overrides and special cases:
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
 
-**Step 5 — Checkout.** You MUST checkout before doing any work. Use the helper (it sends `agentId` + `expectedStatuses` and the run-id header for you):
+**Step 5 — Checkout.** You MUST checkout before doing any work in a heartbeat. (Heartbeat runs only — checkout is impossible from webchat; see "Webchat and interactive sessions".) Use the helper (it sends `agentId` + `expectedStatuses` and the run-id header for you):
 
 ```bash
 /app/skills/paperclip/scripts/paperclip-api.sh checkout "$PAPERCLIP_TASK_ID"

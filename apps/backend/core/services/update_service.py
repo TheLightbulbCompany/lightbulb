@@ -23,6 +23,7 @@ from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
+from core.services.friday_identity import heal_seeded_files
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +385,16 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
             # boot. No-op on a config already free of them.
             if new_image:
                 await migrate_removed_config_keys(owner_id)
+
+                # Image rolls are the fleet's routine touch-point, but they
+                # never rewrite configs — so the seeded-file heal pass that
+                # rides the provision/config-rewrite path would otherwise
+                # never reach an already-provisioned Friday. Run it here so a
+                # promotion carries playbook fixes fleet-wide. Best-effort by
+                # contract (never raises).
+                from core.containers import get_workspace
+
+                await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
 
             # An image-only roll carries NO size — queue_image_update /
             # queue_fleet_image_update write {"new_image": X} only. Passing the

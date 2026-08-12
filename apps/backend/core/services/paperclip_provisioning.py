@@ -657,7 +657,15 @@ class PaperclipProvisioning:
                 )
                 if isinstance(friday, dict) and friday.get("id"):
                     friday_agent_id = friday["id"]
-                    seeded_agent_ids.append(friday["id"])
+                    # FIRST, not appended: on the reconcile path the list
+                    # already carries the previously-seeded Atlas, and
+                    # ``paperclip_repo``'s ``friday_agent_id`` projection reads
+                    # index 0 — appending here would hand the owner-send path
+                    # Atlas's id on exactly the owners whose first provision
+                    # half-failed. (Consumers that can resolve the CEO by ROLE
+                    # should do that instead of trusting position — see
+                    # ``friday_identity._resolve_ceo_agent_id``.)
+                    seeded_agent_ids.insert(0, friday["id"])
             except PaperclipApiError as e:
                 logger.warning(
                     "paperclip_provisioning.provision_org: seed agent failed for %s: %s",

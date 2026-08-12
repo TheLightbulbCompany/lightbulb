@@ -31,6 +31,12 @@ jobs:
   test:
     name: Lint & Test
     runs-on: ubuntu-latest
+    # This job had NO cap, so a stalled `Run tests` step billed GitHub's
+    # 6-hour default instead of failing — run 31562062289 sat in pytest for
+    # 27+ minutes with no way to tell a slow suite from a hung one. The suite
+    # is genuinely slow on hosted runners (no dependency cache), so the cap is
+    # loose: it exists to bound a hang, not to police runtime.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code

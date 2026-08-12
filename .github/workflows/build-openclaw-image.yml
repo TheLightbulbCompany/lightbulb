@@ -67,7 +67,13 @@ jobs:
     needs: boot-chain-smoke
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30m was sized for the self-hosted box, which kept a warm layer cache and
+    # finished in ~3m. Hosted runners start cold every time, so this ~7.8 GB
+    # image is rebuilt from scratch on every run — including the `doctor`
+    # compile-cache bake. Run 31562288851 was still in `Build image` at 25m and
+    # would have been killed mid-build for no reason other than the old cap.
+    # This is a hang bound, not a runtime budget.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4

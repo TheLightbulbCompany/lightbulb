@@ -6,12 +6,19 @@ description: Publish posts and Reels, moderate comments, and answer DMs on the o
 # Instagram
 
 The owner has connected their Instagram professional account. Credentials live at
-`/home/node/.openclaw/skills/instagram/credentials.json`:
+`/home/node/.openclaw/skills/instagram/credentials.json`.
+
+**Always read the token through `token.sh`, never straight out of the JSON.** The
+token expires 60 days after it is issued and `token.sh` renews it when it is
+inside the last 30 days, so calling it is what keeps the connection alive:
 
 ```bash
-IG_TOKEN=$(jq -r .access_token /home/node/.openclaw/skills/instagram/credentials.json)
+IG_TOKEN=$(/home/node/.openclaw/skills/instagram/token.sh) || exit 1
 IG_USER=$(jq -r .user_id /home/node/.openclaw/skills/instagram/credentials.json)
 ```
+
+Re-run `token.sh` at the start of each task that touches Instagram. It is cheap
+(no network call outside the renewal window) and safe to call repeatedly.
 
 All calls go to `https://graph.instagram.com/v23.0`. Sanity check:
 
@@ -78,8 +85,10 @@ curl -s -X POST "https://graph.instagram.com/v23.0/me/messages" \
 
 On `190` / "Invalid OAuth access token" / any 401: the connection has expired or
 been revoked. Tell the owner to reconnect Instagram in **Settings → Connections**;
-do not retry. Isol8 refreshes the token automatically in the background — a
-persistent auth error means the grant itself is gone.
+do not retry. `token.sh` already renews the token whenever it is used, so a
+persistent auth error means the grant itself is gone — either revoked, or the
+integration sat unused past its 60-day expiry, after which Meta will not refresh
+it and only a fresh connect works.
 
 Publishing is rate-limited (per-account posting quota); on a rate-limit error,
 report it and wait — do not loop.

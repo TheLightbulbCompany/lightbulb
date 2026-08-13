@@ -312,11 +312,6 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
     });
-    this.marketplaceListingsTable.addGlobalSecondaryIndex({
-      indexName: "tag-published-index",
-      partitionKey: { name: "tag", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
-    });
 
     this.marketplacePurchasesTable = createTable("MarketplacePurchasesTable", "marketplace-purchases", {
       partitionKey: { name: "buyer_id", type: dynamodb.AttributeType.STRING },

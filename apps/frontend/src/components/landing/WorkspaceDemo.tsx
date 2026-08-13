@@ -381,7 +381,7 @@ export function WorkspaceDemo() {
                     <PanelMasthead
                       overline={DEMO_COMPANY_NAME}
                       title="Tasks"
-                      meta={`${issues.length} tasks`}
+                      meta={`${searchedIssues.length} tasks`}
                     />
                     <PanelToolbar
                       className="mt-4"
@@ -396,7 +396,9 @@ export function WorkspaceDemo() {
                         liveIssueIds={DEMO_LIVE_ISSUE_IDS}
                         searchActive={taskSearch.trim().length > 0}
                         onUpdateIssue={updateIssue}
-                        onNewTask={() => {}}
+                        // Creating tasks is the product — the demo's "New
+                        // task" is a signup door, same as the composer.
+                        onNewTask={() => router.push("/sign-up")}
                       />
                     </div>
                   </div>

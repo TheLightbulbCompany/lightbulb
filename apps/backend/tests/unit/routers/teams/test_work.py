@@ -89,6 +89,23 @@ def test_list_routines(client, admin):
     )
 
 
+def test_list_routines_hides_archived(client, admin):
+    """Archived routines must not surface — delete_routine archives rather
+    than deletes, so an unfiltered list would resurrect a "deleted" routine
+    in the panel with controls that cannot work on it."""
+    admin.list_routines = AsyncMock(
+        return_value=[
+            {"id": "rt_live", "title": "Live", "status": "active"},
+            {"id": "rt_gone", "title": "Deleted", "status": "archived"},
+            {"id": "rt_paused", "title": "Paused", "status": "paused"},
+        ]
+    )
+    r = client.get("/api/v1/teams/routines", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    ids = [row["id"] for row in r.json()["routines"]]
+    assert ids == ["rt_live", "rt_paused"]
+
+
 def test_create_routine(client, admin):
     """Create body mirrors upstream ``createRoutineSchema``: a titled,
     assignable routine row — cron is NOT here (it's on a trigger)."""

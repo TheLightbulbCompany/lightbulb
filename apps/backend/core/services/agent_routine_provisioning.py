@@ -132,6 +132,13 @@ def _existing_titles_for_agent(existing_routines: Any, agent_id: str) -> set[str
             continue
         if r.get("assigneeAgentId") != agent_id:
             continue
+        # An archived routine is removed-from-service (delete_routine archives
+        # rather than deletes — upstream has no DELETE route). It must not
+        # satisfy "already exists", or the compensating cleanup in
+        # create_enabled_schedule_routine would leave the owner durably armed
+        # with a routine that can never fire.
+        if r.get("status") == "archived":
+            continue
         title = r.get("title")
         if isinstance(title, str):
             titles.add(title)

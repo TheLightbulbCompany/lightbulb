@@ -140,24 +140,6 @@ def test_list_inbox_forwards_rich_issue_rows(client, monkeypatch):
     assert body["items"][1]["status"] == "in_progress"
 
 
-def test_dismiss_proxies_with_session(client, monkeypatch):
-    admin = MagicMock()
-    admin.dismiss_inbox_item = AsyncMock(return_value={"ok": True})
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.post(
-        "/api/v1/teams/inbox/itm_1/dismiss",
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200
-    admin.dismiss_inbox_item.assert_awaited_once_with(
-        item_id="itm_1",
-        session_cookie="cookie",
-    )
-
-
 def test_list_inbox_translates_tab_mine_to_upstream_filters(client, monkeypatch):
     """tab=mine derives the upstream filter composition that Paperclip's
     own Inbox.tsx uses: touchedByUserId=me + inboxArchivedByUserId=me +

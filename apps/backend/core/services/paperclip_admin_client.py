@@ -885,56 +885,6 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
-    async def list_runs(
-        self,
-        *,
-        session_cookie: str,
-        agent_id: str,
-    ) -> dict:
-        """List runs for an agent.
-
-        Maps to ``GET /api/agents/{agentId}/runs``.
-        """
-        return await self._get(
-            f"/api/agents/{agent_id}/runs",
-            session_cookie=session_cookie,
-        )
-
-    async def get_run(
-        self,
-        *,
-        session_cookie: str,
-        run_id: str,
-    ) -> dict:
-        """Fetch a single run by id.
-
-        Maps to ``GET /api/runs/{runId}``.
-        """
-        return await self._get(
-            f"/api/runs/{run_id}",
-            session_cookie=session_cookie,
-        )
-
-    # ------------------------------------------------------------------
-    # Inbox
-    # ------------------------------------------------------------------
-
-    async def dismiss_inbox_item(
-        self,
-        *,
-        session_cookie: str,
-        item_id: str,
-    ) -> dict:
-        """Dismiss a single inbox item.
-
-        Maps to ``POST /api/inbox/{itemId}/dismiss``.
-        """
-        return await self._post(
-            f"/api/inbox/{item_id}/dismiss",
-            json={},
-            session_cookie=session_cookie,
-        )
-
     # ------------------------------------------------------------------
     # Heartbeat runs
     # ------------------------------------------------------------------
@@ -1830,12 +1780,11 @@ class PaperclipAdminClient:
     ) -> dict:
         """Archive an issue from the inbox.
 
-        Maps to ``POST /api/issues/{id}/inbox-archive``. Note: there is
-        also a sibling ``dismiss`` endpoint that maps to
-        ``/api/inbox/{itemId}/dismiss`` — that's a different upstream
-        concept (inbox dismissals table) and we keep it. ``archive_issue``
-        is the modern Paperclip flow that flips an issue's
-        ``inbox_archived_at`` column.
+        Maps to ``POST /api/issues/{id}/inbox-archive`` — the modern
+        Paperclip flow that flips an issue's ``inbox_archived_at`` column.
+        (Upstream's separate inbox-dismissals concept lives at
+        ``POST /api/companies/{id}/inbox-dismissals``, keyed by ``itemKey``;
+        nothing on our side calls it.)
         """
         return await self._post(
             f"/api/issues/{issue_id}/inbox-archive",
@@ -2272,14 +2221,29 @@ class PaperclipAdminClient:
         session_cookie: str,
         routine_id: str,
     ) -> dict:
-        """Delete a routine. 404 is swallowed as already-gone.
+        """Remove a routine from service by archiving it.
 
-        Maps to ``DELETE /api/routines/{routineId}``.
+        Upstream has NO ``DELETE /api/routines/{id}`` route — the old DELETE
+        here always 404ed, ``_delete`` swallowed that as already-gone, and the
+        "deleted" routine silently survived and kept firing. Archiving is the
+        supported removal: ``tickScheduledTriggers`` only fires ``active``
+        routines, and the archived row keeps its run history.
+
+        Maps to ``PATCH /api/routines/{routineId}`` with status=archived.
+        A 404 (routine already gone) is swallowed as success, preserving the
+        idempotent-delete contract callers rely on for retries and
+        double-deletes.
         """
-        return await self._delete(
-            f"/api/routines/{routine_id}",
-            session_cookie=session_cookie,
-        )
+        try:
+            return await self._patch(
+                f"/api/routines/{routine_id}",
+                json={"status": "archived"},
+                session_cookie=session_cookie,
+            )
+        except PaperclipApiError as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
 
     async def run_routine(
         self,

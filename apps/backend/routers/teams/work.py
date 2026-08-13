@@ -59,12 +59,20 @@ async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
 
 @router.get("/routines")
 async def list_routines(ctx: TeamsContext = Depends(_ctx)):
-    """List routines in the caller's company."""
+    """List routines in the caller's company.
+
+    Archived routines are filtered out: ``delete_routine`` archives rather
+    than deletes (upstream has no DELETE route), and Isol8 has no archive
+    view — an archived row surfacing here would resurrect a "deleted"
+    routine in the panel with controls that cannot work on it.
+    """
     upstream = await _agents._admin().list_routines(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
-    return envelope_list(upstream, "routines")
+    enveloped = envelope_list(upstream, "routines")
+    enveloped["routines"] = [r for r in enveloped["routines"] if r.get("status") != "archived"]
+    return enveloped
 
 
 @router.post("/routines")

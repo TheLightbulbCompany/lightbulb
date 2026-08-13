@@ -603,6 +603,39 @@ async def test_delete_routine_trigger_swallows_404(client_factory):
     assert out == {}
 
 
+async def test_delete_routine_archives_via_patch(client_factory):
+    """delete_routine must PATCH status=archived — upstream has no DELETE
+    /api/routines/{id} route, and the old DELETE 404ed silently (the routine
+    survived and kept firing)."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["method"] = req.method
+        captured["url"] = str(req.url)
+        captured["body"] = _json.loads(req.content)
+        return httpx.Response(200, json={"id": "rt_1", "status": "archived"})
+
+    client = client_factory(handler)
+    out = await client.delete_routine(session_cookie="sess", routine_id="rt_1")
+    assert captured["method"] == "PATCH"
+    assert "/api/routines/rt_1" in captured["url"]
+    assert captured["body"] == {"status": "archived"}
+    assert out["status"] == "archived"
+
+
+async def test_delete_routine_swallows_404(client_factory):
+    """Deleting an already-gone routine stays an idempotent no-op — the
+    PATCH-based archive must preserve the old DELETE contract for retries
+    and double-deletes."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "Routine not found"})
+
+    client = client_factory(handler)
+    out = await client.delete_routine(session_cookie="sess", routine_id="rt_gone")
+    assert out == {}
+
+
 async def test_rotate_routine_trigger_secret_posts_empty_body(client_factory):
     """Rotate posts an empty object and returns the fresh secret material."""
     captured: dict = {}

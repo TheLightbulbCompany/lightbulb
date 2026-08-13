@@ -756,19 +756,15 @@ async def wake_agent(
     )
 
 
-@router.get("/agents/{agent_id}/runs")
-async def list_runs(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """List runs for a given agent."""
-    return await _admin().list_runs(
-        agent_id=agent_id,
-        session_cookie=ctx.session_cookie,
-    )
-
-
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single run (transcript / metadata) by id."""
-    return await _admin().get_run(
+    """Fetch a single run by id — legacy alias for ``/heartbeat-runs/{id}``.
+
+    The frontend's RunDetailPanel still reads this path as a fallback next to
+    ``/heartbeat-runs/{id}``; upstream never had ``GET /api/runs/{id}``, so
+    this proxies the heartbeat-run route instead of 404ing.
+    """
+    return await _admin().get_heartbeat_run(
         run_id=run_id,
         session_cookie=ctx.session_cookie,
     )

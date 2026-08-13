@@ -116,6 +116,34 @@ async def test_idempotency_ignores_same_title_for_different_agent():
 
 
 @pytest.mark.asyncio
+async def test_idempotency_ignores_archived_routines():
+    """An archived routine must not satisfy title-skip.
+
+    delete_routine archives rather than deletes (upstream has no DELETE
+    route), so a title match on an archived row would leave the owner
+    durably "armed" with a routine that can never fire.
+    """
+    existing = [
+        {
+            "id": "old",
+            "assigneeAgentId": "agent-uuid",
+            "title": "Morning sweep",
+            "status": "archived",
+        },
+    ]
+    admin = _admin_with_existing(existing)
+    created = await create_agent_routines(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="agent-uuid",
+        routines=[{"title": "Morning sweep", "description": "d", "cron": "0 6 * * *"}],
+    )
+    assert created == ["rid-Morning sweep"]
+    assert admin.create_routine.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_idempotency_handles_enveloped_list_shape():
     """list_routines may return {"routines": [...]} (BFF envelope) or a bare list."""
     existing = {"routines": [{"assigneeAgentId": "agent-uuid", "title": "Morning sweep"}]}

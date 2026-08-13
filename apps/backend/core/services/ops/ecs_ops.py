@@ -1,8 +1,8 @@
 """Live-ECS fleet reads for the operator console.
 
 Enumerates the fleet from the DDB container index, enriches with live
-describe_services (≤10/call), maps to health, and serves through the
-ops-cache (~20s TTL). Replaces the DDB-derived counts in system_health.
+describe_services (≤10/call), maps to health, and serves from a short
+in-process TTL cache. Replaces the DDB-derived counts in system_health.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import time
 import boto3
 
 from core.config import settings
-from core.repositories import container_repo, ops_cache_repo, user_repo
+from core.repositories import container_repo, user_repo
 from core.services import clerk_admin
 
 _FLEET_CACHE_TTL_S = 20
@@ -29,6 +29,8 @@ _NAME_FETCH_BUDGET_S = 3.0
 _NAME_FETCH_CONCURRENCY = 4
 _name_cache: dict[str, tuple[float, str | None]] = {}
 
+_fleet_cache: tuple[float, list[dict]] | None = None  # (expires_at_monotonic, grid)
+
 _client = None
 
 
@@ -37,10 +39,6 @@ def _ecs():
     if _client is None:
         _client = boto3.client("ecs", region_name=settings.AWS_REGION)
     return _client
-
-
-def _cache_key() -> str:
-    return f"fleet#{settings.ENVIRONMENT or 'dev'}"
 
 
 def _classify(svc: dict, ddb_status: str) -> str:
@@ -177,17 +175,17 @@ async def _build_grid() -> list[dict]:
 
 
 async def fleet_grid() -> list[dict]:
-    # Read-through with a short TTL, enforced on read: DynamoDB TTL deletion is
-    # lazy (an item can linger hours past `ttl`), so honour the stored ttl here
-    # rather than trusting the row's presence. Spec §5.3's decoupled refresher
-    # (poll-and-cache off the render path) is the follow-up when the fleet grows;
-    # P1 stays a read-through with a short TTL.
-    cached = await ops_cache_repo.get(_cache_key())
-    now = int(time.time())
-    if cached is not None and "value" in cached and int(cached.get("ttl", 0)) > now:
-        return cached["value"]
+    # In-process read-through with a short TTL. Per-instance (not shared
+    # across backend tasks) — redundant refetches are fine for an admin
+    # surface on a 20s window. Spec §5.3's decoupled refresher
+    # (poll-and-cache off the render path) is the follow-up when the fleet
+    # grows; P1 stays a read-through with a short TTL.
+    global _fleet_cache
+    if _fleet_cache is not None and _fleet_cache[0] > time.monotonic():
+        return _fleet_cache[1]
     grid = await _build_grid()
-    await ops_cache_repo.put(_cache_key(), grid, ttl_seconds=_FLEET_CACHE_TTL_S)
+    # TTL anchored after the rebuild so a slow build doesn't eat the window.
+    _fleet_cache = (time.monotonic() + _FLEET_CACHE_TTL_S, grid)
     return grid
 
 

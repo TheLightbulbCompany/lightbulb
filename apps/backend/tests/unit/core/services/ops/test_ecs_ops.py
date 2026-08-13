@@ -7,10 +7,12 @@ from core.services.ops import ecs_ops
 
 
 @pytest.fixture(autouse=True)
-def _clear_name_cache():
+def _clear_caches():
     ecs_ops._name_cache.clear()
+    ecs_ops._fleet_cache = None
     yield
     ecs_ops._name_cache.clear()
+    ecs_ops._fleet_cache = None
 
 
 def _svc(name, desired, running, pending, rollout):
@@ -40,8 +42,6 @@ async def test_fleet_grid_maps_health():
     with (
         patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=None)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
     ):
         grid = await ecs_ops.fleet_grid()
 
@@ -60,8 +60,6 @@ async def test_fleet_counts_live_shape():
     with (
         patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=None)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
     ):
         counts = await ecs_ops.fleet_counts_live()
 
@@ -72,14 +70,11 @@ async def test_fleet_counts_live_shape():
 
 @pytest.mark.asyncio
 async def test_fleet_grid_served_from_cache_when_fresh():
-    cached = {
-        "value": [{"owner_id": "org_a", "service_name": "openclaw-a-1", "status": "running"}],
-        "ttl": int(time.time()) + 60,  # not yet expired
-    }
-    with (
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=cached)),
-        patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock()) as scan,
-    ):
+    ecs_ops._fleet_cache = (
+        time.monotonic() + 60,  # not yet expired
+        [{"owner_id": "org_a", "service_name": "openclaw-a-1", "status": "running"}],
+    )
+    with patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock()) as scan:
         grid = await ecs_ops.fleet_grid()
     assert grid[0]["owner_id"] == "org_a"
     scan.assert_not_called()  # fresh cache hit → no live ECS enumeration
@@ -87,19 +82,15 @@ async def test_fleet_grid_served_from_cache_when_fresh():
 
 @pytest.mark.asyncio
 async def test_fleet_grid_ignores_expired_cache_and_rebuilds():
-    # DDB TTL deletion is lazy, so an item can linger past `ttl`. fleet_grid must
-    # honour the stored ttl on read and rebuild rather than serve stale data.
-    expired = {
-        "value": [{"owner_id": "org_stale", "service_name": "openclaw-stale-1", "status": "running"}],
-        "ttl": int(time.time()) - 1,  # already expired
-    }
+    ecs_ops._fleet_cache = (
+        time.monotonic() - 1,  # already expired
+        [{"owner_id": "org_stale", "service_name": "openclaw-stale-1", "status": "running"}],
+    )
     fake_ecs = MagicMock()
     fake_ecs.describe_services.return_value = {"services": [_svc("openclaw-a-1", 1, 1, 0, "COMPLETED")]}
     rows = [{"owner_id": "org_a", "service_name": "openclaw-a-1", "status": "running"}]
     with (
         patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=expired)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)) as scan,
     ):
         grid = await ecs_ops.fleet_grid()
@@ -123,8 +114,6 @@ async def test_grid_display_name_resolves_user_email_and_org_name():
     with (
         patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=None)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
         patch(
             "core.services.ops.ecs_ops.user_repo.get",
             AsyncMock(return_value={"user_id": "user_1", "email": "founder@isol8.co"}),
@@ -151,8 +140,6 @@ async def test_grid_display_name_falls_back_to_clerk_then_none_on_failure():
     with (
         patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=None)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
         patch("core.services.ops.ecs_ops.user_repo.get", AsyncMock(return_value=None)),
         patch(
             "core.services.ops.ecs_ops.clerk_admin.get_user",
@@ -190,8 +177,6 @@ async def test_indexed_service_not_described_classifies_unknown():
     with (
         patch.object(ecs_ops, "_ecs", return_value=fake_ecs),
         patch("core.services.ops.ecs_ops.container_repo.scan_all", AsyncMock(return_value=rows)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.get", AsyncMock(return_value=None)),
-        patch("core.services.ops.ecs_ops.ops_cache_repo.put", AsyncMock()),
     ):
         grid = await ecs_ops.fleet_grid()
     assert grid[0]["status"] == "unknown"

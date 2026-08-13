@@ -274,7 +274,6 @@ def test_authless_forward_passes_raw_body_and_whitelisted_headers(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}?source=github",
@@ -315,7 +314,6 @@ def test_upstream_status_passes_through_verbatim(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured, status=401, content=b'{"error":"bad signature"}'),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
     assert r.status_code == 401
@@ -334,7 +332,6 @@ def test_upstream_unreachable_returns_502(client):
             "routers.paperclip_trigger_proxy._client_factory",
             lambda: httpx.AsyncClient(transport=FailTransport()),
         ),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
     assert r.status_code == 502
@@ -379,7 +376,6 @@ def test_stripe_signature_header_splits_into_paperclip_headers(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -403,7 +399,6 @@ def test_stripe_event_id_becomes_idempotency_key(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -424,7 +419,6 @@ def test_caller_idempotency_key_not_overridden_by_stripe_event_id(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -448,7 +442,6 @@ def test_no_stripe_signature_forwards_without_injected_headers(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={"id": "evt_should_not_matter"})
     assert r.status_code == 202
@@ -456,51 +449,6 @@ def test_no_stripe_signature_forwards_without_injected_headers(client):
     assert "x-paperclip-timestamp" not in h
     assert "x-paperclip-signature" not in h
     assert "idempotency-key" not in h
-
-
-# ---------------------------------------------------------------------------
-# Audit
-# ---------------------------------------------------------------------------
-
-
-def test_audit_row_written_with_trigger_kind(client):
-    captured: dict = {}
-    audit_writes = []
-    with (
-        _mock_billing("active"),
-        _mock_binding(True),
-        _stub_client(captured),
-        patch(
-            "routers.paperclip_trigger_proxy.hook_event_repo.write_event",
-            side_effect=lambda **kw: audit_writes.append(kw),
-        ),
-    ):
-        r = client.post(
-            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
-            json={},
-            headers={"User-Agent": "GitHub-Hookshot/1.0"},
-        )
-    assert r.status_code == 202
-    assert len(audit_writes) == 1
-    assert audit_writes[0]["kind"] == "paperclip_trigger"
-    assert audit_writes[0]["hook_path"] == PUBLIC_ID
-    assert audit_writes[0]["status_code"] == 202
-    assert audit_writes[0]["user_agent"] == "GitHub-Hookshot/1.0"
-
-
-def test_audit_write_failure_does_not_drop_proxied_call(client):
-    captured: dict = {}
-    with (
-        _mock_billing("active"),
-        _mock_binding(True),
-        _stub_client(captured),
-        patch(
-            "routers.paperclip_trigger_proxy.hook_event_repo.write_event",
-            side_effect=Exception("DDB down"),
-        ),
-    ):
-        r = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
-    assert r.status_code == 202
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +473,6 @@ def test_rate_limiter_returns_429_after_60_per_trigger(client):
     with (
         _mock_billing("active"),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         for _ in range(60):
             client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
@@ -542,7 +489,6 @@ def test_abused_trigger_does_not_starve_sibling_trigger(client):
     with (
         _mock_billing("active"),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         for _ in range(61):
             exhausted = client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
@@ -561,7 +507,6 @@ def test_unresolved_flood_hits_resolve_bucket_but_not_bound_triggers(client):
         _mock_billing("active"),
         _mock_binding(False),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         # Flood with unknown ids: 404s while the resolve bucket lasts...
         for i in range(60):
@@ -585,7 +530,6 @@ def test_trigger_buckets_are_independent_of_container_hook_bucket(client):
     with (
         _mock_billing("active"),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         client.post(f"/api/v1/hooks/t/u_1/{PUBLIC_ID}", json={})
     assert len(hooks_proxy._RATE_BUCKETS_PER_OWNER[f"trigger:{PUBLIC_ID}"]) == 1
@@ -612,7 +556,6 @@ def test_provider_signature_header_copied_to_paperclip_signature(client, provide
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -634,7 +577,6 @@ def test_caller_paperclip_signature_not_clobbered_by_provider_header(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -657,7 +599,6 @@ def test_stripe_split_takes_precedence_over_provider_header(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -689,7 +630,6 @@ def test_goog_channel_token_maps_to_bearer_authorization(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -718,7 +658,6 @@ def test_goog_channel_token_does_not_clobber_caller_authorization(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -741,7 +680,6 @@ def test_goog_sync_ping_returns_204_without_forwarding(client):
         _mock_billing("active"),
         _mock_binding(True),
         _stub_client(captured),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -850,7 +788,6 @@ def test_valid_oidc_jwt_swaps_in_entry_bearer_and_derives_idempotency_key(client
         _stub_client(captured),
         _mock_google_jwks(),
         _mock_gmail_entries([_GMAIL_ENTRY]),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -965,7 +902,6 @@ def test_oidc_caller_idempotency_key_not_overridden(client):
         _stub_client(captured),
         _mock_google_jwks(),
         _mock_gmail_entries([_GMAIL_ENTRY]),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
@@ -990,7 +926,6 @@ def test_gmail_entry_token_is_cached_across_deliveries(client):
         _stub_client(captured),
         _mock_google_jwks(),
         patch("routers.paperclip_trigger_proxy.integrations_repo.get_google_watch_channels", entries),
-        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
     ):
         for _ in range(2):
             r = client.post(

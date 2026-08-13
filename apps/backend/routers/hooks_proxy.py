@@ -18,9 +18,6 @@ NOT trusted (they could be spoofed). We strip and re-assert the chain
 with values we control. OpenClaw on the container side trusts these
 headers because our backend's subnet is in ``gateway.trustedProxies``.
 
-**Audit.** Best-effort write to ``hook-events``. A DDB outage does not
-drop a real webhook — failures are logged and swallowed.
-
 **Rate limit.** In-process sliding-window bucket, 60/min per ``owner_id``.
 Fine for the current single-task backend; needs DDB-backed counter when
 we scale out (flagged in the spec, not v1 work).
@@ -37,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
 from core.containers import get_ecs_manager
-from core.repositories import billing_repo, container_repo, hook_event_repo
+from core.repositories import billing_repo, container_repo
 from core.services.provision_gate import has_always_on_entitlement
 
 logger = logging.getLogger(__name__)
@@ -118,7 +115,7 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     Bearer-token authenticated against ``containers.hook_token`` via timing-safe
     compare. Resolves the container's private IP via Cloud Map, rewrites
     X-Forwarded-* with the true caller IP, and forwards to the container's
-    ``/hooks`` ingress. Audits every call to the ``hook-events`` DDB table.
+    ``/hooks`` ingress.
 
     Returns the upstream's status code verbatim, or 401/402/404/429/503 for
     auth/entitlement/lookup/rate-limit/availability failures.
@@ -208,20 +205,6 @@ async def proxy_hook(owner_id: str, hook_path: str, request: Request) -> Respons
     except httpx.RequestError as exc:
         logger.warning("hook proxy upstream error owner=%s err=%s", owner_id, exc)
         upstream_body = b'{"detail":"upstream_unreachable"}'
-
-    # 7. Audit (best-effort — DDB outage must not drop a real webhook)
-    try:
-        hook_event_repo.write_event(
-            owner_id=owner_id,
-            hook_path=hook_path,
-            status_code=upstream_status,
-            source_ip=_extract_caller_ip(request),
-            user_agent=request.headers.get("User-Agent", ""),
-            request_size=len(body),
-            response_size=len(upstream_body),
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort by design
-        logger.warning("hook-events write failed owner=%s err=%s", owner_id, exc)
 
     return Response(
         status_code=upstream_status,

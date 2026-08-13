@@ -390,6 +390,9 @@ async def test_flush_reverses_transfer_when_refund_races_the_stamp():
             "routers.marketplace_purchases.marketplace_repo.mark_payout_accounted", new_callable=AsyncMock
         ) as mock_mark,
         patch(
+            "routers.marketplace_purchases.marketplace_repo.decrement_held_balance", new_callable=AsyncMock
+        ) as mock_debit,
+        patch(
             "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
         ) as mock_transfer,
         patch("routers.marketplace_purchases.stripe.Transfer.create_reversal") as mock_reversal,
@@ -400,6 +403,7 @@ async def test_flush_reverses_transfer_when_refund_races_the_stamp():
         mock_get.side_effect = [active_row, revoked_row]
         mock_transfer.return_value = "tr_race"
         mock_stamp.return_value = True
+        mock_mark.return_value = True
 
         await _flush_seller_held_balance(seller_id="s1", connect_account_id="acct_1", known_purchase_key=("b1", "cs_r"))
 
@@ -408,10 +412,11 @@ async def test_flush_reverses_transfer_when_refund_races_the_stamp():
     assert args[0] == "tr_race"
     assert kwargs["amount"] == 1700
     assert kwargs["idempotency_key"] == "reversal:tr_race"
-    # The refund path already settled the held balance — no proceeds booked,
-    # but the row is marked accounted so replays never re-book it.
+    # No proceeds booked; the settlement claim owns the held-balance debit
+    # exactly once (the refund handler saw the row unstamped and skipped it).
     mock_totals.assert_not_awaited()
     mock_mark.assert_awaited_once_with(buyer_id="b1", purchase_id="cs_r")
+    mock_debit.assert_awaited_once_with(seller_id="s1", amount_cents=1700)
 
 
 @pytest.mark.asyncio
@@ -446,6 +451,9 @@ async def test_flush_recovery_rereverses_revoked_transfer_instead_of_booking():
             "routers.marketplace_purchases.marketplace_repo.mark_payout_accounted", new_callable=AsyncMock
         ) as mock_mark,
         patch(
+            "routers.marketplace_purchases.marketplace_repo.decrement_held_balance", new_callable=AsyncMock
+        ) as mock_debit,
+        patch(
             "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
         ) as mock_transfer,
         patch("routers.marketplace_purchases.stripe.Transfer.create_reversal") as mock_reversal,
@@ -462,6 +470,9 @@ async def test_flush_recovery_rereverses_revoked_transfer_instead_of_booking():
     assert mock_reversal.call_args.kwargs["idempotency_key"] == "reversal:tr_c"
     mock_totals.assert_not_awaited()
     mock_mark.assert_awaited_once_with(buyer_id="b1", purchase_id="cs_c")
+    # The crash happened before the claim, so the refund handler never
+    # debited (it saw the row stamped) — the recovery's claim does it.
+    mock_debit.assert_awaited_once_with(seller_id="s1", amount_cents=1700)
 
 
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")

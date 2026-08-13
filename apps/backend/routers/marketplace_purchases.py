@@ -326,38 +326,56 @@ async def _handle_charge_refunded(charge: dict) -> None:
     # flush can stamp seller_transfer_id between that read and here. Whichever
     # of revoke/stamp commits second, its actor's re-read sees the other —
     # the flush's post-stamp re-check catches revoke-after-stamp, this one
-    # catches stamp-before-revoke. Branching off the stale row would debit
-    # the held balance while the flush books the transfer: seller paid for a
-    # refunded order.
+    # catches stamp-before-revoke.
     fresh = (
         await marketplace_repo.get_purchase(purchase["buyer_id"], purchase["purchase_id"], consistent=True) or purchase
     )
+    if seller_id:
+        await _settle_refunded_purchase(fresh, seller_id=seller_id)
+
+
+async def _settle_refunded_purchase(fresh: dict, *, seller_id: str) -> None:
+    """Settle the seller side of a refunded purchase — callable from the
+    refund handler AND the flush's refund-race branch, in any interleaving.
+
+    The invariant: held-balance settlement for a purchase happens exactly
+    once, owned by the payout_accounted claim; transfer reversals are
+    idempotent by transfer id, so they may be re-issued freely.
+
+    Cases off the fresh row:
+      - transferred + accounted   → the flush's booking already moved the
+        share out of held balance; only the transfer needs reversing.
+      - transferred + unaccounted → the refund won a race with the flush (or
+        a prior run crashed mid-settle): reverse, claim, debit the share.
+      - untransferred             → claim, then debit (no transfer to
+        reverse; the flush skips revoked rows so none will be created).
+    Whichever of the refund handler / flush claims first performs the debit
+    exactly once; the loser's claim fails and it skips — the cross-races
+    converge. Reversal-before-claim: a crash between them re-reverses on
+    replay (Stripe no-op) instead of losing the reversal.
+    """
+    amount = int(fresh.get("seller_share_cents", fresh.get("price_paid_cents", 0)))
     transfer_id = fresh.get("seller_transfer_id")
     if transfer_id:
-        # The seller was already paid. When the refund came through our
-        # /refund route, refund_purchase already reversed the transfer; but a
-        # refund issued from the Stripe DASHBOARD (the realistic support
-        # path) arrives here with no reversal — without this the buyer gets
-        # their money back and the seller keeps theirs, platform eats 100%.
-        # Same idempotency key as refund_purchase, so whichever path ran
-        # first wins and the other is a Stripe-side no-op.
+        # Refunds issued from the Stripe DASHBOARD (the realistic support
+        # path) arrive with no reversal — without this the buyer gets their
+        # money back and the seller keeps theirs, platform eats 100%. Same
+        # idempotency key as /refund's refund_purchase, so a double reversal
+        # is a Stripe-side no-op.
         stripe.api_key = settings.STRIPE_SECRET_KEY
-        transfer = stripe.Transfer.retrieve(transfer_id)
-        if not transfer.get("reversed"):
-            stripe.Transfer.create_reversal(
-                transfer_id,
-                amount=transfer["amount"],
-                idempotency_key=f"reversal:{transfer_id}",
-            )
-    elif seller_id:
-        # Pre-payout refund: reconcile the held balance. Debit the SELLER
-        # SHARE (what fulfillment credited), not the buyer-paid price. A
-        # False return (balance already short — a concurrent flush+refund
-        # race or manual ops correction) leaves the row alone rather than
-        # going negative.
-        amount = int(purchase.get("seller_share_cents", purchase.get("price_paid_cents", 0)))
-        if amount > 0:
-            await marketplace_repo.decrement_held_balance(seller_id=seller_id, amount_cents=amount)
+        stripe.Transfer.create_reversal(
+            transfer_id,
+            amount=amount,
+            idempotency_key=f"reversal:{transfer_id}",
+        )
+    if fresh.get("payout_accounted"):
+        return  # booking already settled the held balance for this purchase
+    claimed = await marketplace_repo.mark_payout_accounted(buyer_id=fresh["buyer_id"], purchase_id=fresh["purchase_id"])
+    if claimed and amount > 0:
+        # Debit the SELLER SHARE (what fulfillment credited), not the
+        # buyer-paid price. A False return (balance already short — manual
+        # ops correction) leaves the row alone rather than going negative.
+        await marketplace_repo.decrement_held_balance(seller_id=seller_id, amount_cents=amount)
 
 
 async def _handle_account_updated(account: dict) -> None:
@@ -420,10 +438,11 @@ async def _flush_seller_held_balance(
     has never been written by a real checkout — the webhook was mis-scoped in
     dev and absent in prod.)
     """
-    pa = await marketplace_repo.get_payout_account(seller_id, consistent=True) or {}
-    if pa.get("balance_held_cents", 0) <= 0 and known_purchase_key is None:
-        return
-
+    # No zero-balance early exit: recovery work (stamped-but-unaccounted rows,
+    # unreversed revoked transfers) must run even when the held balance reads
+    # zero — a refund race can drain the balance while leaving a transfer
+    # that still needs its compensating reversal. Volumes make the extra
+    # pagination free.
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     processed: set[str] = set()
 
@@ -440,15 +459,10 @@ async def _flush_seller_held_balance(
         """
         revoked = fresh.get("license_key_revoked") or fresh.get("status") == "refunded"
         if revoked:
-            # The refund path settled the held balance; the transfer itself is
-            # the leak — compensate with the shared-idempotency-key reversal.
-            stripe.api_key = settings.STRIPE_SECRET_KEY
-            stripe.Transfer.create_reversal(
-                transfer_id,
-                amount=amount,
-                idempotency_key=f"reversal:{transfer_id}",
-            )
-            await marketplace_repo.mark_payout_accounted(buyer_id=fresh["buyer_id"], purchase_id=fresh["purchase_id"])
+            # Same settlement helper the refund handler uses — reverse the
+            # transfer (idempotent) and let the accounting claim decide who
+            # debits the held share exactly once.
+            await _settle_refunded_purchase(dict(fresh, seller_transfer_id=transfer_id), seller_id=seller_id)
             return
         claimed = await marketplace_repo.mark_payout_accounted(
             buyer_id=fresh["buyer_id"], purchase_id=fresh["purchase_id"]

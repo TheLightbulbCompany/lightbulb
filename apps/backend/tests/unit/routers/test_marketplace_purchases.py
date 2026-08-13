@@ -313,7 +313,7 @@ def test_charge_refunded_debits_held_balance_when_pre_payout(
 @patch("routers.marketplace_purchases.license_service.revoke")
 @patch("core.repositories.marketplace_repo._purchases_table")
 @patch("core.repositories.marketplace_repo._payout_accounts_table")
-def test_charge_refunded_already_reversed_transfer_skips_debit_and_reversal(
+def test_charge_refunded_already_booked_transfer_reverses_idempotently_without_debit(
     mock_pa_table,
     mock_purchases_table,
     mock_revoke,
@@ -323,9 +323,10 @@ def test_charge_refunded_already_reversed_transfer_skips_debit_and_reversal(
     mock_reversal,
     client,
 ):
-    """When the purchase was already transferred AND the transfer already
-    reversed (the /refund route ran first), charge.refunded must neither
-    debit the held balance nor double-reverse."""
+    """When the purchase was already transferred AND booked
+    (payout_accounted), the flush's totals already moved the share out of the
+    held balance — charge.refunded re-issues the idempotent reversal (a
+    Stripe-side no-op when /refund already reversed) and must NOT debit."""
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
@@ -334,6 +335,7 @@ def test_charge_refunded_already_reversed_transfer_skips_debit_and_reversal(
         "type": "charge.refunded",
         "data": {"object": {"payment_intent": "pi_2", "refunded": True}},
     }
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
             "Items": [
@@ -343,13 +345,14 @@ def test_charge_refunded_already_reversed_transfer_skips_debit_and_reversal(
                     "listing_id": "l1",
                     "seller_id": "s1",
                     "price_paid_cents": 2000,
+                    "seller_share_cents": 1700,
                     "seller_transfer_id": "tr_xyz",  # already paid out
+                    "payout_accounted": True,  # flush booked the totals
                     "license_key_revoked": False,
                 }
             ]
         }
     )
-    mock_tr_retrieve.return_value = {"id": "tr_xyz", "amount": 1700, "reversed": True}
 
     async def fake_revoke(*, purchase_id, buyer_id, reason):
         return None
@@ -365,9 +368,11 @@ def test_charge_refunded_already_reversed_transfer_skips_debit_and_reversal(
     assert resp.status_code == 200, resp.text
 
     mock_revoke.assert_awaited_once()
-    # Held balance NOT decremented — the Transfer Reversal moved the seller side.
+    # Held balance NOT decremented — booking already settled it.
     mock_pa_table.return_value.update_item.assert_not_called()
-    mock_reversal.assert_not_called()
+    # Reversal re-issued under the shared idempotency key (Stripe no-op).
+    mock_reversal.assert_called_once()
+    assert mock_reversal.call_args.kwargs["idempotency_key"] == "reversal:tr_xyz"
 
 
 @patch("routers.marketplace_purchases.stripe.Transfer.create_reversal")
@@ -411,6 +416,7 @@ def test_charge_refunded_dashboard_refund_reverses_seller_transfer(
                     "price_paid_cents": 2000,
                     "seller_share_cents": 1700,
                     "seller_transfer_id": "tr_abc",
+                    "payout_accounted": True,  # flush booked the totals
                     "license_key_revoked": False,
                 }
             ]

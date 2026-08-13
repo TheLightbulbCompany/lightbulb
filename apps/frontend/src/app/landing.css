@@ -2325,12 +2325,12 @@
 
 .ld-demo-body {
   display: flex;
-  height: min(640px, 74vh);
-  min-height: 480px;
+  height: min(780px, 84vh);
+  min-height: 520px;
 }
 
 .ld-demo-sidebar {
-  width: 240px;
+  width: 280px;
   flex-shrink: 0;
 }
 
@@ -2339,6 +2339,82 @@
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  background: var(--cream);
+}
+
+/* Slim white header row — the workspace shell's `.workspace-header` at demo
+   scale: file-browser + layout-reset icons left, help + avatar right. */
+.ld-demo-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--edge);
+  background: #fff;
+}
+
+.ld-topbar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--mute);
+}
+
+/* Three-panel dock — chat left (full height), Dashboard right-top, Inbox
+   right-bottom, separated by hairline gaps like dockview's sashes. */
+.ld-dock {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 53fr) minmax(0, 47fr);
+  gap: 1px;
+  background: var(--edge);
+}
+
+.ld-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ld-panel--left {
+  grid-row: 1 / 3;
+}
+
+/* Dockview-style tab strip: light-gray container, active tab white. */
+.ld-tabstrip {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  background: #ececec;
+}
+
+.ld-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.ld-tab-x {
+  color: #9b9b9b;
+}
+
+.ld-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--cream);
 }
 
@@ -2355,6 +2431,25 @@
 
 .ld-demo-mobilenav {
   display: none;
+}
+
+/* Below ~1000px there isn't room for three panels — show ONE, picked by the
+   dock's data-pane (sidebar still visible down to 720px and drives it). */
+@media (max-width: 1000px) {
+  .ld-dock {
+    display: flex;
+  }
+
+  .ld-dock .ld-panel {
+    display: none;
+    flex: 1;
+  }
+
+  .ld-dock[data-pane="left"] .ld-panel--left,
+  .ld-dock[data-pane="dashboard"] .ld-panel--dash,
+  .ld-dock[data-pane="inbox"] .ld-panel--inbox {
+    display: flex;
+  }
 }
 
 @media (max-width: 720px) {

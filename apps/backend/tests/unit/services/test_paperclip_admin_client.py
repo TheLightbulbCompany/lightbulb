@@ -623,6 +623,19 @@ async def test_delete_routine_archives_via_patch(client_factory):
     assert out["status"] == "archived"
 
 
+async def test_delete_routine_swallows_404(client_factory):
+    """Deleting an already-gone routine stays an idempotent no-op — the
+    PATCH-based archive must preserve the old DELETE contract for retries
+    and double-deletes."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "Routine not found"})
+
+    client = client_factory(handler)
+    out = await client.delete_routine(session_cookie="sess", routine_id="rt_gone")
+    assert out == {}
+
+
 async def test_rotate_routine_trigger_secret_posts_empty_body(client_factory):
     """Rotate posts an empty object and returns the fresh secret material."""
     captured: dict = {}

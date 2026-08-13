@@ -2230,12 +2230,20 @@ class PaperclipAdminClient:
         routines, and the archived row keeps its run history.
 
         Maps to ``PATCH /api/routines/{routineId}`` with status=archived.
+        A 404 (routine already gone) is swallowed as success, preserving the
+        idempotent-delete contract callers rely on for retries and
+        double-deletes.
         """
-        return await self._patch(
-            f"/api/routines/{routine_id}",
-            json={"status": "archived"},
-            session_cookie=session_cookie,
-        )
+        try:
+            return await self._patch(
+                f"/api/routines/{routine_id}",
+                json={"status": "archived"},
+                session_cookie=session_cookie,
+            )
+        except PaperclipApiError as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
 
     async def run_routine(
         self,

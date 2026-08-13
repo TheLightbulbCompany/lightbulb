@@ -58,6 +58,7 @@ async def checkout(
         raise HTTPException(status_code=400, detail="listing is free")
 
     stripe.api_key = settings.STRIPE_SECRET_KEY
+    checkout_ts = int(time.time())
     session = stripe.checkout.Session.create(
         mode="payment",
         success_url=_validate_return_url(payload.success_url, "success_url"),
@@ -81,22 +82,30 @@ async def checkout(
             "seller_id": listing["seller_id"],
         },
         payment_intent_data={
-            "transfer_group": f"purchase_{listing['listing_id']}_{auth.user_id}_{int(time.time())}",
+            "transfer_group": f"purchase_{listing['listing_id']}_{auth.user_id}_{checkout_ts}",
         },
-        idempotency_key=f"checkout:{auth.user_id}:{listing['listing_id']}:{int(time.time() // 60)}",
+        # Same timestamp as transfer_group: a second click in the same second
+        # replays the identical request (Stripe returns the same session); a
+        # later click mints a fresh key. A coarser key with a finer-grained
+        # body (the old minute-bucket) made Stripe reject the retry with
+        # idempotency_error — same key, different params — a 500 to the buyer.
+        idempotency_key=f"checkout:{auth.user_id}:{listing['listing_id']}:{checkout_ts}",
     )
     return {"checkout_url": session.url, "session_id": session.id}
 
 
 @router.post(
     "/webhooks/stripe-marketplace",
-    summary="Stripe Connect webhook receiver for marketplace events",
+    summary="Stripe webhook receiver for marketplace events",
     description=(
-        "Receives Stripe Connect webhook events for the marketplace. Verifies "
-        "the signature against STRIPE_CONNECT_WEBHOOK_SECRET (set in the task "
-        "definition). Handles checkout.session.completed (records purchase + "
-        "license + held balance), charge.refunded (revokes license), and "
-        "account.updated (flushes held balance to seller's Connect account). "
+        "Receives Stripe webhook events for the marketplace from TWO Stripe "
+        "endpoint registrations pointing at this URL: a platform-scoped one "
+        "(checkout.session.completed / async_payment_succeeded / "
+        "charge.refunded — checkout runs on the platform balance, so Stripe "
+        "only delivers these to 'events on your account' endpoints) and a "
+        "Connect-scoped one (account.updated for connected accounts). Each "
+        "registration has its own signing secret, so verification tries "
+        "STRIPE_MARKETPLACE_WEBHOOK_SECRET then STRIPE_CONNECT_WEBHOOK_SECRET. "
         "Other event types are acknowledged 200 but not acted on. Idempotent "
         "via webhook_dedup."
     ),
@@ -105,12 +114,25 @@ async def stripe_webhook(
     request: Request,
     stripe_signature: str = Header(..., alias="stripe-signature"),
 ):
-    """Stripe Connect webhook receiver for marketplace events."""
+    """Stripe webhook receiver for marketplace events (platform + Connect)."""
     body = await request.body()
-    try:
-        event = stripe.Webhook.construct_event(body, stripe_signature, settings.STRIPE_CONNECT_WEBHOOK_SECRET)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"invalid signature: {e}")
+    event = None
+    last_error: Exception | None = None
+    # Two Stripe endpoint registrations deliver to this URL (platform-scoped
+    # and Connect-scoped), each with its own signing secret. A signature
+    # matches exactly one of them.
+    for secret in (settings.STRIPE_MARKETPLACE_WEBHOOK_SECRET, settings.STRIPE_CONNECT_WEBHOOK_SECRET):
+        if not secret:
+            continue
+        try:
+            event = stripe.Webhook.construct_event(body, stripe_signature, secret)
+            break
+        except Exception as e:
+            last_error = e
+    if event is None:
+        raise HTTPException(
+            status_code=400, detail=f"invalid signature: {last_error or 'no webhook secret configured'}"
+        )
 
     # Claim-then-rollback dedup. Record the event first (so two concurrent
     # deliveries can't both run the handler), but if the handler raises
@@ -118,7 +140,16 @@ async def stripe_webhook(
     # Without the rollback, a transient DDB/Stripe error surfaces as 500
     # once and the retry sees ALREADY_SEEN and silently drops the event,
     # losing the purchase / license grant / held-balance update.
-    dedup = await webhook_dedup.record_event_or_skip(event_id=event["id"], source="stripe-marketplace")
+    #
+    # The dedup key is SOURCE-PREFIXED: Stripe mints ONE event id per
+    # occurrence and delivers it to every subscribed endpoint, and the
+    # billing webhook (/billing/webhooks/stripe) subscribes to
+    # checkout.session.completed too. Bare event-id keying in the shared
+    # dedup table let whichever endpoint claimed first silently swallow
+    # the other's processing (lost purchase or lost credit grant).
+    dedup = await webhook_dedup.record_event_or_skip(
+        event_id=f"stripe-marketplace:{event['id']}", source="stripe-marketplace"
+    )
     if dedup == WebhookDedupResult.ALREADY_SEEN:
         return {"status": "replay-acked"}
 
@@ -143,7 +174,7 @@ async def stripe_webhook(
         # async_payment_failed in particular is a no-op because we never
         # granted the license in the first place (gated above).
     except Exception:
-        await webhook_dedup.delete_event(event_id=event["id"])
+        await webhook_dedup.delete_event(event_id=f"stripe-marketplace:{event['id']}")
         raise
     return {"status": "ok"}
 
@@ -198,6 +229,11 @@ async def _handle_checkout_completed(session: dict) -> None:
     purchase_id = f"cs_{session_id}"
     license_key = license_service.generate()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # Platform fee: the buyer pays price_paid_cents; the seller's held-balance
+    # credit (and later Transfer) is the post-fee share. We charge on the
+    # platform account and transfer separately, so the fee is simply the
+    # credit delta — no application_fee_amount involved.
+    seller_share = amount * (100 - settings.MARKETPLACE_PLATFORM_FEE_PERCENT) // 100
     await marketplace_repo.transact_record_purchase_and_credit_seller(
         purchase_id=purchase_id,
         buyer_id=buyer_id,
@@ -205,12 +241,33 @@ async def _handle_checkout_completed(session: dict) -> None:
         listing_id=listing_id,
         version=version,
         amount_cents=amount,
+        seller_share_cents=seller_share,
         payment_intent_id=payment_intent_id or "",
         session_id=session_id,
         transfer_group=transfer_group,
         license_key=license_key,
         now_iso=now_iso,
     )
+
+    # Flush at fulfillment, not just on account.updated: a seller who
+    # onboarded BEFORE this sale never gets another account.updated, so
+    # without this the money sits in balance_held_cents forever. Best-effort:
+    # fulfillment above is already committed and idempotent, and a failed
+    # flush self-heals on the next sale or account.updated (the held balance
+    # is untouched until a transfer actually lands).
+    try:
+        pa = await marketplace_repo.get_payout_account(seller_id) or {}
+        connect_account_id = pa.get("stripe_connect_account_id")
+        if connect_account_id:
+            acct = stripe.Account.retrieve(connect_account_id)
+            if acct.get("payouts_enabled"):
+                await _flush_seller_held_balance(seller_id=seller_id, connect_account_id=connect_account_id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "post-fulfillment payout flush failed (will retry on next sale/account.updated)"
+        )
 
 
 async def _handle_charge_refunded(charge: dict) -> None:
@@ -220,6 +277,12 @@ async def _handle_charge_refunded(charge: dict) -> None:
     payment_intent_id = charge.get("payment_intent")
     if not payment_intent_id:
         return
+    # charge.refunded also fires on PARTIAL refunds; `refunded` is Stripe's
+    # fully-refunded flag. Revoking the license (and clawing back the whole
+    # seller share) on a partial refund would punish a purchase the buyer
+    # still holds — skip and let a later full refund settle it.
+    if not charge.get("refunded"):
+        return
     purchase = await marketplace_repo.find_purchase_by_payment_intent(payment_intent_id)
     if purchase is None:
         return
@@ -228,14 +291,6 @@ async def _handle_charge_refunded(charge: dict) -> None:
         buyer_id=purchase["buyer_id"],
         reason="refunded",
     )
-    # Reconcile held balance for pre-payout refunds. The original
-    # checkout added price_paid_cents to balance_held_cents but nothing
-    # subtracts on refund — combined with R11's skip-refunded-in-flush,
-    # the seller's held balance would stay permanently inflated. Only
-    # decrement when seller_transfer_id is absent: if the transfer
-    # already happened, refund_purchase already triggered a Transfer
-    # Reversal which separately clawed back the money on the seller
-    # ledger, so the held balance was already drained at flush time.
     seller_id = purchase.get("seller_id") or (purchase.get("metadata") or {}).get("seller_id")
     if not seller_id:
         # Older purchase rows wrote seller_id into checkout metadata only;
@@ -246,12 +301,32 @@ async def _handle_charge_refunded(charge: dict) -> None:
             v_at_purchase = int(purchase.get("listing_version_at_purchase", 1)) or 1
             li = await marketplace_repo.get_listing(listing_id, v_at_purchase)
             seller_id = (li or {}).get("seller_id")
-    if not purchase.get("seller_transfer_id") and seller_id:
-        amount = int(purchase.get("price_paid_cents", 0))
+
+    transfer_id = purchase.get("seller_transfer_id")
+    if transfer_id:
+        # The seller was already paid. When the refund came through our
+        # /refund route, refund_purchase already reversed the transfer; but a
+        # refund issued from the Stripe DASHBOARD (the realistic support
+        # path) arrives here with no reversal — without this the buyer gets
+        # their money back and the seller keeps theirs, platform eats 100%.
+        # Same idempotency key as refund_purchase, so whichever path ran
+        # first wins and the other is a Stripe-side no-op.
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        transfer = stripe.Transfer.retrieve(transfer_id)
+        if not transfer.get("reversed"):
+            stripe.Transfer.create_reversal(
+                transfer_id,
+                amount=transfer["amount"],
+                idempotency_key=f"reversal:{transfer_id}",
+            )
+    elif seller_id:
+        # Pre-payout refund: reconcile the held balance. Debit the SELLER
+        # SHARE (what fulfillment credited), not the buyer-paid price. A
+        # False return (balance already short — a concurrent flush+refund
+        # race or manual ops correction) leaves the row alone rather than
+        # going negative.
+        amount = int(purchase.get("seller_share_cents", purchase.get("price_paid_cents", 0)))
         if amount > 0:
-            # A False return (balance already short of this amount — likely
-            # a concurrent flush+refund race or a manual ops correction)
-            # leaves the row alone rather than going negative.
             await marketplace_repo.decrement_held_balance(seller_id=seller_id, amount_cents=amount)
 
 
@@ -283,9 +358,21 @@ async def _handle_account_updated(account: dict) -> None:
     if not seller_id:
         return
     pa = await marketplace_repo.get_payout_account(seller_id) or {}
-    held = pa.get("balance_held_cents", 0)
     connect_account_id = pa.get("stripe_connect_account_id") or account.get("id")
-    if held <= 0 or not connect_account_id:
+    if not connect_account_id:
+        return
+    await _flush_seller_held_balance(seller_id=seller_id, connect_account_id=connect_account_id)
+
+
+async def _flush_seller_held_balance(*, seller_id: str, connect_account_id: str) -> None:
+    """Transfer every untransferred, unrefunded purchase's seller share.
+
+    Called from account.updated (seller onboards after selling) AND from
+    checkout fulfillment (seller onboarded before selling) — the two
+    orderings between "sale happened" and "payouts enabled".
+    """
+    pa = await marketplace_repo.get_payout_account(seller_id) or {}
+    if pa.get("balance_held_cents", 0) <= 0:
         return
 
     # The repo pages through all of the seller's listings — a prolific
@@ -308,21 +395,29 @@ async def _handle_account_updated(account: dict) -> None:
             # direct accounting loss: buyer refunded AND seller paid.
             if purchase.get("license_key_revoked") or purchase.get("status") == "refunded":
                 continue
-            amount = int(purchase.get("price_paid_cents", 0))
+            # Seller share is what fulfillment credited post-fee; legacy
+            # rows (pre-fee) carry only price_paid_cents, which WAS their
+            # credited amount.
+            amount = int(purchase.get("seller_share_cents", purchase.get("price_paid_cents", 0)))
             tg = purchase.get("stripe_transfer_group")
             if amount <= 0 or not tg:
                 continue  # legacy / malformed row
-            # listing-created-index is eventually consistent: a replayed
-            # account.updated (or a concurrent run) can re-read the same
-            # purchase before the previous run's seller_transfer_id is
-            # visible. Stripe's idempotency_key on transfer_held_balance
-            # catches the duplicate transfer (returns the existing
-            # transfer_id), but without an atomic guard we'd double-count
-            # the amount in transferred_total and the held balance would
-            # be decremented twice for one transfer. The repo's set-once
-            # conditional write is the source of truth for "this run wrote
-            # the seller_transfer_id" — only successful stamps increment
-            # the running total.
+            # Fresh strongly-consistent re-read before moving money: the
+            # listing-created-index feeding this loop is eventually
+            # consistent, and Stripe's idempotency keys expire after 24h
+            # while webhook retries run for days — a stale "untransferred"
+            # row here plus an expired key would double-pay.
+            fresh = await marketplace_repo.get_purchase(purchase["buyer_id"], purchase["purchase_id"]) or {}
+            if fresh.get("seller_transfer_id"):
+                continue
+            # A replayed account.updated (or a concurrent run) can still
+            # re-read the same purchase before the previous run's
+            # seller_transfer_id is visible. Stripe's idempotency_key on
+            # transfer_held_balance catches the duplicate transfer within
+            # 24h (returns the existing transfer_id), and the repo's
+            # set-once conditional write is the source of truth for "this
+            # run wrote the seller_transfer_id" — only successful stamps
+            # increment the running total.
             transfer_id = await payout_service.transfer_held_balance(
                 connect_account_id=connect_account_id,
                 amount_cents=amount,

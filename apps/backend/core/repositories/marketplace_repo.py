@@ -777,6 +777,7 @@ async def transact_record_purchase_and_credit_seller(
     listing_id: str,
     version: int,
     amount_cents: int,
+    seller_share_cents: int | None = None,
     payment_intent_id: str,
     session_id: str,
     transfer_group: str,
@@ -793,7 +794,13 @@ async def transact_record_purchase_and_credit_seller(
     buy = one session). On a replay the conditional fails, the ENTIRE
     transaction cancels, and neither the purchase nor the balance is written
     a second time -- returns False so the caller treats it as a no-op.
+
+    seller_share_cents is the post-platform-fee amount credited to the
+    seller's held balance (and later transferred); amount_cents remains what
+    the buyer paid. None (legacy callers/tests) means no fee: share = amount.
     """
+    if seller_share_cents is None:
+        seller_share_cents = amount_cents
     client = _ddb_client()
     try:
         await run_in_thread(
@@ -810,6 +817,7 @@ async def transact_record_purchase_and_credit_seller(
                             "listing_version_at_purchase": {"N": str(version)},
                             "entitlement_version_floor": {"N": str(version)},
                             "price_paid_cents": {"N": str(amount_cents)},
+                            "seller_share_cents": {"N": str(seller_share_cents)},
                             "stripe_payment_intent_id": {"S": payment_intent_id},
                             "stripe_checkout_session_id": {"S": session_id},
                             "stripe_transfer_group": {"S": transfer_group},
@@ -832,7 +840,7 @@ async def transact_record_purchase_and_credit_seller(
                         ),
                         "ExpressionAttributeValues": {
                             ":zero": {"N": "0"},
-                            ":amt": {"N": str(amount_cents)},
+                            ":amt": {"N": str(seller_share_cents)},
                             ":now": {"S": now_iso},
                         },
                     },
@@ -912,18 +920,39 @@ async def apply_flush_totals(*, seller_id: str, transferred_cents: int) -> None:
     """Post-flush bookkeeping: decrement (not zero) the held balance by the
     transferred amount -- a new purchase arriving mid-flush keeps its credit
     for the next flush -- and stamp onboarding completed + lifetime
-    earnings."""
+    earnings.
+
+    Floored at zero: a refund debit landing between this flush's read and
+    write can leave the balance short of the transferred total, and an
+    unconditional subtract would drive it negative (rendered as a negative
+    dollar figure on the seller dashboard). In that race the refund already
+    took its share, so clamping to zero is the correct settlement."""
     table = _payout_accounts_table()
-    await run_in_thread(
-        table.update_item,
-        Key={"seller_id": seller_id},
-        UpdateExpression=(
-            "SET balance_held_cents = balance_held_cents - :t, "
-            "    onboarding_status = :done, "
-            "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
-        ),
-        ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},
-    )
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"seller_id": seller_id},
+            UpdateExpression=(
+                "SET balance_held_cents = balance_held_cents - :t, "
+                "    onboarding_status = :done, "
+                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
+            ),
+            ConditionExpression="balance_held_cents >= :t",
+            ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        await run_in_thread(
+            table.update_item,
+            Key={"seller_id": seller_id},
+            UpdateExpression=(
+                "SET balance_held_cents = :zero, "
+                "    onboarding_status = :done, "
+                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
+            ),
+            ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},
+        )
 
 
 # ---------------------------------------------------------------------------

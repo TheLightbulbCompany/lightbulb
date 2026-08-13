@@ -164,8 +164,6 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
             forwarded_kwargs["headers"] = dict(request.headers)
             return httpx.Response(200, content=b'{"ok": true}')
 
-    audit_writes = []
-
     with (
         patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
         _mock_billing("active"),
@@ -174,7 +172,6 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
         ),
         patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
-        patch("routers.hooks_proxy.hook_event_repo.write_event", side_effect=lambda **kw: audit_writes.append(kw)),
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake",
@@ -202,36 +199,6 @@ def test_successful_forward_passes_body_and_writes_audit(client, fake_container)
 
     expected_host = urlparse(_settings.PUBLIC_API_BASE).netloc
     assert forwarded_kwargs["headers"]["x-forwarded-host"] == expected_host
-    # Audit row:
-    assert len(audit_writes) == 1
-    assert audit_writes[0]["status_code"] == 200
-    assert audit_writes[0]["hook_path"] == "wake"
-    assert audit_writes[0]["user_agent"] == "Stripe/1.0"
-
-
-def test_audit_write_failure_does_not_drop_proxied_call(client, fake_container):
-    """DDB outage must not turn a 200 into a 500."""
-
-    class StubTransport(httpx.AsyncBaseTransport):
-        async def handle_async_request(self, request):
-            return httpx.Response(200, content=b'{"ok": true}')
-
-    with (
-        patch("routers.hooks_proxy.container_repo.get_by_owner_id", new=AsyncMock(return_value=fake_container)),
-        _mock_billing("active"),
-        patch(
-            "routers.hooks_proxy.ecs_manager.resolve_running_container",
-            new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
-        ),
-        patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
-        patch("routers.hooks_proxy.hook_event_repo.write_event", side_effect=Exception("DDB down")),
-    ):
-        r = client.post(
-            "/api/v1/hooks/u/u_1/wake",
-            headers={"Authorization": "Bearer " + fake_container["hook_token"]},
-            json={},
-        )
-        assert r.status_code == 200
 
 
 def test_query_string_is_forwarded_verbatim(client, fake_container):
@@ -254,7 +221,6 @@ def test_query_string_is_forwarded_verbatim(client, fake_container):
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
         ),
         patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
-        patch("routers.hooks_proxy.hook_event_repo.write_event"),
     ):
         r = client.post(
             "/api/v1/hooks/u/u_1/wake?challenge=abc&signature=xyz",
@@ -315,7 +281,6 @@ def test_rate_limiter_returns_429_after_60_per_minute(client, fake_container):
             new=AsyncMock(return_value=(fake_container, "10.0.42.17")),
         ),
         patch("routers.hooks_proxy._client_factory", lambda: httpx.AsyncClient(transport=StubTransport())),
-        patch("routers.hooks_proxy.hook_event_repo.write_event"),
     ):
         # Exhaust the bucket (60).
         for _ in range(60):

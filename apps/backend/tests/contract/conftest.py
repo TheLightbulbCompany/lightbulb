@@ -33,7 +33,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         {
             "gateway-token-index": [("gateway_token", "HASH", "S")],
             "status-index": [("status", "HASH", "S")],
-            "owner-type-index": [("owner_type", "HASH", "S")],
         },
     ),
     "billing-accounts": (
@@ -45,7 +44,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
         [("owner_id", "HASH", "S"), ("update_id", "RANGE", "S")],
         {"status-index": [("status", "HASH", "S"), ("scheduled_at", "RANGE", "S")]},
     ),
-    "ops-cache": ([("cache_key", "HASH", "S")], {}),
     "channel-links": (
         [("owner_id", "HASH", "S"), ("sk", "RANGE", "S")],
         {"by-member": [("member_id", "HASH", "S"), ("owner_provider_agent", "RANGE", "S")]},
@@ -93,7 +91,6 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     "marketplace-payout-accounts": ([("seller_id", "HASH", "S")], {}),
     "marketplace-takedowns": ([("listing_id", "HASH", "S"), ("takedown_id", "RANGE", "S")], {}),
     "marketplace-sellers": ([("seller_id", "HASH", "S")], {"handle-index": [("handle", "HASH", "S")]}),
-    "hook-events": ([("owner_id", "HASH", "S"), ("event_id", "RANGE", "S")], {}),
 }
 
 

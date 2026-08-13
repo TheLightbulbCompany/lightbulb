@@ -17,7 +17,7 @@ github_hmac via X-Hub-Signature-256), verified upstream against the
 trigger row.
 
 **Owner binding.** The ``owner_id`` path segment drives edge gating
-(entitlement, rate limits, audit) — and because the upstream fire is
+(entitlement, rate limits) — and because the upstream fire is
 keyed purely by ``public_id``, the segment MUST NOT be trusted bare: a
 trial owner could name a paid owner's id and ride their entitlement.
 Before anything is forwarded we verify the trigger actually belongs to
@@ -53,9 +53,6 @@ trigger:
   lookups, bounding the Paperclip fan-out an unauthenticated flood can
   force. Cache hits skip it, so an in-flight flood of garbage public_ids
   cannot block already-bound triggers.
-
-**Audit.** Same posture as ``hooks_proxy``: best-effort row to
-``hook-events`` (kind="paperclip_trigger").
 
 **Provider signature-header normalization.** Verification is NATIVE — this
 proxy holds no secret and does no verification. Paperclip's own
@@ -126,7 +123,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.auth import is_org_owner_id
 from core.config import settings
-from core.repositories import billing_repo, hook_event_repo, integrations_repo
+from core.repositories import billing_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
@@ -529,21 +526,6 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
         }
     except httpx.RequestError as exc:
         logger.warning("trigger proxy upstream error owner=%s err=%s", owner_id, exc)
-
-    # Audit (best-effort — DDB outage must not drop a real webhook)
-    try:
-        hook_event_repo.write_event(
-            owner_id=owner_id,
-            hook_path=public_id,
-            kind="paperclip_trigger",
-            status_code=upstream_status,
-            source_ip=_extract_caller_ip(request),
-            user_agent=request.headers.get("User-Agent", ""),
-            request_size=len(body),
-            response_size=len(upstream_body),
-        )
-    except Exception as exc:  # noqa: BLE001 — best-effort by design
-        logger.warning("hook-events write failed owner=%s err=%s", owner_id, exc)
 
     return Response(
         status_code=upstream_status,

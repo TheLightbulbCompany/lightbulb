@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { createSignInToken, createUser } from './fixtures/clerk-admin';
+import { createUser } from './fixtures/clerk-admin';
+import { signIn } from './drivers/sign-in';
 
 /**
  * Landing Funnel journey: the deferred-auth path shipped in the landing
@@ -40,6 +41,10 @@ test.describe('Landing Funnel', () => {
     await page.screenshot({ path: 'test-results/landing-02-signup.png' });
 
     // ── 3. programmatic signup + same-tab ticket sign-in ──
+    // The Clerk widget does not initialize on /sign-up under headless CI, so
+    // sign in exactly the way the proven journey driver does — ticket
+    // strategy from the landing page, where Clerk demonstrably loads. The
+    // stash lives in sessionStorage and survives every same-tab navigation.
     const runId = `landing-${Date.now()}`;
     const email = `isol8-${runId}+clerk_test@example.com`;
     const userId = await createUser({
@@ -48,28 +53,7 @@ test.describe('Landing Funnel', () => {
       password: `E2e-${runId}-Aa1!`,
       runId,
     });
-    await page.waitForFunction(
-      () => {
-        const w = window as Window & { Clerk?: { loaded?: boolean; client?: unknown } };
-        return w.Clerk?.loaded === true && w.Clerk?.client != null;
-      },
-      { timeout: 30_000 },
-    );
-    const ticket = await createSignInToken({ secretKey, userId });
-    await page.evaluate(async (t: string) => {
-      const w = window as unknown as {
-        Clerk: {
-          client: {
-            signIn: {
-              create: (o: Record<string, string>) => Promise<{ createdSessionId: string }>;
-            };
-          };
-          setActive: (o: { session: string }) => Promise<void>;
-        };
-      };
-      const si = await w.Clerk.client.signIn.create({ strategy: 'ticket', ticket: t });
-      await w.Clerk.setActive({ session: si.createdSessionId });
-    }, ticket);
+    await signIn(page, BASE, userId);
 
     // ── 4. /chat: the replay hook must consume the stash; the in-chat
     // funnel ("Let's get started." / the path picker) must never render ──

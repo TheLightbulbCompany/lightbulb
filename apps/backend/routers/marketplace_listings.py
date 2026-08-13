@@ -698,11 +698,15 @@ async def deploy_listing(
     # Free listings already skip the check; paid listings need the explicit
     # identity bypass.
     is_seller = listing.get("seller_id") == auth.user_id
+    # Purchase identity is the RESOLVED owner (org id for org workspaces):
+    # the install is org-scoped, so keying entitlement to the individual
+    # admin would double-charge a second admin for an already-installed
+    # listing. Checkout records the same identity.
     if (
         price_cents > 0
         and not is_seller
         and not await marketplace_repo.has_unrevoked_purchase(
-            buyer_id=auth.user_id,
+            buyer_id=resolve_owner_id(auth),
             listing_id=listing["listing_id"],
         )
     ):

@@ -13,7 +13,7 @@ from typing import Annotated
 import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user, require_org_admin
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.repositories import marketplace_repo
 from core.services import license_service, payout_service
@@ -57,10 +57,16 @@ async def checkout(
         raise HTTPException(status_code=404, detail="listing not available")
     if listing["price_cents"] == 0:
         raise HTTPException(status_code=400, detail="listing is free")
+    # Purchase identity is the RESOLVED owner (org id for org workspaces, user
+    # id for personal): the install is org-scoped, so keying purchases to the
+    # individual admin would let a second org admin be charged again for a
+    # listing the org already owns. Deploy's entitlement check uses the same
+    # identity.
+    buyer_identity = resolve_owner_id(auth)
     # An entitled buyer must never reach Stripe again — the storefront's only
     # recovery path after a broken paid deploy used to re-prompt payment.
     # Consumers branch on this shape and deploy instead.
-    if await marketplace_repo.has_unrevoked_purchase(buyer_id=auth.user_id, listing_id=listing["listing_id"]):
+    if await marketplace_repo.has_unrevoked_purchase(buyer_id=buyer_identity, listing_id=listing["listing_id"]):
         raise HTTPException(status_code=409, detail={"error": "already_entitled"})
 
     stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -84,18 +90,18 @@ async def checkout(
             "listing_id": listing["listing_id"],
             "listing_slug": listing["slug"],
             "version": str(listing["version"]),
-            "buyer_id": auth.user_id,
+            "buyer_id": buyer_identity,
             "seller_id": listing["seller_id"],
         },
         payment_intent_data={
-            "transfer_group": f"purchase_{listing['listing_id']}_{auth.user_id}_{checkout_ts}",
+            "transfer_group": f"purchase_{listing['listing_id']}_{buyer_identity}_{checkout_ts}",
         },
         # Same timestamp as transfer_group: a second click in the same second
         # replays the identical request (Stripe returns the same session); a
         # later click mints a fresh key. A coarser key with a finer-grained
         # body (the old minute-bucket) made Stripe reject the retry with
         # idempotency_error — same key, different params — a 500 to the buyer.
-        idempotency_key=f"checkout:{auth.user_id}:{listing['listing_id']}:{checkout_ts}",
+        idempotency_key=f"checkout:{buyer_identity}:{listing['listing_id']}:{checkout_ts}",
     )
     return {"checkout_url": session.url, "session_id": session.id}
 
@@ -580,7 +586,7 @@ async def refund(
 ):
     """7-day refund window for buyers."""
     require_org_admin(auth)
-    purchase = await marketplace_repo.get_purchase(auth.user_id, purchase_id)
+    purchase = await marketplace_repo.get_purchase(resolve_owner_id(auth), purchase_id)
     if not purchase:
         raise HTTPException(status_code=404, detail="purchase not found")
     created_iso = purchase["created_at"]
@@ -596,7 +602,7 @@ async def refund(
         transfer_group=purchase.get("stripe_transfer_group", ""),
         full_amount_cents=purchase["price_paid_cents"],
     )
-    await license_service.revoke(purchase_id=purchase_id, buyer_id=auth.user_id, reason="refunded")
+    await license_service.revoke(purchase_id=purchase_id, buyer_id=resolve_owner_id(auth), reason="refunded")
     return {"refund_id": result.refund_id, "reversal_id": result.reversal_id}
 
 
@@ -619,7 +625,7 @@ async def my_purchases(auth: Annotated[AuthContext, Depends(get_current_user)]):
     # created_at in Python. Limit-then-cap-at-100 after sorting so a buyer
     # with >100 purchases sees the genuinely-newest 100, not an arbitrary
     # subset.
-    raws = await marketplace_repo.list_purchases_by_buyer(auth.user_id)
+    raws = await marketplace_repo.list_purchases_by_buyer(resolve_owner_id(auth))
     raws.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     raws = raws[:100]
 

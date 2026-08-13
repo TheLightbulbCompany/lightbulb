@@ -28,6 +28,24 @@ export const TALLY_ID = "agent-tally";
 
 export const DEMO_COMPANY_NAME = "Northwind Ceramics";
 
+/** Model subtitle shown under each roster row + on the composer chip. */
+export const DEMO_MODEL_NAME = "Claude Sonnet 4.6";
+
+/**
+ * Fixed pastel identities for the roster monograms (the real sidebar hashes
+ * agent ids through lib/agentDesign's PALETTE; canned ids hash to whatever,
+ * so the demo pins the swatches instead — same palette entries).
+ */
+export const DEMO_AGENT_LOOKS: Record<
+  string,
+  { monogram: string; accent: string; tint: string }
+> = {
+  [FRIDAY_ID]: { monogram: "Fr", accent: "#3a4a8a", tint: "#e8eaf3" },
+  [ATLAS_ID]: { monogram: "At", accent: "#2d6b4e", tint: "#e3eee7" },
+  [STITCH_ID]: { monogram: "St", accent: "#a35d1f", tint: "#f3ebe0" },
+  [TALLY_ID]: { monogram: "Ta", accent: "#7a3a5a", tint: "#f1e6ec" },
+};
+
 export const DEMO_AGENTS: CompanyAgent[] = [
   {
     id: FRIDAY_ID,

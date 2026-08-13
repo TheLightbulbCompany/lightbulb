@@ -6,6 +6,7 @@ in marketplace_listings. There is no CLI installer.
 """
 
 import calendar
+import logging
 import time
 from typing import Annotated
 
@@ -285,7 +286,22 @@ async def _handle_charge_refunded(charge: dict) -> None:
     # fully-refunded flag. Revoking the license (and clawing back the whole
     # seller share) on a partial refund would punish a purchase the buyer
     # still holds — skip and let a later full refund settle it.
+    #
+    # ponytail: the seller share is deliberately NOT clawed back
+    # proportionally on partials — the platform eats that slice. Partial
+    # refunds have no user-facing path (the /refund route is full-price
+    # only); they can only be issued by the platform operator from the
+    # Stripe dashboard, so the cost is an operator decision, surfaced by the
+    # warning below. Build proportional clawback (cumulative amount_refunded
+    # tracking on the purchase row + partial transfer reversals) only if
+    # partial refunds become a real support pattern.
     if not charge.get("refunded"):
+        logging.getLogger(__name__).warning(
+            "partial refund on payment_intent=%s (amount_refunded=%s): entitlement kept, "
+            "seller share NOT clawed back — platform absorbs this slice",
+            payment_intent_id,
+            charge.get("amount_refunded"),
+        )
         return
     purchase = await marketplace_repo.find_purchase_by_payment_intent(payment_intent_id)
     if purchase is None:

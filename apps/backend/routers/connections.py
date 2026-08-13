@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import logging
@@ -30,7 +29,6 @@ from core.services.credentials import (
     aws_cfn,
     connection_lock,
     integration_secret_store,
-    meta_token_refresh,
     oauth_app_store,
     oauth_dance,
     registry,
@@ -256,8 +254,8 @@ def _connection_row(
     An ALREADY-CONNECTED owner is never requestable, even if the gate has since
     closed on them (allowlist edited, env changed). Masking a live credential as
     "unavailable" would hide a working integration AND strip its only Disconnect
-    affordance, while the lazy token refresher below kept renewing it — an
-    unrevokable credential the owner is told they don't have. Revocation must
+    affordance — an unrevokable credential the owner is told they don't have,
+    still live and still usable by their agents. Revocation must
     always survive a gate change, so teardown does not consult the gate either
     (see `_get_provider_for_teardown`).
     """
@@ -355,11 +353,6 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
-    # Lazy server-side refresh for backend-refreshed tokens (Instagram): every
-    # Settings visit inside the refresh window renews the 60-day token in the
-    # background. Fire-and-forget — the listing must not wait on Graph API.
-    if connected.get("instagram") == "connected":
-        asyncio.create_task(meta_token_refresh.refresh_instagram_if_stale(owner_id))
     connections = []
     for k, v in registry.all_providers().items():
         # A gate still means HIDDEN unless the provider opts into being requested,
@@ -722,12 +715,10 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
             raise HTTPException(status_code=400, detail="the account parameter is only supported for google")
         await _disconnect_one_google_account(owner_id, p, account)
         return {"status": "disconnected", "provider": provider, "account": account}
-    # Serialize the teardown against a concurrent background refresh (Instagram's
-    # lazy token refresh writes EFS + SM fire-and-forget from GET /connections).
-    # The refresh takes the same per-owner lock around its recheck→write section,
-    # so whichever runs second sees the other's completed state — a disconnect can
-    # no longer be undone by an in-flight refresh. Uncontended for providers with
-    # no background writer.
+    # Serialize the teardown against an in-flight connect: the OAuth callback
+    # takes the same per-owner lock around its write section, so whichever runs
+    # second sees the other's completed state and a disconnect can no longer be
+    # undone by a callback still finishing its writes.
     async with connection_lock.connection_lock(owner_id, provider):
         await _disconnect_teardown(owner_id, provider, p)
     return {"status": "disconnected", "provider": provider}
@@ -902,10 +893,10 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
         # the connections page with a retryable error instead of a 500.
         return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=oauth_exchange")
     p = registry.get_provider(prov)
-    # Serialize the connect writes against a concurrent disconnect or background
-    # refresh (same per-owner lock all three take): a lazy Instagram refresh that
-    # captured the old token before this connect must not clobber the credential
-    # this callback stores. Taken AFTER the exchange network call, never around it.
+    # Serialize the connect writes against a concurrent disconnect (both take the
+    # same per-owner lock), so a disconnect landing mid-connect cannot be undone
+    # by this callback finishing its writes afterwards. Taken AFTER the exchange
+    # network call, never around it.
     async with connection_lock.connection_lock(owner_id, prov):
         # Retain the credential in Secrets Manager only when the backend is the
         # custodian. Actor-refresh providers (e.g. gog) self-refresh inside the

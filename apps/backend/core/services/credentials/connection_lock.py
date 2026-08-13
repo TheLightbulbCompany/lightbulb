@@ -1,18 +1,21 @@
 """Per-(owner, provider) async lock serializing connection-mutating operations.
 
-The one background writer in the credential layer is the Instagram token refresh
-(``meta_token_refresh``), fired fire-and-forget from ``GET /connections``. Without
-serialization, a ``DELETE /connections/instagram`` that lands while a refresh is
-mid-write can be undone by the refresh's ``apply_connection`` + ``put`` — the
-materializer's own Graph ``/me`` call and EFS write give a wide interleave window
-— resurrecting a live credential + re-enabled skill behind a disconnected UI.
+Connect (the OAuth callback) and disconnect both mutate the same three places —
+Secrets Manager, the EFS materialization, and the status row — and a materializer
+can spend seconds in a provider API call and an EFS write between them. Without
+serialization, a ``DELETE /connections/<provider>`` landing mid-connect can be
+undone by the callback finishing its writes afterwards, resurrecting a live
+credential and re-enabled skill behind a disconnected UI.
 
 The backend runs single-instance (ECS ``desiredCount=1``; multi-instance is the
-still-open #1196), so an in-process ``asyncio.Lock`` fully serializes the two on
-the actual deployment. The refresh holds the lock around its recheck→write
-section (NOT the slow Meta network call), and disconnect holds it around its
-teardown; whichever runs second sees the other's completed state. When
-multi-instance lands, this becomes a distributed lock.
+still-open #1196), so an in-process ``asyncio.Lock`` fully serializes them on the
+actual deployment. Each holds the lock around its write section, never around a
+slow provider network call; whichever runs second sees the other's completed
+state. When multi-instance lands, this becomes a distributed lock.
+
+Note there is no longer a background writer here: Instagram's token renewal moved
+into the container (``skills/instagram/token.sh``), which touches only the EFS
+credentials file the agent itself reads.
 """
 
 from __future__ import annotations

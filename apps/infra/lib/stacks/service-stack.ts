@@ -130,8 +130,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     marketplacePayoutAccountsTable: dynamodb.Table;
     marketplaceTakedownsTable: dynamodb.Table;
     marketplaceSellersTable: dynamodb.Table;
-    hookEventsTable: dynamodb.Table;
-    opsCacheTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -704,19 +702,6 @@ export class ServiceStack extends cdk.Stack {
     props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
     props.database.marketplaceSellersTable.grantReadWriteData(this.taskRole);
-
-    // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
-    // T5 repo writes one row per delivery; T6 proxy + admin views read.
-    // KMS encrypt/decrypt is already covered by the broader KmsAccess
-    // statement above (kmsKeyArn is the same CMK the table uses).
-    props.database.hookEventsTable.grantReadWriteData(this.taskRole);
-
-    // Platform-ops fleet cache. The merged ops layer reads AND writes this
-    // table: ops_cache_repo.get()/put() are called from ecs_ops.fleet_grid()
-    // with no try/except, so without this grant the first get() raises
-    // AccessDeniedException and 500s the ops fleet endpoint. The backend
-    // resolves the table by name via get_table("ops-cache") + prefix.
-    props.database.opsCacheTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(

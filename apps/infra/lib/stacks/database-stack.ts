@@ -51,16 +51,6 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplaceTakedownsTable: dynamodb.Table;
   public readonly marketplaceSellersTable: dynamodb.Table;
 
-  // OpenClaw webhook ingress audit log (T4 of openclaw-hook-token-provisioning).
-  // Per-owner event history for /hooks/{owner_id}/{path} requests proxied
-  // into the per-user OpenClaw container. See T5 (repo) + T6 (proxy router).
-  public readonly hookEventsTable: dynamodb.Table;
-
-  // Platform-ops read-through cache (platform-ops-phase1). TTL'd projections
-  // of expensive live reads (ECS fleet counts, CFN deploy/stack status) served
-  // to the operator ops API. Wipeable cache state — never a source of truth.
-  public readonly opsCacheTable: dynamodb.Table;
-
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
 
@@ -119,10 +109,6 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
     });
-    this.containersTable.addGlobalSecondaryIndex({
-      indexName: "owner-type-index",
-      partitionKey: { name: "owner_type", type: dynamodb.AttributeType.STRING },
-    });
 
     this.billingTable = createTable("BillingTable", "billing-accounts", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
@@ -146,11 +132,6 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "scheduled_at", type: dynamodb.AttributeType.STRING },
-    });
-
-    this.opsCacheTable = createTable("OpsCacheTable", "ops-cache", {
-      partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "ttl",
     });
 
     this.channelLinksTable = createTable("ChannelLinksTable", "channel-links", {
@@ -322,11 +303,6 @@ export class DatabaseStack extends cdk.Stack {
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
     });
     this.marketplaceListingsTable.addGlobalSecondaryIndex({
-      indexName: "slug-version-index",
-      partitionKey: { name: "slug", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
-    });
-    this.marketplaceListingsTable.addGlobalSecondaryIndex({
       indexName: "seller-created-index",
       partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
@@ -386,18 +362,6 @@ export class DatabaseStack extends cdk.Stack {
     this.marketplaceSellersTable.addGlobalSecondaryIndex({
       indexName: "handle-index",
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
-    });
-
-    // OpenClaw webhook ingress audit table — every /hooks/{owner_id}/{path}
-    // delivery (signature verified, body proxied into the per-user container)
-    // appends a row keyed by owner + ULID event_id. TTL `expires_at` (set by
-    // the hook router to ~30d) drops rows automatically. PITR + customer-
-    // managed KMS to match the rest of this stack. T4 of
-    // openclaw-hook-token-provisioning; consumed by T5 repo + T6 proxy.
-    this.hookEventsTable = createTable("HookEventsTable", "hook-events", {
-      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
-      timeToLiveAttribute: "expires_at",
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

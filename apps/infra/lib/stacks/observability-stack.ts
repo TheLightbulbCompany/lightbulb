@@ -100,32 +100,6 @@ interface AlarmDef {
 export class ObservabilityStack extends cdk.Stack {
   public readonly pageTopic: sns.Topic;
   public readonly warnTopic: sns.Topic;
-  /**
-   * ARNs of the page-tier CloudWatch alarms. Consumed by FisStack (dev only)
-   * as FIS experiment stop-conditions: a real customer-impacting page alarm
-   * aborts a running chaos experiment. Populated only with page-severity
-   * alarms — warn/cost alarms are deliberately excluded.
-   */
-  public readonly pageAlarmArns: string[] = [];
-  /**
-   * CURATED FIS stop-condition set — the *universal* one applied to every
-   * chaos experiment. ONLY rate-based, NOT_BREACHING blast-gauge alarms that
-   * cannot self-trip on the absence of traffic and that measure real
-   * customer impact: P9 (alb-5xx-rate), P10 (apigw-ws-5xx-rate),
-   * W10 (chat-error-rate). FIS caps stop-conditions at 5 per template, so
-   * this list is deliberately small — it is NOT `pageAlarmArns` (~12 alarms,
-   * over the cap and full of breach-on-event trip-wires that would abort an
-   * experiment for unrelated reasons). Wired in FisStack as the universal
-   * stop set.
-   */
-  public readonly fisStopAlarmArns: string[] = [];
-  /**
-   * CURATED FIS stop-condition set for CONTAINER scenarios (S1 container-kill,
-   * S2 cpu-stress). These additionally watch P1 (container-error-state) on top
-   * of the universal `fisStopAlarmArns`, so a container scenario that drives a
-   * per-user box into a stuck/error state aborts. Still ≤5 entries.
-   */
-  public readonly fisContainerStopAlarmArns: string[] = [];
   private readonly envName: string;
 
   constructor(scope: Construct, id: string, props: ObservabilityStackProps) {
@@ -199,8 +173,7 @@ export class ObservabilityStack extends cdk.Stack {
   /**
    * Creates a single CloudWatch alarm from a definition object.
    *
-   * Wires the alarm to its severity's SNS topic and, for the page tier,
-   * registers it as a FIS stop-condition source. EVERY alarm in this stack
+   * Wires the alarm to its severity's SNS topic. EVERY alarm in this stack
    * goes through here.
    *
    * Pass `metricName` for a custom Isol8-namespace metric -- `env` and
@@ -249,11 +222,6 @@ export class ObservabilityStack extends cdk.Stack {
       ),
     );
 
-    // Collect page-tier alarms as FIS stop-condition sources (dev only).
-    if (def.severity === "page") {
-      this.pageAlarmArns.push(alarm.alarmArn);
-    }
-
     return alarm;
   }
 
@@ -275,13 +243,6 @@ export class ObservabilityStack extends cdk.Stack {
       severity: "page",
       description: "Per-user OpenClaw container in stuck/error state",
     });
-    // P1 is the container-scenario-specific FIS stop-condition (added on top
-    // of the universal P9/P10/W10 set). A container-kill / cpu-stress
-    // experiment that drives a per-user box into a stuck/error state should
-    // abort. Container scenarios do NOT stop-condition on a fault they
-    // themselves induce beyond this recovery signal.
-    this.fisContainerStopAlarmArns.push(p1.alarmArn);
-
     // P2: stripe-webhook-sig-fail
     this.createAlarm({
       id: "P2",
@@ -315,8 +276,7 @@ export class ObservabilityStack extends cdk.Stack {
     // core/services/agent_export.py when a seller's agent_id resolves outside
     // their workspaces dir. Same breach-on-event security trip-wire shape as
     // P3 (workspace path traversal). Pages so a marketplace export attack is
-    // never silent. Goes on pageAlarmArns via createAlarm, but a breach-on-event
-    // trip-wire must NOT be a FIS stop-condition — it is not in any FIS set.
+    // never silent.
     this.createAlarm({
       id: "P11",
       name: "marketplace-path-traversal",
@@ -464,13 +424,6 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p9.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-    this.pageAlarmArns.push(p9.alarmArn);
-    // P9 is a curated FIS stop-condition — rate-based + NOT_BREACHING, so it
-    // can't self-trip on idle. Part of the universal set (every scenario)
-    // AND the container set.
-    this.fisStopAlarmArns.push(p9.alarmArn);
-    this.fisContainerStopAlarmArns.push(p9.alarmArn);
-
     // P10: apigw-ws-5xx-rate (AWS-native metric math)
     const apiGwErrors = new cloudwatch.Metric({
       namespace: "AWS/ApiGateway",
@@ -503,12 +456,6 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
-    this.pageAlarmArns.push(p10.alarmArn);
-    // P10 is a curated FIS stop-condition — rate-based + NOT_BREACHING.
-    // Universal set + container set.
-    this.fisStopAlarmArns.push(p10.alarmArn);
-    this.fisContainerStopAlarmArns.push(p10.alarmArn);
-
     // -------------------------------------------------------------------
     // P12: backend metrics-loop liveness heartbeat
     // -------------------------------------------------------------------
@@ -519,9 +466,6 @@ export class ObservabilityStack extends cdk.Stack {
     // samples means the backend's metrics loop is dead. Expect ~10 samples per
     // 10-min window when healthy; threshold 5 tolerates one skipped cycle.
     // Companion P13 (reaper-crash) was deleted with the reaper.
-    //
-    // Do NOT use as a FIS stop-condition — it self-trips any backend-touching
-    // experiment (stopping/stressing the backend stops the heartbeat gauge).
     const reaperDims = { env: this.envName, service: "isol8-backend" };
 
     const heartbeatMetric = new cloudwatch.Metric({
@@ -548,7 +492,6 @@ export class ObservabilityStack extends cdk.Stack {
     heartbeatAlarm.addAlarmAction(
       new cloudwatch_actions.SnsAction(this.pageTopic),
     );
-    this.pageAlarmArns.push(heartbeatAlarm.alarmArn);
   }
 
   // =========================================================================
@@ -759,12 +702,6 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w10.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
-    // W10 is a curated FIS stop-condition — rate-based + NOT_BREACHING. It is
-    // a warn-tier alarm (NOT on pageAlarmArns) but is a faithful chat blast
-    // gauge, so it joins the universal FIS stop set + the container set.
-    this.fisStopAlarmArns.push(w10.alarmArn);
-    this.fisContainerStopAlarmArns.push(w10.alarmArn);
-
     // W10b: litestream-put-requests.
     // Litestream's documented failure modes are quiet: the idle-PUT pathology
     // (litestream#1171, ~480 PUT/hr against a DB with zero writes) and

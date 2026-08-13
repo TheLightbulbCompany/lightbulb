@@ -82,8 +82,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
       marketplaceTakedownsTable: database.marketplaceTakedownsTable,
       marketplaceSellersTable: database.marketplaceSellersTable,
-      hookEventsTable: database.hookEventsTable,
-      opsCacheTable: database.opsCacheTable,
     },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
@@ -140,11 +138,10 @@ describe("DatabaseStack — marketplace tables", () => {
     });
   });
 
-  test("marketplace-listings has all 4 expected GSIs", () => {
+  test("marketplace-listings has the expected GSIs", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       TableName: "isol8-dev-marketplace-listings",
       GlobalSecondaryIndexes: Match.arrayWith([
-        Match.objectLike({ IndexName: "slug-version-index" }),
         Match.objectLike({ IndexName: "seller-created-index" }),
         Match.objectLike({ IndexName: "status-published-index" }),
         Match.objectLike({ IndexName: "tag-published-index" }),

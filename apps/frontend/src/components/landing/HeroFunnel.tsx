@@ -47,7 +47,9 @@ export function HeroFunnel() {
   const [path, setPath] = React.useState<Path>("new");
   const [input, setInput] = React.useState("");
 
-  const canSubmit = input.trim().length >= 3;
+  // 3..2000 mirrors the backend BriefBody rules — an oversized stash would be
+  // rejected by the replay hook AFTER signup, silently losing the brief.
+  const canSubmit = input.trim().length >= 3 && input.trim().length <= 2000;
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,6 +87,7 @@ export function HeroFunnel() {
 
         <form className="ld-ask" onSubmit={submit}>
           <input
+            maxLength={2000}
             value={input}
             onChange={(e) => {
               setInput(e.target.value);

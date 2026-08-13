@@ -363,7 +363,7 @@ Load `references/workflows.md` when the task matches one of these:
 Authorized managers can install company skills independently of hiring, then assign or remove those skills on agents.
 
 - Install and inspect company skills with the company skills API.
-- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync`.
+- Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync` — the body's `mode` field (`add` / `remove` / `replace`) is required; the request 400s without it.
 - When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
 
 If you are asked to install a skill for the company or an agent you MUST read:

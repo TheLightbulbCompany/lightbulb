@@ -232,9 +232,10 @@ export function WorkspaceDemo() {
   const inboxSections = React.useMemo(
     () =>
       buildGroupedInboxSections(getInboxWorkItems(inboxIssues), {
+        searchQuery: inboxSearch,
         nowIso: DEMO_NOW_ISO,
       }),
-    [inboxIssues],
+    [inboxIssues, inboxSearch],
   );
   const unreadCount = issues.filter(
     (i) => i.unread && !archivedIds.has(i.id) && !i.hiddenAt,
@@ -509,7 +510,10 @@ export function WorkspaceDemo() {
           })}
         </div>
         <PanelToolbar
-          className="min-w-[340px] flex-1"
+          // basis wraps it under the tabs on narrow panels; min-w-0 +
+          // flex-wrap let it shrink further (actions drop below the search)
+          // instead of overflowing the 1001–1150px split-dock widths.
+          className="min-w-0 grow basis-[340px] flex-wrap"
           searchValue={inboxSearch}
           onSearchChange={setInboxSearch}
           searchPlaceholder="Search inbox..."
@@ -577,6 +581,7 @@ export function WorkspaceDemo() {
       <div className="editorial-card mt-4 overflow-hidden">
         <InboxList
           sections={inboxSections}
+          searchQuery={inboxSearch}
           selectedIssueId={detailIssueId}
           onSelect={(id) => setDetailIssueId(id)}
           onArchive={(id) => {

@@ -52,6 +52,11 @@ describe("WorkspaceDemo", () => {
       target: { value: "zzz-no-match" },
     });
     expect(screen.getByText("No matches.")).toBeInTheDocument();
+    // A matching search renders the search-kind section header, not Today/Earlier.
+    fireEvent.change(screen.getByLabelText("Search inbox"), {
+      target: { value: "handle" },
+    });
+    expect(screen.getByText('Search results for "handle"')).toBeInTheDocument();
   });
 
   it("opens the task detail (real IssueHeader + IssueComments) on row click", () => {

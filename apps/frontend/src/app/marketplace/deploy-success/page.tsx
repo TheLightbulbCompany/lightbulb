@@ -41,15 +41,20 @@ function DeploySuccessInner() {
   const params = useSearchParams();
   const listingId = params.get("listing_id") ?? "";
   const sessionId = params.get("session_id");
+  // entitled=1: the buyer already owns this listing (BuyButton got 409
+  // already_entitled from checkout) — run the same on-mount deploy as a paid
+  // return, just without a Stripe session id.
+  const entitled = params.get("entitled") === "1";
   const initialAgentUuid = params.get("agent_uuid");
 
   const { isSignedIn, getToken, isLoaded } = useAuth();
 
   const [agentUuid, setAgentUuid] = useState<string | null>(initialAgentUuid);
   const [phase, setPhase] = useState<
-    "idle" | "deploying" | "ready" | "entitlement_pending" | "error"
+    "idle" | "deploying" | "ready" | "entitlement_pending" | "in_progress" | "error"
   >(initialAgentUuid ? "ready" : "idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorRetryable, setErrorRetryable] = useState(true);
   const [detail, setDetail] = useState<ListingDetailResponse | null>(null);
 
   // Editorial identity — uses the fetched listing if available, otherwise
@@ -103,11 +108,12 @@ function DeploySuccessInner() {
     };
   }, [listingId]);
 
-  // Paid-return path: fire deploy on mount once Clerk auth is loaded.
+  // Paid-return / already-entitled path: fire deploy on mount once Clerk
+  // auth is loaded.
   useEffect(() => {
     if (!isLoaded || !isSignedIn) return;
     if (initialAgentUuid) return;
-    if (!sessionId) return;
+    if (!sessionId && !entitled) return;
     if (!listingId) return;
     if (phase !== "idle") return;
 
@@ -133,7 +139,29 @@ function DeploySuccessInner() {
         }
         if (!resp.ok) {
           const body = await resp.json().catch(() => ({}));
-          throw new Error(body?.detail ?? `deploy failed (${resp.status})`);
+          const d = body?.detail;
+          // Structured 409s: deploy_in_progress means THIS deploy is already
+          // running (a mid-deploy refresh lands here) — "Try again" is the
+          // exact retry-invitation that once duplicated an agent, so it gets
+          // its own no-retry card. Rendering the raw object printed
+          // "[object Object]".
+          if (d && typeof d === "object") {
+            if (d.error === "deploy_in_progress") {
+              setPhase("in_progress");
+              return;
+            }
+            if (d.error === "missing_credentials") {
+              const missing = (d.missing ?? []).join(", ");
+              setErrorRetryable(false);
+              throw new Error(
+                missing
+                  ? `Connect ${missing} in Settings → Integrations first, then come back to finish hiring.`
+                  : "Connect the required integrations in Settings first, then come back to finish hiring.",
+              );
+            }
+            throw new Error(d.error ?? `deploy failed (${resp.status})`);
+          }
+          throw new Error(typeof d === "string" ? d : `deploy failed (${resp.status})`);
         }
         const body = (await resp.json()) as { agent_uuid?: string };
         if (body.agent_uuid) setAgentUuid(body.agent_uuid);
@@ -147,7 +175,7 @@ function DeploySuccessInner() {
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, isSignedIn, getToken, listingId, sessionId, initialAgentUuid, phase]);
+  }, [isLoaded, isSignedIn, getToken, listingId, sessionId, entitled, initialAgentUuid, phase]);
 
   if (isLoaded && !isSignedIn) return <Loading />;
 
@@ -187,6 +215,26 @@ function DeploySuccessInner() {
         </div>
       )}
 
+      {phase === "in_progress" && (
+        <div className="editorial-card p-8 text-center">
+          <div className="mb-5 flex justify-center">
+            <Monogram agent={editorial} size={72} radius={16} />
+          </div>
+          <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">
+            Already on it.
+          </h1>
+          <p className="mt-4 text-base leading-7 text-[var(--ink-soft)]">
+            {editorial.name} is already installing — give it a moment, then open your workspace.
+          </p>
+          <Link
+            href={`${APP_URL}/chat`}
+            className="editorial-btn editorial-btn--primary mt-6 inline-flex h-11 px-6"
+          >
+            Open workspace
+          </Link>
+        </div>
+      )}
+
       {phase === "error" && (
         <div className="editorial-card p-8 text-center">
           <h1 className="font-editorial-serif text-4xl italic text-[var(--ink)]">
@@ -195,16 +243,18 @@ function DeploySuccessInner() {
           <p className="mt-4 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-4 py-3 text-sm text-[var(--danger)]">
             {errorMsg}
           </p>
-          <button
-            type="button"
-            onClick={() => {
-              setErrorMsg(null);
-              setPhase("idle");
-            }}
-            className="editorial-btn editorial-btn--primary mt-6 h-11 px-6"
-          >
-            Try again
-          </button>
+          {errorRetryable && (
+            <button
+              type="button"
+              onClick={() => {
+                setErrorMsg(null);
+                setPhase("idle");
+              }}
+              className="editorial-btn editorial-btn--primary mt-6 h-11 px-6"
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
 

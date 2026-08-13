@@ -36,7 +36,7 @@ export interface DrawerState {
   installedSlugs: Set<string>;
   /** ``error`` set ⇒ the toast renders its failure variant (no "Open in
    * chat"). Success toasts leave it undefined. */
-  toast: { agentName: string; agentId: string; acpNote?: AcpNote; error?: string } | null;
+  toast: { agentName: string; agentId: string; acpNote?: AcpNote; error?: string; sticky?: boolean } | null;
 }
 
 export interface OpenOptions {
@@ -55,7 +55,7 @@ interface DrawerContextValue {
   showInstallToast: (toast: { agentName: string; agentId: string; acpNote?: AcpNote }) => void;
   /** Surface a failed Hire. Without this a rejected deploy was an unhandled
    * promise rejection — the dialog just froze ("the screen bugging out"). */
-  showErrorToast: (message: string) => void;
+  showErrorToast: (message: string, opts?: { sticky?: boolean }) => void;
   dismissToast: () => void;
   setFreshlyInstalled: (agentId: string | null) => void;
   /** Record a just-hired slug so its card flips to "Hired ✓" immediately. */
@@ -150,8 +150,11 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
     [],
   );
 
-  const showErrorToast = useCallback((message: string) => {
-    setState((prev) => ({ ...prev, toast: { agentName: "", agentId: "", error: message } }));
+  const showErrorToast = useCallback((message: string, opts?: { sticky?: boolean }) => {
+    setState((prev) => ({
+      ...prev,
+      toast: { agentName: "", agentId: "", error: message, sticky: opts?.sticky },
+    }));
   }, []);
 
   const dismissToast = useCallback(() => {

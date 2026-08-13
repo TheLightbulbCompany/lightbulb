@@ -176,17 +176,35 @@ describe("useHire — reliability", () => {
     );
   });
 
-  it("keeps the retry message for a 409 that is NOT deploy_in_progress or deploy_busy", async () => {
-    // 409 is also missing_credentials / Requires Ultra Pro — those must not be
-    // relabelled as "installing" or auto-retried.
+  it("keeps the retry message for a 409 that is NOT a structured shape it knows", async () => {
+    // e.g. Requires Ultra Pro — unknown 409s must not be relabelled as
+    // "installing" or auto-retried.
     mockDeploy.mockRejectedValue(
-      new ApiError(409, { detail: { error: "missing_credentials" } }, "conflict"),
+      new ApiError(409, { detail: { error: "requires_ultra" } }, "conflict"),
     );
     const { result } = renderHook(() => useHire());
     await act(async () => {
       await result.current.hire(listing({ name: "Atlas" }));
     });
     expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("try again"));
+  });
+
+  it("names the missing providers on a 409 missing_credentials, and does NOT say 'try again'", async () => {
+    // Retrying can never succeed until the buyer connects the provider — the
+    // backend sends the list specifically so the UI can say which.
+    mockDeploy.mockRejectedValue(
+      new ApiError(
+        409,
+        { detail: { error: "missing_credentials", missing: ["google", "slack"] } },
+        "conflict",
+      ),
+    );
+    const { result } = renderHook(() => useHire());
+    await act(async () => {
+      await result.current.hire(listing({ name: "Atlas" }));
+    });
+    expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("google, slack"));
+    expect(mockShowErrorToast).not.toHaveBeenCalledWith(expect.stringContaining("try again"));
   });
 
   describe("409 deploy_busy — a DIFFERENT listing of the buyer's is installing", () => {
@@ -205,7 +223,12 @@ describe("useHire — reliability", () => {
       await act(async () => {
         await result.current.hire(listing({ name: "Atlas" }));
       });
-      expect(mockShowErrorToast).toHaveBeenCalledWith(expect.stringContaining("busy"));
+      // sticky: the notice must outlive the toast's 5.5s auto-dismiss — the
+      // pending auto-retry fires ~retry_after_s later.
+      expect(mockShowErrorToast).toHaveBeenCalledWith(
+        expect.stringContaining("busy"),
+        expect.objectContaining({ sticky: true }),
+      );
       expect(mockShowErrorToast).not.toHaveBeenCalledWith(expect.stringContaining("try again"));
     });
 

@@ -11,19 +11,24 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
  *
  * Free listings (price_cents === 0) → "Deploy to my Isol8 container":
  *   - Signed-out: clicking redirects to Clerk sign-in then back to this listing.
- *   - Signed-in: POST /listings/{listing_id}/deploy → /deploy-success?listing_id=…&agent_uuid=…
+ *   - Signed-in: POST /listings/{listing_id}/deploy →
+ *     /marketplace/deploy-success?listing_id=…&agent_uuid=…
  *
  * Paid listings → "Buy for $X.XX":
  *   - Signed-out: redirect to Clerk sign-in.
- *   - Signed-in: POST /api/internal/checkout (Stripe Checkout session) → window.location to
- *     the Stripe-hosted URL. Stripe redirects back to /deploy-success on completion,
- *     where the deploy is fired from the post-purchase page.
+ *   - Signed-in: POST /api/internal/marketplace/checkout (Stripe Checkout
+ *     session) → window.location to the Stripe-hosted URL. Stripe redirects
+ *     back to /marketplace/deploy-success on completion, where the deploy is
+ *     fired from the post-purchase page.
+ *   - Already entitled (409 already_entitled): skip Stripe, go straight to
+ *     /marketplace/deploy-success?entitled=1 which runs the deploy.
  */
 export function BuyButton({ listing }: { listing: Listing }) {
   const { isSignedIn, getToken } = useAuth();
   const { user } = useUser();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryable, setRetryable] = useState(true);
 
   if (listing.price_cents === 0) {
     return (
@@ -35,6 +40,8 @@ export function BuyButton({ listing }: { listing: Listing }) {
         setLoading={setLoading}
         error={error}
         setError={setError}
+        retryable={retryable}
+        setRetryable={setRetryable}
       />
     );
   }
@@ -49,6 +56,8 @@ export function BuyButton({ listing }: { listing: Listing }) {
       setLoading={setLoading}
       error={error}
       setError={setError}
+      retryable={retryable}
+      setRetryable={setRetryable}
     />
   );
 }
@@ -63,6 +72,8 @@ interface FreeDeployButtonProps {
   setLoading: (v: boolean) => void;
   error: string | null;
   setError: (v: string | null) => void;
+  retryable: boolean;
+  setRetryable: (v: boolean) => void;
 }
 
 function FreeDeployButton({
@@ -73,6 +84,8 @@ function FreeDeployButton({
   setLoading,
   error,
   setError,
+  retryable,
+  setRetryable,
 }: FreeDeployButtonProps) {
   async function deploy() {
     setError(null);
@@ -95,14 +108,16 @@ function FreeDeployButton({
       );
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
-        throw new Error(body?.detail ?? `deploy failed (${resp.status})`);
+        throw structuredDeployError(body?.detail, resp.status);
       }
       const body = (await resp.json()) as { agent_uuid?: string };
       const params = new URLSearchParams({ listing_id: listingId });
       if (body.agent_uuid) params.set("agent_uuid", body.agent_uuid);
-      window.location.href = `/deploy-success?${params.toString()}`;
+      window.location.href = `/marketplace/deploy-success?${params.toString()}`;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Deploy failed.");
+      const de = e as DeployError;
+      setError(de.message || "Deploy failed.");
+      setRetryable(de.retryable !== false);
       setLoading(false);
     }
   }
@@ -119,17 +134,58 @@ function FreeDeployButton({
       {error && (
         <p className="mt-3 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--danger)]" role="alert">
           {error}{" "}
-          <button
-            onClick={deploy}
-            className="font-bold underline hover:opacity-80"
-            type="button"
-          >
-            Try again
-          </button>
+          {retryable && (
+            <button
+              onClick={deploy}
+              className="font-bold underline hover:opacity-80"
+              type="button"
+            >
+              Try again
+            </button>
+          )}
         </p>
       )}
     </div>
   );
+}
+
+type DeployError = Error & { retryable?: boolean };
+
+/**
+ * Map the deploy endpoint's structured 409 shapes to human copy. Rendering
+ * `body.detail` raw printed "[object Object]", and offering "Try again" on
+ * deploy_in_progress is the exact retry-invitation that once duplicated an
+ * agent in prod — those come back non-retryable.
+ */
+function structuredDeployError(detail: unknown, status: number): DeployError {
+  if (detail && typeof detail === "object") {
+    const d = detail as { error?: string; missing?: string[]; retry_after_s?: number };
+    if (d.error === "deploy_in_progress") {
+      return Object.assign(new Error("This agent is already installing — give it a moment, then check your workspace."), {
+        retryable: false,
+      });
+    }
+    if (d.error === "deploy_busy") {
+      return Object.assign(new Error("Your container is busy with another install — wait a moment and try again."), {
+        retryable: true,
+      });
+    }
+    if (d.error === "missing_credentials") {
+      const missing = (d.missing ?? []).join(", ");
+      return Object.assign(
+        new Error(
+          missing
+            ? `Connect ${missing} in Settings → Integrations first, then deploy again.`
+            : "Connect the required integrations in Settings first, then deploy again.",
+        ),
+        { retryable: false },
+      );
+    }
+    return Object.assign(new Error(d.error ?? `deploy failed (${status})`), { retryable: true });
+  }
+  return Object.assign(new Error(typeof detail === "string" ? detail : `deploy failed (${status})`), {
+    retryable: true,
+  });
 }
 
 interface PaidBuyButtonProps {
@@ -141,6 +197,8 @@ interface PaidBuyButtonProps {
   setLoading: (v: boolean) => void;
   error: string | null;
   setError: (v: string | null) => void;
+  retryable: boolean;
+  setRetryable: (v: boolean) => void;
 }
 
 function PaidBuyButton({
@@ -152,6 +210,8 @@ function PaidBuyButton({
   setLoading,
   error,
   setError,
+  retryable,
+  setRetryable,
 }: PaidBuyButtonProps) {
   async function purchase() {
     setError(null);
@@ -176,9 +236,18 @@ function PaidBuyButton({
         window.location.href = body.checkout_url;
         return;
       }
+      // Already entitled: this buyer paid before (e.g. the old broken return
+      // URL ate their redirect). Never re-charge — run the deploy instead.
+      const detailError =
+        body?.detail && typeof body.detail === "object" ? (body.detail as { error?: string }).error : undefined;
+      if (detailError === "already_entitled") {
+        window.location.href = `/marketplace/deploy-success?listing_id=${encodeURIComponent(listing.listing_id)}&entitled=1`;
+        return;
+      }
       throw new Error(body?.error ?? "Checkout failed");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Checkout failed.");
+      setRetryable(true);
       setLoading(false);
     }
   }
@@ -196,13 +265,15 @@ function PaidBuyButton({
       {error && (
         <p className="mt-3 rounded-lg border border-[rgba(179,36,36,0.2)] bg-[rgba(179,36,36,0.06)] px-3 py-2 text-sm text-[var(--danger)]" role="alert">
           {error}{" "}
-          <button
-            onClick={purchase}
-            className="font-bold underline hover:opacity-80"
-            type="button"
-          >
-            Try again
-          </button>
+          {retryable && (
+            <button
+              onClick={purchase}
+              className="font-bold underline hover:opacity-80"
+              type="button"
+            >
+              Try again
+            </button>
+          )}
         </p>
       )}
     </div>

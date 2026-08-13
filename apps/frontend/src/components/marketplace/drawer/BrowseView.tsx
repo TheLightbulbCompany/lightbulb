@@ -15,6 +15,7 @@ export function BrowseView() {
   const [items, setItems] = useState<Listing[]>([]);
   const [q, setQ] = useState("");
   const [category, setCategory] = useState<string>("all");
+  const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(true);
   const { installedSlugs } = useCatalog();
   // Optimistic overlay: slugs hired this session, before the catalog cache
@@ -27,6 +28,7 @@ export function BrowseView() {
     const handle = setTimeout(() => {
       if (!alive) return;
       setLoading(true);
+      setLoadError(false);
       searchListings({
         q: q || undefined,
         category: category === "all" ? undefined : category,
@@ -37,7 +39,12 @@ export function BrowseView() {
           setLoading(false);
         })
         .catch(() => {
-          if (alive) setLoading(false);
+          // A failed search must not render as an empty catalog — "No agents
+          // fit that brief" on a network error reads as a wiped marketplace.
+          if (alive) {
+            setLoadError(true);
+            setLoading(false);
+          }
         });
     }, 300);
     return () => {
@@ -58,9 +65,6 @@ export function BrowseView() {
             className="flex-1 outline-0 bg-transparent text-sm"
           />
         </div>
-        <button className="bg-white border border-[var(--edge)] rounded-xl px-3.5 py-2.5 text-[13px] text-[#5b5b5b]">
-          Most installed ▾
-        </button>
       </div>
       <div className="flex gap-2 flex-wrap mb-4">
         {CATEGORIES.map((c) => (
@@ -81,6 +85,10 @@ export function BrowseView() {
       <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
         {loading && items.length === 0 ? (
           <p className="font-editorial-serif italic text-[var(--mute)] col-span-full">Loading…</p>
+        ) : loadError ? (
+          <p className="font-editorial-serif italic text-[var(--mute)] col-span-full" role="alert">
+            Couldn&apos;t load the marketplace — check your connection and try another search.
+          </p>
         ) : items.length === 0 ? (
           <p className="font-editorial-serif italic text-[var(--mute)] col-span-full">
             No agents fit that brief.

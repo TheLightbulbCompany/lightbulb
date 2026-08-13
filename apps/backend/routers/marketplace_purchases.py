@@ -57,6 +57,11 @@ async def checkout(
         raise HTTPException(status_code=404, detail="listing not available")
     if listing["price_cents"] == 0:
         raise HTTPException(status_code=400, detail="listing is free")
+    # An entitled buyer must never reach Stripe again — the storefront's only
+    # recovery path after a broken paid deploy used to re-prompt payment.
+    # Consumers branch on this shape and deploy instead.
+    if await marketplace_repo.has_unrevoked_purchase(buyer_id=auth.user_id, listing_id=listing["listing_id"]):
+        raise HTTPException(status_code=409, detail={"error": "already_entitled"})
 
     stripe.api_key = settings.STRIPE_SECRET_KEY
     checkout_ts = int(time.time())

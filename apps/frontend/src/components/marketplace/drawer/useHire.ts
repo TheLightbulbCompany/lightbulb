@@ -44,14 +44,10 @@ export function useHire() {
     async (listing: Listing, reportsTo?: string | null, isRetry = false) => {
       setIsHiring(true);
       try {
-        // Sellers can install their own listing without paying. The
-        // backend has a matching seller-self-deploy bypass (see
-        // routers/marketplace_listings.py:deploy_listing), so we skip
-        // Stripe checkout and call /deploy directly — same path as a
-        // free listing — to avoid charging the seller for their own
-        // product.
-        const isSeller = !!user?.id && listing.seller_id === user.id;
-        if (listing.price_cents === 0 || isSeller) {
+        // The deploy path — shared by free listings, seller-self-installs,
+        // and paid listings the buyer already owns (409 already_entitled from
+        // checkout: never send an entitled buyer back to Stripe).
+        const deployNow = async () => {
           // Org placement: thread the buyer's chosen manager into the deploy.
           // (Paid listings deploy post-Stripe-return — reports_to support on
           // that path is a follow-up; all current listings are free.)
@@ -84,21 +80,39 @@ export function useHire() {
           });
           // 700ms delay before closing matches the mock spec.
           setTimeout(() => close(), 700);
+        };
+
+        // Sellers can install their own listing without paying. The
+        // backend has a matching seller-self-deploy bypass (see
+        // routers/marketplace_listings.py:deploy_listing), so we skip
+        // Stripe checkout and call /deploy directly — same path as a
+        // free listing — to avoid charging the seller for their own
+        // product.
+        const isSeller = !!user?.id && listing.seller_id === user.id;
+        if (listing.price_cents === 0 || isSeller) {
+          await deployNow();
         } else {
           const jwt = await getToken();
           if (!jwt) throw new Error("Not authenticated");
-          const result = await checkout({
-            listingId: listing.listing_id,
-            // {CHECKOUT_SESSION_ID} is a Stripe placeholder — Stripe substitutes
-            // the actual session_id into the redirect URL. /deploy-success requires
-            // session_id in its query params or its paid-return deploy effect exits
-            // and the purchased listing is never installed.
-            successUrl: `${window.location.origin}/marketplace/deploy-success?listing_id=${encodeURIComponent(listing.listing_id)}&session_id={CHECKOUT_SESSION_ID}`,
-            cancelUrl: `${window.location.origin}/chat`,
-            jwt,
-            email: user?.primaryEmailAddress?.emailAddress,
-          });
-          window.location.href = result.checkout_url;
+          try {
+            const result = await checkout({
+              listingId: listing.listing_id,
+              // {CHECKOUT_SESSION_ID} is a Stripe placeholder — Stripe substitutes
+              // the actual session_id into the redirect URL. /deploy-success requires
+              // session_id in its query params or its paid-return deploy effect exits
+              // and the purchased listing is never installed.
+              successUrl: `${window.location.origin}/marketplace/deploy-success?listing_id=${encodeURIComponent(listing.listing_id)}&session_id={CHECKOUT_SESSION_ID}`,
+              cancelUrl: `${window.location.origin}/chat`,
+              jwt,
+              email: user?.primaryEmailAddress?.emailAddress,
+            });
+            window.location.href = result.checkout_url;
+          } catch (checkoutErr) {
+            const ce = checkoutErr as { detail?: { error?: string } | string };
+            const ceError = typeof ce.detail === "object" ? ce.detail?.error : undefined;
+            if (ceError !== "already_entitled") throw checkoutErr;
+            await deployNow();
+          }
         }
       } catch (err) {
         // A failed deploy/checkout used to escape as an unhandled rejection,
@@ -134,10 +148,24 @@ export function useHire() {
         // than retrying forever.
         if (detail?.error === "deploy_busy" && !isRetry) {
           const retryAfterS = typeof detail.retry_after_s === "number" ? detail.retry_after_s : 20;
-          showErrorToast(`${listing.name}: your container is busy — retrying shortly…`);
+          showErrorToast(`${listing.name}: your container is busy — retrying shortly…`, { sticky: true });
           setTimeout(() => {
             void hire(listing, reportsTo, true);
           }, retryAfterS * 1000);
+          return;
+        }
+
+        // missing_credentials: retrying can never succeed until the buyer
+        // connects the named providers — the backend sends the list
+        // specifically so we can say which (the generic "try again" copy left
+        // buyers retrying into the same wall).
+        if (detail?.error === "missing_credentials") {
+          const missing = ((detail as { missing?: string[] }).missing ?? []).join(", ");
+          showErrorToast(
+            missing
+              ? `${listing.name} needs ${missing} connected — head to Settings → Integrations first.`
+              : `${listing.name} needs an integration connected — head to Settings → Integrations first.`,
+          );
           return;
         }
 

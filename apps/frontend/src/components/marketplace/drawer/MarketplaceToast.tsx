@@ -9,6 +9,10 @@ export function MarketplaceToast() {
 
   useEffect(() => {
     if (!toast) return;
+    // Sticky toasts (e.g. "retrying shortly…") outlive the 5.5s timer — the
+    // pending auto-retry fires ~20s later and auto-dismissing its notice left
+    // the buyer staring at a silent dialog wondering if anything was queued.
+    if (toast.sticky) return;
     const handle = setTimeout(() => dismissToast(), 5500);
     return () => clearTimeout(handle);
   }, [toast, dismissToast]);

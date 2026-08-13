@@ -112,6 +112,15 @@ export function PickAgentStep({
         Pick which agent in your workspace you&apos;d like to publish. The next
         step lets you choose which integrations ride along.
       </p>
+      {agents.length === 0 && (
+        <div className="rounded-2xl border border-dashed border-[var(--edge)] bg-white p-6 text-center">
+          <p className="text-[14px] font-medium text-[var(--ink)]">No agents to publish yet.</p>
+          <p className="mt-1.5 text-[13px] leading-snug text-[#5b5b5b]">
+            If your workspace is still starting, give it a minute and reopen this step. Otherwise,
+            build an agent first — then come back to put it on the marketplace.
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2.5">
         {agents.map((agent) => {
           const isMain = agent.id === defaultId || agent.identity?.name === "main";
@@ -714,12 +723,17 @@ export function ReviewStep({ form }: { form: PublishForm }) {
 
       <p className="text-[12px] text-[#5b5b5b] leading-snug mt-3">
         By publishing, you agree to the{" "}
-        <a href="#" className="text-[var(--forest)] underline">
+        <a href="/terms" target="_blank" rel="noreferrer" className="text-[var(--forest)] underline">
           Marketplace Terms
         </a>{" "}
         and confirm this agent is yours to publish. Isol8 retains the right to remove listings
         that violate the{" "}
-        <a href="#" className="text-[var(--forest)] underline">
+        <a
+          href="/acceptable-use"
+          target="_blank"
+          rel="noreferrer"
+          className="text-[var(--forest)] underline"
+        >
           Acceptable Use Policy
         </a>
         .

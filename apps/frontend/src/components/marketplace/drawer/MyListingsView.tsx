@@ -35,6 +35,8 @@ export function MyListingsView() {
   const [listings, setListings] = useState<Listing[] | null>(null);
   const [dashboard, setDashboard] = useState<PayoutsDashboard | null>(null);
   const [busy, setBusy] = useState(false);
+  const [fetchError, setFetchError] = useState(false);
+  const [fetchAttempt, setFetchAttempt] = useState(0);
 
   useEffect(() => {
     // Org members without the org:admin role can't publish OR see payouts
@@ -43,6 +45,7 @@ export function MyListingsView() {
     // and so the restricted view below renders without a loading flash.
     if (restricted) return;
     let alive = true;
+    setFetchError(false);
     (async () => {
       const jwt = await getToken();
       if (!jwt || !userId) return;
@@ -54,10 +57,10 @@ export function MyListingsView() {
       setListings(r1.items);
       setDashboard(r2 as PayoutsDashboard);
     })().catch(() => {
-      if (alive) {
-        setListings([]);
-        setDashboard({});
-      }
+      // A transient failure must NOT masquerade as data: rendering the
+      // "No listings yet / $0.00" empty state to a seller with live
+      // listings reads as their store being wiped.
+      if (alive) setFetchError(true);
     });
     return () => {
       alive = false;
@@ -69,7 +72,7 @@ export function MyListingsView() {
     // the omission is benign. `restricted` is included so that a member
     // who gets promoted to admin mid-session triggers the fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, restricted]);
+  }, [userId, restricted, fetchAttempt]);
 
   // Group raw rows by listing_id so a republish-in-progress (live v1 +
   // draft/review v2) collapses into a single row. The detail view is the
@@ -123,6 +126,24 @@ export function MyListingsView() {
         title="Publishing restricted"
         desc="Only org admins can publish listings or manage marketplace payouts. Ask your org admin to take over."
       />
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="editorial-card p-6 text-center" role="alert">
+        <h4 className="font-editorial-serif text-xl mb-2">Couldn&apos;t load your listings.</h4>
+        <p className="text-[13px] text-[#5b5b5b] mb-4">
+          Something went wrong fetching your store — your listings are safe.
+        </p>
+        <button
+          type="button"
+          onClick={() => setFetchAttempt((n) => n + 1)}
+          className="editorial-btn editorial-btn--primary h-10 px-5 text-sm"
+        >
+          Retry
+        </button>
+      </div>
     );
   }
 

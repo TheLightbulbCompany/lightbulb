@@ -181,11 +181,11 @@ async def fleet_grid() -> list[dict]:
     # (poll-and-cache off the render path) is the follow-up when the fleet
     # grows; P1 stays a read-through with a short TTL.
     global _fleet_cache
-    now = time.monotonic()
-    if _fleet_cache is not None and _fleet_cache[0] > now:
+    if _fleet_cache is not None and _fleet_cache[0] > time.monotonic():
         return _fleet_cache[1]
     grid = await _build_grid()
-    _fleet_cache = (now + _FLEET_CACHE_TTL_S, grid)
+    # TTL anchored after the rebuild so a slow build doesn't eat the window.
+    _fleet_cache = (time.monotonic() + _FLEET_CACHE_TTL_S, grid)
     return grid
 
 

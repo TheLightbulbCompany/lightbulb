@@ -52,16 +52,14 @@ describe("Settings plan card", () => {
     await render(<Settings />);
     expect(await screen.findByText("Isol8 Free plan")).toBeTruthy();
     expect(screen.getByText(/daily free usage allowance/i)).toBeTruthy();
-    expect(screen.getByText("Upgrade on isol8.co")).toBeTruthy();
     // Provider card: free tier runs Claude Sonnet — not "No provider selected".
     expect(screen.getByText("Claude Sonnet")).toBeTruthy();
     expect(screen.getByText("Included with the free plan")).toBeTruthy();
     expect(screen.queryByText(/trial_local/i)).toBeNull();
-    expect(screen.queryByText("Isol8 — $50 / month")).toBeNull();
     expect(screen.queryByText(/No provider selected/)).toBeNull();
   });
 
-  it("renders a paid account unchanged", async () => {
+  it("renders a paid account", async () => {
     mockAccountFixture = {
       is_subscribed: true,
       subscription_status: "active",
@@ -70,9 +68,34 @@ describe("Settings plan card", () => {
       byo_provider: null,
     };
     await render(<Settings />);
-    expect(await screen.findByText("Isol8 — $50 / month")).toBeTruthy();
+    expect(await screen.findByText("Isol8")).toBeTruthy();
     expect(screen.getByText("Active")).toBeTruthy();
-    expect(screen.getByText("Manage billing on isol8.co")).toBeTruthy();
+  });
+
+  // App Store 3.1.3(f): the exemption holds only while the app carries no
+  // call to action for purchase outside it. This screen used to have two —
+  // "Upgrade on isol8.co" and "Manage billing on isol8.co" — plus the plan
+  // price. Plan STATE still renders; nothing that points at a purchase does.
+  it.each([
+    ["trial_local" as const],
+    ["active" as const],
+    [null],
+  ])("carries no purchase call to action for a %s account", async (status) => {
+    mockAccountFixture = {
+      is_subscribed: status === "active",
+      subscription_status: status,
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    await screen.findByText(/Isol8|No plan on this account/);
+
+    expect(screen.queryByText(/upgrade/i)).toBeNull();
+    expect(screen.queryByText(/manage billing/i)).toBeNull();
+    expect(screen.queryByText(/\$50/)).toBeNull();
+    // The legal links are the ONLY isol8.co references that may remain.
+    expect(screen.queryByText(/isol8\.co\/settings/)).toBeNull();
   });
 });
 

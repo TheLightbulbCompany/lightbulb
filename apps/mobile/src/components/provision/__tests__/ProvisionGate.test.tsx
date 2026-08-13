@@ -106,7 +106,38 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
   });
 
-  it("keeps the existing outbound Manage link for every other blocked code (e.g. credits_required)", async () => {
+  // A NON-purchase blocked code is untouched by the 3.1.3(f) change: server
+  // copy, outbound link and admin note all behave exactly as before.
+  it("keeps the existing outbound Manage link for a non-purchase blocked code", async () => {
+    mockUseContainerStatus.mockReturnValue({
+      status: {
+        kind: "blocked",
+        code: "invitation_pending",
+        title: "You've been invited to a workspace",
+        message: "Accept your invitation to start working with your team.",
+        href: "/onboarding",
+        actionLabel: "View invitation",
+        adminOnly: false,
+      },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.getByText("You've been invited to a workspace")).toBeTruthy();
+    expect(screen.getByText("View invitation on isol8.co")).toBeTruthy();
+    expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
+    expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
+  });
+
+  // The 3.1.3(f) fence (lib/purchaseCta). The server sends a "Top up now"
+  // action AND copy instructing the user to buy credits; iOS must render
+  // neither — dropping the button alone would leave the CTA in the message.
+  it("drops the outbound link AND the server copy for a purchase gate", async () => {
     mockUseContainerStatus.mockReturnValue({
       status: {
         kind: "blocked",
@@ -126,10 +157,9 @@ describe("ProvisionGate provider sign-in routing", () => {
       </ProvisionGate>,
     );
 
-    expect(screen.getByText("Top up Claude credits to start your container")).toBeTruthy();
-    expect(screen.getByText("Top up now on isol8.co")).toBeTruthy();
-    expect(screen.queryByText("MOCK_CHATGPT_CONNECT_SCREEN")).toBeNull();
-    expect(screen.queryByText("MOCK_BYO_KEY_SCREEN")).toBeNull();
+    expect(screen.getByText("Out of credits")).toBeTruthy();
+    expect(screen.queryByText(/Top up/)).toBeNull();
+    expect(screen.queryByText(/isol8\.co/)).toBeNull();
   });
 
   it("keeps provider_required (no provider chosen yet) on the outbound handoff, not a native screen", async () => {
@@ -214,7 +244,10 @@ describe("ProvisionGate provider sign-in routing", () => {
     expect(screen.queryByText(/on isol8\.co/)).toBeNull();
   });
 
-  it("renders the finish-on-web interstitial for needsSignup, with the outbound CTA", async () => {
+  // needsSignup used to hand off to the web page where a plan is bought, which
+  // makes it a purchase CTA in all but name (3.1.3(f)). It now states the
+  // situation and stops; Retry and Sign out still come from the Interstitial.
+  it("renders the not-set-up interstitial for needsSignup, with no outbound CTA", async () => {
     mockUseContainerStatus.mockReturnValue({
       status: { kind: "needsSignup" },
       refetch: mockRefetch,
@@ -226,8 +259,9 @@ describe("ProvisionGate provider sign-in routing", () => {
       </ProvisionGate>,
     );
 
-    expect(screen.getByText("Finish setting up on isol8.co")).toBeTruthy();
-    expect(screen.getByText("Manage on isol8.co")).toBeTruthy();
+    expect(screen.getByText("Workspace not set up")).toBeTruthy();
+    expect(screen.queryByText(/isol8\.co/)).toBeNull();
+    expect(screen.getByText("Retry")).toBeTruthy();
     expect(screen.queryByText("APP")).toBeNull();
   });
 

@@ -1,45 +1,22 @@
-import { SmoothScroll } from "@/components/providers/SmoothScroll";
-import { ScrollManager } from "@/components/landing/ScrollManager";
 import { Navbar } from "@/components/landing/Navbar";
-import { Hero } from "@/components/landing/Hero";
-import { Features } from "@/components/landing/Features";
-import { Isolation } from "@/components/landing/Isolation";
-import { Team } from "@/components/landing/Team";
-import { MarketplaceSection } from "@/components/landing/MarketplaceSection";
+import { HeroFunnel } from "@/components/landing/HeroFunnel";
+import { WorkspaceDemo } from "@/components/landing/WorkspaceDemo";
+import { MarketplaceTeaser } from "@/components/landing/MarketplaceTeaser";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
-import { FAQ } from "@/components/landing/FAQ";
-import { GooseTownTransition, GooseTown } from "@/components/landing/GooseTown";
 import { Footer } from "@/components/landing/Footer";
 
+// Funnel-first landing page: the first-run funnel IS the hero (answers stash
+// to sessionStorage and replay after signup via useLandingBriefReplay), the
+// workspace demo shows the product working, and the page gets out of the way.
 export default function LandingPage() {
   return (
-    <SmoothScroll>
-      <main className="ld-page min-h-screen">
-        <ScrollManager />
-        <Navbar />
-        <Hero />
-        <Team />
-        <div className="ld-rule">
-          <span>marketplace_next_hires</span>
-        </div>
-        <MarketplaceSection />
-        <div className="ld-rule">
-          <span>cloud_sandbox</span>
-        </div>
-        <Isolation />
-        <div className="ld-rule">
-          <span>what_you_get</span>
-        </div>
-        <Features />
-        <Pricing />
-        <div className="ld-rule">
-          <span>open_questions</span>
-        </div>
-        <FAQ />
-        <GooseTownTransition />
-        <GooseTown />
-        <Footer />
-      </main>
-    </SmoothScroll>
+    <main className="ld-page min-h-screen">
+      <Navbar />
+      <HeroFunnel />
+      <WorkspaceDemo />
+      <MarketplaceTeaser />
+      <Pricing />
+      <Footer />
+    </main>
   );
 }

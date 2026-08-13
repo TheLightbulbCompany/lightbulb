@@ -31,7 +31,7 @@ test.describe('Landing Funnel', () => {
 
     // ── 2. type the idea, Start → /sign-up with the stash written ──
     await idea.fill(IDEA);
-    await page.locator('.ld-btn').click();
+    await page.locator('form.ld-ask .ld-btn').click();
     await page.waitForURL('**/sign-up**', { timeout: 20_000 });
     const stash = await page.evaluate(() =>
       window.sessionStorage.getItem('isol8_landing_brief_v1'),

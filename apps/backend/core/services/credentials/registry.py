@@ -235,6 +235,24 @@ class Inbound(BaseModel):
     # uses "hmac_sha256" (its `{t}.{body}` scheme); the trigger proxy only
     # normalizes Stripe's combined signature header into what that mode reads.
     signing_mode: str
+    # The provider's own signature header for raw-body HMAC modes (e.g.
+    # "Sentry-Hook-Signature"). The trigger proxy copies its value into
+    # X-Paperclip-Signature so Paperclip's github_hmac mode can read it — the
+    # proxy collects these from the registry, so wiring a new raw-body-HMAC
+    # provider is YAML-only. Leave unset when the provider already sends a
+    # header Paperclip reads natively (GitHub's X-Hub-Signature-256) or needs
+    # bespoke adaptation in the proxy (Stripe's combined t=,v1= header).
+    signature_header: str | None = None
+    # Provider-specific guided-paste copy shown after seeding, overriding the
+    # generic "add a webhook endpoint in your <provider> dashboard" sentence —
+    # each dashboard buries webhooks somewhere different (Sentry: an internal
+    # integration; Linear: Settings → API). Supports {proxy_url}, {event_label}
+    # and {event_id} placeholders.
+    instructions: str | None = None
+    # Placeholder for the paste-the-signing-secret input. Stripe secrets look
+    # like "whsec_…"; Sentry's is an integration Client Secret — a wrong hint
+    # reads as "you're pasting the wrong thing", so name the provider's term.
+    secret_hint: str | None = None
     events: list[InboundEvent]
     template: InboundTemplate
 

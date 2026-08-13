@@ -861,14 +861,17 @@ const START_RUNGS: ReadonlyArray<{
 
 // POST /automations/from-integration's response (core/services/
 // inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
-// paste the proxy URL into the provider's own dashboard (Stripe) and then
-// paste back the signing secret it hands them.
+// paste the proxy URL into the provider's own dashboard and then paste back
+// the signing secret it hands them. `secret_hint` names the provider's term
+// for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
+// becomes the paste input's placeholder.
 interface FromIntegrationResult {
   routine_id: string;
   trigger_public_id: string;
   proxy_url: string;
   guided: boolean;
   instructions?: string | null;
+  secret_hint?: string | null;
 }
 
 function CreateRoutineDialog({
@@ -1134,7 +1137,7 @@ function CreateRoutineDialog({
                   type="password"
                   value={whsecInput}
                   onChange={(e) => setWhsecInput(e.target.value)}
-                  placeholder="whsec_..."
+                  placeholder={connResult.secret_hint ?? "Signing secret"}
                   className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
                 />
               </label>

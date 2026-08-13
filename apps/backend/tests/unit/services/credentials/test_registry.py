@@ -20,3 +20,48 @@ def test_provider_without_inbound_is_none():
 
     # notion has no inbound: block — the field must default to None, not error.
     assert get_provider("notion").inbound is None
+
+
+def test_tier2_providers_have_inbound_with_signature_headers():
+    from core.services.credentials.registry import get_provider
+
+    expected = {
+        "sentry": "Sentry-Hook-Signature",
+        "linear": "Linear-Signature",
+        "attio": "Attio-Signature",
+    }
+    for key, header in expected.items():
+        p = get_provider(key)
+        assert p.inbound is not None, key
+        assert p.inbound.webhook_registration == "guided_paste"
+        # Raw-body HMAC-SHA256/hex — verified by Paperclip's github_hmac mode
+        # (its sha256= prefix strip is optional), fed via the proxy's header
+        # copy from the provider's own signature header.
+        assert p.inbound.signing_mode == "github_hmac", key
+        assert p.inbound.signature_header == header, key
+        assert p.inbound.events, key
+        assert p.inbound.secret_hint, key
+
+
+def test_inbound_invariants_hold_for_every_provider():
+    """YAML-only wiring means YAML mistakes are the failure mode — pin the
+    invariants the seed service and proxy assume for EVERY inbound block:
+    a native Paperclip signingMode, a resolvable suggested agent, and
+    instructions whose placeholders actually interpolate (a stray brace
+    would otherwise KeyError at seed time, after the routine exists)."""
+    from core.services.credentials.registry import all_providers
+
+    native_modes = {"bearer", "hmac_sha256", "github_hmac", "none"}
+    for key, p in all_providers().items():
+        if p.inbound is None:
+            continue
+        assert p.inbound.signing_mode in native_modes, key
+        # signature_header is the proxy's raw-body copy shim — only meaningful
+        # for github_hmac (hmac_sha256 providers need timestamp splitting,
+        # which is bespoke, like Stripe's).
+        if p.inbound.signature_header:
+            assert p.inbound.signing_mode == "github_hmac", key
+        assert p.inbound.template.suggested_agent == "friday", key
+        if p.inbound.instructions:
+            # Must interpolate cleanly with exactly these placeholders.
+            p.inbound.instructions.format(proxy_url="https://x", event_label="L", event_id="e")

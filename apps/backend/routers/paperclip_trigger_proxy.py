@@ -70,7 +70,13 @@ headers — so it splits the former into the latter (see
 ``_normalize_stripe_signature``). It also derives an ``Idempotency-Key`` from
 the Stripe event id (Stripe sends none, and its delivery retries reuse the
 id) so Paperclip dedupes retries to a single run. A ``github_hmac`` provider
-needs no shim — its ``X-Hub-Signature-256`` already matches.
+sending ``X-Hub-Signature-256`` needs no shim — that header is forwarded and
+read natively. Providers that sign the raw body under their OWN header name
+(Sentry-Hook-Signature, Linear-Signature, Attio-Signature — declared as
+``inbound.signature_header`` in the credentials registry) get a one-line
+copy into ``X-Paperclip-Signature``; their retries carry no stable event id
+we derive, so duplicate deliveries can start duplicate runs — the same
+behavior as a hand-wired "Any other app" webhook today.
 
 An unarmed trigger (secret not yet pasted) **fails closed for free**:
 Paperclip verifies against its own random placeholder secret, which the
@@ -116,6 +122,27 @@ _FORWARDED_HEADERS = (
 # which is correct just slightly chattier.
 _BINDING_TTL_SECONDS = 3600
 _BINDING_CACHE: dict[tuple[str, str], float] = {}
+
+
+def _provider_signature_headers() -> tuple[str, ...]:
+    """Provider-native raw-body signature headers, from the registry's
+    ``inbound.signature_header`` declarations (Sentry-Hook-Signature,
+    Linear-Signature, …). The proxy copies whichever one a delivery carries
+    into ``X-Paperclip-Signature`` so Paperclip's ``github_hmac`` mode can
+    verify it — which keeps wiring a new raw-body-HMAC provider YAML-only.
+    Sorted for a deterministic pick in the never-expected case of a request
+    carrying two providers' headers."""
+    from core.services.credentials import registry
+
+    return tuple(
+        sorted(
+            {
+                p.inbound.signature_header
+                for p in registry.all_providers().values()
+                if p.inbound and p.inbound.signature_header
+            }
+        )
+    )
 
 
 def _binding_cached(owner_id: str, public_id: str) -> bool:
@@ -304,6 +331,19 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
         headers["X-Paperclip-Signature"] = stripe_v1
     if stripe_event_id and "Idempotency-Key" not in headers:
         headers["Idempotency-Key"] = stripe_event_id
+
+    # Raw-body HMAC providers (Sentry/Linear/Attio — registry-declared): copy
+    # the provider's own signature header into X-Paperclip-Signature so
+    # Paperclip's github_hmac mode reads it. Never clobbers a signature the
+    # Stripe split or the caller already supplied — precedence goes to the
+    # more specific source, and a delivery only ever carries its own
+    # provider's header anyway.
+    if "X-Paperclip-Signature" not in headers:
+        for header_name in _provider_signature_headers():
+            provider_sig = request.headers.get(header_name)
+            if provider_sig:
+                headers["X-Paperclip-Signature"] = provider_sig.strip()
+                break
 
     base = settings.PAPERCLIP_INTERNAL_URL.rstrip("/")
     target = f"{base}/api/routine-triggers/public/{public_id}/fire"

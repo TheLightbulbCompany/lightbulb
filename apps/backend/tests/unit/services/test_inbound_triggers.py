@@ -149,3 +149,37 @@ async def test_seed_trigger_routine_trigger_missing_public_id_rolls_back_routine
         await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
     admin.delete_routine.assert_awaited_once()
     assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_orphan_malformed"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_sentry_uses_registry_copy_and_github_hmac():
+    """A Tier-2 raw-body-HMAC provider (Sentry) seeds with Paperclip's native
+    ``github_hmac`` mode and surfaces its registry-authored guided copy —
+    Sentry's webhook lives on an internal integration, not a plain
+    "add a webhook endpoint" page, so the per-provider instructions and
+    secret_hint are what keep the owner from getting lost mid-setup."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "sentry", "issue")
+
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["signingMode"] == "github_hmac"
+
+    assert out["guided"] is True
+    # Registry instructions, not the generic fallback — with the placeholders
+    # interpolated.
+    assert "Developer Settings" in out["instructions"]
+    assert out["proxy_url"] in out["instructions"]
+    assert "Issue created or changed" in out["instructions"]
+    assert out["secret_hint"] == "Client Secret from the integration"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_stripe_returns_secret_hint():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
+
+    assert out["secret_hint"] == "whsec_…"

@@ -496,6 +496,7 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
       proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
       guided: true,
       instructions: "Paste this URL into your Stripe Dashboard webhook settings.",
+      secret_hint: "whsec_…",
     });
     const user = await openConnectedAppRung();
 
@@ -525,6 +526,9 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     const secretField = screen.getByLabelText(/paste your stripe signing secret/i);
     expect(secretField).toHaveAttribute("type", "password");
+    // Placeholder comes from the seed response's secret_hint — the
+    // provider's own term for the secret, not a hardcoded Stripe-ism.
+    expect(secretField).toHaveAttribute("placeholder", "whsec_…");
     await user.type(secretField, "whsec_abc123");
     await user.click(screen.getByRole("button", { name: /save secret/i }));
 

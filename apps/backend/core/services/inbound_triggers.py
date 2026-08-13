@@ -204,17 +204,30 @@ async def seed_trigger_routine(
                 provider_key,
                 event_id,
             )
+            # Per-provider copy from the registry when present — every dashboard
+            # buries webhooks somewhere different, and a wrong path strands the
+            # owner mid-setup. The generic sentence is only the fallback.
+            if inbound.instructions:
+                instructions = inbound.instructions.format(
+                    proxy_url=proxy_url, event_label=event.label, event_id=event.id
+                )
+            else:
+                instructions = (
+                    f"In your {provider.display_name} dashboard, add a webhook endpoint "
+                    f"pointed at {proxy_url} listening for the '{event.label}' event "
+                    f"({event.id}). Paste the signing secret it gives you back into Isol8 "
+                    "to finish arming this automation."
+                )
             return {
                 "routine_id": routine_id,
                 "trigger_public_id": public_id,
                 "proxy_url": proxy_url,
                 "guided": True,
-                "instructions": (
-                    f"In your {provider.display_name} dashboard, add a webhook endpoint "
-                    f"pointed at {proxy_url} listening for the '{event.label}' event "
-                    f"({event.id}). Paste the signing secret it gives you back into Isol8 "
-                    "to finish arming this automation."
-                ),
+                "instructions": instructions,
+                # Placeholder for the paste-secret input ("whsec_…" for Stripe,
+                # "Client Secret from the integration" for Sentry) — a
+                # Stripe-shaped hint on a Linear secret reads as an error.
+                "secret_hint": inbound.secret_hint,
             }
 
         # Only guided_paste is implemented today; the routine+trigger were

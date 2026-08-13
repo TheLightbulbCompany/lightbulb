@@ -138,6 +138,43 @@ class TestGithubResources:
         mock_repos.assert_not_awaited()
 
 
+class TestVercelResources:
+    """The project-picker feed for auto_vercel — the same parameterized
+    resources route TestGithubResources exercises, dispatched by provider."""
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_vercel_projects", new_callable=AsyncMock)
+    async def test_lists_projects(self, mock_projects, async_client):
+        mock_projects.return_value = [
+            {"id": "prj_1", "label": "site"},
+            {"id": "prj_2", "label": "api"},
+        ]
+        response = await async_client.get("/api/v1/automations/providers/vercel_cli/resources")
+        assert response.status_code == 200
+        assert response.json() == mock_projects.return_value
+        mock_projects.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_vercel_projects", new_callable=AsyncMock)
+    async def test_vercel_not_connected_404s(self, mock_projects, async_client):
+        mock_projects.side_effect = LookupError("Vercel is not connected")
+        response = await async_client.get("/api/v1/automations/providers/vercel_cli/resources")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_vercel_projects", new_callable=AsyncMock)
+    async def test_vercel_api_failure_502s(self, mock_projects, async_client):
+        mock_projects.side_effect = httpx.HTTPError("vercel down")
+        response = await async_client.get("/api/v1/automations/providers/vercel_cli/resources")
+        assert response.status_code == 502
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_404s(self, async_client):
+        response = await async_client.get("/api/v1/automations/providers/notaprovider/resources")
+        assert response.status_code == 404
+        assert response.json()["detail"] == "unknown_provider"
+
+
 class TestSetWebhookSecret:
     """Verification is native in Paperclip now — arming a trigger means
     resolving public_id -> Paperclip's internal trigger id

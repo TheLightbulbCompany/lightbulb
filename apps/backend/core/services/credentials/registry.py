@@ -210,9 +210,10 @@ class InboundEvent(BaseModel):
     id: str
     label: str
     # Provider-side event names to subscribe when Isol8 auto-registers the
-    # webhook (auto_github: the GitHub hook's `events` array). None for
-    # guided-paste providers — the owner picks events in the provider's own
-    # dashboard, so there is nothing to subscribe programmatically.
+    # webhook (auto_github: the GitHub hook's `events` array; auto_vercel:
+    # the Vercel webhook's `events`). None for guided-paste providers — the
+    # owner picks events in the provider's own dashboard, so there is nothing
+    # to subscribe programmatically.
     provider_events: list[str] | None = None
 
 
@@ -234,22 +235,27 @@ class Inbound(BaseModel):
     # connected gh token can create repo webhooks itself, so the seed registers
     # the hook (armed with the trigger's own one-time secret) and the
     # automation is live with no paste step; the caller must supply the
-    # "owner/repo" resource to hook.
-    webhook_registration: Literal["guided_paste", "auto_github"]
-    # A NATIVE Paperclip signingMode ("hmac_sha256" | "github_hmac" | "bearer"
-    # | "none"), passed straight through to the created trigger — Paperclip
-    # verifies the provider's signature natively against the trigger's secret
-    # (armed with the provider's own value via PUT .../webhook-secret). Stripe
-    # uses "hmac_sha256" (its `{t}.{body}` scheme); the trigger proxy only
+    # "owner/repo" resource to hook. "auto_vercel" — same auto shape but the
+    # secret flows the other way: Vercel GENERATES the webhook secret at
+    # create time, so the seed registers the webhook and then ARMS the trigger
+    # with Vercel's value; the caller supplies the project id to hook.
+    webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel"]
+    # A NATIVE Paperclip signingMode ("hmac_sha256" | "hmac_sha1" |
+    # "github_hmac" | "bearer" | "none"), passed straight through to the
+    # created trigger — Paperclip verifies the provider's signature natively
+    # against the trigger's secret (armed with the provider's own value via
+    # PUT .../webhook-secret or the auto_vercel arm). Stripe uses
+    # "hmac_sha256" (its `{t}.{body}` scheme); the trigger proxy only
     # normalizes Stripe's combined signature header into what that mode reads.
     signing_mode: str
     # The provider's own signature header for raw-body HMAC modes (e.g.
     # "Sentry-Hook-Signature"). The trigger proxy copies its value into
-    # X-Paperclip-Signature so Paperclip's github_hmac mode can read it — the
-    # proxy collects these from the registry, so wiring a new raw-body-HMAC
-    # provider is YAML-only. Leave unset when the provider already sends a
-    # header Paperclip reads natively (GitHub's X-Hub-Signature-256) or needs
-    # bespoke adaptation in the proxy (Stripe's combined t=,v1= header).
+    # X-Paperclip-Signature so Paperclip's raw-body HMAC modes (github_hmac,
+    # hmac_sha1) can read it — the proxy collects these from the registry, so
+    # wiring a new raw-body-HMAC provider is YAML-only. Leave unset when the
+    # provider already sends a header Paperclip reads natively (GitHub's
+    # X-Hub-Signature-256) or needs bespoke adaptation in the proxy (Stripe's
+    # combined t=,v1= header).
     signature_header: str | None = None
     # Provider-specific guided-paste copy shown after seeding, overriding the
     # generic "add a webhook endpoint in your <provider> dashboard" sentence —

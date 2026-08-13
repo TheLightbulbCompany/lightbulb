@@ -30,6 +30,7 @@ def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", s
         trigger_resp["secretMaterial"] = secret_material
     admin.create_routine_trigger = AsyncMock(return_value=trigger_resp)
     admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
+    admin.patch_routine = AsyncMock(return_value={})
     admin.delete_routine = AsyncMock(return_value={})
     return admin
 
@@ -532,10 +533,22 @@ async def test_list_vercel_projects_not_connected_raises_lookup_error():
 # _gog_env stubbed so no EFS paths are touched — the REAL command construction
 # runs, and the tests assert exact argv. The fence being pinned: caller data
 # (the account email, the channel token) rides only as discrete argv elements.
+# The agent-side state file is written for real, under tmp_path via
+# _efs_root_patch (atomic_write skips its chown on a non-root euid, same as
+# the materializer tests).
 
 _GOOG_SECRET = {"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_g1"}
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+# The renewal schedule-trigger body every google shape attaches second.
+_RENEWAL_TRIGGER_BODY = {
+    "kind": "schedule",
+    "cronExpression": "0 6 * * 1,4",
+    "timezone": "UTC",
+    "enabled": True,
+    "label": "Keep the Google watch alive",
+}
 
 
 def _google_accounts_patch(emails=("ada@example.com",)):
@@ -547,6 +560,10 @@ def _google_accounts_patch(emails=("ada@example.com",)):
 
 def _gog_env_patch():
     return patch("core.services.google_watch._gog_env", return_value={"FAKE": "env"})
+
+
+def _efs_root_patch(tmp_path):
+    return patch("core.services.inbound_triggers.owner_efs_root", lambda owner_id: tmp_path / owner_id)
 
 
 def _channels_get_patch(existing=()):
@@ -568,13 +585,14 @@ def _channel_response(resource_id="res_1", expiration="1799999999000"):
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_auto_google_watch_calendar():
+async def test_seed_trigger_routine_auto_google_watch_calendar(tmp_path):
     """The calendar shape: events.watch via gog's generic Discovery caller on
     the picked account's primary calendar, channel token = the trigger's own
-    one-time secret, bearer signingMode, a channel entry appended to the
-    owner's "google" integrations row, and the routine description carrying
-    the account email (the notification has no payload, so the description
-    tells the agent which -a to use)."""
+    one-time secret, bearer signingMode — then the self-renewal seed: a
+    second (schedule) trigger on the same routine, the agent-side state file
+    on the owner's EFS, and the routine description patched to open with the
+    maintenance clause. The integrations row is NOT touched: nothing
+    platform-side reads calendar/drive channels anymore."""
     admin = _fake_admin(secret_material=_GOOG_SECRET)
     p_repo, p_cookie, p_client = _env(admin)
     run_gog = MagicMock(return_value=_channel_response(resource_id="res_cal_1"))
@@ -585,13 +603,20 @@ async def test_seed_trigger_routine_auto_google_watch_calendar():
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
-        _channels_get_patch(),
+        _efs_root_patch(tmp_path),
+        _channels_get_patch() as get_channels,
         _channels_set_patch() as set_channels,
     ):
         out = await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
 
-    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
-    assert trigger_body["signingMode"] == "bearer"
+    # Two triggers on the same routine: the webhook first, then the renewal
+    # schedule.
+    assert admin.create_routine_trigger.await_count == 2
+    webhook_call, schedule_call = admin.create_routine_trigger.await_args_list
+    assert webhook_call.kwargs["body"]["kind"] == "webhook"
+    assert webhook_call.kwargs["body"]["signingMode"] == "bearer"
+    assert schedule_call.kwargs["routine_id"] == "rt_1"
+    assert schedule_call.kwargs["body"] == _RENEWAL_TRIGGER_BODY
 
     routine_body = admin.create_routine.await_args.kwargs["body"]
     assert "ada@example.com" in routine_body["description"]
@@ -609,18 +634,35 @@ async def test_seed_trigger_routine_auto_google_watch_calendar():
     assert watch_body["params"] == {"ttl": "604800"}
     assert argv[10:] == ["--allow-write", "--force", "-a", "ada@example.com"]
 
-    assert set_channels.await_args.args[0] == "owner_1"
-    (entry,) = set_channels.await_args.args[1]
-    assert entry == {
-        "channel_id": watch_body["id"],
-        "provider_event": "calendar.changed",
-        "account_email": "ada@example.com",
-        "resource_id": "res_cal_1",
-        "trigger_public_id": "pub_1",
-        "proxy_url": out["proxy_url"],
+    # The maintenance clause is patched onto the description, ahead of the
+    # act-on-change half, with the concrete path/address/account interpolated
+    # — and NO secret (the description is visible in the Teams UI).
+    patch_call = admin.patch_routine.await_args
+    assert patch_call.kwargs["routine_id"] == "rt_1"
+    desc = patch_call.kwargs["body"]["description"]
+    assert desc.startswith("Every run, FIRST do maintenance")
+    assert "/home/node/.openclaw/google-watch/pub_1.json" in desc
+    assert out["proxy_url"] in desc
+    assert "-a ada@example.com" in desc
+    assert "pcsec_g1" not in desc
+    assert "A Google push notification just fired" in desc
+
+    # The agent-side state file: everything a re-arm needs, including the
+    # secret — 0600 on the owner's own EFS.
+    state_file = tmp_path / "owner_1" / "google-watch" / "pub_1.json"
+    assert json.loads(state_file.read_text()) == {
+        "kind": "calendar",
+        "account": "ada@example.com",
+        "calendar_id": "primary",
+        "address": out["proxy_url"],
         "channel_token": "pcsec_g1",
+        "channel_id": watch_body["id"],
+        "resource_id": "res_cal_1",
         "expiration_ms": 1799999999000,
     }  # no page_token key — calendar watches have none
+
+    get_channels.assert_not_awaited()
+    set_channels.assert_not_awaited()
 
     assert out["guided"] is False
     assert out["resource"] == "ada@example.com"
@@ -629,11 +671,11 @@ async def test_seed_trigger_routine_auto_google_watch_calendar():
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_auto_google_watch_drive():
+async def test_seed_trigger_routine_auto_google_watch_drive(tmp_path):
     """The drive shape: a fresh changes start-token first, then changes.watch
     with the token/webhook-url/channel-id/channel-token flags — the start
-    pageToken kept on the entry, appended after any channels the owner
-    already has."""
+    pageToken kept in the state file (a drive re-arm needs it), the renewal
+    trigger attached, and no integrations-row write."""
     admin = _fake_admin(secret_material=_GOOG_SECRET)
     p_repo, p_cookie, p_client = _env(admin)
     run_gog = MagicMock(
@@ -642,7 +684,6 @@ async def test_seed_trigger_routine_auto_google_watch_drive():
             _channel_response(resource_id="res_drv_1"),
         ]
     )
-    existing_entry = {"channel_id": "chan_prior", "provider_event": "calendar.changed"}
     with (
         p_repo,
         p_cookie,
@@ -650,7 +691,8 @@ async def test_seed_trigger_routine_auto_google_watch_drive():
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
-        _channels_get_patch(existing=[existing_entry]),
+        _efs_root_patch(tmp_path),
+        _channels_get_patch() as get_channels,
         _channels_set_patch() as set_channels,
     ):
         out = await seed_trigger_routine("owner_1", "google", "drive.changed", resource="ada@example.com")
@@ -670,14 +712,29 @@ async def test_seed_trigger_routine_auto_google_watch_drive():
     assert int(watch_argv[8].removeprefix("--expiration-ms=")) > 0
     assert watch_argv[9:] == ["-a", "ada@example.com"]
 
-    # Appended after the owner's existing channels, never replacing them.
-    prior, entry = set_channels.await_args.args[1]
-    assert prior == existing_entry
-    assert entry["channel_id"] == channel_id
-    assert entry["provider_event"] == "drive.changed"
-    assert entry["resource_id"] == "res_drv_1"
-    assert entry["channel_token"] == "pcsec_g1"
-    assert entry["page_token"] == "pt_77"
+    assert admin.create_routine_trigger.await_count == 2
+    assert admin.create_routine_trigger.await_args_list[1].kwargs["body"] == _RENEWAL_TRIGGER_BODY
+
+    # The drive maintenance clause names the drive re-arm command.
+    desc = admin.patch_routine.await_args.kwargs["body"]["description"]
+    assert "gog drive changes watch" in desc
+    assert "/home/node/.openclaw/google-watch/pub_1.json" in desc
+    assert "pcsec_g1" not in desc
+
+    state_file = tmp_path / "owner_1" / "google-watch" / "pub_1.json"
+    assert json.loads(state_file.read_text()) == {
+        "kind": "drive",
+        "account": "ada@example.com",
+        "address": out["proxy_url"],
+        "channel_token": "pcsec_g1",
+        "channel_id": channel_id,
+        "resource_id": "res_drv_1",
+        "expiration_ms": 1799999999000,
+        "page_token": "pt_77",
+    }  # no calendar_id key — that's the calendar shape's
+
+    get_channels.assert_not_awaited()
+    set_channels.assert_not_awaited()
 
     assert out["guided"] is False
     assert out["resource"] == "ada@example.com"
@@ -734,11 +791,17 @@ async def test_seed_trigger_routine_auto_google_watch_gog_failure_rolls_back():
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_auto_google_watch_row_write_failure_stops_channel():
-    """The channel-entry write failing after the channel exists must stop the
-    channel (best-effort) AND unwind the routine — an unrecorded channel can
-    never be renewed or audited."""
-    admin = _fake_admin(routine_id="rt_row_fail", secret_material=_GOOG_SECRET)
+async def test_seed_trigger_routine_auto_google_watch_renewal_trigger_failure_stops_channel():
+    """The renewal schedule-trigger create failing after the channel exists
+    must stop the channel (best-effort) AND unwind the routine — without its
+    maintenance tick the watch silently dies within a week."""
+    admin = _fake_admin(routine_id="rt_renew_fail", secret_material=_GOOG_SECRET)
+    admin.create_routine_trigger = AsyncMock(
+        side_effect=[
+            {"trigger": {"publicId": "pub_1"}, "secretMaterial": _GOOG_SECRET},
+            RuntimeError("upstream 500"),
+        ]
+    )
     p_repo, p_cookie, p_client = _env(admin)
     run_gog = MagicMock(return_value=_channel_response(resource_id="res_x"))
     stop_watch = AsyncMock()
@@ -750,18 +813,15 @@ async def test_seed_trigger_routine_auto_google_watch_row_write_failure_stops_ch
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
         patch("core.services.google_watch.stop_watch", stop_watch),
-        _channels_get_patch(),
-        _channels_set_patch() as set_channels,
-        pytest.raises(RuntimeError, match="ddb down"),
+        pytest.raises(RuntimeError, match="upstream 500"),
     ):
-        set_channels.side_effect = RuntimeError("ddb down")
         await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
     stop_watch.assert_awaited_once()
     stop_kwargs = stop_watch.await_args.kwargs
     assert stop_kwargs["resource_id"] == "res_x"
     assert stop_kwargs["account_email"] == "ada@example.com"
     admin.delete_routine.assert_awaited_once()
-    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_row_fail"
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_renew_fail"
 
 
 @pytest.mark.asyncio
@@ -903,11 +963,13 @@ async def test_seed_trigger_routine_gmail_poll_trigger_failure_rolls_back():
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry():
+async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry(tmp_path):
     """gmail.message: bearer trigger, `gog gmail watch start` against the
-    owner's own topic (INBOX only), a kind="gmail_watch" entry on the shared
-    google_watch_channels list carrying the trigger's secret, and the
-    one-time Pub/Sub setup instructions in the result."""
+    owner's own topic (INBOX only), the self-renewal seed (schedule trigger +
+    secretless state file + maintenance clause), a kind="gmail_watch" entry
+    on the google_watch_channels list carrying the trigger's secret (the
+    proxy's OIDC bearer lookup still reads it), and the one-time Pub/Sub
+    setup instructions in the result."""
     admin = _fake_admin(secret_material=_GOOG_SECRET)
     p_repo, p_cookie, p_client = _env(admin)
     run_gog = MagicMock(return_value=json.dumps({"historyId": "1234", "expiration": "1799999999000"}))
@@ -918,6 +980,7 @@ async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry():
         _google_accounts_patch(),
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
+        _efs_root_patch(tmp_path),
         _channels_get_patch(),
         _channels_set_patch() as set_channels,
     ):
@@ -925,8 +988,25 @@ async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry():
             "owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC
         )
 
-    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
-    assert trigger_body["signingMode"] == "bearer"
+    assert admin.create_routine_trigger.await_count == 2
+    webhook_call, schedule_call = admin.create_routine_trigger.await_args_list
+    assert webhook_call.kwargs["body"]["signingMode"] == "bearer"
+    assert schedule_call.kwargs["body"] == _RENEWAL_TRIGGER_BODY
+
+    # The gmail maintenance clause: renew needs no secret, so neither the
+    # description nor the state file carries one.
+    desc = admin.patch_routine.await_args.kwargs["body"]["description"]
+    assert "gog gmail watch renew -a ada@example.com" in desc
+    assert "/home/node/.openclaw/google-watch/pub_1.json" in desc
+    assert "pcsec_g1" not in desc
+
+    state_file = tmp_path / "owner_1" / "google-watch" / "pub_1.json"
+    assert json.loads(state_file.read_text()) == {
+        "kind": "gmail",
+        "account": "ada@example.com",
+        "topic": _GMAIL_TOPIC,
+        "expiration_ms": 1799999999000,
+    }
 
     run_gog.assert_called_once()
     assert run_gog.call_args.args[0] == [
@@ -1013,10 +1093,10 @@ async def test_seed_trigger_routine_gmail_push_gog_failure_rolls_back():
 
 
 @pytest.mark.asyncio
-async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch():
+async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch(tmp_path):
     """The entry write failing after the watch exists must stop the watch
     (best-effort) AND unwind the routine — without its entry the proxy has no
-    bearer secret to inject and the sweep can never renew it."""
+    bearer secret to inject and deliveries would 401 forever."""
     admin = _fake_admin(routine_id="rt_gmail_row_fail", secret_material=_GOOG_SECRET)
     p_repo, p_cookie, p_client = _env(admin)
     run_gog = MagicMock(return_value=json.dumps({"historyId": "1", "expiration": "1799999999000"}))
@@ -1029,6 +1109,7 @@ async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch():
         _gog_env_patch(),
         patch("core.services.google_watch._run_gog", run_gog),
         patch("core.services.google_watch.stop_gmail_watch", stop),
+        _efs_root_patch(tmp_path),
         _channels_get_patch(),
         _channels_set_patch() as set_channels,
         pytest.raises(RuntimeError, match="ddb down"),
@@ -1041,8 +1122,10 @@ async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch():
 
 
 def test_google_watch_gmail_argv():
-    """The fixed argv for the gmail watch trio — caller data rides only as
-    discrete argv elements — and the expiration parse."""
+    """The fixed argv for the gmail watch pair — caller data rides only as
+    discrete argv elements — and the expiration parse. (Renewal has no
+    backend argv: the routine's own agent runs `gog gmail watch renew`
+    in-container.)"""
     from core.services import google_watch
 
     run_gog = MagicMock(return_value=json.dumps({"historyId": "7", "expiration": "1799999999000"}))
@@ -1065,17 +1148,13 @@ def test_google_watch_gmail_argv():
             "ada@example.com",
         ]
 
-        out = google_watch._renew_gmail_watch_sync("owner_1", "ada@example.com")
-        assert out == {"expiration_ms": 1799999999000}
-        assert run_gog.call_args.args[0] == ["gog", "gmail", "watch", "renew", "-a", "ada@example.com"]
-
         google_watch._stop_gmail_watch_sync("owner_1", "ada@example.com")
         assert run_gog.call_args.args[0] == ["gog", "gmail", "watch", "stop", "-a", "ada@example.com"]
 
 
 def test_parse_gmail_watch_requires_expiration():
     """A watch response without `expiration` is as fatal as the call failing —
-    the sweep could never know when to re-arm."""
+    the seeded state file could never say when to re-arm."""
     from core.services.google_watch import _parse_gmail_watch
 
     with pytest.raises(RuntimeError, match="no expiration"):

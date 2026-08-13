@@ -72,16 +72,18 @@ async def delete_all_for_owner(owner_id: str) -> list[str]:
 
 
 async def get_google_watch_channels(owner_id: str) -> list[dict]:
-    """The owner's live Google push channels (auto_google_watch triggers) —
+    """The owner's Gmail push watches (``kind="gmail_watch"`` entries) —
     stored as a list attribute on the existing ``(owner_id, "google")`` status
-    row rather than a table of their own. Each entry carries the watch's
-    Google-side identity (``channel_id``, ``resource_id``, ``expiration_ms``,
-    ``page_token`` for Drive), the trigger it feeds (``trigger_public_id``,
-    ``proxy_url``), the account that owns it (``account_email``), and the
-    ``channel_token`` (= the trigger's webhook secret — stored because a
-    renewal must re-watch with the SAME token and Paperclip has no secret
-    read-back; this table is CMK-encrypted and Paperclip already holds the
-    identical value on the trigger row)."""
+    row rather than a table of their own. The gmail trigger seed is the only
+    writer and the trigger proxy's ``_gmail_watch_token`` the only reader:
+    each entry binds a trigger (``trigger_public_id``) to its
+    ``channel_token`` (= the trigger's webhook secret — stored because the
+    proxy must inject it as the bearer after OIDC verification and Paperclip
+    has no secret read-back; this table is CMK-encrypted and Paperclip
+    already holds the identical value on the trigger row). Calendar/Drive
+    push channels no longer live here — their state is the agent-side EFS
+    file the seed writes, and the routine's own runs renew them (see
+    ``inbound_triggers``)."""
     row = await get(owner_id, "google")
     return list((row or {}).get("google_watch_channels") or [])
 
@@ -91,11 +93,11 @@ async def set_google_watch_channels(owner_id: str, channels: list[dict]) -> None
     row. UpdateExpression rather than put_item so the row's status fields
     survive (and the row is created if somehow absent).
 
-    Callers do read-modify-write of the list. The row is per-owner, so the
-    only contention is the trigger seed vs the daily renewal sweep — a lost
-    update is tolerable and self-heals: an unrecorded channel simply dies at
-    its ≤7-day expiry, and a resurrected stale entry is renewed and replaced
-    on the next sweep."""
+    Callers do read-modify-write of the list. The row is per-owner and the
+    gmail trigger seed is the only writer, so the only contention is two
+    concurrent seeds by the same owner — a lost update is tolerable: the
+    orphaned watch's deliveries 401 at the proxy and the watch lapses at its
+    ~7-day expiry."""
     now = int(time.time())
     await run_in_thread(
         _table().update_item,

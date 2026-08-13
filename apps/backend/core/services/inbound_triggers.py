@@ -48,20 +48,22 @@ trigger armed with a random secret. The webhook id is likewise not stored.
 
 ``webhook_registration: "auto_google_watch"`` (Google): auto like GitHub —
 the trigger's one-time ``secretMaterial.webhookSecret`` becomes the Google
-push channel's token — but Google channels EXPIRE (≤7 days), so beyond the
-seed each channel is recorded as an entry in the ``google_watch_channels``
-list on the owner's existing "google" integrations row
-(``integrations_repo.get/set_google_watch_channels``), and a daily renewal
-sweep (``update_service._google_watch_renewal_pass``) re-arms each one
-before it dies. The resource is a connected Google ACCOUNT email, validated
-against the stored inventory (which doubles as the argv injection fence —
-the email rides into gog's fixed argv). Google sends no body signature:
-deliveries carry ``X-Goog-Channel-Token``, which the trigger proxy maps into
-``Authorization: Bearer`` for Paperclip's native bearer mode. Deleting the
-automation does NOT stop the channel (same orphan posture as GitHub/Vercel):
-deliveries fail closed at Paperclip, though the renewal sweep keeps
-re-arming the channel until its entry is removed — see the sweep's
-docstring for that trade-off.
+push channel's token — but Google channels EXPIRE (≤7 days), so the watch
+must be re-armed for as long as the automation lives. Renewal is the
+ROUTINE'S OWN job, not the platform's: the seed attaches a second,
+twice-weekly ``kind="schedule"`` trigger to the same routine and writes the
+watch's identity to a state file on the owner's EFS
+(``google-watch/{trigger_public_id}.json`` under the owner root, which the
+container sees at ``/home/node/.openclaw/google-watch/``); the routine
+description opens with a maintenance clause telling the agent to read that
+file and re-arm via gog when expiry is near. Renewal thereby dies with the
+automation — delete the routine and nothing re-arms the orphaned channel
+(it lapses at its ≤7-day expiry; deliveries fail closed at Paperclip until
+then). The resource is a connected Google ACCOUNT email, validated against
+the stored inventory (which doubles as the argv injection fence — the email
+rides into gog's fixed argv). Google sends no body signature: deliveries
+carry ``X-Goog-Channel-Token``, which the trigger proxy maps into
+``Authorization: Bearer`` for Paperclip's native bearer mode.
 
 Two PER-EVENT shapes ride the same google block (``InboundEvent.registration``
 overrides the block-level ``webhook_registration``; see the registry):
@@ -74,18 +76,25 @@ last run. Zero owner setup, nothing to renew, no proxy_url in the result.
 ``registration: "owner_setup"`` (gmail.message): Gmail push publishes only to
 a topic in the OWNER'S OWN GCP project (Google is BYO here, so they have
 one). The seed creates a bearer trigger, runs ``gog gmail watch start
---topic <their topic>``, records a ``kind="gmail_watch"`` entry on the SAME
-``google_watch_channels`` list (entries WITHOUT a kind are push channels —
-back-compat), and returns one-time Pub/Sub setup instructions (create the
-topic, grant gmail-api-push publisher, add an OIDC push subscription aimed
-at the proxy URL). Deliveries carry a per-delivery Google OIDC JWT, which
-the trigger proxy verifies and swaps for the entry's ``channel_token`` (=
-the trigger's own secret) so Paperclip's bearer mode still does the final
-compare. The renewal sweep re-arms the watch via ``gog gmail watch renew``.
+--topic <their topic>``, records a ``kind="gmail_watch"`` entry on the
+``google_watch_channels`` list of the owner's "google" integrations row, and
+returns one-time Pub/Sub setup instructions (create the topic, grant
+gmail-api-push publisher, add an OIDC push subscription aimed at the proxy
+URL). Deliveries carry a per-delivery Google OIDC JWT, which the trigger
+proxy verifies and swaps for the entry's ``channel_token`` (= the trigger's
+own secret) so Paperclip's bearer mode still does the final compare — that
+proxy lookup is the ONLY reader of the row, and gmail push is now its only
+writer (calendar/drive channels live solely in the agent-side state file).
+Renewal rides the same self-renewal shape as the push channels: a second
+schedule trigger + state file + maintenance clause, with the agent running
+``gog gmail watch renew`` — which needs no secret, so the gmail state file
+carries none.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -99,6 +108,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import google_watch
 from core.services.agent_routine_provisioning import _build_routine_body
 from core.services.credentials import integration_secret_store, registry
+from core.services.credentials.materializers.base import atomic_write, owner_efs_root
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
@@ -129,6 +139,72 @@ _PUBSUB_TOPIC_RE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/topics/[A
 # container 144 times a day; the routine's coalesce_if_active policy keeps a
 # slow run from stacking.
 _GMAIL_POLL_CRON = "*/10 * * * *"
+
+# The self-renewal schedule the google shapes attach as a SECOND trigger on
+# the same routine. Twice a week (Mon+Thu 06:00 UTC) gives every ≤7-day
+# watch two maintenance ticks before it can expire; the routine's own agent
+# does the re-arm (see the maintenance clauses below), so renewal lives and
+# dies with the automation instead of outliving it in a platform sweep.
+_GOOGLE_RENEWAL_CRON = "0 6 * * 1,4"
+_GOOGLE_RENEWAL_TRIGGER_LABEL = "Keep the Google watch alive"
+
+# Where the container sees the seeded watch state file: the per-user EFS
+# access point (rooted at the owner's EFS dir, = owner_efs_root) mounts at
+# /home/node/.openclaw, so owner_efs_root/google-watch/{trigger_public_id}.json
+# is this path in every agent-facing prompt.
+_WATCH_STATE_CONTAINER_DIR = "/home/node/.openclaw/google-watch"
+
+# Maintenance clauses prepended to the google starter prompts. The routine
+# wakes from BOTH triggers (webhook delivery and renewal schedule) with the
+# same description, so the clause is self-discriminating instead of
+# source-detecting: maintenance first, then act on what changed, and a run
+# where nothing changed was just a maintenance tick. The concrete account /
+# address / file path are interpolated at seed time so the agent needs zero
+# lookups beyond the file; the channel token is NOT — the description is
+# visible in the Teams UI, so the secret stays in the 0600 state file (and
+# gmail renewal needs no secret at all).
+_CALENDAR_MAINTENANCE_CLAUSE = (
+    "Every run, FIRST do maintenance: read {path}; if its expiration_ms is "
+    "within 3 days of now, re-arm the watch by running `gog api call calendar "
+    'v3 events.watch --params \'{{"calendarId":"primary"}}\' --body '
+    '\'{{"id":"<new uuid>","type":"web_hook","address":"{address}",'
+    '"token":"<channel_token from the file>","params":{{"ttl":"604800"}}}}\' '
+    "--allow-write --force -a {account}` and rewrite the file with the new "
+    "channel_id/resource_id/expiration_ms. THEN check what changed and act on "
+    "it; if nothing changed, this was a maintenance tick — stop quietly."
+)
+_DRIVE_MAINTENANCE_CLAUSE = (
+    "Every run, FIRST do maintenance: read {path}; if its expiration_ms is "
+    "within 3 days of now, re-arm the watch by running `gog drive changes "
+    "watch --token=<page_token from the file> --webhook-url={address} "
+    "--channel-id=<new uuid> --channel-token=<channel_token from the file> "
+    "--expiration-ms=<now + 7 days, in ms> -a {account}`, rewrite the file "
+    "with the new channel_id/resource_id/expiration_ms, then best-effort "
+    "`gog drive changes stop <old channel_id> <old resource_id>`. THEN check "
+    "what changed and act on it; if nothing changed, this was a maintenance "
+    "tick — stop quietly."
+)
+_GMAIL_MAINTENANCE_CLAUSE = (
+    "Every run, FIRST do maintenance: read {path}; if its expiration_ms is "
+    "within 3 days of now, run `gog gmail watch renew -a {account}` and "
+    "rewrite the file's expiration_ms with the returned expiration. THEN "
+    "check what changed and act on it; if nothing changed, this was a "
+    "maintenance tick — stop quietly."
+)
+
+
+def _write_watch_state(owner_id: str, public_id: str, state: dict[str, Any]) -> None:
+    """Seed the agent-side watch state file the maintenance clause reads —
+    ``owner_efs_root/google-watch/{public_id}.json``, which the container
+    mounts at ``{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json``. atomic_write
+    is the materializer idiom exactly: mkdir parents, atomic replace, 0600,
+    chown to node so the routine's own runs can read AND rewrite it after
+    re-arming."""
+    atomic_write(
+        owner_efs_root(owner_id) / "google-watch" / f"{public_id}.json",
+        (json.dumps(state, indent=2) + "\n").encode(),
+    )
+
 
 # `inbound.signing_mode` in the registry IS a native Paperclip signingMode
 # now (e.g. Stripe -> "hmac_sha256"); it's passed straight through to the
@@ -169,19 +245,25 @@ def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, la
     }
 
 
-def _build_schedule_trigger_body(cron: str) -> dict[str, Any]:
-    """The ENABLED schedule-trigger body the poll shape attaches — the
-    ``kind="schedule"`` counterpart to ``_build_webhook_trigger_body``. Live
-    on create for the same reason the webhook one is: the owner explicitly
-    asked for this automation (always-on-gated), unlike the dormant-by-
-    invariant provisioning seeds in ``agent_routine_provisioning``. UTC keeps
-    the cadence unambiguous across the fleet."""
-    return {
+def _build_schedule_trigger_body(cron: str, *, label: str | None = None) -> dict[str, Any]:
+    """The ENABLED schedule-trigger body the poll shape and the google
+    renewal shapes attach — the ``kind="schedule"`` counterpart to
+    ``_build_webhook_trigger_body``. Live on create for the same reason the
+    webhook one is: the owner explicitly asked for this automation
+    (always-on-gated), unlike the dormant-by-invariant provisioning seeds in
+    ``agent_routine_provisioning``. UTC keeps the cadence unambiguous across
+    the fleet. ``label`` names the trigger in the detail panel — the renewal
+    trigger carries one so the owner can see (and delete) the maintenance
+    schedule for what it is."""
+    body: dict[str, Any] = {
         "kind": "schedule",
         "cronExpression": cron,
         "timezone": "UTC",
         "enabled": True,
     }
+    if label is not None:
+        body["label"] = label
+    return body
 
 
 async def _github_token(owner_id: str) -> str | None:
@@ -678,6 +760,26 @@ async def seed_trigger_routine(
 
         if registration == "auto_google_watch":
             assert resource and webhook_secret  # narrowed by the pre-checks above
+            is_calendar = event.id == google_watch.CALENDAR_EVENT
+            clause = (_CALENDAR_MAINTENANCE_CLAUSE if is_calendar else _DRIVE_MAINTENANCE_CLAUSE).format(
+                path=f"{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json",
+                address=proxy_url,
+                account=resource,
+            )
+            try:
+                # The state-file path is keyed by the trigger's public id,
+                # which only exists now — so the maintenance clause lands via
+                # a description patch, not the create body.
+                await admin.patch_routine(
+                    session_cookie=cookie,
+                    routine_id=routine_id,
+                    body={"description": f"{clause}\n\n{description}"},
+                )
+            except Exception:
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
             try:
                 channel = await google_watch.start_watch(
                     owner_id=owner_id,
@@ -694,34 +796,31 @@ async def seed_trigger_routine(
                     admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
                 )
                 raise
-            entry = {
-                "channel_id": channel["channel_id"],
-                "provider_event": event.id,
-                "account_email": resource,
-                "resource_id": channel["resource_id"],
-                "trigger_public_id": public_id,
-                "proxy_url": proxy_url,
-                # The renewal sweep must re-watch with the SAME token, and
-                # Paperclip has no secret read-back — see the repo helper's
-                # docstring for the storage posture.
-                "channel_token": webhook_secret,
-                "expiration_ms": channel["expiration_ms"],
-            }
-            if channel.get("page_token"):
-                entry["page_token"] = channel["page_token"]
             try:
-                # Read-modify-write of the list attr on the owner's single
-                # "google" integrations row — per-owner, so the only writer
-                # contention is this seed vs the daily sweep; a lost update
-                # is tolerable and self-heals at the next sweep.
-                channels = await integrations_repo.get_google_watch_channels(owner_id)
-                channels.append(entry)
-                await integrations_repo.set_google_watch_channels(owner_id, channels)
+                # The renewal trigger + state file are what keep the ≤7-day
+                # channel alive; without either the automation silently dies
+                # within a week — same severity as the watch itself failing,
+                # so stop the just-created channel (best-effort, never masks
+                # this error) and unwind.
+                await admin.create_routine_trigger(
+                    session_cookie=cookie,
+                    routine_id=routine_id,
+                    body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
+                )
+                state: dict[str, Any] = {
+                    "kind": "calendar" if is_calendar else "drive",
+                    "account": resource,
+                    **({"calendar_id": "primary"} if is_calendar else {}),
+                    "address": proxy_url,
+                    "channel_token": webhook_secret,
+                    "channel_id": channel["channel_id"],
+                    "resource_id": channel["resource_id"],
+                    "expiration_ms": channel["expiration_ms"],
+                }
+                if channel.get("page_token"):
+                    state["page_token"] = channel["page_token"]
+                await asyncio.to_thread(_write_watch_state, owner_id, public_id, state)
             except Exception:
-                # Without its entry the channel can never be renewed or
-                # audited — stop it (best-effort, never masks this error)
-                # before unwinding, so Google doesn't deliver into a dead
-                # trigger until expiry.
                 await google_watch.stop_watch(
                     owner_id=owner_id,
                     account_email=resource,
@@ -753,6 +852,23 @@ async def seed_trigger_routine(
 
         if registration == "owner_setup":
             assert resource and topic and webhook_secret  # narrowed by the pre-checks above
+            clause = _GMAIL_MAINTENANCE_CLAUSE.format(
+                path=f"{_WATCH_STATE_CONTAINER_DIR}/{public_id}.json",
+                account=resource,
+            )
+            try:
+                # Same description patch as auto_google_watch above: the
+                # state-file path needs the trigger's public id.
+                await admin.patch_routine(
+                    session_cookie=cookie,
+                    routine_id=routine_id,
+                    body={"description": f"{clause}\n\n{description}"},
+                )
+            except Exception:
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
             try:
                 watch = await google_watch.start_gmail_watch(owner_id=owner_id, account_email=resource, topic=topic)
             except Exception:
@@ -765,31 +881,56 @@ async def seed_trigger_routine(
                     admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
                 )
                 raise
-            entry = {
-                # Discriminates gmail watches from push channels on the
-                # shared list — the renewal sweep treats kind-less entries
-                # as channels (back-compat with pre-gmail rows).
-                "kind": "gmail_watch",
-                "account_email": resource,
-                "topic": topic,
-                "trigger_public_id": public_id,
-                "proxy_url": proxy_url,
-                # The trigger's own secret. The proxy injects it as the
-                # Authorization bearer after verifying a delivery's Google
-                # OIDC JWT — Paperclip has no secret read-back, so this row
-                # is where the proxy finds it.
-                "channel_token": webhook_secret,
-                "expiration_ms": watch["expiration_ms"],
-            }
             try:
-                # Same read-modify-write posture as the channel entry above.
+                # Renewal trigger + state file, same posture as the push
+                # channels. The gmail state file carries NO secret: renewal
+                # is `gog gmail watch renew -a <account>`, which re-arms
+                # from the topic/labels gog stored at start time.
+                await admin.create_routine_trigger(
+                    session_cookie=cookie,
+                    routine_id=routine_id,
+                    body=_build_schedule_trigger_body(_GOOGLE_RENEWAL_CRON, label=_GOOGLE_RENEWAL_TRIGGER_LABEL),
+                )
+                await asyncio.to_thread(
+                    _write_watch_state,
+                    owner_id,
+                    public_id,
+                    {
+                        "kind": "gmail",
+                        "account": resource,
+                        "topic": topic,
+                        "expiration_ms": watch["expiration_ms"],
+                    },
+                )
+                # gmail push is the ONLY writer of google_watch_channels
+                # now (calendar/drive state lives solely in the agent-side
+                # file): the trigger proxy still needs this entry's
+                # channel_token to swap a verified OIDC delivery for the
+                # trigger's bearer secret, and renewal changes neither the
+                # token nor the trigger id, so the row never needs an
+                # update after seed.
+                entry = {
+                    "kind": "gmail_watch",
+                    "account_email": resource,
+                    "topic": topic,
+                    "trigger_public_id": public_id,
+                    "proxy_url": proxy_url,
+                    # The trigger's own secret. The proxy injects it as the
+                    # Authorization bearer after verifying a delivery's
+                    # Google OIDC JWT — Paperclip has no secret read-back,
+                    # so this row is where the proxy finds it.
+                    "channel_token": webhook_secret,
+                    "expiration_ms": watch["expiration_ms"],
+                }
                 channels = await integrations_repo.get_google_watch_channels(owner_id)
                 channels.append(entry)
                 await integrations_repo.set_google_watch_channels(owner_id, channels)
             except Exception:
-                # Without its entry the watch can never be renewed AND the
-                # proxy has no bearer secret to inject — deliveries would
-                # 401 forever. Stop the watch (best-effort) before unwinding.
+                # Without the renewal trigger the watch dies within a week;
+                # without its row entry the proxy has no bearer secret to
+                # inject and deliveries would 401 forever. Either way the
+                # automation is unusable — stop the watch (best-effort)
+                # before unwinding.
                 await google_watch.stop_gmail_watch(owner_id=owner_id, account_email=resource)
                 await _rollback_routine(
                     admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key

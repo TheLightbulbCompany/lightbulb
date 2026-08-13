@@ -7,8 +7,10 @@ expires (≤7 days), POSTs notifications carrying no payload beyond headers,
 and authenticates only by echoing back the token set at watch time
 (``X-Goog-Channel-Token``). The seed sets that token to the trigger's own
 secret so Paperclip's native ``bearer`` mode verifies deliveries (via the
-trigger proxy's header mapping); the renewal sweep in ``update_service``
-re-watches with a fresh channel id (same token) before expiry.
+trigger proxy's header mapping); the routine's own agent re-watches with a
+fresh channel id (same token) before expiry, driven by the maintenance
+schedule trigger and EFS state file the seed leaves behind (see
+``inbound_triggers``) — there is no platform-side renewal job.
 
 gog invocations mirror the ``gog_cli`` materializer exactly: fixed argv
 (caller data rides as discrete argv elements, never a shell string),
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Both watch surfaces accept up to 7 days. The ACTUAL grant comes back in the
 # response's `expiration` and is what gets stored, so a Google-side clamp just
-# means the renewal sweep re-arms that channel sooner.
+# means the routine's maintenance tick re-arms that channel sooner.
 _CHANNEL_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # The registry's curated event ids for the google provider — the dispatch keys
@@ -208,14 +210,16 @@ async def stop_watch(
 # Unlike the push channels above, a Gmail watch has no channel id / resource
 # id: users.watch binds ONE mailbox to ONE topic (a re-call replaces the
 # previous binding), notifications arrive as Pub/Sub push (OIDC-signed, no
-# X-Goog-Channel-Token), and renewal is `gog gmail watch renew`, which
-# re-arms from the topic/labels gog stored at start time.
+# X-Goog-Channel-Token), and renewal is `gog gmail watch renew` — run by the
+# routine's own agent in-container (the same gog keyring), which re-arms from
+# the topic/labels gog stored at start time.
 
 
 def _parse_gmail_watch(stdout: str) -> int:
     """``expiration_ms`` from a users.watch response (gog prints the API's
-    JSON: historyId + expiration in ms). Without it the renewal sweep can
-    never know when to re-arm, so absence is as fatal as the call failing."""
+    JSON: historyId + expiration in ms). Without it the seeded state file
+    could never say when to re-arm, so absence is as fatal as the call
+    failing."""
     data = json.loads(stdout)
     expiration = data.get("expiration") if isinstance(data, dict) else None
     if not expiration:
@@ -239,18 +243,6 @@ async def start_gmail_watch(*, owner_id: str, account_email: str, topic: str) ->
     """Register the mailbox to the owner's Pub/Sub ``topic``. Returns
     ``{expiration_ms}`` — all the recorded watch entry needs to renew it."""
     return await asyncio.to_thread(_start_gmail_watch_sync, owner_id, account_email, topic)
-
-
-def _renew_gmail_watch_sync(owner_id: str, account_email: str) -> dict:
-    env = _gog_env(owner_id)
-    out = _run_gog(["gog", "gmail", "watch", "renew", "-a", account_email], env)
-    return {"expiration_ms": _parse_gmail_watch(out)}
-
-
-async def renew_gmail_watch(*, owner_id: str, account_email: str) -> dict:
-    """Re-arm the account's Gmail watch (gog re-calls users.watch with its
-    stored topic/labels). Returns the fresh ``{expiration_ms}``."""
-    return await asyncio.to_thread(_renew_gmail_watch_sync, owner_id, account_email)
 
 
 def _stop_gmail_watch_sync(owner_id: str, account_email: str) -> None:

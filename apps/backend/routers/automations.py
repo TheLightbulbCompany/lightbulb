@@ -40,7 +40,12 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.services.inbound_triggers import list_github_repos, list_vercel_projects, seed_trigger_routine
+from core.services.inbound_triggers import (
+    list_github_repos,
+    list_google_accounts,
+    list_vercel_projects,
+    seed_trigger_routine,
+)
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from routers import paperclip_trigger_proxy
@@ -107,8 +112,9 @@ async def provider_resources(
     auth: AuthContext = Depends(get_current_user),
 ) -> list[dict]:
     """Provider-side resources the owner's connected token can see (GitHub
-    repositories, Vercel projects) — feeds the create dialog's resource picker
-    for the auto-registering registration shapes.
+    repositories, Vercel projects, connected Google account emails) — feeds
+    the create dialog's resource picker for the auto-registering registration
+    shapes.
 
     Org-admin gated like ``from_integration``, but WITHOUT the always-on
     entitlement gate: listing resources is read-only and commits the owner to
@@ -119,7 +125,11 @@ async def provider_resources(
     owner_id = resolve_owner_id(auth)
     # Built per-call, not at module level, so the module-level names stay the
     # patch points (tests replace routers.automations.list_github_repos).
-    lister = {"github": list_github_repos, "vercel_cli": list_vercel_projects}.get(provider)
+    lister = {
+        "github": list_github_repos,
+        "vercel_cli": list_vercel_projects,
+        "google": list_google_accounts,
+    }.get(provider)
     if lister is None:
         raise HTTPException(status_code=404, detail="unknown_provider")
     try:

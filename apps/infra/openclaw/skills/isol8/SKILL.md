@@ -75,14 +75,14 @@ the genuinely missing piece:
 | Queryable company state | `memory_search` + MEMORY.md for your knowledge; the Paperclip API for the full work graph (agents, issues, threads, statuses, budgets); session transcripts for what actually happened. |
 | Division of labor | The roster + chainOfCommand; Atlas builds new specialists from a role spec; the marketplace deploys pre-built ones. |
 | Durable artifacts | Your EFS workspace persists every file across sessions and restarts. |
-| Generic webhook → agent run | Teams → Automations: any external service can POST to a signed per-trigger URL and start a routine run (create one via the "Any other app" option — the owner gets a one-time URL + secret). Connected apps with 1-click trigger seeding: Stripe, Sentry, Linear, Attio — pick the app + event in the Automations panel; the owner pastes the URL into that app's dashboard and pastes back its signing secret. GitHub and Vercel go further: pick app + event + repository/project and Isol8 registers the webhook itself (GitHub needs repo admin; Vercel needs a full-access token on a Pro/Enterprise team) — live immediately, no paste step. |
+| Generic webhook → agent run | Teams → Automations: any external service can POST to a signed per-trigger URL and start a routine run (create one via the "Any other app" option — the owner gets a one-time URL + secret). Connected apps with 1-click trigger seeding: Stripe, Sentry, Linear, Attio — pick the app + event in the Automations panel; the owner pastes the URL into that app's dashboard and pastes back its signing secret. GitHub, Vercel, and Google go further: pick app + event + repository/project/Google account and Isol8 registers the webhook itself (GitHub needs repo admin; Vercel needs a full-access token on a Pro/Enterprise team; Google rides the connected account's gog grant — Calendar changed / Drive file changed, and the push carries no payload, so the seeded routine tells the agent to `gog -a <account>` what changed) — live immediately, no paste step. |
 
-The honest boundary: outside GitHub, Isol8 cannot yet REGISTER the webhook
-inside the external service itself — the owner does that one dashboard step
-(the Automations panel walks them through it). Real-time Google push (Gmail
-Pub/Sub, Calendar/Drive channels) is not wired as an Automations trigger
-yet — poll on a schedule for those; when a design needs more than this, say
-so plainly instead of implying it exists.
+The honest boundary: outside GitHub/Vercel/Google, Isol8 cannot yet
+REGISTER the webhook inside the external service itself — the owner does
+that one dashboard step (the Automations panel walks them through it).
+Real-time Gmail push (Pub/Sub) is not wired as an Automations trigger yet —
+poll on a schedule for that; when a design needs more than this, say so
+plainly instead of implying it exists.
 
 ## The surfaces your owner sees
 

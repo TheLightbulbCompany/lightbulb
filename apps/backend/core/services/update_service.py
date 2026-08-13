@@ -659,6 +659,123 @@ async def _paperclip_provision_retry_pass() -> None:
         put_metric("paperclip.retry_pass.failed", value=nonretryable)
 
 
+# Google watch channels (auto_google_watch triggers) live ≤7 days; the daily
+# pass re-watches anything expiring inside this lookahead, so every channel
+# gets at least two renewal attempts before it dies.
+_GOOGLE_WATCH_RENEWAL_LOOKAHEAD_MS = 48 * 60 * 60 * 1000
+# ponytail: fixed per-pass cap bounds the tick; raise it (or shard the pass)
+# if the fleet ever holds more expiring channels than this per day.
+_GOOGLE_WATCH_RENEWAL_MAX_PER_PASS = 100
+
+
+async def _google_watch_renewal_pass() -> None:
+    """Daily pass: re-arm Google push channels expiring within the lookahead.
+
+    Channel state lives as the ``google_watch_channels`` list attribute on
+    each owner's ``(owner_id, "google")`` integrations row — no table of its
+    own. ``scan_all`` is the existing orphan-sweep scanner and this pass
+    rides it: daily, off the request path, bounded by connected integrations.
+
+    For each expiring entry: open a REPLACEMENT channel with a fresh channel
+    id but the SAME token (the trigger's secret is stable), replace the
+    entry, then best-effort stop the old channel; the owner's row is written
+    once at the end. A per-entry failure leaves the old entry for the next
+    pass — fail-visible via logs, never crashing the sweep on one owner;
+    worst case the channel dies at expiry. If the row write itself fails,
+    the renewed channels are live but unrecorded: the stale entries are
+    renewed again next pass and the unrecorded channels die at expiry —
+    tolerated for the same self-healing reason as the seed's lost-update
+    window (see ``integrations_repo.set_google_watch_channels``).
+
+    No trigger-liveness check before renewing: resolving the trigger would
+    cost a Paperclip fan-out per channel, and an orphaned channel (automation
+    deleted) is harmless — its deliveries fail closed upstream. The accepted
+    cost is that such channels keep being re-armed until their entry is
+    removed by hand.
+    """
+    from core.repositories import integrations_repo
+    from core.services import google_watch
+
+    cutoff = int(time.time() * 1000) + _GOOGLE_WATCH_RENEWAL_LOOKAHEAD_MS
+    try:
+        rows = await integrations_repo.scan_all()
+    except Exception:
+        logger.exception("google_watch_renewal_pass: integrations scan failed")
+        return
+    google_rows = [r for r in rows if r.get("provider") == "google" and r.get("google_watch_channels")]
+    if not google_rows:
+        return
+
+    renewed = 0
+    failed = 0
+    budget = _GOOGLE_WATCH_RENEWAL_MAX_PER_PASS
+    for row in google_rows:
+        if budget <= 0:
+            break
+        owner_id = row["owner_id"]
+        channels = list(row["google_watch_channels"])
+        changed = False
+        for i, entry in enumerate(channels):
+            if budget <= 0:
+                break
+            # DDB numbers come back as Decimal — normalize before comparing.
+            if int(entry["expiration_ms"]) > cutoff:
+                continue
+            budget -= 1
+            try:
+                replacement = await google_watch.start_watch(
+                    owner_id=owner_id,
+                    account_email=entry["account_email"],
+                    provider_event=entry["provider_event"],
+                    proxy_url=entry["proxy_url"],
+                    channel_token=entry["channel_token"],
+                )
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "google_watch_renewal_pass: renewal failed owner=%s channel=%s (entry left for the next pass)",
+                    owner_id,
+                    entry.get("channel_id"),
+                )
+                continue
+            new_entry = {
+                **entry,
+                "channel_id": replacement["channel_id"],
+                "resource_id": replacement["resource_id"],
+                "expiration_ms": replacement["expiration_ms"],
+            }
+            if replacement.get("page_token"):
+                new_entry["page_token"] = replacement["page_token"]
+            channels[i] = new_entry
+            changed = True
+            # The replacement is live — the old channel is redundant.
+            # stop_watch is best-effort by contract (never raises).
+            await google_watch.stop_watch(
+                owner_id=owner_id,
+                account_email=entry["account_email"],
+                provider_event=entry["provider_event"],
+                channel_id=entry["channel_id"],
+                resource_id=entry["resource_id"],
+            )
+            renewed += 1
+            logger.info(
+                "google_watch_renewal_pass: renewed owner=%s old=%s new=%s event=%s",
+                owner_id,
+                entry["channel_id"],
+                replacement["channel_id"],
+                entry["provider_event"],
+            )
+        if changed:
+            try:
+                await integrations_repo.set_google_watch_channels(owner_id, channels)
+            except Exception:
+                logger.exception("google_watch_renewal_pass: row write failed owner=%s", owner_id)
+
+    put_metric("google_watch.renewal_pass.renewed", value=renewed)
+    if failed:
+        put_metric("google_watch.renewal_pass.failed", value=failed)
+
+
 async def run_scheduled_worker() -> None:
     """Background worker: poll for due scheduled updates and apply them.
 
@@ -702,6 +819,12 @@ async def run_scheduled_worker() -> None:
                     await _paperclip_purge_pass()
                 except Exception:
                     logger.exception("paperclip_purge_pass crashed")
+                # Same daily cadence: Google watch channels expire ≤7 days,
+                # and a 48h-lookahead daily pass re-arms them in time.
+                try:
+                    await _google_watch_renewal_pass()
+                except Exception:
+                    logger.exception("google_watch_renewal_pass crashed")
                 last_purge_pass_at = now
         except Exception:
             put_metric("update.scheduled_worker.error")

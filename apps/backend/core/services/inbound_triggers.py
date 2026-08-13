@@ -45,6 +45,23 @@ body (hex, no prefix, ``x-vercel-signature``), verified by Paperclip's
 header copy. If the ARM fails the Vercel webhook is deleted (best-effort)
 before the routine is unwound — never leave a live webhook pointed at a
 trigger armed with a random secret. The webhook id is likewise not stored.
+
+``webhook_registration: "auto_google_watch"`` (Google): auto like GitHub —
+the trigger's one-time ``secretMaterial.webhookSecret`` becomes the Google
+push channel's token — but Google channels EXPIRE (≤7 days), so beyond the
+seed each channel is recorded as an entry in the ``google_watch_channels``
+list on the owner's existing "google" integrations row
+(``integrations_repo.get/set_google_watch_channels``), and a daily renewal
+sweep (``update_service._google_watch_renewal_pass``) re-arms each one
+before it dies. The resource is a connected Google ACCOUNT email, validated
+against the stored inventory (which doubles as the argv injection fence —
+the email rides into gog's fixed argv). Google sends no body signature:
+deliveries carry ``X-Goog-Channel-Token``, which the trigger proxy maps into
+``Authorization: Bearer`` for Paperclip's native bearer mode. Deleting the
+automation does NOT stop the channel (same orphan posture as GitHub/Vercel):
+deliveries fail closed at Paperclip, though the renewal sweep keeps
+re-arming the channel until its entry is removed — see the sweep's
+docstring for that trade-off.
 """
 
 from __future__ import annotations
@@ -57,7 +74,9 @@ import httpx
 
 from core.auth import is_org_owner_id
 from core.config import settings
+from core.repositories import google_accounts_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
+from core.services import google_watch
 from core.services.agent_routine_provisioning import _build_routine_body
 from core.services.credentials import integration_secret_store, registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
@@ -230,6 +249,20 @@ async def _create_vercel_webhook(*, token: str, resource: str, proxy_url: str, e
     return webhook_id, secret
 
 
+async def list_google_accounts(owner_id: str) -> list[dict[str, str]]:
+    """Connected Google account emails — feeds the create dialog's account
+    picker for the auto_google_watch registration shape. The email is both
+    the id and the label (it IS the human-readable name of the account).
+
+    Raises ``LookupError`` when no Google account is connected (the router
+    maps it to 404).
+    """
+    accounts = await google_accounts_repo.list_accounts(owner_id)
+    if not accounts:
+        raise LookupError("Google is not connected")
+    return [{"id": a["email"], "label": a["email"]} for a in accounts]
+
+
 async def _delete_vercel_webhook(*, token: str, webhook_id: str) -> None:
     """Best-effort delete of a Vercel webhook orphaned by the ARM step failing
     — a live webhook pointed at a trigger still holding its random placeholder
@@ -314,6 +347,18 @@ async def seed_trigger_routine(
         if not vercel_token:
             raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
 
+    # auto_google_watch preconditions, same posture. The resource is a
+    # connected Google ACCOUNT email, validated against the stored inventory
+    # rather than a regex — inventory membership is both the "is Google
+    # connected" check and the injection fence (the email rides into gog's
+    # fixed argv, so only values the connect path recorded may pass).
+    if inbound.webhook_registration == "auto_google_watch":
+        if not resource:
+            raise ValueError("auto_google_watch needs a connected Google account email")
+        accounts = await google_accounts_repo.list_accounts(owner_id)
+        if not any(a["email"] == resource for a in accounts):
+            raise ValueError("That Google account isn't connected — connect it in the Integrations tab first")
+
     # inbound.signing_mode IS a native Paperclip signingMode, passed straight
     # through to the created trigger.
     if inbound.signing_mode not in _NATIVE_SIGNING_MODES:
@@ -329,7 +374,11 @@ async def seed_trigger_routine(
         raise ValueError(f"no active Paperclip company for owner {owner_id!r}")
 
     title = inbound.template.title.format(event_label=event.label)
-    description = inbound.template.starter_prompt.format(event_label=event.label)
+    # str.format ignores surplus kwargs, so `account` is inert for templates
+    # that don't use it. Google's starter_prompt names the account so the
+    # agent knows which `-a` to pass to gog — the push notification carries
+    # no payload, so the routine description is the only carrier.
+    description = inbound.template.starter_prompt.format(event_label=event.label, account=resource or "")
 
     # Lazy import: keeps this module's load light and sidesteps a cycle —
     # same convention agent_export.py uses for the identical import.
@@ -368,11 +417,13 @@ async def seed_trigger_routine(
             public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
             if not public_id:
                 raise RuntimeError("create_routine_trigger returned no trigger.publicId")
-            # The auto path arms the GitHub hook with the trigger's own secret,
-            # shown ONCE in the create response — absent means the trigger is
-            # unusable for auto registration, same severity as no publicId.
+            # The auto shapes arm the provider side with the trigger's own
+            # secret (GitHub: the hook's HMAC secret; Google: the channel
+            # token), shown ONCE in the create response — absent means the
+            # trigger is unusable for auto registration, same severity as no
+            # publicId.
             webhook_secret: str | None = None
-            if inbound.webhook_registration == "auto_github":
+            if inbound.webhook_registration in ("auto_github", "auto_google_watch"):
                 material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
                 webhook_secret = material.get("webhookSecret") if isinstance(material, dict) else None
                 if not webhook_secret:
@@ -508,6 +559,81 @@ async def seed_trigger_routine(
                 raise
             logger.info(
                 "inbound_triggers: seeded auto_vercel routine=%s trigger=%s owner=%s project=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                resource,
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": None,
+                "secret_hint": None,
+                "resource": resource,
+            }
+
+        if inbound.webhook_registration == "auto_google_watch":
+            assert resource and webhook_secret  # narrowed by the pre-checks above
+            try:
+                channel = await google_watch.start_watch(
+                    owner_id=owner_id,
+                    account_email=resource,
+                    provider_event=event.id,
+                    proxy_url=proxy_url,
+                    channel_token=webhook_secret,
+                )
+            except Exception:
+                # gog / Google refused the watch (broken grant, revoked
+                # account, API outage) — the routine+trigger are unusable,
+                # unwind them.
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            entry = {
+                "channel_id": channel["channel_id"],
+                "provider_event": event.id,
+                "account_email": resource,
+                "resource_id": channel["resource_id"],
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                # The renewal sweep must re-watch with the SAME token, and
+                # Paperclip has no secret read-back — see the repo helper's
+                # docstring for the storage posture.
+                "channel_token": webhook_secret,
+                "expiration_ms": channel["expiration_ms"],
+            }
+            if channel.get("page_token"):
+                entry["page_token"] = channel["page_token"]
+            try:
+                # Read-modify-write of the list attr on the owner's single
+                # "google" integrations row — per-owner, so the only writer
+                # contention is this seed vs the daily sweep; a lost update
+                # is tolerable and self-heals at the next sweep.
+                channels = await integrations_repo.get_google_watch_channels(owner_id)
+                channels.append(entry)
+                await integrations_repo.set_google_watch_channels(owner_id, channels)
+            except Exception:
+                # Without its entry the channel can never be renewed or
+                # audited — stop it (best-effort, never masks this error)
+                # before unwinding, so Google doesn't deliver into a dead
+                # trigger until expiry.
+                await google_watch.stop_watch(
+                    owner_id=owner_id,
+                    account_email=resource,
+                    provider_event=event.id,
+                    channel_id=channel["channel_id"],
+                    resource_id=channel["resource_id"],
+                )
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded auto_google_watch routine=%s trigger=%s owner=%s account=%s event=%s",
                 routine_id,
                 public_id,
                 owner_id,

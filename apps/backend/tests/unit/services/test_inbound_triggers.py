@@ -6,6 +6,8 @@ resolution), ``get_admin_session_cookie``, and ``PaperclipAdminClient`` so
 nothing here touches a real Paperclip deployment.
 """
 
+import json
+import re
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -90,9 +92,9 @@ async def test_seed_trigger_routine_builds_expected_bodies():
 
 @pytest.mark.asyncio
 async def test_seed_trigger_routine_bails_when_provider_has_no_inbound():
-    # google has no `inbound:` block, so it isn't a trigger source.
+    # notion has no `inbound:` block, so it isn't a trigger source.
     with pytest.raises(ValueError, match="not wired as an Automations trigger source"):
-        await seed_trigger_routine("owner_1", "google", "whatever")
+        await seed_trigger_routine("owner_1", "notion", "whatever")
 
 
 @pytest.mark.asyncio
@@ -522,3 +524,312 @@ async def test_list_vercel_projects_not_connected_raises_lookup_error():
 
     with _gh_token_patch(token=None), pytest.raises(LookupError, match="not connected"):
         await list_vercel_projects("owner_1")
+
+
+# --- auto_google_watch --------------------------------------------------------
+#
+# The gog layer is mocked at google_watch's runner helper (_run_gog), with
+# _gog_env stubbed so no EFS paths are touched — the REAL command construction
+# runs, and the tests assert exact argv. The fence being pinned: caller data
+# (the account email, the channel token) rides only as discrete argv elements.
+
+_GOOG_SECRET = {"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_g1"}
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _google_accounts_patch(emails=("ada@example.com",)):
+    return patch(
+        "core.services.inbound_triggers.google_accounts_repo.list_accounts",
+        AsyncMock(return_value=[{"email": e} for e in emails]),
+    )
+
+
+def _gog_env_patch():
+    return patch("core.services.google_watch._gog_env", return_value={"FAKE": "env"})
+
+
+def _channels_get_patch(existing=()):
+    return patch(
+        "core.services.inbound_triggers.integrations_repo.get_google_watch_channels",
+        AsyncMock(return_value=list(existing)),
+    )
+
+
+def _channels_set_patch():
+    return patch(
+        "core.services.inbound_triggers.integrations_repo.set_google_watch_channels",
+        new_callable=AsyncMock,
+    )
+
+
+def _channel_response(resource_id="res_1", expiration="1799999999000"):
+    return json.dumps({"kind": "api#channel", "resourceId": resource_id, "expiration": expiration})
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_google_watch_calendar():
+    """The calendar shape: events.watch via gog's generic Discovery caller on
+    the picked account's primary calendar, channel token = the trigger's own
+    one-time secret, bearer signingMode, a channel entry appended to the
+    owner's "google" integrations row, and the routine description carrying
+    the account email (the notification has no payload, so the description
+    tells the agent which -a to use)."""
+    admin = _fake_admin(secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(return_value=_channel_response(resource_id="res_cal_1"))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _channels_get_patch(),
+        _channels_set_patch() as set_channels,
+    ):
+        out = await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["signingMode"] == "bearer"
+
+    routine_body = admin.create_routine.await_args.kwargs["body"]
+    assert "ada@example.com" in routine_body["description"]
+
+    run_gog.assert_called_once()
+    argv = run_gog.call_args.args[0]
+    assert argv[:6] == ["gog", "api", "call", "calendar", "v3", "events.watch"]
+    assert argv[6:8] == ["--params", '{"calendarId":"primary"}']
+    assert argv[8] == "--body"
+    watch_body = json.loads(argv[9])
+    assert _UUID_RE.match(watch_body["id"])
+    assert watch_body["type"] == "web_hook"
+    assert watch_body["address"] == out["proxy_url"]
+    assert watch_body["token"] == "pcsec_g1"  # channel token = the trigger's own secret
+    assert watch_body["params"] == {"ttl": "604800"}
+    assert argv[10:] == ["--allow-write", "--force", "-a", "ada@example.com"]
+
+    assert set_channels.await_args.args[0] == "owner_1"
+    (entry,) = set_channels.await_args.args[1]
+    assert entry == {
+        "channel_id": watch_body["id"],
+        "provider_event": "calendar.changed",
+        "account_email": "ada@example.com",
+        "resource_id": "res_cal_1",
+        "trigger_public_id": "pub_1",
+        "proxy_url": out["proxy_url"],
+        "channel_token": "pcsec_g1",
+        "expiration_ms": 1799999999000,
+    }  # no page_token key — calendar watches have none
+
+    assert out["guided"] is False
+    assert out["resource"] == "ada@example.com"
+    assert out["instructions"] is None
+    assert out["secret_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_google_watch_drive():
+    """The drive shape: a fresh changes start-token first, then changes.watch
+    with the token/webhook-url/channel-id/channel-token flags — the start
+    pageToken kept on the entry, appended after any channels the owner
+    already has."""
+    admin = _fake_admin(secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(
+        side_effect=[
+            json.dumps({"startPageToken": "pt_77"}),
+            _channel_response(resource_id="res_drv_1"),
+        ]
+    )
+    existing_entry = {"channel_id": "chan_prior", "provider_event": "calendar.changed"}
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _channels_get_patch(existing=[existing_entry]),
+        _channels_set_patch() as set_channels,
+    ):
+        out = await seed_trigger_routine("owner_1", "google", "drive.changed", resource="ada@example.com")
+
+    assert run_gog.call_count == 2
+    token_argv = run_gog.call_args_list[0].args[0]
+    assert token_argv == ["gog", "drive", "changes", "start-token", "-a", "ada@example.com"]
+
+    watch_argv = run_gog.call_args_list[1].args[0]
+    assert watch_argv[:4] == ["gog", "drive", "changes", "watch"]
+    assert watch_argv[4] == "--token=pt_77"
+    assert watch_argv[5] == f"--webhook-url={out['proxy_url']}"
+    channel_id = watch_argv[6].removeprefix("--channel-id=")
+    assert _UUID_RE.match(channel_id)
+    assert watch_argv[7] == "--channel-token=pcsec_g1"  # = the trigger's own secret
+    assert watch_argv[8].startswith("--expiration-ms=")
+    assert int(watch_argv[8].removeprefix("--expiration-ms=")) > 0
+    assert watch_argv[9:] == ["-a", "ada@example.com"]
+
+    # Appended after the owner's existing channels, never replacing them.
+    prior, entry = set_channels.await_args.args[1]
+    assert prior == existing_entry
+    assert entry["channel_id"] == channel_id
+    assert entry["provider_event"] == "drive.changed"
+    assert entry["resource_id"] == "res_drv_1"
+    assert entry["channel_token"] == "pcsec_g1"
+    assert entry["page_token"] == "pt_77"
+
+    assert out["guided"] is False
+    assert out["resource"] == "ada@example.com"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_google_watch_requires_connected_account():
+    """A missing resource, or an email that is NOT in the owner's connected-
+    accounts inventory (the argv injection fence), fails BEFORE anything
+    exists upstream."""
+    admin = _fake_admin(secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        pytest.raises(ValueError, match="connected Google account"),
+    ):
+        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource=None)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(emails=("ada@example.com",)),
+        pytest.raises(ValueError, match="isn't connected"),
+    ):
+        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="mallory@evil.example")
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_google_watch_gog_failure_rolls_back():
+    """gog refusing the watch (broken grant, revoked account) unwinds the
+    routine; no channel entry is ever recorded."""
+    admin = _fake_admin(routine_id="rt_gog_fail", secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(side_effect=ValueError("Google refused the watch request: invalid_grant"))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _channels_get_patch(),
+        _channels_set_patch() as set_channels,
+        pytest.raises(ValueError, match="Google refused"),
+    ):
+        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_gog_fail"
+    set_channels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_google_watch_row_write_failure_stops_channel():
+    """The channel-entry write failing after the channel exists must stop the
+    channel (best-effort) AND unwind the routine — an unrecorded channel can
+    never be renewed or audited."""
+    admin = _fake_admin(routine_id="rt_row_fail", secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(return_value=_channel_response(resource_id="res_x"))
+    stop_watch = AsyncMock()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        patch("core.services.google_watch.stop_watch", stop_watch),
+        _channels_get_patch(),
+        _channels_set_patch() as set_channels,
+        pytest.raises(RuntimeError, match="ddb down"),
+    ):
+        set_channels.side_effect = RuntimeError("ddb down")
+        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+    stop_watch.assert_awaited_once()
+    stop_kwargs = stop_watch.await_args.kwargs
+    assert stop_kwargs["resource_id"] == "res_x"
+    assert stop_kwargs["account_email"] == "ada@example.com"
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_row_fail"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_google_watch_missing_secret_material_rolls_back():
+    """No secretMaterial.webhookSecret means there is nothing to arm the
+    channel token with — roll the routine back, never touch Google."""
+    admin = _fake_admin(routine_id="rt_no_goog_secret")  # no secretMaterial
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        pytest.raises(RuntimeError, match="secretMaterial.webhookSecret"),
+    ):
+        await seed_trigger_routine("owner_1", "google", "calendar.changed", resource="ada@example.com")
+    admin.delete_routine.assert_awaited_once()
+    run_gog.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_google_accounts_maps_emails():
+    from core.services.inbound_triggers import list_google_accounts
+
+    with _google_accounts_patch(emails=("ada@example.com", "team@example.com")):
+        out = await list_google_accounts("owner_1")
+    assert out == [
+        {"id": "ada@example.com", "label": "ada@example.com"},
+        {"id": "team@example.com", "label": "team@example.com"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_google_accounts_not_connected_raises_lookup_error():
+    from core.services.inbound_triggers import list_google_accounts
+
+    with _google_accounts_patch(emails=()), pytest.raises(LookupError, match="not connected"):
+        await list_google_accounts("owner_1")
+
+
+def test_google_watch_stop_argv():
+    """stop_watch's fixed argv for both surfaces — drive uses the dedicated
+    stop command, calendar rides the generic channels.stop Discovery call."""
+    from core.services import google_watch
+
+    run_gog = MagicMock(return_value="{}")
+    with (
+        patch("core.services.google_watch._gog_env", return_value={"FAKE": "env"}),
+        patch("core.services.google_watch._run_gog", run_gog),
+    ):
+        google_watch._stop_watch_sync("owner_1", "ada@example.com", "drive.changed", "chan_1", "res_1")
+        assert run_gog.call_args.args[0] == [
+            "gog",
+            "drive",
+            "changes",
+            "stop",
+            "chan_1",
+            "res_1",
+            "-a",
+            "ada@example.com",
+        ]
+
+        google_watch._stop_watch_sync("owner_1", "ada@example.com", "calendar.changed", "chan_2", "res_2")
+        argv = run_gog.call_args.args[0]
+        assert argv[:6] == ["gog", "api", "call", "calendar", "v3", "channels.stop"]
+        assert argv[6] == "--body"
+        assert json.loads(argv[7]) == {"id": "chan_2", "resourceId": "res_2"}
+        assert argv[8:] == ["--allow-write", "--force", "-a", "ada@example.com"]

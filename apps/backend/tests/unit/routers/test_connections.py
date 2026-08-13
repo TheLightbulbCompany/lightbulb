@@ -259,7 +259,8 @@ class TestListConnections:
     @patch("routers.connections.integrations_repo")
     async def test_can_trigger_reflects_registry_inbound_events(self, mock_repo, async_client):
         # stripe declares `inbound` (T1) -> can_trigger is its event labels.
-        # google declares no `inbound` -> can_trigger is empty.
+        # google is a trigger source too (auto_google_watch); notion declares
+        # no `inbound` -> can_trigger is empty.
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
@@ -268,7 +269,8 @@ class TestListConnections:
             "Charge refunded",
             "Subscription canceled",
         ]
-        assert by_key["google"]["can_trigger"] == []
+        assert by_key["google"]["can_trigger"] == ["Calendar changed", "Drive file changed"]
+        assert by_key["notion"]["can_trigger"] == []
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -288,8 +290,16 @@ class TestListConnections:
                 {"id": "customer.subscription.deleted", "label": "Subscription canceled"},
             ],
         }
-        # google (and github — auto-register deferred) declare no `inbound`.
-        assert by_key["google"]["inbound"] is None
+        # google is auto-registering now (auto_google_watch); notion still
+        # declares no `inbound`.
+        assert by_key["google"]["inbound"] == {
+            "webhook_registration": "auto_google_watch",
+            "events": [
+                {"id": "calendar.changed", "label": "Calendar changed"},
+                {"id": "drive.changed", "label": "Drive file changed"},
+            ],
+        }
+        assert by_key["notion"]["inbound"] is None
 
 
 class TestEnvGatedProvider:

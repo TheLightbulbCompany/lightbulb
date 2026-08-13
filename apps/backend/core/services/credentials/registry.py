@@ -244,7 +244,13 @@ class Inbound(BaseModel):
     # secret flows the other way: Vercel GENERATES the webhook secret at
     # create time, so the seed registers the webhook and then ARMS the trigger
     # with Vercel's value; the caller supplies the project id to hook.
-    webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel"]
+    # "auto_google_watch" — the seed opens a Google push CHANNEL through the
+    # owner's gog keyring (Calendar events.watch / Drive changes.watch) whose
+    # token is the trigger's own secret, verified by Paperclip's bearer mode
+    # via the proxy's X-Goog-Channel-Token mapping; the caller supplies a
+    # connected Google account email as the resource. Channels expire ≤7 days
+    # and ride the renewal sweep in update_service.
+    webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel", "auto_google_watch"]
     # A NATIVE Paperclip signingMode ("hmac_sha256" | "hmac_sha1" |
     # "github_hmac" | "bearer" | "none"), passed straight through to the
     # created trigger — Paperclip verifies the provider's signature natively

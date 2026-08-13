@@ -666,3 +666,96 @@ def test_stripe_split_takes_precedence_over_provider_header(client):
     h = captured["headers"]
     assert h["x-paperclip-signature"] == "stripesig"
     assert h["x-paperclip-timestamp"] == "99"
+
+
+# ---------------------------------------------------------------------------
+# Google push channels (auto_google_watch)
+# ---------------------------------------------------------------------------
+
+
+def test_goog_channel_token_maps_to_bearer_authorization(client):
+    """Google push channels echo the token set at watch time (= the trigger's
+    secret) in X-Goog-Channel-Token and send no Authorization — the proxy
+    maps it so Paperclip's native bearer mode does the timing-safe compare.
+    The raw X-Goog-Channel-Token itself is not in the forward allowlist."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"",
+            headers={
+                "X-Goog-Channel-Token": "pcsec_g1",
+                "X-Goog-Resource-State": "exists",
+                "X-Goog-Changed": "children",
+            },
+        )
+    assert r.status_code == 202
+    h = captured["headers"]
+    assert h["authorization"] == "Bearer pcsec_g1"
+    assert "x-goog-channel-token" not in h
+    # The informational pair rides through — the notification has no body, so
+    # these headers ARE the run context.
+    assert h["x-goog-resource-state"] == "exists"
+    assert h["x-goog-changed"] == "children"
+
+
+def test_goog_channel_token_does_not_clobber_caller_authorization(client):
+    """A caller that already sends Authorization (a hand-wired bearer sender)
+    keeps its value even when a Google channel token is also present."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"",
+            headers={
+                "Authorization": "Bearer caller-secret",
+                "X-Goog-Channel-Token": "pcsec_g1",
+            },
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["authorization"] == "Bearer caller-secret"
+
+
+def test_goog_sync_ping_returns_204_without_forwarding(client):
+    """X-Goog-Resource-State: sync is Google's channel-confirmation ping,
+    fired on every watch create/renew — forwarding it would start a spurious
+    routine run each time, so it's acknowledged at the edge."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"",
+            headers={
+                "X-Goog-Channel-Token": "pcsec_g1",
+                "X-Goog-Resource-State": "sync",
+            },
+        )
+    assert r.status_code == 204
+    assert captured == {}  # nothing reached upstream
+
+
+def test_goog_sync_ping_still_behind_the_gates(client):
+    """The sync short-circuit sits AFTER the entitlement gate — a trial owner
+    probing with a sync header still gets the structured 402, not a 204."""
+    with _mock_billing("trial_local"):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"",
+            headers={"X-Goog-Resource-State": "sync"},
+        )
+    assert r.status_code == 402

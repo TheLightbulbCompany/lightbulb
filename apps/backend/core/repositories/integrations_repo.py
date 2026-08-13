@@ -71,6 +71,40 @@ async def delete_all_for_owner(owner_id: str) -> list[str]:
     return providers
 
 
+async def get_google_watch_channels(owner_id: str) -> list[dict]:
+    """The owner's live Google push channels (auto_google_watch triggers) —
+    stored as a list attribute on the existing ``(owner_id, "google")`` status
+    row rather than a table of their own. Each entry carries the watch's
+    Google-side identity (``channel_id``, ``resource_id``, ``expiration_ms``,
+    ``page_token`` for Drive), the trigger it feeds (``trigger_public_id``,
+    ``proxy_url``), the account that owns it (``account_email``), and the
+    ``channel_token`` (= the trigger's webhook secret — stored because a
+    renewal must re-watch with the SAME token and Paperclip has no secret
+    read-back; this table is CMK-encrypted and Paperclip already holds the
+    identical value on the trigger row)."""
+    row = await get(owner_id, "google")
+    return list((row or {}).get("google_watch_channels") or [])
+
+
+async def set_google_watch_channels(owner_id: str, channels: list[dict]) -> None:
+    """Overwrite the ``google_watch_channels`` list on the owner's "google"
+    row. UpdateExpression rather than put_item so the row's status fields
+    survive (and the row is created if somehow absent).
+
+    Callers do read-modify-write of the list. The row is per-owner, so the
+    only contention is the trigger seed vs the daily renewal sweep — a lost
+    update is tolerable and self-heals: an unrecorded channel simply dies at
+    its ≤7-day expiry, and a resurrected stale entry is renewed and replaced
+    on the next sweep."""
+    now = int(time.time())
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": "google"},
+        UpdateExpression="SET google_watch_channels = :channels, updated_at = :now",
+        ExpressionAttributeValues={":channels": channels, ":now": now},
+    )
+
+
 async def scan_all() -> list[dict]:
     """Every row in the table, paginated.
 

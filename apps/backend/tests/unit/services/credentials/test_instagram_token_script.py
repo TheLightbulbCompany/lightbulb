@@ -114,6 +114,61 @@ def test_failed_renewal_still_returns_the_existing_token(tmp_path):
     assert json.loads(cred.read_text())["access_token"] == "OLD_TOKEN"
 
 
+def test_expired_token_exits_nonzero_instead_of_emitting_it(tmp_path):
+    """An expired token can never be renewed, so emitting it is worse than failing.
+
+    Meta drops a token that has gone past expiry — no refresh brings it back. If
+    the script printed it anyway with status 0 the documented
+    `IG_TOKEN=$(token.sh) || exit 1` guard would pass, and the agent would carry
+    a known-dead credential into a confusing 401 several calls later.
+    """
+    cred = _write_credentials(tmp_path, days_to_expiry=-2)
+    _stub_curl(tmp_path, body='{"error":{"message":"Session has expired","code":190}}')
+
+    result = _run(cred, tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "reconnect" in result.stderr.lower()
+
+
+def test_reconnect_during_renewal_is_not_clobbered(tmp_path):
+    """A reconnect landing mid-renewal must win — its token, not ours.
+
+    The curl stub rewrites credentials.json while "the network call" is in
+    flight, standing in for an OAuth callback that re-materialized a DIFFERENT
+    Instagram account. Without the compare-and-swap the script would write its
+    refreshed OLD-account token over the NEW account's file, pairing fresh
+    metadata with a stale grant.
+    """
+    cred = _write_credentials(tmp_path, days_to_expiry=10)
+    reconnected = json.dumps(
+        {
+            "access_token": "RECONNECTED_TOKEN",
+            "user_id": "17849999999999999",
+            "username": "someone.else",
+            "token_expiry": (datetime.now(timezone.utc) + timedelta(days=60)).isoformat(),
+        }
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    # Simulates the reconnect: overwrite the credential file, THEN answer.
+    (bindir / "curl").write_text(
+        f"#!/bin/bash\ncat > '{cred}' <<'RECON'\n{reconnected}\nRECON\n"
+        'cat <<\'JSON\'\n{"access_token":"RENEWED_OLD","expires_in":5184000}\nJSON\n'
+    )
+    (bindir / "curl").chmod(0o755)
+
+    result = _run(cred, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    # Hands back what is actually on disk, not the token it just renewed.
+    assert result.stdout == "RECONNECTED_TOKEN"
+    persisted = json.loads(cred.read_text())
+    assert persisted["access_token"] == "RECONNECTED_TOKEN"
+    assert persisted["username"] == "someone.else"
+
+
 def test_missing_credentials_fails_loudly(tmp_path):
     """No credentials file: non-zero exit so `$(token.sh) || exit 1` stops the task."""
     _stub_curl(tmp_path, body="{}")

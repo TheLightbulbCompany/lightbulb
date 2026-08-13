@@ -33,10 +33,18 @@ fi
 
 # No/unparseable expiry: treat as inside the window and attempt a renewal. Worst
 # case Meta declines and we return the token unchanged.
+#
+# expiry_known is tracked separately from `remaining` because the two mean
+# different things and share a value. remaining=0 is the sentinel for "expiry
+# unknown, try anyway" AND the real reading for "expired". Only a KNOWN expiry at
+# or below zero proves the token is dead; conflating them would hard-fail a
+# legacy credential that has no recorded expiry but is perfectly usable.
+expiry_known=0
 remaining=0
 expiry=$(jq -r '.token_expiry // empty' "$CRED" 2>/dev/null)
 if [ -n "$expiry" ] && exp_epoch=$(date -d "$expiry" +%s 2>/dev/null); then
   remaining=$((exp_epoch - $(date +%s)))
+  expiry_known=1
 fi
 
 renewed=0
@@ -92,7 +100,9 @@ fi
 # take it back. Emitting it anyway would let the documented
 # `IG_TOKEN=$(token.sh) || exit 1` guard pass, pushing the failure into a
 # confusing 401 several API calls later instead of the actionable message here.
-if [ "$remaining" -le 0 ] && [ "$renewed" -eq 0 ]; then
+# Requires expiry_known: an unrecorded expiry is not evidence of death, and a
+# legacy credential whose renewal merely got rate-limited must still be returned.
+if [ "$expiry_known" -eq 1 ] && [ "$remaining" -le 0 ] && [ "$renewed" -eq 0 ]; then
   echo "instagram: token has expired and can no longer be refreshed — reconnect in Settings → Connections" >&2
   exit 1
 fi

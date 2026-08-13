@@ -37,6 +37,17 @@ would push the stale token back over a working connection — the migration woul
 become the outage. ``token.sh`` is the marker because only the new materializer
 writes it.
 
+There is no cross-process lock, and none is claimed. ``connection_lock`` is an
+in-process ``asyncio.Lock``; this runs as its own process, so taking it would
+serialize against nothing. The realistic collision — an owner who reconnected
+before the migration reaches them — is handled by the ``token.sh`` marker above.
+What remains is the narrow case of a reconnect landing between that check and
+``apply_connection`` completing, which would re-materialize the stale retained
+credential over the fresh one. Rather than build a distributed lock for a
+one-shot manual operation over a handful of owners, run this when nobody is
+mid-reconnect; if it does collide, the owner reconnects once and a re-run then
+skips them on the marker.
+
 Idempotent: re-running rewrites the same three files atomically. Once every
 environment is migrated, DELETE this script — git history is the record.
 """
@@ -58,7 +69,7 @@ async def main(*, apply: bool, env: str) -> int:
     # Imports after env setup, matching the other ops scripts: core.config reads
     # ENVIRONMENT at import time.
     from core.repositories import integrations_repo
-    from core.services.credentials import apply_connection, connection_lock, integration_secret_store
+    from core.services.credentials import apply_connection, integration_secret_store
     from core.services.credentials.materializers.base import owner_efs_root
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -97,10 +108,12 @@ async def main(*, apply: bool, env: str) -> int:
             print(f"  {owner_id}: would re-materialize SKILL.md + token.sh + credentials.json")
             continue
         try:
-            # The same per-owner lock the connect/disconnect paths take, so the
-            # migration cannot interleave with an owner reconnecting mid-run.
-            async with connection_lock.connection_lock(owner_id, "instagram"):
-                await apply_connection.apply_connection(owner_id, "instagram", credential)
+            # Deliberately NOT taking connection_lock: it is an in-process
+            # asyncio.Lock, and this runs as its own process, so acquiring it
+            # would serialize against nothing while reading as though it
+            # serialized against the OAuth callback. See the module docstring
+            # for how the residual race is actually handled.
+            await apply_connection.apply_connection(owner_id, "instagram", credential)
             print(f"  {owner_id}: re-materialized")
         except Exception as exc:
             print(f"  {owner_id}: FAILED — {exc}")

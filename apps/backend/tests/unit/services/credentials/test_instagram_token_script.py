@@ -132,6 +132,25 @@ def test_expired_token_exits_nonzero_instead_of_emitting_it(tmp_path):
     assert "reconnect" in result.stderr.lower()
 
 
+def test_unknown_expiry_is_not_treated_as_expired(tmp_path):
+    """A legacy credential with no recorded expiry must not hard-fail.
+
+    `remaining=0` doubles as the "expiry unknown, try a renewal anyway" sentinel
+    and as the real reading for "expired". Conflating them would exit non-zero on
+    a perfectly usable legacy token whose renewal merely got rate-limited —
+    breaking the caller instead of degrading, which is the opposite of the
+    documented contract.
+    """
+    cred = tmp_path / "credentials.json"
+    cred.write_text(json.dumps({"access_token": "LEGACY_TOKEN", "user_id": "1784140", "username": "isol8.ai"}))
+    _stub_curl(tmp_path, body='{"error":{"message":"rate limited","code":4}}')
+
+    result = _run(cred, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "LEGACY_TOKEN"
+
+
 def test_reconnect_during_renewal_is_not_clobbered(tmp_path):
     """A reconnect landing mid-renewal must win — its token, not ours.
 

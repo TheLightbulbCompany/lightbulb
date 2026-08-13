@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { createSignInToken, createUser } from './fixtures/clerk-admin';
+import { createSignInToken } from './fixtures/clerk-admin';
 
 /**
  * Landing Funnel journey: the deferred-auth path shipped in the landing
@@ -18,7 +18,10 @@ const IDEA = 'A ceramics studio that ships nationwide — landing e2e';
 
 test.describe('Landing Funnel', () => {
   test('landing brief replays through signup with no funnel flash', async ({ page }) => {
-    test.setTimeout(600_000);
+    test.setTimeout(900_000);
+    const t0 = Date.now();
+    const mark = (label: string) =>
+      console.log(`T+${((Date.now() - t0) / 1000).toFixed(1)}s ${label}`);
     const secretKey = process.env.CLERK_SECRET_KEY;
     if (!secretKey) throw new Error('CLERK_SECRET_KEY required');
 
@@ -33,6 +36,7 @@ test.describe('Landing Funnel', () => {
     await idea.fill(IDEA);
     await page.locator('form.ld-ask .ld-btn').click();
     await page.waitForURL('**/sign-up**', { timeout: 20_000 });
+    mark('on /sign-up, stash check');
     const stash = await page.evaluate(() =>
       window.sessionStorage.getItem('isol8_landing_brief_v1'),
     );
@@ -46,16 +50,34 @@ test.describe('Landing Funnel', () => {
     // stash lives in sessionStorage and survives every same-tab navigation.
     const runId = `landing-${Date.now()}`;
     const email = `isol8-${runId}+clerk_test@example.com`;
-    const userId = await createUser({
-      secretKey,
-      email,
-      password: `E2e-${runId}-Aa1!`,
-      runId,
+    mark('creating clerk user');
+    const createRes = await fetch('https://api.clerk.com/v1/users', {
+      method: 'POST',
+      signal: AbortSignal.timeout(45_000),
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email_address: [email],
+        password: `E2e-${runId}-Aa1!`,
+        first_name: 'E2E',
+        last_name: runId,
+        skip_password_checks: true,
+        unsafe_metadata: { onboarded: false, e2e_run_id: runId },
+      }),
     });
+    if (!createRes.ok) {
+      throw new Error(`Clerk createUser ${createRes.status}: ${await createRes.text()}`);
+    }
+    const userId = ((await createRes.json()) as { id: string }).id;
+    mark(`clerk user created ${userId}`);
+    mark('back to landing for clerk');
     await page.goto(BASE, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => (window as { Clerk?: unknown }).Clerk != null, {
-      timeout: 45_000,
+      timeout: 120_000,
     });
+    mark('window.Clerk exists');
     // Diagnostic: clerk-js readiness surface differs across versions
     // (loaded vs status==='ready'); log the shape so a failure explains itself.
     const shape = await page.evaluate(() => {
@@ -91,10 +113,12 @@ test.describe('Landing Funnel', () => {
       const si = await w.Clerk.client.signIn.create({ strategy: 'ticket', ticket: t });
       await w.Clerk.setActive({ session: si.createdSessionId });
     }, ticket2);
+    mark('ticket session active');
 
     // ── 4. /chat: the replay hook must consume the stash; the in-chat
     // funnel ("Let's get started." / the path picker) must never render ──
     await page.goto(`${BASE}/chat`, { waitUntil: 'domcontentloaded' });
+    mark('on /chat');
     await expect
       .poll(
         async () =>

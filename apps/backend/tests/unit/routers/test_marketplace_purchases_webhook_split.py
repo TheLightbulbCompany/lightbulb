@@ -414,6 +414,56 @@ async def test_flush_reverses_transfer_when_refund_races_the_stamp():
     mock_mark.assert_awaited_once_with(buyer_id="b1", purchase_id="cs_r")
 
 
+@pytest.mark.asyncio
+async def test_flush_recovery_rereverses_revoked_transfer_instead_of_booking():
+    """Regression (codex): a crash between the compensating reversal and its
+    accounting claim leaves a stamped, REVOKED, unaccounted purchase. The
+    recovery path must re-inspect the revoked state and re-issue the
+    (idempotent) reversal — booking it as proceeds would raise lifetime
+    earnings for a transfer that was already clawed back."""
+    from routers.marketplace_purchases import _flush_seller_held_balance
+
+    reversed_crash_row = {
+        "buyer_id": "b1",
+        "purchase_id": "cs_c",
+        "seller_share_cents": 1700,
+        "stripe_transfer_group": "tg_c",
+        "seller_transfer_id": "tr_c",
+        "license_key_revoked": True,
+        # no payout_accounted — the crash signature
+    }
+    with (
+        patch("routers.marketplace_purchases.marketplace_repo.get_payout_account", new_callable=AsyncMock) as mock_pa,
+        patch("routers.marketplace_purchases.marketplace_repo.get_purchase", new_callable=AsyncMock) as mock_get,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.list_listings_by_seller",
+            new_callable=AsyncMock,
+        ) as mock_listings,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.apply_flush_totals", new_callable=AsyncMock
+        ) as mock_totals,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.mark_payout_accounted", new_callable=AsyncMock
+        ) as mock_mark,
+        patch(
+            "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
+        ) as mock_transfer,
+        patch("routers.marketplace_purchases.stripe.Transfer.create_reversal") as mock_reversal,
+    ):
+        mock_pa.return_value = {"seller_id": "s1", "balance_held_cents": 1700}
+        mock_listings.return_value = []
+        mock_get.return_value = reversed_crash_row
+        mock_mark.return_value = True
+
+        await _flush_seller_held_balance(seller_id="s1", connect_account_id="acct_1", known_purchase_key=("b1", "cs_c"))
+
+    mock_transfer.assert_not_awaited()  # already transferred — never again
+    mock_reversal.assert_called_once()
+    assert mock_reversal.call_args.kwargs["idempotency_key"] == "reversal:tr_c"
+    mock_totals.assert_not_awaited()
+    mock_mark.assert_awaited_once_with(buyer_id="b1", purchase_id="cs_c")
+
+
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
 @patch("core.repositories.marketplace_repo._listings_table")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")

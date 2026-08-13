@@ -267,6 +267,7 @@ def test_charge_refunded_debits_held_balance_when_pre_payout(
         "data": {"object": {"payment_intent": "pi_1", "refunded": True}},
     }
     # Purchase row WITHOUT seller_transfer_id — refund happened before payout.
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
             "Items": [
@@ -398,6 +399,7 @@ def test_charge_refunded_dashboard_refund_reverses_seller_transfer(
         "type": "charge.refunded",
         "data": {"object": {"payment_intent": "pi_3", "refunded": True}},
     }
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
             "Items": [

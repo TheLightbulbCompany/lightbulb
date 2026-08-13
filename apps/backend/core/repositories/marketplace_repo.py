@@ -904,21 +904,31 @@ async def set_connect_account_if_absent(*, seller_id: str, account_id: str) -> b
     return True
 
 
-async def mark_payout_accounted(*, buyer_id: str, purchase_id: str) -> None:
-    """Stamp a purchase's payout bookkeeping as applied.
+async def mark_payout_accounted(*, buyer_id: str, purchase_id: str) -> bool:
+    """CLAIM a purchase's payout bookkeeping. Returns False when another run
+    already claimed it.
 
-    The flush settles per purchase: transfer stamp → apply_flush_totals →
-    this marker. Stamped-but-unmarked rows are the crash signature the next
-    flush heals by re-applying the bookkeeping, so the marker is what stops
-    that recovery from double-booking. Unconditional set — idempotent.
+    The flush settles per purchase: transfer stamp → this claim →
+    apply_flush_totals. The claim is a set-once conditional because two
+    overlapping flushes can both observe a row stamped-but-unaccounted and
+    apply_flush_totals is a non-idempotent decrement — without ownership one
+    purchase's share would be booked twice, consuming held credit belonging
+    to another sale.
     """
     table = _purchases_table()
-    await run_in_thread(
-        table.update_item,
-        Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
-        UpdateExpression="SET payout_accounted = :t",
-        ExpressionAttributeValues={":t": True},
-    )
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
+            UpdateExpression="SET payout_accounted = :t",
+            ConditionExpression="attribute_not_exists(payout_accounted)",
+            ExpressionAttributeValues={":t": True},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
 
 
 async def decrement_held_balance(*, seller_id: str, amount_cents: int) -> bool:

@@ -152,11 +152,16 @@ class OAuthSpec(BaseModel):
     # (registration_url): when set, the dance never consults the per-owner app
     # store for the client.
     platform_app: str | None = None
-    # Provider-specific post-exchange hook. "ig_exchange_token" upgrades
-    # Instagram's short-lived (1h) token to a long-lived (60d) one immediately
-    # after the code exchange — the upgrade needs the client_secret, so it must
-    # run in the dance (backend), never in a materializer or the container.
-    long_lived_exchange: Literal["ig_exchange_token"] | None = None
+    # Provider-specific post-exchange hook upgrading Meta's short-lived
+    # code-exchange token to the ~60-day one, immediately after the exchange. The
+    # upgrade needs the client_secret, so it must run in the dance (backend),
+    # never in a materializer or the container.
+    #   "ig_exchange_token" — Business Login for Instagram.
+    #   "fb_exchange_token" — Facebook Login for Business (the Meta Ads MCP path).
+    # A Meta provider WITHOUT this is broken by construction, not merely
+    # short-lived: Meta issues no refresh_token at any tier, so nothing downstream
+    # can renew and the grant dies within hours of the connect.
+    long_lived_exchange: Literal["ig_exchange_token", "fb_exchange_token"] | None = None
 
 
 class ValidateSpec(BaseModel):

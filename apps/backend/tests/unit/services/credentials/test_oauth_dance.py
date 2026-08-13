@@ -82,6 +82,10 @@ class _FakeAsyncClient:
     # Last POST's (data, auth), so a test can assert how the client authenticated
     # at the token endpoint without threading the instance out of exchange().
     last_post: dict = {}
+    # Same for the long-lived upgrade GET — the two Meta surfaces send different
+    # URLs and parameter names, and getting either wrong yields a token that dies
+    # in hours with no refresh path.
+    last_get: dict = {}
 
     def __init__(self, *args, **kwargs):
         self.get_params = None
@@ -100,6 +104,7 @@ class _FakeAsyncClient:
 
     async def get(self, url, params=None):
         self.get_params = params
+        _FakeAsyncClient.last_get = {"url": url, "params": params}
         return _FakeResponse({"access_token": "LONG60D", "token_type": "bearer", "expires_in": 5184000})
 
 
@@ -126,6 +131,48 @@ async def test_exchange_instagram_upgrades_to_long_lived_and_blanks_platform_sec
     # The platform app secret never leaves the dance in the credential payload.
     assert cred["client_secret"] == ""
     assert cred["client_information"] == {"client_id": "ig_cid"}
+
+
+@pytest.mark.asyncio
+@patch("core.services.credentials.oauth_dance.httpx.AsyncClient", _FakeAsyncClient)
+@patch("core.services.credentials.oauth_dance._oauth_client", new_callable=AsyncMock)
+@patch("core.services.credentials.oauth_dance.oauth_state_repo.consume", new_callable=AsyncMock)
+async def test_exchange_meta_ads_upgrades_via_fb_exchange_token(mock_consume, mock_client):
+    """Meta Ads must take the fb_exchange_token upgrade, not Instagram's.
+
+    Without it the code exchange leaves a token measured in hours, and since Meta
+    issues no refresh_token the MCP SDK has nothing to renew from — the ads server
+    starts 401ing the same afternoon. The parameter names differ from Instagram's
+    (fb_exchange_token, plus client_id), so assert the exact request.
+    """
+    mock_consume.return_value = {
+        "owner_id": "org_1",
+        "provider": "meta_ads",
+        "verifier": "v" * 43,
+        "client_id": "meta_app_id",
+    }
+    mock_client.return_value = ("meta_app_id", "meta_platform_secret")
+
+    owner, provider, cred = await oauth_dance.exchange("state123", "code456", redirect_uri="https://api/cb")
+
+    assert (owner, provider) == ("org_1", "meta_ads")
+    # The upgrade reuses the code-exchange endpoint, so the Graph version tracks
+    # providers.yaml rather than a second hardcoded copy.
+    assert _FakeAsyncClient.last_get["url"] == "https://graph.facebook.com/v25.0/oauth/access_token"
+    assert _FakeAsyncClient.last_get["params"] == {
+        "grant_type": "fb_exchange_token",
+        "client_id": "meta_app_id",
+        "client_secret": "meta_platform_secret",
+        "fb_exchange_token": "SHORT",
+    }
+    # The ~60d token replaced the short one.
+    assert cred["access_token"] == "LONG60D"
+    assert cred["expires_in"] == 5184000
+    # Meta issues no refresh_token — mcp_oauth omits the key entirely rather than
+    # writing an empty one, which is why refresh_owner is `none`, not `actor`.
+    assert cred["refresh_token"] == ""
+    # Platform secret never rides out in the credential payload.
+    assert cred["client_secret"] == ""
 
 
 async def _exchange_for(provider: str) -> dict:

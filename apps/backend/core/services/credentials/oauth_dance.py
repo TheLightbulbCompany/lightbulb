@@ -32,6 +32,41 @@ from core.services.credentials import oauth_app_store, platform_oauth_app_store,
 _IG_LONG_LIVED_URL = "https://graph.instagram.com/access_token"
 
 
+def _long_lived_request(
+    p: registry.Provider, *, client_id: str, client_secret: str, short_token: str
+) -> tuple[str, dict] | None:
+    """The second, secret-bearing call that upgrades a Meta short-lived token to ~60 days.
+
+    Both Meta surfaces hand back a SHORT-lived token from the authorization-code
+    exchange ("expiring in hours" per Meta's own docs), and NEITHER ever issues a
+    refresh_token — Meta does not have them. So this upgrade is the only thing
+    standing between a connect and a token that dies the same afternoon: with no
+    refresh_token there is nothing for the MCP SDK's OAuthClientProvider (or
+    anything else) to renew from, and the provider simply starts 401ing.
+
+    Returns None for providers that declare no upgrade.
+    """
+    kind = p.oauth.long_lived_exchange
+    if kind == "ig_exchange_token":
+        return _IG_LONG_LIVED_URL, {
+            "grant_type": "ig_exchange_token",
+            "client_secret": client_secret,
+            "access_token": short_token,
+        }
+    if kind == "fb_exchange_token":
+        # Facebook Login for Business — the Meta Ads MCP path. Unlike Instagram's,
+        # this one also requires client_id. It reuses the SAME endpoint as the code
+        # exchange, so the Graph version rides p.oauth.token_url and there is no
+        # second place to bump when it moves.
+        return p.oauth.token_url, {
+            "grant_type": "fb_exchange_token",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "fb_exchange_token": short_token,
+        }
+    return None
+
+
 def _pkce() -> tuple[str, str]:
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -188,18 +223,15 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
         resp = await http.post(p.oauth.token_url, data=data, headers={"Accept": "application/json"}, auth=auth)
         resp.raise_for_status()
         tok = resp.json()
-        # Instagram's code exchange yields a ~1h token; agents need the ~60d one.
-        # The upgrade requires the app secret, so it happens here — the ONLY place
-        # outside Secrets Manager that ever sees the platform client_secret.
-        if p.oauth.long_lived_exchange == "ig_exchange_token":
-            ll = await http.get(
-                _IG_LONG_LIVED_URL,
-                params={
-                    "grant_type": "ig_exchange_token",
-                    "client_secret": client_secret,
-                    "access_token": tok["access_token"],
-                },
-            )
+        # Meta's code exchange yields a token measured in hours; agents need the
+        # ~60d one. The upgrade requires the app secret, so it happens here — the
+        # ONLY place outside Secrets Manager that ever sees the platform secret.
+        long_lived = _long_lived_request(
+            p, client_id=client_id, client_secret=client_secret, short_token=tok["access_token"]
+        )
+        if long_lived is not None:
+            url, params = long_lived
+            ll = await http.get(url, params=params)
             ll.raise_for_status()
             upgraded = ll.json()
             tok["access_token"] = upgraded["access_token"]

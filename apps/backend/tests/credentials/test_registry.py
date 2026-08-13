@@ -461,8 +461,15 @@ def test_meta_ads_rides_platform_app_not_dcr():
     p = registry.get_provider("meta_ads")
     assert p.acquisition == "direct_oauth"
     assert p.actor == "mcp"
-    # The MCP SDK's OAuthClientProvider self-refreshes from the token file.
-    assert p.refresh_owner == "actor"
+    # NOT "actor". That would claim the MCP SDK's OAuthClientProvider self-refreshes,
+    # which it cannot: Meta issues no refresh_token at any tier, so mcp_oauth writes a
+    # token store with no `refresh_token` key and the SDK has nothing to renew from.
+    # `none` is honest AND keeps the credential in Secrets Manager, so a reprovision
+    # re-materializes instead of forcing a reconnect.
+    assert p.refresh_owner == "none"
+    # The only thing making the grant outlive the afternoon: the code exchange alone
+    # yields a token measured in hours.
+    assert p.oauth.long_lived_exchange == "fb_exchange_token"
     assert p.oauth.platform_app == "meta-ads"
     assert p.oauth.registration_url is None
     # NOT meta-instagram: that secret holds the Instagram app id, a different app

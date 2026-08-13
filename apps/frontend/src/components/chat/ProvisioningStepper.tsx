@@ -753,7 +753,7 @@ export function ProvisioningStepper({
   // render (personal, normal-gate, non-terminal). While that submit is in
   // flight — and until the next status poll reports it — the funnel is
   // suppressed so the user isn't shown a form they already answered.
-  const { replaying: briefReplaying } = useLandingBriefReplay({
+  const { replaying: briefReplaying, orgDraftVersion } = useLandingBriefReplay({
     gatePhase,
     awaitingBrief,
     isTerminalError,
@@ -775,7 +775,10 @@ export function ProvisioningStepper({
         </div>
       );
     }
-    return <FirstRunFunnel />;
+    // Keyed on the org-draft copy: the funnel reads its draft at mount, and
+    // the landing-stash copy for org contexts happens after it has mounted —
+    // the remount is what makes the pre-filled answers visible.
+    return <FirstRunFunnel key={`funnel-${orgDraftVersion}`} />;
   }
 
   // Hold a neutral loader until Clerk resolves `user`. The funnel branch above

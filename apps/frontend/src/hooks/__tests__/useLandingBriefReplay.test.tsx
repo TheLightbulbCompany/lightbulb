@@ -9,8 +9,15 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ post }) }));
 // owner is UNKNOWN and the stash must not be routed anywhere yet.
 let organization: { id: string } | null = null;
 let orgLoaded = true;
+let user: { id: string } | null = { id: "user_1" };
 vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization, isLoaded: orgLoaded }),
+  useUser: () => ({ user }),
+}));
+
+const writeFirstRun = vi.fn((_u: unknown, _p: unknown) => Promise.resolve());
+vi.mock("@/lib/firstRun", () => ({
+  writeFirstRun: (u: unknown, p: unknown) => writeFirstRun(u, p),
 }));
 
 import {
@@ -41,8 +48,10 @@ function mount(initialProps: Props = READY) {
 
 beforeEach(() => {
   post.mockReset();
+  writeFirstRun.mockClear();
   organization = null;
   orgLoaded = true;
+  user = { id: "user_1" };
   window.sessionStorage.clear();
 });
 
@@ -171,5 +180,44 @@ describe("useLandingBriefReplay", () => {
     expect(result.current.replaying).toBe(false);
     expect(post).toHaveBeenCalledTimes(1);
     expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBeNull();
+  });
+
+  it("drops a stash whose JSON is valid but not an object", async () => {
+    // "null" parses fine; reading .path off it must not throw in the effect.
+    stash("null");
+
+    const { result } = mount();
+    await act(async () => {});
+
+    expect(post).not.toHaveBeenCalled();
+    expect(result.current.replaying).toBe(false);
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).toBeNull();
+  });
+
+  it("records first-run metadata after a successful replay", async () => {
+    post.mockResolvedValue({ status: "staged" });
+    stash({ path: "new", input: "a ceramics studio", detail: "" });
+
+    mount();
+    await waitFor(() => expect(writeFirstRun).toHaveBeenCalledTimes(1));
+
+    expect(writeFirstRun).toHaveBeenCalledWith(
+      { id: "user_1" },
+      { briefSubmitted: true, path: "new" },
+    );
+  });
+
+  it("bumps orgDraftVersion so the consumer remounts the funnel", async () => {
+    organization = { id: "org_9" };
+    stash({ path: "grow", input: "acme.com", detail: "" });
+
+    const { result } = mount();
+    await act(async () => {});
+
+    // The funnel mounted before the copy and reads its draft only at mount —
+    // the version bump is what triggers the keyed remount.
+    expect(result.current.orgDraftVersion).toBe(1);
+    expect(post).not.toHaveBeenCalled();
+    expect(writeFirstRun).not.toHaveBeenCalled();
   });
 });

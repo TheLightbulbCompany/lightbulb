@@ -17,8 +17,9 @@
  * owner-scoped draft key so it renders pre-filled and a human click submits.
  */
 import * as React from "react";
-import { useOrganization } from "@clerk/nextjs";
+import { useOrganization, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
+import { writeFirstRun } from "@/lib/firstRun";
 import { DRAFT_STORAGE_KEY } from "@/components/onboarding/FirstRunFunnel";
 import type { ProvisioningPhase } from "@/hooks/useProvisioningState";
 
@@ -36,7 +37,13 @@ interface LandingBrief {
 function parseBrief(raw: string): LandingBrief | null {
   let parsed: Partial<LandingBrief>;
   try {
-    parsed = JSON.parse(raw) as Partial<LandingBrief>;
+    const value: unknown = JSON.parse(raw);
+    // The stash is user-writable: JSON.parse admits "null", numbers, arrays —
+    // anything non-object must drop to the funnel, not throw in a render effect.
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    parsed = value as Partial<LandingBrief>;
   } catch {
     return null;
   }
@@ -59,12 +66,13 @@ export function useLandingBriefReplay({
   gatePhase: ProvisioningPhase;
   awaitingBrief: boolean;
   isTerminalError: boolean;
-}): { replaying: boolean } {
+}): { replaying: boolean; orgDraftVersion: number } {
   // Same owner resolution as the funnel: while Clerk is still resolving the
   // org context the owner is UNKNOWN, and the stash must not be routed (an
   // org stash auto-POSTed as "personal" is exactly the org bypass the copy
   // path exists to prevent).
   const { organization, isLoaded: orgLoaded } = useOrganization();
+  const { user } = useUser();
   const api = useApi();
   const firedRef = React.useRef(false);
   // True from the moment a POST is dispatched. Never reset on success — the
@@ -73,6 +81,11 @@ export function useLandingBriefReplay({
   // pending brief as submitted. Reset only on failure, where the funnel IS
   // the fallback.
   const [replaying, setReplaying] = React.useState(false);
+  // Bumped after the org-path draft copy. The funnel initializes its state
+  // from sessionStorage at MOUNT, and it has already mounted by the time this
+  // passive effect writes the draft — the consumer must remount it (key prop)
+  // for the copied answers to become visible.
+  const [orgDraftVersion, setOrgDraftVersion] = React.useState(0);
 
   React.useEffect(() => {
     if (firedRef.current) return;
@@ -104,6 +117,7 @@ export function useLandingBriefReplay({
           `${DRAFT_STORAGE_KEY}:${organization.id}`,
           JSON.stringify(brief),
         );
+        setOrgDraftVersion((v) => v + 1);
       } catch {
         /* best-effort */
       }
@@ -121,13 +135,26 @@ export function useLandingBriefReplay({
           detail: brief.path === "new" && brief.detail ? brief.detail : undefined,
         });
         const status = (resp as { status?: string } | null)?.status;
-        if (status === "staged" || status === "already_submitted") return;
+        if (status === "staged" || status === "already_submitted") {
+          // Mirror the funnel's successful-submit metadata: GetStarted gates
+          // its auto-open on this, and a replayed first-run user must not get
+          // the legacy guide over Friday's already-running kickoff.
+          if (user) {
+            void writeFirstRun(user, {
+              briefSubmitted: true,
+              path: brief.path,
+            }).catch(() => {
+              /* presentation cache only — never authority */
+            });
+          }
+          return;
+        }
         setReplaying(false);
       } catch {
         setReplaying(false);
       }
     })();
-  }, [api, gatePhase, awaitingBrief, isTerminalError, orgLoaded, organization]);
+  }, [api, gatePhase, awaitingBrief, isTerminalError, orgLoaded, organization, user]);
 
-  return { replaying };
+  return { replaying, orgDraftVersion };
 }

@@ -58,6 +58,10 @@ FRIDAY_PUBLISH_ERROR_MSG = "cannot publish your default agent; only custom agent
 
 _AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,63}$")
 
+# Content-scan ceiling for the generic text-file bucket in
+# _scan_tarball_for_safety_flags — anything larger is media/data, not config.
+_SCAN_MAX_FILE_BYTES = 1 * 1024 * 1024
+
 
 # Sentinel that replaces the seller's agent_id in MCP server args at
 # export time. ``catalog_service.deploy_from_artifact`` substitutes this
@@ -279,6 +283,16 @@ class BuiltAgentConfigError(Exception):
     ``agents.list[].id``. Unlike the seller path, the built agent is supposed to
     be self-describing — without its own config we can't synthesize the slice
     that registers it in the owner's openclaw.json. The router maps this to 400.
+    """
+
+
+class PaperclipUnavailableError(Exception):
+    """The Friday-guard's Paperclip fetch FAILED (network, auth, Paperclip
+    down) — distinct from Paperclip answering with a genuinely empty agent
+    list. The guard must fail CLOSED on this: treating a fetch failure as
+    "no agents" let a seller export Friday (owner-keyed identity/memory into
+    an immutable artifact) during any Paperclip outage. The router maps this
+    to a retryable 503.
     """
 
 
@@ -562,18 +576,25 @@ def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
             if not member.isfile():
                 continue
             name = member.name[2:] if member.name.startswith("./") else member.name
+            basename = name.rsplit("/", 1)[-1]
+            if basename in _PERSONA_FILES:
+                bucket = persona_files
+            elif basename == "openclaw.json":
+                bucket = openclaw_files
+            elif basename.endswith(".md"):
+                bucket = skillmd_files
+            elif member.size <= _SCAN_MAX_FILE_BYTES:
+                # Every OTHER text-like file: a credential or `curl | bash` in
+                # a .py/.sh/.env ships just as readily as in openclaw.json, so
+                # scan it with the code-format patterns. scan()'s binary sniff
+                # skips non-text; the size cap keeps big assets out.
+                bucket = openclaw_files
+            else:
+                continue
             fobj = tf.extractfile(member)
             if fobj is None:
                 continue
-            data = fobj.read()
-            basename = name.rsplit("/", 1)[-1]
-            if basename in _PERSONA_FILES:
-                persona_files[name] = data
-            elif basename.endswith(".json") and basename == "openclaw.json":
-                openclaw_files[name] = data
-            elif basename.endswith(".md"):
-                skillmd_files[name] = data
-            # Other file types skipped — scanner is regex/text-only.
+            bucket[name] = fobj.read()
 
     flags: list[marketplace_safety.SafetyFlag] = []
     if persona_files:
@@ -1059,9 +1080,12 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
 async def _default_fetch_paperclip_agents(*, owner_id: str) -> list[dict]:
     """Production-path Paperclip agent fetch — constructs the httpx client,
     repo, and admin_client the same way ``ecs_manager`` does, then delegates
-    to ``fetch_paperclip_agents_for_owner``. Returns ``[]`` if anything
-    fails (network, auth, Paperclip down) so callers degrade gracefully
-    rather than blocking publishes when Paperclip is unavailable.
+    to ``fetch_paperclip_agents_for_owner``. Raises
+    ``PaperclipUnavailableError`` if anything fails (network, auth, Paperclip
+    down): the Friday guard consumes this, and an empty return there means
+    "allow the export" — returning ``[]`` on failure made the guard fail
+    OPEN during any Paperclip outage. Callers that genuinely want graceful
+    degrade (``resolve_apex_ceo_agent_id``) catch it themselves.
     """
     import httpx
 
@@ -1077,13 +1101,15 @@ async def _default_fetch_paperclip_agents(*, owner_id: str) -> list[dict]:
         repo = PaperclipRepo(table_name="paperclip-companies")
         admin_client = PaperclipAdminClient(http_client=http)
         return await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
-    except Exception as exc:  # noqa: BLE001 — graceful degrade per docstring
+    except Exception as exc:  # noqa: BLE001 — every failure shape maps to the typed error
         logger.warning(
             "agent_export: default paperclip fetch failed for owner=%s: %s",
             owner_id,
             exc,
         )
-        return []
+        raise PaperclipUnavailableError(
+            "could not verify the agent against Paperclip — retry the publish in a moment"
+        ) from exc
     finally:
         await http.aclose()
 
@@ -1254,10 +1280,14 @@ async def is_reserved_friday_agent(
     Used by the marketplace publish path to refuse snapshotting Friday — see
     ``FRIDAY_PUBLISH_ERROR_MSG`` for the surfaced reason. Returns False
     (allow publish) when:
-      - Paperclip returns no agents (provisioning hasn't run, or Paperclip
-        is unreachable; same graceful-degrade posture as friday_identity).
+      - Paperclip GENUINELY returns no agents (provisioning hasn't run).
       - No entry in the list carries ``role == "ceo"``.
       - The CEO entry's id doesn't match ``agent_id``.
+
+    A fetch FAILURE is different: the default fetcher raises
+    ``PaperclipUnavailableError``, which propagates so the router blocks the
+    export with a retryable 503 — failing open here let Friday be exported
+    during a Paperclip outage.
 
     The fetcher dependency is injected so tests don't need a live Paperclip.
     Production callers can omit it and ``_default_fetch_paperclip_agents``
@@ -1284,11 +1314,16 @@ async def resolve_apex_ceo_agent_id(
     hires land under Friday in the org chart instead of unparented. Delegates
     apex selection to ``company_deploy_service._find_friday_id`` (rootless
     ``role == "ceo"``), which is safe when marketplace company deploys have
-    added division-head CEOs. Same graceful-degrade posture as
-    ``is_reserved_friday_agent``: any fetch failure yields ``None``.
+    added division-head CEOs. Graceful-degrade: any fetch failure yields
+    ``None`` (unlike the Friday guard, which fails closed).
     """
     from core.services.company_deploy_service import _find_friday_id
 
     fetch = fetch_paperclip_agents or _default_fetch_paperclip_agents
-    agents = await fetch(owner_id=owner_id)
+    try:
+        agents = await fetch(owner_id=owner_id)
+    except PaperclipUnavailableError:
+        # Unlike the Friday guard, this is a nice-to-have default (org-chart
+        # placement) — degrade to unparented rather than failing the build.
+        return None
     return _find_friday_id(agents)

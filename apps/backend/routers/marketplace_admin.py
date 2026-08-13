@@ -1,5 +1,6 @@
 """Admin moderation endpoints — approve, reject, takedown, preview."""
 
+import asyncio
 import io
 import json
 import tarfile
@@ -174,7 +175,9 @@ async def approve(
         # safety. Without a clean scan we can't tell whether the bytes are
         # what the moderator inspected; fail closed.
         try:
-            head = s3.head_object(Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key)
+            head = await asyncio.to_thread(
+                s3.head_object, Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key
+            )
         except Exception:
             raise HTTPException(
                 status_code=409,
@@ -193,16 +196,21 @@ async def approve(
                     "Reject or ask the seller to slim the listing."
                 ),
             )
+
         # Unpacked-size gate. Reading the gzip into memory here costs one
         # bounded download (≤50 MB by the compressed check above) per
         # approve call, which is acceptable for an admin path.
         # ``tarfile.getmembers()`` reads headers only — no file content is
         # loaded — so we don't OOM on a 50 MB tarball with 500 MB of
         # unpacked content.
-        try:
+        def _unpacked_size() -> int:
+            # Blocking S3 download + tar parse — runs on a worker thread.
             body = s3.get_object(Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET, Key=artifact_key)["Body"].read()
             with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tf:
-                unpacked = sum(m.size for m in tf.getmembers() if m.isfile())
+                return sum(m.size for m in tf.getmembers() if m.isfile())
+
+        try:
+            unpacked = await asyncio.to_thread(_unpacked_size)
         except tarfile.TarError:
             raise HTTPException(
                 status_code=409,
@@ -335,7 +343,7 @@ async def listing_preview(
     tar_key = f"{s3_prefix}workspace.tar.gz"
 
     try:
-        head = s3.head_object(Bucket=bucket, Key=tar_key)
+        head = await asyncio.to_thread(s3.head_object, Bucket=bucket, Key=tar_key)
     except Exception:
         # Empty / not-yet-uploaded artifact — return an empty preview rather
         # than 500. The admin UI shows "no artifact uploaded yet".
@@ -393,7 +401,7 @@ async def listing_preview(
             unpacked_bytes=0,
         )
 
-    body = s3.get_object(Bucket=bucket, Key=tar_key)["Body"].read()
+    body = await asyncio.to_thread(lambda: s3.get_object(Bucket=bucket, Key=tar_key)["Body"].read())
 
     file_tree: list[schemas.FileTreeEntry] = []
     file_dict: dict[str, bytes] = {}

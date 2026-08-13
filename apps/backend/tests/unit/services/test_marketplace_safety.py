@@ -36,6 +36,25 @@ def test_hardcoded_secret_flagged_high():
     assert any(f.pattern == "hardcoded-secret" and f.severity == "high" for f in flags)
 
 
+def test_bare_provider_token_flagged_high_in_tarball_scan():
+    """Bare provider-prefixed tokens (no `key = "..."` assignment around them)
+    must flag in the tarball content scan — pasting a Slack or OpenAI token
+    into prose was invisible to hardcoded-secret's assignment shape."""
+    for token in (
+        b"here is my key sk-ant-api03-AbCdEf1234567890abcdef",
+        b"export it: ghp_ABCDEFghijkl0123456789",
+        b"bot token xoxb-1234567890-abcdefghij",
+    ):
+        flags = _scan(token)
+        assert any(f.pattern == "provider-token" and f.severity == "high" for f in flags), token
+
+
+def test_prose_containing_sk_dash_word_not_flagged():
+    """`task-...` and short `sk-` fragments must not trip the token pattern."""
+    flags = _scan(b"the task-management sk-etchpad is fine")
+    assert not any(f.pattern == "provider-token" for f in flags)
+
+
 def test_aws_access_key_flagged_high():
     flags = _scan(b"AKIAIOSFODNN7EXAMPLE")
     assert any(f.pattern == "aws-secret-key" and f.severity == "high" for f in flags)
@@ -183,6 +202,23 @@ def test_slice_scrubbed_surviving_apikey_scalar_flagged():
     flags = marketplace_safety.assert_slice_scrubbed(slice_)
     assert any(f.pattern == "unscrubbed-credential" and f.severity == "high" for f in flags)
     assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_plugin_entry_secret_flagged():
+    """plugins.entries carry the same apiKey/env-shaped config as MCP servers;
+    the blocking gate must walk them too — a plugin credential used to sail
+    through the slice gate entirely."""
+    slice_ = {"plugins": {"entries": {"custom-notifier": {"env": {"API_KEY": "sk_live_xxx"}}}}}
+    flags = marketplace_safety.assert_slice_scrubbed(slice_)
+    assert any(
+        f.pattern == "unscrubbed-credential" and "plugins.entries.custom-notifier" in f.snippet for f in flags
+    ), flags
+    assert marketplace_safety.has_blocking_credential_findings(flags) is True
+
+
+def test_slice_scrubbed_clean_plugin_entries_pass():
+    slice_ = {"plugins": {"entries": {"memory": {"enabled": True}, "custom": {"apiKey": ""}}}}
+    assert marketplace_safety.assert_slice_scrubbed(slice_) == []
 
 
 def test_slice_scrubbed_nested_secret_caught():

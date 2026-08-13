@@ -778,6 +778,47 @@ async def test_append_cron_jobs_extends_existing_file(cron_efs_dir):
 
 
 @pytest.mark.asyncio
+async def test_remove_cron_jobs_removes_only_the_named_ids(cron_efs_dir):
+    """The deploy-unwind path: a failed deploy's appended jobs come back out
+    by id, leaving every other job untouched."""
+    from core.services.config_patcher import remove_cron_jobs
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    os.makedirs(os.path.dirname(jobs_path), exist_ok=True)
+    with open(jobs_path, "w") as f:
+        json.dump(
+            {
+                "version": 1,
+                "jobs": [
+                    {"id": "keep", "agentId": "main", "name": "Keep me"},
+                    {"id": "j1", "agentId": "agent_abc", "name": "From deploy"},
+                    {"id": "j2", "agentId": "agent_abc", "name": "From deploy too"},
+                ],
+            },
+            f,
+        )
+
+    await remove_cron_jobs("user_1", ["j1", "j2"])
+
+    with open(jobs_path) as f:
+        data = json.load(f)
+    assert [j["id"] for j in data["jobs"]] == ["keep"]
+
+
+@pytest.mark.asyncio
+async def test_remove_cron_jobs_missing_file_and_ids_are_noops(cron_efs_dir):
+    from core.services.config_patcher import remove_cron_jobs
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    # No file → no-op, and it must not create one.
+    await remove_cron_jobs("user_1", ["j1"])
+    assert not os.path.exists(jobs_path)
+    # Empty id list → no-op.
+    await remove_cron_jobs("user_1", [])
+    assert not os.path.exists(jobs_path)
+
+
+@pytest.mark.asyncio
 async def test_append_cron_jobs_empty_list_is_noop(cron_efs_dir):
     """Callers that have nothing to add shouldn't be required to skip the
     call themselves — the helper short-circuits and doesn't create the file."""

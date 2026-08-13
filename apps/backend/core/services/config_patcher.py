@@ -1034,3 +1034,67 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
             _do()
 
     await asyncio.to_thread(_do_locked)
+
+
+async def remove_cron_jobs(owner_id: str, job_ids: list[str]) -> None:
+    """Atomically remove cron jobs by id from ``{owner_id}/cron/jobs.json``.
+
+    The unwind side of :func:`append_cron_jobs` — a failed deploy must take
+    its appended jobs with it, or the stranded jobs keep firing against an
+    agent that no longer exists (and a retry appends duplicates beside them).
+    Same two-layer lock + tempfile-rename pattern as the append. No-op when
+    ``job_ids`` is empty or the file doesn't exist.
+    """
+    if not job_ids:
+        return
+    ids = set(job_ids)
+
+    cron_dir = os.path.join(_efs_mount_path, owner_id, "cron")
+    jobs_path = os.path.join(cron_dir, "jobs.json")
+    lock_path = os.path.join(cron_dir, "jobs.json.lock")
+
+    def _do():
+        if not os.path.exists(jobs_path):
+            return
+
+        lock_fd = open_lock_fd(cron_dir, lock_path)
+        try:
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+            with open(jobs_path, "r") as f:
+                try:
+                    data = json.load(f)
+                except json.JSONDecodeError:
+                    return
+            if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+                return
+            jobs = data["jobs"]
+            kept = [j for j in jobs if not (isinstance(j, dict) and j.get("id") in ids)]
+            if len(kept) == len(jobs):
+                return
+            data["jobs"] = kept
+
+            fd, tmp_path = tempfile.mkstemp(dir=cron_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f, indent=2)
+                chown_uid_1000_best_effort(tmp_path)
+                os.rename(tmp_path, jobs_path)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
+
+            logger.info(
+                "cron/jobs.json for owner %s: removed %d job(s)",
+                owner_id,
+                len(jobs) - len(kept),
+            )
+        finally:
+            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+    def _do_locked():
+        with get_file_lock(lock_path):
+            _do()
+
+    await asyncio.to_thread(_do_locked)

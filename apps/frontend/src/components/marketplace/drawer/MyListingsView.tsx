@@ -14,6 +14,7 @@ interface PayoutsDashboard {
   balance_held_cents?: number;
   lifetime_earned_cents?: number;
   dashboard_url?: string | null;
+  payouts_enabled?: boolean;
 }
 
 interface GroupedListing {
@@ -160,6 +161,10 @@ export function MyListingsView() {
   );
   const pendingCents = dashboard.balance_held_cents ?? 0;
   const isOnboarded = !!dashboard.dashboard_url;
+  // Login links resolve while Stripe verification is still pending, so a
+  // dashboard_url alone doesn't mean payable. Strict === false: legacy
+  // responses without the field keep the old two-state behavior.
+  const payoutsPending = isOnboarded && dashboard.payouts_enabled === false;
 
   async function handlePayoutAction() {
     setBusy(true);
@@ -193,6 +198,7 @@ export function MyListingsView() {
               action={isOnboarded ? "Cash out →" : "Set up payouts →"}
               onAction={handlePayoutAction}
               disabled={busy}
+              note={payoutsPending ? "Payouts pending Stripe verification" : undefined}
             />
           </div>
         </div>
@@ -241,12 +247,14 @@ function Stat({
   action,
   onAction,
   disabled,
+  note,
 }: {
   label: string;
   value: string;
   action?: string;
   onAction?: () => void;
   disabled?: boolean;
+  note?: string;
 }) {
   return (
     <div>
@@ -262,6 +270,7 @@ function Stat({
           {action}
         </button>
       )}
+      {note && <span className="block text-[11.5px] text-[#a07520] mt-0.5">{note}</span>}
     </div>
   );
 }

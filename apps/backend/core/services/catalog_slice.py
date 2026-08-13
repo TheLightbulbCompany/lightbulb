@@ -113,6 +113,20 @@ def _strip_provider_plugins(plugins: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _scrub_plugins_block(plugins: dict[str, Any]) -> dict[str, Any]:
+    """Provider entries dropped, then every surviving entry scrubbed the same
+    way as ``mcp.servers`` / ``skills.entries`` — plugin configs carry the
+    same apiKey/env-shaped fields, and an unscrubbed one ships the seller's
+    credential in the published slice."""
+    out = _strip_provider_plugins(plugins)
+    entries = out.get("entries") if isinstance(out, dict) else None
+    if isinstance(entries, dict):
+        out["entries"] = {
+            name: _scrub_secret_fields(entry) if isinstance(entry, dict) else entry for name, entry in entries.items()
+        }
+    return out
+
+
 # Secret-shaped field names scrubbed from slice copies of mcp.servers[*] /
 # skills.entries[*]. Values are replaced with empty strings (key names
 # preserved so the buyer sees what to fill in on their side). Mirrors
@@ -435,7 +449,7 @@ def extract_agent_slice(
     sanitized_agent, _dropped = sanitize_agent_entry_for_schema(strip_user_specific_fields(agent_entry))
     slice_: dict[str, Any] = {
         "agent": sanitized_agent,
-        "plugins": _strip_provider_plugins(openclaw_json.get("plugins") or {}),
+        "plugins": _scrub_plugins_block(openclaw_json.get("plugins") or {}),
         "tools": _scrub_tools_block(openclaw_json.get("tools") or {}),
     }
 

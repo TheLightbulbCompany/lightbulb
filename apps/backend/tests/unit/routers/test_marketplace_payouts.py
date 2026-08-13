@@ -93,9 +93,10 @@ def seller_client():
         app.dependency_overrides.clear()
 
 
+@patch("routers.marketplace_payouts.stripe.Account.retrieve")
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
 @patch("core.repositories.marketplace_repo._payout_accounts_table")
-def test_dashboard_no_payout_row_returns_balance_fields(mock_table, mock_login_link, seller_client):
+def test_dashboard_no_payout_row_returns_balance_fields(mock_table, mock_login_link, mock_retrieve, seller_client):
     """No payout row → dashboard_url None + both balance fields present (no Stripe call)."""
     mock_table.return_value.get_item.return_value = {}
 
@@ -104,15 +105,18 @@ def test_dashboard_no_payout_row_returns_balance_fields(mock_table, mock_login_l
     assert resp.status_code == 200
     assert resp.json() == {
         "dashboard_url": None,
+        "payouts_enabled": False,
         "balance_held_cents": 0,
         "lifetime_earned_cents": 0,
     }
     mock_login_link.assert_not_called()
+    mock_retrieve.assert_not_called()
 
 
+@patch("routers.marketplace_payouts.stripe.Account.retrieve")
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
 @patch("core.repositories.marketplace_repo._payout_accounts_table")
-def test_dashboard_stripe_error_degrades_gracefully(mock_table, mock_login_link, seller_client):
+def test_dashboard_stripe_error_degrades_gracefully(mock_table, mock_login_link, mock_retrieve, seller_client):
     """Connect account present but Stripe raises → null dashboard_url, NOT a 500."""
     mock_table.return_value.get_item.return_value = {
         "Item": {
@@ -121,23 +125,25 @@ def test_dashboard_stripe_error_degrades_gracefully(mock_table, mock_login_link,
             "lifetime_earned_cents": 5678,
         }
     }
-    mock_login_link.side_effect = stripe.error.StripeError("account onboarding incomplete")
+    mock_retrieve.side_effect = stripe.error.StripeError("account onboarding incomplete")
 
     resp = seller_client.get("/api/v1/marketplace/payouts/dashboard")
 
     assert resp.status_code == 200
     assert resp.json() == {
         "dashboard_url": None,
+        "payouts_enabled": False,
         "balance_held_cents": 1234,
         "lifetime_earned_cents": 5678,
     }
-    mock_login_link.assert_called_once_with("acct_unfinished")
+    mock_login_link.assert_not_called()
 
 
+@patch("routers.marketplace_payouts.stripe.Account.retrieve")
 @patch("routers.marketplace_payouts.stripe.Account.create_login_link")
 @patch("core.repositories.marketplace_repo._payout_accounts_table")
-def test_dashboard_success_returns_login_link(mock_table, mock_login_link, seller_client):
-    """Onboarded account → dashboard_url from Stripe + balance fields."""
+def test_dashboard_success_returns_login_link(mock_table, mock_login_link, mock_retrieve, seller_client):
+    """Onboarded + verified account → dashboard_url + payouts_enabled True."""
     mock_table.return_value.get_item.return_value = {
         "Item": {
             "stripe_connect_account_id": "acct_ready",
@@ -145,6 +151,7 @@ def test_dashboard_success_returns_login_link(mock_table, mock_login_link, selle
             "lifetime_earned_cents": 9000,
         }
     }
+    mock_retrieve.return_value = {"id": "acct_ready", "payouts_enabled": True}
     mock_login_link.return_value = SimpleNamespace(url="https://connect.stripe.com/express/login123")
 
     resp = seller_client.get("/api/v1/marketplace/payouts/dashboard")
@@ -152,7 +159,36 @@ def test_dashboard_success_returns_login_link(mock_table, mock_login_link, selle
     assert resp.status_code == 200
     assert resp.json() == {
         "dashboard_url": "https://connect.stripe.com/express/login123",
+        "payouts_enabled": True,
         "balance_held_cents": 4200,
         "lifetime_earned_cents": 9000,
     }
     mock_login_link.assert_called_once_with("acct_ready")
+    mock_retrieve.assert_called_once_with("acct_ready")
+
+
+@patch("routers.marketplace_payouts.stripe.Account.retrieve")
+@patch("routers.marketplace_payouts.stripe.Account.create_login_link")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
+def test_dashboard_pending_verification_reports_payouts_disabled(
+    mock_table, mock_login_link, mock_retrieve, seller_client
+):
+    """Login links resolve while Stripe verification is still pending, so
+    dashboard_url alone must not read as payable — payouts_enabled is the
+    real readiness signal."""
+    mock_table.return_value.get_item.return_value = {
+        "Item": {
+            "stripe_connect_account_id": "acct_pending",
+            "balance_held_cents": 4200,
+            "lifetime_earned_cents": 0,
+        }
+    }
+    mock_retrieve.return_value = {"id": "acct_pending", "payouts_enabled": False}
+    mock_login_link.return_value = SimpleNamespace(url="https://connect.stripe.com/express/login456")
+
+    resp = seller_client.get("/api/v1/marketplace/payouts/dashboard")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["dashboard_url"] == "https://connect.stripe.com/express/login456"
+    assert body["payouts_enabled"] is False

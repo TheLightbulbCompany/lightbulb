@@ -221,6 +221,44 @@ describe("MyListingsView", () => {
     expect(screen.queryByText(/rejected/i)).toBeNull();
   });
 
+  it("shows a pending-verification note when onboarded but payouts_enabled is false", async () => {
+    // Stripe login links resolve while verification is still pending, so a
+    // dashboard_url alone must not read as "payouts ready".
+    mockApiGet.mockResolvedValue({
+      dashboard_url: "https://connect.stripe.com/express/login123",
+      payouts_enabled: false,
+      balance_held_cents: 4200,
+    });
+    mockMyListings.mockResolvedValueOnce({ items: [] });
+    render(<MyListingsView />);
+    expect(await screen.findByText(/Payouts pending Stripe verification/i)).toBeInTheDocument();
+    // Still the onboarded action — the seller can open the dashboard to check.
+    expect(screen.getByRole("button", { name: /Cash out/i })).toBeInTheDocument();
+  });
+
+  it("shows no verification note when payouts_enabled is true or absent (legacy)", async () => {
+    mockApiGet.mockResolvedValue({
+      dashboard_url: "https://connect.stripe.com/express/login123",
+      payouts_enabled: true,
+      balance_held_cents: 0,
+    });
+    mockMyListings.mockResolvedValueOnce({ items: [] });
+    const { unmount } = render(<MyListingsView />);
+    expect(await screen.findByRole("button", { name: /Cash out/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Payouts pending Stripe verification/i)).toBeNull();
+    unmount();
+
+    // Legacy backend without the field → old two-state behavior, no note.
+    mockApiGet.mockResolvedValue({
+      dashboard_url: "https://connect.stripe.com/express/login123",
+      balance_held_cents: 0,
+    });
+    mockMyListings.mockResolvedValueOnce({ items: [] });
+    render(<MyListingsView />);
+    expect(await screen.findByRole("button", { name: /Cash out/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Payouts pending Stripe verification/i)).toBeNull();
+  });
+
   it("still renders rows for listings with no published version (e.g. fresh draft only)", async () => {
     mockMyListings.mockResolvedValueOnce({
       items: [

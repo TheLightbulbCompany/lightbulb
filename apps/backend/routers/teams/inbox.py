@@ -165,7 +165,17 @@ def _parse_run_ts(value: Any) -> Optional[datetime]:
 
 
 def _run_ts(run: dict) -> Optional[datetime]:
-    return _parse_run_ts(run.get("createdAt")) or _parse_run_ts(run.get("startedAt"))
+    """When the run reached its terminal state (fall back to creation).
+
+    Ordering recovery by creation time is wrong for overlapping runs: a
+    failure created before a success but finishing after it is the agent's
+    LATEST terminal state and must not be hidden by that success.
+    """
+    return (
+        _parse_run_ts(run.get("finishedAt"))
+        or _parse_run_ts(run.get("createdAt"))
+        or _parse_run_ts(run.get("startedAt"))
+    )
 
 
 @router.get("/inbox/runs")

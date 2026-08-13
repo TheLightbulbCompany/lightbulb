@@ -342,6 +342,38 @@ def test_list_inbox_runs_needs_attention_semantics(client, monkeypatch):
     )
 
 
+def test_list_inbox_runs_orders_recovery_by_terminal_time(client, monkeypatch):
+    """Overlapping runs: a failure CREATED before a success but FINISHING
+    after it is the agent's latest terminal state — it must stay visible.
+    Recovery ordering uses finishedAt, not createdAt."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        # Failure created first but finished LAST — keep.
+        {
+            "id": "r_slow_fail",
+            "agentId": "ag_1",
+            "status": "failed",
+            "createdAt": _iso(now - timedelta(hours=3)),
+            "finishedAt": _iso(now - timedelta(hours=1)),
+        },
+        # Success created later but finished BEFORE the failure did.
+        {
+            "id": "r_quick_ok",
+            "agentId": "ag_1",
+            "status": "succeeded",
+            "createdAt": _iso(now - timedelta(hours=2, minutes=30)),
+            "finishedAt": _iso(now - timedelta(hours=2)),
+        },
+    ]
+    _mock_inbox_runs(monkeypatch, {"runs": rows})
+
+    r = client.get("/api/v1/teams/inbox/runs", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert [row["id"] for row in r.json()["runs"]] == ["r_slow_fail"]
+
+
 def test_list_inbox_runs_fails_open_on_unparseable_timestamps(client, monkeypatch):
     """Pre-Date-fix Paperclip images serialize timestamps as ``{}`` — a
     failure whose age we can't establish must stay visible (hiding a real

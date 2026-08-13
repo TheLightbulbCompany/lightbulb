@@ -698,6 +698,95 @@ describe("RoutinesPanel — auto_github repo picker", () => {
   });
 });
 
+describe("RoutinesPanel — auto_vercel project picker", () => {
+  function vercelConnection() {
+    return {
+      provider: "vercel_cli",
+      display_name: "Vercel",
+      acquisition: "paste_token",
+      status: "connected",
+      can_trigger: ["Deployment failed"],
+      inbound: {
+        webhook_registration: "auto_vercel",
+        events: [
+          { id: "deployment.error", label: "Deployment failed" },
+          { id: "deployment.succeeded", label: "Deployment succeeded" },
+        ],
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+    connectionsData = [vercelConnection()];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "prj_1", label: "my-site" },
+      { id: "prj_2", label: "my-api" },
+    ]);
+  });
+
+  it("fetches projects from the parameterized route, submits the project id, and shows the live success state", async () => {
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: false,
+      instructions: null,
+      secret_hint: null,
+      resource: "prj_1",
+    });
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Vercel" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(
+      await screen.findByRole("option", { name: "Deployment failed" }),
+    );
+
+    // The picker feed comes from the provider-parameterized resources route.
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/vercel_cli/resources",
+      ),
+    );
+    // The third dropdown is labeled by the provider's resource noun; Create
+    // stays gated until a project is picked.
+    expect(screen.getByText("Project")).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+
+    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(await screen.findByRole("option", { name: "my-site" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    // The resource in the body is the project ID (what the backend hooks),
+    // not the display name.
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "vercel_cli",
+      event_id: "deployment.error",
+      resource: "prj_1",
+    });
+
+    // Auto path: already armed — no paste step, Done is immediately enabled.
+    expect(
+      await screen.findByText(/Vercel registered the webhook on prj_1 — this automation is live\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+  });
+});
+
 describe("RoutinesPanel sort", () => {
   beforeEach(() => {
     mockRead.mockClear();

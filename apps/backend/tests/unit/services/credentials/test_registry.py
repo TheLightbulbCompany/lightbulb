@@ -62,6 +62,25 @@ def test_github_inbound_is_auto_registering():
         assert e.provider_events, e.id
 
 
+def test_vercel_inbound_is_auto_registering():
+    from core.services.credentials.registry import get_provider
+
+    p = get_provider("vercel_cli")
+    assert p.inbound is not None
+    assert p.inbound.webhook_registration == "auto_vercel"
+    # Vercel signs HMAC-SHA1 over the raw body in x-vercel-signature —
+    # Paperclip's hmac_sha1 mode reads it via the proxy's header copy.
+    assert p.inbound.signing_mode == "hmac_sha1"
+    assert p.inbound.signature_header == "x-vercel-signature"
+    # The auto path has no paste step, so no guided copy or secret hint.
+    assert p.inbound.instructions is None
+    assert p.inbound.secret_hint is None
+    # Every curated event names the Vercel webhook events to subscribe.
+    assert p.inbound.events
+    for e in p.inbound.events:
+        assert e.provider_events, e.id
+
+
 def test_inbound_invariants_hold_for_every_provider():
     """YAML-only wiring means YAML mistakes are the failure mode — pin the
     invariants the seed service and proxy assume for EVERY inbound block:
@@ -70,16 +89,16 @@ def test_inbound_invariants_hold_for_every_provider():
     would otherwise KeyError at seed time, after the routine exists)."""
     from core.services.credentials.registry import all_providers
 
-    native_modes = {"bearer", "hmac_sha256", "github_hmac", "none"}
+    native_modes = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "none"}
     for key, p in all_providers().items():
         if p.inbound is None:
             continue
         assert p.inbound.signing_mode in native_modes, key
         # signature_header is the proxy's raw-body copy shim — only meaningful
-        # for github_hmac (hmac_sha256 providers need timestamp splitting,
-        # which is bespoke, like Stripe's).
+        # for the raw-body HMAC modes (hmac_sha256 providers need timestamp
+        # splitting, which is bespoke, like Stripe's).
         if p.inbound.signature_header:
-            assert p.inbound.signing_mode == "github_hmac", key
+            assert p.inbound.signing_mode in {"github_hmac", "hmac_sha1"}, key
         assert p.inbound.template.suggested_agent == "friday", key
         if p.inbound.instructions:
             # Must interpolate cleanly with exactly these placeholders.

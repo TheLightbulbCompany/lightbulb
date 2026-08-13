@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.services.inbound_triggers import list_github_repos, seed_trigger_routine
+from core.services.inbound_triggers import list_github_repos, list_vercel_projects, seed_trigger_routine
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from routers import paperclip_trigger_proxy
@@ -101,26 +101,34 @@ async def from_integration(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/providers/github/resources")
-async def github_resources(
+@router.get("/providers/{provider}/resources")
+async def provider_resources(
+    provider: str,
     auth: AuthContext = Depends(get_current_user),
 ) -> list[dict]:
-    """Repositories the owner's connected GitHub token can see — feeds the
-    create dialog's repo picker for the auto_github registration shape.
+    """Provider-side resources the owner's connected token can see (GitHub
+    repositories, Vercel projects) — feeds the create dialog's resource picker
+    for the auto-registering registration shapes.
 
     Org-admin gated like ``from_integration``, but WITHOUT the always-on
-    entitlement gate: listing repos is read-only and commits the owner to
-    nothing. 404 when GitHub isn't connected; 502 when GitHub itself fails.
+    entitlement gate: listing resources is read-only and commits the owner to
+    nothing. 404 for a provider with no lister or one that isn't connected;
+    502 when the provider itself fails.
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
+    # Built per-call, not at module level, so the module-level names stay the
+    # patch points (tests replace routers.automations.list_github_repos).
+    lister = {"github": list_github_repos, "vercel_cli": list_vercel_projects}.get(provider)
+    if lister is None:
+        raise HTTPException(status_code=404, detail="unknown_provider")
     try:
-        return await list_github_repos(owner_id)
+        return await lister(owner_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
-        logger.warning("automations: github repo listing failed owner=%s err=%s", owner_id, exc)
-        raise HTTPException(status_code=502, detail="github_unavailable") from exc
+        logger.warning("automations: %s resource listing failed owner=%s err=%s", provider, owner_id, exc)
+        raise HTTPException(status_code=502, detail=f"{provider}_unavailable") from exc
 
 
 @router.put("/{public_id}/webhook-secret")

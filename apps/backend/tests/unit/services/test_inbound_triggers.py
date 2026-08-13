@@ -15,14 +15,19 @@ import pytest
 from core.services.inbound_triggers import seed_trigger_routine
 
 
-def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", secret_material=None):
+def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", secret_material=None, trigger_id=None):
     admin = MagicMock()
     admin.list_agents = AsyncMock(return_value=[{"id": friday_id, "role": "ceo"}])
     admin.create_routine = AsyncMock(return_value={"id": routine_id})
-    trigger_resp = {"trigger": {"publicId": public_id}}
+    trigger = {"publicId": public_id}
+    # The internal trigger id — the auto_vercel arm (rotate-secret) needs it.
+    if trigger_id is not None:
+        trigger["id"] = trigger_id
+    trigger_resp = {"trigger": trigger}
     if secret_material is not None:
         trigger_resp["secretMaterial"] = secret_material
     admin.create_routine_trigger = AsyncMock(return_value=trigger_resp)
+    admin.rotate_routine_trigger_secret = AsyncMock(return_value={})
     admin.delete_routine = AsyncMock(return_value={})
     return admin
 
@@ -219,11 +224,13 @@ def _gh_response(status_code: int, json_body=None) -> httpx.Response:
 
 
 def _gh_http_patch(response: httpx.Response):
-    """Patch httpx.AsyncClient in the module with a fake whose get/post answer
-    ``response``. Returns (patcher, client) so tests can assert on the call."""
+    """Patch httpx.AsyncClient in the module with a fake whose get/post/delete
+    answer ``response``. Returns (patcher, client) so tests can assert on the
+    call."""
     client = MagicMock()
     client.get = AsyncMock(return_value=response)
     client.post = AsyncMock(return_value=response)
+    client.delete = AsyncMock(return_value=response)
 
     @asynccontextmanager
     async def _fake(*args, **kwargs):
@@ -352,3 +359,166 @@ async def test_list_github_repos_not_connected_raises_lookup_error():
 
     with _gh_token_patch(token=None), pytest.raises(LookupError, match="not connected"):
         await list_github_repos("owner_1")
+
+
+# --- auto_vercel ------------------------------------------------------------
+#
+# Same mocking approach as auto_github above. `_gh_token_patch` is reused for
+# the Vercel credential — it patches the shared integration_secret_store.get,
+# and the paste rail stores the same {"token": ...} shape for vercel_cli.
+
+_VC_WEBHOOK = {"id": "hook_1", "secret": "vcsec_1"}
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_vercel_registers_webhook_and_arms():
+    """The Vercel auto shape: the webhook is created on the named project,
+    pointed at the proxy URL and subscribed to the registry's
+    provider_events — then the trigger is ARMED with the secret Vercel
+    generated (the opposite direction from GitHub). No paste step remains,
+    the result is live."""
+    admin = _fake_admin(trigger_id="trig_int_1")
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, vc_client = _gh_http_patch(_gh_response(200, _VC_WEBHOOK))
+    with p_repo, p_cookie, p_client, _gh_token_patch(token="vc_tok_1"), p_http:
+        out = await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+
+    vc_client.post.assert_awaited_once()
+    assert vc_client.post.await_args.args[0] == "https://api.vercel.com/v1/webhooks"
+    webhook_body = vc_client.post.await_args.kwargs["json"]
+    assert webhook_body == {
+        "url": out["proxy_url"],
+        "events": ["deployment.error"],
+        "projectIds": ["prj_abc123"],
+    }
+    assert vc_client.post.await_args.kwargs["headers"] == {"Authorization": "Bearer vc_tok_1"}
+
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["signingMode"] == "hmac_sha1"
+
+    admin.rotate_routine_trigger_secret.assert_awaited_once_with(
+        session_cookie="s=1", trigger_id="trig_int_1", secret="vcsec_1"
+    )
+
+    assert out["guided"] is False
+    assert out["resource"] == "prj_abc123"
+    assert out["instructions"] is None
+    assert out["secret_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_vercel_requires_resource():
+    """A missing or malformed project id fails BEFORE anything exists upstream."""
+    admin = _fake_admin(trigger_id="trig_int_1")
+    p_repo, p_cookie, p_client = _env(admin)
+    for bad in (None, "prj/abc", "prj abc", "prj-abc!"):
+        with (
+            p_repo,
+            p_cookie,
+            p_client,
+            _gh_token_patch(token="vc_tok_1"),
+            pytest.raises(ValueError, match="project id"),
+        ):
+            await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource=bad)
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_vercel_requires_connected_token():
+    admin = _fake_admin(trigger_id="trig_int_1")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _gh_token_patch(token=None), pytest.raises(ValueError, match="not connected"):
+        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_vercel_missing_trigger_id_rolls_back():
+    """No trigger.id in the create response means the trigger can never be
+    armed with Vercel's secret — same severity as a missing publicId: roll
+    the routine back, and never touch Vercel."""
+    admin = _fake_admin(routine_id="rt_no_trigger_id")  # no trigger.id in the response
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, vc_client = _gh_http_patch(_gh_response(200, _VC_WEBHOOK))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _gh_token_patch(token="vc_tok_1"),
+        p_http,
+        pytest.raises(RuntimeError, match="trigger.id"),
+    ):
+        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_no_trigger_id"
+    vc_client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_vercel_create_403_rolls_back():
+    """Vercel refusing the webhook (plan/token can't create them) unwinds the
+    routine and surfaces a caller-facing ValueError, not an opaque 500."""
+    admin = _fake_admin(routine_id="rt_forbidden_vc", trigger_id="trig_int_1")
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, _ = _gh_http_patch(_gh_response(403, {"error": {"code": "forbidden"}}))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _gh_token_patch(token="vc_tok_1"),
+        p_http,
+        pytest.raises(ValueError, match="plan or token"),
+    ):
+        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_forbidden_vc"
+    admin.rotate_routine_trigger_secret.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_vercel_arm_failure_deletes_webhook_and_rolls_back():
+    """The ARM (rotate-secret) failing after the Vercel webhook exists must
+    delete the webhook AND unwind the routine — a live webhook pointed at a
+    trigger still holding its random placeholder would deliver into signature
+    failures forever."""
+    admin = _fake_admin(routine_id="rt_arm_fail", trigger_id="trig_int_1")
+    admin.rotate_routine_trigger_secret = AsyncMock(side_effect=RuntimeError("upstream 500"))
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, vc_client = _gh_http_patch(_gh_response(200, _VC_WEBHOOK))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _gh_token_patch(token="vc_tok_1"),
+        p_http,
+        pytest.raises(RuntimeError, match="upstream 500"),
+    ):
+        await seed_trigger_routine("owner_1", "vercel_cli", "deployment.error", resource="prj_abc123")
+    vc_client.delete.assert_awaited_once()
+    assert vc_client.delete.await_args.args[0] == "https://api.vercel.com/v1/webhooks/hook_1"
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_arm_fail"
+
+
+@pytest.mark.asyncio
+async def test_list_vercel_projects_maps_ids_and_names():
+    from core.services.inbound_triggers import list_vercel_projects
+
+    p_http, vc_client = _gh_http_patch(
+        _gh_response(200, {"projects": [{"id": "prj_1", "name": "site"}, {"id": "prj_2", "name": "api"}]})
+    )
+    with _gh_token_patch(token="vc_tok_1"), p_http:
+        out = await list_vercel_projects("owner_1")
+    assert out == [
+        {"id": "prj_1", "label": "site"},
+        {"id": "prj_2", "label": "api"},
+    ]
+    assert vc_client.get.await_args.args[0] == "https://api.vercel.com/v9/projects"
+
+
+@pytest.mark.asyncio
+async def test_list_vercel_projects_not_connected_raises_lookup_error():
+    from core.services.inbound_triggers import list_vercel_projects
+
+    with _gh_token_patch(token=None), pytest.raises(LookupError, match="not connected"):
+        await list_vercel_projects("owner_1")

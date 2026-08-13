@@ -7,7 +7,7 @@ sequence ``core/services/agent_routine_provisioning.py`` uses for scheduled
 routines (reuses its routine-body builder directly), driven by the registry
 (``core/services/credentials/registry.py``) instead of a hardcoded spec list.
 
-Two inbound shapes exist:
+Three inbound shapes exist:
 
 ``webhook_registration: "guided_paste"`` (Stripe/Sentry/Linear/Attio): Isol8
 has no reachable register-a-webhook API for the provider (creating a Stripe
@@ -33,6 +33,18 @@ limitation: the GitHub hook's id is NOT stored (recoverable via GitHub's
 list-hooks API by URL), so deleting the automation leaves the hook behind as
 an orphan — it fails closed at Paperclip (the trigger is gone, deliveries
 404) and GitHub disables hooks after repeated delivery failures.
+
+``webhook_registration: "auto_vercel"`` (Vercel): auto like GitHub, but the
+secret flows the OPPOSITE direction — Vercel GENERATES the webhook secret,
+shown once in the create response. So the seed creates the trigger (its own
+secretMaterial goes unused; the trigger holds a random placeholder), creates
+the Vercel webhook on the named project, then ARMS the trigger by rotating
+its Paperclip secret to Vercel's value. Vercel signs HMAC-SHA1 over the raw
+body (hex, no prefix, ``x-vercel-signature``), verified by Paperclip's
+``hmac_sha1`` mode via the trigger proxy's generic X-Paperclip-Signature
+header copy. If the ARM fails the Vercel webhook is deleted (best-effort)
+before the routine is unwound — never leave a live webhook pointed at a
+trigger armed with a random secret. The webhook id is likewise not stored.
 """
 
 from __future__ import annotations
@@ -61,6 +73,13 @@ _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 _GITHUB_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
+_VERCEL_API_BASE = "https://api.vercel.com"
+
+# A Vercel project id ("prj_…") — the only resource shape auto_vercel accepts.
+# Also an injection fence: the resource rides into the webhook create's
+# projectIds and the rollback DELETE path.
+_VERCEL_PROJECT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
 # `inbound.signing_mode` in the registry IS a native Paperclip signingMode
 # now (e.g. Stripe -> "hmac_sha256"); it's passed straight through to the
 # created trigger. Paperclip verifies natively against the trigger's secret,
@@ -70,7 +89,7 @@ _DEFAULT_REPLAY_WINDOW_SEC = 300
 # The signingModes Paperclip verifies natively — an inbound.signing_mode must
 # be one of these (validated at seed time so a providers.yaml typo fails with a
 # clear error instead of an opaque upstream 4xx).
-_NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "github_hmac", "none"}
+_NATIVE_SIGNING_MODES = {"bearer", "hmac_sha256", "hmac_sha1", "github_hmac", "none"}
 
 
 async def _company_id_for_owner(owner_id: str) -> str | None:
@@ -155,6 +174,78 @@ async def _create_github_hook(*, token: str, resource: str, proxy_url: str, even
     resp.raise_for_status()
 
 
+async def _vercel_token(owner_id: str) -> str | None:
+    """The owner's stored Vercel credential, or None when not connected.
+    vercel_cli is paste-rail only, so the shape is always {"token": ...}."""
+    credential = await integration_secret_store.get(owner_id, "vercel_cli")
+    if not credential:
+        return None
+    return credential.get("token")
+
+
+async def list_vercel_projects(owner_id: str) -> list[dict[str, str]]:
+    """Projects the owner's Vercel token can see — feeds the create dialog's
+    project picker for the auto_vercel registration shape. No teamId param:
+    a pasted personal token's default scope is the right one, and a
+    team-scoped failure surfaces as the endpoint's 502.
+
+    Raises ``LookupError`` when Vercel isn't connected (the router maps it to
+    404); httpx errors bubble up for the router's 502.
+    """
+    token = await _vercel_token(owner_id)
+    if not token:
+        raise LookupError("Vercel is not connected")
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.get(
+            f"{_VERCEL_API_BASE}/v9/projects",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return [{"id": p["id"], "label": p["name"]} for p in resp.json().get("projects", [])]
+
+
+async def _create_vercel_webhook(*, token: str, resource: str, proxy_url: str, events: list[str]) -> tuple[str, str]:
+    """Create the project webhook pointed at the trigger proxy. Returns the
+    webhook's ``(id, secret)`` — Vercel generates the secret and shows it only
+    here, and it is what ARMS the trigger. Raises ``ValueError`` with a
+    caller-facing message on the expected refusal (webhook creation needs a
+    full-access token on a Pro/Enterprise team)."""
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.post(
+            f"{_VERCEL_API_BASE}/v1/webhooks",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"url": proxy_url, "events": events, "projectIds": [resource]},
+        )
+    if resp.status_code == 403:
+        raise ValueError(
+            "Isol8 couldn't create the Vercel webhook — your Vercel plan or token can't create webhooks "
+            "(a full-access token on a Pro or Enterprise team is required)"
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    webhook_id = data.get("id")
+    secret = data.get("secret")
+    if not webhook_id or not secret:
+        raise RuntimeError("Vercel webhook create returned no id/secret")
+    return webhook_id, secret
+
+
+async def _delete_vercel_webhook(*, token: str, webhook_id: str) -> None:
+    """Best-effort delete of a Vercel webhook orphaned by the ARM step failing
+    — a live webhook pointed at a trigger still holding its random placeholder
+    secret would fail signature checks on every delivery, forever. Never masks
+    the caller's own error — only logs its own failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.delete(
+                f"{_VERCEL_API_BASE}/v1/webhooks/{webhook_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        resp.raise_for_status()
+    except Exception:
+        logger.exception("inbound_triggers: rollback delete of Vercel webhook %s failed", webhook_id)
+
+
 async def _rollback_routine(
     admin: PaperclipAdminClient, *, routine_id: str, cookie: str, owner_id: str, provider_key: str
 ) -> None:
@@ -184,13 +275,14 @@ async def seed_trigger_routine(
     registry ``inbound`` declaration, for the event named ``event_id``.
 
     Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions,
-    secret_hint}``; the auto_github shape adds ``resource`` and needs one — the
-    "owner/repo" to hook (guided providers ignore it).
+    secret_hint}``; the auto shapes add ``resource`` and need one — the
+    "owner/repo" to hook for auto_github, the project id for auto_vercel
+    (guided providers ignore it).
 
     Raises ``ValueError`` for any caller-facing input problem (unknown
     provider/event, provider not wired as a trigger source, missing/invalid
-    resource, GitHub refusing the hook, no active Paperclip company, no
-    resolvable suggested agent) — the router maps these to a 4xx. Raises
+    resource, GitHub/Vercel refusing the webhook, no active Paperclip company,
+    no resolvable suggested agent) — the router maps these to a 4xx. Raises
     ``RuntimeError`` on a malformed upstream response (Paperclip is expected
     to always return an id / publicId / secretMaterial).
     """
@@ -212,6 +304,15 @@ async def seed_trigger_routine(
         gh_token = await _github_token(owner_id)
         if not gh_token:
             raise ValueError("GitHub is not connected — connect it in the Integrations tab first")
+
+    # auto_vercel preconditions, same posture: fail before anything exists.
+    vercel_token: str | None = None
+    if inbound.webhook_registration == "auto_vercel":
+        if not resource or not _VERCEL_PROJECT_RE.match(resource):
+            raise ValueError("auto_vercel needs a Vercel project id (prj_…)")
+        vercel_token = await _vercel_token(owner_id)
+        if not vercel_token:
+            raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
 
     # inbound.signing_mode IS a native Paperclip signingMode, passed straight
     # through to the created trigger.
@@ -276,6 +377,16 @@ async def seed_trigger_routine(
                 webhook_secret = material.get("webhookSecret") if isinstance(material, dict) else None
                 if not webhook_secret:
                     raise RuntimeError("create_routine_trigger returned no secretMaterial.webhookSecret")
+            # The auto_vercel path arms the trigger AFTER the Vercel webhook
+            # exists (Vercel generates the secret), via rotate-secret — which
+            # takes the INTERNAL trigger id, only present here in the create
+            # response. Absent means the trigger can never be armed, same
+            # severity as no publicId.
+            trigger_id: str | None = None
+            if inbound.webhook_registration == "auto_vercel":
+                trigger_id = trigger.get("id") if isinstance(trigger, dict) else None
+                if not trigger_id:
+                    raise RuntimeError("create_routine_trigger returned no trigger.id")
         except Exception:
             # The routine already exists upstream at this point. If the
             # trigger call itself throws (timeout, upstream error) or comes
@@ -344,6 +455,59 @@ async def seed_trigger_routine(
                 raise
             logger.info(
                 "inbound_triggers: seeded auto_github routine=%s trigger=%s owner=%s repo=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                resource,
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": None,
+                "secret_hint": None,
+                "resource": resource,
+            }
+
+        if inbound.webhook_registration == "auto_vercel":
+            assert resource and vercel_token and trigger_id  # narrowed by the pre-checks above
+            try:
+                webhook_id, vercel_secret = await _create_vercel_webhook(
+                    token=vercel_token,
+                    resource=resource,
+                    proxy_url=proxy_url,
+                    # Provider-side webhook events from the registry; the
+                    # curated id itself is the fallback when they coincide.
+                    events=event.provider_events or [event.id],
+                )
+            except Exception:
+                # Vercel refused the webhook (plan/token can't create them,
+                # outage) — the routine+trigger are unusable, unwind them.
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            try:
+                # ARM the trigger with Vercel's generated secret — the
+                # opposite direction from GitHub, where the trigger's own
+                # secret seeds the hook. Until this lands the trigger holds a
+                # random placeholder, so deliveries fail closed.
+                await admin.rotate_routine_trigger_secret(
+                    session_cookie=cookie, trigger_id=trigger_id, secret=vercel_secret
+                )
+            except Exception:
+                # The webhook is live but the trigger was never armed with its
+                # secret — delete it (best-effort) before unwinding, or Vercel
+                # would deliver into signature failures forever.
+                await _delete_vercel_webhook(token=vercel_token, webhook_id=webhook_id)
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded auto_vercel routine=%s trigger=%s owner=%s project=%s event=%s",
                 routine_id,
                 public_id,
                 owner_id,

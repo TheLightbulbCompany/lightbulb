@@ -859,13 +859,22 @@ const START_RUNGS: ReadonlyArray<{
   },
 ];
 
+// What the auto-registering shapes' third dropdown picks — the provider-side
+// resource the backend hooks ("owner/repo" for GitHub, a project for Vercel).
+// The label heads the dropdown; the plural feeds its placeholder copy.
+const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
+  auto_github: { label: "Repository", plural: "repositories" },
+  auto_vercel: { label: "Project", plural: "projects" },
+};
+
 // POST /automations/from-integration's response (core/services/
 // inbound_triggers.py::seed_trigger_routine). `guided` -> the owner must
 // paste the proxy URL into the provider's own dashboard and then paste back
 // the signing secret it hands them. `secret_hint` names the provider's term
 // for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
 // becomes the paste input's placeholder. `resource` echoes the auto-registered
-// target ("owner/repo" for GitHub) so the success copy can name it.
+// target ("owner/repo" for GitHub, the project id for Vercel) so the success
+// copy can name it.
 interface FromIntegrationResult {
   routine_id: string;
   trigger_public_id: string;
@@ -923,14 +932,14 @@ function CreateRoutineDialog({
   const [whsecInput, setWhsecInput] = useState("");
   const [whsecSubmitting, setWhsecSubmitting] = useState(false);
   const [whsecSaved, setWhsecSaved] = useState(false);
-  // auto_github state — the provider-side resource ("owner/repo") to hook,
-  // and the repo-picker feed fetched lazily once such a provider is selected.
-  // repoOptions null = not loaded yet (also what re-arms the fetch effect).
+  // Auto-register state — the provider-side resource (repo/project) to hook,
+  // and the picker feed fetched lazily once such a provider is selected.
+  // resourceOptions null = not loaded yet (also what re-arms the fetch effect).
   const [connResource, setConnResource] = useState<string | null>(null);
-  const [repoOptions, setRepoOptions] = useState<
+  const [resourceOptions, setResourceOptions] = useState<
     { id: string; label: string }[] | null
   >(null);
-  const [repoError, setRepoError] = useState<string | null>(null);
+  const [resourceError, setResourceError] = useState<string | null>(null);
 
   // Trigger-capable = connected AND the registry declares inbound events for
   // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
@@ -940,26 +949,36 @@ function CreateRoutineDialog({
   const selectedConnection =
     triggerableConnections.find((c) => c.provider === connProvider) ?? null;
   const connEvents = selectedConnection?.inbound?.events ?? [];
-  const isAutoGithub =
-    selectedConnection?.inbound?.webhook_registration === "auto_github";
+  const isAutoRegister =
+    selectedConnection?.inbound?.webhook_registration?.startsWith("auto_") ??
+    false;
+  const resourceNoun = AUTO_RESOURCE_NOUNS[
+    selectedConnection?.inbound?.webhook_registration ?? ""
+  ] ?? { label: "Resource", plural: "resources" };
 
   useEffect(() => {
-    if (!isAutoGithub || repoOptions !== null || repoError !== null) return;
+    if (
+      !isAutoRegister ||
+      !connProvider ||
+      resourceOptions !== null ||
+      resourceError !== null
+    )
+      return;
     let cancelled = false;
     (async () => {
       try {
-        const repos = (await automationsApi.get(
-          "/automations/providers/github/resources",
+        const resources = (await automationsApi.get(
+          `/automations/providers/${connProvider}/resources`,
         )) as { id: string; label: string }[];
-        if (!cancelled) setRepoOptions(repos);
+        if (!cancelled) setResourceOptions(resources);
       } catch (e) {
-        if (!cancelled) setRepoError(gateMessage(e));
+        if (!cancelled) setResourceError(gateMessage(e));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [isAutoGithub, repoOptions, repoError, automationsApi]);
+  }, [isAutoRegister, connProvider, resourceOptions, resourceError, automationsApi]);
 
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);
@@ -972,7 +991,7 @@ function CreateRoutineDialog({
     rung === "connected_app"
       ? connProvider != null &&
         connEventId != null &&
-        (!isAutoGithub || connResource != null)
+        (!isAutoRegister || connResource != null)
       : title.trim() !== "" &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
@@ -1004,7 +1023,7 @@ function CreateRoutineDialog({
       const body = {
         provider: connProvider,
         event_id: connEventId,
-        // Only the auto_github shape carries a resource; guided providers'
+        // Only the auto-register shapes carry a resource; guided providers'
         // bodies stay exactly as before.
         ...(connResource ? { resource: connResource } : {}),
       };
@@ -1126,8 +1145,8 @@ function CreateRoutineDialog({
     // Guided (Stripe) results aren't armed until the owner pastes the whsec
     // back via saveWebhookSecret — closing before that leaves an active,
     // unsigned automation with no UI left to finish it (the detail panel
-    // treats a "none"-signing trigger as non-rotatable). Auto (GitHub)
-    // results are already fully armed by the time this dialog shows.
+    // treats a "none"-signing trigger as non-rotatable). Auto (GitHub/
+    // Vercel) results are already fully armed by the time this dialog shows.
     const mustSaveSecretFirst = connResult.guided && !whsecSaved;
     return (
       <EditorialDialog
@@ -1337,6 +1356,10 @@ function CreateRoutineDialog({
                     setConnProvider(next);
                     setConnEventId(null);
                     setConnResource(null);
+                    // Resource feeds are per-provider — clearing re-arms the
+                    // lazy fetch for the newly selected one.
+                    setResourceOptions(null);
+                    setResourceError(null);
                   }}
                   placeholder={
                     triggerableConnections.length === 0
@@ -1363,37 +1386,39 @@ function CreateRoutineDialog({
                 </div>
               </label>
             )}
-            {/* auto_github's third step — which repo to hook. The backend
-                registers the webhook there itself, so unlike guided providers
-                there is no paste step after Create. */}
-            {isAutoGithub && connEventId != null && (
+            {/* The auto-register shapes' third step — which repo/project to
+                hook. The backend registers the webhook there itself, so
+                unlike guided providers there is no paste step after Create. */}
+            {isAutoRegister && connEventId != null && (
               <label className="block">
                 <span className="text-sm text-[var(--ink-soft)]">
-                  Repository
+                  {resourceNoun.label}
                 </span>
                 <div className="mt-1">
                   <EditorialSelect
-                    options={(repoOptions ?? []).map((r) => ({
+                    options={(resourceOptions ?? []).map((r) => ({
                       value: r.id,
                       label: r.label,
                     }))}
                     value={connResource ?? undefined}
                     onValueChange={setConnResource}
                     placeholder={
-                      repoError
-                        ? "Couldn't load repositories"
-                        : repoOptions === null
-                          ? "Loading repositories…"
-                          : repoOptions.length === 0
-                            ? "No repositories found"
-                            : "Select a repository…"
+                      resourceError
+                        ? `Couldn't load ${resourceNoun.plural}`
+                        : resourceOptions === null
+                          ? `Loading ${resourceNoun.plural}…`
+                          : resourceOptions.length === 0
+                            ? `No ${resourceNoun.plural} found`
+                            : `Select a ${resourceNoun.label.toLowerCase()}…`
                     }
-                    disabled={repoOptions === null || repoOptions.length === 0}
+                    disabled={
+                      resourceOptions === null || resourceOptions.length === 0
+                    }
                   />
                 </div>
-                {repoError && (
+                {resourceError && (
                   <span className="text-xs text-[var(--danger)]">
-                    {repoError}
+                    {resourceError}
                   </span>
                 )}
               </label>

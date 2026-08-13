@@ -43,6 +43,25 @@ def test_tier2_providers_have_inbound_with_signature_headers():
         assert p.inbound.secret_hint, key
 
 
+def test_github_inbound_is_auto_registering():
+    from core.services.credentials.registry import get_provider
+
+    p = get_provider("github")
+    assert p.inbound is not None
+    assert p.inbound.webhook_registration == "auto_github"
+    # GitHub's X-Hub-Signature-256 is read natively by Paperclip's github_hmac
+    # mode — no proxy header-copy shim, so no signature_header.
+    assert p.inbound.signing_mode == "github_hmac"
+    assert p.inbound.signature_header is None
+    # The auto path has no paste step, so no guided copy or secret hint.
+    assert p.inbound.instructions is None
+    assert p.inbound.secret_hint is None
+    # Every curated event names the GitHub hook events to subscribe.
+    assert p.inbound.events
+    for e in p.inbound.events:
+        assert e.provider_events, e.id
+
+
 def test_inbound_invariants_hold_for_every_provider():
     """YAML-only wiring means YAML mistakes are the failure mode — pin the
     invariants the seed service and proxy assume for EVERY inbound block:

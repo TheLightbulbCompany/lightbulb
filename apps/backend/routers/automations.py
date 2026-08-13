@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
-from core.services.inbound_triggers import seed_trigger_routine
+from core.services.inbound_triggers import list_github_repos, seed_trigger_routine
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from routers import paperclip_trigger_proxy
@@ -71,6 +71,9 @@ async def _resolve_trigger_id(owner_id: str, public_id: str) -> str | None:
 class FromIntegrationBody(BaseModel):
     provider: str
     event_id: str
+    # Provider-side resource for auto-registering shapes — the "owner/repo"
+    # to hook for auto_github. Guided-paste providers ignore it.
+    resource: str | None = None
 
 
 class WebhookSecretBody(BaseModel):
@@ -93,9 +96,31 @@ async def from_integration(
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id)
     try:
-        return await seed_trigger_routine(owner_id, body.provider, body.event_id)
+        return await seed_trigger_routine(owner_id, body.provider, body.event_id, resource=body.resource)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/providers/github/resources")
+async def github_resources(
+    auth: AuthContext = Depends(get_current_user),
+) -> list[dict]:
+    """Repositories the owner's connected GitHub token can see — feeds the
+    create dialog's repo picker for the auto_github registration shape.
+
+    Org-admin gated like ``from_integration``, but WITHOUT the always-on
+    entitlement gate: listing repos is read-only and commits the owner to
+    nothing. 404 when GitHub isn't connected; 502 when GitHub itself fails.
+    """
+    require_org_admin(auth)
+    owner_id = resolve_owner_id(auth)
+    try:
+        return await list_github_repos(owner_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("automations: github repo listing failed owner=%s err=%s", owner_id, exc)
+        raise HTTPException(status_code=502, detail="github_unavailable") from exc
 
 
 @router.put("/{public_id}/webhook-secret")

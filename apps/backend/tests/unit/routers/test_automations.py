@@ -7,6 +7,7 @@ org_test_456 admin/non-admin).
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 
@@ -30,7 +31,7 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         assert response.json()["guided"] is True
-        mock_seed.assert_awaited_once_with("user_test_123", "stripe", "invoice.payment_failed")
+        mock_seed.assert_awaited_once_with("user_test_123", "stripe", "invoice.payment_failed", resource=None)
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
@@ -71,6 +72,70 @@ class TestFromIntegration:
             json={"provider": "stripe", "event_id": "nope"},
         )
         assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_resource_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
+        """The auto_github shape rides the same route — `resource` reaches the
+        seed untouched (validation lives there, next to the GitHub call)."""
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.return_value = {
+            "routine_id": "rt_1",
+            "trigger_public_id": "pub_1",
+            "proxy_url": "http://localhost:8000/api/v1/hooks/t/user_test_123/pub_1",
+            "guided": False,
+            "instructions": None,
+            "secret_hint": None,
+            "resource": "acme/site",
+        }
+
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={"provider": "github", "event_id": "pull_request", "resource": "acme/site"},
+        )
+        assert response.status_code == 200
+        assert response.json()["resource"] == "acme/site"
+        mock_seed.assert_awaited_once_with("user_test_123", "github", "pull_request", resource="acme/site")
+
+
+class TestGithubResources:
+    """The repo-picker feed for auto_github. Org-admin gated like
+    from-integration, but with NO always-on gate — listing repos is read-only,
+    so no billing_repo patch is needed for the happy path."""
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_github_repos", new_callable=AsyncMock)
+    async def test_lists_repos(self, mock_repos, async_client):
+        mock_repos.return_value = [
+            {"id": "acme/site", "label": "acme/site"},
+            {"id": "acme/api", "label": "acme/api"},
+        ]
+        response = await async_client.get("/api/v1/automations/providers/github/resources")
+        assert response.status_code == 200
+        assert response.json() == mock_repos.return_value
+        mock_repos.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_github_repos", new_callable=AsyncMock)
+    async def test_github_not_connected_404s(self, mock_repos, async_client):
+        mock_repos.side_effect = LookupError("GitHub is not connected")
+        response = await async_client.get("/api/v1/automations/providers/github/resources")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_github_repos", new_callable=AsyncMock)
+    async def test_github_api_failure_502s(self, mock_repos, async_client):
+        mock_repos.side_effect = httpx.HTTPError("github down")
+        response = await async_client.get("/api/v1/automations/providers/github/resources")
+        assert response.status_code == 502
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_github_repos", new_callable=AsyncMock)
+    async def test_non_admin_org_member_forbidden(self, mock_repos, async_client_org_member):
+        response = await async_client_org_member.get("/api/v1/automations/providers/github/resources")
+        assert response.status_code == 403
+        mock_repos.assert_not_awaited()
 
 
 class TestSetWebhookSecret:

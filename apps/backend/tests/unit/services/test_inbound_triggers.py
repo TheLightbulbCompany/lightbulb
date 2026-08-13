@@ -6,18 +6,23 @@ resolution), ``get_admin_session_cookie``, and ``PaperclipAdminClient`` so
 nothing here touches a real Paperclip deployment.
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from core.services.inbound_triggers import seed_trigger_routine
 
 
-def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1"):
+def _fake_admin(*, friday_id="friday_1", routine_id="rt_1", public_id="pub_1", secret_material=None):
     admin = MagicMock()
     admin.list_agents = AsyncMock(return_value=[{"id": friday_id, "role": "ceo"}])
     admin.create_routine = AsyncMock(return_value={"id": routine_id})
-    admin.create_routine_trigger = AsyncMock(return_value={"trigger": {"publicId": public_id}})
+    trigger_resp = {"trigger": {"publicId": public_id}}
+    if secret_material is not None:
+        trigger_resp["secretMaterial"] = secret_material
+    admin.create_routine_trigger = AsyncMock(return_value=trigger_resp)
     admin.delete_routine = AsyncMock(return_value={})
     return admin
 
@@ -183,3 +188,167 @@ async def test_seed_trigger_routine_stripe_returns_secret_hint():
         out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
 
     assert out["secret_hint"] == "whsec_…"
+
+
+# --- auto_github ------------------------------------------------------------
+#
+# GitHub HTTP is mocked by patching the module's httpx.AsyncClient directly
+# (same approach as test_clerk_admin.py — respx 0.20.2 + newer httpx have a
+# route-matching incompat). The seed opens TWO clients: the Paperclip one
+# (whose requests never fire — the admin client and session are mocked) and
+# the GitHub one, so a single fake client serves both.
+
+_GH_SECRET = {"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_1"}
+
+
+def _gh_token_patch(token="gh_tok_1"):
+    credential = {"token": token} if token else None
+    return patch(
+        "core.services.inbound_triggers.integration_secret_store.get",
+        AsyncMock(return_value=credential),
+    )
+
+
+def _gh_response(status_code: int, json_body=None) -> httpx.Response:
+    # A real Response (with a request attached) so raise_for_status() works.
+    return httpx.Response(
+        status_code,
+        json=json_body if json_body is not None else {},
+        request=httpx.Request("POST", "https://api.github.com/x"),
+    )
+
+
+def _gh_http_patch(response: httpx.Response):
+    """Patch httpx.AsyncClient in the module with a fake whose get/post answer
+    ``response``. Returns (patcher, client) so tests can assert on the call."""
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    client.post = AsyncMock(return_value=response)
+
+    @asynccontextmanager
+    async def _fake(*args, **kwargs):
+        yield client
+
+    return patch("core.services.inbound_triggers.httpx.AsyncClient", new=_fake), client
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_github_registers_hook():
+    """The auto shape: the GitHub hook is created on the named repo, pointed
+    at the proxy URL, armed with the trigger create's one-time secretMaterial
+    secret, and subscribed to the registry's provider_events — no guided
+    paste step remains, the result is live."""
+    admin = _fake_admin(secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
+    with p_repo, p_cookie, p_client, _gh_token_patch(), p_http:
+        out = await seed_trigger_routine("owner_1", "github", "pull_request", resource="acme/site")
+
+    gh_client.post.assert_awaited_once()
+    hook_url = gh_client.post.await_args.args[0]
+    assert hook_url == "https://api.github.com/repos/acme/site/hooks"
+    hook_body = gh_client.post.await_args.kwargs["json"]
+    assert hook_body["config"]["url"] == out["proxy_url"]
+    assert hook_body["config"]["secret"] == "pcsec_1"
+    assert hook_body["config"]["content_type"] == "json"
+    assert hook_body["events"] == ["pull_request"]
+    assert hook_body["active"] is True
+    headers = gh_client.post.await_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer gh_tok_1"
+
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["signingMode"] == "github_hmac"
+
+    assert out["guided"] is False
+    assert out["resource"] == "acme/site"
+    assert out["instructions"] is None
+    assert out["secret_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_github_requires_resource():
+    """A missing or malformed repo fails BEFORE anything exists upstream."""
+    admin = _fake_admin(secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    for bad in (None, "no-slash", "a/b/c", "own er/repo"):
+        with p_repo, p_cookie, p_client, _gh_token_patch(), pytest.raises(ValueError, match="owner/repo"):
+            await seed_trigger_routine("owner_1", "github", "push", resource=bad)
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_github_requires_connected_token():
+    admin = _fake_admin(secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _gh_token_patch(token=None), pytest.raises(ValueError, match="not connected"):
+        await seed_trigger_routine("owner_1", "github", "push", resource="acme/site")
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_github_missing_secret_material_rolls_back():
+    """No secretMaterial.webhookSecret in the trigger create response means
+    there is nothing to arm the GitHub hook with — same severity as a missing
+    publicId: roll the routine back, and never touch GitHub."""
+    admin = _fake_admin(routine_id="rt_no_secret")  # no secretMaterial in the response
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, gh_client = _gh_http_patch(_gh_response(201, {"id": 99}))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _gh_token_patch(),
+        p_http,
+        pytest.raises(RuntimeError, match="secretMaterial.webhookSecret"),
+    ):
+        await seed_trigger_routine("owner_1", "github", "push", resource="acme/site")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_no_secret"
+    gh_client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_github_hook_403_rolls_back():
+    """GitHub refusing the hook (no admin on the repo) unwinds the routine
+    and surfaces a caller-facing ValueError, not an opaque 500."""
+    admin = _fake_admin(routine_id="rt_forbidden", secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, _ = _gh_http_patch(_gh_response(403, {"message": "Forbidden"}))
+    with p_repo, p_cookie, p_client, _gh_token_patch(), p_http, pytest.raises(ValueError, match="admin access"):
+        await seed_trigger_routine("owner_1", "github", "issues", resource="acme/site")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_github_hook_422_duplicate_rolls_back():
+    admin = _fake_admin(routine_id="rt_dupe", secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, _ = _gh_http_patch(_gh_response(422, {"message": "Hook already exists on this repository"}))
+    with p_repo, p_cookie, p_client, _gh_token_patch(), p_http, pytest.raises(ValueError, match="already exists"):
+        await seed_trigger_routine("owner_1", "github", "issues", resource="acme/site")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_dupe"
+
+
+@pytest.mark.asyncio
+async def test_list_github_repos_maps_full_names():
+    from core.services.inbound_triggers import list_github_repos
+
+    p_http, gh_client = _gh_http_patch(_gh_response(200, [{"full_name": "acme/site"}, {"full_name": "acme/api"}]))
+    with _gh_token_patch(), p_http:
+        out = await list_github_repos("owner_1")
+    assert out == [
+        {"id": "acme/site", "label": "acme/site"},
+        {"id": "acme/api", "label": "acme/api"},
+    ]
+    assert gh_client.get.await_args.args[0] == "https://api.github.com/user/repos"
+    assert gh_client.get.await_args.kwargs["params"] == {"per_page": 100, "sort": "updated"}
+
+
+@pytest.mark.asyncio
+async def test_list_github_repos_not_connected_raises_lookup_error():
+    from core.services.inbound_triggers import list_github_repos
+
+    with _gh_token_patch(token=None), pytest.raises(LookupError, match="not connected"):
+        await list_github_repos("owner_1")

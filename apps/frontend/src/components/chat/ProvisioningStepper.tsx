@@ -14,6 +14,7 @@ import {
 import { useOrganization, useAuth, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { FirstRunFunnel } from "@/components/onboarding/FirstRunFunnel";
+import { useLandingBriefReplay } from "@/hooks/useLandingBriefReplay";
 import { useBilling } from "@/hooks/useBilling";
 import { useProvisioningState, type BlockedPayload } from "@/hooks/useProvisioningState";
 import { useGateway } from "@/hooks/useGateway";
@@ -747,6 +748,16 @@ export function ProvisioningStepper({
   // — a brief confirmation, then live chat.
   const funnelState = container?.funnel?.state ?? "not_started";
   const awaitingBrief = !containerOnboarded && funnelState === "not_started";
+  // Landing-page replay: answers stashed by the public landing funnel are
+  // POSTed once, right here, the moment the in-chat funnel would otherwise
+  // render (personal, normal-gate, non-terminal). While that submit is in
+  // flight — and until the next status poll reports it — the funnel is
+  // suppressed so the user isn't shown a form they already answered.
+  const { replaying: briefReplaying } = useLandingBriefReplay({
+    gatePhase,
+    awaitingBrief,
+    isTerminalError,
+  });
   if (
     !!user &&
     gatePhase === "normal" &&
@@ -757,6 +768,13 @@ export function ProvisioningStepper({
     !isTerminalError &&
     awaitingBrief
   ) {
+    if (briefReplaying) {
+      return (
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      );
+    }
     return <FirstRunFunnel />;
   }
 

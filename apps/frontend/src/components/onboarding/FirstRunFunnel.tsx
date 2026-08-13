@@ -15,10 +15,7 @@ import * as React from "react";
 import { useOrganization, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { writeFirstRun } from "@/lib/firstRun";
-
-type Path = "new" | "grow";
-/** "noIdea" = they clicked "I don't know yet — you pick": submit with no input. */
-type Mode = "idea" | "noIdea";
+import { FirstRunSteps, type Mode, type Path } from "@/components/onboarding/FirstRunSteps";
 // DEPLOY-SKEW SHIM. The endpoint is durable intake now — it records the answer
 // and returns, so there is nothing to wait out and no retry loop. But Vercel
 // ships this file independently of (and usually ahead of) the ECS backend, and
@@ -30,12 +27,6 @@ type Mode = "idea" | "noIdea";
 // deployed everywhere.
 const SKEW_RETRY_MS = 3000;
 const SKEW_RETRIES = 2;
-// After this many CONSECUTIVE failed submits carrying the same upstream
-// error, the generic "Couldn't save that just yet. Retry" line — which
-// implies a transient problem — gives way to a persistent error state that
-// shows the upstream detail and points at support. A different error (or a
-// success) resets the streak.
-const PERSISTENT_FAILURE_THRESHOLD = 3;
 
 // The funnel does NOT control its own lifetime. ProvisioningStepper renders
 // it as one branch of a machine driven by /container/status, so anything that
@@ -52,7 +43,9 @@ const PERSISTENT_FAILURE_THRESHOLD = 3;
 // reload, NOT worth resurrecting in a brand-new tab days later. Owner-scoped
 // on the same reasoning as ProvisioningStepper's activation markers — a
 // shared browser must not hand one account's draft to the next.
-const DRAFT_STORAGE_KEY = "isol8_first_run_draft_v1";
+// Exported for useLandingBriefReplay, which pre-fills an org workspace's
+// funnel from a landing-page stash by writing this same owner-scoped key.
+export const DRAFT_STORAGE_KEY = "isol8_first_run_draft_v1";
 
 interface Draft {
   path: Path | null;
@@ -109,17 +102,6 @@ function extractErrorDetail(err: unknown): string {
   }
   return "Unknown error";
 }
-
-// Brand-primary recipe used across the app (see ProviderPicker / landing
-// .ld-btn): forest fill (#06402B), cream text, pill, hover #0a5138.
-const CHOICE_BTN =
-  "w-full rounded-full bg-[var(--forest)] hover:bg-[#0a5138] text-[var(--cream)] py-4 text-sm font-semibold tracking-wide transition-colors";
-const INPUT =
-  "w-full rounded-xl border border-[var(--edge)] bg-white p-3 text-sm text-[var(--ink)] placeholder:text-[var(--mute)] focus:outline-none focus:border-[var(--forest)]";
-// Outline, not filled: this is the escape hatch for the undecided, and it
-// should not compete with Continue for the user who already has an idea.
-const SECONDARY_BTN =
-  "w-full rounded-full border border-[#d6d0c3] bg-transparent hover:bg-[#f1ede4] text-[var(--ink)] py-3 text-sm font-medium tracking-wide transition-colors disabled:opacity-50";
 
 export function FirstRunFunnel() {
   const { user } = useUser();
@@ -324,116 +306,18 @@ export function FirstRunFunnel() {
   return (
     <div className="flex-1 flex items-center justify-center p-6 bg-[var(--cream)]">
       <div className="w-full max-w-md space-y-8">
-        {path === null ? (
-          <div className="space-y-8 text-center">
-            <div className="space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight text-[var(--ink)] font-lora">
-                Let&apos;s get started.
-              </h1>
-              <p className="text-sm text-[var(--mute)]">
-                Tell your CEO about your business — she&apos;ll research it and lay out your next moves.
-              </p>
-            </div>
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <button className={CHOICE_BTN} onClick={() => setPath("new")}>
-                  Start something new
-                </button>
-                <p className="text-xs italic text-[var(--mute)]">Start from scratch</p>
-              </div>
-              <div className="space-y-1.5">
-                <button className={CHOICE_BTN} onClick={() => setPath("grow")}>
-                  Grow my business
-                </button>
-                <p className="text-xs italic text-[var(--mute)]">Already have a business</p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <button
-              className="text-xs text-[var(--mute)] hover:text-[var(--ink)] transition-colors"
-              onClick={() => setPath(null)}
-            >
-              ← Back
-            </button>
-            <h1 className="text-2xl font-semibold tracking-tight text-[var(--ink)] font-lora">
-              {path === "new" ? "What's your idea?" : "What's your company's website?"}
-            </h1>
-            {path === "new" ? (
-              <div className="space-y-3">
-                <textarea
-                  className={`${INPUT} min-h-28`}
-                  placeholder="e.g. A social media agency for small restaurants"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                />
-                <input
-                  className={INPUT}
-                  placeholder="Who's it for? (optional)"
-                  value={detail}
-                  onChange={(e) => setDetail(e.target.value)}
-                />
-              </div>
-            ) : (
-              <input
-                className={INPUT}
-                placeholder="yourcompany.com"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-              />
-            )}
-            <div className="space-y-3">
-              <button
-                className={`${CHOICE_BTN} disabled:opacity-50`}
-                disabled={busy || input.trim().length < 3}
-                onClick={() => submit("idea")}
-              >
-                {busy && mode === "idea" ? "Setting things up…" : "Continue →"}
-              </button>
-              {path === "new" && (
-                <div className="space-y-1.5 pt-1">
-                  <button
-                    className={SECONDARY_BTN}
-                    disabled={busy}
-                    onClick={() => submit("noIdea")}
-                  >
-                    {busy && mode === "noIdea"
-                      ? "Setting things up…"
-                      : "I don’t know yet — you pick"}
-                  </button>
-                  <p className="text-xs italic text-center text-[var(--mute)]">
-                    Friday will look you up and choose something
-                  </p>
-                </div>
-              )}
-            </div>
-            {state === "error" &&
-              (failure && failure.streak >= PERSISTENT_FAILURE_THRESHOLD ? (
-                // Persistent failure: the same upstream error N times in a
-                // row is not transient — stop implying a retry will fix it.
-                // Show the upstream detail and route to support instead.
-                <div className="space-y-1.5 text-sm text-[var(--danger)]">
-                  <p>We couldn&apos;t save your brief.</p>
-                  <p className="break-words text-xs text-[var(--mute)]">{failure.detail}</p>
-                  <p>
-                    Please{" "}
-                    <a className="underline" href="mailto:support@isol8.co">
-                      contact support
-                    </a>{" "}
-                    and we&apos;ll get it sorted.
-                  </p>
-                </div>
-              ) : (
-                <p className="text-sm text-[var(--danger)]">
-                  Couldn&apos;t save that just yet.{" "}
-                  <button className="underline" onClick={() => submit(mode)}>
-                    Retry
-                  </button>
-                </p>
-              ))}
-          </div>
-        )}
+        <FirstRunSteps
+          path={path}
+          input={input}
+          detail={detail}
+          busy={busy}
+          mode={mode}
+          error={state === "error" ? failure : null}
+          onSetPath={setPath}
+          onInput={setInput}
+          onDetail={setDetail}
+          onSubmit={submit}
+        />
       </div>
     </div>
   );

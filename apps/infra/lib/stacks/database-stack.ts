@@ -364,6 +364,26 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "handle", type: dynamodb.AttributeType.STRING },
     });
 
+    // Phase 1 of retiring the hook-events + ops-cache tables (nothing in the
+    // backend reads or writes them anymore). The DEPLOYED service stack still
+    // imports their ARN exports (old IAM grants), and this stack deploys
+    // before it — so deleting table + export in one pass rolls back with
+    // "Cannot delete export ... as it is in use by isol8-{env}-service".
+    // Keep the tables this deploy and pin their exports with exportValue()
+    // (same logical IDs -> same export names) while the service stack ships
+    // its grant-free template; the next change deletes tables + pins together.
+    const hookEventsTable = createTable("HookEventsTable", "hook-events", {
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "expires_at",
+    });
+    this.exportValue(hookEventsTable.tableArn);
+    const opsCacheTable = createTable("OpsCacheTable", "ops-cache", {
+      partitionKey: { name: "cache_key", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+    });
+    this.exportValue(opsCacheTable.tableArn);
+
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: `isol8-${env}-`,
       exportName: `${this.stackName}-table-prefix`,

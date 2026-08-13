@@ -76,7 +76,14 @@ function toCard(l: Listing): TeaserCard {
     name: l.name,
     desc: snippet(l.description_md ?? ""),
     tags: (l.tags ?? []).slice(0, 3),
-    price: l.price_cents > 0 ? `$${(l.price_cents / 100).toFixed(0)}` : "Free",
+    price:
+      l.price_cents > 0
+        ? `$${
+            l.price_cents % 100 === 0
+              ? l.price_cents / 100
+              : (l.price_cents / 100).toFixed(2)
+          }`
+        : "Free",
     hires: l.install_count,
   };
 }

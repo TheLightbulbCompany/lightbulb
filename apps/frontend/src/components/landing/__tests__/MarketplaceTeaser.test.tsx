@@ -53,6 +53,19 @@ describe("MarketplaceTeaser", () => {
     ).toHaveAttribute("href", "/marketplace");
   });
 
+  it("preserves cents on non-whole-dollar prices", async () => {
+    mockedBrowse.mockResolvedValue({
+      items: [
+        listing({ listing_id: "lst_2", name: "Cents", price_cents: 1499 }),
+        listing({ listing_id: "lst_3", name: "Pennies", price_cents: 49 }),
+      ],
+      count: 2,
+    });
+    render(await MarketplaceTeaser());
+    expect(screen.getByText("$14.99")).toBeInTheDocument();
+    expect(screen.getByText("$0.49")).toBeInTheDocument();
+  });
+
   it("falls back to the static six when the API errors", async () => {
     mockedBrowse.mockRejectedValue(new Error("api down"));
     render(await MarketplaceTeaser());

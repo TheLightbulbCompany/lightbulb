@@ -1,45 +1,106 @@
 import Link from "next/link";
 
+import { browseListings } from "@/lib/marketplace/api";
+import type { Listing } from "@/lib/marketplace/types";
+
 /**
- * Static marketplace teaser — six illustrative agent cards (no fetch; the
- * real shelf lives at /marketplace, which is already public). Reuses the
- * ld-mkt forest-section styling the old fetched shelf used.
+ * Marketplace teaser — live listings from the public search endpoint
+ * (GET /marketplace/listings/search, 60s ISR via browseListings), falling
+ * back to six illustrative static cards when the API errors or is empty.
+ * Server component: no client fetch, no loading state.
  */
 
-const AGENTS = [
+type TeaserCard = {
+  key: string;
+  name: string;
+  desc: string;
+  tags: string[];
+  price?: string;
+  hires?: number;
+};
+
+const FALLBACK: TeaserCard[] = [
   {
+    key: "Scout",
     name: "Scout",
     desc: "Market researcher. Sizes a niche, maps competitors, and finds the gap worth entering.",
     tags: ["research", "strategy"],
   },
   {
+    key: "Quill",
     name: "Quill",
     desc: "Content writer. Keeps the blog, the newsletter, and the socials moving in your voice.",
     tags: ["content", "social"],
   },
   {
+    key: "Halo",
     name: "Halo",
     desc: "Customer support. Answers the inbox, resolves the easy ones, escalates the rest.",
     tags: ["support", "email"],
   },
   {
+    key: "Ledger",
     name: "Ledger",
     desc: "Bookkeeper. Categorizes every transaction and hands you a clean month-end close.",
     tags: ["finance", "ops"],
   },
   {
+    key: "Beacon",
     name: "Beacon",
     desc: "SEO specialist. Finds the queries you should own and grinds the rankings up.",
     tags: ["seo", "growth"],
   },
   {
+    key: "Pace",
     name: "Pace",
     desc: "Operations. Chases schedules, suppliers, and follow-ups so nothing slips.",
     tags: ["ops", "scheduling"],
   },
 ];
 
-export function MarketplaceTeaser() {
+/** First readable sentence-ish run of the listing's markdown description. */
+function snippet(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^[#>\s*-]+/gm, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toCard(l: Listing): TeaserCard {
+  return {
+    key: l.listing_id,
+    name: l.name,
+    desc: snippet(l.description_md ?? ""),
+    tags: (l.tags ?? []).slice(0, 3),
+    price:
+      l.price_cents > 0
+        ? `$${
+            l.price_cents % 100 === 0
+              ? l.price_cents / 100
+              : (l.price_cents / 100).toFixed(2)
+          }`
+        : "Free",
+    hires: l.install_count,
+  };
+}
+
+async function fetchCards(): Promise<TeaserCard[]> {
+  try {
+    const { items } = await browseListings({ limit: 6, format: "openclaw" });
+    const cards = items.map(toCard);
+    return cards.length > 0 ? cards : FALLBACK;
+  } catch {
+    return FALLBACK;
+  }
+}
+
+export async function MarketplaceTeaser() {
+  const cards = await fetchCards();
+
   return (
     <section className="ld-mkt" id="marketplace">
       <div className="ld-section">
@@ -61,20 +122,28 @@ export function MarketplaceTeaser() {
         </div>
 
         <div className="ld-shelf ld-shelf--teaser">
-          {AGENTS.map((agent) => (
-            <div key={agent.name} className="ld-listing">
+          {cards.map((card) => (
+            <div key={card.key} className="ld-listing">
               <div className="ld-listing-head">
-                <span className="ld-puck">{agent.name.slice(0, 2).toUpperCase()}</span>
+                <span className="ld-puck">
+                  {card.name.slice(0, 2).toUpperCase()}
+                </span>
+                {card.price && <span className="ld-price">{card.price}</span>}
               </div>
-              <h3>{agent.name}</h3>
-              <p className="ld-listing-desc">{agent.desc}</p>
+              <h3>{card.name}</h3>
+              <p className="ld-listing-desc">{card.desc}</p>
               <div className="ld-listing-tags">
-                {agent.tags.map((t) => (
+                {card.tags.map((t) => (
                   <span key={t} className="ld-listing-tag">
                     {t}
                   </span>
                 ))}
               </div>
+              {typeof card.hires === "number" && card.hires > 0 && (
+                <div className="ld-listing-foot">
+                  {card.hires} {card.hires === 1 ? "hire" : "hires"}
+                </div>
+              )}
             </div>
           ))}
         </div>

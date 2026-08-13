@@ -67,7 +67,12 @@ export interface Connection {
    */
   inbound?: {
     webhook_registration: string;
-    events: { id: string; label: string }[];
+    /**
+     * `registration` is a per-EVENT override of `webhook_registration`
+     * (google: gmail.poll → "poll", gmail.message → "owner_setup" while the
+     * watch events inherit the block level). Null/absent = inherit.
+     */
+    events: { id: string; label: string; registration?: string | null }[];
   } | null;
 }
 

@@ -876,15 +876,19 @@ const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
 // for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
 // becomes the paste input's placeholder. `resource` echoes the auto-registered
 // target ("owner/repo" for GitHub, the project id for Vercel) so the success
-// copy can name it.
+// copy can name it. `poll` -> a schedule-backed automation (gmail.poll): no
+// webhook exists, so trigger_public_id/proxy_url are null. Non-guided results
+// may still carry `instructions` (gmail.message's one-time Pub/Sub setup) —
+// informational only, Done is never gated on them.
 interface FromIntegrationResult {
   routine_id: string;
-  trigger_public_id: string;
-  proxy_url: string;
+  trigger_public_id: string | null;
+  proxy_url: string | null;
   guided: boolean;
   instructions?: string | null;
   secret_hint?: string | null;
   resource?: string | null;
+  poll?: boolean;
 }
 
 function CreateRoutineDialog({
@@ -942,6 +946,8 @@ function CreateRoutineDialog({
     { id: string; label: string }[] | null
   >(null);
   const [resourceError, setResourceError] = useState<string | null>(null);
+  // owner_setup state (gmail.message) — the owner's own Pub/Sub topic.
+  const [connTopic, setConnTopic] = useState("");
 
   // Trigger-capable = connected AND the registry declares inbound events for
   // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
@@ -954,6 +960,11 @@ function CreateRoutineDialog({
   const isAutoRegister =
     selectedConnection?.inbound?.webhook_registration?.startsWith("auto_") ??
     false;
+  // The selected EVENT's registration override — "owner_setup" adds the
+  // Pub/Sub topic input below (the account picker still comes from the
+  // block-level auto_google_watch shape).
+  const selectedEvent = connEvents.find((e) => e.id === connEventId) ?? null;
+  const isOwnerSetup = selectedEvent?.registration === "owner_setup";
   const resourceNoun = AUTO_RESOURCE_NOUNS[
     selectedConnection?.inbound?.webhook_registration ?? ""
   ] ?? { label: "Resource", plural: "resources" };
@@ -993,7 +1004,8 @@ function CreateRoutineDialog({
     rung === "connected_app"
       ? connProvider != null &&
         connEventId != null &&
-        (!isAutoRegister || connResource != null)
+        (!isAutoRegister || connResource != null) &&
+        (!isOwnerSetup || connTopic.trim() !== "")
       : title.trim() !== "" &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
@@ -1028,6 +1040,8 @@ function CreateRoutineDialog({
         // Only the auto-register shapes carry a resource; guided providers'
         // bodies stay exactly as before.
         ...(connResource ? { resource: connResource } : {}),
+        // Only the owner_setup shape (gmail.message) carries a topic.
+        ...(isOwnerSetup && connTopic.trim() ? { topic: connTopic.trim() } : {}),
       };
       const result = (await automationsApi.post(
         "/automations/from-integration",
@@ -1157,15 +1171,28 @@ function CreateRoutineDialog({
     // treats a "none"-signing trigger as non-rotatable). Auto (GitHub/
     // Vercel) results are already fully armed by the time this dialog shows.
     const mustSaveSecretFirst = connResult.guided && !whsecSaved;
+    // Poll results (gmail.poll) are schedule-backed: nothing to wire, no URL.
+    const isPoll = connResult.poll === true;
+    // Non-guided results carrying instructions (gmail.message) still need a
+    // one-time owner-side setup — informational only, Done is never gated.
+    const needsOwnerSetup = !connResult.guided && !isPoll && !!connResult.instructions;
     return (
       <EditorialDialog
         open
         onOpenChange={(o) => !o && !mustSaveSecretFirst && onCreated()}
-        title={connResult.guided ? "Finish setup" : "Automation registered"}
+        title={
+          connResult.guided || needsOwnerSetup
+            ? "Finish setup"
+            : "Automation registered"
+        }
         description={
           connResult.guided
             ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
-            : `${providerName} registered the webhook${resourceLabel ? ` on ${resourceLabel}` : " automatically"} — this automation is live.`
+            : isPoll
+              ? `Checks ${resourceLabel ?? "the account"}'s inbox every 10 minutes — this automation is live.`
+              : needsOwnerSetup
+                ? "One-time setup in your Google Cloud project points push notifications at this URL — follow the steps below."
+                : `${providerName} registered the webhook${resourceLabel ? ` on ${resourceLabel}` : " automatically"} — this automation is live.`
         }
         footer={
           <EditorialButton
@@ -1184,7 +1211,10 @@ function CreateRoutineDialog({
         }
       >
         <div className="flex flex-col gap-3">
-          <SecretField label="Webhook URL" value={connResult.proxy_url} />
+          {/* Poll results have no webhook — nothing to copy. */}
+          {connResult.proxy_url && (
+            <SecretField label="Webhook URL" value={connResult.proxy_url} />
+          )}
           {connResult.instructions && (
             <p className="text-xs text-[var(--mute)]">
               {connResult.instructions}
@@ -1365,6 +1395,7 @@ function CreateRoutineDialog({
                     setConnProvider(next);
                     setConnEventId(null);
                     setConnResource(null);
+                    setConnTopic("");
                     // Resource feeds are per-provider — clearing re-arms the
                     // lazy fetch for the newly selected one.
                     setResourceOptions(null);
@@ -1430,6 +1461,26 @@ function CreateRoutineDialog({
                     {resourceError}
                   </span>
                 )}
+              </label>
+            )}
+            {/* owner_setup (gmail.message) — the owner's own Pub/Sub topic.
+                The one-time topic/subscription wiring instructions come back
+                in the finish dialog after Create. */}
+            {isOwnerSetup && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Pub/Sub topic
+                </span>
+                <input
+                  value={connTopic}
+                  onChange={(e) => setConnTopic(e.target.value)}
+                  placeholder="projects/my-project/topics/isol8-gmail"
+                  className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 mt-1 font-mono text-[var(--ink)]"
+                />
+                <span className="text-xs text-[var(--mute)]">
+                  A topic in your own Google Cloud project — you&apos;ll wire
+                  it up after Create.
+                </span>
               </label>
             )}
           </>

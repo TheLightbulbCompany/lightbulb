@@ -833,3 +833,250 @@ def test_google_watch_stop_argv():
         assert argv[6] == "--body"
         assert json.loads(argv[7]) == {"id": "chan_2", "resourceId": "res_2"}
         assert argv[8:] == ["--allow-write", "--force", "-a", "ada@example.com"]
+
+
+# --- gmail (per-event registration: poll / owner_setup) -----------------------
+#
+# Both shapes ride the google block; the event's `registration` overrides the
+# block-level auto_google_watch. Same mocking approach as the watch tests.
+
+_GMAIL_TOPIC = "projects/my-project/topics/isol8-gmail"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_poll_creates_enabled_schedule_trigger():
+    """gmail.poll: no webhook at all — the routine gets an ENABLED */10 UTC
+    schedule trigger, the description carries the per-event prompt (a
+    scheduled gog search, not the push-notification template), and the result
+    has poll=True with no trigger_public_id/proxy_url."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _google_accounts_patch():
+        out = await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="ada@example.com")
+
+    trigger_call = admin.create_routine_trigger.await_args.kwargs
+    assert trigger_call["routine_id"] == "rt_1"
+    assert trigger_call["body"] == {
+        "kind": "schedule",
+        "cronExpression": "*/10 * * * *",
+        "timezone": "UTC",
+        "enabled": True,
+    }
+
+    routine_body = admin.create_routine.await_args.kwargs["body"]
+    assert "ada@example.com" in routine_body["description"]
+    # The per-event starter_prompt override, not the push-notification template.
+    assert "gog gmail search" in routine_body["description"]
+
+    assert out == {
+        "routine_id": "rt_1",
+        "trigger_public_id": None,
+        "proxy_url": None,
+        "guided": False,
+        "instructions": None,
+        "secret_hint": None,
+        "resource": "ada@example.com",
+        "poll": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_poll_requires_connected_account():
+    """The connected-accounts inventory fence applies to the poll shape too —
+    the email rides into the routine description the agent executes."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _google_accounts_patch(), pytest.raises(ValueError, match="isn't connected"):
+        await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="mallory@evil.example")
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_poll_trigger_failure_rolls_back():
+    admin = _fake_admin(routine_id="rt_poll_orphan")
+    admin.create_routine_trigger = AsyncMock(side_effect=RuntimeError("upstream 500"))
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, _google_accounts_patch(), pytest.raises(RuntimeError, match="upstream 500"):
+        await seed_trigger_routine("owner_1", "google", "gmail.poll", resource="ada@example.com")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_poll_orphan"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_push_starts_watch_and_records_entry():
+    """gmail.message: bearer trigger, `gog gmail watch start` against the
+    owner's own topic (INBOX only), a kind="gmail_watch" entry on the shared
+    google_watch_channels list carrying the trigger's secret, and the
+    one-time Pub/Sub setup instructions in the result."""
+    admin = _fake_admin(secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(return_value=json.dumps({"historyId": "1234", "expiration": "1799999999000"}))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _channels_get_patch(),
+        _channels_set_patch() as set_channels,
+    ):
+        out = await seed_trigger_routine(
+            "owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC
+        )
+
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["signingMode"] == "bearer"
+
+    run_gog.assert_called_once()
+    assert run_gog.call_args.args[0] == [
+        "gog",
+        "gmail",
+        "watch",
+        "start",
+        "--topic",
+        _GMAIL_TOPIC,
+        "--label-ids",
+        "INBOX",
+        "-a",
+        "ada@example.com",
+    ]
+
+    assert set_channels.await_args.args[0] == "owner_1"
+    (entry,) = set_channels.await_args.args[1]
+    assert entry == {
+        "kind": "gmail_watch",
+        "account_email": "ada@example.com",
+        "topic": _GMAIL_TOPIC,
+        "trigger_public_id": "pub_1",
+        "proxy_url": out["proxy_url"],
+        "channel_token": "pcsec_g1",  # = the trigger's own secret
+        "expiration_ms": 1799999999000,
+    }
+
+    assert out["guided"] is False
+    assert "poll" not in out
+    assert out["resource"] == "ada@example.com"
+    assert out["secret_hint"] is None
+    # The finish dialog's one-time setup steps, concretely interpolated.
+    assert _GMAIL_TOPIC in out["instructions"]
+    assert out["proxy_url"] in out["instructions"]
+    assert "gmail-api-push@system.gserviceaccount.com" in out["instructions"]
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_push_requires_valid_topic():
+    """A missing or malformed topic fails BEFORE anything exists upstream —
+    the regex is also the argv/instructions injection fence."""
+    admin = _fake_admin(secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    for bad in (
+        None,
+        "isol8-gmail",  # bare name, not fully qualified
+        "projects/My_Proj/topics/isol8",  # project charset violation
+        "projects/my-project/topics/",  # empty topic name
+        "projects/my-project/topics/a b",  # whitespace injection
+    ):
+        with (
+            p_repo,
+            p_cookie,
+            p_client,
+            _google_accounts_patch(),
+            pytest.raises(ValueError, match="Pub/Sub topic"),
+        ):
+            await seed_trigger_routine("owner_1", "google", "gmail.message", resource="ada@example.com", topic=bad)
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_push_gog_failure_rolls_back():
+    """gog refusing the watch (broken grant, topic Gmail can't publish to)
+    unwinds the routine; no entry is ever recorded."""
+    admin = _fake_admin(routine_id="rt_gmail_fail", secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(side_effect=ValueError("Google refused the watch request: topicNotFound"))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        _channels_get_patch(),
+        _channels_set_patch() as set_channels,
+        pytest.raises(ValueError, match="Google refused"),
+    ):
+        await seed_trigger_routine("owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC)
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_gmail_fail"
+    set_channels.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_gmail_push_row_write_failure_stops_watch():
+    """The entry write failing after the watch exists must stop the watch
+    (best-effort) AND unwind the routine — without its entry the proxy has no
+    bearer secret to inject and the sweep can never renew it."""
+    admin = _fake_admin(routine_id="rt_gmail_row_fail", secret_material=_GOOG_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    run_gog = MagicMock(return_value=json.dumps({"historyId": "1", "expiration": "1799999999000"}))
+    stop = AsyncMock()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        _google_accounts_patch(),
+        _gog_env_patch(),
+        patch("core.services.google_watch._run_gog", run_gog),
+        patch("core.services.google_watch.stop_gmail_watch", stop),
+        _channels_get_patch(),
+        _channels_set_patch() as set_channels,
+        pytest.raises(RuntimeError, match="ddb down"),
+    ):
+        set_channels.side_effect = RuntimeError("ddb down")
+        await seed_trigger_routine("owner_1", "google", "gmail.message", resource="ada@example.com", topic=_GMAIL_TOPIC)
+    stop.assert_awaited_once_with(owner_id="owner_1", account_email="ada@example.com")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_gmail_row_fail"
+
+
+def test_google_watch_gmail_argv():
+    """The fixed argv for the gmail watch trio — caller data rides only as
+    discrete argv elements — and the expiration parse."""
+    from core.services import google_watch
+
+    run_gog = MagicMock(return_value=json.dumps({"historyId": "7", "expiration": "1799999999000"}))
+    with (
+        patch("core.services.google_watch._gog_env", return_value={"FAKE": "env"}),
+        patch("core.services.google_watch._run_gog", run_gog),
+    ):
+        out = google_watch._start_gmail_watch_sync("owner_1", "ada@example.com", _GMAIL_TOPIC)
+        assert out == {"expiration_ms": 1799999999000}
+        assert run_gog.call_args.args[0] == [
+            "gog",
+            "gmail",
+            "watch",
+            "start",
+            "--topic",
+            _GMAIL_TOPIC,
+            "--label-ids",
+            "INBOX",
+            "-a",
+            "ada@example.com",
+        ]
+
+        out = google_watch._renew_gmail_watch_sync("owner_1", "ada@example.com")
+        assert out == {"expiration_ms": 1799999999000}
+        assert run_gog.call_args.args[0] == ["gog", "gmail", "watch", "renew", "-a", "ada@example.com"]
+
+        google_watch._stop_gmail_watch_sync("owner_1", "ada@example.com")
+        assert run_gog.call_args.args[0] == ["gog", "gmail", "watch", "stop", "-a", "ada@example.com"]
+
+
+def test_parse_gmail_watch_requires_expiration():
+    """A watch response without `expiration` is as fatal as the call failing —
+    the sweep could never know when to re-arm."""
+    from core.services.google_watch import _parse_gmail_watch
+
+    with pytest.raises(RuntimeError, match="no expiration"):
+        _parse_gmail_watch(json.dumps({"historyId": "7"}))

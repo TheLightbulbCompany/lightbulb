@@ -269,7 +269,12 @@ class TestListConnections:
             "Charge refunded",
             "Subscription canceled",
         ]
-        assert by_key["google"]["can_trigger"] == ["Calendar changed", "Drive file changed"]
+        assert by_key["google"]["can_trigger"] == [
+            "Calendar changed",
+            "Drive file changed",
+            "New email (checked on a schedule)",
+            "New email (real-time push)",
+        ]
         assert by_key["notion"]["can_trigger"] == []
 
     @pytest.mark.asyncio
@@ -282,21 +287,25 @@ class TestListConnections:
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
+        # Events carry their per-event `registration` override (None =
+        # inherit the block level) so the frontend can branch per-event.
         assert by_key["stripe"]["inbound"] == {
             "webhook_registration": "guided_paste",
             "events": [
-                {"id": "invoice.payment_failed", "label": "Invoice payment failed"},
-                {"id": "charge.refunded", "label": "Charge refunded"},
-                {"id": "customer.subscription.deleted", "label": "Subscription canceled"},
+                {"id": "invoice.payment_failed", "label": "Invoice payment failed", "registration": None},
+                {"id": "charge.refunded", "label": "Charge refunded", "registration": None},
+                {"id": "customer.subscription.deleted", "label": "Subscription canceled", "registration": None},
             ],
         }
-        # google is auto-registering now (auto_google_watch); notion still
-        # declares no `inbound`.
+        # google is auto-registering (auto_google_watch) with the gmail
+        # events overriding per-event; notion still declares no `inbound`.
         assert by_key["google"]["inbound"] == {
             "webhook_registration": "auto_google_watch",
             "events": [
-                {"id": "calendar.changed", "label": "Calendar changed"},
-                {"id": "drive.changed", "label": "Drive file changed"},
+                {"id": "calendar.changed", "label": "Calendar changed", "registration": None},
+                {"id": "drive.changed", "label": "Drive file changed", "registration": None},
+                {"id": "gmail.poll", "label": "New email (checked on a schedule)", "registration": "poll"},
+                {"id": "gmail.message", "label": "New email (real-time push)", "registration": "owner_setup"},
             ],
         }
         assert by_key["notion"]["inbound"] is None

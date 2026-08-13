@@ -8,10 +8,14 @@ the trigger via the instance-admin binding resolver before any
 entitlement it names is honoured.
 """
 
+import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from main import app
@@ -24,15 +28,17 @@ SIBLING_ID = "fedcba987654fedcba987654"
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
     """Rate buckets live in hooks_proxy module state (shared helper), and
-    the binding cache in the trigger router — both must start empty or
-    tests pollute their neighbours."""
+    the binding + gmail-token caches in the trigger router — all must start
+    empty or tests pollute their neighbours."""
     from routers import hooks_proxy, paperclip_trigger_proxy
 
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
+    paperclip_trigger_proxy._GMAIL_TOKEN_CACHE.clear()
     yield
     hooks_proxy._RATE_BUCKETS_PER_OWNER.clear()
     paperclip_trigger_proxy._BINDING_CACHE.clear()
+    paperclip_trigger_proxy._GMAIL_TOKEN_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -759,3 +765,238 @@ def test_goog_sync_ping_still_behind_the_gates(client):
             headers={"X-Goog-Resource-State": "sync"},
         )
     assert r.status_code == 402
+
+
+# ---------------------------------------------------------------------------
+# Gmail push OIDC (owner_setup / gmail.message)
+#
+# Pub/Sub push rotates its OIDC JWT per delivery, so the proxy verifies it
+# (JWKS mocked to a test RSA key; the REAL decode path — signature, iss, aud,
+# exp, email_verified — runs) and swaps in the trigger's own bearer secret
+# from the owner's gmail_watch entry. A JWT-shaped Authorization that fails
+# verification is 401'd at the edge; non-JWT values ride the existing
+# pass-through (pinned by test_authless_forward_* above).
+# ---------------------------------------------------------------------------
+
+# One module-level key: 2048-bit generation is ~100ms, no need per-test.
+_OIDC_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _oidc_audience(owner_id: str = "u_1", public_id: str = PUBLIC_ID) -> str:
+    from core.config import settings
+
+    return f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+
+
+def _google_jwt(**over) -> str:
+    claims = {
+        "iss": "https://accounts.google.com",
+        "aud": _oidc_audience(),
+        "email": "push@my-project.iam.gserviceaccount.com",
+        "email_verified": True,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 3600,
+    }
+    claims.update(over)
+    return jwt.encode(claims, _OIDC_KEY, algorithm="RS256")
+
+
+def _mock_google_jwks():
+    """Serve the test key as whatever kid the JWT names — the decode itself
+    still enforces signature/claims against it."""
+    from routers import paperclip_trigger_proxy as mod
+
+    return patch.object(
+        mod._google_jwks_client,
+        "get_signing_key_from_jwt",
+        return_value=MagicMock(key=_OIDC_KEY.public_key()),
+    )
+
+
+def _mock_gmail_entries(entries: list[dict]):
+    return patch(
+        "routers.paperclip_trigger_proxy.integrations_repo.get_google_watch_channels",
+        AsyncMock(return_value=entries),
+    )
+
+
+_GMAIL_ENTRY = {
+    "kind": "gmail_watch",
+    "account_email": "ada@example.com",
+    "trigger_public_id": PUBLIC_ID,
+    "channel_token": "pcsec_gmail1",
+}
+
+_PUBSUB_BODY = json.dumps(
+    {
+        "message": {
+            "data": "eyJlbWFpbEFkZHJlc3MiOiJhZGFAZXhhbXBsZS5jb20iLCJoaXN0b3J5SWQiOjk5fQ==",
+            "messageId": "pubsub-msg-42",
+        },
+        "subscription": "projects/my-project/subscriptions/isol8-gmail",
+    }
+).encode()
+
+
+def test_valid_oidc_jwt_swaps_in_entry_bearer_and_derives_idempotency_key(client):
+    """The happy path: a Google-signed JWT for this exact proxy URL is
+    verified, REPLACED with the gmail_watch entry's channel_token (so
+    Paperclip's bearer mode does the final compare), and the Pub/Sub
+    messageId becomes the Idempotency-Key (delivery retries reuse it)."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+        _mock_gmail_entries([_GMAIL_ENTRY]),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=_PUBSUB_BODY,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {_google_jwt()}",
+            },
+        )
+    assert r.status_code == 202
+    h = captured["headers"]
+    assert h["authorization"] == "Bearer pcsec_gmail1"  # JWT never forwarded
+    assert h["idempotency-key"] == "pubsub-msg-42"
+    assert captured["body"] == _PUBSUB_BODY  # byte-verbatim, as ever
+
+
+def test_oidc_jwt_with_wrong_audience_is_rejected_401(client):
+    """aud must be THIS trigger's exact proxy URL — a JWT minted for another
+    trigger (or any other audience) is refused, nothing forwarded."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+        _mock_gmail_entries([_GMAIL_ENTRY]),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=_PUBSUB_BODY,
+            headers={"Authorization": f"Bearer {_google_jwt(aud=_oidc_audience(public_id=SIBLING_ID))}"},
+        )
+    assert r.status_code == 401
+    assert r.json() == {"detail": "invalid_oidc_token"}
+    assert captured == {}
+
+
+@pytest.mark.parametrize(
+    "bad_claims",
+    [
+        {"iss": "https://evil.example"},
+        {"exp": int(time.time()) - 60},
+        {"email_verified": False},
+    ],
+)
+def test_oidc_jwt_with_bad_claims_is_rejected_401(client, bad_claims):
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+        _mock_gmail_entries([_GMAIL_ENTRY]),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=_PUBSUB_BODY,
+            headers={"Authorization": f"Bearer {_google_jwt(**bad_claims)}"},
+        )
+    assert r.status_code == 401
+    assert captured == {}
+
+
+def test_garbage_jwt_shaped_authorization_is_rejected_401(client):
+    """Three dot-separated segments that aren't a real JWT: the shape check
+    routes it to verification, which fails — never forwarded as a bearer."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b"{}",
+            headers={"Authorization": "Bearer aaa.bbb.ccc"},
+        )
+    assert r.status_code == 401
+    assert captured == {}
+
+
+def test_verified_oidc_without_gmail_entry_fails_closed_401(client):
+    """A verified Google delivery for a trigger with no recorded gmail_watch
+    entry has nothing to authenticate to Paperclip with — 401, not a forward
+    of the raw JWT."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+        _mock_gmail_entries([]),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=_PUBSUB_BODY,
+            headers={"Authorization": f"Bearer {_google_jwt()}"},
+        )
+    assert r.status_code == 401
+    assert r.json() == {"detail": "unknown_gmail_watch"}
+    assert captured == {}
+
+
+def test_oidc_caller_idempotency_key_not_overridden(client):
+    """A caller-supplied Idempotency-Key wins over the derived messageId —
+    same gap-filling posture as the Stripe event-id derivation."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+        _mock_gmail_entries([_GMAIL_ENTRY]),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=_PUBSUB_BODY,
+            headers={
+                "Authorization": f"Bearer {_google_jwt()}",
+                "Idempotency-Key": "caller-key",
+            },
+        )
+    assert r.status_code == 202
+    assert captured["headers"]["idempotency-key"] == "caller-key"
+
+
+def test_gmail_entry_token_is_cached_across_deliveries(client):
+    """The entry lookup rides an in-process TTL cache (same idiom as the
+    binding cache) — a second delivery must not re-read the row."""
+    captured: dict = {}
+    entries = AsyncMock(return_value=[_GMAIL_ENTRY])
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+        _mock_google_jwks(),
+        patch("routers.paperclip_trigger_proxy.integrations_repo.get_google_watch_channels", entries),
+        patch("routers.paperclip_trigger_proxy.hook_event_repo.write_event"),
+    ):
+        for _ in range(2):
+            r = client.post(
+                f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+                content=_PUBSUB_BODY,
+                headers={"Authorization": f"Bearer {_google_jwt()}"},
+            )
+            assert r.status_code == 202
+    assert entries.await_count == 1

@@ -201,3 +201,67 @@ async def stop_watch(
         await asyncio.to_thread(_stop_watch_sync, owner_id, account_email, provider_event, channel_id, resource_id)
     except Exception:
         logger.exception("google_watch: stop of channel %s failed", channel_id)
+
+
+# --- Gmail watch (users.watch → the OWNER'S Pub/Sub topic) -------------------
+#
+# Unlike the push channels above, a Gmail watch has no channel id / resource
+# id: users.watch binds ONE mailbox to ONE topic (a re-call replaces the
+# previous binding), notifications arrive as Pub/Sub push (OIDC-signed, no
+# X-Goog-Channel-Token), and renewal is `gog gmail watch renew`, which
+# re-arms from the topic/labels gog stored at start time.
+
+
+def _parse_gmail_watch(stdout: str) -> int:
+    """``expiration_ms`` from a users.watch response (gog prints the API's
+    JSON: historyId + expiration in ms). Without it the renewal sweep can
+    never know when to re-arm, so absence is as fatal as the call failing."""
+    data = json.loads(stdout)
+    expiration = data.get("expiration") if isinstance(data, dict) else None
+    if not expiration:
+        raise RuntimeError("gog gmail watch returned no expiration")
+    return int(expiration)
+
+
+def _start_gmail_watch_sync(owner_id: str, account_email: str, topic: str) -> dict:
+    env = _gog_env(owner_id)
+    # INBOX only — a full-mailbox watch fires on sent/archived/label churn,
+    # and "new email" is the curated event. The topic is validated by the
+    # seed's regex fence before it ever reaches this argv.
+    out = _run_gog(
+        ["gog", "gmail", "watch", "start", "--topic", topic, "--label-ids", "INBOX", "-a", account_email],
+        env,
+    )
+    return {"expiration_ms": _parse_gmail_watch(out)}
+
+
+async def start_gmail_watch(*, owner_id: str, account_email: str, topic: str) -> dict:
+    """Register the mailbox to the owner's Pub/Sub ``topic``. Returns
+    ``{expiration_ms}`` — all the recorded watch entry needs to renew it."""
+    return await asyncio.to_thread(_start_gmail_watch_sync, owner_id, account_email, topic)
+
+
+def _renew_gmail_watch_sync(owner_id: str, account_email: str) -> dict:
+    env = _gog_env(owner_id)
+    out = _run_gog(["gog", "gmail", "watch", "renew", "-a", account_email], env)
+    return {"expiration_ms": _parse_gmail_watch(out)}
+
+
+async def renew_gmail_watch(*, owner_id: str, account_email: str) -> dict:
+    """Re-arm the account's Gmail watch (gog re-calls users.watch with its
+    stored topic/labels). Returns the fresh ``{expiration_ms}``."""
+    return await asyncio.to_thread(_renew_gmail_watch_sync, owner_id, account_email)
+
+
+def _stop_gmail_watch_sync(owner_id: str, account_email: str) -> None:
+    env = _gog_env(owner_id)
+    _run_gog(["gog", "gmail", "watch", "stop", "-a", account_email], env)
+
+
+async def stop_gmail_watch(*, owner_id: str, account_email: str) -> None:
+    """Best-effort stop of a Gmail watch being rolled back — same posture as
+    ``stop_watch``; an unstopped watch dies at its ~7-day expiry anyway."""
+    try:
+        await asyncio.to_thread(_stop_gmail_watch_sync, owner_id, account_email)
+    except Exception:
+        logger.exception("google_watch: gmail watch stop failed for %s", account_email)

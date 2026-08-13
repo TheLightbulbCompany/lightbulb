@@ -295,7 +295,11 @@ def _connection_row(
         "inbound": (
             {
                 "webhook_registration": v.inbound.webhook_registration,
-                "events": [{"id": e.id, "label": e.label} for e in v.inbound.events],
+                # Per-event `registration` overrides the block-level mode
+                # (google: gmail.poll/gmail.message differ from the watch
+                # events) — the frontend branches per-event on it (the
+                # owner_setup topic input). None = inherit.
+                "events": [{"id": e.id, "label": e.label, "registration": e.registration} for e in v.inbound.events],
             }
             if v.inbound
             else None

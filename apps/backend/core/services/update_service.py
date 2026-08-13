@@ -722,6 +722,35 @@ async def _google_watch_renewal_pass() -> None:
             if int(entry["expiration_ms"]) > cutoff:
                 continue
             budget -= 1
+            # Gmail watches (kind="gmail_watch") are re-armed in place: gog
+            # re-calls users.watch with its stored topic/labels, so there is
+            # no channel-id rotation and no predecessor to stop — only the
+            # expiration moves. Entries WITHOUT a kind are calendar/drive
+            # push channels (pre-kind rows included) and take the re-watch
+            # path below.
+            if entry.get("kind") == "gmail_watch":
+                try:
+                    replacement = await google_watch.renew_gmail_watch(
+                        owner_id=owner_id, account_email=entry["account_email"]
+                    )
+                except Exception:
+                    failed += 1
+                    logger.exception(
+                        "google_watch_renewal_pass: gmail renew failed owner=%s account=%s "
+                        "(entry left for the next pass)",
+                        owner_id,
+                        entry.get("account_email"),
+                    )
+                    continue
+                channels[i] = {**entry, "expiration_ms": replacement["expiration_ms"]}
+                changed = True
+                renewed += 1
+                logger.info(
+                    "google_watch_renewal_pass: renewed gmail watch owner=%s account=%s",
+                    owner_id,
+                    entry.get("account_email"),
+                )
+                continue
             try:
                 replacement = await google_watch.start_watch(
                     owner_id=owner_id,

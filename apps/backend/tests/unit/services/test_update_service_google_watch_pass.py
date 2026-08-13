@@ -206,3 +206,80 @@ async def test_renewal_pass_survives_scan_failure(dynamodb_table):
     ):
         await update_service._google_watch_renewal_pass()  # must not raise
     start.assert_not_awaited()
+
+
+# --- gmail watches (kind="gmail_watch") --------------------------------------
+#
+# Gmail entries ride the same list but renew IN PLACE via `gog gmail watch
+# renew` — no channel-id rotation, no predecessor to stop. Kind-less entries
+# stay on the re-watch path (pinned by the channel tests above).
+
+
+def _gmail_entry(*, expiration_ms=1_000) -> dict:
+    return {
+        "kind": "gmail_watch",
+        "account_email": "ada@example.com",
+        "topic": "projects/my-project/topics/isol8-gmail",
+        "trigger_public_id": "pub_g1",
+        "proxy_url": "https://api/hooks/t/org_1/pub_g1",
+        "channel_token": "pcsec_g1",
+        "expiration_ms": expiration_ms,
+    }
+
+
+async def test_renewal_pass_renews_expiring_gmail_watch(dynamodb_table):
+    await _seed_owner("org_1", [_gmail_entry()])
+    renew = AsyncMock(return_value={"expiration_ms": _FAR_FUTURE_MS})
+    start = AsyncMock()
+    stop = AsyncMock()
+    with (
+        patch("core.services.google_watch.renew_gmail_watch", renew),
+        patch("core.services.google_watch.start_watch", start),
+        patch("core.services.google_watch.stop_watch", stop),
+    ):
+        await update_service._google_watch_renewal_pass()
+
+    renew.assert_awaited_once_with(owner_id="org_1", account_email="ada@example.com")
+    # NOT the channel re-watch, and nothing to stop — the watch re-arms in place.
+    start.assert_not_awaited()
+    stop.assert_not_awaited()
+
+    (entry,) = await _channels("org_1")
+    assert int(entry["expiration_ms"]) == _FAR_FUTURE_MS
+    # Identity untouched — only the expiration moved.
+    assert entry["kind"] == "gmail_watch"
+    assert entry["topic"] == "projects/my-project/topics/isol8-gmail"
+    assert entry["trigger_public_id"] == "pub_g1"
+    assert entry["channel_token"] == "pcsec_g1"
+
+
+async def test_renewal_pass_skips_gmail_watch_outside_the_lookahead(dynamodb_table):
+    await _seed_owner("org_1", [_gmail_entry(expiration_ms=_FAR_FUTURE_MS)])
+    renew = AsyncMock()
+    with (
+        patch("core.services.google_watch.renew_gmail_watch", renew),
+        patch("core.services.google_watch.start_watch", AsyncMock()),
+        patch("core.services.google_watch.stop_watch", AsyncMock()),
+    ):
+        await update_service._google_watch_renewal_pass()
+    renew.assert_not_awaited()
+
+
+async def test_gmail_renew_failure_leaves_entry_and_channel_still_renews(dynamodb_table):
+    """Per-entry isolation across KINDS: the gmail renew failing must not
+    prevent the sibling channel's re-watch — and its entry stays for the
+    next pass."""
+    await _seed_owner("org_1", [_gmail_entry(), _entry("chan_old")])
+    renew = AsyncMock(side_effect=ValueError("Google refused the watch request"))
+    start = AsyncMock(return_value=_replacement("chan_new"))
+    with (
+        patch("core.services.google_watch.renew_gmail_watch", renew),
+        patch("core.services.google_watch.start_watch", start),
+        patch("core.services.google_watch.stop_watch", AsyncMock()),
+    ):
+        await update_service._google_watch_renewal_pass()  # must not raise
+
+    gmail, channel = await _channels("org_1")
+    assert gmail["kind"] == "gmail_watch"
+    assert int(gmail["expiration_ms"]) == 1_000  # untouched, retried next pass
+    assert channel["channel_id"] == "chan_new"  # the channel path still ran

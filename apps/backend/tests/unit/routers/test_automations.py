@@ -31,7 +31,9 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         assert response.json()["guided"] is True
-        mock_seed.assert_awaited_once_with("user_test_123", "stripe", "invoice.payment_failed", resource=None)
+        mock_seed.assert_awaited_once_with(
+            "user_test_123", "stripe", "invoice.payment_failed", resource=None, topic=None
+        )
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
@@ -96,7 +98,44 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         assert response.json()["resource"] == "acme/site"
-        mock_seed.assert_awaited_once_with("user_test_123", "github", "pull_request", resource="acme/site")
+        mock_seed.assert_awaited_once_with("user_test_123", "github", "pull_request", resource="acme/site", topic=None)
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_topic_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
+        """The owner_setup shape (gmail.message) rides the same route —
+        `topic` reaches the seed untouched (validation lives there, next to
+        the gog call)."""
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.return_value = {
+            "routine_id": "rt_1",
+            "trigger_public_id": "pub_1",
+            "proxy_url": "http://localhost:8000/api/v1/hooks/t/user_test_123/pub_1",
+            "guided": False,
+            "instructions": "one-time Pub/Sub setup",
+            "secret_hint": None,
+            "resource": "ada@example.com",
+        }
+
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={
+                "provider": "google",
+                "event_id": "gmail.message",
+                "resource": "ada@example.com",
+                "topic": "projects/my-project/topics/isol8-gmail",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["instructions"] == "one-time Pub/Sub setup"
+        mock_seed.assert_awaited_once_with(
+            "user_test_123",
+            "google",
+            "gmail.message",
+            resource="ada@example.com",
+            topic="projects/my-project/topics/isol8-gmail",
+        )
 
 
 class TestGithubResources:

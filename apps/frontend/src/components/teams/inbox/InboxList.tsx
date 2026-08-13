@@ -14,6 +14,7 @@ import type {
   InboxGroupedSection,
   InboxWorkItem,
 } from "@/components/teams/shared/lib/inbox";
+import type { Issue } from "@/components/teams/shared/types";
 import type { LiveIssueEntry } from "@/components/teams/shared/lib/liveRuns";
 import { IssueRow } from "@/components/teams/inbox/IssueRow";
 import { IssueStatusMenu } from "@/components/teams/issues/IssueStatusMenu";
@@ -28,6 +29,9 @@ export interface InboxListProps {
   onMarkRead: (id: string) => void;
   /** Issue ids currently mid-archive (for fade-out CSS). */
   archivingIds: Set<string>;
+  /** Replaces the row's trailing status menu. The default mutates for real —
+   * read-only hosts (e.g. the landing demo) must pass a static rendering. */
+  statusMenu?: (issue: Issue) => ReactNode;
   /**
    * Per-issue live-run state (running / stalled + tooltip) for issues with an
    * active agent run. Absent map or missing key == no live run. Derived by the
@@ -72,6 +76,7 @@ export function InboxList({
   onArchive,
   onMarkRead,
   archivingIds,
+  statusMenu,
   liveIssueState,
   isMobile = false,
   searchQuery,
@@ -104,14 +109,20 @@ export function InboxList({
                     onMarkRead={() => onMarkRead(id)}
                     onArchive={() => onArchive(id)}
                     live={liveIssueState?.get(id) ?? null}
-                    desktopTrailing={<IssueStatusMenu issue={item.issue} />}
+                    desktopTrailing={
+                      statusMenu ? statusMenu(item.issue) : <IssueStatusMenu issue={item.issue} />
+                    }
                   />
                 );
                 return (
                   <div
                     key={id}
                     data-inbox-item-id={id}
-                    onClickCapture={() => onSelect(id)}
+                    // Bubble phase, deliberately: IssueRow's action buttons
+                    // stopPropagation so archive/read/status clicks must not
+                    // also select the row — a capture handler here fires
+                    // before them and defeats that.
+                    onClick={() => onSelect(id)}
                     className={cn(
                       "relative",
                       isArchiving && ARCHIVING_CLASSNAME,

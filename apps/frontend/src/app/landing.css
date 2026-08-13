@@ -2353,9 +2353,37 @@
   }
 }
 
+.ld-demo-mobilenav {
+  display: none;
+}
+
 @media (max-width: 720px) {
   .ld-demo-sidebar {
     display: none;
+  }
+
+  .ld-demo-mobilenav {
+    display: flex;
+    gap: 2px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--edge);
+  }
+
+  .ld-demo-mobilenav button {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 12.5px;
+    color: var(--mute);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .ld-demo-mobilenav button.on {
+    color: var(--forest);
+    border-color: var(--forest);
   }
 
   .ld-funnel {

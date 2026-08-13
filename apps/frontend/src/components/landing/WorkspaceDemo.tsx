@@ -190,6 +190,23 @@ export function WorkspaceDemo() {
               </p>
             </div>
 
+            {/* ≤720px the sidebar is hidden — this strip is then the only
+                way to reach tasks/inbox, so it must mirror openView exactly. */}
+            <div className="ld-demo-mobilenav" role="tablist" aria-label="Workspace demo views">
+              {(["chat", "tasks", "inbox"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === v}
+                  className={view === v ? "on" : undefined}
+                  onClick={() => openView(v)}
+                >
+                  {v === "chat" ? "Chat" : v === "tasks" ? "Tasks" : "Inbox"}
+                </button>
+              ))}
+            </div>
+
             <div className="ld-demo-body">
               {/* ── sidebar (lookalike over .cream-sidebar classes) ── */}
               <aside className="cream-sidebar ld-demo-sidebar">
@@ -381,6 +398,11 @@ export function WorkspaceDemo() {
                         onArchive={(id) => updateIssue(id, { unread: false })}
                         onMarkRead={(id) => updateIssue(id, { unread: false })}
                         archivingIds={EMPTY_SET}
+                        statusMenu={(issue) => (
+                          <span className="flex items-center gap-1.5 text-xs text-[var(--mute)]">
+                            <StatusIcon status={issue.status} />
+                          </span>
+                        )}
                       />
                     </div>
                   </div>

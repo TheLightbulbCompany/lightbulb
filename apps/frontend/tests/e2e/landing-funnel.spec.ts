@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { createUser } from './fixtures/clerk-admin';
-import { signIn } from './drivers/sign-in';
+import { createSignInToken, createUser } from './fixtures/clerk-admin';
 
 /**
  * Landing Funnel journey: the deferred-auth path shipped in the landing
@@ -53,7 +52,45 @@ test.describe('Landing Funnel', () => {
       password: `E2e-${runId}-Aa1!`,
       runId,
     });
-    await signIn(page, BASE, userId);
+    await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => (window as { Clerk?: unknown }).Clerk != null, {
+      timeout: 45_000,
+    });
+    // Diagnostic: clerk-js readiness surface differs across versions
+    // (loaded vs status==='ready'); log the shape so a failure explains itself.
+    const shape = await page.evaluate(() => {
+      const C = (window as { Clerk?: Record<string, unknown> }).Clerk;
+      return {
+        loaded: C?.loaded,
+        status: C?.status,
+        hasClient: C?.client != null,
+        version: C?.version,
+      };
+    });
+    console.log('CLERK SHAPE', JSON.stringify(shape));
+    await page.waitForFunction(
+      () => {
+        const C = (window as { Clerk?: { loaded?: boolean; status?: string; client?: unknown } })
+          .Clerk;
+        return (C?.loaded === true || C?.status === 'ready') && C?.client != null;
+      },
+      { timeout: 60_000 },
+    );
+    const ticket2 = await createSignInToken({ secretKey, userId });
+    await page.evaluate(async (t: string) => {
+      const w = window as unknown as {
+        Clerk: {
+          client: {
+            signIn: {
+              create: (o: Record<string, string>) => Promise<{ createdSessionId: string }>;
+            };
+          };
+          setActive: (o: { session: string }) => Promise<void>;
+        };
+      };
+      const si = await w.Clerk.client.signIn.create({ strategy: 'ticket', ticket: t });
+      await w.Clerk.setActive({ session: si.createdSessionId });
+    }, ticket2);
 
     // ── 4. /chat: the replay hook must consume the stash; the in-chat
     // funnel ("Let's get started." / the path picker) must never render ──

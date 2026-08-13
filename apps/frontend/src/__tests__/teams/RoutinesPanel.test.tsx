@@ -37,6 +37,7 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 // useApi(), not useTeamsApi(). Preserve every other export (ApiError,
 // BACKEND_URL, ...) via importOriginal so nothing else that imports @/lib/api
 // breaks.
+const mockAutomationsGet = vi.fn();
 const mockAutomationsPost = vi.fn();
 const mockAutomationsPut = vi.fn();
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -44,7 +45,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...actual,
     useApi: () => ({
-      get: vi.fn(),
+      get: mockAutomationsGet,
       post: mockAutomationsPost,
       put: mockAutomationsPut,
       patch: vi.fn(),
@@ -91,6 +92,7 @@ describe("RoutinesPanel", () => {
     mockPatch.mockReset();
     mockDel.mockReset();
     mockRead.mockClear();
+    mockAutomationsGet.mockReset();
     mockAutomationsPost.mockReset();
     mockAutomationsPut.mockReset();
     connectionsData = [];
@@ -587,6 +589,113 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(doneButton).toBeEnabled();
   });
 
+});
+
+describe("RoutinesPanel — auto_github repo picker", () => {
+  function githubConnection() {
+    return {
+      provider: "github",
+      display_name: "GitHub",
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: ["Pull request opened or changed"],
+      inbound: {
+        webhook_registration: "auto_github",
+        events: [
+          { id: "pull_request", label: "Pull request opened or changed" },
+          { id: "push", label: "Code pushed" },
+        ],
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+    connectionsData = [githubConnection()];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "acme/site", label: "acme/site" },
+      { id: "acme/api", label: "acme/api" },
+    ]);
+  });
+
+  async function pickGithubEvent() {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "GitHub" }));
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(
+      await screen.findByRole("option", { name: "Pull request opened or changed" }),
+    );
+    return user;
+  }
+
+  it("fetches the repo list once GitHub is selected and offers it after the event pick", async () => {
+    const user = await pickGithubEvent();
+
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/github/resources",
+      ),
+    );
+    // The third dropdown appears only after the event is chosen; Create stays
+    // gated until a repo is picked.
+    expect(screen.getByText("Repository")).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+
+    await user.click(screen.getAllByRole("combobox")[2]);
+    expect(await screen.findByRole("option", { name: "acme/site" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "acme/api" })).toBeInTheDocument();
+  });
+
+  it("submits {provider, event_id, resource} and shows the live-on-repo success state", async () => {
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: false,
+      instructions: null,
+      secret_hint: null,
+      resource: "acme/site",
+    });
+    const user = await pickGithubEvent();
+
+    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(await screen.findByRole("option", { name: "acme/site" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "github",
+      event_id: "pull_request",
+      resource: "acme/site",
+    });
+
+    // Auto path: already armed — no paste step, Done is immediately enabled.
+    expect(
+      await screen.findByText(/GitHub registered the webhook on acme\/site — this automation is live\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+  });
+
+  it("renders the repo-list failure inline instead of a dead dropdown", async () => {
+    mockAutomationsGet.mockRejectedValue(new Error("GitHub is not connected"));
+    await pickGithubEvent();
+
+    expect(await screen.findByText(/github is not connected/i)).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+  });
 });
 
 describe("RoutinesPanel sort", () => {

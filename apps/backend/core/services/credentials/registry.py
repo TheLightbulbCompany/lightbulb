@@ -209,6 +209,11 @@ class Requires(BaseModel):
 class InboundEvent(BaseModel):
     id: str
     label: str
+    # Provider-side event names to subscribe when Isol8 auto-registers the
+    # webhook (auto_github: the GitHub hook's `events` array). None for
+    # guided-paste providers — the owner picks events in the provider's own
+    # dashboard, so there is nothing to subscribe programmatically.
+    provider_events: list[str] | None = None
 
 
 class InboundTemplate(BaseModel):
@@ -225,9 +230,12 @@ class Inbound(BaseModel):
 
     # "guided_paste" — the provider has no register-a-webhook API reachable
     # with what we hold, so the owner pastes the proxy URL into the provider's
-    # own dashboard (Stripe). (An "auto" shape — Isol8 registers the webhook
-    # itself via the provider's API — returns with the generic-rail follow-up.)
-    webhook_registration: Literal["guided_paste"]
+    # own dashboard (Stripe/Sentry/Linear/Attio). "auto_github" — the owner's
+    # connected gh token can create repo webhooks itself, so the seed registers
+    # the hook (armed with the trigger's own one-time secret) and the
+    # automation is live with no paste step; the caller must supply the
+    # "owner/repo" resource to hook.
+    webhook_registration: Literal["guided_paste", "auto_github"]
     # A NATIVE Paperclip signingMode ("hmac_sha256" | "github_hmac" | "bearer"
     # | "none"), passed straight through to the created trigger — Paperclip
     # verifies the provider's signature natively against the trigger's secret

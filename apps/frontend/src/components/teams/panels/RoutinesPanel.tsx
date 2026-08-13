@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { notifyConversionGate } from "@/lib/notify";
 import { ArrowUpDown, Blocks, Cable, Check, Clock, Repeat } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -864,7 +864,8 @@ const START_RUNGS: ReadonlyArray<{
 // paste the proxy URL into the provider's own dashboard and then paste back
 // the signing secret it hands them. `secret_hint` names the provider's term
 // for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
-// becomes the paste input's placeholder.
+// becomes the paste input's placeholder. `resource` echoes the auto-registered
+// target ("owner/repo" for GitHub) so the success copy can name it.
 interface FromIntegrationResult {
   routine_id: string;
   trigger_public_id: string;
@@ -872,6 +873,7 @@ interface FromIntegrationResult {
   guided: boolean;
   instructions?: string | null;
   secret_hint?: string | null;
+  resource?: string | null;
 }
 
 function CreateRoutineDialog({
@@ -921,6 +923,14 @@ function CreateRoutineDialog({
   const [whsecInput, setWhsecInput] = useState("");
   const [whsecSubmitting, setWhsecSubmitting] = useState(false);
   const [whsecSaved, setWhsecSaved] = useState(false);
+  // auto_github state — the provider-side resource ("owner/repo") to hook,
+  // and the repo-picker feed fetched lazily once such a provider is selected.
+  // repoOptions null = not loaded yet (also what re-arms the fetch effect).
+  const [connResource, setConnResource] = useState<string | null>(null);
+  const [repoOptions, setRepoOptions] = useState<
+    { id: string; label: string }[] | null
+  >(null);
+  const [repoError, setRepoError] = useState<string | null>(null);
 
   // Trigger-capable = connected AND the registry declares inbound events for
   // it (mirrors the Integrations card's `can_trigger` gate — Task 5).
@@ -930,6 +940,26 @@ function CreateRoutineDialog({
   const selectedConnection =
     triggerableConnections.find((c) => c.provider === connProvider) ?? null;
   const connEvents = selectedConnection?.inbound?.events ?? [];
+  const isAutoGithub =
+    selectedConnection?.inbound?.webhook_registration === "auto_github";
+
+  useEffect(() => {
+    if (!isAutoGithub || repoOptions !== null || repoError !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const repos = (await automationsApi.get(
+          "/automations/providers/github/resources",
+        )) as { id: string; label: string }[];
+        if (!cancelled) setRepoOptions(repos);
+      } catch (e) {
+        if (!cancelled) setRepoError(gateMessage(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAutoGithub, repoOptions, repoError, automationsApi]);
 
   const showReplayWindow = REPLAY_WINDOW_SIGNING_MODES.has(signingMode);
   const replayWindowNum = Number(replayWindowSec);
@@ -940,7 +970,9 @@ function CreateRoutineDialog({
       replayWindowNum <= 86400);
   const canSubmit =
     rung === "connected_app"
-      ? connProvider != null && connEventId != null
+      ? connProvider != null &&
+        connEventId != null &&
+        (!isAutoGithub || connResource != null)
       : title.trim() !== "" &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
 
@@ -972,6 +1004,9 @@ function CreateRoutineDialog({
       const body = {
         provider: connProvider,
         event_id: connEventId,
+        // Only the auto_github shape carries a resource; guided providers'
+        // bodies stay exactly as before.
+        ...(connResource ? { resource: connResource } : {}),
       };
       const result = (await automationsApi.post(
         "/automations/from-integration",
@@ -1102,7 +1137,7 @@ function CreateRoutineDialog({
         description={
           connResult.guided
             ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
-            : `${providerName} registered the webhook automatically — this automation is live.`
+            : `${providerName} registered the webhook${connResult.resource ? ` on ${connResult.resource}` : " automatically"} — this automation is live.`
         }
         footer={
           <EditorialButton
@@ -1301,6 +1336,7 @@ function CreateRoutineDialog({
                   onValueChange={(next) => {
                     setConnProvider(next);
                     setConnEventId(null);
+                    setConnResource(null);
                   }}
                   placeholder={
                     triggerableConnections.length === 0
@@ -1325,6 +1361,41 @@ function CreateRoutineDialog({
                     placeholder="Select an event…"
                   />
                 </div>
+              </label>
+            )}
+            {/* auto_github's third step — which repo to hook. The backend
+                registers the webhook there itself, so unlike guided providers
+                there is no paste step after Create. */}
+            {isAutoGithub && connEventId != null && (
+              <label className="block">
+                <span className="text-sm text-[var(--ink-soft)]">
+                  Repository
+                </span>
+                <div className="mt-1">
+                  <EditorialSelect
+                    options={(repoOptions ?? []).map((r) => ({
+                      value: r.id,
+                      label: r.label,
+                    }))}
+                    value={connResource ?? undefined}
+                    onValueChange={setConnResource}
+                    placeholder={
+                      repoError
+                        ? "Couldn't load repositories"
+                        : repoOptions === null
+                          ? "Loading repositories…"
+                          : repoOptions.length === 0
+                            ? "No repositories found"
+                            : "Select a repository…"
+                    }
+                    disabled={repoOptions === null || repoOptions.length === 0}
+                  />
+                </div>
+                {repoError && (
+                  <span className="text-xs text-[var(--danger)]">
+                    {repoError}
+                  </span>
+                )}
               </label>
             )}
           </>

@@ -7,30 +7,38 @@ sequence ``core/services/agent_routine_provisioning.py`` uses for scheduled
 routines (reuses its routine-body builder directly), driven by the registry
 (``core/services/credentials/registry.py``) instead of a hardcoded spec list.
 
-Today the only inbound shape is ``webhook_registration: "guided_paste"``
-(Stripe): Isol8 has no reachable register-a-webhook API for the provider
-(creating a Stripe endpoint needs a restricted API key we don't hold), so the
-owner pastes the returned ``proxy_url`` into the provider's own dashboard, then
-pastes the ``whsec_`` it hands back via ``PUT /automations/{public_id}/webhook-
-secret`` (``routers/automations.py``) — THAT call ARMS the trigger by rotating
-its Paperclip secret to the pasted value. Verification is NATIVE: the trigger
-is created with a native ``signingMode`` straight from the registry (Stripe ->
+Two inbound shapes exist:
+
+``webhook_registration: "guided_paste"`` (Stripe/Sentry/Linear/Attio): Isol8
+has no reachable register-a-webhook API for the provider (creating a Stripe
+endpoint needs a restricted API key we don't hold), so the owner pastes the
+returned ``proxy_url`` into the provider's own dashboard, then pastes the
+secret it hands back via ``PUT /automations/{public_id}/webhook-secret``
+(``routers/automations.py``) — THAT call ARMS the trigger by rotating its
+Paperclip secret to the pasted value. Verification is NATIVE: the trigger is
+created with a native ``signingMode`` straight from the registry (Stripe ->
 ``hmac_sha256``, whose ``{t}.{body}`` scheme is Stripe's exact one), and
 Paperclip verifies the provider's signature against that armed secret. Until
 it's armed the trigger holds a random placeholder secret, so a provider
 signature can't match and nothing fires — it fails closed for free, no marker
 needed.
 
-(An ``"auto"`` shape — where Isol8 registers the webhook itself via the
-provider's own API — was prototyped for GitHub and removed: native GitHub
-verification is fine, but reliable auto-registration needs webhook-lifecycle
-handling (ping deliveries, redelivery idempotency, hook cleanup ordering) that
-belongs in its own focused change. It returns with the generic-rail follow-up.)
+``webhook_registration: "auto_github"`` (GitHub): the owner's connected gh
+token carries ``repo`` scope, which is enough to create repo webhooks, so the
+seed registers the hook itself — the trigger create's one-time
+``secretMaterial.webhookSecret`` becomes the GitHub hook's HMAC secret, and
+Paperclip's ``github_hmac`` mode reads GitHub's own ``X-Hub-Signature-256``
+natively. No paste step: the automation is live when the seed returns. Known
+limitation: the GitHub hook's id is NOT stored (recoverable via GitHub's
+list-hooks API by URL), so deleting the automation leaves the hook behind as
+an orphan — it fails closed at Paperclip (the trigger is gone, deliveries
+404) and GitHub disables hooks after repeated delivery failures.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -39,11 +47,19 @@ from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.agent_routine_provisioning import _build_routine_body
-from core.services.credentials import registry
+from core.services.credentials import integration_secret_store, registry
 from core.services.paperclip_admin_client import PaperclipAdminClient
 from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
+
+_GITHUB_API_BASE = "https://api.github.com"
+
+# "owner/repo" — the only resource shape auto_github accepts. Also a
+# path-injection fence: the resource is interpolated into the GitHub hooks URL.
+_GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+_GITHUB_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
 # `inbound.signing_mode` in the registry IS a native Paperclip signingMode
 # now (e.g. Stripe -> "hmac_sha256"); it's passed straight through to the
@@ -84,6 +100,61 @@ def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, la
     }
 
 
+async def _github_token(owner_id: str) -> str | None:
+    """The owner's stored GitHub credential, or None when not connected.
+    Same dual shape the gh_cli materializer handles: the paste rail stores
+    {"token": ...}, the direct_oauth rail stores "access_token"."""
+    credential = await integration_secret_store.get(owner_id, "github")
+    if not credential:
+        return None
+    return credential.get("token") or credential.get("access_token")
+
+
+async def list_github_repos(owner_id: str) -> list[dict[str, str]]:
+    """Repos the owner's gh token can see — feeds the create dialog's
+    repository picker for the auto_github registration shape.
+
+    Raises ``LookupError`` when GitHub isn't connected (the router maps it to
+    404); httpx errors bubble up for the router's 502.
+    """
+    token = await _github_token(owner_id)
+    if not token:
+        raise LookupError("GitHub is not connected")
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.get(
+            f"{_GITHUB_API_BASE}/user/repos",
+            params={"per_page": 100, "sort": "updated"},
+            headers={**_GITHUB_HEADERS, "Authorization": f"Bearer {token}"},
+        )
+    resp.raise_for_status()
+    return [{"id": r["full_name"], "label": r["full_name"]} for r in resp.json()]
+
+
+async def _create_github_hook(*, token: str, resource: str, proxy_url: str, events: list[str], secret: str) -> None:
+    """Create the repo webhook pointed at the trigger proxy, signed with the
+    trigger's own secret. Raises ``ValueError`` with a caller-facing message
+    on the expected refusals (no admin on the repo, duplicate hook)."""
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.post(
+            f"{_GITHUB_API_BASE}/repos/{resource}/hooks",
+            headers={**_GITHUB_HEADERS, "Authorization": f"Bearer {token}"},
+            json={
+                "config": {"url": proxy_url, "content_type": "json", "secret": secret},
+                "events": events,
+                "active": True,
+            },
+        )
+    # 422 = a hook for this exact URL already exists on the repo (each seed
+    # mints a fresh trigger, so this means a previous half-finished attempt).
+    if resp.status_code == 422:
+        raise ValueError(f"A webhook for this URL already exists on {resource}")
+    # GitHub answers 404 (not 403) when the token can see the repo but can't
+    # administer it, so both map to the same caller-facing message.
+    if resp.status_code in (403, 404):
+        raise ValueError(f"Isol8 couldn't create the webhook on {resource} — you need admin access to the repository")
+    resp.raise_for_status()
+
+
 async def _rollback_routine(
     admin: PaperclipAdminClient, *, routine_id: str, cookie: str, owner_id: str, provider_key: str
 ) -> None:
@@ -107,18 +178,21 @@ async def seed_trigger_routine(
     owner_id: str,
     provider_key: str,
     event_id: str,
+    resource: str | None = None,
 ) -> dict[str, Any]:
     """Create a routine + webhook trigger pre-filled from ``provider_key``'s
     registry ``inbound`` declaration, for the event named ``event_id``.
 
-    Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions}``.
-    ``instructions`` carries the guided-paste copy (Stripe today).
+    Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions,
+    secret_hint}``; the auto_github shape adds ``resource`` and needs one — the
+    "owner/repo" to hook (guided providers ignore it).
 
     Raises ``ValueError`` for any caller-facing input problem (unknown
-    provider/event, provider not wired as a trigger source, no active
-    Paperclip company, no resolvable suggested agent) — the router maps
-    these to a 4xx. Raises ``RuntimeError`` on a malformed upstream
-    response (Paperclip is expected to always return an id / publicId).
+    provider/event, provider not wired as a trigger source, missing/invalid
+    resource, GitHub refusing the hook, no active Paperclip company, no
+    resolvable suggested agent) — the router maps these to a 4xx. Raises
+    ``RuntimeError`` on a malformed upstream response (Paperclip is expected
+    to always return an id / publicId / secretMaterial).
     """
     provider = registry.get_provider(provider_key)
     inbound = provider.inbound
@@ -128,6 +202,16 @@ async def seed_trigger_routine(
     event = next((e for e in inbound.events if e.id == event_id), None)
     if event is None:
         raise ValueError(f"unknown event {event_id!r} for provider {provider_key!r}")
+
+    # auto_github preconditions up front — a missing repo or token must fail
+    # before anything exists upstream, not after a create/rollback cycle.
+    gh_token: str | None = None
+    if inbound.webhook_registration == "auto_github":
+        if not resource or not _GITHUB_REPO_RE.match(resource):
+            raise ValueError("auto_github needs a repository in the form owner/repo")
+        gh_token = await _github_token(owner_id)
+        if not gh_token:
+            raise ValueError("GitHub is not connected — connect it in the Integrations tab first")
 
     # inbound.signing_mode IS a native Paperclip signingMode, passed straight
     # through to the created trigger.
@@ -183,6 +267,15 @@ async def seed_trigger_routine(
             public_id = trigger.get("publicId") if isinstance(trigger, dict) else None
             if not public_id:
                 raise RuntimeError("create_routine_trigger returned no trigger.publicId")
+            # The auto path arms the GitHub hook with the trigger's own secret,
+            # shown ONCE in the create response — absent means the trigger is
+            # unusable for auto registration, same severity as no publicId.
+            webhook_secret: str | None = None
+            if inbound.webhook_registration == "auto_github":
+                material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
+                webhook_secret = material.get("webhookSecret") if isinstance(material, dict) else None
+                if not webhook_secret:
+                    raise RuntimeError("create_routine_trigger returned no secretMaterial.webhookSecret")
         except Exception:
             # The routine already exists upstream at this point. If the
             # trigger call itself throws (timeout, upstream error) or comes
@@ -230,7 +323,44 @@ async def seed_trigger_routine(
                 "secret_hint": inbound.secret_hint,
             }
 
-        # Only guided_paste is implemented today; the routine+trigger were
+        if inbound.webhook_registration == "auto_github":
+            assert resource and gh_token and webhook_secret  # narrowed by the pre-checks above
+            try:
+                await _create_github_hook(
+                    token=gh_token,
+                    resource=resource,
+                    proxy_url=proxy_url,
+                    # Provider-side hook events from the registry; the curated
+                    # id itself is the fallback when they coincide.
+                    events=event.provider_events or [event.id],
+                    secret=webhook_secret,
+                )
+            except Exception:
+                # GitHub refused the hook (no admin on the repo, duplicate,
+                # outage) — the routine+trigger are unusable, unwind them.
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded auto_github routine=%s trigger=%s owner=%s repo=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                resource,
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": None,
+                "secret_hint": None,
+                "resource": resource,
+            }
+
+        # No other registration shape exists; the routine+trigger were
         # already created, so unwind before surfacing the misconfiguration.
         await _rollback_routine(
             admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key

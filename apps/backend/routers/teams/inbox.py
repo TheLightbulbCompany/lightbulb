@@ -141,15 +141,6 @@ async def list_inbox(
     return envelope_list(rows, "items")
 
 
-@router.post("/inbox/{item_id}/dismiss")
-async def dismiss_inbox(item_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Dismiss an inbox item by id."""
-    return await _agents._admin().dismiss_inbox_item(
-        item_id=item_id,
-        session_cookie=ctx.session_cookie,
-    )
-
-
 @router.get("/inbox/runs")
 async def list_inbox_runs(ctx: TeamsContext = Depends(_ctx)):
     """List failed heartbeat runs — the source for the Inbox 'Runs' tab.

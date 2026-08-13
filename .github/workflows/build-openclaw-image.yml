@@ -72,8 +72,10 @@ jobs:
     # image is rebuilt from scratch on every run — including the `doctor`
     # compile-cache bake. Run 31562288851 was still in `Build image` at 25m and
     # would have been killed mid-build for no reason other than the old cap.
-    # This is a hang bound, not a runtime budget.
-    timeout-minutes: 90
+    # This is a hang bound, not a runtime budget. 120 (was 90) because the
+    # swap added below lets the bake page under memory pressure instead of
+    # killing the VM — slower, but it completes.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,6 +91,20 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                       /usr/local/.ghcup /usr/local/share/powershell
           df -h /
+
+      # Every build since the doctor compile-cache bake was restored died at
+      # ~60m with "the hosted runner lost communication with the server" — the
+      # bake's compile peak starves the 7 GB VM until the runner agent itself
+      # is killed (no failed step, no uploaded logs). Swap on /mnt (the large
+      # ephemeral disk, so it doesn't eat the image-build space on /) turns
+      # that OOM death into paging.
+      - name: Add swap for the compile-cache bake
+        run: |
+          sudo fallocate -l 10G /mnt/swapfile-build
+          sudo chmod 600 /mnt/swapfile-build
+          sudo mkswap /mnt/swapfile-build
+          sudo swapon /mnt/swapfile-build
+          free -h
 
       - name: Read version metadata
         id: meta

@@ -548,16 +548,6 @@ export function WorkspaceDemo() {
           onSearchChange={setInboxSearch}
           searchPlaceholder="Search inbox..."
           searchAriaLabel="Search inbox"
-          filters={
-            <EditorialButton
-              type="button"
-              variant="secondary"
-              size="icon"
-              aria-label="Filters"
-            >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-            </EditorialButton>
-          }
           actions={
             <>
               <EditorialButton
@@ -575,9 +565,11 @@ export function WorkspaceDemo() {
                 variant="secondary"
                 size="sm"
                 className="shrink-0"
-                disabled={unreadCount === 0}
+                disabled={!inboxIssues.some((i) => i.unread)}
                 onClick={() => {
-                  for (const i of issues) {
+                  // Only the rows the current tab/search actually shows —
+                  // a filtered-out unread must survive "Mark all as read".
+                  for (const i of inboxIssues) {
                     if (i.unread) updateIssue(i.id, { unread: false });
                   }
                 }}

@@ -381,7 +381,8 @@ export function WorkspaceDemo() {
                     <PanelMasthead
                       overline={DEMO_COMPANY_NAME}
                       title="Tasks"
-                      meta={`${searchedIssues.length} tasks`}
+                      // No count: TasksList owns its structured filter state
+                      // internally, so a parent-side number can't stay honest.
                     />
                     <PanelToolbar
                       className="mt-4"

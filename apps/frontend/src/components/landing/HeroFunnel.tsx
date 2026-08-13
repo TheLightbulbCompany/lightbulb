@@ -17,6 +17,7 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
+import { clearSignupIntentCookie } from "@/lib/signupIntent";
 import { capture } from "@/lib/analytics";
 
 const COPY: Record<Path, { placeholder: string; swap: string }> = {
@@ -51,6 +52,10 @@ export function HeroFunnel() {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
+    // This CTA is explicitly personal: a leftover team-intent cookie (30-min
+    // TTL from the pricing Teams CTA) would route the signup into team
+    // creation and strand the stashed brief in an org context.
+    clearSignupIntentCookie();
     stash(path, input.trim());
     capture("signup_started", {
       source: "landing_hero_funnel",

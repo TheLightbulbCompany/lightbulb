@@ -118,12 +118,16 @@ function routineEnabled(r: Routine): boolean {
 }
 
 // Plain-English "what starts this" subtitle for a routine's list row: picks
-// the first enabled trigger (or any trigger) and describes it via
-// triggerSentence. A legacy flat-cron row (no triggers[] array) synthesizes a
-// schedule trigger so it still reads as a sentence, not a raw cron string.
+// the routine's defining trigger and describes it via triggerSentence. An
+// enabled webhook wins over an enabled schedule — Google-seeded automations
+// carry a maintenance schedule trigger alongside their webhook, and the row
+// should read as "when an app calls this webhook", not as its upkeep cron.
+// A legacy flat-cron row (no triggers[] array) synthesizes a schedule
+// trigger so it still reads as a sentence, not a raw cron string.
 function routineTriggerSentence(r: Routine): string {
   const triggers = r.triggers ?? [];
-  const picked = triggers.find((t) => t.enabled !== false) ?? triggers[0];
+  const enabled = triggers.filter((t) => t.enabled !== false);
+  const picked = enabled.find((t) => t.kind === "webhook") ?? enabled[0] ?? triggers[0];
   if (picked) return triggerSentence(picked);
   if (r.cron) return triggerSentence({ kind: "schedule", cronExpression: r.cron });
   return "No trigger configured";

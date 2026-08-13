@@ -265,7 +265,9 @@ class Inbound(BaseModel):
     # token is the trigger's own secret, verified by Paperclip's bearer mode
     # via the proxy's X-Goog-Channel-Token mapping; the caller supplies a
     # connected Google account email as the resource. Channels expire ≤7 days
-    # and ride the renewal sweep in update_service.
+    # and the routine renews its own: the seed attaches a twice-weekly
+    # maintenance schedule trigger and an EFS state file the agent re-arms
+    # from (see inbound_triggers) — no platform-side renewal job.
     webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel", "auto_google_watch"]
     # A NATIVE Paperclip signingMode ("hmac_sha256" | "hmac_sha1" |
     # "github_hmac" | "bearer" | "none"), passed straight through to the

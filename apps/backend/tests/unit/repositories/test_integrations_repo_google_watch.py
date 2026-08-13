@@ -1,6 +1,7 @@
 """Tests for the google_watch_channels helpers on integrations_repo — the
-channel state for auto_google_watch triggers lives as a list attribute on the
-owner's existing (owner_id, "google") status row, not in a table of its own."""
+gmail-watch entries the trigger proxy's OIDC bearer lookup reads live as a
+list attribute on the owner's existing (owner_id, "google") status row, not
+in a table of its own."""
 
 import os
 from unittest.mock import patch

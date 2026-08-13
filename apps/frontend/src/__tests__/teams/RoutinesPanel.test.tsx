@@ -108,6 +108,31 @@ describe("RoutinesPanel", () => {
     expect(screen.getByText(/on a schedule — Every day at 09:00/)).toBeInTheDocument();
   });
 
+  it("prefers the webhook trigger over a maintenance schedule in the row sentence", () => {
+    // Google-seeded automations carry a renewal schedule trigger alongside
+    // their webhook; the row must still read as the webhook, regardless of
+    // the array order the API returns.
+    routinesData = {
+      routines: [
+        routine({
+          title: "Google: Calendar changed",
+          triggers: [
+            {
+              id: "tr-renew",
+              kind: "schedule",
+              enabled: true,
+              cronExpression: "0 6 * * 1,4",
+              label: "Keep the Google watch alive",
+            },
+            { id: "tr-hook", kind: "webhook", enabled: true },
+          ],
+        }),
+      ],
+    };
+    render(<RoutinesPanel />);
+    expect(screen.getByText(/when an app calls this webhook/)).toBeInTheDocument();
+  });
+
   it("resolves the assignee id to the agent display name", () => {
     render(<RoutinesPanel />);
     // "Friday" (resolved name) shows in the row subtitle; the raw id "a1" does not.

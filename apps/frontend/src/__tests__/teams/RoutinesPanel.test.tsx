@@ -777,7 +777,9 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
 
     // Auto path: already armed — no paste step, Done is immediately enabled.
     expect(
-      await screen.findByText(/Vercel registered the webhook on prj_1 — this automation is live\./),
+      // The success copy names the PICKED project by its human label, not the
+      // prj_… id the backend echoes — the picker already knows the name.
+      await screen.findByText(/Vercel registered the webhook on my-site — this automation is live\./),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
     const doneButton = screen.getByRole("button", { name: "Done" });

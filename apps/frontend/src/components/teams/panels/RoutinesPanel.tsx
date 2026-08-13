@@ -1142,6 +1142,13 @@ function CreateRoutineDialog({
   if (connResult) {
     const providerName =
       selectedConnection?.display_name ?? connProvider ?? "the app";
+    // Prefer the picker's human label for the registered resource — the
+    // backend echoes the id it hooked (a GitHub "owner/repo" reads fine, but
+    // a Vercel "prj_…" id doesn't), and the picker already knows the name.
+    const resourceLabel = connResult.resource
+      ? (resourceOptions?.find((r) => r.id === connResult.resource)?.label ??
+        connResult.resource)
+      : null;
     // Guided (Stripe) results aren't armed until the owner pastes the whsec
     // back via saveWebhookSecret — closing before that leaves an active,
     // unsigned automation with no UI left to finish it (the detail panel
@@ -1156,7 +1163,7 @@ function CreateRoutineDialog({
         description={
           connResult.guided
             ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
-            : `${providerName} registered the webhook${connResult.resource ? ` on ${connResult.resource}` : " automatically"} — this automation is live.`
+            : `${providerName} registered the webhook${resourceLabel ? ` on ${resourceLabel}` : " automatically"} — this automation is live.`
         }
         footer={
           <EditorialButton

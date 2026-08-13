@@ -227,7 +227,125 @@ def test_checkout_completed_flushes_when_seller_already_payable(
         content=b'{"id":"evt_flush"}',
     )
     assert resp.status_code == 200, resp.text
-    mock_flush.assert_awaited_once_with(seller_id="s1", connect_account_id="acct_9")
+    # The just-fulfilled purchase is passed explicitly — the eventually
+    # consistent listing index may not surface it yet.
+    mock_flush.assert_awaited_once_with(
+        seller_id="s1", connect_account_id="acct_9", known_purchase_key=("b1", "cs_cs_flush")
+    )
+
+
+@patch("routers.marketplace_purchases.webhook_dedup.delete_event")
+@patch("routers.marketplace_purchases._flush_seller_held_balance", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.stripe.Account.retrieve")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
+@patch("core.repositories.marketplace_repo._ddb_client")
+@patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
+def test_flush_failure_propagates_so_stripe_retries(
+    mock_gen,
+    mock_dedup,
+    mock_construct,
+    mock_pi_retrieve,
+    mock_boto_client,
+    mock_pa_table,
+    mock_acct,
+    mock_flush,
+    mock_delete,
+    client,
+):
+    """A swallowed flush error would ack the webhook with a transferred-but-
+    unstamped purchase and no prompt retry — reopening the >24h Stripe-
+    idempotency double-pay window. The failure must propagate so the dedup
+    rollback fires and Stripe redelivers (fulfillment is idempotent)."""
+    mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_111"}
+    fake_ddb = MagicMock()
+    fake_ddb.transact_write_items = MagicMock(return_value={})
+    mock_boto_client.return_value = fake_ddb
+    mock_pa_table.return_value.get_item = MagicMock(
+        return_value={"Item": {"seller_id": "s1", "stripe_connect_account_id": "acct_9", "balance_held_cents": 1700}}
+    )
+    mock_acct.return_value = {"id": "acct_9", "payouts_enabled": True}
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_flush.side_effect = RuntimeError("transient DDB error mid-flush")
+
+    async def del_ok(*_a, **_k):
+        return None
+
+    mock_delete.side_effect = del_ok
+    mock_construct.return_value = {
+        "id": "evt_flush_fail",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_ff",
+                "payment_status": "paid",
+                "metadata": {"listing_id": "l1", "buyer_id": "b1", "seller_id": "s1", "version": "1"},
+                "amount_total": 2000,
+                "payment_intent": "pi_1",
+            }
+        },
+    }
+
+    from main import app
+
+    raising_client = TestClient(app, raise_server_exceptions=False)
+    resp = raising_client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_flush_fail"}',
+    )
+    assert resp.status_code == 500
+    mock_delete.assert_called_once_with(event_id="stripe-marketplace:evt_flush_fail")
+
+
+@pytest.mark.asyncio
+async def test_flush_processes_known_purchase_missing_from_index():
+    """The eventually-consistent listing index can miss the purchase
+    fulfillment just wrote; the explicit known_purchase_key must be processed
+    via a consistent base-table read anyway."""
+    from routers.marketplace_purchases import _flush_seller_held_balance
+
+    purchase_row = {
+        "buyer_id": "b1",
+        "purchase_id": "cs_x",
+        "seller_share_cents": 1700,
+        "price_paid_cents": 2000,
+        "stripe_transfer_group": "tg_x",
+    }
+    with (
+        patch("routers.marketplace_purchases.marketplace_repo.get_payout_account", new_callable=AsyncMock) as mock_pa,
+        patch("routers.marketplace_purchases.marketplace_repo.get_purchase", new_callable=AsyncMock) as mock_get,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.list_listings_by_seller",
+            new_callable=AsyncMock,
+        ) as mock_listings,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.set_seller_transfer_if_absent",
+            new_callable=AsyncMock,
+        ) as mock_stamp,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.apply_flush_totals", new_callable=AsyncMock
+        ) as mock_totals,
+        patch(
+            "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
+        ) as mock_transfer,
+    ):
+        # Eventual reads show NOTHING yet: zero balance, no listings.
+        mock_pa.return_value = {"seller_id": "s1", "balance_held_cents": 0}
+        mock_listings.return_value = []
+        mock_get.return_value = purchase_row
+        mock_transfer.return_value = "tr_new"
+        mock_stamp.return_value = True
+
+        await _flush_seller_held_balance(seller_id="s1", connect_account_id="acct_1", known_purchase_key=("b1", "cs_x"))
+
+    mock_get.assert_awaited_once_with("b1", "cs_x", consistent=True)
+    mock_transfer.assert_awaited_once_with(connect_account_id="acct_1", amount_cents=1700, transfer_group="tg_x")
+    mock_totals.assert_awaited_once_with(seller_id="s1", transferred_cents=1700)
 
 
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")

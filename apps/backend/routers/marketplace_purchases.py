@@ -251,23 +251,27 @@ async def _handle_checkout_completed(session: dict) -> None:
 
     # Flush at fulfillment, not just on account.updated: a seller who
     # onboarded BEFORE this sale never gets another account.updated, so
-    # without this the money sits in balance_held_cents forever. Best-effort:
-    # fulfillment above is already committed and idempotent, and a failed
-    # flush self-heals on the next sale or account.updated (the held balance
-    # is untouched until a transfer actually lands).
-    try:
-        pa = await marketplace_repo.get_payout_account(seller_id) or {}
-        connect_account_id = pa.get("stripe_connect_account_id")
-        if connect_account_id:
-            acct = stripe.Account.retrieve(connect_account_id)
-            if acct.get("payouts_enabled"):
-                await _flush_seller_held_balance(seller_id=seller_id, connect_account_id=connect_account_id)
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "post-fulfillment payout flush failed (will retry on next sale/account.updated)"
-        )
+    # without this the money sits in balance_held_cents forever. Failures
+    # PROPAGATE deliberately: the webhook's dedup rollback fires and Stripe
+    # retries the whole event — fulfillment above is idempotent (the
+    # transaction no-ops on replay) and a swallowed flush error would leave a
+    # transferred-but-unstamped purchase with no prompt retry, reopening the
+    # >24h Stripe-idempotency double-pay window.
+    #
+    # THIS sale's purchase is passed explicitly: the listing-created-index the
+    # flush loop pages is eventually consistent and may not show the row the
+    # transaction just wrote, which would make the flush no-op "successfully"
+    # for exactly the seller it was added for.
+    pa = await marketplace_repo.get_payout_account(seller_id, consistent=True) or {}
+    connect_account_id = pa.get("stripe_connect_account_id")
+    if connect_account_id:
+        acct = stripe.Account.retrieve(connect_account_id)
+        if acct.get("payouts_enabled"):
+            await _flush_seller_held_balance(
+                seller_id=seller_id,
+                connect_account_id=connect_account_id,
+                known_purchase_key=(buyer_id, purchase_id),
+            )
 
 
 async def _handle_charge_refunded(charge: dict) -> None:
@@ -364,44 +368,91 @@ async def _handle_account_updated(account: dict) -> None:
     await _flush_seller_held_balance(seller_id=seller_id, connect_account_id=connect_account_id)
 
 
-async def _flush_seller_held_balance(*, seller_id: str, connect_account_id: str) -> None:
+async def _flush_seller_held_balance(
+    *,
+    seller_id: str,
+    connect_account_id: str,
+    known_purchase_key: tuple[str, str] | None = None,
+) -> None:
     """Transfer every untransferred, unrefunded purchase's seller share.
 
     Called from account.updated (seller onboards after selling) AND from
     checkout fulfillment (seller onboarded before selling) — the two
     orderings between "sale happened" and "payouts enabled".
+
+    known_purchase_key (buyer_id, purchase_id): a purchase the caller KNOWS
+    exists (fulfillment just wrote it) — processed via a consistent base-table
+    read even when the eventually-consistent listing-created-index hasn't
+    surfaced it yet, so the fulfillment-time flush can't no-op on exactly the
+    sale it was invoked for.
     """
-    pa = await marketplace_repo.get_payout_account(seller_id) or {}
-    if pa.get("balance_held_cents", 0) <= 0:
+    pa = await marketplace_repo.get_payout_account(seller_id, consistent=True) or {}
+    if pa.get("balance_held_cents", 0) <= 0 and known_purchase_key is None:
         return
+
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    transferred_total = 0
+    processed: set[str] = set()
+
+    async def transfer_one(purchase: dict) -> None:
+        nonlocal transferred_total
+        if purchase.get("seller_transfer_id"):
+            return  # already transferred on a prior flush
+        # Skip refunded purchases — license_service.revoke leaves
+        # price_paid_cents intact (so the buyer's history still shows what
+        # they paid), so without an explicit refund check the flush would
+        # Transfer to the seller for a purchase the buyer was already
+        # refunded for. That's a direct accounting loss: buyer refunded AND
+        # seller paid.
+        if purchase.get("license_key_revoked") or purchase.get("status") == "refunded":
+            return
+        # Seller share is what fulfillment credited post-fee; legacy rows
+        # (pre-fee) carry only price_paid_cents, which WAS their credited
+        # amount.
+        amount = int(purchase.get("seller_share_cents", purchase.get("price_paid_cents", 0)))
+        tg = purchase.get("stripe_transfer_group")
+        if amount <= 0 or not tg:
+            return  # legacy / malformed row
+        # A replayed account.updated (or a concurrent run) can re-read the
+        # same purchase before the previous run's seller_transfer_id is
+        # visible. Stripe's idempotency_key on transfer_held_balance catches
+        # the duplicate transfer within 24h (returns the existing
+        # transfer_id), and the repo's set-once conditional write is the
+        # source of truth for "this run wrote the seller_transfer_id" — only
+        # successful stamps increment the running total.
+        transfer_id = await payout_service.transfer_held_balance(
+            connect_account_id=connect_account_id,
+            amount_cents=amount,
+            transfer_group=tg,
+        )
+        stamped = await marketplace_repo.set_seller_transfer_if_absent(
+            buyer_id=purchase["buyer_id"],
+            purchase_id=purchase["purchase_id"],
+            transfer_id=transfer_id,
+            now_iso=now_iso,
+        )
+        if not stamped:
+            # Another run got there first — Stripe Transfer was idempotent so
+            # no money moved twice; just don't count this amount toward our
+            # held-balance decrement.
+            return
+        transferred_total += amount
+
+    if known_purchase_key is not None:
+        known = await marketplace_repo.get_purchase(*known_purchase_key, consistent=True)
+        if known:
+            processed.add(known["purchase_id"])
+            await transfer_one(known)
 
     # The repo pages through all of the seller's listings — a prolific
     # seller could otherwise have purchases on later listings silently
     # skipped during payout flush.
-    seller_listings = await marketplace_repo.list_listings_by_seller(seller_id)
-
-    transferred_total = 0
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    for listing in seller_listings:
-        listing_id = listing["listing_id"]
-        for purchase in await marketplace_repo.list_purchases_by_listing(listing_id):
-            if purchase.get("seller_transfer_id"):
-                continue  # already transferred on a prior flush
-            # Skip refunded purchases — license_service.revoke leaves
-            # price_paid_cents intact (so the buyer's history still
-            # shows what they paid), so without an explicit refund
-            # check the flush would Transfer to the seller for a
-            # purchase the buyer was already refunded for. That's a
-            # direct accounting loss: buyer refunded AND seller paid.
-            if purchase.get("license_key_revoked") or purchase.get("status") == "refunded":
+    for listing in await marketplace_repo.list_listings_by_seller(seller_id):
+        for purchase in await marketplace_repo.list_purchases_by_listing(listing["listing_id"]):
+            if purchase["purchase_id"] in processed:
                 continue
-            # Seller share is what fulfillment credited post-fee; legacy
-            # rows (pre-fee) carry only price_paid_cents, which WAS their
-            # credited amount.
-            amount = int(purchase.get("seller_share_cents", purchase.get("price_paid_cents", 0)))
-            tg = purchase.get("stripe_transfer_group")
-            if amount <= 0 or not tg:
-                continue  # legacy / malformed row
+            if purchase.get("seller_transfer_id"):
+                continue
             # Fresh strongly-consistent re-read before moving money: the
             # listing-created-index feeding this loop is eventually
             # consistent, and Stripe's idempotency keys expire after 24h
@@ -411,33 +462,8 @@ async def _flush_seller_held_balance(*, seller_id: str, connect_account_id: str)
                 await marketplace_repo.get_purchase(purchase["buyer_id"], purchase["purchase_id"], consistent=True)
                 or {}
             )
-            if fresh.get("seller_transfer_id"):
-                continue
-            # A replayed account.updated (or a concurrent run) can still
-            # re-read the same purchase before the previous run's
-            # seller_transfer_id is visible. Stripe's idempotency_key on
-            # transfer_held_balance catches the duplicate transfer within
-            # 24h (returns the existing transfer_id), and the repo's
-            # set-once conditional write is the source of truth for "this
-            # run wrote the seller_transfer_id" — only successful stamps
-            # increment the running total.
-            transfer_id = await payout_service.transfer_held_balance(
-                connect_account_id=connect_account_id,
-                amount_cents=amount,
-                transfer_group=tg,
-            )
-            stamped = await marketplace_repo.set_seller_transfer_if_absent(
-                buyer_id=purchase["buyer_id"],
-                purchase_id=purchase["purchase_id"],
-                transfer_id=transfer_id,
-                now_iso=now_iso,
-            )
-            if not stamped:
-                # Another run got there first — Stripe Transfer was
-                # idempotent so no money moved twice; just don't count
-                # this amount toward our held-balance decrement.
-                continue
-            transferred_total += amount
+            processed.add(purchase["purchase_id"])
+            await transfer_one(fresh or purchase)
 
     if transferred_total > 0:
         await marketplace_repo.apply_flush_totals(seller_id=seller_id, transferred_cents=transferred_total)

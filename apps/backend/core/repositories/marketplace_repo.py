@@ -867,9 +867,12 @@ async def transact_record_purchase_and_credit_seller(
 # ---------------------------------------------------------------------------
 
 
-async def get_payout_account(seller_id: str) -> dict | None:
+async def get_payout_account(seller_id: str, *, consistent: bool = False) -> dict | None:
+    """consistent=True: the payout flush reads this right after the
+    fulfillment transaction credited balance_held_cents — an eventually
+    consistent read can miss that credit and skip the flush entirely."""
     table = _payout_accounts_table()
-    resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id})
+    resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id}, ConsistentRead=consistent)
     return resp.get("Item")
 
 
@@ -933,38 +936,55 @@ async def apply_flush_totals(*, seller_id: str, transferred_cents: int) -> None:
     Conditional on the balance covering the decrement: a refund debit landing
     between this flush's read and write can leave the balance short of the
     transferred total, and an unconditional subtract would drive it negative
-    (rendered as a negative dollar figure on the seller dashboard). On that
-    conditional failure the balance is left ALONE — same posture as
-    decrement_held_balance — because a blind "set to zero" fallback could
-    stomp a concurrent NEW SALE's credit (transact_record_purchase_and_credit_
-    seller updates the same field unordered), silently discarding seller-owed
-    money. Worst case of leaving it: a rare, slightly-inflated display that
-    the next flush settles. Onboarding/lifetime stamps still land."""
+    (rendered as a negative dollar figure on the seller dashboard). A blind
+    "set to zero" fallback is equally wrong — it could stomp a concurrent NEW
+    SALE's credit (transact_record_purchase_and_credit_seller updates the same
+    field unordered), silently discarding seller-owed money. So on conditional
+    failure: consistent-read the current balance and clamp the decrement to
+    what's actually there, retrying a couple of times (each retry re-reads, so
+    a mid-race credit is respected). If contention persists the balance is
+    left alone — a rare, slightly-inflated display — and the lifetime/
+    onboarding stamps still land."""
     table = _payout_accounts_table()
-    try:
-        await run_in_thread(
-            table.update_item,
-            Key={"seller_id": seller_id},
-            UpdateExpression=(
-                "SET balance_held_cents = balance_held_cents - :t, "
-                "    onboarding_status = :done, "
-                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
-            ),
-            ConditionExpression="balance_held_cents >= :t",
-            ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        await run_in_thread(
-            table.update_item,
-            Key={"seller_id": seller_id},
-            UpdateExpression=(
-                "SET onboarding_status = :done, "
-                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
-            ),
-            ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},
-        )
+    decrement = transferred_cents
+    for _ in range(3):
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"seller_id": seller_id},
+                UpdateExpression=(
+                    "SET balance_held_cents = balance_held_cents - :d, "
+                    "    onboarding_status = :done, "
+                    "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
+                ),
+                ConditionExpression="balance_held_cents >= :d",
+                ExpressionAttributeValues={
+                    ":zero": 0,
+                    ":done": "completed",
+                    ":t": transferred_cents,
+                    ":d": decrement,
+                },
+            )
+            return
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id}, ConsistentRead=True)
+            current = int((resp.get("Item") or {}).get("balance_held_cents", 0))
+            decrement = min(decrement, max(current, 0))
+            if decrement <= 0:
+                break
+    # Contention exhausted (or nothing left to decrement): stamp the
+    # non-balance fields only.
+    await run_in_thread(
+        table.update_item,
+        Key={"seller_id": seller_id},
+        UpdateExpression=(
+            "SET onboarding_status = :done, "
+            "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
+        ),
+        ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},
+    )
 
 
 # ---------------------------------------------------------------------------

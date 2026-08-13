@@ -82,18 +82,21 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_li
     assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
 
 
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 @patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
 def test_webhook_checkout_completed_grants_license(
-    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, client
+    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, mock_pa_table, client
 ):
     mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_111"}
     fake_ddb = MagicMock()
     fake_ddb.transact_write_items = MagicMock(return_value={})
     mock_boto_client.return_value = fake_ddb
+    # No payout account: the fulfillment-time flush no-ops.
+    mock_pa_table.return_value.get_item = MagicMock(return_value={})
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
@@ -196,18 +199,20 @@ def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     mock_pa_table.return_value.update_item.assert_not_called()
 
 
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 @patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
 def test_webhook_async_payment_succeeded_grants_license(
-    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, client
+    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, mock_pa_table, client
 ):
     mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_async"}
     fake_ddb = MagicMock()
     fake_ddb.transact_write_items = MagicMock(return_value={})
     mock_boto_client.return_value = fake_ddb
+    mock_pa_table.return_value.get_item = MagicMock(return_value={})
     """Regression: async_payment_succeeded is the settle event for delayed
     methods. Must run the same fulfillment path as a synchronous paid
     checkout.session.completed."""

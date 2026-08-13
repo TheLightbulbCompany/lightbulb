@@ -789,6 +789,101 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
   });
 });
 
+describe("RoutinesPanel — auto_google_watch account picker", () => {
+  function googleConnection() {
+    return {
+      provider: "google",
+      display_name: "Google Workspace",
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: ["Calendar changed"],
+      inbound: {
+        webhook_registration: "auto_google_watch",
+        events: [
+          { id: "calendar.changed", label: "Calendar changed" },
+          { id: "drive.changed", label: "Drive file changed" },
+        ],
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+    connectionsData = [googleConnection()];
+    // The picker feed is the owner's connected account emails — the email is
+    // both the id and the label.
+    mockAutomationsGet.mockResolvedValue([
+      { id: "ada@example.com", label: "ada@example.com" },
+    ]);
+  });
+
+  it("fetches accounts from the parameterized route, submits the email, and shows the live success state", async () => {
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: false,
+      instructions: null,
+      secret_hint: null,
+      resource: "ada@example.com",
+    });
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(
+      await screen.findByRole("option", { name: "Google Workspace" }),
+    );
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(
+      await screen.findByRole("option", { name: "Calendar changed" }),
+    );
+
+    // The picker feed comes from the provider-parameterized resources route.
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/google/resources",
+      ),
+    );
+    // The third dropdown is labeled by the provider's resource noun; Create
+    // stays gated until an account is picked.
+    expect(screen.getByText("Google account")).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+
+    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(
+      await screen.findByRole("option", { name: "ada@example.com" }),
+    );
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    // The resource in the body is the account email (what the backend
+    // validates against the connected-accounts inventory).
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "google",
+      event_id: "calendar.changed",
+      resource: "ada@example.com",
+    });
+
+    // Auto path: already armed — no paste step, Done is immediately enabled,
+    // and the success copy names the account (emails are human-readable as-is).
+    expect(
+      await screen.findByText(/Google Workspace registered the webhook on ada@example\.com — this automation is live\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+  });
+});
+
 describe("RoutinesPanel sort", () => {
   beforeEach(() => {
     mockRead.mockClear();

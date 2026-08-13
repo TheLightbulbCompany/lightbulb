@@ -860,11 +860,13 @@ const START_RUNGS: ReadonlyArray<{
 ];
 
 // What the auto-registering shapes' third dropdown picks — the provider-side
-// resource the backend hooks ("owner/repo" for GitHub, a project for Vercel).
+// resource the backend hooks ("owner/repo" for GitHub, a project for Vercel,
+// a connected Google account email for Google watch channels).
 // The label heads the dropdown; the plural feeds its placeholder copy.
 const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
   auto_github: { label: "Repository", plural: "repositories" },
   auto_vercel: { label: "Project", plural: "projects" },
+  auto_google_watch: { label: "Google account", plural: "accounts" },
 };
 
 // POST /automations/from-integration's response (core/services/

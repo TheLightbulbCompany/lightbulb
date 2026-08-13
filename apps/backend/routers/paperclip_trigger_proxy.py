@@ -78,6 +78,17 @@ copy into ``X-Paperclip-Signature``; their retries carry no stable event id
 we derive, so duplicate deliveries can start duplicate runs — the same
 behavior as a hand-wired "Any other app" webhook today.
 
+Google push channels (auto_google_watch) send no body signature at all —
+they echo back the token set at watch time in ``X-Goog-Channel-Token``,
+which the seed set to the trigger's own secret. The proxy maps that header
+into ``Authorization: Bearer <token>`` (never clobbering a caller-supplied
+Authorization) so Paperclip's native ``bearer`` mode does the timing-safe
+compare. A delivery with ``X-Goog-Resource-State: sync`` is Google's
+channel-confirmation ping, fired on every watch create/renew — it is
+answered 204 at the edge instead of forwarded, or every (re)creation would
+start a spurious routine run. ``X-Goog-Resource-State`` / ``X-Goog-Changed``
+are forwarded on real deliveries as informational run context.
+
 An unarmed trigger (secret not yet pasted) **fails closed for free**:
 Paperclip verifies against its own random placeholder secret, which the
 provider's signature cannot match, so nothing fires until the real secret is
@@ -104,13 +115,17 @@ from routers.hooks_proxy import _check_rate_limit, _client_factory, _extract_cal
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Headers Paperclip's trigger verification reads (plus Content-Type).
+# Headers Paperclip's trigger verification reads (plus Content-Type), and the
+# informational X-Goog-* pair a Google push delivery carries (what kind of
+# change fired — the notification has no body, so these ARE the run context).
 # Everything else — cookies, Clerk tokens, spoofed X-Forwarded-* — is dropped.
 _FORWARDED_HEADERS = (
     "Authorization",
     "X-Paperclip-Signature",
     "X-Paperclip-Timestamp",
     "X-Hub-Signature-256",
+    "X-Goog-Resource-State",
+    "X-Goog-Changed",
     "Idempotency-Key",
     "Content-Type",
 )
@@ -292,6 +307,13 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
             media_type="application/json",
         )
 
+    # Google channel-confirmation ping: every watch create/renew fires one
+    # delivery with X-Goog-Resource-State: sync and no meaningful payload.
+    # Forwarding it would start a spurious routine run on every (re)creation,
+    # so it's acknowledged at the edge. The gates above still applied.
+    if request.headers.get("X-Goog-Resource-State") == "sync":
+        return Response(status_code=204)
+
     # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
     body = await request.body()
 
@@ -331,6 +353,15 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
         headers["X-Paperclip-Signature"] = stripe_v1
     if stripe_event_id and "Idempotency-Key" not in headers:
         headers["Idempotency-Key"] = stripe_event_id
+
+    # Google push channels authenticate by echoing back the channel token
+    # (set at watch time to the trigger's own secret) and send no
+    # Authorization of their own — map it so Paperclip's native bearer mode
+    # does the timing-safe compare. A caller-supplied Authorization (a
+    # hand-wired bearer sender) is never clobbered.
+    goog_token = request.headers.get("X-Goog-Channel-Token")
+    if goog_token and "Authorization" not in headers:
+        headers["Authorization"] = f"Bearer {goog_token}"
 
     # Raw-body HMAC providers (Sentry/Linear/Attio — registry-declared): copy
     # the provider's own signature header into X-Paperclip-Signature so

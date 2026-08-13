@@ -337,3 +337,26 @@ class TestSetWebhookSecret:
             )
         assert response.status_code == 403
         mock_lookup.assert_not_awaited()
+
+
+class TestGoogleResources:
+    """The account-picker feed for auto_google_watch — the same parameterized
+    resources route TestGithubResources exercises, dispatched by provider."""
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_google_accounts", new_callable=AsyncMock)
+    async def test_lists_accounts(self, mock_accounts, async_client):
+        mock_accounts.return_value = [
+            {"id": "ada@example.com", "label": "ada@example.com"},
+        ]
+        response = await async_client.get("/api/v1/automations/providers/google/resources")
+        assert response.status_code == 200
+        assert response.json() == mock_accounts.return_value
+        mock_accounts.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_google_accounts", new_callable=AsyncMock)
+    async def test_google_not_connected_404s(self, mock_accounts, async_client):
+        mock_accounts.side_effect = LookupError("Google is not connected")
+        response = await async_client.get("/api/v1/automations/providers/google/resources")
+        assert response.status_code == 404

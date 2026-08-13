@@ -103,3 +103,29 @@ def test_inbound_invariants_hold_for_every_provider():
         if p.inbound.instructions:
             # Must interpolate cleanly with exactly these placeholders.
             p.inbound.instructions.format(proxy_url="https://x", event_label="L", event_id="e")
+
+
+def test_google_inbound_is_auto_registering_via_watch():
+    from core.services.credentials.registry import get_provider
+
+    p = get_provider("google")
+    assert p.inbound is not None
+    assert p.inbound.webhook_registration == "auto_google_watch"
+    # Google sends no body signature — deliveries echo the channel token in
+    # X-Goog-Channel-Token, mapped by the proxy into Authorization: Bearer
+    # for Paperclip's native bearer mode. No signature_header shim.
+    assert p.inbound.signing_mode == "bearer"
+    assert p.inbound.signature_header is None
+    # The auto path has no paste step, so no guided copy or secret hint.
+    assert p.inbound.instructions is None
+    assert p.inbound.secret_hint is None
+    assert {e.id for e in p.inbound.events} == {"calendar.changed", "drive.changed"}
+    # No provider_events: the watch call itself picks the surface — there is
+    # no provider-side event array to subscribe.
+    for e in p.inbound.events:
+        assert e.provider_events is None, e.id
+    # The seed formats the starter prompt with the picked account email (the
+    # push notification carries no payload, so the description is the only
+    # carrier of which -a the agent should use) — it must interpolate cleanly.
+    rendered = p.inbound.template.starter_prompt.format(event_label="L", account="ada@example.com")
+    assert "ada@example.com" in rendered

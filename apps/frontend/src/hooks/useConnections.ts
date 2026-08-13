@@ -34,6 +34,18 @@ export interface Connection {
   byo_configured?: boolean;
   byo_setup_url?: string | null;
   /**
+   * Where a paste-key provider's token is minted. Distinct from
+   * `byo_setup_url`, which deep-links an OAuth-app console — this answers
+   * "where do I get the key this box is asking for".
+   */
+  token_setup_url?: string | null;
+  /**
+   * WHICH account is connected (Instagram username, Google email). Never a
+   * credential. Absent for connections made before identity was recorded, and
+   * for providers whose materializer resolves none.
+   */
+  identity?: string | null;
+  /**
    * This owner cannot connect the provider directly — it is gated off their
    * environment and they are not on its owner_allowlist. The row offers
    * Request access (emails support) instead of Connect. Set by the backend's

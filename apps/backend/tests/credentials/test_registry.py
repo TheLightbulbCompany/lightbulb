@@ -500,3 +500,35 @@ def test_meta_ads_publishes_the_remote_mcp_block():
     assert p.mcp_remote.key == "meta_ads"
     assert p.mcp_remote.url == "https://mcp.facebook.com/ads"
     assert p.mcp_remote.transport == "streamable-http"
+
+
+def test_meta_ads_server_block_filters_the_tool_catalog():
+    """The ads server's catalog must not reach the model unfiltered.
+
+    Measured against the live endpoint 2026-08-13: 95 tools, 687 KB of JSON
+    schema, ~172k tokens. OpenClaw loads MCP servers from the ONE global
+    openclaw.json with no per-agent scoping, so an unfiltered block would put
+    most of a 200k context window into EVERY agent's tool declarations on EVERY
+    turn — including agents that never touch ads. Pin the filter so a future
+    edit can't silently drop it.
+    """
+    block = registry.get_provider("meta_ads").mcp_remote.server_block()
+    include = block.get("toolFilter", {}).get("include", [])
+    assert include, "meta_ads must publish a toolFilter — 95 unfiltered tools blows the context"
+    assert len(include) < 30, "filter has grown back toward the unfiltered catalog"
+    # The campaign-lifecycle core the filter exists to preserve.
+    assert "ads_create_campaign" in include
+    assert "ads_insights_performance_trend" in include
+    # Catalog/pixel/experiment surfaces are the bulk of the 95 and stay out.
+    assert not [t for t in include if t.startswith(("ads_catalog_", "ads_pixel_", "ads_experiment_"))]
+
+
+def test_server_block_omits_tool_filter_when_unset():
+    """A server with no filter must emit no toolFilter key at all.
+
+    An empty `{"include": []}` would read to OpenClaw as "publish nothing",
+    silently emptying the catalog of every other remote MCP server.
+    """
+    block = registry.get_provider("stripe").mcp_remote.server_block()
+    assert "toolFilter" not in block
+    assert block["auth"] == "oauth"

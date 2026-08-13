@@ -81,6 +81,17 @@ class McpRemote(BaseModel):
     # 60s matches the MCP SDK's default per-request timeout, so runtime tool-call
     # behavior is unchanged; only the list budget is lifted.
     request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
+    # Tool names to publish from this server, as OpenClaw's
+    # ``mcp.servers.*.toolFilter.include``. Empty = publish everything.
+    #
+    # This exists because a remote catalog is not free: EVERY tool a server
+    # exposes is declared to the model on EVERY turn, and OpenClaw loads MCP
+    # servers only from the ONE global openclaw.json — there is no per-agent
+    # scoping — so an unfiltered server taxes every agent on the container,
+    # including the ones that will never call it. Meta's ads server measured
+    # 95 tools / 687 KB of schema (~172k tokens), which is most of a 200k
+    # context window before the agent reads a word. Filter anything large.
+    tool_filter_include: list[str] = Field(default_factory=list, alias="toolFilterInclude")
 
     model_config = {"populate_by_name": True}
 
@@ -93,12 +104,15 @@ class McpRemote(BaseModel):
         runtime treats the endpoint as a plain remote server, ignores the token
         store, and the server 401s. The materializer write and the reprovision
         rehydration both build the block from here, so they stay identical."""
-        return {
+        block: dict[str, object] = {
             "transport": self.transport,
             "url": self.url,
             "auth": "oauth",
             "requestTimeoutMs": self.request_timeout_ms,
         }
+        if self.tool_filter_include:
+            block["toolFilter"] = {"include": list(self.tool_filter_include)}
+        return block
 
 
 class SkillSpec(BaseModel):
@@ -316,6 +330,14 @@ class Provider(BaseModel):
     byo_required: bool = False
     # Help link shown in the BYO setup panel (the provider's OAuth-app console).
     byo_setup_url: str | None = None
+    # Where a paste_token provider's key is minted. The OAuth rail needs no such
+    # link (the provider's own consent screen is the flow), but an API-key row is
+    # just a blank box: without this the owner has to go find the right settings
+    # page themselves, which is the difference between connecting now and
+    # connecting later. Rendered next to the paste field, not in the BYO panel —
+    # deliberately separate from byo_setup_url, which points at an OAuth-app
+    # console and answers a different question.
+    token_setup_url: str | None = None
     # Remote MCP endpoint published into mcp.servers.<key> by the mcp_oauth
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.

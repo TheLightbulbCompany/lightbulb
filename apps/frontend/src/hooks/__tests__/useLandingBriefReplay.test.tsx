@@ -236,4 +236,23 @@ describe("useLandingBriefReplay", () => {
     expect(result.current.orgDraftVersion).toBe(0);
     expect(post).not.toHaveBeenCalled();
   });
+
+  it("leaves the stash untouched until the Clerk user resolves (personal path)", async () => {
+    user = null;
+    stash({ path: "new", input: "a ceramics studio", detail: "" });
+
+    const { rerender } = mount();
+    await act(async () => {});
+
+    // Not consumed, not posted — the metadata mirror needs the user, so the
+    // stash must survive the transient null.
+    expect(post).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(LANDING_BRIEF_STORAGE_KEY)).not.toBeNull();
+
+    user = { id: "user_1" };
+    post.mockResolvedValue({ status: "staged" });
+    rerender(READY);
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(writeFirstRun).toHaveBeenCalledTimes(1));
+  });
 });

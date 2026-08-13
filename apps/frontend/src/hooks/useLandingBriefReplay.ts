@@ -90,6 +90,10 @@ export function useLandingBriefReplay({
   React.useEffect(() => {
     if (firedRef.current) return;
     if (!orgLoaded) return;
+    // Personal path needs the Clerk user resolved BEFORE the stash is
+    // consumed: the POST itself doesn't need it, but the first-run metadata
+    // mirror does, and a transiently-null user would silently skip it.
+    if (!organization && !user) return;
     if (gatePhase !== "normal" || !awaitingBrief || isTerminalError) return;
 
     let raw: string | null = null;

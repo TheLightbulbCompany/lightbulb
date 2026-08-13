@@ -17,6 +17,14 @@ const BASE = process.env.BASE_URL ?? 'https://dev.isol8.co';
 const IDEA = 'A ceramics studio that ships nationwide — landing e2e';
 
 test.describe('Landing Funnel', () => {
+  // Production Clerk instances apply bot heuristics; the stock headless UA
+  // never gets clerk-js to initialize (see run 31688410391: window.Clerk
+  // absent after 120s while the page renders fine). Present a normal Chrome.
+  test.use({
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+  });
+
   test('landing brief replays through signup with no funnel flash', async ({ page }) => {
     test.setTimeout(900_000);
     const t0 = Date.now();
@@ -24,6 +32,20 @@ test.describe('Landing Funnel', () => {
       console.log(`T+${((Date.now() - t0) / 1000).toFixed(1)}s ${label}`);
     const secretKey = process.env.CLERK_SECRET_KEY;
     if (!secretKey) throw new Error('CLERK_SECRET_KEY required');
+
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    page.on('requestfailed', (req) => {
+      if (/clerk/i.test(req.url())) {
+        console.log('CLERK REQ FAILED', req.url().slice(0, 120), req.failure()?.errorText);
+      }
+    });
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && /clerk/i.test(msg.text())) {
+        console.log('CLERK CONSOLE', msg.text().slice(0, 200));
+      }
+    });
 
     // ── 1. the new landing renders: pill hero + workspace demo ──
     await page.goto(BASE, { waitUntil: 'domcontentloaded' });

@@ -47,7 +47,8 @@
  * clears itself once the admin's workspace comes up.
  */
 import { useAuth } from "@clerk/clerk-expo";
-import { useCallback } from "react";
+import { useCallback, useMemo, useRef } from "react";
+import { createApiClient } from "@isol8/shared";
 import {
   ActivityIndicator,
   Alert,
@@ -66,8 +67,11 @@ import {
   useContainerStatus,
   type ContainerStatus,
 } from "../../lib/containerStatus";
+import { makeAdapter } from "../../lib/adapter";
+import { APPLE_IAP_AVAILABLE } from "../../lib/appleIap";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
-import { purchaseGateCopy } from "../../lib/purchaseCta";
+import { isPurchaseGate, purchaseGateCopy } from "../../lib/purchaseCta";
+import { PaywallScreen } from "../billing/PaywallScreen";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { ProvisioningStepper } from "./ProvisioningStepper";
@@ -250,6 +254,29 @@ function TeamsDegradedBanner({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/**
+ * PaywallScreen wired to the authenticated API client.
+ *
+ * The screen takes `post` as a prop so it stays testable without Clerk; this
+ * is the one place that supplies the real one. Same getTokenRef pattern as
+ * settings.tsx — clerk-expo hands out a new getToken every render, so routing
+ * it through a ref keeps the client referentially stable.
+ */
+function ConnectedPaywall({ onPurchased }: { onPurchased: () => void }) {
+  const { getToken } = useAuth();
+  const getTokenRef = useRef(getToken);
+  getTokenRef.current = getToken;
+  const api = useMemo(
+    () => createApiClient(makeAdapter(() => getTokenRef.current())),
+    [],
+  );
+  const post = useCallback(
+    (path: string, body: unknown) => api.post(path, body as never),
+    [api],
+  );
+  return <PaywallScreen post={post} onPurchased={onPurchased} />;
+}
+
 // ---------------------------------------------------------------------------
 // Gate
 // ---------------------------------------------------------------------------
@@ -308,10 +335,19 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   }
 
   if (status.kind === "blocked") {
-    // Purchase gates render state and nothing else on iOS — no outbound
-    // button, and the LOCAL copy rather than the server's, which ends in a
-    // call to action the web frontend needs and this app may not carry
-    // (App Store 3.1.3(f); see lib/purchaseCta). Every other blocked code
+    // With IAP configured, a purchase gate becomes actionable again: show the
+    // paywall instead of a dead-end card. This is the 3.1.3(b) posture — the
+    // plan is purchasable INSIDE the app — superseding the CTA-free 3.1.3(f)
+    // one below, and it is why the paywall carries both StoreKit and the web
+    // link (3.1.1(a) permits both on the U.S. storefront).
+    if (APPLE_IAP_AVAILABLE && isPurchaseGate(status.code)) {
+      return <ConnectedPaywall onPurchased={refetch} />;
+    }
+
+    // Fallback while IAP is unconfigured — no product exists until the Paid
+    // Apps Agreement is active. State only, no outbound button, and the LOCAL
+    // copy rather than the server's, which ends in a call to action this app
+    // may not carry (3.1.3(f); see lib/purchaseCta). Every other blocked code
     // keeps the server copy and the outbound handoff exactly as before.
     const local = purchaseGateCopy(status.code);
     const copy = local ? { headline: local.title, body: local.body } : blockedCopy(status);

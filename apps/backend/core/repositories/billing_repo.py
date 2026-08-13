@@ -60,6 +60,86 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def get_by_apple_original_transaction_id(original_transaction_id: str) -> dict | None:
+    """Resolve the billing row an Apple auto-renewable subscription belongs to.
+
+    App Store Server Notifications identify a subscription only by its
+    ``originalTransactionId`` — they carry no Isol8 owner id — so this is how a
+    renewal, expiry, or refund finds the account to update. The mapping is
+    written by :func:`set_apple_subscription` when the purchase is first linked.
+
+    The backing GSI is SPARSE: ``apple_original_transaction_id`` is written only
+    for rows that actually have an Apple subscription, and never as an empty
+    string, because an empty value on a GSI key attribute makes DynamoDB reject
+    the ENTIRE PutItem — which, on this table's read-then-put writers, would
+    brick every unrelated billing write for that owner.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        IndexName="apple-original-transaction-index",
+        KeyConditionExpression=Key("apple_original_transaction_id").eq(original_transaction_id),
+    )
+    items = response.get("Items", [])
+    return items[0] if items else None
+
+
+async def set_apple_subscription(
+    owner_id: str,
+    *,
+    original_transaction_id: str,
+    status: str,
+    expires_at: int | None,
+    signed_date: int | None = None,
+) -> dict | None:
+    """Persist Apple IAP subscription identity + status onto the billing account.
+
+    Writes the SAME ``subscription_status`` field the Stripe path writes, on
+    purpose: every entitlement predicate in ``provision_gate`` keys off that one
+    field, so an Apple-subscribed owner is active, paid, and always-on entitled
+    through the existing code with no second axis to keep in sync. What
+    distinguishes the two is ``subscription_source``, which exists so billing
+    surfaces can send the customer to the right place to cancel — an Apple
+    subscription can only be managed in iOS Settings, and opening the Stripe
+    portal for one would be a dead end.
+
+    ``stripe_subscription_id`` is deliberately left alone. An owner who once had
+    a Stripe subscription and now pays through Apple must not have that history
+    erased by a renewal notification.
+
+    Returns None (no write) when no billing row exists, mirroring
+    ``set_subscription``: a notification for an owner we have no row for must
+    not conjure a phantom account.
+    """
+    if not original_transaction_id:
+        # Never "" — it keys a GSI, and DynamoDB rejects the whole PutItem.
+        raise ValueError("original_transaction_id must be non-empty (it keys a GSI)")
+
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+
+    existing["apple_original_transaction_id"] = original_transaction_id
+    existing["subscription_source"] = "apple_iap"
+    existing["subscription_status"] = status
+    if expires_at is not None:
+        existing["apple_expires_at"] = expires_at
+    else:
+        existing.pop("apple_expires_at", None)
+    # Watermark for the notification out-of-order guard (apple_iap). Only ever
+    # advances — a caller with no signedDate (the link path) leaves it alone
+    # rather than clearing it, or a purchase-link would reopen the window for
+    # every already-applied notification to be replayed.
+    if signed_date is not None:
+        existing["apple_last_signed_date"] = signed_date
+    existing["updated_at"] = utc_now_iso()
+
+    table = _get_table()
+    await run_in_thread(table.put_item, Item=existing)
+    publish_status_changed(owner_id)
+    return existing
+
+
 async def get_by_metronome_customer_id(metronome_customer_id: str) -> dict | None:
     """Resolve the billing row from a Metronome customer UUID.
 

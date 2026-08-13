@@ -22,11 +22,17 @@ def dynamodb_table():
             AttributeDefinitions=[
                 {"AttributeName": "owner_id", "AttributeType": "S"},
                 {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
+                {"AttributeName": "apple_original_transaction_id", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
                 {
                     "IndexName": "stripe-customer-index",
                     "KeySchema": [{"AttributeName": "stripe_customer_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "apple-original-transaction-index",
+                    "KeySchema": [{"AttributeName": "apple_original_transaction_id", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
                 },
             ],
@@ -573,3 +579,107 @@ async def test_try_claim_checkout_slot_no_row_returns_none(dynamodb_table):
     from core.repositories import billing_repo
 
     assert await billing_repo.try_claim_checkout_slot("ghost_owner") is None
+
+
+# ---------------------------------------------------------------------------
+# Apple IAP (App Store 3.1.3(b)) — the fixture above mirrors prod's
+# apple-original-transaction-index, so these exercise the real index.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_and_resolve_apple_subscription(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    written = await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="active",
+        expires_at=1_800_000_000_000,
+    )
+
+    assert written is not None
+    assert written["subscription_status"] == "active"
+    assert written["subscription_source"] == "apple_iap"
+
+    # The GSI lookup is how every renewal/expiry/refund finds the account.
+    found = await billing_repo.get_by_apple_original_transaction_id("2000000000000001")
+    assert found is not None
+    assert found["owner_id"] == "user_1"
+
+
+@pytest.mark.asyncio
+async def test_set_apple_subscription_preserves_stripe_history(dynamodb_table):
+    """An owner who once paid via Stripe and now pays via Apple must keep the
+    Stripe id — a renewal notification is not a reason to erase it."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_subscription(owner_id="user_1", subscription_id="sub_old", status="canceled")
+
+    await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="active",
+        expires_at=None,
+    )
+
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["stripe_subscription_id"] == "sub_old"
+    assert row["subscription_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_set_apple_subscription_refuses_empty_transaction_id(dynamodb_table):
+    """An empty string on a GSI key attribute makes DynamoDB reject the ENTIRE
+    PutItem. On this table's read-then-put writers that would brick every
+    unrelated billing write for the owner (the 2026-08-02 outage shape), so the
+    setter refuses before it can reach the table."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    with pytest.raises(ValueError):
+        await billing_repo.set_apple_subscription(
+            "user_1", original_transaction_id="", status="active", expires_at=None
+        )
+
+    # The row is untouched and still writable.
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert "apple_original_transaction_id" not in row
+
+
+@pytest.mark.asyncio
+async def test_set_apple_subscription_no_row_returns_none(dynamodb_table):
+    """A notification for an owner we have no row for must not conjure one."""
+    from core.repositories import billing_repo
+
+    result = await billing_repo.set_apple_subscription(
+        "ghost", original_transaction_id="2000000000000009", status="active", expires_at=None
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_apple_signed_date_watermark_only_advances(dynamodb_table):
+    """The link path carries no signedDate and must not clear the watermark —
+    doing so would reopen the replay window for every applied notification."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="active",
+        expires_at=None,
+        signed_date=9_000,
+    )
+    await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="active",
+        expires_at=None,
+    )
+
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["apple_last_signed_date"] == 9_000

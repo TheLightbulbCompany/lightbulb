@@ -23,11 +23,17 @@ def dynamodb_table():
             AttributeDefinitions=[
                 {"AttributeName": "owner_id", "AttributeType": "S"},
                 {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
+                {"AttributeName": "apple_original_transaction_id", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
                 {
                     "IndexName": "stripe-customer-index",
                     "KeySchema": [{"AttributeName": "stripe_customer_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": "apple-original-transaction-index",
+                    "KeySchema": [{"AttributeName": "apple_original_transaction_id", "KeyType": "HASH"}],
                     "Projection": {"ProjectionType": "ALL"},
                 },
             ],

@@ -262,6 +262,29 @@ class Settings(BaseSettings):
     # STRIPE_TEAM_BASE_PRICE_ID's unit amount in Stripe.
     TEAM_BASE_PRICE_USD: int = 50
 
+    # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
+    # be buyable inside the iOS app). ALL default empty, and the feature is off
+    # while APPLE_IAP_BUNDLE_ID is: the Paid Apps Agreement has to be active
+    # before a subscription product can exist, so every environment boots
+    # without these and the router answers 503 rather than 500.
+    APPLE_IAP_BUNDLE_ID: str = ""
+    # Numeric App Store app id (6788944100). Optional — the verifier uses it to
+    # bind notifications to this app when present.
+    APPLE_IAP_APP_APPLE_ID: str = ""
+    # "sandbox" (default) or "production". A sandbox transaction fails
+    # verification against a production verifier and vice versa, so this MUST
+    # match the build being served: TestFlight and the simulator are sandbox.
+    APPLE_IAP_ENVIRONMENT: str = "sandbox"
+    # Directory holding Apple's root .cer files. The certificate chain is
+    # pinned to these, so an empty or wrong directory disables the feature
+    # rather than weakening it — see apple_iap._verifier.
+    APPLE_IAP_ROOT_CERTS_DIR: str = ""
+    # The one product id we sell. A transaction naming anything else is
+    # rejected, so a purchase of some other product can never grant a plan
+    # here. Price is deliberately NOT configured: StoreKit is the source of
+    # truth and the app renders the localized price off the product itself.
+    APPLE_IAP_PRODUCT_ID: str = ""
+
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).
     MARKETPLACE_LISTINGS_TABLE: str = ""

@@ -1,0 +1,348 @@
+"""Apple IAP entitlement mapping, linking, and notification handling.
+
+The JWS verifier itself is Apple's library and is not re-tested here — what IS
+tested is everything we built around it: that an unverifiable payload never
+reaches a write, that event types map to the right ``subscription_status``, that
+a subscription cannot be walked between accounts, and that Apple's retry /
+out-of-order delivery cannot corrupt entitlement.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from core.services import apple_iap
+from core.services.apple_iap import AppleIapError, AppleIapNotConfigured
+from core.services.webhook_dedup import WebhookDedupResult
+
+
+def _transaction(**overrides):
+    base = dict(
+        originalTransactionId="2000000000000001",
+        productId="co.isol8.mobile.plan.monthly",
+        expiresDate=1_800_000_000_000,
+        revocationDate=None,
+        appAccountToken=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _notification(**overrides):
+    base = dict(
+        notificationType="DID_RENEW",
+        notificationUUID="uuid-1",
+        signedDate=1_700_000_000_000,
+        data=SimpleNamespace(signedTransactionInfo="signed-tx"),
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.fixture(autouse=True)
+def _product_id(monkeypatch):
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "co.isol8.mobile.plan.monthly")
+
+
+# ---------------------------------------------------------------------------
+# Status mapping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "notification_type,expected",
+    [
+        ("SUBSCRIBED", "active"),
+        ("DID_RENEW", "active"),
+        ("OFFER_REDEEMED", "active"),
+        ("EXPIRED", "canceled"),
+        ("REFUND", "canceled"),
+        ("REVOKE", "canceled"),
+        # Billing retry: recoverable, so it maps to the same status the Stripe
+        # path uses for a failed charge rather than cutting access immediately.
+        ("DID_FAIL_TO_RENEW", "past_due"),
+    ],
+)
+def test_status_mapping(notification_type, expected):
+    assert apple_iap._status_for(notification_type) == expected
+
+
+def test_unmapped_notification_type_raises_rather_than_guessing():
+    with pytest.raises(AppleIapError):
+        apple_iap._status_for("SOME_FUTURE_APPLE_EVENT")
+
+
+def test_revocation_date_revokes_regardless_of_type():
+    """A refunded transaction must lose access even when the notification type
+    itself is a granting one — the money has been returned."""
+    subscription = apple_iap._subscription_from_transaction(_transaction(revocationDate=1_700_000_000_000), "DID_RENEW")
+    assert subscription.status == "canceled"
+
+
+def test_foreign_product_id_is_rejected():
+    """A valid transaction for a product we do not sell must never grant a plan."""
+    with pytest.raises(AppleIapError, match="unexpected productId"):
+        apple_iap._subscription_from_transaction(_transaction(productId="com.someone.else.pro"), "SUBSCRIBED")
+
+
+def test_transaction_without_original_id_is_rejected():
+    with pytest.raises(AppleIapError):
+        apple_iap._subscription_from_transaction(_transaction(originalTransactionId=None), "SUBSCRIBED")
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+
+def test_unconfigured_environment_raises_not_configured(monkeypatch):
+    """The feature is off until the Paid Apps Agreement is active. That must be
+    a distinguishable error so the router answers 503, not 500."""
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "")
+    apple_iap._verifier.cache_clear()
+    with pytest.raises(AppleIapNotConfigured):
+        apple_iap._verifier()
+    apple_iap._verifier.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# link_purchase
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_writes_entitlement():
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
+        ) as set_sub,
+    ):
+        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert result.status == "active"
+    set_sub.assert_awaited_once()
+    assert set_sub.await_args.kwargs["original_transaction_id"] == "2000000000000001"
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_rejects_an_unverifiable_transaction():
+    """The security boundary: a payload the verifier rejects must never reach a
+    write. A forged one that did would hand out a paid plan for free."""
+
+    def _boom(_):
+        raise ValueError("bad signature")
+
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=_boom)
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError):
+            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="forged")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_refuses_to_move_a_subscription_between_accounts():
+    """Without this, one Apple ID could be walked across accounts to keep
+    several of them paid off a single subscription."""
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_OTHER"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError, match="already linked"):
+            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_is_idempotent_for_the_same_owner():
+    """A client retrying after a dropped response must not be an error."""
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert result.status == "active"
+
+
+# ---------------------------------------------------------------------------
+# apply_notification
+# ---------------------------------------------------------------------------
+
+
+def _notification_verifier(notification, transaction=None):
+    return SimpleNamespace(
+        verify_and_decode_notification=lambda _: notification,
+        verify_and_decode_signed_transaction=lambda _: transaction or _transaction(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_notification_applies_status_to_the_linked_owner():
+    with (
+        patch.object(apple_iap, "_verifier", return_value=_notification_verifier(_notification())),
+        patch.object(
+            apple_iap.webhook_dedup,
+            "record_event_or_skip",
+            AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result == ("user_1", "active")
+    set_sub.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_notification_replay_is_skipped():
+    """Apple retries for up to three days; the same uuid must not be reapplied."""
+    with (
+        patch.object(apple_iap, "_verifier", return_value=_notification_verifier(_notification())),
+        patch.object(
+            apple_iap.webhook_dedup,
+            "record_event_or_skip",
+            AsyncMock(return_value=WebhookDedupResult.ALREADY_SEEN),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result is None
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_notification_does_not_move_entitlement_backwards():
+    """Apple does not promise ordering. A retried DID_RENEW landing after an
+    EXPIRED must not restore access that legitimately ended."""
+    stale = _notification(notificationType="DID_RENEW", signedDate=1_000)
+    with (
+        patch.object(apple_iap, "_verifier", return_value=_notification_verifier(stale)),
+        patch.object(
+            apple_iap.webhook_dedup,
+            "record_event_or_skip",
+            AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1", "apple_last_signed_date": 9_000}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result is None
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notification_for_an_unlinked_subscription_is_acked_not_applied():
+    """The app died between StoreKit returning and the link call landing. There
+    is nothing to update; the client's restore path recovers it."""
+    with (
+        patch.object(apple_iap, "_verifier", return_value=_notification_verifier(_notification())),
+        patch.object(
+            apple_iap.webhook_dedup,
+            "record_event_or_skip",
+            AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result is None
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notification_without_a_transaction_is_ignored():
+    """CONSUMPTION_REQUEST / TEST carry no transaction — not an error."""
+    empty = _notification(notificationType="TEST", data=None)
+    with (
+        patch.object(apple_iap, "_verifier", return_value=_notification_verifier(empty)),
+        patch.object(
+            apple_iap.webhook_dedup,
+            "record_event_or_skip",
+            AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result is None
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unverifiable_notification_raises_so_apple_retries():
+    """Swallowing a bad-signature notification would also swallow a real
+    renewal during a misconfiguration, cutting off a paying customer."""
+
+    def _boom(_):
+        raise ValueError("bad chain")
+
+    verifier = SimpleNamespace(verify_and_decode_notification=_boom)
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError):
+            await apple_iap.apply_notification("forged")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unactionable_notification_is_acked_not_retried():
+    """An unmapped type is a permanent condition — answering 400 would make
+    Apple retry it for three days."""
+    unknown = _notification(notificationType="SOME_FUTURE_APPLE_EVENT")
+    with (
+        patch.object(apple_iap, "_verifier", return_value=_notification_verifier(unknown)),
+        patch.object(
+            apple_iap.webhook_dedup,
+            "record_event_or_skip",
+            AsyncMock(return_value=WebhookDedupResult.RECORDED),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result is None
+    set_sub.assert_not_awaited()

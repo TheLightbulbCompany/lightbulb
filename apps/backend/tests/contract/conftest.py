@@ -37,7 +37,10 @@ _CONTRACT_TABLES: dict[str, tuple[list[tuple[str, str, str]], dict[str, list[tup
     ),
     "billing-accounts": (
         [("owner_id", "HASH", "S")],
-        {"stripe-customer-index": [("stripe_customer_id", "HASH", "S")]},
+        {
+            "stripe-customer-index": [("stripe_customer_id", "HASH", "S")],
+            "apple-original-transaction-index": [("apple_original_transaction_id", "HASH", "S")],
+        },
     ),
     "usage-counters": ([("owner_id", "HASH", "S"), ("period", "RANGE", "S")], {}),
     "pending-updates": (

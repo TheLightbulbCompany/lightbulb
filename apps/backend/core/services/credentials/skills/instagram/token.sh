@@ -53,21 +53,34 @@ if [ "$remaining" -lt "$WINDOW_SECONDS" ]; then
     tmp=$(mktemp "$(dirname "$CRED")/.credentials.XXXXXX") || tmp=""
     if [ -n "$tmp" ]; then
       # Compare-and-swap. A reconnect may have rewritten credentials.json while
-      # we sat in that curl — possibly for a DIFFERENT Instagram account. Blindly
-      # writing our result would pair the new account's user_id/username with the
+      # we sat in that curl — possibly for a DIFFERENT Instagram account — and
+      # blindly writing would pair the new account's user_id/username with the
       # OLD account's token. The backend serializes its own writes under a
-      # per-owner lock, but it cannot reach into this container, so the check
-      # belongs here. If the file changed underneath us, ours is the stale token:
-      # discard it and hand back whatever is actually on disk now.
-      current=$(jq -r '.access_token // empty' "$CRED" 2>/dev/null)
-      if [ -n "$current" ] && [ "$current" != "$token" ]; then
-        rm -f "$tmp"
-        token="$current"
-      elif jq --arg t "$fresh" --arg e "$new_expiry" --argjson s "$ttl" \
-             '.access_token = $t | .token_expiry = $e | .expires_in = $s' "$CRED" >"$tmp" 2>/dev/null &&
-           chmod 600 "$tmp" && mv -f "$tmp" "$CRED"; then
-        token="$fresh"
-        renewed=1
+      # per-owner lock but cannot reach into this container, so the check has to
+      # happen here. If the file changed underneath us, ours is the stale token:
+      # discard it and hand back whatever is on disk now.
+      #
+      # Build the replacement FIRST, then re-read and swap, so the gap between
+      # check and mv is two adjacent syscalls instead of the ~15s network call.
+      # This is deliberately not a true atomic CAS: the skill dir is on EFS
+      # (NFS), where flock(1) is unreliable — the backend uses fcntl.lockf for
+      # exactly that reason and there is no lockf CLI to match it from bash.
+      # The residual window is microseconds, and its failure is self-announcing
+      # rather than silent: a mismatched token/account fails the next Graph call
+      # with a permissions error and the owner reconnects.
+      if jq --arg t "$fresh" --arg e "$new_expiry" --argjson s "$ttl" \
+           '.access_token = $t | .token_expiry = $e | .expires_in = $s' "$CRED" >"$tmp" 2>/dev/null &&
+         chmod 600 "$tmp"; then
+        current=$(jq -r '.access_token // empty' "$CRED" 2>/dev/null)
+        if [ -n "$current" ] && [ "$current" != "$token" ]; then
+          rm -f "$tmp"
+          token="$current"
+        elif mv -f "$tmp" "$CRED"; then
+          token="$fresh"
+          renewed=1
+        else
+          rm -f "$tmp"
+        fi
       else
         rm -f "$tmp"
       fi

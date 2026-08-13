@@ -19,11 +19,23 @@ delete what is already stored.
 Run via::
 
     cd apps/backend
-    DYNAMODB_TABLE_PREFIX=isol8-prod uv run python -m scripts.rematerialize_instagram_skill --env prod
-    DYNAMODB_TABLE_PREFIX=isol8-prod uv run python -m scripts.rematerialize_instagram_skill --env prod --apply
+    DYNAMODB_TABLE_PREFIX=isol8-prod- uv run python -m scripts.rematerialize_instagram_skill --env prod
+    DYNAMODB_TABLE_PREFIX=isol8-prod- uv run python -m scripts.rematerialize_instagram_skill --env prod --apply
+
+Note the TRAILING HYPHEN on the prefix: ``core.dynamodb.table_name`` concatenates
+it verbatim, so ``isol8-prod`` would address ``isol8-prodintegrations``.
 
 Defaults to dry-run. Writes to the owner's EFS workspace, so run it where
 ``EFS_MOUNT_PATH`` actually resolves (a task in the cluster) — not a laptop.
+
+Owners already on the new scheme are SKIPPED, keyed on ``token.sh`` existing in
+their skill dir. This is load-bearing, not tidiness: once Instagram is
+``refresh_owner: actor`` the OAuth callback no longer writes Secrets Manager
+(``_retains_secret`` is False), so an owner who reconnects after the deploy has a
+fresh credential on EFS and a STALE one in Secrets Manager. Re-materializing them
+would push the stale token back over a working connection — the migration would
+become the outage. ``token.sh`` is the marker because only the new materializer
+writes it.
 
 Idempotent: re-running rewrites the same three files atomically. Once every
 environment is migrated, DELETE this script — git history is the record.
@@ -47,6 +59,7 @@ async def main(*, apply: bool, env: str) -> int:
     # ENVIRONMENT at import time.
     from core.repositories import integrations_repo
     from core.services.credentials import apply_connection, connection_lock, integration_secret_store
+    from core.services.credentials.materializers.base import owner_efs_root
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -64,6 +77,15 @@ async def main(*, apply: bool, env: str) -> int:
     print(f"[{env}] {len(owners)} owner(s) with Instagram connected")
     failures = 0
     for owner_id in owners:
+        # Already on the new scheme — either migrated by an earlier run, or
+        # reconnected since the deploy. A post-deploy reconnect writes EFS but
+        # NOT Secrets Manager (refresh_owner: actor ⇒ _retains_secret False), so
+        # re-materializing from the retained secret would overwrite a working
+        # connection with a stale token. Skip on the marker only the new
+        # materializer writes.
+        if (owner_efs_root(owner_id) / "skills" / "instagram" / "token.sh").exists():
+            print(f"  {owner_id}: already has token.sh — skipping")
+            continue
         credential = await integration_secret_store.get(owner_id, "instagram")
         if not credential or not credential.get("access_token"):
             # Nothing retained to re-materialize from — that owner has to

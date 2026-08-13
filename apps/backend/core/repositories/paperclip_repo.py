@@ -1961,18 +1961,28 @@ class PaperclipRepo:
         The counter is on the item rather than in memory because the process
         that fails is often not the process that retries (a rolling deploy, a
         different ECS task picking up the next poll).
+
+        Conditional on the item existing: an unconditional update_item against
+        a concurrently-deleted item would RESURRECT it as a partial (attempts
+        + last_error, no brief_state), which ``put_pending_brief``'s guard
+        then rejects forever. Item gone means nothing to count -- report 0.
         """
-        resp = await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": _pending_brief_key(owner_id)},
-            UpdateExpression="ADD attempts :one SET last_error = :e, last_attempt_at = :t",
-            ExpressionAttributeValues={
-                ":one": 1,
-                ":e": reason[:500],
-                ":t": utc_now_iso(),
-            },
-            ReturnValues="UPDATED_NEW",
-        )
+        table = self._table()
+        try:
+            resp = await run_in_thread(
+                table.update_item,
+                Key={"user_id": _pending_brief_key(owner_id)},
+                UpdateExpression="ADD attempts :one SET last_error = :e, last_attempt_at = :t",
+                ConditionExpression="attribute_exists(user_id)",
+                ExpressionAttributeValues={
+                    ":one": 1,
+                    ":e": reason[:500],
+                    ":t": utc_now_iso(),
+                },
+                ReturnValues="UPDATED_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return 0
         return int(resp.get("Attributes", {}).get("attempts", 0))
 
     async def fail_pending_brief(self, owner_id: str, *, reason: str, owner_broadcast_id: Optional[str] = None) -> None:
@@ -1985,17 +1995,26 @@ class PaperclipRepo:
         then submit again (``put_pending_brief`` overwrites a failed item).
         Without this a deterministic fulfilment failure left them in an empty
         chat, with an agent that never starts and no way to retry.
+
+        Conditional on the item existing, for the same reason as
+        ``record_pending_brief_failure``: resurrecting a deleted item as a
+        partial would block every future submit. Gone item = nothing to mark.
         """
-        await run_in_thread(
-            self._table().update_item,
-            Key={"user_id": _pending_brief_key(owner_id)},
-            UpdateExpression="SET brief_state = :failed, last_error = :e, failed_at = :t",
-            ExpressionAttributeValues={
-                ":failed": "failed",
-                ":e": reason[:500],
-                ":t": utc_now_iso(),
-            },
-        )
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": _pending_brief_key(owner_id)},
+                UpdateExpression="SET brief_state = :failed, last_error = :e, failed_at = :t",
+                ConditionExpression="attribute_exists(user_id)",
+                ExpressionAttributeValues={
+                    ":failed": "failed",
+                    ":e": reason[:500],
+                    ":t": utc_now_iso(),
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
         # The funnel is about to re-render for every tab on this company.
         publish_status_changed(owner_broadcast_id or owner_id)
 

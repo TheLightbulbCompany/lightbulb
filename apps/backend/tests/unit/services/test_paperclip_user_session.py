@@ -39,7 +39,9 @@ async def test_get_user_session_cookie_signs_in_with_decrypted_password(active_c
         clerk_email_resolver=AsyncMock(return_value="alice@example.com"),
     )
 
-    repo.get.assert_awaited_once_with("u1")
+    # Strong read is load-bearing: a replica-lagged miss right after the row
+    # flips to active burns one of the brief drain's failure attempts.
+    repo.get.assert_awaited_once_with("u1", consistent_read=True)
     admin_client.sign_in_user.assert_awaited_once_with(email="alice@example.com", password="the-password")
     assert cookie == "paperclip-default.session_token=AAA"
 

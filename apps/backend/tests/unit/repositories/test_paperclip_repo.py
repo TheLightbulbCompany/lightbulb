@@ -1419,3 +1419,32 @@ async def test_failures_are_counted_on_the_item_not_in_memory(repo):
     assert item["last_error"] == "boom again"
     # Still drainable: counting a failure is not giving up.
     assert item["brief_state"] == "pending"
+
+
+async def test_failure_record_on_a_deleted_item_does_not_resurrect_it(repo):
+    """An unconditional update_item against a concurrently-deleted item would
+    resurrect it as a partial (attempts + last_error, no brief_state) that
+    put_pending_brief's guard rejects forever -- the owner could never file
+    a brief again."""
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="user_abc"
+    )
+    await repo.delete_pending_brief("user_abc")
+
+    assert await repo.record_pending_brief_failure("user_abc", reason="boom") == 0
+    assert await repo.get_pending_brief("user_abc") is None
+
+    assert await repo.put_pending_brief(
+        "user_abc", path="new", user_input="next idea", detail=None, brief_text="build next", submitted_by="user_abc"
+    )
+
+
+async def test_fail_pending_brief_on_a_deleted_item_is_a_noop(repo):
+    await repo.put_pending_brief(
+        "user_abc", path="new", user_input="an idea", detail=None, brief_text="build an idea", submitted_by="user_abc"
+    )
+    await repo.delete_pending_brief("user_abc")
+
+    await repo.fail_pending_brief("user_abc", reason="gave up")
+
+    assert await repo.get_pending_brief("user_abc") is None

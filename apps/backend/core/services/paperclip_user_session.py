@@ -25,7 +25,7 @@ class UserSessionError(Exception):
 
 
 class _Repo(Protocol):
-    async def get(self, user_id: str) -> PaperclipCompany | None: ...
+    async def get(self, user_id: str, *, consistent_read: bool = False) -> PaperclipCompany | None: ...
 
 
 class _AdminClient(Protocol):
@@ -46,7 +46,11 @@ async def get_user_session_cookie(
       - the company exists but ``status != "active"``
       - the upstream sign-in returns no Set-Cookie
     """
-    company = await repo.get(user_id)
+    # Strongly consistent: the brief drain calls this right after the company
+    # row flips to active, and a replica-lagged read here raises
+    # UserSessionError -- which the drain counts as a FAILED attempt, burning
+    # the retry budget on pure timing.
+    company = await repo.get(user_id, consistent_read=True)
     if company is None:
         raise UserSessionError(f"team workspace not provisioned for user {user_id}")
     if company.status != "active":

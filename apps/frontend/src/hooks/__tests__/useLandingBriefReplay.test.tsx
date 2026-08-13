@@ -220,4 +220,20 @@ describe("useLandingBriefReplay", () => {
     expect(post).not.toHaveBeenCalled();
     expect(writeFirstRun).not.toHaveBeenCalled();
   });
+
+  it("never replaces an existing org draft with a stale landing stash", async () => {
+    organization = { id: "org_9" };
+    const draftKey = "isol8_first_run_draft_v1:org_9";
+    const deliberate = JSON.stringify({ path: "new", input: "the real company brief", detail: "" });
+    window.sessionStorage.setItem(draftKey, deliberate);
+    stash({ path: "grow", input: "stale.example.com", detail: "" });
+
+    const { result } = mount();
+    await act(async () => {});
+
+    // Deliberate company-scoped intent wins; no remount is forced either.
+    expect(window.sessionStorage.getItem(draftKey)).toBe(deliberate);
+    expect(result.current.orgDraftVersion).toBe(0);
+    expect(post).not.toHaveBeenCalled();
+  });
 });

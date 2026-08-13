@@ -111,13 +111,15 @@ export function useLandingBriefReplay({
 
     if (organization) {
       // Pre-fill, never submit: land the stash under the funnel's own
-      // owner-scoped draft key (same shape) so it renders filled in.
+      // owner-scoped draft key (same shape) so it renders filled in. An
+      // EXISTING org draft wins — it is deliberate company-scoped intent,
+      // and a stale personal landing stash must never replace it.
       try {
-        window.sessionStorage.setItem(
-          `${DRAFT_STORAGE_KEY}:${organization.id}`,
-          JSON.stringify(brief),
-        );
-        setOrgDraftVersion((v) => v + 1);
+        const draftKey = `${DRAFT_STORAGE_KEY}:${organization.id}`;
+        if (!window.sessionStorage.getItem(draftKey)) {
+          window.sessionStorage.setItem(draftKey, JSON.stringify(brief));
+          setOrgDraftVersion((v) => v + 1);
+        }
       } catch {
         /* best-effort */
       }

@@ -41,6 +41,19 @@ describe("WorkspaceDemo", () => {
     expect(left.getByText("Price it against the market")).toBeInTheDocument();
   });
 
+  it("inbox tabs and search filter honestly, with the real empty state", () => {
+    render(<WorkspaceDemo />);
+    // Mine: every demo task is agent-assigned, so the visitor's tab is empty.
+    fireEvent.click(screen.getByRole("tab", { name: "Mine" }));
+    expect(screen.getByText("Inbox zero.")).toBeInTheDocument();
+    // Unmatched search on All shows the search empty state.
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    fireEvent.change(screen.getByLabelText("Search inbox"), {
+      target: { value: "zzz-no-match" },
+    });
+    expect(screen.getByText("No matches.")).toBeInTheDocument();
+  });
+
   it("opens the task detail (real IssueHeader + IssueComments) on row click", () => {
     render(<WorkspaceDemo />);
     fireEvent.click(screen.getAllByRole("button", { name: "Tasks" })[0]);

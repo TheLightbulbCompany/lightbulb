@@ -53,6 +53,7 @@ import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import { Monogram } from "@/components/agents/AgentIdentity";
 import {
   EditorialButton,
+  PanelEmptyState,
   PanelMasthead,
   PanelToolbar,
 } from "@/components/teams/shell";
@@ -67,7 +68,6 @@ import {
   matchesInboxIssueSearch,
 } from "@/components/teams/shared/lib/inbox";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
-import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
@@ -132,17 +132,6 @@ function NavRow({
       <span className="flex-1 text-left">{label}</span>
       {trailing}
     </button>
-  );
-}
-
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-3 py-1.5">
-      <span className="w-20 shrink-0 text-xs text-[var(--mute)]">{label}</span>
-      <span className="flex min-w-0 items-center gap-1.5 text-sm text-[var(--ink)]">
-        {children}
-      </span>
-    </div>
   );
 }
 
@@ -212,17 +201,34 @@ export function WorkspaceDemo() {
     [issues, taskSearch],
   );
 
-  const inboxIssues = React.useMemo(
-    () =>
-      issues.filter(
-        (i) =>
-          !archivedIds.has(i.id) &&
-          !i.hiddenAt &&
-          (inboxTab !== "unread" || i.unread) &&
-          matchesInboxIssueSearch(i, inboxSearch),
-      ),
-    [issues, archivedIds, inboxTab, inboxSearch],
-  );
+  const inboxIssues = React.useMemo(() => {
+    const matchesTab = (i: Issue): boolean => {
+      switch (inboxTab) {
+        case "mine":
+          // Every demo task is agent-assigned — the visitor owns none, so
+          // Mine honestly shows the empty state.
+          return false;
+        case "unread":
+          return i.unread === true;
+        case "recent": {
+          // Touched within the demo's "today".
+          const ts = i.updatedAt ?? i.createdAt;
+          return (
+            !!ts && Date.parse(DEMO_NOW_ISO) - Date.parse(ts) < 24 * 60 * 60 * 1000
+          );
+        }
+        default:
+          return true;
+      }
+    };
+    return issues.filter(
+      (i) =>
+        !archivedIds.has(i.id) &&
+        !i.hiddenAt &&
+        matchesTab(i) &&
+        matchesInboxIssueSearch(i, inboxSearch),
+    );
+  }, [issues, archivedIds, inboxTab, inboxSearch]);
   const inboxSections = React.useMemo(
     () =>
       buildGroupedInboxSections(getInboxWorkItems(inboxIssues), {
@@ -242,9 +248,6 @@ export function WorkspaceDemo() {
     setView(next);
     setDetailIssueId(null);
   };
-
-  const assigneeOf = (issue: Issue) =>
-    DEMO_AGENTS.find((a) => a.id === issue.assigneeAgentId) ?? null;
 
   const namingIssue = issues.find((i) => i.id === "iss-name");
 
@@ -390,46 +393,9 @@ export function WorkspaceDemo() {
           />
         </div>
       </div>
-      {/* properties rail — static rows, real icon components */}
-      <div className="hidden w-56 shrink-0 overflow-y-auto border-l border-[var(--edge)] p-4 lg:block">
-        <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mute)]">
-          Properties
-        </p>
-        <PropertyRow label="Status">
-          <StatusIcon
-            status={detailIssue.status}
-            showLabel
-            onChange={(status) => updateIssue(detailIssue.id, { status })}
-          />
-        </PropertyRow>
-        <PropertyRow label="Assignee">
-          {assigneeOf(detailIssue) ? (
-            <Identity name={assigneeOf(detailIssue)!.name} size="sm" />
-          ) : (
-            <span className="text-xs text-[var(--mute)]">Unassigned</span>
-          )}
-        </PropertyRow>
-        {detailIssue.priority ? (
-          <PropertyRow label="Priority">
-            <PriorityIcon priority={detailIssue.priority} showLabel />
-          </PropertyRow>
-        ) : null}
-        {detailIssue.project ? (
-          <PropertyRow label="Project">{detailIssue.project.name}</PropertyRow>
-        ) : null}
-        {(detailIssue.labels?.length ?? 0) > 0 ? (
-          <PropertyRow label="Labels">
-            {detailIssue.labels!.map((label) => (
-              <span
-                key={label.id}
-                className="rounded border border-[var(--edge)] bg-[var(--cream-deeper)] px-1.5 py-0.5 text-[11px] text-[var(--ink-soft)]"
-              >
-                {label.name}
-              </span>
-            ))}
-          </PropertyRow>
-        ) : null}
-      </div>
+      {/* No properties rail here: it was sized for the old full-width pane,
+          and the dock's left slot (~430px at desktop) can't spare 224px.
+          IssueHeader + inline chips carry the same facts. */}
     </div>
   ) : null;
 
@@ -580,6 +546,34 @@ export function WorkspaceDemo() {
           }
         />
       </div>
+      {inboxSections.length === 0 ? (
+        // Same per-tab / per-search copy as the real InboxPage's empty state.
+        <PanelEmptyState
+          icon={Inbox}
+          headline={
+            inboxSearch.trim()
+              ? "No matches."
+              : inboxTab === "mine"
+                ? "Inbox zero."
+                : inboxTab === "unread"
+                  ? "No new inbox items."
+                  : inboxTab === "recent"
+                    ? "No recent inbox items."
+                    : "Nothing here."
+          }
+          supporting={
+            inboxSearch.trim()
+              ? "No inbox items match your search."
+              : inboxTab === "mine"
+                ? "Nothing pending right now. Items appear here when an agent completes a run, an issue is assigned to you, or an approval is requested."
+                : inboxTab === "unread"
+                  ? "Everything in your inbox has been read."
+                  : inboxTab === "recent"
+                    ? "Recently touched issues will surface here."
+                    : "No inbox items match these filters."
+          }
+        />
+      ) : (
       <div className="editorial-card mt-4 overflow-hidden">
         <InboxList
           sections={inboxSections}
@@ -598,6 +592,7 @@ export function WorkspaceDemo() {
           )}
         />
       </div>
+      )}
     </div>
   );
 

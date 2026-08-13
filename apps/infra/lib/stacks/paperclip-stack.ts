@@ -366,10 +366,12 @@ export class PaperclipStack extends cdk.Stack {
         ? "https://company.isol8.co"
         : `https://${env}.company.isol8.co`;
 
-    // In-VPC Cloud Map host. Kept on PAPERCLIP_API_URL for parity / newer images that
-    // read it, but on the deployed image this env is dead on the wake path (the wake
-    // reads PAPERCLIP_RUNTIME_API_URL first); the live agent path is the adapterConfig
-    // override above, not this.
+    // In-VPC Cloud Map host. Since upstream's PAPERCLIP_API_URL-first precedence
+    // change (adapter-utils buildPaperclipEnv), this env WINS over
+    // PAPERCLIP_RUNTIME_API_URL for any agent lacking the adapterConfig
+    // `paperclipApiUrl` override — but our backend always sets that override
+    // (synthesize_openclaw_adapter), and it is applied last, so the live agent
+    // path remains the override. This value is the same in-VPC host either way.
     const paperclipInternalApiUrl = `http://paperclip.${props.cloudMapNamespace.namespaceName}:3100`;
 
     // Receiver for the bundled isol8.notifications plugin. MUST be the PUBLIC

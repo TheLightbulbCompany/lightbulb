@@ -179,6 +179,14 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-i
 
 ## Assign Skills To An Existing Agent
 
+`mode` is REQUIRED (the request 400s without it):
+
+- `"add"` — add `desiredSkills` to the agent's existing skills. Use this
+  unless you were explicitly asked to remove or replace.
+- `"remove"` — remove exactly `desiredSkills`, keep the rest.
+- `"replace"` — make the agent's skill set exactly `desiredSkills`.
+  Destructive: anything not listed is unassigned.
+
 `desiredSkills` accepts:
 
 - exact company skill key
@@ -192,6 +200,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
+    "mode": "add",
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
     ]

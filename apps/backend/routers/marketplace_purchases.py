@@ -407,7 +407,10 @@ async def _flush_seller_held_balance(*, seller_id: str, connect_account_id: str)
             # consistent, and Stripe's idempotency keys expire after 24h
             # while webhook retries run for days — a stale "untransferred"
             # row here plus an expired key would double-pay.
-            fresh = await marketplace_repo.get_purchase(purchase["buyer_id"], purchase["purchase_id"]) or {}
+            fresh = (
+                await marketplace_repo.get_purchase(purchase["buyer_id"], purchase["purchase_id"], consistent=True)
+                or {}
+            )
             if fresh.get("seller_transfer_id"):
                 continue
             # A replayed account.updated (or a concurrent run) can still

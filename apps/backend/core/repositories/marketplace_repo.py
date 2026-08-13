@@ -592,9 +592,17 @@ async def mark_taken_down_if_nonterminal(*, listing_id: str, version: int, now_i
 # ---------------------------------------------------------------------------
 
 
-async def get_purchase(buyer_id: str, purchase_id: str) -> dict | None:
+async def get_purchase(buyer_id: str, purchase_id: str, *, consistent: bool = False) -> dict | None:
+    """consistent=True forces a strongly-consistent base-table read — the
+    payout flush re-reads right before moving money, where the default
+    eventually-consistent get_item could still miss a just-stamped
+    seller_transfer_id. Other callers keep the cheaper default."""
     table = _purchases_table()
-    resp = await run_in_thread(table.get_item, Key={"buyer_id": buyer_id, "purchase_id": purchase_id})
+    resp = await run_in_thread(
+        table.get_item,
+        Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
+        ConsistentRead=consistent,
+    )
     return resp.get("Item")
 
 
@@ -922,11 +930,16 @@ async def apply_flush_totals(*, seller_id: str, transferred_cents: int) -> None:
     for the next flush -- and stamp onboarding completed + lifetime
     earnings.
 
-    Floored at zero: a refund debit landing between this flush's read and
-    write can leave the balance short of the transferred total, and an
-    unconditional subtract would drive it negative (rendered as a negative
-    dollar figure on the seller dashboard). In that race the refund already
-    took its share, so clamping to zero is the correct settlement."""
+    Conditional on the balance covering the decrement: a refund debit landing
+    between this flush's read and write can leave the balance short of the
+    transferred total, and an unconditional subtract would drive it negative
+    (rendered as a negative dollar figure on the seller dashboard). On that
+    conditional failure the balance is left ALONE — same posture as
+    decrement_held_balance — because a blind "set to zero" fallback could
+    stomp a concurrent NEW SALE's credit (transact_record_purchase_and_credit_
+    seller updates the same field unordered), silently discarding seller-owed
+    money. Worst case of leaving it: a rare, slightly-inflated display that
+    the next flush settles. Onboarding/lifetime stamps still land."""
     table = _payout_accounts_table()
     try:
         await run_in_thread(
@@ -947,8 +960,7 @@ async def apply_flush_totals(*, seller_id: str, transferred_cents: int) -> None:
             table.update_item,
             Key={"seller_id": seller_id},
             UpdateExpression=(
-                "SET balance_held_cents = :zero, "
-                "    onboarding_status = :done, "
+                "SET onboarding_status = :done, "
                 "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
             ),
             ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},

@@ -331,6 +331,9 @@ async def test_flush_processes_known_purchase_missing_from_index():
             "routers.marketplace_purchases.marketplace_repo.apply_flush_totals", new_callable=AsyncMock
         ) as mock_totals,
         patch(
+            "routers.marketplace_purchases.marketplace_repo.mark_payout_accounted", new_callable=AsyncMock
+        ) as mock_mark,
+        patch(
             "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
         ) as mock_transfer,
     ):
@@ -343,9 +346,72 @@ async def test_flush_processes_known_purchase_missing_from_index():
 
         await _flush_seller_held_balance(seller_id="s1", connect_account_id="acct_1", known_purchase_key=("b1", "cs_x"))
 
-    mock_get.assert_awaited_once_with("b1", "cs_x", consistent=True)
+    # Two consistent reads: the known-purchase fetch, then the post-stamp
+    # refund-race re-check.
+    assert mock_get.await_count == 2
+    assert mock_get.await_args_list[0].args == ("b1", "cs_x")
     mock_transfer.assert_awaited_once_with(connect_account_id="acct_1", amount_cents=1700, transfer_group="tg_x")
     mock_totals.assert_awaited_once_with(seller_id="s1", transferred_cents=1700)
+    mock_mark.assert_awaited_once_with(buyer_id="b1", purchase_id="cs_x")
+
+
+@pytest.mark.asyncio
+async def test_flush_reverses_transfer_when_refund_races_the_stamp():
+    """Regression (codex): charge.refunded can observe the row UNstamped,
+    revoke it, and debit only the held balance — while this flush's transfer
+    completes and stamps after. Without the post-stamp re-check the seller
+    stays paid with no later event to reverse it. The flush must issue the
+    compensating reversal (same idempotency key as the refund paths) and must
+    NOT book the transfer as settled proceeds."""
+    from routers.marketplace_purchases import _flush_seller_held_balance
+
+    active_row = {
+        "buyer_id": "b1",
+        "purchase_id": "cs_r",
+        "seller_share_cents": 1700,
+        "stripe_transfer_group": "tg_r",
+    }
+    revoked_row = dict(active_row, seller_transfer_id="tr_race", license_key_revoked=True)
+    with (
+        patch("routers.marketplace_purchases.marketplace_repo.get_payout_account", new_callable=AsyncMock) as mock_pa,
+        patch("routers.marketplace_purchases.marketplace_repo.get_purchase", new_callable=AsyncMock) as mock_get,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.list_listings_by_seller",
+            new_callable=AsyncMock,
+        ) as mock_listings,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.set_seller_transfer_if_absent",
+            new_callable=AsyncMock,
+        ) as mock_stamp,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.apply_flush_totals", new_callable=AsyncMock
+        ) as mock_totals,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.mark_payout_accounted", new_callable=AsyncMock
+        ) as mock_mark,
+        patch(
+            "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
+        ) as mock_transfer,
+        patch("routers.marketplace_purchases.stripe.Transfer.create_reversal") as mock_reversal,
+    ):
+        mock_pa.return_value = {"seller_id": "s1", "balance_held_cents": 1700}
+        mock_listings.return_value = []
+        # First read: active. Post-stamp re-check: refund won the race.
+        mock_get.side_effect = [active_row, revoked_row]
+        mock_transfer.return_value = "tr_race"
+        mock_stamp.return_value = True
+
+        await _flush_seller_held_balance(seller_id="s1", connect_account_id="acct_1", known_purchase_key=("b1", "cs_r"))
+
+    mock_reversal.assert_called_once()
+    args, kwargs = mock_reversal.call_args
+    assert args[0] == "tr_race"
+    assert kwargs["amount"] == 1700
+    assert kwargs["idempotency_key"] == "reversal:tr_race"
+    # The refund path already settled the held balance — no proceeds booked,
+    # but the row is marked accounted so replays never re-book it.
+    mock_totals.assert_not_awaited()
+    mock_mark.assert_awaited_once_with(buyer_id="b1", purchase_id="cs_r")
 
 
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")

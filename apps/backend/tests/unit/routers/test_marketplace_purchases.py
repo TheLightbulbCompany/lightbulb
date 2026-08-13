@@ -622,13 +622,16 @@ def test_account_updated_skips_already_transferred_purchases_idempotently(
         }
     )
     mock_purchases_table.return_value.get_item = MagicMock(return_value={})
+    # Per purchase the settle path writes stamp then accounted-marker; the
+    # race-loser's STAMP is the conditional failure (third call here).
     mock_purchases_table.return_value.update_item = MagicMock(
         side_effect=[
-            None,
+            None,  # p1 seller_transfer_id stamp
+            None,  # p1 payout_accounted marker
             ClientError(
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
                 "UpdateItem",
-            ),
+            ),  # p2 stamp — another run got there first
         ]
     )
 
@@ -735,12 +738,15 @@ def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
     assert "purchase_l1_b1_111" in transfer_groups
     assert "purchase_l1_b2_222" in transfer_groups
 
-    # Each purchase row got its seller_transfer_id stamped.
-    assert mock_purchases_table.return_value.update_item.call_count == 2
+    # Each purchase row got its seller_transfer_id stamped AND its
+    # payout_accounted marker (2 update_item calls per purchase).
+    assert mock_purchases_table.return_value.update_item.call_count == 4
 
-    # Held balance decremented by the sum, not zeroed.
-    pa_update = mock_pa_table.return_value.update_item.call_args.kwargs
-    assert pa_update["ExpressionAttributeValues"][":t"] == 5000
+    # Per-purchase bookkeeping: one decrement per purchase, never zeroed.
+    totals = [
+        call.kwargs["ExpressionAttributeValues"][":t"] for call in mock_pa_table.return_value.update_item.call_args_list
+    ]
+    assert sorted(totals) == [2000, 3000]
 
 
 @patch("routers.marketplace_purchases.webhook_dedup.delete_event")

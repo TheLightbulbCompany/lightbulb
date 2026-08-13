@@ -202,6 +202,15 @@ async def fetch_paperclip_agents_for_owner(
         return []
 
     if not isinstance(agents, list):
+        # A 200 with a non-list payload is as unknowable as an outage: the
+        # roster cannot be trusted to be empty. Strict mode must not let it
+        # degrade to [] — the Friday guard reads [] as "allow the export".
+        if raise_on_unavailable:
+            raise PaperclipApiError(
+                "list_agents returned a non-list payload",
+                status_code=502,
+                body=type(agents).__name__,
+            )
         logger.warning(
             "paperclip_openclaw_pairing: list_agents returned non-list for owner=%s -- got %s",
             owner_id,

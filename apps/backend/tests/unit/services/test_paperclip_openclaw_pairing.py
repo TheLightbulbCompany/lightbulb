@@ -377,6 +377,40 @@ async def test_fetch_raise_on_unavailable_reraises_availability_failure(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_fetch_raise_on_unavailable_rejects_non_list_payload(monkeypatch):
+    """Regression (codex): a 200 with a non-list payload (the admin client
+    maps empty responses to {}) is as unknowable as an outage — strict mode
+    must raise, not degrade to [] (which the Friday guard reads as allow).
+    Default mode keeps the swallow for provision."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    admin_client = MagicMock()
+    admin_client.list_agents = AsyncMock(return_value={})
+
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    with pytest.raises(PaperclipApiError):
+        await fetch_paperclip_agents_for_owner(
+            owner_id="user_abc",
+            repo=repo,
+            admin_client=admin_client,
+            raise_on_unavailable=True,
+        )
+
+    assert (
+        await fetch_paperclip_agents_for_owner(
+            owner_id="user_abc",
+            repo=repo,
+            admin_client=admin_client,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_resolve_company_id_none_for_personal_failed_marker():
     """A personal owner whose only row is a net-new ``failed`` marker
     (``company_id=""``) resolves to None — NOT the empty string. Every caller

@@ -158,6 +158,7 @@ async def get_billing_account(
         seat_count=seat_count,
         team_seat_price_usd=team_seat_price_usd,
         team_base_price_usd=team_base_price_usd,
+        flat_price_usd=settings.FLAT_PRICE_USD,
         is_seat_subscription=is_seat_subscription,
     )
 

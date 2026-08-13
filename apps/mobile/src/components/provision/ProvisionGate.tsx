@@ -270,11 +270,14 @@ function ConnectedPaywall({ onPurchased }: { onPurchased: () => void }) {
     () => createApiClient(makeAdapter(() => getTokenRef.current())),
     [],
   );
-  const post = useCallback(
-    (path: string, body: unknown) => api.post(path, body as never),
+  const paywallApi = useMemo(
+    () => ({
+      get: (path: string) => api.get(path),
+      post: (path: string, body: unknown) => api.post(path, body as never),
+    }),
     [api],
   );
-  return <PaywallScreen post={post} onPurchased={onPurchased} />;
+  return <PaywallScreen api={paywallApi} onPurchased={onPurchased} />;
 }
 
 // ---------------------------------------------------------------------------

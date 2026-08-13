@@ -4,16 +4,35 @@
  * App Review rejected 0.1.0 (17) holding that a plan sold on isol8.co must also
  * be purchasable inside the app. This is that purchase path.
  *
- * BOTH options are offered, which is legal specifically on the U.S. storefront:
- * 3.1.1(a) lets a U.S. app carry buttons and external links to other purchase
- * mechanisms with no entitlement, and App Review restated that allowance in the
- * rejection itself. So StoreKit is the primary action and "subscribe on the
- * web" sits beneath it — the customer chooses, and we keep the cheaper channel
- * available. If this ever ships to a non-U.S. storefront the web option has to
- * come out; that is the only reason it is a named constant rather than inline.
+ * BOTH options are offered WITH THEIR PRICES, which is legal specifically on
+ * the U.S. storefront: 3.1.1(a) lets a U.S. app carry buttons and external
+ * links to other purchase mechanisms with no entitlement, App Review restated
+ * that allowance in the rejection itself, and Apple approved Spotify's U.S.
+ * build showing external pricing alongside links in May 2025 — the same shape
+ * as this screen.
  *
- * The price is NEVER hardcoded. `product.displayPrice` is StoreKit's localized
- * string for the viewer's storefront and is the only correct thing to render.
+ * Two conditions come with that allowance, and both are enforced here rather
+ * than assumed:
+ *
+ * - **U.S. storefront only.** Everywhere else, 3.1.3's no-steering rule still
+ *   bites and this screen would be a rejectable violation. The gate is
+ *   `getStorefront()` — the VIEWER's actual storefront — not the app's
+ *   availability settings, because availability is changed in App Store
+ *   Connect by someone who will never think to open this file. Until it
+ *   resolves, the web option stays hidden: fail closed.
+ * - **The displayed price must be accurate.** A stale or wrong external price
+ *   is a 5.1.1 violation, not a cosmetic bug, so the web price is fetched from
+ *   /billing/account (server-owned) and NEVER baked into the binary, where it
+ *   would go wrong the moment pricing changed and could only be fixed by
+ *   shipping a build. If the fetch fails the price is simply omitted — an
+ *   unpriced link is allowed; a wrong price is not.
+ *
+ * Apple's own price is `product.displayPrice`, StoreKit's localized string for
+ * the viewer's storefront, likewise never hardcoded.
+ *
+ * IAP is the primary action and stays at least as prominent as the web option:
+ * the December 2025 appeals ruling restored Apple's authority over relative
+ * prominence, so the web button must not be made louder than Subscribe.
  *
  * The purchase is not trusted here. A StoreKit success hands back a signed
  * transaction, which goes to the backend for verification against Apple's root
@@ -31,25 +50,39 @@ import {
   Text,
   View,
 } from "react-native";
-import { ErrorCode, useIAP } from "expo-iap";
+import { ErrorCode, getStorefront, useIAP } from "expo-iap";
 
 import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { APPLE_IAP_AVAILABLE, APPLE_SUBSCRIPTION_SKU, linkApplePurchase } from "../../lib/appleIap";
 
-/** Permitted only on the U.S. storefront (3.1.1(a)). See the module docstring. */
-const SHOW_WEB_PURCHASE_OPTION = true;
+/**
+ * Storefronts where an external purchase link + its price may be shown.
+ * `getStorefront()` returns an ISO-3166 alpha-3 code; the U.S. carve-out in
+ * 3.1.1(a) / 3.1.3 applies to exactly one of them.
+ */
+const EXTERNAL_LINK_STOREFRONTS = new Set(["USA"]);
 
 export function PaywallScreen({
-  post,
+  api,
   onPurchased,
 }: {
-  /** Authenticated POST — `useApi`-shaped, injected so this stays testable. */
-  post: (path: string, body: unknown) => Promise<unknown>;
+  /** Authenticated client — injected so this stays testable without Clerk. */
+  api: {
+    get: (path: string) => Promise<unknown>;
+    post: (path: string, body: unknown) => Promise<unknown>;
+  };
   onPurchased: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // undefined = not resolved yet. The web option stays hidden until the
+  // storefront is known — showing it outside the U.S. is a guideline
+  // violation, so an unresolved read must fail closed.
+  const [storefront, setStorefront] = useState<string | undefined>(undefined);
+  // null = unknown price. An unpriced link is permitted; a WRONG price is a
+  // 5.1.1 violation, so a failed fetch omits the figure rather than guessing.
+  const [webPriceUsd, setWebPriceUsd] = useState<number | null>(null);
 
   // useIAP takes the success handler as an option and RETURNS finishTransaction,
   // so the handler cannot close over it directly (it is declared below). The ref
@@ -68,7 +101,7 @@ export function PaywallScreen({
           return;
         }
         try {
-          await linkApplePurchase(post, purchase.purchaseToken);
+          await linkApplePurchase(api.post, purchase.purchaseToken);
           // Only now is the transaction finished: until the server has recorded
           // it, StoreKit redelivering is exactly what we want.
           await finishRef.current?.({ purchase: purchase as never });
@@ -82,7 +115,7 @@ export function PaywallScreen({
         }
       })();
     },
-    [post, onPurchased],
+    [api, onPurchased],
   );
 
   const { connected, subscriptions, fetchProducts, requestPurchase, finishTransaction, restorePurchases } =
@@ -103,6 +136,39 @@ export function PaywallScreen({
     if (!connected || !APPLE_IAP_AVAILABLE) return;
     void fetchProducts({ skus: [APPLE_SUBSCRIPTION_SKU], type: "subs" });
   }, [connected, fetchProducts]);
+
+  // Storefront decides whether the external link may appear at all.
+  useEffect(() => {
+    if (!connected) return;
+    let cancelled = false;
+    void getStorefront()
+      .then((code: string) => {
+        if (!cancelled) setStorefront(code);
+      })
+      // Leave it unresolved on failure: hidden beats a violation.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [connected]);
+
+  // Web price, server-owned so it cannot go stale in the binary.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .get("/billing/account")
+      .then((body) => {
+        const price = (body as { flat_price_usd?: number })?.flat_price_usd;
+        if (!cancelled && typeof price === "number") setWebPriceUsd(price);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  const showWebOption =
+    storefront !== undefined && EXTERNAL_LINK_STOREFRONTS.has(storefront);
 
   const product = subscriptions.find((s) => s.id === APPLE_SUBSCRIPTION_SKU);
 
@@ -184,12 +250,15 @@ export function PaywallScreen({
         </View>
       )}
 
-      {SHOW_WEB_PURCHASE_OPTION && (
+      {showWebOption && (
         <View style={styles.card}>
           <Text style={styles.overline}>OTHER WAYS TO SUBSCRIBE</Text>
+          {/* Price shown only when the server supplied it — an unpriced link
+              is allowed, a wrong price is a 5.1.1 violation. */}
           <Text style={styles.caption}>
-            You can also subscribe on isol8.co in your browser, and manage
-            billing there.
+            {webPriceUsd != null
+              ? `You can also subscribe on isol8.co in your browser for $${webPriceUsd}/month, and manage billing there.`
+              : "You can also subscribe on isol8.co in your browser, and manage billing there."}
           </Text>
           <Pressable
             onPress={() => void Linking.openURL(WEB_BILLING_URL)}

@@ -34,6 +34,16 @@ class BillingAccountResponse(BaseModel):
     # Flat monthly base charged alongside the per-seat item. None for personal
     # owners. Frontend renders "$50 + N x $20" from these two numbers.
     team_base_price_usd: int | None = None
+    # Personal flat-plan monthly price in whole dollars. Not owner-dependent,
+    # so always populated.
+    #
+    # Load-bearing for the iOS paywall, which shows the web price beside
+    # Apple's: App Review permits that on the U.S. storefront but requires the
+    # figure to be ACCURATE — a stale one is a 5.1.1 violation, not just bad
+    # copy. A number baked into the binary would go wrong the moment pricing
+    # changed and could only be fixed by shipping a build, so the server owns
+    # it.
+    flat_price_usd: int | None = None
     # True only for org owners on a REAL per-seat Stripe subscription (one
     # that recorded subscription_item_id via the webhook). False for
     # personal owners and for flat/comped/grandfathered org subs that have

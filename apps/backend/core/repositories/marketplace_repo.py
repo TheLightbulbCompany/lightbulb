@@ -54,7 +54,7 @@ def _ddb_client():
 
 # ---------------------------------------------------------------------------
 # Listings (PK listing_id S, SK version N; GSIs seller-created-index,
-# status-published-index, slug-version-index)
+# status-published-index)
 # ---------------------------------------------------------------------------
 
 

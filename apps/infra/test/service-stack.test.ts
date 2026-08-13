@@ -63,8 +63,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
       marketplaceTakedownsTable: database.marketplaceTakedownsTable,
       marketplaceSellersTable: database.marketplaceSellersTable,
-      hookEventsTable: database.hookEventsTable,
-      opsCacheTable: database.opsCacheTable,
     },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,

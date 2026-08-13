@@ -45,11 +45,15 @@ export function Navbar() {
       { id: "pricing", el: document.getElementById("pricing") },
     ].filter((s) => s.el);
 
+    // The map's key is the nav's own vocabulary — the hero's DOM id is
+    // "start" (the funnel anchor), which no link carries.
+    const sectionKeyByEl = new Map(sections.map((s) => [s.el, s.id]));
+
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting) {
-            const id = entry.target.id || "home";
+            const id = sectionKeyByEl.get(entry.target) ?? "home";
             links.forEach((l) => {
               l.classList.toggle("active", l.dataset.section === id);
             });

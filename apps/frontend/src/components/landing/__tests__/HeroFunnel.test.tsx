@@ -23,6 +23,24 @@ describe("HeroFunnel", () => {
     pushMock.mockClear();
   });
 
+  it("renders the idea-to-company fold: eyebrow, headline, one microcopy line", () => {
+    render(<HeroFunnel />);
+    expect(
+      screen.getByText("The Integrated Management Environment"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+      "Type an idea. Watch it become a company.",
+    );
+    expect(
+      screen.getByText(
+        /Your own persistent, isolated cloud container starts building/,
+      ),
+    ).toBeInTheDocument();
+    // The old subheadline and trial line are gone from the fold.
+    expect(screen.queryByText(/Tell your AI CEO/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/3-day free trial/)).not.toBeInTheDocument();
+  });
+
   it("stashes {path, input, detail} to sessionStorage on every change", () => {
     render(<HeroFunnel />);
     fireEvent.change(screen.getByLabelText("Your idea"), {

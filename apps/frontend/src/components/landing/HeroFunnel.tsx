@@ -15,6 +15,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { LogoMark } from "@/components/Logo";
 import type { Path } from "@/components/onboarding/FirstRunSteps";
 import { LANDING_BRIEF_STORAGE_KEY } from "@/hooks/useLandingBriefReplay";
 import { clearSignupIntentCookie } from "@/lib/signupIntent";
@@ -70,20 +71,15 @@ export function HeroFunnel() {
   return (
     <section className="ld-funnel" id="start">
       <div className="ld-funnel-in">
-        <div className="ld-orb-wrap">
-          <div className="ld-orb" aria-hidden="true" />
-          <p className="ld-orb-lbl">Friday</p>
-        </div>
-
-        <h1 className="ld-funnel-h1">
-          Start a business.{" "}
-          <br />
-          Friday runs it with you.
-        </h1>
-        <p className="ld-funnel-sub">
-          Tell your AI CEO the idea. She researches it, lays out your first
-          moves, and puts a team of agents on the work.
+        <p className="ld-mono ld-funnel-eyebrow">
+          The Integrated Management Environment
         </p>
+        <LogoMark className="ld-funnel-mark" />
+        <h1 className="ld-funnel-h1">
+          Type an idea.{" "}
+          <br />
+          Watch it become a company.
+        </h1>
 
         <form className="ld-ask" onSubmit={submit}>
           <input
@@ -104,7 +100,8 @@ export function HeroFunnel() {
         </form>
 
         <p className="ld-funnel-fine">
-          3-day free trial · no card · your own private workspace
+          Your own persistent, isolated cloud container starts building the
+          moment you sign up.
         </p>
         <button
           type="button"

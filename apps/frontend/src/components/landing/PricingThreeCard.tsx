@@ -23,7 +23,9 @@ export function PricingThreeCard() {
           <span className="ld-price-big">
             <sup>$</sup>50
           </span>
-          <span className="ld-price-per">/ month · flat</span>
+          <span className="ld-price-per">
+            / month · flat · 3-day free trial · no card
+          </span>
         </div>
 
         <div className="ld-price-grid" data-ld-reveal-group>

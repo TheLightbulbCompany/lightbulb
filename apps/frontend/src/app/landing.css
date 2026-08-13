@@ -1253,54 +1253,11 @@
 
 /* ----------------------------------------------------------- marketplace */
 
+/* Sits on cream — the forest band moved to the workspace-demo stage. */
 .ld-mkt {
-  background: var(--forest);
-  color: var(--cream);
-  border-radius: 0;
+  background: var(--cream);
+  color: var(--ink);
   position: relative;
-  overflow: hidden;
-}
-
-.ld-mkt::after {
-  /* grain */
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
-  pointer-events: none;
-}
-
-.ld-mkt .ld-section {
-  position: relative;
-  z-index: 1;
-}
-
-.ld-mkt .ld-kicker {
-  color: #a8e6c6;
-}
-
-.ld-mkt .ld-kicker::before {
-  background: #a8e6c6;
-}
-
-.ld-mkt .ld-kicker .ld-kicker-index {
-  color: rgba(250, 247, 242, 0.4);
-}
-
-.ld-mkt .ld-h2 {
-  color: var(--cream);
-}
-
-.ld-mkt .ld-h2 em {
-  color: #a8e6c6;
-}
-
-.ld-mkt .ld-lede {
-  color: rgba(250, 247, 242, 0.75);
-}
-
-.ld-mkt .ld-lede strong {
-  color: var(--cream);
 }
 
 .ld-mkt-head {
@@ -1319,15 +1276,15 @@
   font-size: 11px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: #a8e6c6;
-  border-bottom: 1px solid rgba(168, 230, 198, 0.35);
+  color: var(--forest);
+  border-bottom: 1px solid rgba(6, 64, 43, 0.3);
   padding-bottom: 4px;
   transition: border-color 0.25s ease, color 0.25s ease;
 }
 
 .ld-mkt-link:hover {
-  color: var(--cream);
-  border-color: var(--cream);
+  color: var(--ink);
+  border-color: var(--ink);
 }
 
 .ld-shelf {
@@ -1343,17 +1300,17 @@
   gap: 14px;
   padding: 26px 24px;
   border-radius: 18px;
-  background: rgba(250, 247, 242, 0.05);
-  border: 1px solid rgba(250, 247, 242, 0.12);
-  color: var(--cream);
+  background: #fff;
+  border: 1px solid var(--edge);
+  color: var(--ink);
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
-    background 0.3s ease, border-color 0.3s ease;
+    box-shadow 0.3s ease, border-color 0.3s ease;
 }
 
 .ld-listing:hover {
   transform: translateY(-6px);
-  background: rgba(250, 247, 242, 0.09);
-  border-color: rgba(250, 247, 242, 0.28);
+  border-color: var(--mute-soft);
+  box-shadow: 0 22px 54px rgba(26, 26, 26, 0.08);
 }
 
 .ld-listing-head {
@@ -1363,9 +1320,9 @@
 }
 
 .ld-listing .ld-puck {
-  background: rgba(250, 247, 242, 0.1);
-  border-color: rgba(250, 247, 242, 0.2);
-  color: var(--cream);
+  background: var(--forest-tint);
+  border-color: var(--edge-forest);
+  color: var(--forest);
   font-family: var(--font-lora-serif), Georgia, serif;
   font-style: italic;
   font-size: 20px;
@@ -1381,21 +1338,21 @@
   letter-spacing: 0.1em;
   padding: 4px 10px;
   border-radius: 99px;
-  border: 1px solid rgba(168, 230, 198, 0.35);
-  color: #a8e6c6;
+  border: 1px solid rgba(6, 64, 43, 0.3);
+  color: var(--forest);
 }
 
 .ld-listing h3 {
   font-family: var(--font-lora-serif), Georgia, serif;
   font-size: 21px;
   font-weight: 500;
-  color: var(--cream);
+  color: var(--ink);
 }
 
 .ld-listing-desc {
   font-size: 13px;
   line-height: 1.6;
-  color: rgba(250, 247, 242, 0.65);
+  color: var(--ink-soft);
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
@@ -1413,8 +1370,8 @@
   font-size: 8.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(250, 247, 242, 0.55);
-  border: 1px solid rgba(250, 247, 242, 0.15);
+  color: var(--mute);
+  border: 1px solid var(--edge);
   padding: 3px 8px;
   border-radius: 99px;
 }
@@ -1422,32 +1379,10 @@
 .ld-listing-foot {
   margin-top: auto;
   padding-top: 14px;
-  border-top: 1px solid rgba(250, 247, 242, 0.12);
+  border-top: 1px solid var(--edge-soft);
   font-size: 13px;
   font-weight: 600;
-  color: #a8e6c6;
-}
-
-.ld-listing--more {
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  gap: 8px;
-  border-style: dashed;
-  background: transparent;
-}
-
-.ld-listing--more .ld-more-glyph {
-  font-family: var(--font-lora-serif), Georgia, serif;
-  font-style: italic;
-  font-size: 44px;
-  line-height: 1;
-  color: #a8e6c6;
-}
-
-.ld-listing--more .ld-more-lbl {
-  font-size: 13.5px;
-  color: rgba(250, 247, 242, 0.7);
+  color: var(--forest);
 }
 
 /* -------------------------------------------------------------- pricing */
@@ -2115,13 +2050,13 @@
 }
 
 /* ================================================================== */
-/* Funnel-first hero — the okara-style pill funnel with Friday's orb. */
+/* Funnel-first hero — Cursor-shaped fold: eyebrow, serif-8 mark,      */
+/* headline, pill input, one line. Compressed so the workspace demo's  */
+/* top edge is inside the first viewport at 1440x900.                  */
 /* ================================================================== */
 
-/* Below the fixed translucent nav, never under it: the nav's blur +
-   rgba backdrop paints a visible seam across the orb's crown otherwise. */
 .ld-funnel {
-  padding: 148px 48px 96px;
+  padding: 128px 48px 56px;
   display: grid;
   place-items: center;
   text-align: center;
@@ -2129,58 +2064,31 @@
 
 .ld-funnel-in {
   width: 100%;
-  max-width: 720px;
+  max-width: 820px;
 }
 
-/* Friday's orb — reproduced exactly per the landing-onboarding design §7.1:
-   280px, off-centre gradient origin (44% 42%), forest-soft mid-stop, .20
-   centre alpha, 11s breathe. */
-.ld-orb-wrap {
-  position: relative;
-  height: 190px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 6px;
+.ld-funnel-eyebrow {
+  margin: 0 0 26px;
+  font-size: 11px;
+  letter-spacing: 0.26em;
+  color: var(--forest);
 }
 
-.ld-orb {
-  width: 280px;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  pointer-events: none;
-  filter: blur(6px);
-  background: radial-gradient(
-    circle at 44% 42%,
-    rgba(6, 64, 43, 0.2) 0%,
-    rgba(74, 158, 116, 0.16) 34%,
-    rgba(6, 64, 43, 0.07) 58%,
-    rgba(6, 64, 43, 0.02) 72%,
-    transparent 80%
-  );
-  animation: ld-orb-breathe 11s ease-in-out infinite;
+/* The identity moment: the og-image serif 8, static, quiet fade-in. */
+.ld-funnel-mark {
+  font-size: 84px;
+  color: var(--ink);
+  margin-bottom: 18px;
+  animation: ld-fade 0.9s ease both;
 }
 
-@keyframes ld-orb-breathe {
-  0%,
-  100% {
-    transform: scale(1) translate(0, 0);
-    opacity: 0.9;
+@keyframes ld-fade {
+  from {
+    opacity: 0;
   }
-  50% {
-    transform: scale(1.075) translate(1.2%, -1.6%);
+  to {
     opacity: 1;
   }
-}
-
-.ld-orb-lbl {
-  position: absolute;
-  bottom: 2px;
-  margin: 0;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-  color: var(--mute);
 }
 
 .ld-funnel-h1 {
@@ -2194,17 +2102,9 @@
   text-wrap: balance;
 }
 
-.ld-funnel-sub {
-  margin: 18px auto 0;
-  font-size: 17px;
-  line-height: 1.6;
-  color: var(--ink-soft);
-  max-width: 46ch;
-}
-
 /* one pill input, CTA embedded */
 .ld-ask {
-  margin: 40px auto 0;
+  margin: 36px auto 0;
   max-width: 640px;
   display: flex;
   align-items: center;
@@ -2254,11 +2154,10 @@
 }
 
 .ld-funnel-fine {
-  margin: 18px 0 0;
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  margin: 18px auto 0;
+  max-width: 72ch;
+  font-size: 13.5px;
+  line-height: 1.55;
   color: var(--mute);
 }
 
@@ -2281,46 +2180,47 @@
 }
 
 /* ================================================================ */
-/* Workspace demo — the real /chat components inside a window frame */
+/* Workspace demo — the real /chat components, staged near-full-bleed */
+/* on the deep-forest band (the staged contrast moment). The page     */
+/* scrolls INTO this: its top edge shows inside the first viewport.   */
 /* ================================================================ */
 
-.ld-demo .ld-section {
-  padding-top: 40px;
-}
-
-.ld-demo-window {
-  margin-top: 44px;
-  border: 1px solid var(--edge);
-  border-radius: 18px;
-  background: var(--cream);
-  box-shadow: 0 30px 80px rgba(26, 26, 26, 0.1);
+.ld-demo {
+  position: relative;
+  background: var(--forest);
   overflow: hidden;
 }
 
-.ld-demo-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--edge);
-  background: var(--cream-deeper);
+.ld-demo::after {
+  /* grain — same treatment the marketplace band used to carry */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none;
 }
 
-.ld-demo-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--edge);
-}
-
-.ld-demo-title {
+.ld-demo-stage {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 1400px);
   margin: 0 auto;
-  padding-right: 45px; /* re-centre against the dots */
-  font-family: var(--font-geist-mono), ui-monospace, monospace;
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--mute);
+  padding: 56px 0 88px;
+}
+
+/* The demo sidebar's app-icon slot: the serif 8 mark alone. */
+.ld-sidebar-mark {
+  font-size: 26px;
+  color: var(--ink);
+}
+
+/* Slim hairline chrome — no mac-dots title bar. */
+.ld-demo-window {
+  border: 1px solid rgba(250, 247, 242, 0.18);
+  border-radius: 14px;
+  background: var(--cream);
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
 }
 
 .ld-demo-body {
@@ -2482,15 +2382,11 @@
   }
 
   .ld-funnel {
-    padding: 118px 22px 72px;
+    padding: 112px 22px 48px;
   }
 
-  .ld-orb-wrap {
-    height: 150px;
-  }
-
-  .ld-orb {
-    width: 220px;
+  .ld-funnel-mark {
+    font-size: 64px;
   }
 
   .ld-ask {
@@ -2509,7 +2405,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ld-orb {
+  .ld-funnel-mark {
     animation: none;
   }
 }

@@ -1461,6 +1461,26 @@ button:focus-visible { border-radius: 999px; }
 }
 .brand-logo--ink   { color: var(--ink); }
 .brand-logo--cream { color: var(--cream); }
+
+/* The serif 8 mark (og-image.png's Didone numeral, as a styled glyph).
+   Scaled by font-size at each call site. Didot/Bodoni lead the stack —
+   the og mark IS a Didone, and Georgia/Lora's low-contrast figures read
+   flat next to it. Georgia is the non-Apple fallback. */
+.brand-mark {
+  font-family: Didot, "Bodoni MT", "Bodoni 72", Georgia,
+    var(--font-lora-serif), serif;
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: 0;
+  line-height: 1;
+  display: inline-block;
+  color: inherit;
+}
+.brand-logo .brand-mark {
+  font-size: 1.45em;
+  margin-right: 0.42em;
+  transform: translateY(0.04em);
+}
 .brand-logo--sm { font-size: 15px; }
 .brand-logo--md { font-size: 18px; }
 .brand-logo--lg { font-size: 24px; }

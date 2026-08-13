@@ -50,6 +50,7 @@ import {
 import "@/components/chat/ChatLayout.css";
 
 import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
+import { LogoMark } from "@/components/Logo";
 import { Monogram } from "@/components/agents/AgentIdentity";
 import {
   EditorialButton,
@@ -603,28 +604,9 @@ export function WorkspaceDemo() {
 
   return (
     <section className="ld-demo" id="workspace">
-      <div className="ld-section">
-        <div className="ld-kicker">the workspace</div>
-        <h2 className="ld-h2">
-          This is what <em>running one</em> looks like.
-        </h2>
-        <p className="ld-lede">
-          Your company lives in one workspace: talk to Friday, watch the task
-          board move, and step in wherever you want a say. This one is real —
-          click around.
-        </p>
-
+      <div className="ld-demo-stage">
         <InlineTeamsNavProvider value={nav}>
           <div className="ld-demo-window" aria-label="Isol8 workspace demo">
-            <div className="ld-demo-bar">
-              <span className="ld-demo-dot" />
-              <span className="ld-demo-dot" />
-              <span className="ld-demo-dot" />
-              <p className="ld-demo-title">
-                isol8 — {DEMO_COMPANY_NAME.toLowerCase()}
-              </p>
-            </div>
-
             {/* ≤720px the sidebar is hidden — this strip is then the only
                 way to switch panels, so it must mirror openView exactly. */}
             <div className="ld-demo-mobilenav" role="tablist" aria-label="Workspace demo views">
@@ -647,9 +629,7 @@ export function WorkspaceDemo() {
               <aside className="cream-sidebar ld-demo-sidebar">
                 <div className="sidebar-header">
                   <div className="sidebar-logo">
-                    <span className="brand-logo brand-logo--ink brand-logo--sm">
-                      ISOL8
-                    </span>
+                    <LogoMark className="ld-sidebar-mark" />
                   </div>
                   <span className="sidebar-settings-link" aria-hidden="true">
                     <Settings size={16} />

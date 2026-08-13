@@ -144,19 +144,36 @@ export function WorkspaceDemo() {
     ? (issues.find((i) => i.id === detailIssueId) ?? null)
     : null;
 
+  // Dismissed-from-inbox rows: locally removed, exactly like the real inbox.
+  const [archivedIds, setArchivedIds] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const archiveIssue = React.useCallback((id: string) => {
+    setArchivedIds((prev) => new Set(prev).add(id));
+  }, []);
+
+  // "Hide" from a task row patches hiddenAt (see issues/lib/hideIssue.ts) —
+  // the demo must honor it or the action appears broken.
   const searchedIssues = React.useMemo(
-    () => issues.filter((i) => matchesInboxIssueSearch(i, taskSearch)),
+    () =>
+      issues.filter(
+        (i) => !i.hiddenAt && matchesInboxIssueSearch(i, taskSearch),
+      ),
     [issues, taskSearch],
   );
 
+  const inboxIssues = React.useMemo(
+    () => issues.filter((i) => !archivedIds.has(i.id) && !i.hiddenAt),
+    [issues, archivedIds],
+  );
   const inboxSections = React.useMemo(
     () =>
-      buildGroupedInboxSections(getInboxWorkItems(issues), {
+      buildGroupedInboxSections(getInboxWorkItems(inboxIssues), {
         nowIso: DEMO_NOW_ISO,
       }),
-    [issues],
+    [inboxIssues],
   );
-  const unreadCount = issues.filter((i) => i.unread).length;
+  const unreadCount = inboxIssues.filter((i) => i.unread).length;
 
   const openView = (next: DemoView) => {
     setView(next);
@@ -395,7 +412,10 @@ export function WorkspaceDemo() {
                         sections={inboxSections}
                         selectedIssueId={detailIssueId}
                         onSelect={(id) => setDetailIssueId(id)}
-                        onArchive={(id) => updateIssue(id, { unread: false })}
+                        onArchive={(id) => {
+                          archiveIssue(id);
+                          updateIssue(id, { unread: false });
+                        }}
                         onMarkRead={(id) => updateIssue(id, { unread: false })}
                         archivingIds={EMPTY_SET}
                         statusMenu={(issue) => (

@@ -20,7 +20,13 @@ test.describe('Landing Funnel', () => {
   // Production Clerk instances apply bot heuristics; the stock headless UA
   // never gets clerk-js to initialize (see run 31688410391: window.Clerk
   // absent after 120s while the page renders fine). Present a normal Chrome.
+  // The config's global x-vercel-protection-bypass header rides on EVERY
+  // request including cross-origin ones to clerk.accounts.dev, where the
+  // custom header forces a CORS preflight Clerk's CDN rejects — clerk-js
+  // never loads (run 31689874475). Strip it; the bypass lands as a Vercel
+  // cookie via query params on the first navigation instead.
   test.use({
+    extraHTTPHeaders: {},
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
   });
@@ -48,7 +54,11 @@ test.describe('Landing Funnel', () => {
     });
 
     // ── 1. the new landing renders: pill hero + workspace demo ──
-    await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+    const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    const entry = bypass
+      ? `${BASE}/?x-vercel-protection-bypass=${bypass}&x-vercel-set-bypass-cookie=true`
+      : BASE;
+    await page.goto(entry, { waitUntil: 'domcontentloaded' });
     const idea = page.getByPlaceholder(/ceramics studio/i);
     await expect(idea).toBeVisible({ timeout: 20_000 });
     await expect(page.locator('.ld-demo-window')).toBeVisible();

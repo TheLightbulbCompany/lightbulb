@@ -39,13 +39,10 @@ export function Navbar() {
     });
 
     const sections = [
-      { id: "home", el: document.querySelector(".ld-hero") },
-      { id: "features", el: document.getElementById("features") },
-      { id: "team", el: document.getElementById("team") },
+      { id: "home", el: document.querySelector(".ld-funnel") },
+      { id: "workspace", el: document.getElementById("workspace") },
       { id: "marketplace", el: document.getElementById("marketplace") },
       { id: "pricing", el: document.getElementById("pricing") },
-      { id: "faq", el: document.getElementById("faq") },
-      { id: "goosetown", el: document.getElementById("goosetown") },
     ].filter((s) => s.el);
 
     const observer = new IntersectionObserver(
@@ -94,11 +91,8 @@ export function Navbar() {
         <Link href="/" data-section="home" className={initialActive("home")}>
           Home
         </Link>
-        <Link href={anchor("features")} data-section="features" className={initialActive("features")}>
-          Features
-        </Link>
-        <Link href={anchor("team")} data-section="team" className={initialActive("team")}>
-          Team
+        <Link href={anchor("workspace")} data-section="workspace" className={initialActive("workspace")}>
+          Product
         </Link>
         <Link href={anchor("marketplace")} data-section="marketplace" className={initialActive("marketplace")}>
           Marketplace
@@ -106,14 +100,8 @@ export function Navbar() {
         <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
           Pricing
         </Link>
-        <Link href={anchor("faq")} data-section="faq" className={initialActive("faq")}>
-          FAQ
-        </Link>
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
           Blog
-        </Link>
-        <Link href={anchor("goosetown")} data-section="goosetown" className={initialActive("goosetown")}>
-          GooseTown<span className="nav-alpha">alpha</span>
         </Link>
         {isLoaded && !isSignedIn && (
           <Link href="/sign-in" className="nav-mobile-login">

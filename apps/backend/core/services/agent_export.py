@@ -1100,7 +1100,13 @@ async def _default_fetch_paperclip_agents(*, owner_id: str) -> list[dict]:
     try:
         repo = PaperclipRepo(table_name="paperclip-companies")
         admin_client = PaperclipAdminClient(http_client=http)
-        return await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
+        # raise_on_unavailable: the shared fetcher's default contract swallows
+        # availability failures into [] (provision's needs) — which this
+        # guard would read as "empty roster, allow". The flag re-raises them
+        # so they land in the except below and become the typed error.
+        return await fetch_paperclip_agents_for_owner(
+            owner_id=owner_id, repo=repo, admin_client=admin_client, raise_on_unavailable=True
+        )
     except Exception as exc:  # noqa: BLE001 — every failure shape maps to the typed error
         logger.warning(
             "agent_export: default paperclip fetch failed for owner=%s: %s",

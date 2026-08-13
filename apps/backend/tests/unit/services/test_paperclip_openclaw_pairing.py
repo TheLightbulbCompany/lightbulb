@@ -7,6 +7,7 @@ import pytest
 
 from core.containers.config import build_device_paired_json
 from core.crypto.operator_device import generate_operator_device, private_key_pem
+from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_openclaw_pairing import (
     _PAIR_RPC_TIMEOUT_S,
     approve_pending_device_from_rejection,
@@ -323,6 +324,56 @@ async def test_fetch_for_org_with_no_company_returns_empty():
 
     assert result == []
     admin_client.list_agents.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_swallows_availability_failure_by_default(monkeypatch):
+    """Default contract: availability failures fall back to [] so container
+    provision never breaks because Paperclip is down."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    admin_client = MagicMock()
+    admin_client.list_agents = AsyncMock(
+        side_effect=PaperclipApiError("list_agents", status_code=500, body="paperclip down")
+    )
+
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    result = await fetch_paperclip_agents_for_owner(
+        owner_id="user_abc",
+        repo=repo,
+        admin_client=admin_client,
+    )
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_raise_on_unavailable_reraises_availability_failure(monkeypatch):
+    """Regression (codex): the Friday-publish guard reads [] as "allow", so
+    an outage swallowed into [] fails OPEN. raise_on_unavailable=True must
+    re-raise the availability failure instead of masking it."""
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=MagicMock(company_id="co_xyz"))
+    admin_client = MagicMock()
+    admin_client.list_agents = AsyncMock(
+        side_effect=PaperclipApiError("list_agents", status_code=500, body="paperclip down")
+    )
+
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.get_admin_session_cookie",
+        AsyncMock(return_value="cookie123"),
+    )
+
+    with pytest.raises(PaperclipApiError):
+        await fetch_paperclip_agents_for_owner(
+            owner_id="user_abc",
+            repo=repo,
+            admin_client=admin_client,
+            raise_on_unavailable=True,
+        )
 
 
 @pytest.mark.asyncio

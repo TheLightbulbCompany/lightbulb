@@ -7,7 +7,7 @@ sequence ``core/services/agent_routine_provisioning.py`` uses for scheduled
 routines (reuses its routine-body builder directly), driven by the registry
 (``core/services/credentials/registry.py``) instead of a hardcoded spec list.
 
-Three inbound shapes exist:
+The inbound shapes:
 
 ``webhook_registration: "guided_paste"`` (Stripe/Sentry/Linear/Attio): Isol8
 has no reachable register-a-webhook API for the provider (creating a Stripe
@@ -62,6 +62,26 @@ automation does NOT stop the channel (same orphan posture as GitHub/Vercel):
 deliveries fail closed at Paperclip, though the renewal sweep keeps
 re-arming the channel until its entry is removed — see the sweep's
 docstring for that trade-off.
+
+Two PER-EVENT shapes ride the same google block (``InboundEvent.registration``
+overrides the block-level ``webhook_registration``; see the registry):
+
+``registration: "poll"`` (gmail.poll): no webhook at all — the seed creates
+the routine plus an ENABLED ``kind="schedule"`` trigger (``*/10 * * * *``
+UTC) and the starter prompt has the agent gog-search for mail newer than the
+last run. Zero owner setup, nothing to renew, no proxy_url in the result.
+
+``registration: "owner_setup"`` (gmail.message): Gmail push publishes only to
+a topic in the OWNER'S OWN GCP project (Google is BYO here, so they have
+one). The seed creates a bearer trigger, runs ``gog gmail watch start
+--topic <their topic>``, records a ``kind="gmail_watch"`` entry on the SAME
+``google_watch_channels`` list (entries WITHOUT a kind are push channels —
+back-compat), and returns one-time Pub/Sub setup instructions (create the
+topic, grant gmail-api-push publisher, add an OIDC push subscription aimed
+at the proxy URL). Deliveries carry a per-delivery Google OIDC JWT, which
+the trigger proxy verifies and swaps for the entry's ``channel_token`` (=
+the trigger's own secret) so Paperclip's bearer mode still does the final
+compare. The renewal sweep re-arms the watch via ``gog gmail watch renew``.
 """
 
 from __future__ import annotations
@@ -99,6 +119,17 @@ _VERCEL_API_BASE = "https://api.vercel.com"
 # projectIds and the rollback DELETE path.
 _VERCEL_PROJECT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
+# A fully-qualified Pub/Sub topic ("projects/<proj>/topics/<name>") — the only
+# topic shape owner_setup (gmail.message) accepts. GCP's own naming rules for
+# both segments; also an injection fence: the topic rides into gog's fixed
+# argv and back out in the setup instructions.
+_PUBSUB_TOPIC_RE = re.compile(r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/topics/[A-Za-z0-9-_.~+%]{3,255}$")
+
+# gmail.poll's cadence. */10 balances inbox latency against waking the
+# container 144 times a day; the routine's coalesce_if_active policy keeps a
+# slow run from stacking.
+_GMAIL_POLL_CRON = "*/10 * * * *"
+
 # `inbound.signing_mode` in the registry IS a native Paperclip signingMode
 # now (e.g. Stripe -> "hmac_sha256"); it's passed straight through to the
 # created trigger. Paperclip verifies natively against the trigger's secret,
@@ -135,6 +166,21 @@ def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, la
         "signingMode": signing_mode,
         "replayWindowSec": replay_window_sec,
         "label": label,
+    }
+
+
+def _build_schedule_trigger_body(cron: str) -> dict[str, Any]:
+    """The ENABLED schedule-trigger body the poll shape attaches — the
+    ``kind="schedule"`` counterpart to ``_build_webhook_trigger_body``. Live
+    on create for the same reason the webhook one is: the owner explicitly
+    asked for this automation (always-on-gated), unlike the dormant-by-
+    invariant provisioning seeds in ``agent_routine_provisioning``. UTC keeps
+    the cadence unambiguous across the fleet."""
+    return {
+        "kind": "schedule",
+        "cronExpression": cron,
+        "timezone": "UTC",
+        "enabled": True,
     }
 
 
@@ -303,21 +349,26 @@ async def seed_trigger_routine(
     provider_key: str,
     event_id: str,
     resource: str | None = None,
+    topic: str | None = None,
 ) -> dict[str, Any]:
-    """Create a routine + webhook trigger pre-filled from ``provider_key``'s
-    registry ``inbound`` declaration, for the event named ``event_id``.
+    """Create a routine + trigger pre-filled from ``provider_key``'s registry
+    ``inbound`` declaration, for the event named ``event_id``.
 
     Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions,
     secret_hint}``; the auto shapes add ``resource`` and need one — the
-    "owner/repo" to hook for auto_github, the project id for auto_vercel
-    (guided providers ignore it).
+    "owner/repo" to hook for auto_github, the project id for auto_vercel,
+    a connected Google account email for the google shapes (guided providers
+    ignore it). The poll shape adds ``poll: True`` (and has no
+    trigger_public_id/proxy_url — there is no webhook); owner_setup
+    additionally needs ``topic``, the owner's own Pub/Sub topic.
 
     Raises ``ValueError`` for any caller-facing input problem (unknown
     provider/event, provider not wired as a trigger source, missing/invalid
-    resource, GitHub/Vercel refusing the webhook, no active Paperclip company,
-    no resolvable suggested agent) — the router maps these to a 4xx. Raises
-    ``RuntimeError`` on a malformed upstream response (Paperclip is expected
-    to always return an id / publicId / secretMaterial).
+    resource or topic, GitHub/Vercel/Google refusing the registration, no
+    active Paperclip company, no resolvable suggested agent) — the router
+    maps these to a 4xx. Raises ``RuntimeError`` on a malformed upstream
+    response (Paperclip is expected to always return an id / publicId /
+    secretMaterial).
     """
     provider = registry.get_provider(provider_key)
     inbound = provider.inbound
@@ -328,10 +379,15 @@ async def seed_trigger_routine(
     if event is None:
         raise ValueError(f"unknown event {event_id!r} for provider {provider_key!r}")
 
+    # Events may override the block-level registration (the google block:
+    # calendar/drive stay auto_google_watch, gmail.poll/gmail.message carry
+    # their own shape) — everything below dispatches on the EFFECTIVE value.
+    registration = event.registration or inbound.webhook_registration
+
     # auto_github preconditions up front — a missing repo or token must fail
     # before anything exists upstream, not after a create/rollback cycle.
     gh_token: str | None = None
-    if inbound.webhook_registration == "auto_github":
+    if registration == "auto_github":
         if not resource or not _GITHUB_REPO_RE.match(resource):
             raise ValueError("auto_github needs a repository in the form owner/repo")
         gh_token = await _github_token(owner_id)
@@ -340,24 +396,32 @@ async def seed_trigger_routine(
 
     # auto_vercel preconditions, same posture: fail before anything exists.
     vercel_token: str | None = None
-    if inbound.webhook_registration == "auto_vercel":
+    if registration == "auto_vercel":
         if not resource or not _VERCEL_PROJECT_RE.match(resource):
             raise ValueError("auto_vercel needs a Vercel project id (prj_…)")
         vercel_token = await _vercel_token(owner_id)
         if not vercel_token:
             raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
 
-    # auto_google_watch preconditions, same posture. The resource is a
-    # connected Google ACCOUNT email, validated against the stored inventory
-    # rather than a regex — inventory membership is both the "is Google
-    # connected" check and the injection fence (the email rides into gog's
-    # fixed argv, so only values the connect path recorded may pass).
-    if inbound.webhook_registration == "auto_google_watch":
+    # Google-shape preconditions (push channels, gmail poll, gmail push),
+    # same posture. The resource is a connected Google ACCOUNT email,
+    # validated against the stored inventory rather than a regex — inventory
+    # membership is both the "is Google connected" check and the injection
+    # fence (the email rides into gog's fixed argv and the routine
+    # description, so only values the connect path recorded may pass).
+    if registration in ("auto_google_watch", "poll", "owner_setup"):
         if not resource:
-            raise ValueError("auto_google_watch needs a connected Google account email")
+            raise ValueError(f"{registration} needs a connected Google account email")
         accounts = await google_accounts_repo.list_accounts(owner_id)
         if not any(a["email"] == resource for a in accounts):
             raise ValueError("That Google account isn't connected — connect it in the Integrations tab first")
+
+    # owner_setup additionally needs the owner's own Pub/Sub topic — the
+    # regex is both a UX check (typo'd topics fail here, not at gog) and the
+    # argv/instructions injection fence.
+    if registration == "owner_setup":
+        if not topic or not _PUBSUB_TOPIC_RE.match(topic):
+            raise ValueError("owner_setup needs a Pub/Sub topic in the form projects/<project>/topics/<name>")
 
     # inbound.signing_mode IS a native Paperclip signingMode, passed straight
     # through to the created trigger.
@@ -377,8 +441,11 @@ async def seed_trigger_routine(
     # str.format ignores surplus kwargs, so `account` is inert for templates
     # that don't use it. Google's starter_prompt names the account so the
     # agent knows which `-a` to pass to gog — the push notification carries
-    # no payload, so the routine description is the only carrier.
-    description = inbound.template.starter_prompt.format(event_label=event.label, account=resource or "")
+    # no payload, so the routine description is the only carrier. An event
+    # may override the template's prompt (a scheduled inbox check reads
+    # nothing like a push notification).
+    starter_prompt = event.starter_prompt or inbound.template.starter_prompt
+    description = starter_prompt.format(event_label=event.label, account=resource or "")
 
     # Lazy import: keeps this module's load light and sidesteps a cycle —
     # same convention agent_export.py uses for the identical import.
@@ -402,6 +469,39 @@ async def seed_trigger_routine(
         if not routine_id:
             raise RuntimeError("create_routine returned no id")
 
+        if registration == "poll":
+            # No webhook at all — the trigger is an enabled schedule and the
+            # automation is live the moment it exists. Nothing to renew, no
+            # proxy URL to hand the owner.
+            try:
+                await admin.create_routine_trigger(
+                    session_cookie=cookie,
+                    routine_id=routine_id,
+                    body=_build_schedule_trigger_body(_GMAIL_POLL_CRON),
+                )
+            except Exception:
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded poll routine=%s owner=%s account=%s event=%s",
+                routine_id,
+                owner_id,
+                resource,
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": None,
+                "proxy_url": None,
+                "guided": False,
+                "instructions": None,
+                "secret_hint": None,
+                "resource": resource,
+                "poll": True,
+            }
+
         try:
             trigger_resp = await admin.create_routine_trigger(
                 session_cookie=cookie,
@@ -419,11 +519,12 @@ async def seed_trigger_routine(
                 raise RuntimeError("create_routine_trigger returned no trigger.publicId")
             # The auto shapes arm the provider side with the trigger's own
             # secret (GitHub: the hook's HMAC secret; Google: the channel
-            # token), shown ONCE in the create response — absent means the
-            # trigger is unusable for auto registration, same severity as no
-            # publicId.
+            # token; gmail push: the watch entry's channel_token the proxy
+            # injects after OIDC verification), shown ONCE in the create
+            # response — absent means the trigger is unusable for auto
+            # registration, same severity as no publicId.
             webhook_secret: str | None = None
-            if inbound.webhook_registration in ("auto_github", "auto_google_watch"):
+            if registration in ("auto_github", "auto_google_watch", "owner_setup"):
                 material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
                 webhook_secret = material.get("webhookSecret") if isinstance(material, dict) else None
                 if not webhook_secret:
@@ -434,7 +535,7 @@ async def seed_trigger_routine(
             # response. Absent means the trigger can never be armed, same
             # severity as no publicId.
             trigger_id: str | None = None
-            if inbound.webhook_registration == "auto_vercel":
+            if registration == "auto_vercel":
                 trigger_id = trigger.get("id") if isinstance(trigger, dict) else None
                 if not trigger_id:
                     raise RuntimeError("create_routine_trigger returned no trigger.id")
@@ -450,7 +551,7 @@ async def seed_trigger_routine(
 
         proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
 
-        if inbound.webhook_registration == "guided_paste":
+        if registration == "guided_paste":
             logger.info(
                 "inbound_triggers: seeded guided_paste routine=%s trigger=%s owner=%s provider=%s event=%s",
                 routine_id,
@@ -485,7 +586,7 @@ async def seed_trigger_routine(
                 "secret_hint": inbound.secret_hint,
             }
 
-        if inbound.webhook_registration == "auto_github":
+        if registration == "auto_github":
             assert resource and gh_token and webhook_secret  # narrowed by the pre-checks above
             try:
                 await _create_github_hook(
@@ -522,7 +623,7 @@ async def seed_trigger_routine(
                 "resource": resource,
             }
 
-        if inbound.webhook_registration == "auto_vercel":
+        if registration == "auto_vercel":
             assert resource and vercel_token and trigger_id  # narrowed by the pre-checks above
             try:
                 webhook_id, vercel_secret = await _create_vercel_webhook(
@@ -575,7 +676,7 @@ async def seed_trigger_routine(
                 "resource": resource,
             }
 
-        if inbound.webhook_registration == "auto_google_watch":
+        if registration == "auto_google_watch":
             assert resource and webhook_secret  # narrowed by the pre-checks above
             try:
                 channel = await google_watch.start_watch(
@@ -650,9 +751,82 @@ async def seed_trigger_routine(
                 "resource": resource,
             }
 
+        if registration == "owner_setup":
+            assert resource and topic and webhook_secret  # narrowed by the pre-checks above
+            try:
+                watch = await google_watch.start_gmail_watch(owner_id=owner_id, account_email=resource, topic=topic)
+            except Exception:
+                # gog / Google refused the watch — broken grant, revoked
+                # account, API outage, or a topic Gmail can't publish to yet
+                # (an owner who hasn't done the Pub/Sub setup retries this
+                # create afterwards; the error names Google's reason). The
+                # routine+trigger are unusable either way — unwind them.
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            entry = {
+                # Discriminates gmail watches from push channels on the
+                # shared list — the renewal sweep treats kind-less entries
+                # as channels (back-compat with pre-gmail rows).
+                "kind": "gmail_watch",
+                "account_email": resource,
+                "topic": topic,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                # The trigger's own secret. The proxy injects it as the
+                # Authorization bearer after verifying a delivery's Google
+                # OIDC JWT — Paperclip has no secret read-back, so this row
+                # is where the proxy finds it.
+                "channel_token": webhook_secret,
+                "expiration_ms": watch["expiration_ms"],
+            }
+            try:
+                # Same read-modify-write posture as the channel entry above.
+                channels = await integrations_repo.get_google_watch_channels(owner_id)
+                channels.append(entry)
+                await integrations_repo.set_google_watch_channels(owner_id, channels)
+            except Exception:
+                # Without its entry the watch can never be renewed AND the
+                # proxy has no bearer secret to inject — deliveries would
+                # 401 forever. Stop the watch (best-effort) before unwinding.
+                await google_watch.stop_gmail_watch(owner_id=owner_id, account_email=resource)
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded owner_setup routine=%s trigger=%s owner=%s account=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                resource,
+                event_id,
+            )
+            # The one-time Pub/Sub setup in the OWNER'S project. Everything
+            # interpolated is fence-validated above (topic regex, proxy_url is
+            # ours). The dialog is informational — no paste-back step.
+            instructions = (
+                "One-time setup in your Google Cloud project: "
+                "(1) enable the Pub/Sub API; "
+                f"(2) create the topic {topic}; "
+                "(3) grant gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role on it; "
+                f'(4) create a PUSH subscription to {proxy_url} with "Enable authentication" ON '
+                f"(any service account) and the audience set to exactly {proxy_url}."
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": instructions,
+                "secret_hint": None,
+                "resource": resource,
+            }
+
         # No other registration shape exists; the routine+trigger were
         # already created, so unwind before surfacing the misconfiguration.
         await _rollback_routine(
             admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
         )
-        raise ValueError(f"unsupported inbound.webhook_registration {inbound.webhook_registration!r}")
+        raise ValueError(f"unsupported registration {registration!r}")

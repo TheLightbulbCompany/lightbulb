@@ -89,23 +89,44 @@ answered 204 at the edge instead of forwarded, or every (re)creation would
 start a spurious routine run. ``X-Goog-Resource-State`` / ``X-Goog-Changed``
 are forwarded on real deliveries as informational run context.
 
+Gmail push (owner_setup / gmail.message) is the one delivery kind the proxy
+DOES verify: Google Pub/Sub push authenticates with a per-delivery OIDC JWT
+in the Authorization header (rotates every delivery, so no static-secret
+mode upstream can check it). Any Authorization value shaped like a Bearer
+JWT (three dot-separated segments — Paperclip trigger secrets never contain
+dots) must verify against Google's JWKS with iss ∈ accounts.google.com,
+``aud`` equal to this exact proxy URL (what the seed's instructions tell the
+owner to set on the push subscription), ``email_verified``, and a live
+``exp`` — or the delivery is 401'd at the edge. On success the JWT is
+REPLACED with ``Bearer <channel_token>`` from the owner's matching
+``gmail_watch`` entry on the integrations row (the trigger's own secret,
+written there by the seed), so Paperclip's bearer mode still does the final
+timing-safe compare and the fail-closed posture is preserved: a caller who
+merely knows the URL cannot fire the trigger without a Google-signed JWT
+for OUR audience. Pub/Sub retries reuse ``message.messageId``, so an
+``Idempotency-Key`` is derived from it (mirrors the Stripe event-id
+derivation). Non-JWT Authorization values pass through untouched.
+
 An unarmed trigger (secret not yet pasted) **fails closed for free**:
 Paperclip verifies against its own random placeholder secret, which the
 provider's signature cannot match, so nothing fires until the real secret is
 armed. There is no per-trigger secret lookup, cache, or edge verification in
-this proxy anymore — all of that moved into Paperclip.
+this proxy anymore (the Gmail OIDC swap above excepted) — all of that moved
+into Paperclip.
 """
 
+import asyncio
 import json
 import logging
 import time
 
 import httpx
+import jwt
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.auth import is_org_owner_id
 from core.config import settings
-from core.repositories import billing_repo, hook_event_repo
+from core.repositories import billing_repo, hook_event_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
@@ -137,6 +158,72 @@ _FORWARDED_HEADERS = (
 # which is correct just slightly chattier.
 _BINDING_TTL_SECONDS = 3600
 _BINDING_CACHE: dict[tuple[str, str], float] = {}
+
+# --- Gmail push OIDC verification (see module docstring) --------------------
+
+_GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+# Google historically stamps either form; both are Google.
+_GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"]
+# Module-level like core/auth.py's Clerk JWKS cache — PyJWKClient does its own
+# TTL'd JWKS caching (and per-kid key caching), so verification only hits
+# Google's cert endpoint on cache expiry / unknown kid.
+_google_jwks_client = jwt.PyJWKClient(_GOOGLE_JWKS_URL, cache_keys=True, lifespan=3600)
+
+# (owner_id, public_id) → the bearer secret to inject after OIDC success,
+# read from the owner's gmail_watch entry. Same TTL idiom as _BINDING_CACHE
+# (the secret is stable for the trigger's lifetime).
+_GMAIL_TOKEN_CACHE: dict[tuple[str, str], tuple[str, float]] = {}
+
+
+def _bearer_jwt(value: str | None) -> str | None:
+    """The token when an Authorization value is a Bearer JWT (three non-empty
+    dot-separated segments), else None. Paperclip trigger secrets are random
+    hex/base64url with no dots, so a hand-wired bearer sender never matches
+    this shape — its Authorization passes through untouched."""
+    if not value:
+        return None
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    parts = token.split(".")
+    return token if len(parts) == 3 and all(parts) else None
+
+
+def _verify_google_oidc_sync(token: str, audience: str) -> bool:
+    """Whether ``token`` is a live Google-signed OIDC JWT for ``audience``.
+
+    Blocking (PyJWKClient fetches over urllib on a cache miss) — call via
+    ``asyncio.to_thread``. Any failure — unknown kid, bad signature, wrong
+    iss/aud, expired, unverified email — is simply "not verified"; the
+    caller 401s without distinguishing why (the sender is a machine)."""
+    try:
+        key = _google_jwks_client.get_signing_key_from_jwt(token).key
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            audience=audience,
+            issuer=_GOOGLE_ISSUERS,
+            options={"require": ["exp"]},
+        )
+    except Exception:
+        return False
+    return claims.get("email_verified") is True
+
+
+async def _gmail_watch_token(owner_id: str, public_id: str) -> str | None:
+    """The bearer secret to inject for an OIDC-verified delivery — the
+    ``channel_token`` of the owner's watch entry feeding ``public_id``, or
+    None when no such entry exists (the caller fails closed)."""
+    cached = _GMAIL_TOKEN_CACHE.get((owner_id, public_id))
+    if cached and (time.monotonic() - cached[1]) < _BINDING_TTL_SECONDS:
+        return cached[0]
+    for entry in await integrations_repo.get_google_watch_channels(owner_id):
+        if entry.get("trigger_public_id") == public_id and entry.get("channel_token"):
+            token = str(entry["channel_token"])
+            _GMAIL_TOKEN_CACHE[(owner_id, public_id)] = (token, time.monotonic())
+            return token
+    return None
 
 
 def _provider_signature_headers() -> tuple[str, ...]:
@@ -317,6 +404,35 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
     body = await request.body()
 
+    # Gmail push OIDC (see module docstring): a Bearer-JWT-shaped
+    # Authorization MUST verify as a Google-signed token whose audience is
+    # this exact proxy URL, or the delivery is rejected here — forwarding it
+    # would only have Paperclip compare the raw JWT against the trigger
+    # secret and 401 anyway, but rejecting at the edge keeps the semantics
+    # explicit and the swap below possible. Non-JWT Authorization values are
+    # untouched.
+    oidc_bearer: str | None = None
+    oidc_jwt = _bearer_jwt(request.headers.get("Authorization"))
+    if oidc_jwt:
+        audience = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+        if not await asyncio.to_thread(_verify_google_oidc_sync, oidc_jwt, audience):
+            return Response(
+                status_code=401,
+                content=b'{"detail":"invalid_oidc_token"}',
+                media_type="application/json",
+            )
+        oidc_bearer = await _gmail_watch_token(owner_id, public_id)
+        if not oidc_bearer:
+            # A verified Google delivery for a trigger with no recorded
+            # gmail_watch entry — there is nothing to authenticate to
+            # Paperclip with, so fail closed rather than forward a JWT the
+            # bearer compare can never match.
+            return Response(
+                status_code=401,
+                content=b'{"detail":"unknown_gmail_watch"}',
+                media_type="application/json",
+            )
+
     # Provider header normalization (see module docstring). Verification is
     # native in Paperclip; the proxy only ADAPTS Stripe's combined
     # ``Stripe-Signature: t=,v1=`` into the separate ``X-Paperclip-*`` headers
@@ -362,6 +478,22 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     goog_token = request.headers.get("X-Goog-Channel-Token")
     if goog_token and "Authorization" not in headers:
         headers["Authorization"] = f"Bearer {goog_token}"
+
+    # OIDC-verified Gmail push: swap the per-delivery JWT for the trigger's
+    # own bearer secret, and derive an Idempotency-Key from the Pub/Sub
+    # messageId (its delivery retries reuse it; same gap-filling posture as
+    # the Stripe event-id derivation above).
+    if oidc_bearer:
+        headers["Authorization"] = f"Bearer {oidc_bearer}"
+        if "Idempotency-Key" not in headers:
+            try:
+                payload = json.loads(body)
+                message = payload.get("message") if isinstance(payload, dict) else None
+                message_id = message.get("messageId") if isinstance(message, dict) else None
+            except ValueError:
+                message_id = None
+            if message_id:
+                headers["Idempotency-Key"] = str(message_id)
 
     # Raw-body HMAC providers (Sentry/Linear/Attio — registry-declared): copy
     # the provider's own signature header into X-Paperclip-Signature so

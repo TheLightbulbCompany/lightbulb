@@ -959,3 +959,170 @@ describe("RoutinesPanel agentId filter (inspector intrinsic scope)", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", () => {
+  // The google connection with the gmail events: the block level stays
+  // auto_google_watch (which is what renders the account picker), while each
+  // gmail event carries its own `registration` override.
+  function gmailGoogleConnection() {
+    return {
+      provider: "google",
+      display_name: "Google Workspace",
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: [
+        "Calendar changed",
+        "New email (checked on a schedule)",
+        "New email (real-time push)",
+      ],
+      inbound: {
+        webhook_registration: "auto_google_watch",
+        events: [
+          { id: "calendar.changed", label: "Calendar changed", registration: null },
+          {
+            id: "gmail.poll",
+            label: "New email (checked on a schedule)",
+            registration: "poll",
+          },
+          {
+            id: "gmail.message",
+            label: "New email (real-time push)",
+            registration: "owner_setup",
+          },
+        ],
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+    connectionsData = [gmailGoogleConnection()];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "ada@example.com", label: "ada@example.com" },
+    ]);
+  });
+
+  async function pickGmailEvent(label: string) {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(
+      await screen.findByRole("option", { name: "Google Workspace" }),
+    );
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: label }));
+    // Account picker — the block-level auto shape's resource, common to both
+    // gmail events.
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/google/resources",
+      ),
+    );
+    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(
+      await screen.findByRole("option", { name: "ada@example.com" }),
+    );
+    return user;
+  }
+
+  it("gmail.poll: no topic input, submits without one, and the success copy reads live-on-a-schedule with no URL", async () => {
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: null,
+      proxy_url: null,
+      guided: false,
+      instructions: null,
+      secret_hint: null,
+      resource: "ada@example.com",
+      poll: true,
+    });
+    const user = await pickGmailEvent("New email (checked on a schedule)");
+
+    // The poll shape needs no Pub/Sub topic — the extra input is
+    // owner_setup-only.
+    expect(screen.queryByText("Pub/Sub topic")).not.toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeEnabled();
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith(
+      "/automations/from-integration",
+      {
+        provider: "google",
+        event_id: "gmail.poll",
+        resource: "ada@example.com",
+      },
+    );
+
+    // Schedule-backed success copy — nothing to wire, no webhook URL field.
+    expect(screen.getByText("Automation registered")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /Checks ada@example\.com's inbox every 10 minutes — this automation is live\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Webhook URL")).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+  });
+
+  it("gmail.message: requires the Pub/Sub topic, submits it, shows the setup instructions, and Done is not gated", async () => {
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: false,
+      instructions:
+        "Create the topic, grant gmail-api-push the Publisher role, then add a push subscription.",
+      secret_hint: null,
+      resource: "ada@example.com",
+    });
+    const user = await pickGmailEvent("New email (real-time push)");
+
+    // The owner_setup shape adds the topic input; Create stays gated until
+    // it's filled in.
+    expect(screen.getByText("Pub/Sub topic")).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+
+    fireEvent.change(
+      screen.getByPlaceholderText("projects/my-project/topics/isol8-gmail"),
+      { target: { value: "projects/my-project/topics/isol8-gmail" } },
+    );
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith(
+      "/automations/from-integration",
+      {
+        provider: "google",
+        event_id: "gmail.message",
+        resource: "ada@example.com",
+        topic: "projects/my-project/topics/isol8-gmail",
+      },
+    );
+
+    // Finish dialog: URL + one-time setup instructions, informational only —
+    // no secret paste-back, and Done is enabled immediately (unlike guided).
+    expect(await screen.findByText("Finish setup")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Create the topic, grant gmail-api-push/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+  });
+});

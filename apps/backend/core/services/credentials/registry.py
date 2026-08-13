@@ -220,6 +220,22 @@ class InboundEvent(BaseModel):
     # owner picks events in the provider's own dashboard, so there is nothing
     # to subscribe programmatically.
     provider_events: list[str] | None = None
+    # Per-EVENT registration override. Events within one provider can differ
+    # in how they're wired (google: calendar/drive ride push channels, Gmail
+    # polling rides a schedule trigger, Gmail push needs the owner's own
+    # Pub/Sub topic), so registration granularity lives on the event:
+    #   None          — inherit the block-level webhook_registration.
+    #   "poll"        — no webhook at all; the seed attaches an enabled
+    #                   schedule trigger and the agent checks on a cadence.
+    #   "owner_setup" — the owner does a one-time setup in THEIR OWN
+    #                   provider project (gmail.message: a Pub/Sub topic +
+    #                   push subscription); the seed registers our side and
+    #                   returns the setup instructions.
+    registration: Literal["poll", "owner_setup"] | None = None
+    # Per-event starter-prompt override of template.starter_prompt — a
+    # scheduled inbox check and a push notification need different opening
+    # lines. Same placeholders as the template ({event_label}, {account}).
+    starter_prompt: str | None = None
 
 
 class InboundTemplate(BaseModel):

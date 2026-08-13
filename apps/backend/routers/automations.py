@@ -79,6 +79,9 @@ class FromIntegrationBody(BaseModel):
     # Provider-side resource for auto-registering shapes — the "owner/repo"
     # to hook for auto_github. Guided-paste providers ignore it.
     resource: str | None = None
+    # The owner's own Pub/Sub topic ("projects/<proj>/topics/<name>") — only
+    # the owner_setup shape (gmail.message) reads it.
+    topic: str | None = None
 
 
 class WebhookSecretBody(BaseModel):
@@ -101,7 +104,9 @@ async def from_integration(
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id)
     try:
-        return await seed_trigger_routine(owner_id, body.provider, body.event_id, resource=body.resource)
+        return await seed_trigger_routine(
+            owner_id, body.provider, body.event_id, resource=body.resource, topic=body.topic
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

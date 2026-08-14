@@ -458,6 +458,13 @@ export function useAgentChat(
   // segment + tail would both contain the pre-tool text and the synthesized
   // assistant message at `done` would duplicate it.
   const streamCommittedOffsetRef = useRef<number>(0);
+  // Chars of the CURRENT assistant message already committed into segments.
+  // Activity pills (plan/patch/item/acp) split the stream WITHOUT an upstream
+  // assistant-message reset, so a later non-append frame — which carries the
+  // whole current message — must be sliced past what those pills committed or
+  // the committed prefix would fold twice. Tool pills ARE message boundaries
+  // (upstream resets at the next assistant message_start), so they zero it.
+  const segmentCommittedOffsetRef = useRef<number>(0);
   // Accumulated full text of the live run's assistant / thinking streams.
   // Reset at run boundaries and every live-state clear; a full-text
   // (non-append) frame replaces the buffer outright, which is how a client
@@ -543,13 +550,20 @@ export function useAgentChat(
   // committed length advances streamCommittedOffsetRef so the next post-pill
   // chunk (cumulative from start-of-run) slices off the already-committed
   // prefix. Does NOT clear chatStreamRunIdRef — the same run continues.
-  const commitStreamBeforePill = useCallback(() => {
+  // `isMessageBoundary`: true for tool pills (upstream starts a new assistant
+  // message after a tool call, so the per-message committed offset resets);
+  // false for activity pills (same assistant message keeps streaming, so a
+  // later non-append frame must be sliced past the text committed here).
+  const commitStreamBeforePill = useCallback((isMessageBoundary: boolean) => {
     const priorStream = chatStreamRef.current ?? "";
     setChatStreamSegments((segs) => [...segs, { text: priorStream, ts: Date.now() }]);
     if (priorStream.length > 0) {
       streamCommittedOffsetRef.current += priorStream.length;
       setChatStream(null);
     }
+    segmentCommittedOffsetRef.current = isMessageBoundary
+      ? 0
+      : segmentCommittedOffsetRef.current + priorStream.length;
   }, [setChatStreamSegments, setChatStream]);
 
   // Live tool state.
@@ -1111,6 +1125,7 @@ export function useAgentChat(
     setChatStream(null);
     chatStreamRunIdRef.current = null;
     streamCommittedOffsetRef.current = 0;
+    segmentCommittedOffsetRef.current = 0;
     streamCumulativeRef.current = null;
     setChatStreamThinking(null);
     thinkingCumulativeRef.current = null;
@@ -1469,6 +1484,7 @@ export function useAgentChat(
             setChatStreamSegments((segs) => [...segs, { text: prior, ts: Date.now() }]);
           }
           streamCommittedOffsetRef.current = 0;
+          segmentCommittedOffsetRef.current = 0;
           streamCumulativeRef.current = null;
         }
         // Reconstruct the run's cumulative text, then slice off the already-
@@ -1476,13 +1492,14 @@ export function useAgentChat(
         // resyncs (first frame after a reconnect, replace events, the
         // chat.final backstop) carry the CURRENT assistant message's full
         // text — upstream resets its accumulator after every tool call —
-        // NOT the run-cumulative text, so rebuild as frozen-prefix + segment
-        // text (mirrors the mobile chunk handler; see streamText.ts).
+        // NOT the run-cumulative text, so rebuild as frozen-prefix + the
+        // message text minus any part an activity pill already committed
+        // (mirrors the mobile chunk handler; see streamText.ts).
         // Refs update synchronously; the paint is throttled.
         const cumulative = msg.append
           ? accumulateStreamText(streamCumulativeRef.current, msg)
           : (streamCumulativeRef.current ?? "").slice(0, streamCommittedOffsetRef.current) +
-            msg.content;
+            msg.content.slice(segmentCommittedOffsetRef.current);
         streamCumulativeRef.current = cumulative;
         const tail = cumulative.slice(streamCommittedOffsetRef.current);
         chatStreamRef.current = tail.length > 0 ? tail : null;
@@ -1525,7 +1542,7 @@ export function useAgentChat(
 
         // Commit the in-progress stream tail before this pill so segments stay
         // index-aligned with the tool order (see commitStreamBeforePill).
-        commitStreamBeforePill();
+        commitStreamBeforePill(true);
 
         const now = Date.now();
         const entry: ToolStreamEntry = {
@@ -1682,7 +1699,9 @@ export function useAgentChat(
           // text streamed before this activity folds after the pill and renders
           // out of order. An UPDATE to an existing pill keeps its slot, so skip
           // the commit there (committing again would push a spurious segment).
-          commitStreamBeforePill();
+          // NOT a message boundary: activities don't reset the assistant
+          // message upstream, so the current message keeps accumulating.
+          commitStreamBeforePill(false);
           toolStreamOrderRef.current.push(synthId);
         }
         // Activity pills are point-in-time (status "done") → terminal, so
@@ -1769,6 +1788,7 @@ export function useAgentChat(
         chatStreamRunIdRef.current = null;
         chatStreamStartedAtRef.current = null;
         streamCommittedOffsetRef.current = 0;
+        segmentCommittedOffsetRef.current = 0;
         streamCumulativeRef.current = null;
         setChatStreamThinking(null);
         thinkingCumulativeRef.current = null;
@@ -1913,6 +1933,7 @@ export function useAgentChat(
         setChatStream(null);
         chatStreamRunIdRef.current = null;
         streamCommittedOffsetRef.current = 0;
+        segmentCommittedOffsetRef.current = 0;
         streamCumulativeRef.current = null;
         setChatStreamThinking(null);
         thinkingCumulativeRef.current = null;
@@ -2483,6 +2504,7 @@ export function useAgentChat(
     setChatStream(null);
     chatStreamRunIdRef.current = null;
     streamCommittedOffsetRef.current = 0;
+    segmentCommittedOffsetRef.current = 0;
     streamCumulativeRef.current = null;
     setChatStreamThinking(null);
     thinkingCumulativeRef.current = null;

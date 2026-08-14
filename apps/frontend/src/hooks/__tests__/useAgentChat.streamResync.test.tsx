@@ -193,4 +193,61 @@ describe("useAgentChat — segment-scoped non-append resync frames", () => {
     expect(content).toContain("A long first segment that the tool call commits.");
     expect(content).toContain("Created the goal.");
   });
+
+  it("does not duplicate text committed by an activity pill when the final non-append frame carries the whole message", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("plan something");
+    });
+    const runA = lastClientRunId();
+
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: runA,
+        content: "Before the plan.",
+      } as ChatIncomingMessage),
+    );
+    // Activity pill splits the stream WITHOUT an assistant-message reset —
+    // the same message keeps accumulating upstream.
+    act(() =>
+      dispatch({
+        type: "agent_activity",
+        agent_id: "agent-X",
+        runId: runA,
+        activity: "plan",
+        title: "Proposed plan",
+        detail: { steps: 1 },
+      } as unknown as ChatIncomingMessage),
+    );
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: runA,
+        content: " After the plan.",
+        append: true,
+      } as ChatIncomingMessage),
+    );
+    // chat.final backstop: the WHOLE current message, including the part the
+    // activity pill already committed.
+    act(() =>
+      dispatch({
+        type: "chunk",
+        agent_id: "agent-X",
+        runId: runA,
+        content: "Before the plan. After the plan.",
+      } as ChatIncomingMessage),
+    );
+    act(() => dispatch({ type: "done", agent_id: "agent-X", runId: runA } as ChatIncomingMessage));
+
+    const content = lastAssistantContent(result);
+    expect(content).toContain("Before the plan.");
+    expect(content).toContain("After the plan.");
+    // The committed prefix must fold exactly once.
+    expect(content.match(/Before the plan\./g)).toHaveLength(1);
+  });
 });

@@ -19,18 +19,27 @@ def _table():
     return get_table("integrations")  # short name; table prefix auto-applied
 
 
-async def put_status(owner_id: str, provider: str, status: str = "connected") -> None:
+async def put_status(owner_id: str, provider: str, status: str = "connected", identity: str | None = None) -> None:
+    """Record that this owner has this provider connected.
+
+    ``identity`` is the human-readable handle the materializer resolved for the
+    account actually connected — an Instagram username, a Google email. It is NOT
+    a credential and never a token; it exists so Settings can say WHICH account is
+    wired up, which matters most where an owner could plausibly have several.
+    Optional because it only lands on connects made after this shipped: older rows
+    have none and the UI simply omits the line.
+    """
     now = int(time.time())
-    await run_in_thread(
-        _table().put_item,
-        Item={
-            "owner_id": owner_id,
-            "provider": provider,
-            "status": status,
-            "connected_at": now,
-            "updated_at": now,
-        },
-    )
+    item: dict = {
+        "owner_id": owner_id,
+        "provider": provider,
+        "status": status,
+        "connected_at": now,
+        "updated_at": now,
+    }
+    if identity:
+        item["identity"] = identity
+    await run_in_thread(_table().put_item, Item=item)
 
 
 async def get(owner_id: str, provider: str) -> dict | None:

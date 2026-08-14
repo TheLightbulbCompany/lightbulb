@@ -420,12 +420,12 @@ async def replace_provider_block(
                     if not search:
                         web.pop("search", None)
 
-        # tools.toolSearch is provision-time gated (embedded runtimes with
-        # merged MCP servers only; NEVER written for chatgpt_oauth) — the swap
-        # must mirror that: None deletes any stale key so a Codex-bound config
-        # matches a fresh provision (the Codex runtime ignores it today, but a
-        # swap back — or a runtime that stops ignoring it — would hide the
-        # entire catalog behind the bridge); a value (re)pins the mode.
+        # tools.toolSearch is written unconditionally at provision time, for every
+        # provider choice — so callers should pass a mode to (re)pin it and the
+        # swap keeps matching a fresh provision. None still deletes the key, kept
+        # for callers that genuinely want it gone; it is no longer what a provider
+        # swap wants, since stripping it drops the owner back to carrying the full
+        # tool catalog.
         tools = current.get("tools")
         if tool_search_mode is not None:
             if not isinstance(tools, dict):

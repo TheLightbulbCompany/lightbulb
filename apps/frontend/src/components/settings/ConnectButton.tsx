@@ -433,6 +433,19 @@ export function ConnectButton({
           {busy ? "Connecting…" : "Connect"}
         </Button>
       </div>
+      {/* An OAuth row needs no instructions — the provider's own consent screen
+          is the flow. An API-key row is a blank box, so without this the owner
+          has to go find the right settings page themselves. */}
+      {connection.token_setup_url && (
+        <a
+          href={connection.token_setup_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-[var(--mute)] underline underline-offset-2 hover:text-[#1c1917]"
+        >
+          Where do I find this?
+        </a>
+      )}
       {err && (
         <p id={errorId} className="text-xs text-[#b63025]" role="alert">
           {err}

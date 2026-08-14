@@ -508,7 +508,8 @@ class TestConnectPaste:
         mock_apply.apply_connection.assert_awaited_once_with("user_test_123", "vercel_cli", {"token": "vc_test_abc123"})
 
         # Status row written ONLY after a successful apply.
-        mock_repo.put_status.assert_awaited_once_with("user_test_123", "vercel_cli", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "vercel_cli", "connected")
 
         # Load-bearing ordering: store secret -> wire container -> mark connected.
         # A put_status written before apply would falsely report "connected"
@@ -652,7 +653,8 @@ class TestConnectionWriteOrgAdminGate:
         put_args = mock_store.put.await_args
         assert put_args.args[0] == "org_test_456"
         mock_apply.apply_connection.assert_awaited_once_with("org_test_456", "vercel_cli", {"token": "vc_test_abc123"})
-        mock_repo.put_status.assert_awaited_once_with("org_test_456", "vercel_cli", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("org_test_456", "vercel_cli", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.integrations_repo")
@@ -1116,7 +1118,8 @@ class TestOAuthCallback:
         mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
         # Status row written after a clean apply.
-        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
 
     @pytest.mark.asyncio
     async def test_callback_redirects_on_provider_error_redirect(self, async_client):
@@ -1215,7 +1218,8 @@ class TestOAuthCallback:
         assert "/settings/connections?connected=google" in response.headers["location"]
 
         # Provider-level status row still written.
-        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
         # The connected account is added to the owner's inventory.
         mock_accounts.add_account.assert_awaited_once_with("org_1", "alice@example.com")
 
@@ -1286,7 +1290,8 @@ class TestOAuthCallback:
         )
         assert response.status_code in (302, 307)
         # Generic flow unchanged: status written, Google inventory untouched.
-        mock_repo.put_status.assert_awaited_once_with("org_1", "acme", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("org_1", "acme", "connected")
         mock_accounts.add_account.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1773,7 +1778,8 @@ class TestAwsComplete:
 
         assert _h.sha256(applied["cli_token"].encode()).hexdigest() == stored["cli_token_hash"]
 
-        mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
@@ -1952,7 +1958,8 @@ class TestAwsComplete:
         )
         assert resp.status_code == 200
         mock_apply.apply_connection.assert_awaited_once()
-        mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)
@@ -2115,7 +2122,8 @@ class TestAwsComplete:
         )
         assert resp.status_code == 200
         mock_apply.apply_connection.assert_awaited_once()
-        mock_repo.put_status.assert_awaited_once_with("user_test_123", "aws", "connected")
+        assert mock_repo.put_status.await_count == 1
+        assert mock_repo.put_status.await_args.args == ("user_test_123", "aws", "connected")
 
     @pytest.mark.asyncio
     @patch("routers.connections.aws_cfn.platform_trust_principal_arn", return_value=_PLATFORM_PRINCIPAL)

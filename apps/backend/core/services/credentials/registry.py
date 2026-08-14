@@ -81,7 +81,6 @@ class McpRemote(BaseModel):
     # 60s matches the MCP SDK's default per-request timeout, so runtime tool-call
     # behavior is unchanged; only the list budget is lifted.
     request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
-
     model_config = {"populate_by_name": True}
 
     def server_block(self) -> dict[str, object]:
@@ -322,6 +321,14 @@ class Provider(BaseModel):
     byo_required: bool = False
     # Help link shown in the BYO setup panel (the provider's OAuth-app console).
     byo_setup_url: str | None = None
+    # Where a paste_token provider's key is minted. The OAuth rail needs no such
+    # link (the provider's own consent screen is the flow), but an API-key row is
+    # just a blank box: without this the owner has to go find the right settings
+    # page themselves, which is the difference between connecting now and
+    # connecting later. Rendered next to the paste field, not in the BYO panel —
+    # deliberately separate from byo_setup_url, which points at an OAuth-app
+    # console and answers a different question.
+    token_setup_url: str | None = None
     # Remote MCP endpoint published into mcp.servers.<key> by the mcp_oauth
     # materializer. Only set for OAuth-protected remote MCP servers (e.g. Attio);
     # see McpRemote for why it lives at the provider level rather than in Wiring.

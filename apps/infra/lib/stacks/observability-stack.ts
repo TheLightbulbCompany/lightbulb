@@ -1821,12 +1821,24 @@ def handler(event, _ctx):
     // climbs back toward historical highs. That is the intent: an early
     // tripwire while launch traffic is unknown, not a ceiling. Raise it once
     // post-launch spend settles, rather than letting it sit breached again.
+    // DO NOT set an explicit budgetName here. `notificationsWithSubscribers`
+    // is an update-requires-REPLACEMENT property, so any change to the alert
+    // addresses makes CloudFormation create a new budget BEFORE deleting the
+    // old one. With a fixed name the two collide and the deploy dies with:
+    //
+    //   A budget or resource with the same name but a different internalId
+    //   already exists (Service: Budgets, Status Code: 400)
+    //
+    // which is exactly what happened repointing these from oncall@/alerts@ to
+    // admin@. Letting CloudFormation generate the physical name costs a less
+    // readable string in the Budgets console and buys a resource that can
+    // actually be updated. The budget is identified by the alarm/notification
+    // it produces, not by its console name.
     new budgets.CfnBudget(this, "MonthlyBudget", {
       budget: {
         budgetType: "COST",
         timeUnit: "MONTHLY",
         budgetLimit: { amount: 1500, unit: "USD" },
-        budgetName: `isol8-${this.envName}-monthly`,
       },
       notificationsWithSubscribers: [
         {

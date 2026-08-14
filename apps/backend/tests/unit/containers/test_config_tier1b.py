@@ -67,18 +67,36 @@ class TestToolSearchAlwaysOn:
             ("bedrock_trial", {}),
         ):
             cfg = _cfg(choice, integration_mcp_servers=_MCP, **kwargs)
-            assert cfg["tools"]["toolSearch"] == {"mode": "code"}, choice
+            assert cfg["tools"]["toolSearch"] == {"mode": "tools"}, choice
 
     def test_present_even_with_no_mcp_servers(self):
         """No servers today does not mean no servers tomorrow — the owner can
         connect one without the config being regenerated."""
-        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": "code"}
-        assert _cfg("chatgpt_oauth")["tools"]["toolSearch"] == {"mode": "code"}
-        assert _cfg("bedrock_trial")["tools"]["toolSearch"] == {"mode": "code"}
+        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": "tools"}
+        assert _cfg("chatgpt_oauth")["tools"]["toolSearch"] == {"mode": "tools"}
+        assert _cfg("bedrock_trial")["tools"]["toolSearch"] == {"mode": "tools"}
 
     def test_manual_mcp_servers_are_covered_too(self):
         custom = {"my-internal-api": {"command": "node", "args": ["server.js"], "env": {}}}
-        assert _cfg("bedrock_claude", integration_mcp_servers=custom)["tools"]["toolSearch"] == {"mode": "code"}
+        assert _cfg("bedrock_claude", integration_mcp_servers=custom)["tools"]["toolSearch"] == {"mode": "tools"}
+
+    def test_provider_swap_repins_the_same_mode_as_a_fresh_provision(self):
+        """The mode lives in two places — provision-time here and the provider
+        swap's re-pin in billing_service — and nothing but this test couples
+        them. Drift means a swapped owner silently runs a different tool-search
+        mode than a freshly provisioned one, which is precisely the class of
+        bug that made the swap delete the key entirely once before.
+        """
+        import inspect
+
+        from core.services import billing_service
+
+        provisioned = _cfg("bedrock_claude")["tools"]["toolSearch"]["mode"]
+        source = inspect.getsource(billing_service)
+        assert f'tool_search_mode="{provisioned}"' in source, (
+            f"provision-time writes mode={provisioned!r}; billing_service's provider-swap "
+            "re-pin must pass the same value"
+        )
 
 
 class TestBrowserBounds:

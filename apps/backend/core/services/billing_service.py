@@ -1779,8 +1779,10 @@ async def _hot_swap_provider(
             # must RE-PIN it rather than delete it. Passing None here strips the
             # key, which would drop a swapped owner straight back to carrying the
             # full tool catalog — the exact drift the unconditional setting
-            # exists to prevent.
-            tool_search_mode="code",
+            # exists to prevent. Keep this value identical to the provision-time
+            # one in containers/config.py, or a provider swap silently moves the
+            # owner to a different tool-search mode than a fresh provision.
+            tool_search_mode="tools",
             acp_block=acp_block,
             acpx_entry=acpx_entry,
         )

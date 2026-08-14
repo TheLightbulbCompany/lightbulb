@@ -1856,11 +1856,14 @@ export class ServiceStack extends cdk.Stack {
     // that might be absent. That is not style: a Choice rule on a missing
     // path throws States.Runtime, Choice states cannot Catch, and the
     // execution would die with the row still leased — reintroducing the exact
-    // orphan this loop exists to prevent (same hazard ClassifyFailure's
-    // IsPresent guard documents below). ASL guarantees rules evaluate IN
-    // ORDER, but does NOT guarantee short-circuiting WITHIN an And/Or, so
-    // every presence check is its own rule rather than a member of a
-    // compound condition.
+    // orphan this loop exists to prevent (the same hazard ClassifyFailure's
+    // IsPresent guard documents below).
+    //
+    // ASL guarantees rules evaluate IN ORDER, and AWS documents that an
+    // IsPresent member short-circuits the rest of its And. Either mechanism
+    // is sufficient; this uses ordering because a flat list of single-purpose
+    // rules reads better than nested compound conditions, and it stays
+    // correct without depending on the short-circuit at all.
     const watchChoice = new sfn.Choice(this, "WatchRow")
       // Row deleted mid-provision (account wipe / delete): nothing to drive.
       .when(sfn.Condition.isNotPresent("$.row.Item"), succeedSuperseded)
@@ -1897,13 +1900,14 @@ export class ServiceStack extends cdk.Stack {
       // straggler exactly as provision_dispatch.py documents.
       //
       // Deliberately does NOT branch on the row's `retryable` flag to
-      // short-cut a deterministic failure into Fail. Reading it would mean
-      // comparing $.row.Item.retryable.BOOL, which is absent on any row that
-      // predates the field — and one wrong path here kills the watchdog. The
-      // deterministic case still terminates correctly one attempt later, via
-      // the proven route: the runner exits 10 and ClassifyFailure sends it to
-      // MarkFailedDeterministic. One redundant ECS attempt on a permanently
-      // broken provision is a cheap price for a Choice that cannot throw.
+      // short-cut a deterministic failure straight to Fail. Such a rule would
+      // be safe to write (guard $.row.Item.retryable.BOOL with IsPresent —
+      // it is absent on rows predating the field), but it buys only the
+      // skipping of one ECS attempt: the deterministic case already
+      // terminates correctly via the proven route, where the runner exits 10
+      // and ClassifyFailure routes to MarkFailedDeterministic. The row is
+      // honest either way, so the user-visible error is identical. Add the
+      // branch only if that wasted attempt ever shows up as a real cost.
       .when(sfn.Condition.stringEquals("$.row.Item.status.S", "error"), runProvisioner)
       // Dead-runner backstop: still leased to us, still "provisioning", no
       // progress for 40 ticks. The inline child cannot still be alive —

@@ -477,8 +477,9 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     // (d2) No rule may compare a path that could be absent — a Choice on a
     // missing path throws States.Runtime, which a Choice cannot Catch, and
     // the execution would die holding the lease (the very orphan this loop
-    // prevents). ASL guarantees rule ORDER but not short-circuiting inside
-    // And/Or, so each presence check is its own earlier rule.
+    // prevents). Guaranteed here by rule ORDER: each presence check is its
+    // own earlier rule, so the comparison after it cannot be reached with the
+    // attribute missing.
     const statusPresentIdx = flat.indexOf(
       '"Variable":"$.row.Item.status.S","IsPresent":false,"Next":"Superseded"',
     );

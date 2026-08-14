@@ -243,7 +243,6 @@ def _connection_row(
     connected: dict[str, str],
     byo: bool,
     owner_id: str | None,
-    identity: str | None = None,
 ) -> dict:
     """One row of GET /connections.
 
@@ -283,9 +282,6 @@ def _connection_row(
         # Where a paste_token provider's key is minted, so an API-key row isn't
         # just a blank box the owner has to go hunting for.
         "token_setup_url": v.token_setup_url,
-        # WHICH account is connected (Instagram username, Google email). Never a
-        # credential. None for older rows and for providers with no identity.
-        "identity": identity,
         # can_trigger: this provider's inbound event labels (registry `inbound`,
         # T1) — the Integrations card's "Can trigger" line. Empty when the
         # provider isn't (yet) wired as an Automations trigger source.
@@ -364,9 +360,6 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
     rows = await integrations_repo.list_for_owner(owner_id)
     connected = {r["provider"]: r.get("status", "connected") for r in rows}
-    # Which ACCOUNT is wired up, per provider — absent for rows written before
-    # identity was recorded, and for providers whose materializer resolves none.
-    identities = {r["provider"]: r.get("identity") for r in rows if r.get("identity")}
     connections = []
     for k, v in registry.all_providers().items():
         # A gate still means HIDDEN unless the provider opts into being requested,
@@ -375,7 +368,7 @@ async def list_connections(auth: AuthContext = Depends(get_current_user)):
         if not registry.is_listable(v, owner_id) and k not in connected:
             continue
         byo = await _byo_active(owner_id, k)
-        connections.append(_connection_row(k, v, connected, byo, owner_id, identities.get(k)))
+        connections.append(_connection_row(k, v, connected, byo, owner_id))
     return {"connections": connections}
 
 
@@ -472,7 +465,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     # wiring succeeds, so status never reports a false "connected".
     await integration_secret_store.put(owner_id, provider, credential)
     try:
-        connection_identity = await apply_connection.apply_connection(owner_id, provider, credential)
+        await apply_connection.apply_connection(owner_id, provider, credential)
     except Exception:
         await _remove_materialized_artifacts(owner_id, p, credential)
         await integration_secret_store.delete(owner_id, provider)
@@ -480,7 +473,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
             status_code=502,
             detail="failed to apply the connection to your container; please retry",
         )
-    await integrations_repo.put_status(owner_id, provider, "connected", identity=connection_identity)
+    await integrations_repo.put_status(owner_id, provider, "connected")
     return {"status": "connected", "provider": provider}
 
 
@@ -926,7 +919,7 @@ async def oauth_callback(provider: str, state: str, code: str | None = None):
             if _retains_secret(p):
                 await integration_secret_store.delete(owner_id, prov)
             return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
-        await integrations_repo.put_status(owner_id, prov, "connected", identity=connection_identity)
+        await integrations_repo.put_status(owner_id, prov, "connected")
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

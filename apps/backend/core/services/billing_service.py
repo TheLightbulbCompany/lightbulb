@@ -1775,9 +1775,12 @@ async def _hot_swap_provider(
             subagent_model=subagent_model,
             llm_task_model=cheap_model,
             web_search_provider=web_search_provider,
-            # Provision-time never writes toolSearch for chatgpt_oauth (the
-            # hot path's only target) — delete any stale embedded-runtime key.
-            tool_search_mode=None,
+            # Provision-time now writes toolSearch unconditionally, so the swap
+            # must RE-PIN it rather than delete it. Passing None here strips the
+            # key, which would drop a swapped owner straight back to carrying the
+            # full tool catalog — the exact drift the unconditional setting
+            # exists to prevent.
+            tool_search_mode="code",
             acp_block=acp_block,
             acpx_entry=acpx_entry,
         )

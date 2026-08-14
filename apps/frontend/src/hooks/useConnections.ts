@@ -40,12 +40,6 @@ export interface Connection {
    */
   token_setup_url?: string | null;
   /**
-   * WHICH account is connected (Instagram username, Google email). Never a
-   * credential. Absent for connections made before identity was recorded, and
-   * for providers whose materializer resolves none.
-   */
-  identity?: string | null;
-  /**
    * This owner cannot connect the provider directly — it is gated off their
    * environment and they are not on its owner_allowlist. The row offers
    * Request access (emails support) instead of Connect. Set by the backend's

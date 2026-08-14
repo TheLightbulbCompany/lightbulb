@@ -97,14 +97,6 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
                   : connection.acquisition === "aws_sts"
                     ? " · AWS role"
                     : " · API key"}
-                {/* WHICH account is wired up. Only meaningful once connected, and
-                    absent on rows connected before identity was recorded. */}
-                {connected && connection.identity && (
-                  <>
-                    {" · "}
-                    <span className="text-[#1c1917]">{connection.identity}</span>
-                  </>
-                )}
               </p>
               {receipt && (
                 <p className="text-xs text-[var(--mute)] mt-0.5">

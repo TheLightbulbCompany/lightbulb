@@ -878,12 +878,16 @@ const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
 // paste the proxy URL into the provider's own dashboard and then paste back
 // the signing secret it hands them. `secret_hint` names the provider's term
 // for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
-// becomes the paste input's placeholder. `resource` echoes the auto-registered
-// target ("owner/repo" for GitHub, the project id for Vercel) so the success
-// copy can name it. `poll` -> a schedule-backed automation (gmail.poll): no
-// webhook exists, so trigger_public_id/proxy_url are null. Non-guided results
-// may still carry `instructions` (gmail.message's one-time Pub/Sub setup) —
-// informational only, Done is never gated on them.
+// becomes the paste input's placeholder. `webhook_secret` -> the REVERSE-
+// guided variant (PostHog): the secret flows the other way — the owner sets
+// it as the provider-side Authorization header, shown once here with no
+// paste-back step, so Done is never gated on it. `resource` echoes the
+// auto-registered target ("owner/repo" for GitHub, the project id for
+// Vercel) so the success copy can name it. `poll` -> a schedule-backed
+// automation (gmail.poll): no webhook exists, so trigger_public_id/proxy_url
+// are null. Non-guided results may still carry `instructions`
+// (gmail.message's one-time Pub/Sub setup) — informational only, Done is
+// never gated on them.
 interface FromIntegrationResult {
   routine_id: string;
   trigger_public_id: string | null;
@@ -891,6 +895,7 @@ interface FromIntegrationResult {
   guided: boolean;
   instructions?: string | null;
   secret_hint?: string | null;
+  webhook_secret?: string | null;
   resource?: string | null;
   poll?: boolean;
 }
@@ -1294,7 +1299,12 @@ function CreateRoutineDialog({
     // unsigned automation with no UI left to finish it (the detail panel
     // treats a "none"-signing trigger as non-rotatable). Auto (GitHub/
     // Vercel) results are already fully armed by the time this dialog shows.
-    const mustSaveSecretFirst = connResult.guided && !whsecSaved;
+    // Reverse-guided (webhook_secret present) results have no paste-back —
+    // the trigger is born armed with its own secret and the owner wires the
+    // provider side by hand — so Done is never gated for them either.
+    const isReverseGuided = !!connResult.webhook_secret;
+    const mustSaveSecretFirst =
+      connResult.guided && !isReverseGuided && !whsecSaved;
     // Poll results (gmail.poll) are schedule-backed: nothing to wire, no URL.
     const isPoll = connResult.poll === true;
     // Non-guided results carrying instructions (gmail.message) still need a
@@ -1311,7 +1321,9 @@ function CreateRoutineDialog({
         }
         description={
           connResult.guided
-            ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
+            ? isReverseGuided
+              ? `Copy this URL and Authorization header value into ${providerName} — the secret is shown only once.`
+              : `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
             : isPoll
               ? `Checks ${resourceLabel ?? "the account"}'s inbox every 10 minutes — this automation is live.`
               : needsOwnerSetup
@@ -1339,12 +1351,21 @@ function CreateRoutineDialog({
           {connResult.proxy_url && (
             <SecretField label="Webhook URL" value={connResult.proxy_url} />
           )}
+          {/* Reverse-guided: the FULL header value ("Bearer <secret>"), not
+              the bare secret — copying it whole eliminates the classic
+              forgot-the-Bearer-prefix failure. */}
+          {connResult.webhook_secret && (
+            <SecretField
+              label="Authorization header value"
+              value={`Bearer ${connResult.webhook_secret}`}
+            />
+          )}
           {connResult.instructions && (
             <p className="text-xs text-[var(--mute)]">
               {connResult.instructions}
             </p>
           )}
-          {connResult.guided ? (
+          {connResult.guided && !isReverseGuided ? (
             <>
               <label className="block">
                 <span className="text-sm text-[var(--ink-soft)]">
@@ -1374,9 +1395,13 @@ function CreateRoutineDialog({
               )}
             </>
           ) : (
-            <p className="text-sm" style={{ color: "var(--forest)" }}>
-              Registered.
-            </p>
+            // Reverse-guided is guided-but-unwired: "Registered." would claim
+            // a liveness the owner's PostHog-side setup hasn't earned yet.
+            !connResult.guided && (
+              <p className="text-sm" style={{ color: "var(--forest)" }}>
+                Registered.
+              </p>
+            )
           )}
           {err && (
             <div

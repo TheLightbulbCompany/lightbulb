@@ -681,6 +681,62 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(doneButton).toBeEnabled();
   });
 
+  it("reverse-guided (PostHog): shows the URL + full Authorization header value, no paste step, Done immediately enabled", async () => {
+    connectionsData = [
+      connection({
+        provider: "posthog",
+        display_name: "PostHog",
+        can_trigger: ["Exception captured"],
+        inbound: {
+          webhook_registration: "guided_paste",
+          events: [{ id: "$exception", label: "Exception captured" }],
+        },
+      }),
+    ];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+      instructions:
+        "In PostHog, open Data pipelines → Destinations and create a new 'HTTP Webhook' destination.",
+      secret_hint: null,
+      webhook_secret: "pcsec_ph",
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "PostHog" }));
+    await user.click(
+      await screen.findByRole("option", { name: "Exception captured" }),
+    );
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "posthog",
+      event_id: "$exception",
+    });
+
+    expect(
+      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+    ).toBeInTheDocument();
+    // The FULL header value, Bearer prefix included — copying it whole
+    // eliminates the forgot-the-prefix failure.
+    expect(screen.getByText("Bearer pcsec_ph")).toBeInTheDocument();
+    expect(screen.getByText(/data pipelines/i)).toBeInTheDocument();
+
+    // The secret flows Isol8 → PostHog: no paste-back input, no arming PUT,
+    // and no "Registered." claim — the owner still has PostHog-side setup.
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Registered.")).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+    expect(mockAutomationsPut).not.toHaveBeenCalled();
+  });
+
 });
 
 describe("RoutinesPanel — auto_github repo picker", () => {

@@ -23,6 +23,16 @@ it's armed the trigger holds a random placeholder secret, so a provider
 signature can't match and nothing fires — it fails closed for free, no marker
 needed.
 
+The BEARER-guided variant (PostHog, ``signing_mode: "bearer"`` on a
+guided_paste block): the provider sends no signature at all, only whatever
+headers the owner configures, so the secret flows the OPPOSITE direction —
+the trigger's own one-time ``secretMaterial.webhookSecret`` is returned as
+``webhook_secret`` for the owner to set as the provider-side Authorization
+header (shown ONCE: Paperclip has no secret read-back, so this response is
+the only place it ever exists outside the trigger). No paste-back step, no
+arming PUT — the trigger is born holding the right secret and deliveries
+fail closed until the owner wires the header.
+
 ``webhook_registration: "auto_github"`` (GitHub): the owner's connected gh
 token carries ``repo`` scope, which is enough to create repo webhooks, so the
 seed registers the hook itself — the trigger create's one-time
@@ -437,7 +447,10 @@ async def seed_trigger_routine(
     ``inbound`` declaration, for the event named ``event_id``.
 
     Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions,
-    secret_hint}``; the auto shapes add ``resource`` and need one — the
+    secret_hint}``; bearer-guided providers add ``webhook_secret`` (the
+    trigger's own one-time secret, which the owner sets as the provider-side
+    Authorization header — see the module docstring); the auto shapes add
+    ``resource`` and need one — the
     "owner/repo" to hook for auto_github, the project id for auto_vercel,
     a connected Google account email for the google shapes (guided providers
     ignore it). The poll shape adds ``poll: True`` (and has no
@@ -604,9 +617,14 @@ async def seed_trigger_routine(
             # token; gmail push: the watch entry's channel_token the proxy
             # injects after OIDC verification), shown ONCE in the create
             # response — absent means the trigger is unusable for auto
-            # registration, same severity as no publicId.
+            # registration, same severity as no publicId. Bearer-guided
+            # providers (PostHog) need it for the same reason: the OWNER arms
+            # the provider side by hand with this value, and there is no
+            # read-back later.
             webhook_secret: str | None = None
-            if registration in ("auto_github", "auto_google_watch", "owner_setup"):
+            if registration in ("auto_github", "auto_google_watch", "owner_setup") or (
+                registration == "guided_paste" and inbound.signing_mode == "bearer"
+            ):
                 material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
                 webhook_secret = material.get("webhookSecret") if isinstance(material, dict) else None
                 if not webhook_secret:
@@ -666,6 +684,11 @@ async def seed_trigger_routine(
                 # "Client Secret from the integration" for Sentry) — a
                 # Stripe-shaped hint on a Linear secret reads as an error.
                 "secret_hint": inbound.secret_hint,
+                # Bearer-guided only (None for every other guided provider):
+                # the trigger's own secret, which the owner sets as the
+                # provider-side Authorization header. Shown ONCE — the
+                # reverse of the whsec paste-back, with no read-back later.
+                "webhook_secret": webhook_secret,
             }
 
         if registration == "auto_github":

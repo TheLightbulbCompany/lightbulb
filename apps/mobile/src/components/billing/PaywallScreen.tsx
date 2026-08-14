@@ -54,6 +54,7 @@ import { ErrorCode, getStorefront, useIAP } from "expo-iap";
 
 import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
+import { parseCheckoutReturn } from "../../lib/deepLink";
 import {
   APPLE_IAP_AVAILABLE,
   APPLE_SUBSCRIPTION_SKU,
@@ -172,6 +173,21 @@ export function PaywallScreen({
       cancelled = true;
     };
   }, [api]);
+
+  // Return leg of the web checkout. Stripe's success_url is a universal link
+  // back into the app, and the fallback page offers the isol8:// scheme when
+  // iOS declines to open it — both land here.
+  //
+  // A returning URL is only a HINT to go re-read entitlement, never a grant.
+  // Deep links are externally triggerable, so treating one as proof of payment
+  // would hand anyone a free subscription; the subscription is granted by the
+  // customer.subscription.* webhook and confirmed by refetching the server.
+  useEffect(() => {
+    const sub = Linking.addEventListener("url", ({ url }) => {
+      if (parseCheckoutReturn(url)?.status === "success") onPurchased();
+    });
+    return () => sub.remove();
+  }, [onPurchased]);
 
   const showWebOption =
     storefront !== undefined && EXTERNAL_LINK_STOREFRONTS.has(storefront);

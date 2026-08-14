@@ -61,7 +61,20 @@ const nextConfig: NextConfig = {
   },
 
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      {
+        // Apple will not associate the domain unless this file is served as
+        // application/json. It deliberately has no file extension, so Next
+        // otherwise serves it as application/octet-stream and Universal Links
+        // fail SILENTLY — the Stripe return link just opens Safari instead of
+        // handing back to the app, with no error surfaced anywhere. Verify
+        // after any deploy that touches static serving:
+        //   curl -I https://isol8.co/.well-known/apple-app-site-association
+        source: "/.well-known/apple-app-site-association",
+        headers: [{ key: "Content-Type", value: "application/json" }],
+      },
+    ];
   },
 
   turbopack: {

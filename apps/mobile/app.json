@@ -24,7 +24,10 @@
       },
       "entitlements": {
         "aps-environment": "production"
-      }
+      },
+      "associatedDomains": [
+        "applinks:isol8.co"
+      ]
     },
     "plugins": [
       "expo-apple-authentication",

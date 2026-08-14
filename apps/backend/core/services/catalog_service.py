@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from core.observability.metrics import put_metric
+from core.observability.product_analytics import capture_product_event
 from core.services import agent_export
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
@@ -703,6 +704,15 @@ class CatalogService:
                 "deploy: ACP enable failed for %s; agent deployed without harness delegation",
                 owner_id,
             )
+
+        # Funnel event. Emitted here rather than per-router because every
+        # deploy surface (marketplace deploy, agent hiring, agent builder)
+        # funnels through this method.
+        capture_product_event(
+            distinct_id=owner_id,
+            event="catalog_agent_deployed",
+            properties={"slug": slug, "agent_id": new_agent_id, "seller_id": seller_id},
+        )
 
         return {
             "slug": slug,

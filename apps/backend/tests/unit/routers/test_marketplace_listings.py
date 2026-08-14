@@ -2545,3 +2545,65 @@ def test_discard_requires_version_query_param(authed_client_factory):
     client = authed_client_factory("u_seller", "seller@example.com")
     r = client.delete("/api/v1/marketplace/listings/lst_1")
     assert r.status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# Manifest routines: schedules recreate DORMANT, webhooks come back as pending
+# --------------------------------------------------------------------------- #
+
+
+def test_pending_automations_maps_webhook_entries_only():
+    from routers.marketplace_listings import _pending_automations
+
+    assert _pending_automations(
+        [
+            {"title": "Morning sweep", "cron": "0 6 * * *", "timezone": "UTC"},
+            {"title": "GitHub: Issue opened or changed", "kind": "webhook", "provider": "github", "event_id": "issues"},
+            {
+                "title": "Stripe: Charge refunded",
+                "kind": "webhook",
+                "provider": "stripe",
+                "event_id": "charge.refunded",
+            },
+        ]
+    ) == [
+        {"provider": "github", "event_id": "issues", "needs_resource": True},
+        {"provider": "stripe", "event_id": "charge.refunded", "needs_resource": False},
+    ]
+
+
+def test_pending_automations_dedupes_and_drops_unknown_pairs():
+    from routers.marketplace_listings import _pending_automations
+
+    assert _pending_automations(
+        [
+            {"kind": "webhook", "provider": "github", "event_id": "issues"},
+            {"kind": "webhook", "provider": "github", "event_id": "issues"},
+            {"kind": "webhook", "provider": "github", "event_id": "gone.from.registry"},
+            {"kind": "webhook"},
+            "not-a-dict",
+        ]
+    ) == [{"provider": "github", "event_id": "issues", "needs_resource": True}]
+
+
+@pytest.mark.asyncio
+async def test_recreate_routines_never_arms_a_webhook_entry():
+    """Webhook manifest entries carry no cron, so the dormant-schedule
+    recreate path drops them before it ever resolves a company — a deploy
+    must never silently arm a live trigger the buyer didn't ask for."""
+    from routers.marketplace_listings import _recreate_routines_for_buyer
+
+    with patch("routers.marketplace_listings.create_agent_routines", new_callable=AsyncMock) as mock_create:
+        await _recreate_routines_for_buyer(
+            owner_id="u_buyer",
+            new_agent_id="agent_new",
+            manifest_routines=[
+                {
+                    "title": "GitHub: Issue opened or changed",
+                    "kind": "webhook",
+                    "provider": "github",
+                    "event_id": "issues",
+                }
+            ],
+        )
+    mock_create.assert_not_awaited()

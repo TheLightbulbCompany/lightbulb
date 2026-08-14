@@ -34,6 +34,7 @@ from core.services.catalog_slice import (
     extract_agent_slice,
     filter_cron_jobs_for_agent,
 )
+from core.services.inbound_triggers import automation_from_title
 from core.services.marketplace.requirements import (
     build_manifest_requirements,
     load_effective_config,
@@ -1136,17 +1137,35 @@ _TRIGGER_PORTABLE_KEYS = ("cronExpression", "timezone")
 def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     """Strip a Paperclip RoutineDetail down to its buyer-portable shape.
 
-    Returns ``{title, description, cron, timezone}`` (one entry per schedule
-    trigger; the routine's title/description are repeated per trigger so the
-    deploy side can recreate one routine+trigger per entry) — or ``None`` when
-    the routine has no schedule trigger to carry (webhook/api triggers don't
-    port; a routine with zero schedule triggers has no cron to recreate).
+    One entry per trigger (the routine's title/description are repeated per
+    trigger so the deploy side can recreate one routine+trigger per entry), in
+    one of two shapes:
+
+    - schedule -> ``{title, description, cron, timezone}``, recreated DORMANT
+      on the buyer.
+    - webhook  -> ``{title, description, kind: "webhook", provider, event_id}``,
+      a REQUIREMENT the buyer arms themselves. The live trigger never ports:
+      its resource (repo / project / Page / mailbox) is the SELLER's, and a
+      deploy must not silently arm a trigger the buyer didn't ask for. The
+      ``(provider, event_id)`` pair is recovered by inverting the seed's title
+      rendering (``inbound_triggers.automation_from_title``); a title nothing
+      in the registry renders is dropped rather than guessed at.
+
+    ``None`` when the routine is archived, belongs to another agent, or has no
+    portable trigger at all.
+
+    Archived routines are skipped because ``delete_routine`` ARCHIVES rather
+    than deletes (upstream has no DELETE route) — the same filter
+    ``GET /teams/routines`` applies, for the same reason: an archived row is
+    work the seller deleted, and a republish would ship it to every buyer.
 
     Company / agent / instance ids and revision fields are dropped — the buyer
     side remaps ``assigneeAgentId`` to the freshly-minted agent and Paperclip
     generates new routine/trigger ids.
     """
     if not isinstance(detail, dict):
+        return None
+    if detail.get("status") == "archived":
         return None
     if detail.get("assigneeAgentId") != agent_id:
         return None
@@ -1161,7 +1180,23 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     for trig in triggers:
         if not isinstance(trig, dict):
             continue
-        if trig.get("kind") != "schedule":
+        kind = trig.get("kind")
+        if kind == "webhook":
+            automation = automation_from_title(title)
+            if automation is None:
+                continue
+            provider, event_id = automation
+            out.append(
+                {
+                    "title": title,
+                    "description": description if isinstance(description, str) else "",
+                    "kind": "webhook",
+                    "provider": provider,
+                    "event_id": event_id,
+                }
+            )
+            continue
+        if kind != "schedule":
             continue
         cron = trig.get("cronExpression")
         if not isinstance(cron, str) or not cron:
@@ -1190,11 +1225,13 @@ async def capture_agent_routines(
 ) -> list[dict]:
     """Capture an agent's Paperclip routines into a buyer-portable list.
 
-    Each entry is ``{title, description, cron, timezone}`` with all
-    company/agent/instance ids and revision fields stripped (mirrors
-    ``filter_cron_jobs_for_agent``). The cron lives on the routine's schedule
-    *trigger*, so we read each routine's detail (which carries its triggers) to
-    pull it.
+    Entries are either a schedule (``{title, description, cron, timezone}``) or
+    a webhook requirement (``{title, description, kind: "webhook", provider,
+    event_id}``) — see ``_portable_routine_from_detail`` for why webhooks ship
+    as requirements and never as live triggers. All company/agent/instance ids
+    and revision fields are stripped (mirrors ``filter_cron_jobs_for_agent``).
+    Both the cron and the trigger kind live on the routine's *triggers*, so we
+    read each routine's detail (which carries them) to pull them.
 
     Best-effort: any failure (Paperclip down, no company, malformed shape) logs
     and returns ``[]`` so routine capture never fails the export. The fetcher is
@@ -1255,6 +1292,11 @@ async def _default_fetch_routine_details(*, owner_id: str, agent_id: str) -> lis
         details: list[dict] = []
         for r in items:
             if not isinstance(r, dict) or r.get("assigneeAgentId") != agent_id:
+                continue
+            # Archived == the seller deleted it (upstream archives instead of
+            # deleting). Skipped here as well as in the portable strip, so a
+            # board full of archived rows doesn't cost a detail fetch each.
+            if r.get("status") == "archived":
                 continue
             rid = r.get("id")
             if not isinstance(rid, str):

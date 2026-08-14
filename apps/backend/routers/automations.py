@@ -84,6 +84,10 @@ class FromIntegrationBody(BaseModel):
     # The owner's own Pub/Sub topic ("projects/<proj>/topics/<name>") — only
     # the owner_setup shape (gmail.message) reads it.
     topic: str | None = None
+    # Who the seeded routine lands on. Omitted, the seed resolves the owner's
+    # Friday as before. Validated against the caller's own Paperclip company
+    # roster inside the seed — never trusted from here.
+    assignee_agent_id: str | None = None
 
 
 class WebhookSecretBody(BaseModel):
@@ -100,14 +104,20 @@ async def from_integration(
     Returns ``seed_trigger_routine``'s dict verbatim — ``{routine_id,
     trigger_public_id, proxy_url, guided, instructions}``. Bad input
     (unknown provider/event, provider not wired as a trigger source, no
-    active Paperclip company) surfaces as 400 rather than an opaque 500.
+    active Paperclip company, an assignee outside the caller's company)
+    surfaces as 400 rather than an opaque 500.
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id)
     try:
         return await seed_trigger_routine(
-            owner_id, body.provider, body.event_id, resource=body.resource, topic=body.topic
+            owner_id,
+            body.provider,
+            body.event_id,
+            resource=body.resource,
+            topic=body.topic,
+            assignee_agent_id=body.assignee_agent_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

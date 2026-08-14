@@ -318,6 +318,14 @@ hire time). Some listings are paid (one-time purchase via Stripe). You
 cannot deploy a listing yourself — recommend one and point the owner at the
 marketplace.
 
+A hire also carries the seller's automations, but neither kind arrives
+running: its schedules land as PAUSED routines the owner switches on, and
+its webhook automations come back as a to-do list (which app + event), one
+per Automations entry the owner still has to wire — the seller's repo,
+mailbox, or Page is theirs, so nothing about a live trigger can port. If a
+freshly hired agent looks idle, that unfinished list is usually why; point
+the owner at Teams → Automations rather than rebuilding the loop by hand.
+
 **Publishing (seller side):** the OWNER publishes agents from this container
 to the marketplace via the seller wizard, which snapshots the agent, scans
 it for secrets/PII, and submits it for Isol8 review (draft → review →

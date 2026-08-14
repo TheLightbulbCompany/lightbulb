@@ -700,6 +700,33 @@ async def test_deploy_sidecar_records_seller_id():
 
 
 @pytest.mark.asyncio
+async def test_deploy_emits_catalog_agent_deployed(monkeypatch):
+    """Every deploy surface (marketplace deploy, hire, agent builder) funnels
+    through here, so the funnel event belongs here rather than on each router."""
+    calls = []
+    monkeypatch.setattr(
+        "core.services.catalog_service.capture_product_event",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    svc, _ws, _aux, _pair, _gw = _make_service()
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+        seller_id="seller_1",
+    )
+    assert len(calls) == 1
+    assert calls[0]["event"] == "catalog_agent_deployed"
+    assert calls[0]["distinct_id"] == "user_buyer"
+    assert calls[0]["properties"] == {"slug": "demo", "agent_id": "agent_abc", "seller_id": "seller_1"}
+
+
+@pytest.mark.asyncio
 async def test_unwind_removes_the_cron_jobs_the_sidecar_recorded(monkeypatch):
     """A failed deploy must take its appended cron jobs with it — a stranded
     job keeps firing against a dead agent, and the retry appends duplicates."""

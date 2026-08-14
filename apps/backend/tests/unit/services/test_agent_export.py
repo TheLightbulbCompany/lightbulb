@@ -1161,6 +1161,87 @@ async def test_capture_routines_multiple_schedule_triggers_flatten():
     assert all(e["title"] == "Two-trigger" for e in out)
 
 
+@pytest.mark.asyncio
+async def test_capture_routines_carries_webhook_triggers_as_requirements():
+    """A webhook automation ships as a REQUIREMENT, never as a live trigger:
+    the (provider, event) pair is recovered by inverting the seed's title
+    rendering, and the seller's resource (repo/mailbox/page) never ports."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "GitHub: Issue opened or changed",
+                "description": "triage it",
+                "triggers": [{"id": "t1", "kind": "webhook", "signingMode": "github_hmac"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "GitHub: Issue opened or changed",
+            "description": "triage it",
+            "kind": "webhook",
+            "provider": "github",
+            "event_id": "issues",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_drops_webhook_titles_the_registry_cannot_resolve():
+    """A hand-made webhook routine names no registry event — we drop it
+    rather than guess at a provider the buyer would then be told to wire."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "My bespoke hook",
+                "triggers": [{"kind": "webhook"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_skips_archived():
+    """``delete_routine`` archives rather than deletes, so an archived row is
+    a routine the seller DELETED — republishing must not resurrect it into
+    every buyer's manifest."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "status": "archived",
+                "title": "Old sweep",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            },
+            {
+                "assigneeAgentId": "agent-uuid",
+                "status": "active",
+                "title": "Live sweep",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 7 * * *", "timezone": "UTC"}],
+            },
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert [e["title"] for e in out] == ["Live sweep"]
+
+
 # --------------------------------------------------------------------------- #
 # Legacy slug → workspace-UUID resolution (republish orphan fix)
 # --------------------------------------------------------------------------- #

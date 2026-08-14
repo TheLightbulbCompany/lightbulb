@@ -46,15 +46,33 @@ function PostHogInit() {
       person_profiles: "identified_only",
       capture_pageview: false,
       capture_pageleave: true,
-      // Off: we hand-instrument a strict, explicitly-typed union of product
-      // events in @/lib/analytics, so autocapture adds no signal we don't
-      // already have — it only adds document-level listeners plus a DOM-path
-      // walk on every interaction, on the same main thread /chat is already
-      // saturating. It also serialises surrounding element text/attributes
-      // into `$element_chain`, an uncontrolled PII surface that bypasses the
-      // no-PII-in-props discipline we hold everywhere else. Heatmaps are a
-      // separate subsystem (`capture_heatmaps`) and are unaffected.
-      autocapture: false,
+      // ON everywhere EXCEPT /chat.
+      //
+      // The hand-instrumented events in @/lib/analytics cover the funnel we
+      // knew to measure. Launch is the case they cannot cover: you cannot
+      // pre-instrument a drop-off nobody has seen yet, and first real traffic
+      // is exactly when an uninstrumented dead end is worth more than a clean
+      // event taxonomy. This is the safety net for that window — revisit once
+      // the funnel has been read against real users.
+      //
+      // The /chat exclusion is the load-bearing part, not a detail.
+      // Autocapture serialises the text of the clicked element and its
+      // ancestors into `$element_chain`. On marketing and onboarding pages
+      // that text is our own copy — harmless. On /chat the DOM IS the
+      // customer's business conversation, so a click on a copy button or a
+      // link inside an agent response would carry conversation content into
+      // analytics props, bypassing the no-PII-in-props discipline held
+      // everywhere else. That is customer data somewhere it was never meant
+      // to go, on a product sold on confidentiality.
+      //
+      // The original perf objection lives on the same page: a DOM-path walk
+      // per interaction on the one main thread already saturated by an
+      // un-virtualized streaming transcript. Excluding /chat answers both.
+      //
+      // Heatmaps are a separate subsystem (`capture_heatmaps`), unaffected.
+      autocapture: {
+        url_ignorelist: [/\/chat/],
+      },
       // CEO observability: keep session replay, but sample it instead of
       // recording every session. rrweb installs a document-wide
       // MutationObserver and serialises every mutation; on /chat the

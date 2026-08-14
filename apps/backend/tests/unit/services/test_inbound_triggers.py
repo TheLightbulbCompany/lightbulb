@@ -59,6 +59,10 @@ async def test_seed_trigger_routine_stripe_guided():
     assert out["proxy_url"].endswith("/api/v1/hooks/t/owner_1/pub_1")
     assert "invoice.payment_failed" in out["instructions"]
     assert out["proxy_url"] in out["instructions"]
+    # Only the bearer-guided variant surfaces the trigger's own secret —
+    # Stripe's secret is minted provider-side and pasted BACK, so returning
+    # one here would be a secret nothing ever verifies against.
+    assert out["webhook_secret"] is None
 
 
 @pytest.mark.asyncio
@@ -196,6 +200,50 @@ async def test_seed_trigger_routine_stripe_returns_secret_hint():
         out = await seed_trigger_routine("owner_1", "stripe", "charge.refunded")
 
     assert out["secret_hint"] == "whsec_…"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_posthog_bearer_guided_returns_webhook_secret():
+    """The bearer-guided (reverse-guided) variant: PostHog sends no signature,
+    so the trigger's own one-time secret comes back as ``webhook_secret`` for
+    the owner to set as the destination's Authorization header — shown once,
+    no read-back later — and the trigger is created with Paperclip's native
+    ``bearer`` mode."""
+    admin = _fake_admin(secret_material={"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_ph"})
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        out = await seed_trigger_routine("owner_1", "posthog", "$exception")
+
+    trigger_body = admin.create_routine_trigger.await_args.kwargs["body"]
+    assert trigger_body["signingMode"] == "bearer"
+
+    assert out["guided"] is True
+    assert out["webhook_secret"] == "pcsec_ph"
+    # Registry instructions, not the generic fallback — with the placeholders
+    # interpolated.
+    assert "Destinations" in out["instructions"]
+    assert out["proxy_url"] in out["instructions"]
+    assert "Exception captured" in out["instructions"]
+    # No paste-back input on this variant, so no hint to shape it.
+    assert out["secret_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_posthog_missing_secret_material_rolls_back():
+    """No secretMaterial.webhookSecret means there is nothing for the owner
+    to set as the Authorization header — the automation could never fire,
+    same severity as the auto shapes' missing secret."""
+    admin = _fake_admin(routine_id="rt_no_ph_secret")  # no secretMaterial in the response
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        pytest.raises(RuntimeError, match="secretMaterial.webhookSecret"),
+    ):
+        await seed_trigger_routine("owner_1", "posthog", "$pageview")
+    admin.delete_routine.assert_awaited_once()
+    assert admin.delete_routine.await_args.kwargs["routine_id"] == "rt_no_ph_secret"
 
 
 # --- auto_github ------------------------------------------------------------

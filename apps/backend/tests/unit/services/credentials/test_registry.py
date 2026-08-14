@@ -43,6 +43,26 @@ def test_tier2_providers_have_inbound_with_signature_headers():
         assert p.inbound.secret_hint, key
 
 
+def test_posthog_inbound_is_bearer_guided():
+    from core.services.credentials.registry import get_provider
+
+    p = get_provider("posthog")
+    assert p.inbound is not None
+    # Reverse-guided: still guided_paste (the owner creates the HTTP Webhook
+    # destination by hand in PostHog's UI), but the secret flows Isol8 →
+    # provider — PostHog sends no signature, only the Authorization header
+    # the owner configures, verified by Paperclip's native bearer mode.
+    assert p.inbound.webhook_registration == "guided_paste"
+    assert p.inbound.signing_mode == "bearer"
+    assert p.inbound.signature_header is None
+    # No paste-back step, so no secret_hint — but the destination form is
+    # buried enough that the instructions are load-bearing.
+    assert p.inbound.secret_hint is None
+    assert p.inbound.instructions
+    assert {e.id for e in p.inbound.events} == {"$identify", "$pageview", "$exception", "any"}
+    assert "{event_label}" in p.inbound.template.title
+
+
 def test_github_inbound_is_auto_registering():
     from core.services.credentials.registry import get_provider
 

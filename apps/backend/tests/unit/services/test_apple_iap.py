@@ -402,3 +402,46 @@ def test_web_checkout_omits_origin_context_for_web_callers():
     # Set only under the guard, never in the base kwargs dict.
     assert "if origin_context:" in src
     assert 'kwargs["origin_context"] = origin_context' in src
+
+
+# ---------------------------------------------------------------------------
+# Org fence (PR review finding: an org routed here gets CHARGED and then fails)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_refuses_org_owners():
+    """The Apple product is the PERSONAL flat plan; orgs pay base + per-seat.
+
+    An org reaching link_purchase has already been charged by Apple, and the
+    write would fail anyway — a team_billing_required org has no billing row by
+    construction, so set_apple_subscription returns None. Refuse before the
+    verifier, so no charge can be recorded against the wrong plan shape.
+    """
+    with (
+        patch.object(apple_iap, "_verifier") as verifier,
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError, match="per seat"):
+            await apple_iap.link_purchase(owner_id="org_abc", signed_transaction="jws")
+
+    verifier.assert_not_called()
+    set_sub.assert_not_awaited()
+
+
+def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
+    """The per-transaction product check is `if expected and ...`, so an empty
+    APPLE_IAP_PRODUCT_ID would skip it silently. Rollout sets the bundle id and
+    certs in a separate step from the product id, so "verifier live, product id
+    blank" is reachable — and in that window any validly-signed transaction for
+    our bundle would be granted a plan. Configuration must fail instead.
+    """
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_BUNDLE_ID", "co.isol8.mobile")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ROOT_CERTS_DIR", "/tmp/certs")
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "")
+    apple_iap._verifier.cache_clear()
+    try:
+        with pytest.raises(AppleIapNotConfigured, match="APPLE_IAP_PRODUCT_ID"):
+            apple_iap._verifier()
+    finally:
+        apple_iap._verifier.cache_clear()

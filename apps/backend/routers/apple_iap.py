@@ -21,7 +21,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, is_org_owner_id
 from core.repositories import billing_repo
 from core.services.apple_iap import AppleIapError, AppleIapNotConfigured, apply_notification, link_purchase
 from core.services.billing_service import BillingService, BillingServiceError, create_mobile_web_checkout
@@ -79,6 +79,18 @@ async def link_apple_purchase(
     ),
 )
 async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
+    # Same fence as link_purchase, for the same reason: this session is built on
+    # STRIPE_FLAT_PRICE_ID, the PERSONAL plan. An org billed through it would
+    # get a single flat subscription where the rest of the system expects base +
+    # per-seat — no subscription_item_id, so is_seat_subscription reads false
+    # and sync_team_seat_quantity has nothing to drive. Checked BEFORE the
+    # customer is minted so a wrong caller leaves no Stripe residue behind.
+    if is_org_owner_id(auth.owner_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Team workspaces are billed per seat — subscribe from the web app.",
+        )
+
     # Mint or reuse the Stripe customer first. The caller is by definition
     # someone who has not paid yet, and a trial_local row carries no
     # stripe_customer_id — without this the session build raises and every
@@ -86,7 +98,7 @@ async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
     try:
         await BillingService().create_customer_for_owner(
             auth.owner_id,
-            owner_type="org" if auth.owner_id.startswith("org_") else "personal",
+            owner_type="personal",
             email=auth.email,
         )
     except Exception as e:  # noqa: BLE001

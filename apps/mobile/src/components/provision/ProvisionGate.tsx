@@ -46,7 +46,7 @@
  * Polling continues while `teamPending` (see useContainerStatus) so the gate
  * clears itself once the admin's workspace comes up.
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth, useOrganization } from "@clerk/clerk-expo";
 import { useCallback, useMemo, useRef } from "react";
 import { createApiClient } from "@isol8/shared";
 import {
@@ -286,6 +286,10 @@ function ConnectedPaywall({ onPurchased }: { onPurchased: () => void }) {
 
 export function ProvisionGate({ children }: { children: React.ReactNode }) {
   const { status, refetch } = useContainerStatus();
+  // Org context means the container owner is an org_ id, which is billed per
+  // seat and must never reach the personal paywall (see the branch below).
+  const { organization } = useOrganization();
+  const isOrgOwner = organization != null;
 
   const onRetry = useCallback(() => {
     void refetch();
@@ -343,7 +347,21 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     // plan is purchasable INSIDE the app — superseding the CTA-free 3.1.3(f)
     // one below, and it is why the paywall carries both StoreKit and the web
     // link (3.1.1(a) permits both on the U.S. storefront).
-    if (APPLE_IAP_AVAILABLE && isPurchaseGate(status.code)) {
+    // PERSONAL owners only. The paywall sells the personal flat plan — one
+    // Apple product, one Stripe flat price — and an org pays a different shape
+    // entirely (base + per-seat, quantity driven by Clerk membership). Routing
+    // an org here would take real money through StoreKit for a plan that
+    // cannot be recorded: a team_billing_required org has no billing row by
+    // construction, so the link call fails permanently and the customer is
+    // left charged with no way forward.
+    //
+    // Gated on OWNER TYPE, not on the gate code. Excluding team_billing_required
+    // alone would not do it — payment_past_due, subscription_required,
+    // credits_required and signup_required all fire for orgs too
+    // (provision_gate.py), so a code allowlist would leak every one of them.
+    // The backend refuses org owners on both endpoints regardless; this keeps
+    // them from seeing a paywall that could only 403.
+    if (APPLE_IAP_AVAILABLE && isPurchaseGate(status.code) && !isOrgOwner) {
       return <ConnectedPaywall onPurchased={refetch} />;
     }
 

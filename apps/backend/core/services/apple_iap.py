@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from core.auth import is_org_owner_id
 from core.config import settings
 from core.repositories import billing_repo
 from core.services import webhook_dedup
@@ -94,9 +95,18 @@ def _verifier():
     before the Paid Apps Agreement is active) still starts — the router turns
     that into a 503 rather than a 500.
     """
-    if not settings.APPLE_IAP_BUNDLE_ID or not settings.APPLE_IAP_ROOT_CERTS_DIR:
+    # APPLE_IAP_PRODUCT_ID is required here, NOT merely checked per-transaction.
+    # The product check in _subscription_from_transaction is written as
+    # `if expected and ...`, so an empty setting would silently skip it — and
+    # the rollout wires the bundle id and certs in a separate step from the
+    # product id, so "verifier live, product id blank" is a reachable state. In
+    # that window ANY validly-signed transaction for our bundle would be
+    # accepted and granted a plan. Failing configuration instead keeps the
+    # whole feature off until all three are present.
+    if not settings.APPLE_IAP_BUNDLE_ID or not settings.APPLE_IAP_ROOT_CERTS_DIR or not settings.APPLE_IAP_PRODUCT_ID:
         raise AppleIapNotConfigured(
-            "APPLE_IAP_BUNDLE_ID / APPLE_IAP_ROOT_CERTS_DIR unset — Apple IAP is off in this environment"
+            "APPLE_IAP_BUNDLE_ID / APPLE_IAP_ROOT_CERTS_DIR / APPLE_IAP_PRODUCT_ID unset "
+            "— Apple IAP is off in this environment"
         )
 
     # Imported lazily so the dependency is not required to import this module
@@ -185,6 +195,20 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     same transaction replayed writes the same row, so a client retrying after a
     dropped response cannot double-grant or corrupt anything.
     """
+    # The Apple product is the PERSONAL flat plan. An org pays a different
+    # shape entirely — base + per-seat, quantity driven by Clerk membership via
+    # sync_team_seat_quantity — so there is nothing here an org can validly buy.
+    #
+    # This is a money fence, not a UX one, and it belongs on the server. An org
+    # that reaches this by any route (client bug, stale build, direct call) has
+    # ALREADY been charged by Apple by the time we see the transaction, and the
+    # write below would fail anyway: a team_billing_required org has no billing
+    # row by construction, so set_apple_subscription returns None and the caller
+    # gets a permanent dead end with real money taken. Refuse before StoreKit is
+    # ever reached instead.
+    if is_org_owner_id(owner_id):
+        raise AppleIapError("Team workspaces are billed per seat and cannot subscribe through the App Store")
+
     subscription = verify_transaction(signed_transaction)
 
     # Refuse to move a live subscription between accounts. Without this, one

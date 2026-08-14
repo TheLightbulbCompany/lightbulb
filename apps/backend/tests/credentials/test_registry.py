@@ -500,3 +500,35 @@ def test_meta_ads_publishes_the_remote_mcp_block():
     assert p.mcp_remote.key == "meta_ads"
     assert p.mcp_remote.url == "https://mcp.facebook.com/ads"
     assert p.mcp_remote.transport == "streamable-http"
+
+
+def test_meta_inbound_blocks_are_app_level_and_well_formed():
+    """Meta Ads + Instagram are the only APP-LEVEL trigger sources: one webhook
+    callback for the whole app, so the seed's only per-owner act is subscribing
+    the asset, and the trigger is `bearer` because Meta signs with the APP
+    secret (verified at the edge, not by Paperclip)."""
+    for key, expected_events in (
+        ("meta_ads", {"leadgen", "feed", "messages"}),
+        ("instagram", {"comments", "mentions", "messages"}),
+    ):
+        p = registry.get_provider(key)
+        assert p.inbound is not None, f"{key} lost its inbound block"
+        assert p.inbound.webhook_registration == "auto_meta"
+        assert p.inbound.signing_mode == "bearer"
+        assert {e.id for e in p.inbound.events} == expected_events
+        # provider_events ARE the Meta field names subscribed_apps takes — an
+        # event without them would subscribe the curated id by accident.
+        for event in p.inbound.events:
+            assert event.provider_events, f"{key}.{event.id} has no provider_events"
+        assert p.inbound.template.suggested_agent == "friday"
+        assert "{event_label}" in p.inbound.template.title
+        # The app-level ingress derives the app secrets it accepts from these
+        # providers' platform apps — no platform_app, no verifiable delivery.
+        assert p.oauth is not None and p.oauth.platform_app
+
+
+def test_meta_providers_stay_waitlisted_off_prod():
+    """The `environments` gate is the Meta App Review waitlist. Wiring these two
+    as trigger sources must not be the thing that un-gates them in prod."""
+    for key in ("meta_ads", "instagram"):
+        assert registry.get_provider(key).environments == ["local", "dev"]

@@ -399,3 +399,50 @@ class TestGoogleResources:
         mock_accounts.side_effect = LookupError("Google is not connected")
         response = await async_client.get("/api/v1/automations/providers/google/resources")
         assert response.status_code == 404
+
+
+class TestMetaResources:
+    """The Page / Instagram-account picker feeds for auto_meta — the same
+    parameterized resources route, dispatched by provider. Two providers share
+    one registration shape here, so both entries have to be wired."""
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_meta_pages", new_callable=AsyncMock)
+    async def test_lists_pages(self, mock_pages, async_client):
+        mock_pages.return_value = [{"id": "1112223334", "label": "Acme Page"}]
+        response = await async_client.get("/api/v1/automations/providers/meta_ads/resources")
+        assert response.status_code == 200
+        assert response.json() == mock_pages.return_value
+        mock_pages.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_instagram_accounts", new_callable=AsyncMock)
+    async def test_lists_instagram_accounts(self, mock_accounts, async_client):
+        mock_accounts.return_value = [{"id": "7778889990", "label": "acme.co"}]
+        response = await async_client.get("/api/v1/automations/providers/instagram/resources")
+        assert response.status_code == 200
+        assert response.json() == mock_accounts.return_value
+        mock_accounts.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_meta_pages", new_callable=AsyncMock)
+    async def test_meta_not_connected_404s(self, mock_pages, async_client):
+        mock_pages.side_effect = LookupError("Meta Ads is not connected")
+        response = await async_client.get("/api/v1/automations/providers/meta_ads/resources")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_meta_pages", new_callable=AsyncMock)
+    async def test_graph_failure_502s(self, mock_pages, async_client):
+        mock_pages.side_effect = httpx.HTTPError("graph down")
+        response = await async_client.get("/api/v1/automations/providers/meta_ads/resources")
+        assert response.status_code == 502
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_meta_pages", new_callable=AsyncMock)
+    async def test_unrecognised_graph_body_502s(self, mock_pages, async_client):
+        # A 200 with a shape we don't recognise is the provider misbehaving,
+        # not a server bug — 502, same as an HTTP error.
+        mock_pages.side_effect = RuntimeError("Meta /me/accounts returned no page list")
+        response = await async_client.get("/api/v1/automations/providers/meta_ads/resources")
+        assert response.status_code == 502

@@ -15,6 +15,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 
+import pytest
 import schemathesis
 
 from main import app
@@ -69,3 +70,19 @@ NEGATIVE_PASS_EXCLUSIONS: dict[str, str] = {
     # wire the seller table into the fixture to fuzz this endpoint for real.
     "GET /api/v1/marketplace/seller/handle/{handle}": "seller-profile table env not wired in fixture (empty TableName); follow-up to provision it",
 }
+
+
+@pytest.fixture(autouse=True)
+def _meta_webhook_configured(monkeypatch):
+    """Configure the Meta app-level webhook for the fuzz.
+
+    Unconfigured, that route 503s wholesale — a deliberate fail-closed (an
+    environment that can't verify a Meta signature must not be able to complete
+    the subscribe handshake), but a 5xx the not_a_server_error check reads as a
+    crash. Setting the verify token makes the fuzz exercise what actually
+    guards the route: the 403 on a wrong verify token and the 401 on an
+    unsigned delivery.
+    """
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "META_WEBHOOK_VERIFY_TOKEN", "chaos-verify-token")

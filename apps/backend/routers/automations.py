@@ -43,6 +43,8 @@ from core.config import settings
 from core.services.inbound_triggers import (
     list_github_repos,
     list_google_accounts,
+    list_instagram_accounts,
+    list_meta_pages,
     list_vercel_projects,
     seed_trigger_routine,
 )
@@ -134,6 +136,8 @@ async def provider_resources(
         "github": list_github_repos,
         "vercel_cli": list_vercel_projects,
         "google": list_google_accounts,
+        "meta_ads": list_meta_pages,
+        "instagram": list_instagram_accounts,
     }.get(provider)
     if lister is None:
         raise HTTPException(status_code=404, detail="unknown_provider")
@@ -141,7 +145,10 @@ async def provider_resources(
         return await lister(owner_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except httpx.HTTPError as exc:
+    # RuntimeError = the provider answered 200 with a body we don't recognise
+    # (Meta's /me/accounts without a `data` list). Same class of "the provider
+    # is not behaving" as an HTTP error, and far better than guessing a shape.
+    except (httpx.HTTPError, RuntimeError) as exc:
         logger.warning("automations: %s resource listing failed owner=%s err=%s", provider, owner_id, exc)
         raise HTTPException(status_code=502, detail=f"{provider}_unavailable") from exc
 

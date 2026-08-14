@@ -345,6 +345,14 @@ class Settings(BaseSettings):
     # plugin configJson is per-company on the deployed fork line, so env is
     # the only instance-wide channel).
     PAPERCLIP_EVENTS_WEBHOOK_SECRET: str = ""
+    # The `hub.verify_token` Meta echoes back on the one-time subscribe
+    # handshake for the APP-LEVEL webhook callback (routers/meta_webhook.py).
+    # It is a shared string of our choosing, set identically here and in the
+    # Meta app's webhook config; it authenticates nothing after setup (real
+    # deliveries carry X-Hub-Signature-256 instead). Empty ⇒ the whole /hooks/meta
+    # route 503s, so a half-configured environment can never complete a
+    # handshake and start receiving events it cannot verify.
+    META_WEBHOOK_VERIFY_TOKEN: str = ""
     # --- Platform Ops (operator console + owner-scoped ops API) ---
     # The founder's owner_id (user_* or org_*). The platform_ops token's
     # `sub` must equal this; it gates the agent path on /ops/*.

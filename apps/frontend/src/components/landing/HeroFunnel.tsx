@@ -100,8 +100,8 @@ export function HeroFunnel() {
         </form>
 
         <p className="ld-funnel-fine">
-          Your own persistent, isolated cloud container starts building the
-          moment you sign up.
+          Your company gets a name, a working email address, and its first
+          three moves — in its own persistent, isolated container.
         </p>
         <button
           type="button"

@@ -33,7 +33,7 @@ describe("HeroFunnel", () => {
     );
     expect(
       screen.getByText(
-        /Your own persistent, isolated cloud container starts building/,
+        /Your company gets a name, a working email address, and its first/,
       ),
     ).toBeInTheDocument();
     // The old subheadline and trial line are gone from the fold.

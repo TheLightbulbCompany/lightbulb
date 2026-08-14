@@ -36,7 +36,7 @@ describe("WorkspaceDemo", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Tasks" })[0]);
     const left = leftPanel();
     expect(left.getByText("Research the market")).toBeInTheDocument();
-    expect(left.getByText("Name it and take the handle")).toBeInTheDocument();
+    expect(left.getByText("Name it and take the address")).toBeInTheDocument();
     expect(left.getByText("Find the first fifty buyers")).toBeInTheDocument();
     expect(left.getByText("Price it against the market")).toBeInTheDocument();
   });
@@ -54,9 +54,9 @@ describe("WorkspaceDemo", () => {
     expect(screen.getByText("No matches.")).toBeInTheDocument();
     // A matching search renders the search-kind section header, not Today/Earlier.
     fireEvent.change(screen.getByLabelText("Search inbox"), {
-      target: { value: "handle" },
+      target: { value: "address" },
     });
-    expect(screen.getByText('Search results for "handle"')).toBeInTheDocument();
+    expect(screen.getByText('Search results for "address"')).toBeInTheDocument();
   });
 
   it("opens the task detail (real IssueHeader + IssueComments) on row click", () => {

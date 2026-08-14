@@ -449,8 +449,8 @@ export function WorkspaceDemo() {
             }}
             aria-label="Live agent activity"
           >
-            <div>$ whois northwindceramics.com — unregistered</div>
-            <div>Claiming @northwindceramics on Instagram + TikTok…</div>
+            <div>naming the company → northwindceramics</div>
+            <div>minting friday@northwindceramics.isol8.co …</div>
           </div>
         </div>
       </section>

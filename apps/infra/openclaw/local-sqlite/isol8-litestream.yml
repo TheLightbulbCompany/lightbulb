@@ -18,18 +18,24 @@
 # Metrics (+ /debug/pprof, same mux) stay loopback-only.
 addr: "127.0.0.1:9090"
 
+#
+# openclaw-quarantine.sqlite is DELIBERATELY NOT LISTED. Upstream hardcodes that
+# database to `PRAGMA journal_mode = DELETE` (openclaw-quarantine-store.ts) --
+# it records corrupted databases, so it must not depend on WAL's -shm sidecar.
+# Litestream replicates by shipping WAL frames and cannot replicate a
+# rollback-journal database at all. Listing it did not half-work; it never
+# worked: across the whole prod fleet the quarantine replica prefix holds ZERO
+# objects, while the state DB beside it holds thousands. What the entry DID do
+# was make every compaction monitor (levels 1/2/3/9) block on a database that
+# never initialises, each burning a 30s timeout, on every container, forever.
+# If quarantine state ever needs to survive task replacement it needs a
+# different transport -- not this one.
 dbs:
   - path: $ISOL8_STATE_ROOT/state/openclaw.sqlite
     replica:
       type: s3
       bucket: $LITESTREAM_S3_BUCKET
       path: $OWNER_ID/state/openclaw.sqlite
-      region: us-east-1
-  - path: $ISOL8_STATE_ROOT/state/openclaw-quarantine.sqlite
-    replica:
-      type: s3
-      bucket: $LITESTREAM_S3_BUCKET
-      path: $OWNER_ID/state/openclaw-quarantine.sqlite
       region: us-east-1
   - dir: $ISOL8_STATE_ROOT/agents
     pattern: "openclaw-agent.sqlite"

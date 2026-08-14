@@ -28,6 +28,18 @@ def _webhook_secrets(monkeypatch):
     monkeypatch.setattr(settings, "STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect_test")
 
 
+@pytest.fixture(autouse=True)
+def _no_existing_transfers(monkeypatch):
+    """The flush adopts an existing Transfer for the purchase's group before
+    creating one; default every test to "none found" so create-path
+    expectations hold. Adoption tests override."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import payout_service as _ps
+
+    monkeypatch.setattr(_ps, "find_transfer_id_by_group", _AsyncMock(return_value=None))
+
+
 @patch("core.repositories.marketplace_repo._listings_table")
 @patch("core.repositories.marketplace_repo._purchases_table")
 def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_listings_table, client):

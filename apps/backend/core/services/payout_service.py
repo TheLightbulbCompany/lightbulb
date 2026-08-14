@@ -72,6 +72,22 @@ async def create_onboarding_link(*, connect_account_id: str, refresh_url: str, r
     return link.url
 
 
+async def find_transfer_id_by_group(*, transfer_group: str) -> str | None:
+    """The existing Transfer for this purchase's transfer_group, or None.
+
+    Transfer groups are unique per purchase (checkout embeds a timestamp), so
+    at most one legitimate Transfer exists per group. The flush checks this
+    BEFORE creating a transfer and adopts a match instead — closing the
+    crash-before-stamp window generally: a transfer that succeeded but never
+    got recorded on the purchase row is found and stamped on retry rather
+    than duplicated, regardless of which idempotency-key bucket the retry
+    lands in. Same lookup refund_purchase already relies on for reversals.
+    """
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    transfers = stripe.Transfer.list(transfer_group=transfer_group, limit=1)
+    return transfers.data[0].id if transfers.data else None
+
+
 async def transfer_held_balance(*, connect_account_id: str, amount_cents: int, transfer_group: str) -> str:
     """Create a Transfer from platform balance to the connected account.
 

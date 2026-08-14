@@ -520,33 +520,38 @@ async def _flush_seller_held_balance(
         tg = purchase.get("stripe_transfer_group")
         if amount <= 0 or not tg:
             return  # legacy / malformed row
-        # A replayed account.updated (or a concurrent run) can re-read the
-        # same purchase before the previous run's seller_transfer_id is
-        # visible. Stripe's idempotency_key on transfer_held_balance catches
-        # the duplicate transfer within 24h (returns the existing
-        # transfer_id), and the repo's set-once conditional write is the
-        # source of truth for which run owns the bookkeeping.
-        try:
-            transfer_id = await payout_service.transfer_held_balance(
-                connect_account_id=connect_account_id,
-                amount_cents=amount,
-                transfer_group=tg,
-            )
-        except stripe.InvalidRequestError as exc:
-            if getattr(exc, "code", None) == "balance_insufficient":
-                # The NORMAL first-attempt outcome at fulfillment time: the
-                # buyer's charge is still pending, and transfers draw from
-                # AVAILABLE balance. Re-raised so the webhook 500s and
-                # Stripe's multi-day retry schedule re-runs the flush — the
-                # day-bucketed idempotency key lets a later retry succeed
-                # once the charge settles. WARNING, not exception: expected.
-                logging.getLogger(__name__).warning(
-                    "payout flush deferred: platform balance insufficient for %s cents to %s "
-                    "(charge likely still pending; Stripe retries converge after settlement)",
-                    amount,
-                    connect_account_id,
+        # ADOPT before creating: a prior run's transfer may have succeeded
+        # without its stamp landing (crash between the Stripe call and the
+        # conditional write, or a retry straddling the idempotency-key day
+        # boundary). Transfer groups are unique per purchase, so a match IS
+        # this purchase's transfer — stamp it instead of minting a second
+        # one. This, not the idempotency key, is what makes retries
+        # duplicate-safe across key buckets; the key covers same-bucket
+        # concurrency, and the set-once conditional write decides which run
+        # owns the bookkeeping.
+        transfer_id = await payout_service.find_transfer_id_by_group(transfer_group=tg)
+        if transfer_id is None:
+            try:
+                transfer_id = await payout_service.transfer_held_balance(
+                    connect_account_id=connect_account_id,
+                    amount_cents=amount,
+                    transfer_group=tg,
                 )
-            raise
+            except stripe.InvalidRequestError as exc:
+                if getattr(exc, "code", None) == "balance_insufficient":
+                    # The NORMAL first-attempt outcome at fulfillment time: the
+                    # buyer's charge is still pending, and transfers draw from
+                    # AVAILABLE balance. Re-raised so the webhook 500s and
+                    # Stripe's multi-day retry schedule re-runs the flush — the
+                    # day-bucketed idempotency key lets a later retry succeed
+                    # once the charge settles. WARNING, not exception: expected.
+                    logging.getLogger(__name__).warning(
+                        "payout flush deferred: platform balance insufficient for %s cents to %s "
+                        "(charge likely still pending; Stripe retries converge after settlement)",
+                        amount,
+                        connect_account_id,
+                    )
+                raise
         stamped = await marketplace_repo.set_seller_transfer_if_absent(
             buyer_id=purchase["buyer_id"],
             purchase_id=purchase["purchase_id"],

@@ -121,3 +121,12 @@ async def test_transfer_idempotency_key_is_day_bucketed(mock_stripe):
     key = mock_stripe.Transfer.create.call_args.kwargs["idempotency_key"]
     day = _time.strftime("%Y%m%d", _time.gmtime())
     assert key == f"transfer:acct_x:tg_x:{day}"
+
+
+@pytest.mark.asyncio
+@patch("core.services.payout_service.stripe")
+async def test_find_transfer_by_group(mock_stripe):
+    mock_stripe.Transfer.list.return_value = MagicMock(data=[MagicMock(id="tr_x")])
+    assert await payout_service.find_transfer_id_by_group(transfer_group="tg_x") == "tr_x"
+    mock_stripe.Transfer.list.return_value = MagicMock(data=[])
+    assert await payout_service.find_transfer_id_by_group(transfer_group="tg_none") is None

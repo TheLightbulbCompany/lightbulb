@@ -17,10 +17,13 @@
  *     behind the surface (contract §B3). `teamPending` (an org member whose
  *     admin hasn't provisioned the workspace yet) shows a pulsing "Setting
  *     up your team workspace…" affordance + Retry — NOT a thin bar over a
- *     broken chat. `blocked` / `needsSignup` show an OUTBOUND "Manage on
+ *     broken chat. A NON-purchase `blocked` code shows an OUTBOUND "Manage on
  *     isol8.co" link (Linking.openURL) — the mobile app never reimplements
  *     billing / checkout (D1). admin-only gates tell org members to ask
- *     their workspace admin instead of showing a CTA. `error` (mobile
+ *     their workspace admin instead of showing a CTA. A PURCHASE gate — and
+ *     `needsSignup`, which is one in all but name — shows neither the link
+ *     nor the server's copy: see lib/purchaseCta for why iOS may carry no
+ *     call to action for a purchase (App Store 3.1.3(f)). `error` (mobile
  *     onboarding-parity Slice 1 — the backend-reported container failure;
  *     see `containerStatus.ts`) shows Retry only, no outbound link — there
  *     is nothing to manage on isol8.co for a failed provision, only a
@@ -64,6 +67,7 @@ import {
   type ContainerStatus,
 } from "../../lib/containerStatus";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
+import { purchaseGateCopy } from "../../lib/purchaseCta";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
 import { ProvisioningStepper } from "./ProvisioningStepper";
@@ -304,7 +308,13 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   }
 
   if (status.kind === "blocked") {
-    const copy = blockedCopy(status);
+    // Purchase gates render state and nothing else on iOS — no outbound
+    // button, and the LOCAL copy rather than the server's, which ends in a
+    // call to action the web frontend needs and this app may not carry
+    // (App Store 3.1.3(f); see lib/purchaseCta). Every other blocked code
+    // keeps the server copy and the outbound handoff exactly as before.
+    const local = purchaseGateCopy(status.code);
+    const copy = local ? { headline: local.title, body: local.body } : blockedCopy(status);
     return (
       <Interstitial
         headline={copy.headline}
@@ -312,24 +322,28 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
         onRetry={onRetry}
         retrying={false}
         action={
-          <ManageAction
-            adminOnly={status.adminOnly}
-            manageUrl={resolveManageUrl(status.href)}
-            actionLabel={status.actionLabel}
-          />
+          local ? null : (
+            <ManageAction
+              adminOnly={status.adminOnly}
+              manageUrl={resolveManageUrl(status.href)}
+              actionLabel={status.actionLabel}
+            />
+          )
         }
       />
     );
   }
 
+  // needsSignup is a purchase gate in everything but name — the web page it
+  // handed off to is where a plan is bought — so it states the situation and
+  // stops. Retry + sign out (from the Interstitial itself) remain.
   if (status.kind === "needsSignup") {
     return (
       <Interstitial
-        headline="Finish setting up on isol8.co"
-        body="Your workspace hasn't been set up yet. Complete onboarding on the web to start chatting with your agents."
+        headline="Workspace not set up"
+        body="This account doesn't have a workspace yet, so there are no agents to chat with."
         onRetry={onRetry}
         retrying={false}
-        action={<ManageAction adminOnly={false} manageUrl={DEFAULT_MANAGE_URL} />}
       />
     );
   }

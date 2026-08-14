@@ -14,14 +14,17 @@ import {
 import { ApiError, createApiClient } from "@isol8/shared";
 
 import { usePulse } from "../../components/chat/usePulse";
-import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { unregisterDevice } from "../../lib/pushDevice";
 
-// Web-managed billing surface (W2 contract §5): mobile never calls
-// POST /billing/portal — it deep-links out to the web settings page instead.
-const MANAGE_BILLING_URL = WEB_BILLING_URL;
+// Billing is READ-ONLY here. This screen used to carry "Upgrade on isol8.co"
+// and "Manage billing on isol8.co" rows out to the web checkout; both are
+// gone, along with the plan's price, because App Store guideline 3.1.3(f)
+// exempts this app only while it contains no call to action for purchase
+// outside it (see lib/purchaseCta). Plan state, credits, and provider still
+// render — describing what you have is not a CTA. Customers manage plans on
+// isol8.co, which the web and desktop clients still link to.
 
 // ---------------------------------------------------------------------------
 // Contract shapes (W2 billing contract §2)
@@ -352,16 +355,6 @@ export default function Settings() {
     ]);
   }, [signOut, api]);
 
-  const renderBillingRow = (label: string) => (
-    <Pressable
-      style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
-      onPress={() => void Linking.openURL(MANAGE_BILLING_URL)}
-    >
-      <Text style={styles.linkText}>{label}</Text>
-    </Pressable>
-  );
-  const manageBillingRow = renderBillingRow("Manage billing on isol8.co");
-
   let billingCards: ReactNode;
   if (restricted) {
     billingCards = (
@@ -395,10 +388,7 @@ export default function Settings() {
     billingCards = (
       <Card>
         <Text style={styles.overline}>PLAN</Text>
-        <Text style={styles.bodyText}>
-          No billing account yet — finish setup at isol8.co
-        </Text>
-        {manageBillingRow}
+        <Text style={styles.bodyText}>No plan on this account yet</Text>
       </Card>
     );
   } else {
@@ -418,7 +408,7 @@ export default function Settings() {
           <Text style={styles.overline}>PLAN</Text>
           <View style={styles.planRow}>
             <Text style={styles.bodyText}>
-              {isTrialLocal ? "Isol8 Free plan" : "Isol8 — $50 / month"}
+              {isTrialLocal ? "Isol8 Free plan" : "Isol8"}
             </Text>
             {chip != null && (
               <View style={styles.planBadge}>
@@ -428,8 +418,7 @@ export default function Settings() {
           </View>
           {isTrialLocal && (
             <Text style={styles.captionText}>
-              Includes a daily free usage allowance. Upgrade for the full plan
-              — $50 / month.
+              Includes a daily free usage allowance.
             </Text>
           )}
           {trialing && account.trial_end != null && (
@@ -437,9 +426,6 @@ export default function Settings() {
               Trial ends {trialEndLabel(account.trial_end)}
             </Text>
           )}
-          {isTrialLocal
-            ? renderBillingRow("Upgrade on isol8.co")
-            : manageBillingRow}
         </Card>
 
         {showCredits && (

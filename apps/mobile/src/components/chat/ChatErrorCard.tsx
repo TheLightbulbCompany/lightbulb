@@ -1,7 +1,7 @@
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
-import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing } from "../../config/theme";
+import { purchaseGateCopy } from "../../lib/purchaseCta";
 
 /**
  * Chat error card (spec §4 frame), code-aware for the free-tier gate codes.
@@ -9,44 +9,34 @@ import { colors, fonts, radii, spacing } from "../../config/theme";
  * The backend stamps `code` on error frames — Isol8-side gate codes
  * (`trial_daily_cap` / `trial_expired` from gate_chat, see
  * core/gateway/connection_pool.py) plus OpenClaw errorKinds. The two
- * free-tier codes get tailored copy + an outbound upgrade action (web
- * ChatErrorCard parity): the mobile app never reimplements billing /
- * checkout (D1), so the action deep-links to the web billing panel.
- * Any other (or no) code keeps the plain full-width error card.
+ * free-tier codes get tailored copy; any other (or no) code keeps the plain
+ * full-width error card.
+ *
+ * DIVERGES FROM WEB, deliberately (App Store 3.1.3(f) — see lib/purchaseCta):
+ * web renders an "Upgrade on isol8.co" button here and prefers the server's
+ * message. iOS renders neither. The server copy for both of these codes ends
+ * in a call to action ("Upgrade to keep going" / "Pick a plan to keep your
+ * agent"), so for a purchase gate the LOCAL text wins and no action is shown —
+ * the inverse of the `message || fallback` precedence used everywhere else.
  */
 export interface ChatErrorPresentation {
   title: string;
   description: string;
-  action: { label: string; url: string };
 }
 
 /**
  * Map a coded error frame to tailored copy, or null for the plain card.
- * `message` (the backend's copy) wins over the local fallback when present.
+ *
+ * Takes no `message`: for the codes this handles, the server's copy is exactly
+ * what must not be shown. Uncoded frames still render the raw message — via
+ * the plain card below, not through here.
  */
 export function describeChatError(
   code: string | undefined,
-  message: string,
 ): ChatErrorPresentation | null {
-  switch (code) {
-    case "trial_daily_cap":
-      return {
-        title: "Daily free limit reached",
-        description:
-          message ||
-          "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
-        action: { label: "Upgrade on isol8.co", url: WEB_BILLING_URL },
-      };
-    case "trial_expired":
-      return {
-        title: "Your free trial has ended",
-        description:
-          message || "Your free trial has ended. Pick a plan to keep your agent.",
-        action: { label: "Upgrade on isol8.co", url: WEB_BILLING_URL },
-      };
-    default:
-      return null;
-  }
+  const local = purchaseGateCopy(code);
+  if (local == null) return null;
+  return { title: local.title, description: local.body };
 }
 
 export function ChatErrorCard({
@@ -56,7 +46,7 @@ export function ChatErrorCard({
   code?: string;
   message: string;
 }) {
-  const presentation = describeChatError(code, message);
+  const presentation = describeChatError(code);
   if (presentation == null) {
     return (
       <View style={styles.card}>
@@ -64,19 +54,11 @@ export function ChatErrorCard({
       </View>
     );
   }
-  const { title, description, action } = presentation;
+  const { title, description } = presentation;
   return (
     <View style={styles.card}>
       <Text style={styles.title}>{title}</Text>
       <Text style={styles.description}>{description}</Text>
-      <Pressable
-        style={({ pressed }) => [styles.actionButton, pressed && styles.pressed]}
-        onPress={() => void Linking.openURL(action.url)}
-        accessibilityRole="button"
-        accessibilityLabel={action.label}
-      >
-        <Text style={styles.actionText}>{action.label}</Text>
-      </Pressable>
     </View>
   );
 }
@@ -103,19 +85,4 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: colors.errorText,
   },
-  actionButton: {
-    alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.errorBorder,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-  },
-  actionText: {
-    fontFamily: fonts.dmSansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.errorText,
-  },
-  pressed: { opacity: 0.6 },
 });

@@ -1,0 +1,76 @@
+/**
+ * Which backend gates are about money, and what iOS says instead.
+ *
+ * App Store guideline 3.1.3(f) exempts a free companion app to a paid
+ * web-based tool ONLY while there is "no purchasing inside the app, or calls
+ * to action for purchase outside of the app". Isol8 sells hosted compute, so
+ * the exemption fits — but the build Apple rejected on 2026-08-12 carried five
+ * "Upgrade on isol8.co" CTAs, which fails that condition on its face.
+ *
+ * Deleting the hardcoded button labels is NOT enough, and that is why this
+ * module exists rather than a few inline edits. The gate copy itself comes
+ * from the server (`provision_gate.py`) and mobile renders it verbatim:
+ * `trial_daily_cap` ships "You've used today's free allowance — Upgrade to
+ * keep going", `trial_expired` ships "Pick a plan to keep your agent". Those
+ * strings are calls to action, and the web frontend needs them, so the fix
+ * cannot be to change what the backend sends. iOS has to decline the server's
+ * copy for these codes and use its own.
+ *
+ * Hence the rule for a purchase gate on iOS: no action button, no admin note
+ * pointing at the billing site, and LOCAL copy — never `status.message`. The
+ * codes are listed rather than pattern-matched so a new backend gate defaults
+ * to the current behaviour and shows up in review as a deliberate choice; the
+ * unit test pins both this list and provision_gate.py's full set of codes, so
+ * a new money-shaped gate that nobody classified fails there.
+ *
+ * Provider-setup gates (`provider_required`, `oauth_required`,
+ * `byo_provider_required`, `invitation_pending`) are deliberately NOT here.
+ * They cost nothing and direct nobody to a purchase.
+ */
+
+/** Gate codes where following the CTA would lead to a purchase. */
+const PURCHASE_GATE_COPY: Record<string, { title: string; body: string }> = {
+  trial_daily_cap: {
+    title: "Daily free limit reached",
+    body: "You've used today's free allowance. It resets tomorrow.",
+  },
+  trial_expired: {
+    title: "Your free trial has ended",
+    body: "Your free trial has ended, so your agents are paused for now.",
+  },
+  signup_required: {
+    title: "No active plan",
+    body: "This account doesn't have an active plan yet.",
+  },
+  subscription_required: {
+    title: "No active plan",
+    body: "This account doesn't have an active plan right now.",
+  },
+  payment_past_due: {
+    title: "Payment problem",
+    body: "There's a problem with the payment method on this account.",
+  },
+  team_billing_required: {
+    title: "Workspace not set up",
+    body: "This workspace doesn't have an active plan yet.",
+  },
+  credits_required: {
+    title: "Out of credits",
+    body: "This account has run out of inference credits.",
+  },
+};
+
+export function isPurchaseGate(code: string | null | undefined): boolean {
+  return code != null && code in PURCHASE_GATE_COPY;
+}
+
+/**
+ * iOS-local copy for a purchase gate — state only, no instruction to buy.
+ * Returns null for every other code, whose server copy is fine to render.
+ */
+export function purchaseGateCopy(
+  code: string | null | undefined,
+): { title: string; body: string } | null {
+  if (code == null) return null;
+  return PURCHASE_GATE_COPY[code] ?? null;
+}

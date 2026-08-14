@@ -14,6 +14,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as rds from "aws-cdk-lib/aws-rds";
+import * as route53 from "aws-cdk-lib/aws-route53";
 import { Construct } from "constructs";
 
 // ---------------------------------------------------------------------------
@@ -166,6 +167,7 @@ export class ObservabilityStack extends cdk.Stack {
     this.createWarnAwsNativeAlarms(props);
     this.createPaperclipTierAlarms(props);
     this.createCostAlarms(props);
+    this.createUptimeChecks();
 
     // -----------------------------------------------------------------------
     // Dashboard
@@ -1938,6 +1940,118 @@ def handler(event, _ctx):
     // W52 token-volume alarm (above) plus the per-owner invocation-logging
     // meter; if managed $-anomaly detection is wanted, configure it ONCE at
     // account scope, not in this per-env stack.
+  }
+
+  // =========================================================================
+  // Uptime checks (P13, P14)
+  // =========================================================================
+
+  /**
+   * Outside-in uptime checks on the two public front doors.
+   *
+   * Every other alarm in this stack is an INTERNAL signal — a metric the
+   * backend emits about itself, or an AWS metric about our own resources.
+   * All of them can look perfectly healthy while a customer cannot reach the
+   * product at all: an expired certificate, a broken Vercel deploy, a DNS
+   * mistake, a dead Clerk dependency, or a WAF rule that blackholes the world
+   * are invisible from the inside. These two checks are the only thing here
+   * that asks the question a user asks.
+   *
+   * Route53 health checks rather than CloudWatch Synthetics on purpose. A
+   * Synthetics canary needs an artifacts bucket, an execution role and a
+   * bundled script to answer "does this URL return 200"; a Route53 health
+   * check is a config block that probes from multiple AWS regions and
+   * publishes HealthCheckStatus natively. Reach for Synthetics when we want
+   * the real signup->ready journey in a browser, which is deliberately NOT
+   * this — that belongs after launch, and it is a different alarm.
+   *
+   * Note the metric only exists in us-east-1 regardless of where the check
+   * runs, which is where this stack already lives.
+   */
+  private createUptimeChecks(): void {
+    const isProd = this.envName === "prod";
+
+    // Mirrors api-stack (`api.isol8.co` / `api-{env}.isol8.co`) and
+    // isol8-stage (`isol8.co` / `dev.isol8.co`).
+    const appHost = isProd ? "isol8.co" : `${this.envName}.isol8.co`;
+    const apiHost = isProd ? "api.isol8.co" : `api-${this.envName}.isol8.co`;
+
+    const targets = [
+      {
+        id: "P13",
+        name: "app-unreachable",
+        host: appHost,
+        path: "/",
+        description:
+          "The marketing/app front door is failing its health check from " +
+          "multiple AWS regions. Users cannot load the product.",
+      },
+      {
+        id: "P14",
+        name: "api-unreachable",
+        host: apiHost,
+        // Unauthenticated 200 {"status":"healthy"} — the only public path
+        // that answers without a Clerk token.
+        path: "/health",
+        description:
+          "The backend API is failing its health check from multiple AWS " +
+          "regions. Chat, billing and provisioning are all down.",
+      },
+    ];
+
+    for (const target of targets) {
+      const check = new route53.CfnHealthCheck(this, `${target.id}HealthCheck`, {
+        healthCheckConfig: {
+          type: "HTTPS",
+          fullyQualifiedDomainName: target.host,
+          resourcePath: target.path,
+          port: 443,
+          // Route53 probes from several regions on this interval and flips
+          // the status only after failureThreshold consecutive failures, so
+          // a single blip or one bad region cannot page.
+          requestInterval: 30,
+          failureThreshold: 3,
+          enableSni: true,
+          measureLatency: false,
+        },
+        healthCheckTags: [
+          { key: "Name", value: `isol8-${this.envName}-${target.name}` },
+        ],
+      });
+
+      const metric = new cloudwatch.Metric({
+        namespace: "AWS/Route53",
+        metricName: "HealthCheckStatus",
+        // Minimum, not Average: if ANY probing region says down, treat it as
+        // down rather than letting healthy regions average the outage away.
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: { HealthCheckId: check.attrHealthCheckId },
+      });
+
+      const alarm = new cloudwatch.Alarm(this, target.id, {
+        alarmName: `isol8-${this.envName}-${target.id}-${target.name}`,
+        alarmDescription: target.description,
+        metric,
+        threshold: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        // ~90s of probe failures before the status flips, then 2 minutes of
+        // that status before we page.
+        evaluationPeriods: 2,
+        // Route53 publishes this every minute unconditionally. Missing data
+        // means the check itself is gone or not reporting, which we cannot
+        // distinguish from an outage and must not silently treat as healthy.
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      });
+
+      // Dev going dark should not wake anyone; prod should.
+      alarm.addAlarmAction(
+        new cloudwatch_actions.SnsAction(isProd ? this.pageTopic : this.warnTopic),
+      );
+      if (isProd) {
+        this.pageAlarmArns.push(alarm.alarmArn);
+      }
+    }
   }
 
   // =========================================================================

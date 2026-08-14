@@ -170,6 +170,36 @@ describe("ObservabilityStack", () => {
     }
   });
 
+  // The only outside-in signal in the stack. Every other alarm is internal
+  // and can look healthy while users cannot reach the product at all.
+  test("creates Route53 health checks for the app and API front doors", () => {
+    const checks = template.findResources("AWS::Route53::HealthCheck");
+    const hosts = Object.values(checks).map(
+      (c: any) => c.Properties.HealthCheckConfig.FullyQualifiedDomainName,
+    );
+    expect(hosts.sort()).toEqual(["api-dev.isol8.co", "dev.isol8.co"]);
+
+    for (const c of Object.values(checks) as any[]) {
+      expect(c.Properties.HealthCheckConfig.Type).toBe("HTTPS");
+    }
+  });
+
+  test("uptime alarms treat missing data as breaching", () => {
+    // Route53 publishes HealthCheckStatus every minute unconditionally, so
+    // absent data means the check is gone — indistinguishable from an
+    // outage, and must never be read as healthy.
+    for (const alarmName of [
+      "isol8-dev-P13-app-unreachable",
+      "isol8-dev-P14-api-unreachable",
+    ]) {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: alarmName,
+        ComparisonOperator: "LessThanThreshold",
+        TreatMissingData: "breaching",
+      });
+    }
+  });
+
   test("page-tier alarm P1 exists with correct name", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       AlarmName: "isol8-dev-P1-container-error-state",

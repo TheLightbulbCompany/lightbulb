@@ -66,13 +66,16 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: boot-chain-smoke
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    # 30m was sized for the self-hosted box, which kept a warm layer cache and
-    # finished in ~3m. Hosted runners start cold every time, so this ~7.8 GB
-    # image is rebuilt from scratch on every run — including the `doctor`
-    # compile-cache bake. Run 31562288851 was still in `Build image` at 25m and
-    # would have been killed mid-build for no reason other than the old cap.
-    # This is a hang bound, not a runtime budget.
+    # Back on the box. Every build on a standard hosted runner since the
+    # `doctor` compile-cache bake was restored OOM-killed the 7 GB VM — the
+    # annotation reads "the hosted runner lost communication with the server",
+    # with no failed step and no uploaded logs. The box has the memory, the
+    # disk, and a warm layer cache. The rest of Linux CI stays on hosted
+    # runners (#1706); this job is the memory-hungry outlier.
+    runs-on: [self-hosted, isol8-wsl]
+    # A hang bound, not a runtime budget: the box finishes in ~3m warm, while
+    # a cold from-scratch rebuild of this ~7.8 GB image (bake included) ran
+    # past 25m on a hosted runner.
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -84,7 +87,13 @@ jobs:
       # copies at once (docker overlay2, the containerd store it's loaded into,
       # and the convert staging ref). A hosted runner starts with ~14 GB free,
       # so drop preinstalled toolchains this build never touches.
+      #
+      # HOSTED ONLY: on the box these paths are the operator's own toolchains
+      # on a persistent disk, not a throwaway VM image — deleting them there
+      # is destructive and buys nothing (the box has the space; per-run bytes
+      # are handled by "Reclaim container storage" below).
       - name: Reclaim disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                       /usr/local/.ghcup /usr/local/share/powershell

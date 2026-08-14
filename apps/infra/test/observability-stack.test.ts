@@ -150,18 +150,24 @@ describe("ObservabilityStack", () => {
     template.resourceCountIs("AWS::Budgets::Budget", 1);
   });
 
-  test("page topic has email subscription", () => {
-    template.hasResourceProperties("AWS::SNS::Subscription", {
-      Protocol: "email",
-      Endpoint: "oncall@isol8.co",
-    });
-  });
+  // Both tiers must have a live destination. Alarms are worthless without one:
+  // these topics previously ran with ZERO subscribers while ~105 alarms fired
+  // into the void. Assert on BOTH topics, and assert the count, so a
+  // subscription that gets dropped rather than repointed also fails here.
+  test("both alert topics subscribe the alert email", () => {
+    const subs = template.findResources("AWS::SNS::Subscription");
+    const byTopic = Object.values(subs).map((s: any) => ({
+      topic: JSON.stringify(s.Properties.TopicArn),
+      endpoint: s.Properties.Endpoint,
+      protocol: s.Properties.Protocol,
+    }));
 
-  test("warn topic has email subscription", () => {
-    template.hasResourceProperties("AWS::SNS::Subscription", {
-      Protocol: "email",
-      Endpoint: "alerts@isol8.co",
-    });
+    expect(byTopic).toHaveLength(2);
+    expect(new Set(byTopic.map((s) => s.topic)).size).toBe(2); // page + warn, not two on one
+    for (const s of byTopic) {
+      expect(s.protocol).toBe("email");
+      expect(s.endpoint).toBe("admin@isol8.co");
+    }
   });
 
   test("page-tier alarm P1 exists with correct name", () => {

@@ -110,28 +110,53 @@ export class ObservabilityStack extends cdk.Stack {
     // SNS Topics
     // -----------------------------------------------------------------------
 
-    // Page tier: SMS + email — fires on customer-impacting events
+    // Page tier: fires on customer-impacting events.
     this.pageTopic = new sns.Topic(this, "AlertsPage", {
       topicName: `isol8-${props.envName}-alerts-page`,
       displayName: "Isol8 Page",
     });
 
-    // Email subscription (always present)
-    this.pageTopic.addSubscription(
-      new subs.EmailSubscription("oncall@isol8.co"),
-    );
-
-    // SMS subscription will be added manually after the oncall phone secret
-    // is created in Secrets Manager.
-
-    // Warn tier: email only
+    // Warn tier.
     this.warnTopic = new sns.Topic(this, "AlertsWarn", {
       topicName: `isol8-${props.envName}-alerts-warn`,
       displayName: "Isol8 Warn",
     });
-    this.warnTopic.addSubscription(
-      new subs.EmailSubscription("alerts@isol8.co"),
-    );
+
+    // -----------------------------------------------------------------------
+    // Alert destinations
+    // -----------------------------------------------------------------------
+    //
+    // READ THIS BEFORE CHANGING AN ADDRESS. An SNS email subscription is only
+    // live once a human clicks the confirmation link, and SNS DELETES the
+    // subscription if nobody clicks within 3 days. CloudFormation does not
+    // notice: it keeps reporting CREATE_COMPLETE against a subscription that
+    // no longer exists, so no future `cdk deploy` recreates it.
+    //
+    // That is not hypothetical — it already happened here. Both topics ran
+    // with ZERO subscribers while ~105 alarms fired into the void, and a
+    // real alarm (bedrock-meter DLQ) sat unnoticed in ALARM for four weeks.
+    //
+    // So: changing an address here is NOT enough. CDK only replaces the
+    // subscription when the CONSTRUCT ID changes (the address is part of the
+    // generated id, so a new address does force a new resource) — but the
+    // deploy is only half the job. Someone must then click the confirmation
+    // link in the new inbox, and verify with:
+    //
+    //   aws sns list-subscriptions-by-topic --topic-arn <arn>
+    //
+    // A subscription is only real when that command shows a SubscriptionArn
+    // that is not the literal string "PendingConfirmation".
+    const alertEmail = "admin@isol8.co";
+
+    this.pageTopic.addSubscription(new subs.EmailSubscription(alertEmail));
+    this.warnTopic.addSubscription(new subs.EmailSubscription(alertEmail));
+
+    // NOTE: there is deliberately no SMS subscription. SNS cannot send SMS
+    // from this account — it has no registered US origination identity and
+    // sits in the SMS sandbox, so `CreateSMSSandboxPhoneNumber` fails with
+    // "No origination entities available to send". Adding an SMS subscription
+    // here would deploy clean and silently never deliver. Wire it only once a
+    // toll-free number is registered AND the account has left the sandbox.
 
     // -----------------------------------------------------------------------
     // Alarms

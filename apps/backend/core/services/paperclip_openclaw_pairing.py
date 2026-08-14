@@ -221,6 +221,39 @@ async def fetch_paperclip_agents_for_owner(
     return agents
 
 
+async def count_paperclip_agents_for_owner(owner_id: str) -> int:
+    """Live Paperclip agent count for ``owner_id``, or 0 if it can't be fetched.
+
+    Constructs the httpx client + repo + admin_client itself so callers that
+    only want a number don't have to (``ecs_manager._size_for_owner``,
+    ``stripe_webhook_handlers``). Delegates to
+    ``fetch_paperclip_agents_for_owner``, which returns [] rather than raising
+    when the owner has no company yet or Paperclip is unreachable.
+
+    **0 means UNDETERMINABLE, never "a genuinely tiny owner."** Every
+    provisioned owner has Friday + Atlas seeded, so a reachable owner's roster
+    is always >= 2. Callers must treat 0 as "no signal" and fall back to their
+    own default — never as "small enough to shrink." See the deferral logic in
+    ``stripe_webhook_handlers._apply_ultra_resize`` for why shrinking on an
+    unknown count is the dangerous direction.
+    """
+    from core.config import settings
+
+    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    try:
+        agents = await fetch_paperclip_agents_for_owner(
+            owner_id=owner_id,
+            repo=PaperclipRepo(table_name="paperclip-companies"),
+            admin_client=PaperclipAdminClient(http_client=http),
+        )
+        return len(agents)
+    except Exception:  # noqa: BLE001 — best-effort count; 0 = "no signal".
+        logger.exception("Failed to count Paperclip agents for owner %s", owner_id)
+        return 0
+    finally:
+        await http.aclose()
+
+
 async def _resolve_seeded_agent_ids(*, owner_id: str, repo: PaperclipRepo) -> set[str]:
     """Resolve the persisted seeded-agent IDs (Friday + Atlas) for an owner.
 

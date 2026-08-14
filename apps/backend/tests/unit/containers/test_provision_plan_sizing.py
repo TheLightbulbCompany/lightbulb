@@ -22,6 +22,7 @@ from core.containers.ecs_manager import (
     ULTRA_MEMORY_MIB,
     EcsManager,
 )
+from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 
 
 # ---------------------------------------------------------------------------
@@ -143,12 +144,102 @@ def _billing(plan):
 
 
 class TestSizeForOwner:
+    @pytest.fixture(autouse=True)
+    def _small_roster(self, monkeypatch):
+        """Default every case in this class to a small, KNOWN roster.
+
+        Without this the helper would build a real httpx client and try to
+        reach Paperclip. Tests that care about the count override it.
+        """
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(return_value=2),
+        )
+
     @pytest.mark.asyncio
     async def test_ultra_pro_owner_gets_ultra_box(self, manager, monkeypatch):
         monkeypatch.setattr(
             "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("ultra_pro"))
         )
         assert await manager._size_for_owner("owner") == (ULTRA_CPU, ULTRA_MEMORY_MIB)
+
+    @pytest.mark.asyncio
+    async def test_agent_count_over_budget_upgrades_a_standard_owner(self, manager, monkeypatch):
+        """The organic-growth gap this fix closes.
+
+        An owner on the flat plan who accumulates agents one at a time — via
+        chat, the Teams REST endpoint, a marketplace hire, or Atlas creating
+        them straight against Paperclip — never crossed the marketplace or
+        Stripe gates, so nothing sized their box up. Prod owner with 11 agents
+        crash-looped on boot for exactly this reason (24 SQLite DBs restoring
+        on one vCPU -> "database is locked").
+        """
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("standard"))
+        )
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(return_value=COMPANY_STANDARD_PLAN_MAX_AGENTS + 1),
+        )
+        assert await manager._size_for_owner("owner") == (ULTRA_CPU, ULTRA_MEMORY_MIB)
+
+    @pytest.mark.asyncio
+    async def test_agent_count_exactly_at_budget_stays_standard(self, manager, monkeypatch):
+        """Boundary: the budget is inclusive — N agents is still standard."""
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("standard"))
+        )
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(return_value=COMPANY_STANDARD_PLAN_MAX_AGENTS),
+        )
+        assert await manager._size_for_owner("owner") == (PER_USER_CPU, PER_USER_MEMORY_MIB)
+
+    @pytest.mark.asyncio
+    async def test_undeterminable_agent_count_does_not_upgrade(self, manager, monkeypatch):
+        """0 means "Paperclip unreachable", never "a tiny owner".
+
+        It must leave the plan-derived size alone rather than be read as a
+        number below the budget (which is what it literally is).
+        """
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("standard"))
+        )
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(return_value=0),
+        )
+        assert await manager._size_for_owner("owner") == (PER_USER_CPU, PER_USER_MEMORY_MIB)
+
+    @pytest.mark.asyncio
+    async def test_agent_count_never_shrinks_an_ultra_owner(self, manager, monkeypatch):
+        """Sizing up on count must not become sizing DOWN on count.
+
+        Shrinking is owned by ``stripe_webhook_handlers._apply_ultra_resize``,
+        which defers on oversized/unknown counts; a competing shrink here would
+        bounce an Ultra owner onto the small box mid-provision.
+        """
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("ultra_pro"))
+        )
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(return_value=1),
+        )
+        assert await manager._size_for_owner("owner") == (ULTRA_CPU, ULTRA_MEMORY_MIB)
+
+    @pytest.mark.asyncio
+    async def test_agent_count_lookup_error_fails_safe_to_standard(self, manager, monkeypatch):
+        """A Paperclip outage must not fail a provision any more than a
+        billing outage does."""
+        monkeypatch.setattr(
+            "core.repositories.billing_repo.get_by_owner_id", AsyncMock(return_value=_billing("standard"))
+        )
+        monkeypatch.setattr(
+            "core.services.paperclip_openclaw_pairing.count_paperclip_agents_for_owner",
+            AsyncMock(side_effect=RuntimeError("paperclip down")),
+        )
+        assert await manager._size_for_owner("owner") == (PER_USER_CPU, PER_USER_MEMORY_MIB)
 
     @pytest.mark.asyncio
     async def test_standard_owner_gets_standard_box(self, manager, monkeypatch):

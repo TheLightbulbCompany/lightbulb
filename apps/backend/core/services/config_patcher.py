@@ -921,6 +921,40 @@ async def strip_removed_agent_keys(
     await _locked_rmw(owner_id, _mutate, "strip removed agent keys")
 
 
+async def repin_tool_search_mode(owner_id: str, mode: str) -> None:
+    """Re-pin ``tools.toolSearch.mode`` on an existing container.
+
+    OVERWRITES, unlike the additive ``ensure_*`` helpers next door, and that is
+    correct here: the mode is generator-owned, not an owner preference. Nothing
+    but ``containers/config.py`` and the provider swap ever writes it, so a
+    stale value on disk is drift, not a choice to preserve.
+
+    Scoped to that one key — ``tools`` also carries the deny list, web
+    providers and media flags, none of which are ours to touch from here.
+
+    Exists because owners provisioned before a mode change keep the old one
+    forever: the image roll reuses the on-disk config and
+    ``replace_provider_block`` re-pins the mode only on a provider swap. Dev
+    2026-08-14 showed what that costs — every agent on ``code`` mode opened its
+    first run with three `ReferenceError: require is not defined` failures,
+    because in that mode a file read must be written as JavaScript inside a
+    sandbox with no ``require``.
+    """
+
+    def _mutate(current: dict) -> bool:
+        tools = current.get("tools")
+        if not isinstance(tools, dict):
+            tools = {}
+            current["tools"] = tools
+        existing = tools.get("toolSearch")
+        if isinstance(existing, dict) and existing.get("mode") == mode:
+            return False
+        tools["toolSearch"] = {"mode": mode}
+        return True
+
+    await _locked_rmw(owner_id, _mutate, f"repin toolSearch mode={mode}")
+
+
 async def ensure_plugin_entries(owner_id: str, entries: dict) -> None:
     """Ensure ``plugins.entries`` contains each of ``entries``.
 

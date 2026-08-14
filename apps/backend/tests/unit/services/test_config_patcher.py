@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,6 +18,7 @@ from core.services.config_patcher import (  # noqa: E402
     delete_provider_level_channel_secrets,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
+    repin_tool_search_mode,
     replace_provider_block,
     set_openclaw_config_path,
     strip_removed_agent_keys,
@@ -1611,6 +1613,68 @@ async def test_apply_paperclip_meta_clears_field_when_value_is_empty_string(tmp_
     assert "title" not in pc
     assert "capabilities" not in pc
     assert "icon" not in pc
+
+
+@pytest.mark.asyncio
+async def test_repin_tool_search_mode_overwrites_drift_but_leaves_the_rest_of_tools():
+    """The mode is generator-owned, so a stale on-disk value is drift and gets
+    overwritten — unlike the additive ensure_* helpers. Everything else under
+    `tools` belongs to other writers and must survive untouched."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "owner_1")
+        os.makedirs(user_dir)
+        config = {
+            "tools": {
+                "profile": "full",
+                "deny": ["cron", "tts"],
+                "web": {"search": {"provider": "parallel-free"}},
+                "toolSearch": {"mode": "code"},
+            }
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await repin_tool_search_mode("owner_1", "tools")
+
+        written = json.loads((Path(user_dir) / "openclaw.json").read_text())
+        assert written["tools"]["toolSearch"] == {"mode": "tools"}
+        # Untouched neighbours.
+        assert written["tools"]["profile"] == "full"
+        assert written["tools"]["deny"] == ["cron", "tts"]
+        assert written["tools"]["web"]["search"]["provider"] == "parallel-free"
+
+
+@pytest.mark.asyncio
+async def test_repin_tool_search_mode_is_a_noop_when_already_correct():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "owner_1")
+        os.makedirs(user_dir)
+        path = Path(user_dir) / "openclaw.json"
+        path.write_text(json.dumps({"tools": {"toolSearch": {"mode": "tools"}}}))
+        before = path.read_text()
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await repin_tool_search_mode("owner_1", "tools")
+
+        assert path.read_text() == before
+
+
+@pytest.mark.asyncio
+async def test_repin_tool_search_mode_creates_the_block_when_absent():
+    """An owner whose config predates tool search entirely still gets it —
+    otherwise they keep carrying the full MCP catalog on every turn."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "owner_1")
+        os.makedirs(user_dir)
+        (Path(user_dir) / "openclaw.json").write_text(json.dumps({"agents": {"list": []}}))
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await repin_tool_search_mode("owner_1", "tools")
+
+        written = json.loads((Path(user_dir) / "openclaw.json").read_text())
+        assert written["tools"]["toolSearch"] == {"mode": "tools"}
+        assert written["agents"] == {"list": []}
 
 
 @pytest.mark.asyncio

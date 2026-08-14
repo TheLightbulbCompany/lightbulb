@@ -393,10 +393,11 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
                 # playbook that reads their Paperclip key while never gaining
                 # the pattern that redacts it — the cohort that needs it most.
                 # Additive and behaviour-free, so it is safe on every owner.
-                from core.containers.config import REDACT_PATTERNS
+                from core.containers.config import REDACT_PATTERNS, TOOL_SEARCH_MODE
                 from core.services.config_patcher import (
                     ensure_plugin_entries,
                     ensure_redact_patterns,
+                    repin_tool_search_mode,
                 )
                 from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
 
@@ -417,6 +418,17 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
                     await ensure_plugin_entries(owner_id, PAPERCLIP_CREDS_PLUGIN_PATCH["entries"])
                 except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
                     logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
+
+                # Re-pin the tool-search mode. Owners provisioned on "code"
+                # keep it forever otherwise, and every one of their agents
+                # opens each run with failing tool_search_code calls — the
+                # mode's JS sandbox has no `require`, so the commonest
+                # operation (reading a file) cannot be expressed in it.
+                # Generator-owned key, so overwriting drift is the point.
+                try:
+                    await repin_tool_search_mode(owner_id, TOOL_SEARCH_MODE)
+                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                    logger.exception("update_service: tool-search repin failed for owner=%s", owner_id)
 
                 # Image rolls are the fleet's routine touch-point, but they
                 # never rewrite configs — so the seeded-file heal pass that

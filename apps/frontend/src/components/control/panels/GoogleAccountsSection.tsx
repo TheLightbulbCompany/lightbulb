@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiError, useGoogleAccounts } from "@/hooks/useGoogleAccounts";
@@ -12,8 +12,9 @@ interface GoogleAccountsSectionProps {
   canManage: boolean;
 }
 
-/** Sentinel select value for "no explicit assignment" → uses the owner's
- * default account. Kept distinct from any email so it can never collide. */
+/** Sentinel select value for "no explicit assignment" → the agent is told
+ * nothing and falls back to bare `gog`. Kept distinct from any email so it can
+ * never collide. */
 const DEFAULT_OPTION = "__default__";
 
 const NON_ADMIN_MSG = "Only organization admins can manage Google accounts.";
@@ -33,17 +34,27 @@ function errorMessage(e: unknown): string {
 }
 
 /**
- * Google multi-account management, rendered inside the Integrations tab only
- * when the `google` provider is connected. Three parts:
+ * Google multi-account management. Mounted on BOTH Google surfaces — the
+ * /settings/connections route (which is also where `connectAnother`'s OAuth
+ * round trip lands) and the Control dashboard's Integrations tab — so there is
+ * no surface where a connected Google reads as single-account-only.
  *
- *   1. Connected accounts — each Google account with a per-row Disconnect.
- *   2. Connect another — additive OAuth redirect to add a second account.
- *   3. Per-agent accounts — a dropdown per agent picking which connected
- *      account that agent acts as ("Default" → no explicit assignment).
+ * Three parts, in the order the work is done:
+ *
+ *   1. Connect another — additive OAuth, in the header where an add-action
+ *      belongs rather than stranded between the two lists.
+ *   2. Connected accounts — each account, with how many agents act as it, and
+ *      a per-row Disconnect.
+ *   3. Per-agent accounts — which account each agent acts as. This is the
+ *      identity binding: it writes a standing `gog -a <email>` instruction
+ *      into the agent's IDENTITY.md, so it governs every run of that agent,
+ *      not one task. The copy says so, because an owner who does not know
+ *      that reaches for the wrong lever (an automation's account picker) and
+ *      points an agent at the wrong mailbox.
  *
  * Mutations are admin-gated; non-admins see disabled controls. State lives in
  * useGoogleAccounts (SWR cache) + useAgents (gateway RPC); this component owns
- * only transient per-row busy/error flags.
+ * only transient per-row busy flags.
  */
 export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps) {
   const {
@@ -58,9 +69,20 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
   } = useGoogleAccounts();
   const { agents, isLoading: agentsLoading } = useAgents();
 
-  // Track which row (keyed by email or agent id) is mid-request, plus the
-  // last error for that row, so spinners + messages stay row-local.
+  // Track which row (keyed by email or agent id) is mid-request so spinners
+  // stay row-local.
   const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  // How many agents act as each account. Shown on the account row so
+  // Disconnect is never a blind action — removing an account silently strips
+  // the gog-account block from every agent bound to it.
+  const agentsPerAccount = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const email of Object.values(assignments)) {
+      counts[email] = (counts[email] ?? 0) + 1;
+    }
+    return counts;
+  }, [assignments]);
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusyKey(key);
@@ -74,7 +96,6 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
   };
 
   const headingStyle = { fontFamily: "'Lora', serif" } as const;
-  const bodyStyle = { fontFamily: "'DM Sans', sans-serif" } as const;
 
   const onAssignmentChange = (agentId: string, value: string) => {
     if (value === DEFAULT_OPTION) {
@@ -85,20 +106,33 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
   };
 
   return (
-    <div className="space-y-5 rounded-md border border-[var(--edge)] bg-white p-5">
-      <div>
-        <h3 className="text-base font-semibold text-[#1c1917]" style={headingStyle}>
-          Google accounts
-        </h3>
-        <p className="mt-0.5 text-sm text-[var(--mute)]" style={bodyStyle}>
-          Connect one or more Google accounts and choose which account each
-          agent acts as.
-        </p>
-      </div>
+    <section
+      id="google-accounts"
+      aria-labelledby="google-accounts-heading"
+      className="overflow-hidden rounded-md border border-[var(--edge)] bg-white"
+    >
+      <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-[var(--edge)] px-5 py-4">
+        <div className="min-w-0 flex-1">
+          <h3
+            id="google-accounts-heading"
+            className="text-base font-semibold text-[var(--ink)]"
+            style={headingStyle}
+          >
+            Google accounts
+          </h3>
+          <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--mute)]">
+            One Google connection can hold several accounts — a shared inbox, a
+            second workspace — and each agent acts as one of them.
+          </p>
+        </div>
+        <ConnectAnotherButton canManage={canManage} />
+      </header>
 
       {error && (
-        <div className="space-y-2">
-          <p className="text-sm text-[#b63025]">Failed to load Google accounts.</p>
+        <div className="flex items-center gap-3 px-5 py-4">
+          <p className="flex-1 text-sm text-[var(--danger)]">
+            Failed to load Google accounts.
+          </p>
           <Button variant="outline" size="sm" onClick={() => mutate()}>
             Retry
           </Button>
@@ -106,51 +140,54 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
       )}
 
       {!error && isLoading && (
-        <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
+        <p className="px-5 py-4 text-sm text-[var(--mute)]">
           Loading Google accounts…
         </p>
       )}
 
       {!error && !isLoading && (
         <>
-          {/* Connected accounts */}
-          <div className="space-y-2">
+          <div className="border-b border-[var(--edge)] px-5 py-4">
             <p className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
               Connected accounts
             </p>
             {accounts.length === 0 ? (
-              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
+              <p className="mt-2 text-sm text-[var(--mute)]">
                 No Google accounts connected yet.
               </p>
             ) : (
-              <ul className="space-y-2">
+              <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded border border-[var(--edge)]">
                 {accounts.map((account) => {
                   const busy = busyKey === account.email;
+                  const used = agentsPerAccount[account.email] ?? 0;
                   return (
                     <li
                       key={account.email}
-                      className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3"
+                      className="flex items-center gap-4 bg-[var(--cream)] px-3 py-2.5"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-[#1c1917]">
+                        <p className="truncate text-sm font-medium text-[var(--ink)]">
                           {account.email}
                         </p>
+                        <p className="mt-0.5 text-xs text-[var(--mute)]">
+                          {used === 0
+                            ? "No agent acts as this account"
+                            : `${used} agent${used === 1 ? "" : "s"} act${used === 1 ? "s" : ""} as this account`}
+                        </p>
                       </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={busy || !canManage}
-                          onClick={() =>
-                            run(account.email, () =>
-                              disconnectAccount(account.email),
-                            )
-                          }
-                          aria-label={`Disconnect ${account.email}`}
-                        >
-                          {busy ? "Disconnecting…" : "Disconnect"}
-                        </Button>
-                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy || !canManage}
+                        onClick={() =>
+                          run(account.email, () =>
+                            disconnectAccount(account.email),
+                          )
+                        }
+                        aria-label={`Disconnect ${account.email}`}
+                      >
+                        {busy ? "Disconnecting…" : "Disconnect"}
+                      </Button>
                     </li>
                   );
                 })}
@@ -158,34 +195,26 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
             )}
           </div>
 
-          {/* Connect another account */}
-          <div className="space-y-1">
-            <ConnectAnotherButton canManage={canManage} />
-            <p className="text-xs text-[var(--mute)]" style={bodyStyle}>
-              Adding an account sends you to Google to sign in. You&apos;ll
-              return via Settings with the account connected.
-            </p>
-          </div>
-
-          {/* Per-agent account assignment */}
-          <div className="space-y-2">
+          <div className="px-5 py-4">
             <p className="text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
-              Per-agent accounts
+              Which account each agent acts as
+            </p>
+            <p className="mt-1 max-w-prose text-sm leading-relaxed text-[var(--mute)]">
+              An agent given an account is told to use it for every Google
+              action, on every run. Leave it on{" "}
+              <span className="text-[var(--ink-soft)]">Default</span> and the
+              agent is never told which account to use.
             </p>
             {agentsLoading ? (
-              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
-                Loading agents…
-              </p>
+              <p className="mt-3 text-sm text-[var(--mute)]">Loading agents…</p>
             ) : agents.length === 0 ? (
-              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
-                No agents yet.
-              </p>
+              <p className="mt-3 text-sm text-[var(--mute)]">No agents yet.</p>
             ) : accounts.length === 0 ? (
-              <p className="text-sm text-[var(--mute)]" style={bodyStyle}>
+              <p className="mt-3 text-sm text-[var(--mute)]">
                 Connect a Google account to assign it to an agent.
               </p>
             ) : (
-              <ul className="space-y-2">
+              <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded border border-[var(--edge)]">
                 {agents.map((agent) => {
                   const current = assignments[agent.id] ?? DEFAULT_OPTION;
                   const busy = busyKey === agent.id;
@@ -193,33 +222,30 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
                   return (
                     <li
                       key={agent.id}
-                      className="flex items-center gap-3 rounded-md border border-[var(--edge)] bg-[var(--cream)] p-3"
+                      className="flex items-center gap-4 bg-[var(--cream)] px-3 py-2.5"
                     >
                       <label
                         htmlFor={selectId}
-                        className="min-w-0 flex-1 truncate text-sm font-medium text-[#1c1917]"
+                        className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--ink)]"
                       >
                         {agentDisplayName(agent)}
                       </label>
-                      <div className="flex flex-col items-end gap-1">
-                        <select
-                          id={selectId}
-                          value={current}
-                          disabled={busy || !canManage}
-                          onChange={(e) =>
-                            onAssignmentChange(agent.id, e.target.value)
-                          }
-                          className="h-9 w-52 rounded-md border border-[var(--edge)] bg-white px-2 text-sm text-[#1c1917] disabled:cursor-not-allowed disabled:opacity-50"
-                          style={bodyStyle}
-                        >
-                          <option value={DEFAULT_OPTION}>Default</option>
-                          {accounts.map((account) => (
-                            <option key={account.email} value={account.email}>
-                              {account.email}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      <select
+                        id={selectId}
+                        value={current}
+                        disabled={busy || !canManage}
+                        onChange={(e) =>
+                          onAssignmentChange(agent.id, e.target.value)
+                        }
+                        className="h-9 w-56 rounded-md border border-[var(--edge)] bg-white px-2 text-sm text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <option value={DEFAULT_OPTION}>Default</option>
+                        {accounts.map((account) => (
+                          <option key={account.email} value={account.email}>
+                            {account.email}
+                          </option>
+                        ))}
+                      </select>
                     </li>
                   );
                 })}
@@ -228,13 +254,13 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
           </div>
         </>
       )}
-    </div>
+    </section>
   );
 }
 
 /**
- * The "Connect another Google account" button owns its own busy/error state
- * (the redirect can fail before navigation, e.g. a 403 for a non-admin) so a
+ * The "Connect another Google account" button owns its own busy state (the
+ * redirect can fail before navigation, e.g. a 403 for a non-admin) so a
  * failure here doesn't clobber a row-level error elsewhere in the section.
  */
 function ConnectAnotherButton({ canManage }: { canManage: boolean }) {
@@ -253,10 +279,13 @@ function ConnectAnotherButton({ canManage }: { canManage: boolean }) {
   };
 
   return (
-    <div className="flex flex-col items-start gap-1">
-      <Button size="sm" disabled={busy || !canManage} onClick={onClick}>
-        {busy ? "Redirecting…" : "Connect another Google account"}
-      </Button>
-    </div>
+    <Button
+      className="shrink-0"
+      size="sm"
+      disabled={busy || !canManage}
+      onClick={onClick}
+    >
+      {busy ? "Redirecting…" : "Connect another account"}
+    </Button>
   );
 }

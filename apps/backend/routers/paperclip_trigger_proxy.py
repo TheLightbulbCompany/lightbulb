@@ -398,6 +398,13 @@ async def proxy_trigger(owner_id: str, public_id: str, request: Request) -> Resp
     if request.headers.get("X-Goog-Resource-State") == "sync":
         return Response(status_code=204)
 
+    # GitHub's equivalent: hook creation fires one `ping` delivery, signed
+    # with the hook's secret like any real event — verified live: it started
+    # a run the moment auto-registration created the hook. Any 2xx marks the
+    # hook healthy in GitHub's UI.
+    if request.headers.get("X-GitHub-Event") == "ping":
+        return Response(status_code=204)
+
     # Raw bytes, untouched — hmac_sha256/github_hmac sign the exact body.
     body = await request.body()
 

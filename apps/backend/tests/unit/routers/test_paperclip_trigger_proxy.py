@@ -935,3 +935,49 @@ def test_gmail_entry_token_is_cached_across_deliveries(client):
             )
             assert r.status_code == 202
     assert entries.await_count == 1
+
+
+def test_github_ping_acknowledged_at_edge_not_forwarded(client):
+    """GitHub fires one `ping` delivery when a hook is created, signed with
+    the hook's secret like a real event — without this short-circuit it
+    starts a spurious run the moment auto-registration creates the hook
+    (observed live). Any 2xx marks the hook healthy on GitHub's side."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b'{"zen":"Design for failure.","hook_id":1}',
+            headers={
+                "Content-Type": "application/json",
+                "X-GitHub-Event": "ping",
+                "X-Hub-Signature-256": "sha256=deadbeef",
+            },
+        )
+    assert r.status_code == 204
+    assert "url" not in captured  # never forwarded upstream
+
+
+def test_github_issues_event_still_forwarded(client):
+    """A real GitHub event (X-GitHub-Event: issues) is unaffected by the
+    ping short-circuit."""
+    captured: dict = {}
+    with (
+        _mock_billing("active"),
+        _mock_binding(True),
+        _stub_client(captured),
+    ):
+        r = client.post(
+            f"/api/v1/hooks/t/u_1/{PUBLIC_ID}",
+            content=b'{"action":"opened"}',
+            headers={
+                "Content-Type": "application/json",
+                "X-GitHub-Event": "issues",
+                "X-Hub-Signature-256": "sha256=deadbeef",
+            },
+        )
+    assert r.status_code == 202
+    assert "url" in captured

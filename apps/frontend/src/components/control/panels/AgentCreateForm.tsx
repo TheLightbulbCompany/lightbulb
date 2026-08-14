@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
 import { normalizeAgentId, validateAgentName } from "@/lib/agentIdentity";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useBilling } from "@/hooks/useBilling";
 import { AgentPaperclipFields } from "@/components/control/agents/AgentPaperclipFields";
 import type { PaperclipMeta } from "@/lib/paperclipMeta";
 
@@ -20,8 +21,12 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   const [name, setName] = useState("");
   const [meta, setMeta] = useState<PaperclipMeta>({ role: "general" });
   const [error, setError] = useState<string | null>(null);
+  // Set only for the plan agent-limit refusal, so the form can offer the
+  // upgrade instead of rendering an error the user can do nothing about.
+  const [atAgentLimit, setAtAgentLimit] = useState(false);
   const [creating, setCreating] = useState(false);
   const callRpc = useGatewayRpcMutation();
+  const { upgradeToUltra } = useBilling();
 
   const normalizedId = normalizeAgentId(name);
   const clientError = validateAgentName(name, existingNames);
@@ -31,6 +36,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
     if (!canCreate) return;
     setCreating(true);
     setError(null);
+    setAtAgentLimit(false);
     try {
       // Build params.paperclip payload — only include keys with non-empty values
       // so the backend's paperclip_meta.read_from_agent_entry doesn't have to
@@ -64,6 +70,11 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
       capture("agent_created", { agent_name: name.trim(), paperclip_role: meta.role });
       onCreated();
     } catch (err) {
+      // The backend answers an over-budget create with a structured gateway
+      // error; GatewayRpcError keeps `code` rather than flattening it into the
+      // message, so match on the code and let the message stay the human
+      // sentence the backend wrote.
+      setAtAgentLimit((err as { code?: string } | null)?.code === "agent_budget_exceeded");
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
@@ -104,8 +115,27 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
 
       <AgentPaperclipFields value={meta} onChange={setMeta} disabled={creating} />
 
-      {(clientError || error) && (
+      {(clientError || error) && !atAgentLimit && (
         <p className="text-xs text-red-500">{clientError || error}</p>
+      )}
+      {/* The plan agent limit is not a failure the user can retry their way out
+          of, so it gets an action instead of red text. Same reasoning as the
+          marketplace hire's missing_credentials branch: "try again" copy on a
+          wall the user cannot clear just sends them back into it. */}
+      {atAgentLimit && (
+        <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
+          <p className="text-xs text-muted-foreground">{error}</p>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => {
+              capture("billing_ultra_upgrade_clicked", { source: "agent_limit" });
+              void upgradeToUltra();
+            }}
+          >
+            Upgrade to Ultra Pro
+          </Button>
+        </div>
       )}
 
       <div className="flex justify-end gap-2">

@@ -14,12 +14,24 @@ independent paths, and a limit enforced on some of them is not a limit:
 (4) is the one that makes this non-obvious. Atlas is a seeded agent that runs
 INSIDE the owner's container and recruits new agents on its own initiative, so
 it never crosses the browser→backend WS path the /chat interception sits on.
-It is gated here only because Atlas's build pipeline cannot mint an agent
-itself — its own instructions say "the CREATE is the one thing Atlas can't do
-gateway-free" and it curls this backend bridge. That is the property that makes
-a backend-side budget enforceable at all; if a future change lets the container
-mint Paperclip agents directly, this guard stops being complete and the
-reliability floor in ``ecs_manager._size_for_owner`` becomes the only backstop.
+
+**What makes that catchable is credential scoping, not Atlas's prompt.** Atlas's
+seeded AGENTS.md does say "the CREATE is the one thing Atlas can't do
+gateway-free", but instructions to a model are not an enforcement boundary. The
+actual control is that the container holds NO Paperclip credential —
+``ecs_manager`` strips every ``PAPERCLIP_*`` var from per-user task definitions
+and the admin session cookie is backend-side only — so minting a Paperclip agent
+genuinely requires coming through this backend. Keep it that way: handing the
+container a Paperclip credential would turn this guard into a suggestion.
+
+**Known blind spot.** Nothing stops the container calling its OWN gateway's
+``agents.create`` to make a container-local OpenClaw agent. That agent never
+reaches Paperclip, so it is not counted here and not refused. It does not
+survive in the roster — a config regen rebuilds ``agents.list`` from Paperclip
+and ``_deep_merge`` replaces non-dict values — but its workspace dir, SQLite
+database and Litestream replica persist, which is exactly the orphan-replica
+class that inflated one owner's boot from 11 live agents to 23 restored
+databases. Counting the roster bounds the PRODUCT; it does not bound boot cost.
 
 **The budget counts the LIVE ROSTER, which includes the seeded Friday + Atlas.**
 That matches what ``stripe_webhook_handlers._apply_ultra_resize`` already

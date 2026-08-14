@@ -846,6 +846,99 @@ def test_checkout_non_admin_org_member_403(mock_stripe_create, org_member_client
     mock_get.assert_not_called()
 
 
+@patch("routers.marketplace_purchases.stripe.checkout.Session.create")
+def test_checkout_already_entitled_409s_before_stripe(mock_stripe_create, client):
+    """An entitled buyer must never reach Stripe again — the storefront's
+    recovery path after a broken paid deploy used to re-prompt payment.
+    Consumers branch on the structured detail and deploy instead."""
+    from main import app
+
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="b1")
+    try:
+        with (
+            patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock) as mock_get,
+            patch(
+                "routers.marketplace_purchases.marketplace_repo.has_unrevoked_purchase",
+                new_callable=AsyncMock,
+            ) as mock_owned,
+        ):
+            mock_get.return_value = {
+                "listing_id": "lst_1",
+                "status": "published",
+                "price_cents": 2000,
+                "name": "Pulse",
+                "slug": "pulse",
+                "version": 1,
+                "seller_id": "s1",
+            }
+            mock_owned.return_value = True
+            resp = client.post(
+                "/api/v1/marketplace/checkout",
+                json={
+                    "listing_id": "lst_1",
+                    "success_url": "https://isol8.co/marketplace/deploy-success",
+                    "cancel_url": "https://isol8.co/marketplace/listing/lst_1",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"error": "already_entitled"}
+    mock_stripe_create.assert_not_called()
+
+
+@patch("routers.marketplace_purchases.stripe.checkout.Session.create")
+def test_checkout_scopes_purchase_identity_to_org(mock_stripe_create, client):
+    """Regression (codex): the install is org-scoped, so purchase identity
+    must be the RESOLVED owner. Keying to the individual admin let a second
+    org admin be charged again for a listing the org already owns."""
+    from main import app
+
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="admin_b",
+        org_id="org_test",
+        org_role="org:admin",
+    )
+    try:
+        with (
+            patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock) as mock_get,
+            patch(
+                "routers.marketplace_purchases.marketplace_repo.has_unrevoked_purchase",
+                new_callable=AsyncMock,
+            ) as mock_owned,
+        ):
+            mock_get.return_value = {
+                "listing_id": "lst_1",
+                "status": "published",
+                "price_cents": 2000,
+                "name": "Pulse",
+                "slug": "pulse",
+                "version": 1,
+                "seller_id": "s1",
+            }
+            # Admin A already bought for the org — admin B must be refused.
+            mock_owned.return_value = True
+            resp = client.post(
+                "/api/v1/marketplace/checkout",
+                json={
+                    "listing_id": "lst_1",
+                    "success_url": "https://isol8.co/marketplace/deploy-success",
+                    "cancel_url": "https://isol8.co/marketplace/listing/lst_1",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 409, resp.text
+    mock_owned.assert_awaited_once_with(buyer_id="org_test", listing_id="lst_1")
+    mock_stripe_create.assert_not_called()
+
+
 @patch("routers.marketplace_purchases.payout_service.refund_purchase")
 @patch("core.repositories.marketplace_repo._purchases_table")
 def test_refund_non_admin_org_member_403(mock_table, mock_refund, org_member_client):

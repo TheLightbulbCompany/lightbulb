@@ -86,7 +86,17 @@ export async function checkout(opts: {
       email: opts.email,
     }),
   });
-  if (!resp.ok) throw new Error(`checkout failed: ${resp.status}`);
+  if (!resp.ok) {
+    // Structured throw: consumers branch on detail.error (e.g.
+    // already_entitled → deploy instead of re-charging). A bare string here
+    // made every 409 look like a dead checkout.
+    const body = (await resp.json().catch(() => ({}))) as {
+      detail?: string | { error?: string };
+    };
+    const detail = body.detail;
+    const message = typeof detail === "string" ? detail : (detail?.error ?? `checkout failed: ${resp.status}`);
+    throw Object.assign(new Error(message), { status: resp.status, detail });
+  }
   return (await resp.json()) as { checkout_url: string; session_id: string };
 }
 

@@ -81,18 +81,6 @@ class McpRemote(BaseModel):
     # 60s matches the MCP SDK's default per-request timeout, so runtime tool-call
     # behavior is unchanged; only the list budget is lifted.
     request_timeout_ms: int = Field(60_000, alias="requestTimeoutMs")
-    # Tool names to publish from this server, as OpenClaw's
-    # ``mcp.servers.*.toolFilter.include``. Empty = publish everything.
-    #
-    # This exists because a remote catalog is not free: EVERY tool a server
-    # exposes is declared to the model on EVERY turn, and OpenClaw loads MCP
-    # servers only from the ONE global openclaw.json — there is no per-agent
-    # scoping — so an unfiltered server taxes every agent on the container,
-    # including the ones that will never call it. Meta's ads server measured
-    # 95 tools / 687 KB of schema (~172k tokens), which is most of a 200k
-    # context window before the agent reads a word. Filter anything large.
-    tool_filter_include: list[str] = Field(default_factory=list, alias="toolFilterInclude")
-
     model_config = {"populate_by_name": True}
 
     def server_block(self) -> dict[str, object]:
@@ -104,15 +92,12 @@ class McpRemote(BaseModel):
         runtime treats the endpoint as a plain remote server, ignores the token
         store, and the server 401s. The materializer write and the reprovision
         rehydration both build the block from here, so they stay identical."""
-        block: dict[str, object] = {
+        return {
             "transport": self.transport,
             "url": self.url,
             "auth": "oauth",
             "requestTimeoutMs": self.request_timeout_ms,
         }
-        if self.tool_filter_include:
-            block["toolFilter"] = {"include": list(self.tool_filter_include)}
-        return block
 
 
 class SkillSpec(BaseModel):

@@ -1601,20 +1601,25 @@ def build_openclaw_config_dict(
                 "search": {"provider": "parallel-free"},
             },
             # Tool Search: hide the full tool catalog behind
-            # tool_search/tool_describe/tool_call. Worth the extra bridge
-            # round-trips ONLY when merged integration MCP servers inflate
-            # the per-turn schema payload (Stripe MCP alone is dozens of
-            # tools); a bare catalog would pay latency for no byte savings,
-            # so plain owners stay direct-exposure. Embedded runtime only —
-            # the Codex runtime ignores this key (native tool search) — and
-            # never on trial (minimal surface). "code" mode falls back to
-            # plain tools mode if the Node child can't spawn; policy
-            # (allow/deny) still applies to bridged calls, fail-closed.
-            **(
-                {"toolSearch": {"mode": "code"}}
-                if (integration_mcp_servers and provider_choice != "chatgpt_oauth" and not is_bedrock_trial)
-                else {}
-            ),
+            # tool_search/tool_describe/tool_call. ON FOR EVERY OWNER, with no
+            # gating — the catalog is unbounded from this file's point of view
+            # (any owner can connect an MCP integration at any time, and Meta's
+            # ads server alone measured 95 tools / ~172k tokens against the live
+            # endpoint), and a config written today is read for the life of the
+            # container. Conditioning on what happens to be connected at write
+            # time is what left owners carrying a full catalog after the fact.
+            #
+            # The previous gate also excluded chatgpt_oauth and trial. Neither
+            # exclusion earned its complexity: the Codex runtime never reads this
+            # key (resolveToolSearchConfig is called from agent-tools.ts and
+            # nowhere else), so it is simply inert there; and trial owners are the
+            # ones who can least afford a full catalog against a $3 cap, since
+            # integrations are not trial-gated.
+            #
+            # "code" mode falls back to plain tools mode if the Node child can't
+            # spawn; policy (allow/deny) still applies to bridged calls,
+            # fail-closed.
+            "toolSearch": {"mode": "code"},
             "media": {
                 "image": {"enabled": True},
                 "audio": {"enabled": False},

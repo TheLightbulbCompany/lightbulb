@@ -1787,10 +1787,133 @@ export class ServiceStack extends cdk.Stack {
       resultPath: "$.error",
     });
 
+    runProvisioner.next(succeedProvisioned);
+
+    // ------------------------------------------------------------------
+    // Watch loop — custody from t=0.
+    //
+    // The backend starts this execution AT CLAIM TIME
+    // (provision_dispatch._dispatch_inner Branch B) and then runs attempt 0
+    // as its own child process, which is ~30s faster than an ECS cold
+    // launch. So this machine's job is to OBSERVE the row: succeed when the
+    // runner lands "running", stand down when the claim changes hands, take
+    // the ECS leg when the row goes error+retryable, and take it
+    // unconditionally after the tick backstop (a runner that died without
+    // writing — a SIGKILLed backend task).
+    //
+    // Before this, the machine STARTED at RunProvisioner and the backend had
+    // to hand each claim over per exit path. The common leg — a nonzero
+    // runner exit — had no handoff at all: it relied on the frontend's ~3s
+    // status poll to re-dispatch, which orphans the claim whenever no tab is
+    // open, and a saturated inline queue suppressed even that. Dev broke
+    // fleet-wide that way on 2026-08-13 during a Fargate Spot drought.
+    //
+    // watch_ticks is seeded HERE, not in the StartExecution input: Branch-A
+    // idempotency requires that input to stay byte-identical per claim.
+    const initWatch = new sfn.Pass(this, "InitWatch", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "attempt_token.$": "$.attempt_token",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+        watch_ticks: 0,
+      },
+    });
+    const getRow = new tasks.DynamoGetItem(this, "GetContainerRow", {
+      table: props.database.containersTable,
+      key: {
+        owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
+      },
+      // The runner may have written the terminal row milliseconds ago; an
+      // eventually-consistent read would burn a whole tick on stale data (or
+      // mis-route on a half-visible write).
+      consistentRead: true,
+      resultPath: "$.row",
+    });
+    // Same reasoning as the ddbWrite retriers: a single DDB throttle must not
+    // kill the watchdog and orphan the claim it exists to protect.
+    getRow.addRetry({
+      errors: ["States.ALL"],
+      interval: cdk.Duration.seconds(2),
+      backoffRate: 2,
+      maxAttempts: 3,
+    });
+    const tickWatch = new sfn.Pass(this, "TickWatch", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "attempt_token.$": "$.attempt_token",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+        "watch_ticks.$": "States.MathAdd($.watch_ticks, 1)",
+      },
+    });
+    const waitWatch = new sfn.Wait(this, "WaitWatchTick", {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
+    });
+    const watchChoice = new sfn.Choice(this, "WatchRow")
+      // Row deleted mid-provision (account wipe / delete): nothing to drive.
+      .when(sfn.Condition.isNotPresent("$.row.Item"), succeedSuperseded)
+      // Terminal success. MUST precede the claim-identity rule below: the
+      // running transition REMOVEs the lease fields
+      // (container_repo.update_container_leased), so checking the claim first
+      // would read a successful provision as "superseded".
+      .when(sfn.Condition.stringEquals("$.row.Item.status.S", "running"), succeedProvisioned)
+      // Something deliberately stopped this box (trial park, conversion
+      // revert, admin stop). update_status is NOT claim-conditioned, so this
+      // CAN land on a row still holding our claim — and without this rule the
+      // tick backstop below would resurrect a container someone chose to
+      // stop. Never fight that decision from a watchdog: recovery for a
+      // wrongly-stopped row already belongs to the status poll's auto-retry
+      // and release_stranded_stop_to_error.
+      .when(sfn.Condition.stringEquals("$.row.Item.status.S", "stopped"), succeedSuperseded)
+      // The claim changed hands (deliberate reprovision, conversion takeover,
+      // admin door) — stand down quietly, the runner's superseded rule.
+      .when(
+        sfn.Condition.or(
+          sfn.Condition.isNotPresent("$.row.Item.provision_claim_id.S"),
+          sfn.Condition.not(sfn.Condition.stringEqualsJsonPath("$.row.Item.provision_claim_id.S", "$.claim_id")),
+        ),
+        succeedSuperseded,
+      )
+      // Deterministic failure: the runner already wrote error + retryable
+      // false, so there is no row write to make — fail the execution so the
+      // executions-failed alarm sees it (parity with MarkFailedDeterministic
+      // on the ECS leg).
+      .when(
+        sfn.Condition.and(
+          sfn.Condition.stringEquals("$.row.Item.status.S", "error"),
+          sfn.Condition.isPresent("$.row.Item.retryable.BOOL"),
+          sfn.Condition.booleanEquals("$.row.Item.retryable.BOOL", false),
+        ),
+        failProvision,
+      )
+      // Transient failure (retryable true, or a legacy row with the attribute
+      // absent): take the ECS leg. attempt stays 0 and attempt_token stays
+      // claim_id — DISTINCT from the inline token ({claim}-inline) — so the
+      // runner's first-act claim_attempt re-stamp fences any inline straggler
+      // exactly as provision_dispatch.py documents.
+      .when(sfn.Condition.stringEquals("$.row.Item.status.S", "error"), runProvisioner)
+      // Dead-runner backstop: still leased to us, still "provisioning", no
+      // progress for 40 ticks. The inline child cannot still be alive —
+      // 40 x 60s = 2400s exceeds the backend's queue bound + attempt timeout
+      // (300 + 1800 = 2100s, provision_dispatch.py) — so running the ECS leg
+      // here cannot collide with a live attempt. Move one, move all three.
+      .when(sfn.Condition.numberGreaterThanEquals("$.watch_ticks", 40), runProvisioner)
+      .otherwise(waitWatch);
+    initWatch.next(getRow);
+    getRow.next(watchChoice);
+    waitWatch.next(tickWatch);
+    tickWatch.next(getRow);
+
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
       stateMachineName: `isol8-${env}-provision`,
-      definitionBody: sfn.DefinitionBody.fromChainable(runProvisioner.next(succeedProvisioned)),
-      timeout: cdk.Duration.hours(2), // hard ceiling across all attempts
+      definitionBody: sfn.DefinitionBody.fromChainable(initWatch),
+      // 40 watch ticks (~40 min) + up to 3 x 30-min ECS attempts + retry
+      // waits ~= 132 min. The old 2h ceiling would time the execution out
+      // mid-final-attempt.
+      timeout: cdk.Duration.hours(3),
     });
 
     // The MarkRetrying/MarkFailed* DynamoUpdateItem tasks auto-grant only

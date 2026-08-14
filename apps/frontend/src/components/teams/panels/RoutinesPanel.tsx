@@ -867,10 +867,15 @@ const START_RUNGS: ReadonlyArray<{
 // resource the backend hooks ("owner/repo" for GitHub, a project for Vercel,
 // a connected Google account email for Google watch channels).
 // The label heads the dropdown; the plural feeds its placeholder copy.
+// Keyed by registration shape, with an optional "<shape>:<provider>" override:
+// auto_meta is the one shape two providers share, and its resource is a Page
+// for Meta Ads but an account for Instagram.
 const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
   auto_github: { label: "Repository", plural: "repositories" },
   auto_vercel: { label: "Project", plural: "projects" },
   auto_google_watch: { label: "Google account", plural: "accounts" },
+  "auto_meta:meta_ads": { label: "Page", plural: "Pages" },
+  "auto_meta:instagram": { label: "Instagram account", plural: "accounts" },
 };
 
 // POST /automations/from-integration's response (core/services/
@@ -1094,9 +1099,15 @@ function CreateRoutineDialog({
   // block-level auto_google_watch shape).
   const selectedEvent = connEvents.find((e) => e.id === connEventId) ?? null;
   const isOwnerSetup = selectedEvent?.registration === "owner_setup";
+  const registrationShape =
+    selectedConnection?.inbound?.webhook_registration ?? "";
   const resourceNoun = AUTO_RESOURCE_NOUNS[
-    selectedConnection?.inbound?.webhook_registration ?? ""
-  ] ?? { label: "Resource", plural: "resources" };
+    `${registrationShape}:${connProvider}`
+  ] ??
+    AUTO_RESOURCE_NOUNS[registrationShape] ?? {
+      label: "Resource",
+      plural: "resources",
+    };
 
   useEffect(() => {
     if (

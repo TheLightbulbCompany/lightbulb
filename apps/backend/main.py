@@ -48,6 +48,7 @@ from routers import (
     hooks_credentials,
     hooks_proxy,
     integrations,
+    meta_webhook,
     metronome_webhook,
     oauth,
     onboarding,
@@ -864,6 +865,10 @@ app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
 # /api/v1/hooks/t/{owner_id}/{public_id}. No edge auth — Paperclip verifies
 # the per-trigger signature upstream. See routers/paperclip_trigger_proxy.py.
 app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+# App-LEVEL Meta ingress at /api/v1/hooks/meta — deliberately ownerless, because
+# a Meta app has ONE callback URL for every user. Routed by the asset id in the
+# payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
+app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Platform-ops operator console + owner-scoped agent access (dual auth). See
 # routers/ops.py for the Clerk-admin OR platform_ops-token model.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])

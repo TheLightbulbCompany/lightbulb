@@ -75,6 +75,29 @@ rides into gog's fixed argv). Google sends no body signature: deliveries
 carry ``X-Goog-Channel-Token``, which the trigger proxy maps into
 ``Authorization: Bearer`` for Paperclip's native bearer mode.
 
+``webhook_registration: "auto_meta"`` (Meta Ads / Instagram): auto like GitHub,
+but the ingress is APP-LEVEL — Meta configures one callback URL for the whole
+app, not one per owner, so the seed's job is only to bind the owner's ASSET to
+it: ``POST /{asset-id}/subscribed_apps`` with the owner's own token, then a
+``{asset_id, …, trigger_public_id, trigger_secret}`` entry on the owner's
+integrations row so ``routers/meta_webhook.py`` can route a delivery whose only
+identifying mark is ``entry[].id``. The trigger is created ``bearer``: Meta
+signs with the APP secret (nothing Paperclip holds), so the edge verifies that
+signature and then injects the trigger's own secret as the Authorization —
+exactly the Gmail-push shape one paragraph down, minus the OIDC. The resource
+is the asset id, validated as digits AND as a member of the owner's live asset
+list (that membership check is the ownership fence: it is the only thing
+stopping an owner from binding somebody else's Page). Unsubscribing on rollback
+is best-effort, same posture as the Vercel webhook delete.
+
+The two providers differ only in which Graph host holds the asset:
+``meta_ads`` Pages come from ``graph.facebook.com/me/accounts`` using the
+retained OAuth token (and are subscribed with the PAGE token that call returns
+— ``subscribed_apps`` on a Page wants a Page token, not the user one), while
+``instagram`` has exactly ONE professional account whose ``graph.instagram.com``
+token the backend never retains (``refresh_owner: actor``) and so is read from
+the materialized ``skills/instagram/credentials.json`` on EFS.
+
 Two PER-EVENT shapes ride the same google block (``InboundEvent.registration``
 overrides the block-level ``webhook_registration``; see the registry):
 
@@ -138,6 +161,24 @@ _VERCEL_API_BASE = "https://api.vercel.com"
 # Also an injection fence: the resource rides into the webhook create's
 # projectIds and the rollback DELETE path.
 _VERCEL_PROJECT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+# Meta Graph. v23.0 rather than the v21.0 the design sketched: Meta retires a
+# version ~2 years after release, which puts v21.0 (Oct 2024) inside its
+# deprecation window already. v23.0 also matches the only other Graph call in
+# the backend (the instagram_cli materializer's identity fetch).
+_GRAPH_VERSION = "v23.0"
+_FACEBOOK_GRAPH_BASE = "https://graph.facebook.com"
+_INSTAGRAM_GRAPH_BASE = "https://graph.instagram.com"
+
+# A Meta asset id (Page id / IG professional-account id) — always numeric. The
+# only resource shape auto_meta accepts, and an injection fence: the id rides
+# into the subscribed_apps URL path.
+_META_ASSET_RE = re.compile(r"^\d{1,32}$")
+
+# Where instagram_cli materialized the owner's IG token. The backend does not
+# retain that credential (refresh_owner: actor — the container renews it in
+# place), so EFS is the only place to read it from.
+_INSTAGRAM_CREDENTIALS_REL = ("skills", "instagram", "credentials.json")
 
 # A fully-qualified Pub/Sub topic ("projects/<proj>/topics/<name>") — the only
 # topic shape owner_setup (gmail.message) accepts. GCP's own naming rules for
@@ -401,6 +442,149 @@ async def list_google_accounts(owner_id: str) -> list[dict[str, str]]:
     return [{"id": a["email"], "label": a["email"]} for a in accounts]
 
 
+# --- Meta (auto_meta) -------------------------------------------------------
+#
+# An "asset" is one Facebook Page (meta_ads) or one Instagram professional
+# account (instagram). The pickers only ever see {id, label}; the seed also
+# needs the access token and which Graph host holds it, so the internal shape
+# carries those and the public listers project them away — the resources
+# endpoint returns owner-facing JSON and must never carry a token.
+
+
+async def _meta_pages(owner_id: str) -> list[dict[str, str]]:
+    """The Pages the owner's connected Meta Ads token administers, each with
+    the PAGE access token ``/me/accounts`` hands back — ``subscribed_apps`` on
+    a Page wants a Page token, not the user one.
+
+    Raises ``LookupError`` when Meta Ads isn't connected (the router maps it to
+    404); httpx errors and an unrecognised 200 body both bubble up for the
+    router's 502 rather than being guessed at.
+    """
+    credential = await integration_secret_store.get(owner_id, "meta_ads")
+    token = (credential or {}).get("access_token")
+    if not token:
+        raise LookupError("Meta Ads is not connected")
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.get(
+            f"{_FACEBOOK_GRAPH_BASE}/{_GRAPH_VERSION}/me/accounts",
+            params={"fields": "id,name,access_token", "access_token": token},
+        )
+    resp.raise_for_status()
+    data = resp.json().get("data")
+    if not isinstance(data, list):
+        raise RuntimeError("Meta /me/accounts returned no page list")
+    return [
+        {
+            "id": str(p["id"]),
+            "label": p.get("name") or str(p["id"]),
+            # Page token when Graph returned one, else the user token — no page
+            # token means this grant can't act on the Page, which surfaces as
+            # the subscribe call's own caller-facing refusal.
+            "token": p.get("access_token") or token,
+            "graph_base": _FACEBOOK_GRAPH_BASE,
+            "object_type": "page",
+        }
+        for p in data
+        if isinstance(p, dict) and p.get("id")
+    ]
+
+
+def _read_instagram_credentials(owner_id: str) -> dict:
+    return json.loads(owner_efs_root(owner_id).joinpath(*_INSTAGRAM_CREDENTIALS_REL).read_text())
+
+
+async def _instagram_accounts(owner_id: str) -> list[dict[str, str]]:
+    """The single Instagram professional account the owner connected.
+
+    Business Login for Instagram grants exactly ONE account and issues a
+    ``graph.instagram.com`` token — there is no ``/me/accounts`` there to fan
+    out over, and the backend never retains the token (``refresh_owner:
+    actor``). The materializer already wrote the id, username and token to EFS,
+    so this is a file read.
+
+    Raises ``LookupError`` when Instagram isn't connected — no materialized
+    credentials file, or one missing the token/id (the router maps it to 404).
+    """
+    try:
+        creds = await asyncio.to_thread(_read_instagram_credentials, owner_id)
+    except (OSError, ValueError) as exc:
+        raise LookupError("Instagram is not connected") from exc
+    token = creds.get("access_token")
+    account_id = str(creds.get("user_id") or "")
+    if not token or not account_id:
+        raise LookupError("Instagram is not connected")
+    return [
+        {
+            "id": account_id,
+            "label": creds.get("username") or account_id,
+            "token": token,
+            "graph_base": _INSTAGRAM_GRAPH_BASE,
+            "object_type": "instagram",
+        }
+    ]
+
+
+# provider_key -> its asset lister. Also the set of providers auto_meta accepts.
+_META_ASSET_LISTERS = {"meta_ads": _meta_pages, "instagram": _instagram_accounts}
+
+
+async def list_meta_pages(owner_id: str) -> list[dict[str, str]]:
+    """Picker feed for meta_ads' auto_meta shape — Pages, tokens stripped."""
+    return [{"id": a["id"], "label": a["label"]} for a in await _meta_pages(owner_id)]
+
+
+async def list_instagram_accounts(owner_id: str) -> list[dict[str, str]]:
+    """Picker feed for instagram's auto_meta shape — the one connected account,
+    token stripped. A one-entry dropdown, but it keeps the create dialog's
+    resource step identical across every auto shape."""
+    return [{"id": a["id"], "label": a["label"]} for a in await _instagram_accounts(owner_id)]
+
+
+async def _subscribe_meta_asset(asset: dict[str, str], fields: list[str]) -> None:
+    """Bind the app's ONE webhook callback to this asset for ``fields``.
+
+    Raises ``ValueError`` with a caller-facing message on the expected refusals
+    — the connected account doesn't administer the asset, or the Isol8 Meta app
+    doesn't hold the webhook permission for that object type. Graph reports
+    both as a 400/403 whose subcode we'd only be guessing at, so they share one
+    message that names both causes."""
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.post(
+            f"{asset['graph_base']}/{_GRAPH_VERSION}/{asset['id']}/subscribed_apps",
+            params={"subscribed_fields": ",".join(fields), "access_token": asset["token"]},
+        )
+    if resp.status_code in (400, 403):
+        raise ValueError(
+            f"Isol8 couldn't subscribe to {asset['label']} — the connected Meta account must administer it, "
+            "and the Isol8 Meta app must hold the webhook permission for it"
+        )
+    resp.raise_for_status()
+    # Graph answers 200 {"success": true}. A 200 that doesn't say so means the
+    # binding didn't take, and a trigger nothing ever delivers to is worse than
+    # a visible failure.
+    try:
+        confirmed = resp.json().get("success") is True
+    except ValueError:
+        confirmed = False
+    if not confirmed:
+        raise RuntimeError(f"Meta subscribed_apps did not confirm the subscription for {asset['id']}")
+
+
+async def _unsubscribe_meta_asset(asset: dict[str, str]) -> None:
+    """Best-effort unbind of an asset whose binding write failed — left
+    subscribed, Meta would deliver events this fleet can route nowhere. Never
+    masks the caller's own error — only logs its own failure."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.delete(
+                f"{asset['graph_base']}/{_GRAPH_VERSION}/{asset['id']}/subscribed_apps",
+                params={"access_token": asset["token"]},
+            )
+        resp.raise_for_status()
+    except Exception:
+        logger.exception("inbound_triggers: rollback unsubscribe of Meta asset %s failed", asset["id"])
+
+
 async def _delete_vercel_webhook(*, token: str, webhook_id: str) -> None:
     """Best-effort delete of a Vercel webhook orphaned by the ARM step failing
     — a live webhook pointed at a trigger still holding its random placeholder
@@ -497,6 +681,27 @@ async def seed_trigger_routine(
         vercel_token = await _vercel_token(owner_id)
         if not vercel_token:
             raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
+
+    # auto_meta preconditions, same posture: fail before anything exists. The
+    # asset must be numeric AND present in the owner's live asset list — that
+    # membership check is the ownership fence (nothing else stops an owner
+    # naming a Page they don't administer) as well as the connected check.
+    meta_asset: dict[str, str] | None = None
+    if registration == "auto_meta":
+        if not resource or not _META_ASSET_RE.match(resource):
+            raise ValueError("auto_meta needs a numeric Meta asset id")
+        asset_lister = _META_ASSET_LISTERS.get(provider_key)
+        if asset_lister is None:
+            raise ValueError(f"{provider_key!r} has no Meta asset lister")
+        try:
+            assets = await asset_lister(owner_id)
+        except LookupError as exc:
+            raise ValueError(
+                f"{provider.display_name} is not connected — connect it in the Integrations tab first"
+            ) from exc
+        meta_asset = next((a for a in assets if a["id"] == resource), None)
+        if meta_asset is None:
+            raise ValueError("That Meta asset isn't on your connected account — reconnect it in the Integrations tab")
 
     # Google-shape preconditions (push channels, gmail poll, gmail push),
     # same posture. The resource is a connected Google ACCOUNT email,
@@ -621,8 +826,11 @@ async def seed_trigger_routine(
             # providers (PostHog) need it for the same reason: the OWNER arms
             # the provider side by hand with this value, and there is no
             # read-back later.
+            # auto_meta joins them for a different reason: Meta signs with the
+            # APP secret, so the trigger's own secret is what the app-level
+            # ingress injects as the bearer AFTER verifying that signature.
             webhook_secret: str | None = None
-            if registration in ("auto_github", "auto_google_watch", "owner_setup") or (
+            if registration in ("auto_github", "auto_google_watch", "owner_setup", "auto_meta") or (
                 registration == "guided_paste" and inbound.signing_mode == "bearer"
             ):
                 material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
@@ -779,6 +987,64 @@ async def seed_trigger_routine(
                 "instructions": None,
                 "secret_hint": None,
                 "resource": resource,
+            }
+
+        if registration == "auto_meta":
+            assert meta_asset and webhook_secret  # narrowed by the pre-checks above
+            fields = event.provider_events or [event.id]
+            try:
+                await _subscribe_meta_asset(meta_asset, fields)
+            except Exception:
+                # Meta refused the binding (not an admin of the asset, missing
+                # app permission, outage) — the routine+trigger are unusable.
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            try:
+                # The routing map for the app-level ingress. A delivery names
+                # only the asset id, so this entry IS how the route finds the
+                # owner, the trigger, and the bearer to fire it with.
+                bindings = await integrations_repo.get_meta_webhook_bindings(owner_id, provider_key)
+                bindings.append(
+                    {
+                        "asset_id": meta_asset["id"],
+                        "asset_name": meta_asset["label"],
+                        "object_type": meta_asset["object_type"],
+                        "event_id": event.id,
+                        "fields": fields,
+                        "trigger_public_id": public_id,
+                        "trigger_secret": webhook_secret,
+                    }
+                )
+                await integrations_repo.set_meta_webhook_bindings(owner_id, provider_key, bindings)
+            except Exception:
+                # Subscribed but unroutable: Meta would deliver into a fleet
+                # that can't resolve the asset. Unbind (best-effort) first.
+                await _unsubscribe_meta_asset(meta_asset)
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded auto_meta routine=%s trigger=%s owner=%s provider=%s asset=%s event=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                provider_key,
+                meta_asset["id"],
+                event_id,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": None,
+                "secret_hint": None,
+                # The asset NAME, not the id — a numeric Page id in the success
+                # copy tells the owner nothing about which Page went live.
+                "resource": meta_asset["label"],
             }
 
         if registration == "auto_google_watch":

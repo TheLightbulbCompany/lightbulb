@@ -935,6 +935,112 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
   });
 });
 
+describe("RoutinesPanel — auto_meta asset picker", () => {
+  // auto_meta is the one registration shape TWO providers share, and its
+  // resource is a different thing in each — so the noun map needs a
+  // per-provider override, which is what these two cases pin.
+  function metaConnection(provider: string, displayName: string, events: { id: string; label: string }[]) {
+    return {
+      provider,
+      display_name: displayName,
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: [events[0].label],
+      inbound: { webhook_registration: "auto_meta", events },
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+  });
+
+  it("labels the Meta Ads picker 'Page' and submits the Page id", async () => {
+    connectionsData = [
+      metaConnection("meta_ads", "Meta Ads", [
+        { id: "leadgen", label: "New lead" },
+        { id: "feed", label: "Page post activity" },
+      ]),
+    ];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "1112223334", label: "Acme Page" },
+    ]);
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: false,
+      instructions: null,
+      secret_hint: null,
+      // The backend echoes the asset NAME here (a numeric Page id names
+      // nothing to the owner), so the success copy uses it as-is.
+      resource: "Acme Page",
+    });
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Meta Ads" }));
+    await user.click(await screen.findByRole("option", { name: "New lead" }));
+
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/meta_ads/resources",
+      ),
+    );
+    expect(screen.getByText("Page")).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Acme Page" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith(
+      "/automations/from-integration",
+      { provider: "meta_ads", event_id: "leadgen", resource: "1112223334" },
+    );
+    expect(
+      await screen.findByText(
+        /Meta Ads registered the webhook on Acme Page — this automation is live\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("labels the Instagram picker 'Instagram account'", async () => {
+    connectionsData = [
+      metaConnection("instagram", "Instagram", [
+        { id: "comments", label: "New comment" },
+        { id: "messages", label: "New DM" },
+      ]),
+    ];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "7778889990", label: "acme.co" },
+    ]);
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Instagram" }));
+    await user.click(await screen.findByRole("option", { name: "New comment" }));
+
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/instagram/resources",
+      ),
+    );
+    // Same shape as Meta Ads, different noun — the per-provider override.
+    expect(screen.getByText("Instagram account")).toBeInTheDocument();
+    expect(screen.queryByText("Page")).not.toBeInTheDocument();
+  });
+});
+
 describe("RoutinesPanel — auto_google_watch account picker", () => {
   function googleConnection() {
     return {

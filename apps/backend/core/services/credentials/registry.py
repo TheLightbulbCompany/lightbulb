@@ -267,7 +267,15 @@ class Inbound(BaseModel):
     # and the routine renews its own: the seed attaches a twice-weekly
     # maintenance schedule trigger and an EFS state file the agent re-arms
     # from (see inbound_triggers) — no platform-side renewal job.
-    webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel", "auto_google_watch"]
+    # "auto_meta" — the only APP-LEVEL (fan-in) shape: Meta configures ONE
+    # callback URL for the whole app, so every owner's deliveries land on the
+    # same ownerless route (routers/meta_webhook.py) and are routed by the
+    # asset id in the payload. The seed binds the owner's asset with
+    # POST /{asset-id}/subscribed_apps and records the asset↔trigger binding
+    # on the integrations row; the caller supplies the asset id as the
+    # resource. signing_mode is "bearer" because Meta's signature is over the
+    # APP secret (verified at the edge), not anything Paperclip holds.
+    webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel", "auto_google_watch", "auto_meta"]
     # A NATIVE Paperclip signingMode ("hmac_sha256" | "hmac_sha1" |
     # "github_hmac" | "bearer" | "none"), passed straight through to the
     # created trigger — Paperclip verifies the provider's signature natively

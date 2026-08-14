@@ -1207,3 +1207,297 @@ def test_parse_gmail_watch_requires_expiration():
 
     with pytest.raises(RuntimeError, match="no expiration"):
         _parse_gmail_watch(json.dumps({"historyId": "7"}))
+
+
+# --- auto_meta ---------------------------------------------------------------
+#
+# The first APP-LEVEL shape: the seed registers nothing owner-specific with
+# Meta beyond subscribing the asset, and records the asset↔trigger binding the
+# ownerless ingress route routes by. Same fake-collaborator idiom as above; the
+# Graph calls are the module's httpx.AsyncClient, with GET answering
+# /me/accounts and POST/DELETE answering subscribed_apps.
+
+_META_SECRET = {"webhookSecret": "pcsec_meta"}
+_PAGES = {"data": [{"id": "1112223334", "name": "Acme Page", "access_token": "page_tok_1"}]}
+_IG_CREDS = {"access_token": "ig_tok_1", "user_id": "7778889990", "username": "acme.co"}
+
+
+def _meta_http_patch(*, pages=_PAGES, subscribe=None):
+    """Fake httpx.AsyncClient whose GET answers /me/accounts and whose
+    POST/DELETE answer subscribed_apps."""
+    client = MagicMock()
+    client.get = AsyncMock(return_value=_gh_response(200, pages))
+    client.post = AsyncMock(return_value=subscribe if subscribe is not None else _gh_response(200, {"success": True}))
+    client.delete = AsyncMock(return_value=_gh_response(200, {"success": True}))
+
+    @asynccontextmanager
+    async def _fake(*args, **kwargs):
+        yield client
+
+    return patch("core.services.inbound_triggers.httpx.AsyncClient", new=_fake), client
+
+
+def _meta_bindings_patch(existing=None, *, set_side_effect=None):
+    """Patch the integrations-row binding read/write. Returns (patchers, setter)."""
+    getter = AsyncMock(return_value=list(existing or []))
+    setter = AsyncMock(side_effect=set_side_effect)
+    return (
+        patch("core.services.inbound_triggers.integrations_repo.get_meta_webhook_bindings", getter),
+        patch("core.services.inbound_triggers.integrations_repo.set_meta_webhook_bindings", setter),
+    ), setter
+
+
+def _ig_creds_patch(creds=None):
+    return patch(
+        "core.services.inbound_triggers._read_instagram_credentials",
+        return_value=dict(creds if creds is not None else _IG_CREDS),
+    )
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_subscribes_page_and_records_binding():
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, meta_client = _meta_http_patch()
+    (p_get_b, p_set_b), setter = _meta_bindings_patch()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        p_http,
+        p_get_b,
+        p_set_b,
+        # meta_ads is an OAuth provider: the retained credential is
+        # {"access_token": ...}, not the paste rail's {"token": ...}.
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+    ):
+        out = await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="1112223334")
+
+    # The asset is bound with the PAGE token /me/accounts returned, not the
+    # user token — subscribed_apps on a Page wants the Page's own token.
+    meta_client.post.assert_awaited_once()
+    assert meta_client.post.await_args.args[0] == "https://graph.facebook.com/v23.0/1112223334/subscribed_apps"
+    assert meta_client.post.await_args.kwargs["params"] == {
+        "subscribed_fields": "leadgen",
+        "access_token": "page_tok_1",
+    }
+
+    # bearer: Meta signs with the APP secret, so the trigger's own secret is
+    # what the app-level ingress injects after verifying that signature.
+    assert admin.create_routine_trigger.await_args.kwargs["body"]["signingMode"] == "bearer"
+
+    setter.assert_awaited_once()
+    owner_arg, provider_arg, bindings = setter.await_args.args
+    assert (owner_arg, provider_arg) == ("owner_1", "meta_ads")
+    assert bindings == [
+        {
+            "asset_id": "1112223334",
+            "asset_name": "Acme Page",
+            "object_type": "page",
+            "event_id": "leadgen",
+            "fields": ["leadgen"],
+            "trigger_public_id": "pub_1",
+            "trigger_secret": "pcsec_meta",
+        }
+    ]
+
+    assert out["guided"] is False
+    # The asset NAME, not the numeric id — the success copy names the Page.
+    assert out["resource"] == "Acme Page"
+    assert out["instructions"] is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_rejects_asset_not_on_the_account():
+    """Membership in the owner's own asset list is the ownership fence — the
+    only thing stopping an owner from binding somebody else's Page."""
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, _ = _meta_http_patch()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        p_http,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+        pytest.raises(ValueError, match="isn't on your connected account"),
+    ):
+        await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="9998887776")
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_requires_numeric_asset():
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    for bad in (None, "acme/site", "111-222", "111 222"):
+        with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="numeric Meta asset id"):
+            await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource=bad)
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_rolls_back_on_graph_refusal():
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, _ = _meta_http_patch(subscribe=_gh_response(403, {"error": {"message": "no"}}))
+    (p_get_b, p_set_b), setter = _meta_bindings_patch()
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        p_http,
+        p_get_b,
+        p_set_b,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+        pytest.raises(ValueError, match="couldn't subscribe"),
+    ):
+        await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="1112223334")
+
+    admin.delete_routine.assert_awaited_once()
+    setter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_unsubscribes_when_the_binding_write_fails():
+    """Subscribed but unroutable is the worst state: Meta would deliver into a
+    fleet that can't resolve the asset. Unbind, then unwind."""
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, meta_client = _meta_http_patch()
+    (p_get_b, p_set_b), _ = _meta_bindings_patch(set_side_effect=RuntimeError("ddb down"))
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        p_http,
+        p_get_b,
+        p_set_b,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+        pytest.raises(RuntimeError, match="ddb down"),
+    ):
+        await seed_trigger_routine("owner_1", "meta_ads", "leadgen", resource="1112223334")
+
+    meta_client.delete.assert_awaited_once()
+    assert meta_client.delete.await_args.args[0] == "https://graph.facebook.com/v23.0/1112223334/subscribed_apps"
+    admin.delete_routine.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_instagram_uses_the_efs_token():
+    """Instagram's token is graph.instagram.com-scoped and the backend never
+    retains it (refresh_owner: actor) — it comes off EFS, and the subscribe
+    goes to the Instagram host, not graph.facebook.com."""
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    p_http, meta_client = _meta_http_patch()
+    (p_get_b, p_set_b), setter = _meta_bindings_patch()
+    with p_repo, p_cookie, p_client, p_http, p_get_b, p_set_b, _ig_creds_patch():
+        out = await seed_trigger_routine("owner_1", "instagram", "comments", resource="7778889990")
+
+    # No Graph fan-out at all on the Instagram path — one account, one file.
+    meta_client.get.assert_not_awaited()
+    assert meta_client.post.await_args.args[0] == "https://graph.instagram.com/v23.0/7778889990/subscribed_apps"
+    assert meta_client.post.await_args.kwargs["params"] == {
+        "subscribed_fields": "comments",
+        "access_token": "ig_tok_1",
+    }
+    assert setter.await_args.args[1] == "instagram"
+    assert setter.await_args.args[2][0]["object_type"] == "instagram"
+    assert out["resource"] == "acme.co"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_meta_instagram_not_connected():
+    admin = _fake_admin(secret_material=_META_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch("core.services.inbound_triggers._read_instagram_credentials", side_effect=FileNotFoundError()),
+        pytest.raises(ValueError, match="is not connected"),
+    ):
+        await seed_trigger_routine("owner_1", "instagram", "comments", resource="7778889990")
+    admin.create_routine.assert_not_awaited()
+
+
+# --- Meta resource listers ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_meta_pages_maps_and_strips_tokens():
+    from core.services.inbound_triggers import list_meta_pages
+
+    p_http, _ = _meta_http_patch()
+    with (
+        p_http,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+    ):
+        out = await list_meta_pages("owner_1")
+    # The picker feed is owner-facing JSON — a Page access token must never
+    # ride out of the resources endpoint.
+    assert out == [{"id": "1112223334", "label": "Acme Page"}]
+
+
+@pytest.mark.asyncio
+async def test_list_meta_pages_not_connected():
+    from core.services.inbound_triggers import list_meta_pages
+
+    with (
+        patch("core.services.inbound_triggers.integration_secret_store.get", AsyncMock(return_value=None)),
+        pytest.raises(LookupError, match="Meta Ads is not connected"),
+    ):
+        await list_meta_pages("owner_1")
+
+
+@pytest.mark.asyncio
+async def test_list_meta_pages_unrecognised_body_is_not_guessed_at():
+    """A 200 without a `data` list is the provider misbehaving — the router
+    turns this into a 502 rather than the lister inventing an empty picker."""
+    from core.services.inbound_triggers import list_meta_pages
+
+    p_http, _ = _meta_http_patch(pages={"paging": {}})
+    with (
+        p_http,
+        patch(
+            "core.services.inbound_triggers.integration_secret_store.get",
+            AsyncMock(return_value={"access_token": "meta_user_tok"}),
+        ),
+        pytest.raises(RuntimeError, match="no page list"),
+    ):
+        await list_meta_pages("owner_1")
+
+
+@pytest.mark.asyncio
+async def test_list_instagram_accounts_maps_and_strips_token():
+    from core.services.inbound_triggers import list_instagram_accounts
+
+    with _ig_creds_patch():
+        assert await list_instagram_accounts("owner_1") == [{"id": "7778889990", "label": "acme.co"}]
+
+
+@pytest.mark.asyncio
+async def test_list_instagram_accounts_not_connected():
+    from core.services.inbound_triggers import list_instagram_accounts
+
+    with (
+        patch("core.services.inbound_triggers._read_instagram_credentials", side_effect=FileNotFoundError()),
+        pytest.raises(LookupError, match="Instagram is not connected"),
+    ):
+        await list_instagram_accounts("owner_1")

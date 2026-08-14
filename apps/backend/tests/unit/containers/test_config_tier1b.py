@@ -90,6 +90,47 @@ class TestToolSearchAlwaysOn:
         assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": TOOL_SEARCH_MODE}
 
 
+class TestTranscriptRedaction:
+    """Paperclip keys must be redacted from persisted transcripts.
+
+    Upstream already runs transcript redaction (mode defaults to "tools",
+    applied on the session append path) but its default vendor prefixes cover
+    sk-/ghp_/github_pat_/gho_/ghu_ and NOT Paperclip's `pcp_`. A live key
+    reached an owner's transcript on 2026-08-14 through exactly that gap.
+    """
+
+    def test_paperclip_key_pattern_is_configured_for_every_provider_choice(self):
+        for choice, kwargs in (
+            ("bedrock_claude", {}),
+            ("byo_key", {"byo_provider": "anthropic"}),
+            ("chatgpt_oauth", {}),
+            ("bedrock_trial", {}),
+        ):
+            patterns = _cfg(choice, **kwargs)["logging"]["redactPatterns"]
+            assert any("pcp_" in p for p in patterns), choice
+
+    def test_the_pattern_matches_every_shape_the_leak_actually_took(self):
+        import re
+
+        pattern = next(p for p in _cfg("bedrock_claude")["logging"]["redactPatterns"] if "pcp_" in p)
+        compiled = re.compile(pattern)
+        key = "pcp_e7cb205d2877971e2aef28e674fc886579317e12cdbcf3fe"
+        # The observed leak was PROSE in the model's reasoning, which is why
+        # the default KEY=value pattern did not catch it.
+        assert compiled.search(f"token: {key}")
+        # And the shapes an `env` dump or a pasted header would produce.
+        assert compiled.search(f"PAPERCLIP_API_KEY={key}")
+        assert compiled.search(f"Authorization: Bearer {key}")
+        assert compiled.search(f'{{"token":"{key}"}}')
+
+    def test_the_pattern_leaves_a_bare_prefix_mention_alone(self):
+        import re
+
+        pattern = next(p for p in _cfg("bedrock_claude")["logging"]["redactPatterns"] if "pcp_" in p)
+        # Documentation prose about the prefix is not a credential.
+        assert not re.compile(pattern).search("keys start with the pcp_ prefix")
+
+
 class TestBrowserBounds:
     def test_efficient_snapshots_and_tab_cleanup(self):
         """Upstream tab defaults (8 tabs / 120m idle) are desktop-sized; on a

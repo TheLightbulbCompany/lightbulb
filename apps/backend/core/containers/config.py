@@ -1690,6 +1690,31 @@ def build_openclaw_config_dict(
             "store": "/home/node/.openclaw/cron/jobs.json",
             **({"enabled": False} if is_bedrock_trial else {}),
         },
+        # Transcript/log redaction. Upstream already runs this — mode defaults
+        # to "tools" and redactTranscriptMessage is applied on the session
+        # APPEND path, so it covers what is persisted to openclaw-agent.sqlite
+        # (and therefore the litestream S3 replica), what chat.history replays,
+        # and what later turns re-send to the model. It does NOT cover the
+        # single in-flight stream to the UI.
+        #
+        # DEFAULT_REDACT_PATTERNS knows sk-/ghp_/github_pat_/gho_/ghu_, env
+        # assignments, Authorization headers and JSON token fields — but not
+        # Paperclip's `pcp_` keys, which is why a live one reached an owner's
+        # transcript on 2026-08-14 (as prose, so the KEY=value pattern missed
+        # it too). Custom patterns are PREPENDED to the defaults upstream, not
+        # substituted, so nothing is lost by setting this.
+        #
+        # This is the backstop, not the fix: the fix is that the agent is no
+        # longer told to read its key (paperclip-exec-creds injects it into
+        # exec children). This catches the residue — an `env`/`printenv` dump,
+        # a third-party script, or a model that pastes it anyway.
+        "logging": {
+            "redactPatterns": [
+                # Paperclip agent API keys: `pcp_` + hex. Bounded length so a
+                # short lookalike in prose is not mangled.
+                r"(pcp_[A-Za-z0-9]{16,})",
+            ],
+        },
         "skills": {
             "install": {
                 "nodeManager": "npm",

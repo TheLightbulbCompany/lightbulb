@@ -66,7 +66,12 @@ jobs:
     # A boot chain that fails its own suite must never reach ECR.
     needs: boot-chain-smoke
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # INTERIM: org-hosted larger runner (8-core/32GB/300GB, created 2026-08-14).
+    # Every build since the doctor compile-cache bake was restored OOM-killed
+    # the standard 7GB hosted VM ("runner lost communication", no failed step,
+    # no logs). Repoint back to the self-hosted box when it's fixed — larger
+    # runners bill per-minute.
+    runs-on: isol8-xl
     # 30m was sized for the self-hosted box, which kept a warm layer cache and
     # finished in ~3m. Hosted runners start cold every time, so this ~7.8 GB
     # image is rebuilt from scratch on every run — including the `doctor`

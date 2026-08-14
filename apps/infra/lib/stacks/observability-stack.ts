@@ -15,6 +15,7 @@ import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 // ---------------------------------------------------------------------------
@@ -158,6 +159,41 @@ export class ObservabilityStack extends cdk.Stack {
     // "No origination entities available to send". Adding an SMS subscription
     // here would deploy clean and silently never deliver. Wire it only once a
     // toll-free number is registered AND the account has left the sandbox.
+    //
+    // PagerDuty covers that gap instead: it turns a page into a phone push
+    // with escalation, needs no carrier registration, and — unlike the email
+    // subscriptions above — CANNOT silently rot, because PagerDuty answers
+    // SNS's confirmation callback programmatically. There is no link to click
+    // and no 3-day expiry window.
+    if (props.envName === "prod") {
+      // The URL embeds the integration key, so it lives in SSM rather than in
+      // this file. Read with valueForStringParameter (a deploy-time CFN
+      // dynamic reference), NOT valueFromLookup, which would resolve at synth
+      // and bake the key into the committed template.
+      const pagerDutyUrl = ssm.StringParameter.valueForStringParameter(
+        this,
+        "/isol8/prod/pagerduty-page-url",
+      );
+
+      // sns.Subscription directly, NOT pageTopic.addSubscription(new
+      // UrlSubscription(...)). UrlSubscription hardcodes its subscriberId to
+      // the URL string, and the URL here is an unresolved token — that would
+      // put `${Token[TOKEN.nnn]}` in the construct id, which shifts between
+      // synths and churns the resource. This spells the id out instead.
+      new sns.Subscription(this, "PagerDutyPage", {
+        topic: this.pageTopic,
+        endpoint: pagerDutyUrl,
+        protocol: sns.SubscriptionProtocol.HTTPS,
+        // Must stay false. PagerDuty's CloudWatch integration parses the SNS
+        // envelope and expects a nested JSON-encoded object in the Message
+        // property; raw delivery strips that and nothing triggers.
+        rawMessageDelivery: false,
+      });
+    }
+
+    // Warn tier stays email-only on purpose. Routing ~90 warn alarms into
+    // PagerDuty would create an incident per blip and train you to ignore the
+    // thing whose entire job is to be impossible to ignore.
 
     // -----------------------------------------------------------------------
     // Alarms

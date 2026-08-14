@@ -24,9 +24,11 @@ there is nothing to hand back:
   released the row to ``error``; the watch loop observes it within a tick
   and runs the ECS leg. Retries stay SFN-owned, paced by the machine's own
   Wait states.
-- **Backend shutdown** (deploy roll) or **crash without SIGTERM**: the
-  lifespan hook terminates the children and exits. The row keeps its lease
-  with no live runner; the watch loop's tick backstop takes over.
+- **Backend shutdown** (deploy roll) and **attempt timeout**: the child is
+  terminated, then ``_stand_down_attempt`` assures the watchdog and releases
+  the row to ``error`` — so recovery costs one watch tick, not the 40-tick
+  backstop. **Crash without SIGTERM** reaches no code at all; that one is
+  the backstop's.
 - **Queue saturation**: the inline slot wait is BOUNDED
   (``_INLINE_QUEUE_TIMEOUT_S``) and releases the row to ``error`` on expiry,
   so a pileup of wedged attempts can never park a claim behind them.
@@ -357,16 +359,16 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
             # above — a queued signup does not burn its attempt budget.
             code = await asyncio.wait_for(_runner_subprocess(owner_id, claim_id), timeout=_INLINE_ATTEMPT_TIMEOUT_S)
         except TimeoutError:
-            # wait_for has cancelled the attempt (terminating the child). The
-            # row keeps its lease with no live runner; the watchdog's tick
-            # backstop takes the ECS leg over. Nothing to hand off.
+            # wait_for has cancelled the attempt, and that cancellation path
+            # terminated the child and awaited it — so by the time we are
+            # here, the runner is confirmed dead and the row has no worker.
             emit_provision_metric("inline_timeout")
             logger.error(
-                "inline provision attempt for owner %s exceeded %ss — terminated; "
-                "the machine's watch backstop takes over",
+                "inline provision attempt for owner %s exceeded %ss — terminated",
                 owner_id,
                 _INLINE_ATTEMPT_TIMEOUT_S,
             )
+            await _stand_down_attempt(owner_id, claim_id, "inline provision attempt timed out")
             return
         finally:
             _INLINE_CONCURRENCY.release()
@@ -408,15 +410,59 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
             _INLINE_ATTEMPTS.pop(owner_id, None)
 
 
+async def _stand_down_attempt(owner_id: str, claim_id: str, cause: str) -> None:
+    """Leave a killed inline attempt's row in a state something will act on.
+
+    Called from the two paths that terminate a running child (attempt timeout,
+    shutdown). Both used to just return, which was wrong in two ways:
+
+    * If Branch B degraded to unwatched (StartExecution failed), the row was
+      left leased with no execution AND no runner — an orphan.
+    * Even when watched, a leased ``provisioning`` row shows the watchdog no
+      progress, so recovery waited for the 40-tick backstop. After a deploy
+      roll that is ~40 minutes of a stuck provision.
+
+    So: make sure a watchdog exists, then make the row honest.
+
+    ``_start`` is idempotent on the deterministic name+input, so the normal
+    case (execution already RUNNING) is a no-op, and the degraded case
+    genuinely acquires the watchdog Branch B could not get. The release is
+    fenced on the INLINE attempt token, so if the machine has already taken
+    this claim over its runner's ``claim_attempt`` re-stamp makes this a
+    silent no-op rather than a write over machine-owned state. ``retryable``
+    is True — a killed attempt is transient by definition — which the status
+    endpoint treats as silently-retried rather than surfacing to the owner,
+    and which the watch loop turns into the ECS leg on its very next tick.
+    """
+    outcome = await _start(owner_id, claim_id)
+    if outcome != "ok":
+        logger.error(
+            "inline stand-down for owner %s: no watchdog (start outcome=%s) — recovery falls back to the status poll",
+            owner_id,
+            outcome,
+        )
+    try:
+        await container_repo.release_provision_to_error(
+            owner_id,
+            claim_id,
+            last_error=cause,
+            retryable=True,
+            attempt_token=inline_attempt_token(claim_id),
+        )
+    except Exception:  # noqa: BLE001 — release is best-effort; the watchdog's backstop still covers it
+        logger.exception("inline stand-down: release failed for owner %s", owner_id)
+
+
 async def handoff_inflight_provisions() -> None:
     """Shutdown hook (main.py lifespan): terminate every live inline child
     before the process exits. Cancel and AWAIT — the cancellation path
     terminates the child process — so no straggler outlives this instance.
 
-    No StartExecution: the execution has been running since claim time and is
-    watching the row, so it takes the ECS leg over on its own clock. That is
-    also what covers the crash-without-SIGTERM case this hook cannot reach."""
-    for owner_id, (_claim_id, task) in list(_INLINE_ATTEMPTS.items()):
+    Then stand each killed attempt down (see ``_stand_down_attempt``): assure
+    the watchdog and make the row honest, so a deploy roll costs the owner one
+    watch tick rather than the 40-tick backstop. Crash-without-SIGTERM cannot
+    reach this hook at all; that case is the backstop's."""
+    for owner_id, (claim_id, task) in list(_INLINE_ATTEMPTS.items()):
         if task.done():
             continue
         task.cancel()
@@ -427,7 +473,8 @@ async def handoff_inflight_provisions() -> None:
         except Exception:  # noqa: BLE001 — the attempt is dead either way
             logger.exception("inline provision handoff: attempt for owner %s errored on cancel", owner_id)
         emit_provision_metric("inline_handoff")
-        logger.info("inline provision for owner %s terminated for shutdown; machine owns the claim", owner_id)
+        logger.info("inline provision for owner %s terminated for shutdown", owner_id)
+        await _stand_down_attempt(owner_id, claim_id, "backend shutdown during inline provision attempt")
 
 
 async def _start(owner_id: str, claim_id: str) -> str:

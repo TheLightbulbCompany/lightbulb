@@ -367,10 +367,12 @@ async def test_runner_subprocess_contract(monkeypatch):
     assert captured["env"]["PROVISION_ATTEMPT_TOKEN"] == provision_dispatch.inline_attempt_token("claim-1")
 
 
-async def test_handoff_terminates_children_without_start(monkeypatch, sfn):
+async def test_handoff_terminates_child_then_stands_the_row_down(monkeypatch, sfn):
     # Shutdown: cancel + await the attempt (the cancel path terminates the
-    # child). NO StartExecution — the execution has been running since claim
-    # time; it observes the abandoned row on its own clock.
+    # child), then assure the watchdog and make the row honest. Without the
+    # stand-down a deploy roll costs the owner the 40-tick backstop (~40 min)
+    # instead of one tick — and, if Branch B had degraded to unwatched, the
+    # claim would have neither an execution nor a runner.
     order = []
     gate = asyncio.Event()
 
@@ -383,17 +385,27 @@ async def test_handoff_terminates_children_without_start(monkeypatch, sfn):
         return 0
 
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
+    sfn.start_execution.side_effect = lambda **kw: order.append("started")
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
     await asyncio.sleep(0)  # let the attempt reach its await
     await provision_dispatch.handoff_inflight_provisions()
-    assert order == ["cancelled"]
-    sfn.start_execution.assert_not_called()
+    # Child dies FIRST — no straggler may outlive this instance — then the
+    # watchdog is assured.
+    assert order == ["cancelled", "started"]
+    kwargs = sfn.start_execution.call_args.kwargs
+    assert kwargs["name"] == provision_dispatch.execution_name("user_abc", "claimuuid-1234")
+    assert kwargs["input"] == provision_dispatch.execution_input("user_abc", "claimuuid-1234")
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["attempt_token"] == provision_dispatch.inline_attempt_token("claimuuid-1234")
+    assert release.await_args.kwargs["retryable"] is True
     assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
 
 
-async def test_handoff_leaves_row_untouched(monkeypatch, sfn):
-    # The handoff must never write the row: the claim belongs to the running
-    # execution, which is the only thing allowed to move it.
+async def test_handoff_survives_a_failed_release(monkeypatch, sfn):
+    # The release is best-effort: the watchdog's backstop still covers the row,
+    # so a DDB failure here must not take down the shutdown path.
     gate = asyncio.Event()
 
     async def blocked_runner(owner_id, claim_id):
@@ -401,19 +413,23 @@ async def test_handoff_leaves_row_untouched(monkeypatch, sfn):
         return 0
 
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
-    release = AsyncMock()
-    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    monkeypatch.setattr(
+        provision_dispatch.container_repo,
+        "release_provision_to_error",
+        AsyncMock(side_effect=RuntimeError("ddb down")),
+    )
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
     await asyncio.sleep(0)
     await provision_dispatch.handoff_inflight_provisions()  # must not raise
-    release.assert_not_awaited()
+    sfn.start_execution.assert_called_once()
 
 
-async def test_inline_timeout_terminates_without_second_start(monkeypatch, sfn):
+async def test_inline_timeout_terminates_then_stands_the_row_down(monkeypatch, sfn):
     # The machine bounds every ECS attempt at 30 min (taskTimeout); attempt 0
-    # gets the same ceiling. On expiry: child cancelled (terminated), row
-    # untouched, and NO StartExecution — the watchdog's tick backstop owns
-    # the takeover.
+    # gets the same ceiling. On expiry the child is terminated, then the row is
+    # stood down so a watchdog acts on the NEXT tick rather than at the
+    # backstop — and so an unwatched attempt (degraded Branch B) does not
+    # leave the claim with nothing at all.
     monkeypatch.setattr(provision_dispatch, "_INLINE_ATTEMPT_TIMEOUT_S", 0.05)
     cancelled = asyncio.Event()
 
@@ -431,9 +447,49 @@ async def test_inline_timeout_terminates_without_second_start(monkeypatch, sfn):
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
     await _await_inline("user_abc")
     assert cancelled.is_set()
-    sfn.start_execution.assert_not_called()
-    release.assert_not_awaited()
+    sfn.start_execution.assert_called_once()
+    release.assert_awaited_once()
+    args, kwargs = release.await_args
+    assert args == ("user_abc", "claimuuid-1234")
+    assert kwargs["last_error"] == "inline provision attempt timed out"
+    assert kwargs["retryable"] is True
+    # Fenced on the inline token: if the machine already took this claim over,
+    # its runner re-stamped the token and this release no-ops instead of
+    # clobbering machine-owned state.
+    assert kwargs["attempt_token"] == provision_dispatch.inline_attempt_token("claimuuid-1234")
     assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
+
+
+async def test_unwatched_attempt_that_times_out_still_gets_a_watchdog(monkeypatch, sfn):
+    # The composition bug: Branch B degrades to unwatched (StartExecution
+    # fails), then the attempt times out. Previously that terminated the only
+    # runner and returned, leaving a leased row with neither an execution nor
+    # a worker. The stand-down retries the start — SFN may well have recovered
+    # during the 30 minutes — and makes the row honest either way.
+    monkeypatch.setattr(provision_dispatch, "_INLINE_ATTEMPT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+    async def fake_claim(owner_id, *, claim_id=None, execution_name=None):
+        return claim_id
+
+    monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", fake_claim)
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+
+    async def wedged_runner(owner_id, claim_id):
+        await asyncio.Event().wait()
+        return 0
+
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", wedged_runner)
+    # First call (Branch B) fails; the stand-down's retry succeeds.
+    sfn.start_execution.side_effect = [
+        ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow"}}, "StartExecution"),
+        None,
+    ]
+    await provision_dispatch.dispatch_provision("user_abc")
+    await _await_inline("user_abc")
+    assert sfn.start_execution.call_count == 2  # degraded start, then recovered
+    release.assert_awaited_once()
 
 
 async def test_inline_queue_saturation_releases_claim_for_machine(monkeypatch, sfn):

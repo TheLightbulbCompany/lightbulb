@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Awaitable, Callable, Protocol
 
 from core.services.company_package import PlannedAgent
+from core.services.paperclip_credential_rule import PAPERCLIP_CREDENTIAL_RULE
 
 
 class _WorkspaceWriter(Protocol):
@@ -77,7 +78,16 @@ async def materialize_agent(
     # 1. Identity. Write-if-missing mirrors the identity-seeding idiom
     #    (Friday/Atlas) — a redeploy retry must not clobber a body the agent
     #    may already have evolved.
-    workspace.write_file_if_missing(owner_id, f"{ws_root}/AGENTS.md", planned.body_md)
+    # The credential rule is appended, not left to the planner: body_md is
+    # model-authored and says nothing about credentials, while Paperclip wakes
+    # this agent with text that still tells it to load the key from a file.
+    # Without this a freshly materialized specialist follows that and prints a
+    # live key into its visible reasoning.
+    workspace.write_file_if_missing(
+        owner_id,
+        f"{ws_root}/AGENTS.md",
+        planned.body_md.rstrip("\n") + "\n" + PAPERCLIP_CREDENTIAL_RULE,
+    )
 
     # 2. Skill files (bytes — may be non-text). None / empty is a no-op.
     for relpath, data in (skill_assets or {}).items():

@@ -102,8 +102,17 @@ async def test_writes_agents_md_to_agent_workspace():
     )
 
     # AGENTS.md is the agent's identity — write-if-missing, at the agent's
-    # EFS-relative workspace path.
-    assert (OWNER, f"workspace-{AGENT_ID}/AGENTS.md", planned.body_md) in ws.missing_writes
+    # EFS-relative workspace path. The planner's body is preserved verbatim,
+    # with the Paperclip credential rule appended: body_md is model-authored
+    # and says nothing about credentials, while Paperclip's wake text still
+    # tells the agent to load its key from a file.
+    from core.services.paperclip_credential_rule import PAPERCLIP_CREDENTIAL_PROHIBITION
+
+    writes = [w for w in ws.missing_writes if w[1] == f"workspace-{AGENT_ID}/AGENTS.md"]
+    assert len(writes) == 1
+    body = writes[0][2]
+    assert body.startswith(planned.body_md.rstrip("\n"))
+    assert PAPERCLIP_CREDENTIAL_PROHIBITION in body
 
 
 @pytest.mark.asyncio

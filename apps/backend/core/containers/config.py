@@ -111,6 +111,22 @@ OPENCODE_XDG_DATA_DIR = "/home/node/.openclaw/opencode-data"
 # a ~$2,600 runaway into a ~$27 one.
 AGENT_RUN_TIMEOUT_SECONDS = 1800
 
+# logging.redactPatterns. THE single source — provision-time writes these, and
+# `config_patcher.ensure_redact_patterns` carries them onto ALREADY-provisioned
+# containers during an image roll. Both read this tuple, so an owner healed by
+# the roll and one provisioned fresh cannot end up with different rules.
+#
+# Upstream PREPENDS these to its own DEFAULT_REDACT_PATTERNS rather than
+# replacing them, so adding here only ever widens coverage.
+REDACT_PATTERNS: tuple[str, ...] = (
+    # Paperclip agent API keys: `pcp_` + hex. Bounded length so a short
+    # lookalike in documentation prose is not mangled. Upstream's vendor
+    # prefixes cover sk-/ghp_/github_pat_/gho_/ghu_ but not this one, which is
+    # how a live key reached an owner's transcript on 2026-08-14 — it arrived
+    # as prose ("token: pcp_…"), so the KEY=value pattern missed it too.
+    r"(pcp_[A-Za-z0-9]{16,})",
+)
+
 # tools.toolSearch.mode. THE single source — provision-time (below) and the
 # provider swap's re-pin (core.services.billing_service) must write the same
 # value, or a swapped owner silently runs a different tool-search mode than a
@@ -1722,13 +1738,7 @@ def build_openclaw_config_dict(
         # longer told to read its key (paperclip-exec-creds injects it into
         # exec children). This catches the residue — an `env`/`printenv` dump,
         # a third-party script, or a model that pastes it anyway.
-        "logging": {
-            "redactPatterns": [
-                # Paperclip agent API keys: `pcp_` + hex. Bounded length so a
-                # short lookalike in prose is not mangled.
-                r"(pcp_[A-Za-z0-9]{16,})",
-            ],
-        },
+        "logging": {"redactPatterns": list(REDACT_PATTERNS)},
         "skills": {
             "install": {
                 "nodeManager": "npm",

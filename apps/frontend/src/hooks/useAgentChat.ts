@@ -1471,10 +1471,18 @@ export function useAgentChat(
           streamCommittedOffsetRef.current = 0;
           streamCumulativeRef.current = null;
         }
-        // Reconstruct the run's cumulative text (frames arrive as append
-        // deltas or full-text resyncs), then slice off the already-committed
-        // prefix. Refs update synchronously; the paint is throttled.
-        const cumulative = accumulateStreamText(streamCumulativeRef.current, msg);
+        // Reconstruct the run's cumulative text, then slice off the already-
+        // committed prefix. Append deltas extend the buffer; non-append
+        // resyncs (first frame after a reconnect, replace events, the
+        // chat.final backstop) carry the CURRENT assistant message's full
+        // text — upstream resets its accumulator after every tool call —
+        // NOT the run-cumulative text, so rebuild as frozen-prefix + segment
+        // text (mirrors the mobile chunk handler; see streamText.ts).
+        // Refs update synchronously; the paint is throttled.
+        const cumulative = msg.append
+          ? accumulateStreamText(streamCumulativeRef.current, msg)
+          : (streamCumulativeRef.current ?? "").slice(0, streamCommittedOffsetRef.current) +
+            msg.content;
         streamCumulativeRef.current = cumulative;
         const tail = cumulative.slice(streamCommittedOffsetRef.current);
         chatStreamRef.current = tail.length > 0 ? tail : null;

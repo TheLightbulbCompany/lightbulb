@@ -108,7 +108,12 @@ export function ConnectionsList({ canManage }: ConnectionsListProps) {
               )}
               {connection.can_trigger && connection.can_trigger.length > 0 && (
                 <p className="text-xs text-[var(--mute)] mt-0.5">
-                  Can trigger: {connection.can_trigger.join(", ")}
+                  {/* Providers carry full event catalogs now (Stripe ~265) —
+                      show the curated leaders (the registry orders those
+                      first) and count the rest. */}
+                  Can trigger: {connection.can_trigger.slice(0, 3).join(", ")}
+                  {connection.can_trigger.length > 3 &&
+                    ` and ${connection.can_trigger.length - 3} more`}
                 </p>
               )}
               {connection.actor === "cli" && (

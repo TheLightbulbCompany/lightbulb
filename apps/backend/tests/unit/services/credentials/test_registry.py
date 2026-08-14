@@ -105,6 +105,39 @@ def test_inbound_invariants_hold_for_every_provider():
             p.inbound.instructions.format(proxy_url="https://x", event_label="L", event_id="e")
 
 
+def test_event_catalogs_are_well_formed():
+    """The full catalogs are generated from provider specs/docs — pin the shape
+    every consumer assumes: unique ids, non-empty labels, no whitespace inside
+    an id (ids ride into hook `events` arrays and instruction interpolation),
+    and every auto-registering github/vercel event naming its provider-side
+    subscription."""
+    from core.services.credentials.registry import all_providers
+
+    for key, p in all_providers().items():
+        if p.inbound is None:
+            continue
+        ids = [e.id for e in p.inbound.events]
+        assert len(ids) == len(set(ids)), key
+        for e in p.inbound.events:
+            assert e.id and not any(c.isspace() for c in e.id), (key, e.id)
+            assert e.label and e.label.strip(), (key, e.id)
+        if p.inbound.webhook_registration in ("auto_github", "auto_vercel"):
+            for e in p.inbound.events:
+                assert e.provider_events, (key, e.id)
+
+
+def test_event_catalogs_meet_size_floors():
+    """Hard floors so a truncated source fetch can't silently ship a gutted
+    catalog — each floor sits under the fetched count (2026-08-13: stripe 265,
+    vercel 98, github 53, attio 27, linear 15) but far above the old 3-event
+    curated lists."""
+    from core.services.credentials.registry import get_provider
+
+    floors = {"stripe": 200, "vercel_cli": 10, "github": 35, "attio": 20, "linear": 12}
+    for key, floor in floors.items():
+        assert len(get_provider(key).inbound.events) >= floor, key
+
+
 def test_google_inbound_is_auto_registering_via_watch():
     from core.services.credentials.registry import get_provider
 

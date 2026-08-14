@@ -296,6 +296,10 @@ class Inbound(BaseModel):
     # like "whsec_…"; Sentry's is an integration Client Secret — a wrong hint
     # reads as "you're pasting the wrong thing", so name the provider's term.
     secret_hint: str | None = None
+    # Ordering is load-bearing, by convention rather than schema: the first
+    # entries are the curated "popular" set — the frontend event picker pins
+    # the first 3 as its Popular group — and the remainder is alphabetized by
+    # id. See the matching comment atop the stripe events list in providers.yaml.
     events: list[InboundEvent]
     template: InboundTemplate
 

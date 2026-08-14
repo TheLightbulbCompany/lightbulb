@@ -1,4 +1,13 @@
-"""APP-LEVEL webhook ingress for Meta (Facebook Pages + Instagram).
+"""APP-LEVEL EVENT ingress for Meta (Facebook Pages + Instagram).
+
+**Not to be confused with ``routers/meta_account_callbacks.py`` (plural name,
+different job).** That module handles the ACCOUNT-lifecycle pair Meta
+configures under App settings → Basic — deauthorize and data-deletion — which
+arrive form-encoded as ``signed_request`` at ``/api/v1/webhooks/meta``. THIS
+module is the delivery pipe for subscribed field changes, mounted at
+``/api/v1/hooks/meta`` and authenticated by ``X-Hub-Signature-256`` over the
+raw body. Both are required for Advanced Access; neither substitutes for the
+other.
 
 **Why this route has no owner in its path.** Every other trigger source gets a
 per-owner signed URL (``/hooks/t/{owner_id}/{public_id}``) because every other

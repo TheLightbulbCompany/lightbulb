@@ -92,7 +92,10 @@ export default function SupportPage() {
         </div>
 
         {/* Declared as the data deletion instructions URL for the Meta app
-            (App settings -> Basic). Reviewers open this section directly. */}
+            (App settings -> Basic), AND returned as the status URL by the Meta
+            data-deletion callback (routers/meta_account_callbacks.py) — one
+            canonical page rather than two that drift. Reviewers open this
+            section directly. */}
         <div className="support-direct" id="data-deletion">
           <h2>Deleting your data</h2>
           <p>
@@ -111,6 +114,12 @@ export default function SupportPage() {
             To remove just one connected service, disconnect it in the Integrations tab of the
             Control Panel &mdash; that revokes our access and deletes the credentials we stored
             for it, leaving the rest of your account intact. Account deletion is irreversible.
+          </p>
+          <p>
+            If you removed Isol8 from a connected Facebook or Instagram account and were given a
+            confirmation code, that deletion has already completed &mdash; we revoked and deleted
+            the stored credential when the request arrived, so there is nothing left to wait for
+            and no status to poll.
           </p>
         </div>
       </main>

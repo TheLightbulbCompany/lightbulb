@@ -49,6 +49,7 @@ from routers import (
     hooks_credentials,
     hooks_proxy,
     integrations,
+    meta_account_callbacks,
     meta_webhook,
     metronome_webhook,
     oauth,
@@ -786,6 +787,14 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 # Paperclip isol8.notifications plugin events (approvals + run lifecycle →
 # push notifications). Bearer-secret auth; disabled when the secret is unset.
 app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
+# Meta ACCOUNT callbacks — deauthorize + data-deletion (Instagram / Meta Ads).
+# Required by Meta for Advanced Access, and distinct from the EVENT ingress
+# mounted at /api/v1/hooks/meta below: this one is form-encoded signed_request
+# from App settings, that one is X-Hub-Signature-256 over delivery payloads.
+# Unauthenticated: the signed_request signature is the only gate — see the
+# router's module docstring.
+app.include_router(meta_account_callbacks.router, prefix="/api/v1/webhooks/meta", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")

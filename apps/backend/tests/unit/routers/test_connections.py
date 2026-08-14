@@ -1118,8 +1118,7 @@ class TestOAuthCallback:
         mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_awaited_once_with("org_1", "google", cred)
         # Status row written after a clean apply.
-        assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
+        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected", provider_user_id=None)
 
     @pytest.mark.asyncio
     async def test_callback_redirects_on_provider_error_redirect(self, async_client):
@@ -1218,8 +1217,7 @@ class TestOAuthCallback:
         assert "/settings/connections?connected=google" in response.headers["location"]
 
         # Provider-level status row still written.
-        assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
+        mock_repo.put_status.assert_awaited_once_with("org_1", "google", "connected", provider_user_id=None)
         # The connected account is added to the owner's inventory.
         mock_accounts.add_account.assert_awaited_once_with("org_1", "alice@example.com")
 
@@ -1290,8 +1288,38 @@ class TestOAuthCallback:
         )
         assert response.status_code in (302, 307)
         # Generic flow unchanged: status written, Google inventory untouched.
-        assert mock_repo.put_status.await_count == 1
-        assert mock_repo.put_status.await_args.args == ("org_1", "acme", "connected")
+        mock_repo.put_status.assert_awaited_once_with("org_1", "acme", "connected", provider_user_id=None)
+        mock_accounts.add_account.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_callback_persists_the_provider_side_account_id(
+        self, mock_dance, mock_repo, mock_store, mock_apply, mock_accounts, async_client
+    ):
+        """Instagram's exchange returns Meta's app-scoped user id. It must reach
+        the integrations row: Meta's deauthorize / data-deletion callbacks name
+        the user by that id and nothing else, so a connection stored without it
+        can never be torn down on Meta's signal."""
+        cred = {
+            "access_token": "a",
+            "client_id": "c",
+            "client_secret": "",
+            "provider_user_id": "17841400000000000",
+        }
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "instagram", cred))
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value=None)
+
+        response = await async_client.get("/api/v1/oauth/instagram/callback?code=abc&state=st1", follow_redirects=False)
+        assert response.status_code in (302, 307)
+        mock_repo.put_status.assert_awaited_once_with(
+            "org_1", "instagram", "connected", provider_user_id="17841400000000000"
+        )
         mock_accounts.add_account.assert_not_called()
 
     @pytest.mark.asyncio

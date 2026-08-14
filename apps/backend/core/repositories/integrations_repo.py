@@ -19,7 +19,13 @@ def _table():
     return get_table("integrations")  # short name; table prefix auto-applied
 
 
-async def put_status(owner_id: str, provider: str, status: str = "connected", identity: str | None = None) -> None:
+async def put_status(
+    owner_id: str,
+    provider: str,
+    status: str = "connected",
+    identity: str | None = None,
+    provider_user_id: str | None = None,
+) -> None:
     """Record that this owner has this provider connected.
 
     ``identity`` is the human-readable handle the materializer resolved for the
@@ -28,6 +34,9 @@ async def put_status(owner_id: str, provider: str, status: str = "connected", id
     wired up, which matters most where an owner could plausibly have several.
     Optional because it only lands on connects made after this shipped: older rows
     have none and the UI simply omits the line.
+
+    ``provider_user_id`` is the machine-readable counterpart — see the comment
+    on the write below.
     """
     now = int(time.time())
     item: dict = {
@@ -39,7 +48,39 @@ async def put_status(owner_id: str, provider: str, status: str = "connected", id
     }
     if identity:
         item["identity"] = identity
+    # The provider's own account id for this owner (Meta's app-scoped user id for
+    # instagram/meta_ads). Not a secret — it is opaque, per-app, and useless
+    # without the token — but it is the ONLY key Meta's deauthorize and
+    # data-deletion callbacks send us, so without it here a teardown request
+    # cannot be resolved to an owner at all. The credential carries the same
+    # value, but that lives per-owner in Secrets Manager and is not searchable.
+    if provider_user_id:
+        item["provider_user_id"] = str(provider_user_id)
     await run_in_thread(_table().put_item, Item=item)
+
+
+async def find_by_provider_user_id(provider: str, provider_user_id: str) -> dict | None:
+    """The owner who connected `provider` as `provider_user_id`, or None.
+
+    Rides ``scan_all`` — a full scan, deliberately, and the same one the Meta
+    event ingress already does: the delivery names a provider-side id and
+    nothing else, so there is no key to query by. This runs only on Meta's
+    deauthorize / data-deletion callbacks, single-digit events against a table
+    with one row per owner-provider pair. A GSI would be real infrastructure
+    (CDK change, deploy, backfill) bought for a handful of lookups a year.
+    Revisit if Meta connections reach the thousands.
+    """
+    want = str(provider_user_id or "")
+    # An empty needle must never match. Rows connected before this field was
+    # captured have no `provider_user_id`, and a falsy-coalescing compare would
+    # match every one of them — turning a blank id in a callback into the
+    # teardown of an arbitrary owner's connection.
+    if not want:
+        return None
+    for row in await scan_all():
+        if row.get("provider") == provider and str(row.get("provider_user_id") or "") == want:
+            return row
+    return None
 
 
 async def get(owner_id: str, provider: str) -> dict | None:

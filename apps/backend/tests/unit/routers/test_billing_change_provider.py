@@ -791,7 +791,12 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # written unconditionally, so the swap must RE-PIN it. Passing None here
         # would strip the key and drop a swapped owner straight back to carrying
         # the full MCP tool catalog on every turn.
-        assert tool_search_mode == "code"
+        # Asserted against the shared constant, not a literal: provision-time
+        # and this swap read the same name, so they cannot drift to different
+        # modes, and this test follows the constant if it is ever changed.
+        from core.containers.config import TOOL_SEARCH_MODE
+
+        assert tool_search_mode == TOOL_SEARCH_MODE
         # The harness set follows the provider: a bedrock owner arriving on
         # chatgpt_oauth swaps claude → opencode, and the acpx agents map must
         # ride along (the patcher's plugins.entries rebuild would otherwise

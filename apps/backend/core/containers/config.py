@@ -111,6 +111,16 @@ OPENCODE_XDG_DATA_DIR = "/home/node/.openclaw/opencode-data"
 # a ~$2,600 runaway into a ~$27 one.
 AGENT_RUN_TIMEOUT_SECONDS = 1800
 
+# tools.toolSearch.mode. THE single source — provision-time (below) and the
+# provider swap's re-pin (core.services.billing_service) must write the same
+# value, or a swapped owner silently runs a different tool-search mode than a
+# freshly provisioned one. That is not hypothetical: the swap used to delete
+# the key outright, dropping owners back onto the full tool catalog. Sharing
+# one constant makes the drift impossible rather than merely tested for.
+#
+# See the toolSearch block below for why this is "tools" and not "code".
+TOOL_SEARCH_MODE = "tools"
+
 # agents.defaults.runRetries.max — upstream default is 160, and each retry
 # re-arms the deadline above (so 160 × 30m is not a bound at all).
 AGENT_RUN_RETRIES_MAX = 8
@@ -1616,10 +1626,32 @@ def build_openclaw_config_dict(
             # ones who can least afford a full catalog against a $3 cap, since
             # integrations are not trial-gated.
             #
-            # "code" mode falls back to plain tools mode if the Node child can't
-            # spawn; policy (allow/deny) still applies to bridged calls,
-            # fail-closed.
-            "toolSearch": {"mode": "code"},
+            # MODE IS "tools", NOT "code". Both compact the catalog identically —
+            # this is only about how the agent reaches a hidden tool.
+            #
+            # "code" routes every call through a JS bridge whose child is spawned
+            # under Node permission mode with an EMPTY environment, no filesystem
+            # or network grants, ESM only, and eval/new Function disabled. The
+            # whole surface is console.log/warn/error plus
+            # openclaw.tools.search/describe/call — no require, no timers, no
+            # Buffer, no fetch, no process. An agent therefore CANNOT read a file
+            # through the bridge: the plain read tool is hidden, so every read
+            # becomes a search -> describe -> call('openclaw:core:read') round
+            # trip written in JavaScript. Observed live on dev 2026-08-14: Friday
+            # opened its first run with three consecutive
+            # `ReferenceError: require is not defined` failures on exactly that
+            # path, and could not recover — the model is handed the stringified
+            # error with no stack and no statement of what the sandbox actually
+            # provides, and there is no retry, no repair hint, and no fallback.
+            #
+            # The fallback the previous comment here claimed is narrower than it
+            # read: resolveToolSearchConfig only downgrades code -> tools when the
+            # RUNTIME lacks --permission support. It does nothing for a sandbox
+            # error at call time, which is the failure we actually hit.
+            #
+            # "tools" is upstream's own default fallback for that unsupported
+            # case, so it is a well-trodden path rather than an exotic one.
+            "toolSearch": {"mode": TOOL_SEARCH_MODE},
             "media": {
                 "image": {"enabled": True},
                 "audio": {"enabled": False},

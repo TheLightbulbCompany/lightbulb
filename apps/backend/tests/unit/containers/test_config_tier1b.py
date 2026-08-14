@@ -67,18 +67,27 @@ class TestToolSearchAlwaysOn:
             ("bedrock_trial", {}),
         ):
             cfg = _cfg(choice, integration_mcp_servers=_MCP, **kwargs)
-            assert cfg["tools"]["toolSearch"] == {"mode": "code"}, choice
+            assert cfg["tools"]["toolSearch"] == {"mode": "tools"}, choice
 
     def test_present_even_with_no_mcp_servers(self):
         """No servers today does not mean no servers tomorrow — the owner can
         connect one without the config being regenerated."""
-        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": "code"}
-        assert _cfg("chatgpt_oauth")["tools"]["toolSearch"] == {"mode": "code"}
-        assert _cfg("bedrock_trial")["tools"]["toolSearch"] == {"mode": "code"}
+        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": "tools"}
+        assert _cfg("chatgpt_oauth")["tools"]["toolSearch"] == {"mode": "tools"}
+        assert _cfg("bedrock_trial")["tools"]["toolSearch"] == {"mode": "tools"}
 
     def test_manual_mcp_servers_are_covered_too(self):
         custom = {"my-internal-api": {"command": "node", "args": ["server.js"], "env": {}}}
-        assert _cfg("bedrock_claude", integration_mcp_servers=custom)["tools"]["toolSearch"] == {"mode": "code"}
+        assert _cfg("bedrock_claude", integration_mcp_servers=custom)["tools"]["toolSearch"] == {"mode": "tools"}
+
+    def test_provisioned_mode_is_the_shared_constant(self):
+        """Provision-time and the provider swap share one constant, so they
+        cannot drift to different modes. This pins the generator to it; the
+        swap side is covered by test_billing_change_provider, which asserts the
+        kwarg it passes."""
+        from core.containers.config import TOOL_SEARCH_MODE
+
+        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": TOOL_SEARCH_MODE}
 
 
 class TestBrowserBounds:

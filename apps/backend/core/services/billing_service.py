@@ -529,6 +529,40 @@ async def _build_subscription_checkout(
     return session
 
 
+async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | None:
+    """The owner's still-open Checkout Session, or None if there isn't one.
+
+    Reads the ``pending_checkout_session_id`` marker and asks Stripe what it
+    actually is, because the marker alone cannot say: it is written at create
+    time and nothing clears it when a session expires or completes. The
+    session's LIVE status is the truth, so a stale marker self-heals into None.
+
+    Raises ``already_subscribed:checkout_completed`` when the pending session is
+    already paid. The subscription exists at Stripe but the webhook has not
+    landed, so every local guard still reads "not subscribed" — minting another
+    session here is precisely how an owner ends up charged twice.
+    """
+    account = await billing_repo.get_by_owner_id(owner_id)
+    pending_id = (account or {}).get("pending_checkout_session_id")
+    if not pending_id:
+        return None
+
+    try:
+        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+            pending = stripe.checkout.Session.retrieve(pending_id)
+    except stripe.error.InvalidRequestError:
+        # Unretrievable (wrong mode, deleted, never existed) — dead marker.
+        logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
+        return None
+
+    status = pending.get("status")
+    if status == "open":
+        return pending
+    if status == "complete":
+        raise BillingServiceError("already_subscribed:checkout_completed")
+    return None
+
+
 async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Session:
     """App-to-web Checkout for the iOS paywall's "subscribe on the web" option.
 
@@ -549,16 +583,23 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
     variant rather than the desktop one. Apple Pay rides along automatically on
     supported devices, which is the single biggest conversion lever here.
 
-    Carries the SAME checkout-slot claim and pending-session marker as
-    ``create_flat_fee_checkout``. An earlier version omitted them on the
-    reasoning that the app is the only caller and ``is_trial_blocked`` already
-    refuses a prior subscriber — both true and both irrelevant. The idempotency
-    key is bucketed to five minutes while a session stays completable for about
-    thirty-one, and ``is_trial_blocked`` reads a local row that says nothing
-    until a checkout webhook lands. So an owner calling twice across a bucket
-    boundary gets two live sessions, completes both, and ends up with two Stripe
-    subscriptions. "The app is the only caller" is not a property of an
-    authenticated HTTP endpoint.
+    Carries the SAME checkout-slot claim, pending-session marker, AND
+    single-open-session guard as ``create_flat_fee_checkout``. An earlier
+    version omitted them on the reasoning that the app is the only caller and
+    ``is_trial_blocked`` already refuses a prior subscriber — both true and both
+    irrelevant. The idempotency key is bucketed to five minutes while a session
+    stays completable for about thirty-one, and ``is_trial_blocked`` reads a
+    local row that says nothing until a checkout webhook lands. So an owner
+    calling twice across a bucket boundary gets two live sessions, completes
+    both, and ends up with two Stripe subscriptions. "The app is the only
+    caller" is not a property of an authenticated HTTP endpoint.
+
+    The version after that WROTE the marker but never READ it, which fixed
+    nothing: recording an open session prevents a second one only if something
+    checks for it. Hence the ``_open_pending_checkout`` call below — the same
+    guard the web route runs, minus the intent-comparison, because this
+    session's body never varies (one price, no credits, no provider choice), so
+    an already-open session is always the right one to hand back.
 
     Still deliberately unlike the flat path: **no starter-credits line item**.
     Credits are a Bedrock-onboarding concern; this session sells the plan alone.
@@ -568,6 +609,10 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
     """
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+
+    existing = await _open_pending_checkout(owner_id)
+    if existing is not None:
+        return existing
 
     # Serializes concurrent calls for one owner; self-expires (90s) so a crashed
     # request cannot wedge them out of checking out. The router maps this to 409.

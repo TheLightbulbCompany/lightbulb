@@ -13,10 +13,39 @@
  * product can exist in App Store Connect, so the paywall treats "unset" as
  * "IAP unavailable" rather than crashing.
  */
+import { CryptoDigestAlgorithm, digestStringAsync } from "expo-crypto";
+
 export const APPLE_SUBSCRIPTION_SKU =
   process.env.EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID ?? "";
 
 export const APPLE_IAP_AVAILABLE = APPLE_SUBSCRIPTION_SKU !== "";
+
+/**
+ * The `appAccountToken` to stamp on a purchase: a UUID derived from the owner
+ * id deterministically, so the server can recompute and compare it without
+ * storing anything.
+ *
+ * This is what makes the server's ownership check a fence rather than a
+ * comment. Apple echoes `appAccountToken` inside the SIGNED transaction, so an
+ * account replaying someone else's JWS cannot strip or forge it. The server's
+ * other defence — a lookup on the transaction id — reads an eventually
+ * consistent GSI, where two accounts submitting the same unlinked transaction
+ * can both be told "unowned" and both be granted a subscription paid for once.
+ *
+ * StoreKit requires a UUID and owner ids (`user_2ab…`) are not one, hence the
+ * derivation: SHA-256 the owner id, shape the first 16 bytes into a v5-style
+ * UUID. `apple_iap.owner_account_token` on the backend is the same computation
+ * and MUST stay in lockstep — a mismatch rejects every real purchase.
+ */
+export async function ownerAccountToken(ownerId: string): Promise<string> {
+  const digest = await digestStringAsync(CryptoDigestAlgorithm.SHA256, ownerId);
+  const b = digest.slice(0, 32).split("");
+  // Version 5 in the high nibble of byte 6; RFC-4122 variant in byte 8.
+  b[12] = "5";
+  b[16] = "8";
+  const h = b.join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
 
 /**
  * Hand a completed StoreKit transaction to the backend for verification.

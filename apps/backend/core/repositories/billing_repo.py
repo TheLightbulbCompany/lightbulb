@@ -91,33 +91,84 @@ async def get_by_apple_original_transaction_id(original_transaction_id: str) -> 
 _STATUS_RANK = ("active", "trialing", "trial_local", "past_due", "canceled")
 
 
-def _effective_status(row: dict) -> str | None:
-    """Combine per-provider statuses into the shared ``subscription_status``.
+def _adopt_legacy_status(row: dict) -> None:
+    """Claim a pre-IAP row's shared status for the Stripe side, once.
 
-    Exists because both providers used to write that one field directly, making
-    them last-writer-wins: an Apple expiry set the row to "canceled" for an
-    owner whose Stripe subscription was still live and still charging them —
+    Every row written before Apple IAP existed carries only the shared
+    ``subscription_status`` — nothing ever set ``stripe_subscription_status``,
+    because the field did not exist. Left alone, the first Apple write makes
+    :func:`_effective_status` see exactly one candidate (Apple's) and skip the
+    fallback, so an Apple expiry, refund, or restored-but-expired transaction
+    would set an actively-paying legacy Stripe owner to "canceled" and cut off
+    a customer who is still being charged.
+
+    Gated on the row having NO Apple state yet, which is the only condition
+    under which the shared field is guaranteed to be purely non-Apple. Gating
+    instead on "stripe_subscription_status is missing" is not enough and was the
+    first attempt: a row that has only ever paid Apple never gets that field, so
+    every subsequent Apple write would copy the DERIVED (Apple-sourced) value
+    into the Stripe slot, and the owner would keep access forever after
+    canceling. Called before Apple's status joins the row, so "no Apple state"
+    means no PRIOR Apple state.
+    """
+    if row.get("apple_subscription_status"):
+        return
+    if not row.get("stripe_subscription_status") and row.get("subscription_status"):
+        row["stripe_subscription_status"] = row["subscription_status"]
+
+
+def _effective_status(row: dict, *, prefer: str | None = None) -> tuple[str | None, str | None]:
+    """Combine per-provider statuses into ``(subscription_status, source)``.
+
+    Exists because both providers used to write the shared field directly,
+    making them last-writer-wins: an Apple expiry set the row to "canceled" for
+    an owner whose Stripe subscription was still live and still charging them —
     ``is_subscription_active`` reads "canceled" as inactive, so a paying
     customer lost access. The inverse happened when a Stripe cancellation
     landed while Apple was active.
 
-    Falls back to the row's existing value when neither provider has recorded a
-    status, so a card-less ``trial_local`` row (written by
+    The winning provider also names ``subscription_source``, which decides
+    where the billing surfaces send someone to cancel. Deriving it here rather
+    than pinning it at the Apple write is what stops an owner who has since
+    moved to Stripe from being sent to iOS Settings, where their subscription
+    does not exist and cannot be canceled.
+
+    ``prefer`` breaks a tie toward the provider currently being written, so two
+    simultaneously-active subscriptions resolve to the one the owner most
+    recently acted on. Entitlement is identical either way — only the
+    management destination differs.
+
+    Falls back to the row's existing values when neither provider has recorded
+    a status, so a card-less ``trial_local`` row (written by
     ``create_trial_local_if_absent``, not by any provider) is never clobbered.
     """
     candidates = [
-        row.get("stripe_subscription_status"),
-        row.get("apple_subscription_status"),
+        ("stripe", row.get("stripe_subscription_status")),
+        ("apple_iap", row.get("apple_subscription_status")),
     ]
-    present = [c for c in candidates if c]
+    present = [(src, status) for src, status in candidates if status]
     if not present:
-        return row.get("subscription_status")
+        return row.get("subscription_status"), row.get("subscription_source")
+    if prefer:
+        present.sort(key=lambda c: c[0] != prefer)
     for rank in _STATUS_RANK:
-        if rank in present:
-            return rank
+        for src, status in present:
+            if status == rank:
+                # "trial_local" is the card-less free tier — there is no
+                # subscription to manage, so naming a provider for it would
+                # point the manage button at a portal with nothing in it.
+                return status, (None if status == "trial_local" else src)
     # An unranked provider value (a status neither map produces today) is still
     # better information than dropping it.
-    return present[0]
+    return present[0][1], present[0][0]
+
+
+def _apply_effective_status(row: dict, *, prefer: str) -> None:
+    """Write the derived status + source onto ``row`` in place."""
+    status, source = _effective_status(row, prefer=prefer)
+    row["subscription_status"] = status
+    if source:
+        row["subscription_source"] = source
 
 
 async def set_apple_subscription(
@@ -137,10 +188,12 @@ async def set_apple_subscription(
     last-writer-wins and let an Apple expiry cancel an owner who was still
     paying — and still being charged by — Stripe.
 
-    ``subscription_source`` records which channel is current, so billing
-    surfaces send the customer to the right place to cancel: an Apple
-    subscription can only be managed in iOS Settings, and opening the Stripe
-    portal for one is a dead end.
+    ``subscription_source`` — which channel billing surfaces send the customer
+    to for cancellation — is derived alongside the status, not pinned here. An
+    Apple subscription can only be managed in iOS Settings and opening the
+    Stripe portal for one is a dead end, but the reverse is worse: pinning the
+    source at the Apple write stranded an owner who later moved to Stripe in
+    iOS Settings, where there was nothing to cancel.
 
     ``stripe_subscription_id`` is deliberately left alone. An owner who once had
     a Stripe subscription and now pays through Apple must not have that history
@@ -165,12 +218,15 @@ async def set_apple_subscription(
         return None
 
     existing["apple_original_transaction_id"] = original_transaction_id
-    existing["subscription_source"] = "apple_iap"
-    # Apple's own status lives in its own field; the shared one is DERIVED from
-    # both providers below. Writing subscription_status directly here is what
-    # made an Apple expiry cancel a live Stripe subscription.
+    # Must run BEFORE Apple's status joins the row, while the shared field
+    # still holds purely non-Apple state.
+    _adopt_legacy_status(existing)
+    # Apple's own status lives in its own field; the shared one and the
+    # management source are DERIVED from both providers below. Writing
+    # subscription_status directly here is what made an Apple expiry cancel a
+    # live Stripe subscription.
     existing["apple_subscription_status"] = status
-    existing["subscription_status"] = _effective_status(existing)
+    _apply_effective_status(existing, prefer="apple_iap")
     if expires_at is not None:
         existing["apple_expires_at"] = expires_at
     else:
@@ -613,7 +669,7 @@ async def set_subscription(
     # _effective_status). Without this the shared field is last-writer-wins and
     # an Apple expiry cancels a live Stripe subscription — or vice versa.
     existing["stripe_subscription_status"] = status
-    existing["subscription_status"] = _effective_status(existing)
+    _apply_effective_status(existing, prefer="stripe")
     # Always overwrite trial_end so a cancellation (trial_end=None) actually
     # clears the field (otherwise a stale trial countdown lingers after
     # subscription.deleted).
@@ -652,7 +708,11 @@ async def set_team_subscription(
         return None
 
     existing["stripe_subscription_id"] = subscription_id
-    existing["subscription_status"] = status
+    # Same derivation as set_subscription — this is a Stripe writer too, and
+    # writing the shared field directly would make it last-writer-wins against
+    # Apple for any org that also has an IAP subscription on the row.
+    existing["stripe_subscription_status"] = status
+    _apply_effective_status(existing, prefer="stripe")
     existing["subscription_item_id"] = subscription_item_id
     existing["seat_count"] = seat_count
     existing["updated_at"] = utc_now_iso()

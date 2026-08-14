@@ -50,7 +50,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { ErrorCode, getStorefront, useIAP } from "expo-iap";
+import {
+  ErrorCode,
+  getAvailablePurchases,
+  getStorefront,
+  useIAP,
+} from "expo-iap";
 
 import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
@@ -60,6 +65,7 @@ import {
   APPLE_SUBSCRIPTION_SKU,
   createWebCheckout,
   linkApplePurchase,
+  ownerAccountToken,
 } from "../../lib/appleIap";
 
 /**
@@ -71,6 +77,7 @@ const EXTERNAL_LINK_STOREFRONTS = new Set(["USA"]);
 
 export function PaywallScreen({
   api,
+  ownerId,
   onPurchased,
 }: {
   /** Authenticated client — injected so this stays testable without Clerk. */
@@ -78,6 +85,11 @@ export function PaywallScreen({
     get: (path: string) => Promise<unknown>;
     post: (path: string, body: unknown) => Promise<unknown>;
   };
+  /**
+   * Owner the purchase is bound to, stamped into StoreKit's `appAccountToken`.
+   * A prop rather than a `useAuth()` call for the same reason `api` is one.
+   */
+  ownerId?: string | null;
   onPurchased: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -128,12 +140,10 @@ export function PaywallScreen({
   const {
     connected,
     subscriptions,
-    availablePurchases,
     fetchProducts,
     requestPurchase,
     finishTransaction,
     restorePurchases,
-    getAvailablePurchases,
   } = useIAP({
       onPurchaseSuccess,
       onPurchaseError: (e) => {
@@ -207,9 +217,14 @@ export function PaywallScreen({
     setBusy(true);
     setError(null);
     try {
+      // Binds the transaction to this account INSIDE the payload Apple signs.
+      // Without it the server's cross-account check has nothing to compare and
+      // silently passes, leaving only a lookup on an eventually-consistent GSI
+      // — which two accounts submitting the same transaction can both clear.
+      const appAccountToken = ownerId ? await ownerAccountToken(ownerId) : undefined;
       await requestPurchase({
         type: "subs",
-        request: { apple: { sku: APPLE_SUBSCRIPTION_SKU } },
+        request: { apple: { sku: APPLE_SUBSCRIPTION_SKU, appAccountToken } },
       });
     } catch {
       setBusy(false);
@@ -248,17 +263,25 @@ export function PaywallScreen({
    * work, sent nothing to the server, and left a paying customer with no way to
    * recover entitlement after reinstalling. Each restored token has to go
    * through the same verify-then-finish path a fresh purchase takes.
+   *
+   * The transactions come from the MODULE-level `getAvailablePurchases()`,
+   * which resolves to the array, and never from the hook's `availablePurchases`
+   * state. The hook's own `getAvailablePurchases` returns `Promise<void>` — it
+   * only schedules a state update, which cannot reach a callback that already
+   * captured `availablePurchases` at the render where Restore was tapped. That
+   * closure is empty on a fresh launch, so reading it told a paying customer
+   * "No previous purchase found" while their subscription sat right there.
    */
   async function onRestore() {
     setBusy(true);
     setError(null);
     try {
+      // Prompts for the Apple Account and syncs the transaction history — the
+      // part a reinstall on a new device actually needs.
       await restorePurchases();
-      // Read them back explicitly rather than trusting the state to have
-      // re-rendered: this runs inside the same tick as the call above.
-      await getAvailablePurchases?.();
+      const purchases = (await getAvailablePurchases()) ?? [];
 
-      const restored = (availablePurchases ?? []).filter(
+      const restored = purchases.filter(
         (p) => p?.id === APPLE_SUBSCRIPTION_SKU || p?.productId === APPLE_SUBSCRIPTION_SKU,
       );
       const linked = await Promise.allSettled(

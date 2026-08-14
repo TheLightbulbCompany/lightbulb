@@ -263,7 +263,7 @@ function TeamsDegradedBanner({ onRetry }: { onRetry: () => void }) {
  * it through a ref keeps the client referentially stable.
  */
 function ConnectedPaywall({ onPurchased }: { onPurchased: () => void }) {
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(
@@ -277,7 +277,9 @@ function ConnectedPaywall({ onPurchased }: { onPurchased: () => void }) {
     }),
     [api],
   );
-  return <PaywallScreen api={paywallApi} onPurchased={onPurchased} />;
+  // Orgs are refused this screen (and refused server-side), so the Clerk user
+  // id IS the owner id the purchase must be stamped with.
+  return <PaywallScreen api={paywallApi} ownerId={userId ?? null} onPurchased={onPurchased} />;
 }
 
 // ---------------------------------------------------------------------------

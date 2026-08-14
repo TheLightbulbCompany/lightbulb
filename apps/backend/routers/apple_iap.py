@@ -126,6 +126,12 @@ async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
         # tell the app the request itself was wrong.
         if str(e) == "checkout_in_progress":
             raise HTTPException(status_code=409, detail="A checkout is already in progress") from e
+        if str(e).startswith("already_subscribed:"):
+            # The pending session is already PAID and its webhook is still in
+            # flight, so is_trial_blocked above read a row that says nothing yet.
+            # Handing back a second session here is how one owner gets charged
+            # twice.
+            raise HTTPException(status_code=409, detail="This account already has a subscription") from e
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return {"url": session.url}

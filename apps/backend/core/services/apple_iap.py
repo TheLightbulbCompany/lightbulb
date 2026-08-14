@@ -41,6 +41,7 @@ as success.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -64,6 +65,27 @@ class AppleIapNotConfigured(AppleIapError):
     """IAP settings are absent — the feature is off in this environment."""
 
 
+def owner_account_token(owner_id: str) -> str:
+    """The ``appAccountToken`` a purchase by ``owner_id`` must carry.
+
+    Derived rather than stored: SHA-256 of the owner id, first 16 bytes shaped
+    into a v5-style UUID, because StoreKit accepts only a UUID in that field and
+    owner ids (``user_2ab…``) are not one. Deriving means there is no per-owner
+    token to mint, store, look up, or leak — the server recomputes it and
+    compares.
+
+    ``ownerAccountToken`` in ``apps/mobile/src/lib/appleIap.ts`` is the same
+    computation and the two MUST stay in lockstep: a divergence rejects every
+    real purchase, since the comparison is what authorizes the link.
+
+    Lowercase hex, matching what Apple echoes back and what the JS side emits.
+    """
+    h = hashlib.sha256(owner_id.encode()).hexdigest()[:32]
+    # Version 5 in the high nibble of byte 6; RFC-4122 variant in byte 8.
+    h = f"{h[:12]}5{h[13:16]}8{h[17:]}"
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
 @dataclass(frozen=True)
 class AppleSubscription:
     """The subset of a verified transaction this system acts on."""
@@ -74,8 +96,9 @@ class AppleSubscription:
     expires_at_ms: int | None
     #: Isol8 ``subscription_status`` this transaction implies.
     status: str
-    #: Owner id the client stamped into ``appAccountToken`` at purchase, when
-    #: present. Absent on notifications, which is why the GSI lookup exists.
+    #: ``appAccountToken`` the client stamped at purchase, when present — the
+    #: UUID form of an owner id (see :func:`owner_account_token`), not the owner
+    #: id itself, because StoreKit only accepts a UUID here.
     owner_hint: str | None
 
 
@@ -272,22 +295,39 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
 
     subscription = verify_transaction(signed_transaction)
 
-    # `appAccountToken` is the strongest binding available: the client stamps it
-    # at purchase and Apple echoes it inside the SIGNED payload, so a mismatch
-    # means this transaction was bought by someone else. Checked when present —
-    # it is optional, and absent on anything bought before we started sending it.
-    if subscription.owner_hint and subscription.owner_hint != owner_id:
+    # `appAccountToken` is the ONLY binding here that is not a race: the client
+    # stamps it at purchase and Apple echoes it inside the SIGNED payload, so a
+    # replay by another account cannot strip or forge it, and the comparison
+    # needs no read at all.
+    #
+    # REQUIRED, not advisory. The earlier version checked it "when present" —
+    # which sounds careful and fenced nothing, because the client was not
+    # stamping it, so `owner_hint` was always None and the branch never ran.
+    # Requiring it is safe precisely because IAP has never shipped: there is no
+    # install base of un-stamped purchases to grandfather, and every transaction
+    # that can exist comes from a build that stamps.
+    #
+    # Deliberately narrows one case: an owner who deletes their Isol8 account
+    # and signs up again cannot restore onto the new one, because the token is
+    # bound to the id that bought it. That is the correct trade — the looser
+    # rule ("allow it when no row claims the transaction") makes deleting an
+    # account the bypass for sharing a subscription, since the wipe removes the
+    # very row the check reads. Recovery is to cancel in iOS Settings and
+    # subscribe again on the new account.
+    if not subscription.owner_hint:
+        raise AppleIapError("this Apple transaction carries no account binding and cannot be linked")
+    if subscription.owner_hint.lower() != owner_account_token(owner_id):
         raise AppleIapError("this Apple transaction was purchased by a different account")
 
     # Refuse to move a live subscription between accounts. Without this, one
     # Apple ID could be walked across accounts to keep several of them paid.
     #
-    # This lookup alone is NOT sufficient and is not relied on alone: it reads a
-    # non-unique, eventually-consistent GSI, so two accounts submitting the same
-    # unlinked JWS can both see "unowned". The write below carries a condition
-    # binding the row to this transaction id, which is what actually decides the
-    # race; this check exists to reject an id already owned by a DIFFERENT row,
-    # which no single-row condition can see.
+    # Kept as a second line even though the token check above already decides
+    # the cross-account case, because it catches an id owned by a DIFFERENT row
+    # — something no single-row write condition can see. It is NOT sufficient
+    # alone: it reads a non-unique, eventually-consistent GSI, so two accounts
+    # submitting the same unlinked JWS could both be told "unowned", and each
+    # one's write condition only fences its own row.
     existing = await billing_repo.get_by_apple_original_transaction_id(subscription.original_transaction_id)
     if existing is not None and existing.get("owner_id") != owner_id:
         raise AppleIapError("this Apple subscription is already linked to another account")

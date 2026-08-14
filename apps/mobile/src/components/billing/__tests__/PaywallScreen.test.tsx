@@ -8,8 +8,15 @@ const mockRequestPurchase = jest.fn(async () => undefined);
 const mockFinishTransaction = jest.fn(async () => undefined);
 const mockFetchProducts = jest.fn(async () => undefined);
 const mockRestorePurchases = jest.fn(async () => undefined);
-const mockGetAvailablePurchases = jest.fn(async () => undefined);
-let mockAvailablePurchases: { id: string; purchaseToken?: string | null }[] = [];
+// What the MODULE-level getAvailablePurchases resolves to. Restore must read
+// the transactions from here, never from the hook's `availablePurchases`
+// state: that state is captured by the callback's closure at the render where
+// Restore was tapped, so on a fresh launch it is empty and always will be —
+// no state update can reach a closure that has already been created. The hook
+// mock below therefore reports an empty array FOREVER, so any code that goes
+// back to reading it fails these tests instead of shipping.
+let mockRestoredPurchases: { id: string; purchaseToken?: string | null }[] = [];
+const mockGetAvailablePurchases = jest.fn(async () => mockRestoredPurchases);
 let capturedOnSuccess: ((p: { purchaseToken?: string | null }) => void) | null = null;
 let mockSubscriptions: { id: string; displayPrice: string }[] = [];
 let mockStorefront: Promise<string> = Promise.resolve("USA");
@@ -19,6 +26,10 @@ jest.mock(
   () => ({
     ErrorCode: { UserCancelled: "user-cancelled" },
     getStorefront: () => mockStorefront,
+    // Wrapped rather than referenced directly: the factory runs at require
+    // time, before the const above is initialized, so a bare reference sits in
+    // the temporal dead zone and the export comes out undefined.
+    getAvailablePurchases: () => mockGetAvailablePurchases(),
     useIAP: (opts: { onPurchaseSuccess?: (p: unknown) => void }) => {
       capturedOnSuccess = opts.onPurchaseSuccess as never;
       return {
@@ -28,8 +39,8 @@ jest.mock(
         requestPurchase: mockRequestPurchase,
         finishTransaction: mockFinishTransaction,
         restorePurchases: mockRestorePurchases,
-        getAvailablePurchases: mockGetAvailablePurchases,
-        availablePurchases: mockAvailablePurchases,
+        // Deliberately always empty — see mockRestoredPurchases above.
+        availablePurchases: [],
       };
     },
   }),
@@ -49,6 +60,7 @@ function makeApi(flatPriceUsd: number | null = 50) {
 jest.mock("../../../lib/appleIap", () => ({
   APPLE_IAP_AVAILABLE: true,
   APPLE_SUBSCRIPTION_SKU: "co.isol8.mobile.plan.monthly",
+  ownerAccountToken: jest.fn(async (id: string) => `token-for-${id}`),
   linkApplePurchase: jest.fn(async () => undefined),
   createWebCheckout: jest.fn(async () => "https://checkout.stripe.com/c/pay/cs_test_123"),
 }));
@@ -66,7 +78,7 @@ describe("PaywallScreen", () => {
     jest.clearAllMocks();
     capturedOnSuccess = null;
     mockStorefront = Promise.resolve("USA");
-    mockAvailablePurchases = [];
+    mockRestoredPurchases = [];
     // clearAllMocks clears CALLS but not implementations, so a rejection set by
     // one test leaks into every later one. Restore the happy path explicitly.
     mockLink.mockReset().mockResolvedValue(undefined);
@@ -148,8 +160,34 @@ describe("PaywallScreen", () => {
 
     expect(mockRequestPurchase).toHaveBeenCalledWith({
       type: "subs",
-      request: { apple: { sku: "co.isol8.mobile.plan.monthly" } },
+      request: { apple: { sku: "co.isol8.mobile.plan.monthly", appAccountToken: undefined } },
     });
+  });
+
+  // appAccountToken is the ONLY cross-account binding the server can trust: it
+  // rides inside the payload Apple signs, so a replay by another account cannot
+  // strip it. The server REQUIRES it, so a purchase that ships without one is
+  // rejected — and the server's check was dead code for exactly as long as the
+  // client sent nothing.
+  it("stamps the owner's account token on the purchase", async () => {
+    const u = userEvent.setup();
+    await render(
+      <PaywallScreen api={makeApi()} ownerId="user_abc" onPurchased={jest.fn()} />,
+    );
+
+    await u.press(screen.getByText("Subscribe"));
+
+    await waitFor(() =>
+      expect(mockRequestPurchase).toHaveBeenCalledWith({
+        type: "subs",
+        request: {
+          apple: {
+            sku: "co.isol8.mobile.plan.monthly",
+            appAccountToken: "token-for-user_abc",
+          },
+        },
+      }),
+    );
   });
 
   it("sends the signed transaction for server verification, then finishes it", async () => {
@@ -263,7 +301,7 @@ describe("PaywallScreen", () => {
 // to recover what they had bought.
 describe("restore purchases", () => {
   it("submits each restored token through verify-then-finish", async () => {
-    mockAvailablePurchases = [
+    mockRestoredPurchases = [
       { id: "co.isol8.mobile.plan.monthly", purchaseToken: "restored-jws" },
     ];
     const onPurchased = jest.fn();
@@ -280,7 +318,7 @@ describe("restore purchases", () => {
   });
 
   it("ignores restored purchases for other products", async () => {
-    mockAvailablePurchases = [{ id: "com.someone.else.pro", purchaseToken: "other-jws" }];
+    mockRestoredPurchases = [{ id: "com.someone.else.pro", purchaseToken: "other-jws" }];
     const u = userEvent.setup();
     await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
 
@@ -295,7 +333,7 @@ describe("restore purchases", () => {
   });
 
   it("says so when there is nothing to restore, rather than failing silently", async () => {
-    mockAvailablePurchases = [];
+    mockRestoredPurchases = [];
     const u = userEvent.setup();
     await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
 
@@ -305,7 +343,7 @@ describe("restore purchases", () => {
   });
 
   it("reports a restore that could not be recorded, since the customer already paid", async () => {
-    mockAvailablePurchases = [
+    mockRestoredPurchases = [
       { id: "co.isol8.mobile.plan.monthly", purchaseToken: "restored-jws" },
     ];
     mockLink.mockRejectedValueOnce(new Error("server down"));
@@ -317,5 +355,49 @@ describe("restore purchases", () => {
 
     expect(await screen.findByText(/couldn't restore it/i)).toBeTruthy();
     expect(onPurchased).not.toHaveBeenCalled();
+  });
+});
+
+// The restore bug that survived one round of "fixing": the transactions were
+// read from the hook's `availablePurchases` state, which the running callback
+// captured at the render where Restore was tapped. Refreshing that state
+// cannot reach an already-created closure, so on a fresh launch it was empty
+// and a paying customer was told they had never bought anything.
+describe("restore reads the transactions it just fetched", () => {
+  it("uses the value getAvailablePurchases resolves to, not hook state", async () => {
+    mockRestoredPurchases = [
+      { id: "co.isol8.mobile.plan.monthly", purchaseToken: "fresh-jws" },
+    ];
+    const onPurchased = jest.fn();
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={onPurchased} />);
+
+    await u.press(screen.getByText("Restore purchases"));
+
+    // The hook's availablePurchases is hardcoded empty in this suite, so a
+    // link call here can only have come from the module-level return value.
+    await waitFor(() =>
+      expect(linkApplePurchase).toHaveBeenCalledWith(expect.anything(), "fresh-jws"),
+    );
+    expect(mockGetAvailablePurchases).toHaveBeenCalled();
+    await waitFor(() => expect(onPurchased).toHaveBeenCalled());
+  });
+
+  it("syncs with the store before reading, which is what a reinstall needs", async () => {
+    const order: string[] = [];
+    mockRestorePurchases.mockImplementation(async () => {
+      order.push("sync");
+      return undefined;
+    });
+    mockGetAvailablePurchases.mockImplementation(async () => {
+      order.push("read");
+      return mockRestoredPurchases;
+    });
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
+
+    await u.press(screen.getByText("Restore purchases"));
+
+    await waitFor(() => expect(order).toEqual(["sync", "read"]));
   });
 });

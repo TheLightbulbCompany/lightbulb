@@ -23,7 +23,10 @@ def _transaction(**overrides):
         productId="co.isol8.mobile.plan.monthly",
         expiresDate=1_800_000_000_000,
         revocationDate=None,
-        appAccountToken=None,
+        # Every purchase our client makes carries this — link_purchase requires
+        # it, because it is the only cross-account fence that is not a race.
+        # Derived, not pasted, so the fixture cannot drift from the algorithm.
+        appAccountToken=apple_iap.owner_account_token("user_1"),
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -366,6 +369,18 @@ async def test_unactionable_notification_is_acked_not_retried():
 
 
 @pytest.mark.asyncio
+def _no_pending_session(monkeypatch):
+    """No open Checkout Session on the row — the ordinary starting state.
+
+    create_mobile_web_checkout reads this BEFORE claiming a slot: recording a
+    pending session prevents a second one only if something checks for it.
+    """
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "user_1"}))
+
+
+@pytest.mark.asyncio
 async def test_mobile_web_checkout_uses_the_app_optimized_origin_context(monkeypatch):
     """`origin_context="mobile_app"` is what makes Checkout render the
     app-to-web page rather than the desktop one, and is why Apple Pay shows up
@@ -379,6 +394,7 @@ async def test_mobile_web_checkout_uses_the_app_optimized_origin_context(monkeyp
         captured.update(kwargs)
         return SimpleNamespace(id="cs_1", url="https://checkout.stripe.com/c/pay/cs_1")
 
+    _no_pending_session(monkeypatch)
     monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_build)
     # The slot claim + pending marker are real repo writes; this test is about
     # the session shape, so stub them. Their own behaviour is covered below.
@@ -512,6 +528,7 @@ async def test_mobile_web_checkout_refuses_a_second_concurrent_session(monkeypat
     from core.services import billing_service
 
     monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    _no_pending_session(monkeypatch)
     # Slot already held by an in-flight checkout.
     monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value=None))
     built = AsyncMock()
@@ -528,6 +545,7 @@ async def test_mobile_web_checkout_frees_the_slot_when_session_creation_fails(mo
     """A failed create must not wedge the owner out of checkout for the claim TTL."""
     from core.services import billing_service
 
+    _no_pending_session(monkeypatch)
     monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
     monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
     release = AsyncMock()
@@ -543,3 +561,225 @@ async def test_mobile_web_checkout_frees_the_slot_when_session_creation_fails(mo
 
     release.assert_awaited_once()
     assert release.await_args.kwargs["token"] == "tok"
+
+
+# ---------------------------------------------------------------------------
+# appAccountToken — the only cross-account fence that is not a race.
+# ---------------------------------------------------------------------------
+
+
+def test_owner_account_token_is_a_uuid_and_stable():
+    token = apple_iap.owner_account_token("user_2abcDEF")
+    assert token == apple_iap.owner_account_token("user_2abcDEF")
+    assert len(token) == 36
+    assert [len(p) for p in token.split("-")] == [8, 4, 4, 4, 12]
+    # StoreKit requires a UUID; version + variant nibbles must be well-formed.
+    assert token[14] == "5"
+    assert token[19] == "8"
+    assert token != apple_iap.owner_account_token("user_other")
+
+
+def test_owner_account_token_matches_the_client_derivation():
+    """Lockstep check against apps/mobile/src/lib/appleIap.ts.
+
+    The two implementations are the same algorithm written twice. If they
+    diverge, EVERY real purchase is rejected — so the expected values here are
+    literals produced by the JS side, not by calling the Python one.
+    """
+    assert apple_iap.owner_account_token("user_2abcDEF") == "6d2d23ed-6454-54b1-8b21-49eca4734604"
+    assert apple_iap.owner_account_token("user_x") == "0f0a552a-1e17-5118-8bfc-6a9430304d4b"
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_refuses_a_transaction_bought_by_another_account():
+    """The replay: B submits A's signed transaction. The token is inside the
+    payload Apple signed, so B cannot strip or forge it."""
+    verifier = SimpleNamespace(
+        verify_and_decode_signed_transaction=lambda _: _transaction(
+            appAccountToken=apple_iap.owner_account_token("user_A")
+        )
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError, match="different account"):
+            await apple_iap.link_purchase(owner_id="user_B", signed_transaction="jws")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_refuses_a_transaction_with_no_account_binding():
+    """Required, not advisory. Checking it "when present" fenced nothing while
+    the client sent nothing — the branch simply never ran."""
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction(appAccountToken=None))
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError, match="no account binding"):
+            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_purchase_accepts_apples_uppercase_token():
+    """Apple echoes appAccountToken as an uppercase UUID in some payloads. A
+    case-sensitive compare would reject every genuine purchase."""
+    verifier = SimpleNamespace(
+        verify_and_decode_signed_transaction=lambda _: _transaction(
+            appAccountToken=apple_iap.owner_account_token("user_1").upper()
+        )
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
+        ) as set_sub,
+    ):
+        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert result.status == "active"
+    set_sub.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# The pending-session marker only prevents a second session if it is READ.
+# An earlier version wrote it and never looked at it, which fixed nothing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_returns_the_already_open_session(monkeypatch):
+    """The slot claim self-expires after 90s while a session stays completable
+    for ~31 minutes. Past that window the only thing standing between an owner
+    and two charged subscriptions is this read."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "pending_checkout_session_id": "cs_open"}),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        lambda _id: {"status": "open", "id": "cs_open", "url": "https://checkout.stripe.com/c/pay/cs_open"},
+    )
+    built = AsyncMock()
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", built)
+    claim = AsyncMock(return_value="tok")
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", claim)
+
+    session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    assert session["url"].endswith("cs_open")
+    built.assert_not_awaited()
+    # Reused, so no slot is taken and no second session is minted.
+    claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_refuses_when_the_pending_session_is_already_paid(monkeypatch):
+    """Paid but the webhook has not landed, so every local guard still reads
+    "not subscribed". Minting another session here is the double-charge."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "pending_checkout_session_id": "cs_done"}),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        lambda _id: {"status": "complete", "id": "cs_done"},
+    )
+    built = AsyncMock()
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", built)
+
+    with pytest.raises(billing_service.BillingServiceError, match="already_subscribed"):
+        await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    built.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_mints_fresh_past_a_dead_marker(monkeypatch):
+    """Nothing clears the marker when a session expires, so a stale one must
+    self-heal rather than wedge the owner out of ever checking out again."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "pending_checkout_session_id": "cs_expired"}),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        lambda _id: {"status": "expired", "id": "cs_expired"},
+    )
+
+    async def _fake_build(**_):
+        return SimpleNamespace(id="cs_new", url="https://checkout.stripe.com/c/pay/cs_new")
+
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_build)
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
+
+    session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
+    assert session.id == "cs_new"
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_mints_fresh_when_the_marker_cannot_be_retrieved(monkeypatch):
+    """Same self-heal, via the exception path rather than an "expired" status.
+
+    Covers the except clause specifically: naming the wrong exception class
+    there turns an ordinary stale marker into a 500 on the one button meant to
+    convert a free user.
+    """
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "pending_checkout_session_id": "cs_gone"}),
+    )
+
+    def _gone(_id):
+        raise billing_service.stripe.error.InvalidRequestError("No such session", param="id")
+
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", _gone)
+
+    async def _fake_build(**_):
+        return SimpleNamespace(id="cs_new", url="https://checkout.stripe.com/c/pay/cs_new")
+
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_build)
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
+
+    session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
+    assert session.id == "cs_new"

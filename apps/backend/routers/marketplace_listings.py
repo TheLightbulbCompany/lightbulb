@@ -507,15 +507,19 @@ async def get_listing(listing_id: str, response: Response):
     manifest: dict | None = None
     s3_prefix = listing.get("s3_prefix")
     if s3_prefix:
-        try:
+
+        def _fetch_manifest() -> dict | None:
+            # Blocking boto3 I/O — runs on a worker thread below.
             s3 = boto3.client("s3")
             obj = s3.get_object(
                 Bucket=settings.MARKETPLACE_ARTIFACTS_BUCKET,
                 Key=f"{s3_prefix}manifest.json",
             )
-            manifest = json.loads(obj["Body"].read().decode("utf-8"))
-            if not isinstance(manifest, dict):
-                manifest = None
+            parsed = json.loads(obj["Body"].read().decode("utf-8"))
+            return parsed if isinstance(parsed, dict) else None
+
+        try:
+            manifest = await asyncio.to_thread(_fetch_manifest)
         except (ClientError, json.JSONDecodeError, UnicodeDecodeError):
             # NoSuchKey + transient S3 errors (ClientError), malformed JSON
             # (JSONDecodeError), and non-UTF8 bodies (UnicodeDecodeError) all
@@ -561,8 +565,18 @@ def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
         raise HTTPException(status_code=500, detail="failed to fetch listing artifact") from exc
 
 
-def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None) -> dict | None:
-    """The owner's still-live install of ``slug``, or None.
+def _live_install_of(
+    catalog: CatalogService, *, owner_id: str, slug: str | None, seller_id: str | None = None
+) -> dict | None:
+    """The owner's still-live install of ``slug`` from ``seller_id``, or None.
+
+    Slugs are NOT unique across sellers, so a slug-only match would tell a
+    buyer holding seller A's free "pulse" that seller B's paid "pulse" is
+    already_installed — and hand them nothing. Sidecars written since the
+    field shipped carry ``seller_id``; those must match. Legacy sidecars
+    without it fall back to the slug-only match. (seller_id, NOT listing_id:
+    republish mints a new listing_id for the same slug, and the slug-level
+    match is deliberate republish idempotency.)
 
     A ``.template`` sidecar on its own isn't proof the agent exists, so this
     cross-checks openclaw.json's ``agents.list``, which the deploy file-merges
@@ -593,7 +607,11 @@ def _live_install_of(catalog: CatalogService, *, owner_id: str, slug: str | None
     listing_ids for the same slug (one tab holding a pre-republish listing
     page) now contend on the same claim too, not just same-listing retries.
     """
-    sidecars = [d for d in catalog.list_deployed_for_user(owner_id) if d.get("template_slug") == slug]
+    sidecars = [
+        d
+        for d in catalog.list_deployed_for_user(owner_id)
+        if d.get("template_slug") == slug and (d.get("seller_id") is None or d.get("seller_id") == seller_id)
+    ]
     if not sidecars:
         return None
     config = get_workspace().read_openclaw_config(owner_id) or {}
@@ -677,7 +695,9 @@ async def deploy_listing(
         s3_prefix = listing.get("s3_prefix")
         if not s3_prefix:
             raise HTTPException(status_code=500, detail="listing has no artifact prefix")
-        tar_bytes = _fetch_company_tar(s3_prefix=s3_prefix, listing_id=listing.get("listing_id"))
+        tar_bytes = await asyncio.to_thread(
+            _fetch_company_tar, s3_prefix=s3_prefix, listing_id=listing.get("listing_id")
+        )
 
         # Fire-and-forget: instantiate the whole package off the request path and
         # return 202 immediately. There is no job row — progress and the final
@@ -727,7 +747,7 @@ async def deploy_listing(
     # retry after a lost response heals into success. The drawer offers Hire
     # once per listing (installed cards render "Hired ✓"), so a repeat deploy of
     # a slug the owner already has is always an accidental retry, never intent.
-    already = _live_install_of(catalog, owner_id=owner_id, slug=listing.get("slug"))
+    already = _live_install_of(catalog, owner_id=owner_id, slug=listing.get("slug"), seller_id=listing.get("seller_id"))
     if already:
         logger.info(
             "Marketplace deploy: owner=%s already has listing %s as agent %s — returning existing install",
@@ -806,7 +826,8 @@ async def deploy_listing(
     # the container may still be writing (see release_owner_deploy_claim).
     deploy_cause: BaseException | None = None
     try:
-        tar_bytes, slice_ = _fetch_agent_artifact(listing)
+        # Blocking boto3 I/O — keep the S3 fetch off the event loop.
+        tar_bytes, slice_ = await asyncio.to_thread(_fetch_agent_artifact, listing)
 
         # Manifest carried on the listing row (see _upload_artifact_to_s3 + the
         # listing's manifest_json column). The marketplace manifest doesn't
@@ -898,6 +919,7 @@ async def deploy_listing(
                 new_agent_id=new_agent_id,
                 container_ip=container_ip,
                 container_token=container_token,
+                seller_id=listing.get("seller_id"),
             )
 
             # Register the deployed agent's operator device into the running
@@ -987,6 +1009,18 @@ async def deploy_listing(
                 status_code=500,
                 detail="deploy failed",
             ) from exc
+
+        # Seller-dashboard counter on the listing row (My Listings reads it).
+        # Best-effort: never worth failing a committed install over.
+        try:
+            await marketplace_repo.increment_listing_install_count(
+                listing_id=listing["listing_id"], version=int(listing.get("version", 1) or 1)
+            )
+        except Exception:
+            logger.exception(
+                "Marketplace deploy: install_count bump failed for listing %s",
+                listing["listing_id"],
+            )
 
         # Surface the honest "these steps will skip" warnings at hire time: byo /
         # unavailable requirements the platform can't inject or verify. These never
@@ -1187,10 +1221,16 @@ async def my_agent_artifact_preview(
     except agent_export.AgentNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    if await agent_export.is_reserved_friday_agent(
-        owner_id=owner_id,
-        agent_id=resolved_agent_id,
-    ):
+    try:
+        is_friday = await agent_export.is_reserved_friday_agent(
+            owner_id=owner_id,
+            agent_id=resolved_agent_id,
+        )
+    except agent_export.PaperclipUnavailableError as e:
+        # Fail CLOSED: with Paperclip unreachable we can't prove this isn't
+        # Friday, and exporting Friday leaks owner-keyed identity/memory.
+        raise HTTPException(status_code=503, detail=str(e))
+    if is_friday:
         raise HTTPException(
             status_code=400,
             detail=agent_export.FRIDAY_PUBLISH_ERROR_MSG,
@@ -1249,9 +1289,11 @@ async def upload_artifact_from_agent(
 ):
     """Snapshot one of the seller's existing OpenClaw agents.
 
-    Body: ``{ agent_id }``. Reads ``/mnt/efs/users/{seller}/agents/{agent_id}/``
-    directly from EFS (no container interaction), tars the directory, packs
-    it as a CatalogPackage, and replaces the listing's artifact.
+    Body: ``{ agent_id }``. Reads ``/mnt/efs/users/{seller}/workspace-{agent_id}/``
+    directly from EFS (no container interaction — this is the seller's content
+    dir, NEVER ``agents/{agent_id}/``, which is OpenClaw runtime state), tars
+    the directory, packs it as a CatalogPackage, and replaces the listing's
+    artifact.
 
     Authentication is the only gate. The natural floor is "user has a
     provisioned container with a registered agent" — ``agent_export``
@@ -1281,10 +1323,16 @@ async def upload_artifact_from_agent(
     # Friday-publish guard: the per-owner CEO agent is reserved (its
     # IDENTITY/USER files are owner-keyed and Paperclip wires it into the
     # CEO slot). Run BEFORE the snapshot so we don't tar Friday's dir.
-    if await agent_export.is_reserved_friday_agent(
-        owner_id=owner_id,
-        agent_id=resolved_agent_id,
-    ):
+    try:
+        is_friday = await agent_export.is_reserved_friday_agent(
+            owner_id=owner_id,
+            agent_id=resolved_agent_id,
+        )
+    except agent_export.PaperclipUnavailableError as e:
+        # Fail CLOSED: with Paperclip unreachable we can't prove this isn't
+        # Friday, and exporting Friday leaks owner-keyed identity/memory.
+        raise HTTPException(status_code=503, detail=str(e))
+    if is_friday:
         raise HTTPException(
             status_code=400,
             detail=agent_export.FRIDAY_PUBLISH_ERROR_MSG,

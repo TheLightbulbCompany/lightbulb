@@ -635,12 +635,14 @@ async def test_deploy_carries_cron_jobs_with_remapped_id_and_agent():
     original = cp.append_cron_jobs
     cp.append_cron_jobs = _append_cron
     try:
-        svc, _ws, _aux, _pair, _gw = _make_service()
+        svc, ws, _aux, _pair, _gw = _make_service()
         slice_ = _slice_with_agent()
         slice_["cron_jobs"] = [
             {
                 "agentId": "publisher-agent",
                 "name": "morning standup",
+                "enabled": True,
+                "sessionTarget": "seller-session-123",
                 "schedule": {"kind": "cron", "expr": "0 9 * * *"},
                 "delivery": {"channel": "telegram", "accountId": "publisher-agent"},
             }
@@ -665,6 +667,72 @@ async def test_deploy_carries_cron_jobs_with_remapped_id_and_agent():
     assert job["agentId"] == result["agent_id"]
     assert job["delivery"]["accountId"] == result["agent_id"]
     assert job["sessionKey"] == f"agent:{result['agent_id']}:user_u"
+    # The seller's enabled hourly job must not burn the buyer's inference
+    # budget from the moment of hire — jobs land DORMANT, like routines.
+    assert job["enabled"] is False
+    # sessionTarget names a seller-side session that doesn't exist here.
+    assert "sessionTarget" not in job
+    # The sidecar records the remapped ids so a failed deploy's unwind can
+    # pull exactly these jobs back out of cron/jobs.json.
+    sidecar = ws.write_template_sidecar.call_args.kwargs["content"]
+    assert sidecar["cron_job_ids"] == [job["id"]]
+
+
+@pytest.mark.asyncio
+async def test_deploy_sidecar_records_seller_id():
+    """Slugs are not unique across sellers; the sidecar's seller_id is what
+    lets install idempotency tell two sellers' same-slug listings apart."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    await svc.deploy_from_artifact(
+        owner_id="user_buyer",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=_slice_with_agent(),
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+        seller_id="seller_1",
+    )
+    content = ws.write_template_sidecar.call_args.kwargs["content"]
+    assert content["seller_id"] == "seller_1"
+    assert content["cron_job_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_unwind_removes_the_cron_jobs_the_sidecar_recorded(monkeypatch):
+    """A failed deploy must take its appended cron jobs with it — a stranded
+    job keeps firing against a dead agent, and the retry appends duplicates."""
+    svc, ws, _aux, _pair, _gw = _make_service()
+    ws.read_template_sidecar = MagicMock(return_value={"template_slug": "demo", "cron_job_ids": ["job-1", "job-2"]})
+    removed: list[tuple] = []
+
+    async def _remove(owner_id, job_ids):
+        removed.append((owner_id, job_ids))
+
+    monkeypatch.setattr("core.services.config_patcher.remove_cron_jobs", _remove)
+    monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", AsyncMock())
+    monkeypatch.setattr("core.containers.workspace.cleanup_deleted_agent", AsyncMock())
+
+    unwound = await svc.unwind_partial_deploy("user_u", "agent_abc", cause=RuntimeError("boom"))
+
+    assert unwound is True
+    assert removed == [("user_u", ["job-1", "job-2"])]
+    # Read BEFORE the unlink — after it there is nothing left to read.
+    ws.read_template_sidecar.assert_called_once_with("user_u", "agent_abc")
+
+
+@pytest.mark.asyncio
+async def test_unwind_skips_cron_removal_for_legacy_sidecar_without_ids(monkeypatch):
+    svc, ws, _aux, _pair, _gw = _make_service()
+    ws.read_template_sidecar = MagicMock(return_value={"template_slug": "demo"})
+    remove = AsyncMock()
+    monkeypatch.setattr("core.services.config_patcher.remove_cron_jobs", remove)
+    monkeypatch.setattr("core.services.config_patcher.remove_from_openclaw_config_list", AsyncMock())
+    monkeypatch.setattr("core.containers.workspace.cleanup_deleted_agent", AsyncMock())
+
+    assert await svc.unwind_partial_deploy("user_u", "agent_abc", cause=RuntimeError("boom")) is True
+    remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -698,7 +766,7 @@ def test_list_deployed_for_user_keyed_by_owner_id():
     workspace = MagicMock()
     workspace.list_workspace_agent_dirs.return_value = ["agent_a", "agent_b", "agent_c"]
     workspace.read_template_sidecar.side_effect = [
-        {"template_slug": "pitch", "template_version": 3},
+        {"template_slug": "pitch", "template_version": 3, "seller_id": "seller_p"},
         None,
         {"template_slug": "scout", "template_version": 1},
     ]
@@ -712,8 +780,10 @@ def test_list_deployed_for_user_keyed_by_owner_id():
 
     workspace.list_workspace_agent_dirs.assert_called_once_with("org_xyz")
     assert out == [
-        {"agent_id": "agent_a", "template_slug": "pitch", "template_version": 3},
-        {"agent_id": "agent_c", "template_slug": "scout", "template_version": 1},
+        {"agent_id": "agent_a", "template_slug": "pitch", "template_version": 3, "seller_id": "seller_p"},
+        # Legacy sidecar without the field surfaces seller_id=None so the
+        # idempotency check knows to fall back to slug-only matching.
+        {"agent_id": "agent_c", "template_slug": "scout", "template_version": 1, "seller_id": None},
     ]
 
 

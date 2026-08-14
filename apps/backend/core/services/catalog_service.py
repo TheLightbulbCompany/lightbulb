@@ -32,6 +32,7 @@ Depends on injected collaborators so unit tests can mock them:
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import io
 import logging
@@ -260,6 +261,12 @@ def _remap_cron_jobs_for_deploy(
         ``agent:{agentId}:{userId}`` shape (the persisted format observed
         in ``cron/jobs.json``)
       - ``createdAtMs`` and ``updatedAtMs`` set to now
+      - ``enabled`` forced to False — deliberate product posture, matching
+        routines: a seller's enabled hourly job would otherwise burn the
+        buyer's inference budget from the moment of hire. The buyer flips
+        it on when ready.
+      - ``sessionTarget`` dropped — it names a seller-side session that
+        doesn't exist on the buyer's container.
       - ``state`` is intentionally absent — OpenClaw recomputes
         ``nextRunAtMs`` from ``schedule`` on first read.
 
@@ -282,6 +289,8 @@ def _remap_cron_jobs_for_deploy(
         new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"
         new_job["createdAtMs"] = now_ms
         new_job["updatedAtMs"] = now_ms
+        new_job["enabled"] = False
+        new_job.pop("sessionTarget", None)
         # Per-agent channel bindings pair ``accountId`` 1:1 with ``agentId``
         # (see config_patcher._ensure_channel_bindings_for_patch).
         # Rewrite delivery.accountId to the new agent id so the cron lands on
@@ -329,6 +338,7 @@ class CatalogService:
         container_ip: str,
         container_token: str,
         new_agent_id: str | None = None,
+        seller_id: str | None = None,
     ) -> dict[str, Any]:
         """Deploy a pre-fetched artifact (tarball + slice + manifest) into the
         owner's container.
@@ -357,6 +367,13 @@ class CatalogService:
                 deploys pass Paperclip's freshly-minted UUID so the two
                 systems share the same id. Defaults to a locally-generated
                 ``agent_<hex>`` UUID for direct callers.
+            seller_id: the listing's seller, recorded on the ``.template``
+                sidecar so install idempotency can tell two sellers' listings
+                with the SAME slug apart (slugs are not unique). NOT the
+                listing_id — republish mints a new listing_id for the same
+                slug, and the slug-level match is deliberate republish
+                idempotency. Optional: non-marketplace callers (agent
+                builder) have no seller.
 
         Rollback posture: a failed step lets the exception propagate to
         the caller, which is the marketplace deploy router — the owner of
@@ -377,11 +394,31 @@ class CatalogService:
         # would deploy and immediately fail on its first credentialed call.
         await assert_credentials_satisfied(owner_id, manifest, slice_)
 
-        self._workspace.extract_tarball_to_workspace(
-            user_id=owner_id,
-            agent_id=new_agent_id,
-            tar_bytes=_strip_plugin_boot_vectors(tar_bytes, slug=slug),
+        slice_ = slice_ or {}
+        slice_has_agent = bool(slice_.get("agent"))
+        # Remapped up front (ids are fresh UUIDs) so the sidecar below can
+        # record them — the unwind needs the ids to pull a failed deploy's
+        # jobs back out of cron/jobs.json. The append itself stays late,
+        # after the agent is registered.
+        remapped_cron_jobs = (
+            _remap_cron_jobs_for_deploy(
+                slice_.get("cron_jobs") or [],
+                new_agent_id=new_agent_id,
+                owner_id=owner_id,
+            )
+            if slice_has_agent
+            else []
         )
+
+        def _extract():
+            # Tarball parse + EFS write are blocking; keep them off the loop.
+            self._workspace.extract_tarball_to_workspace(
+                user_id=owner_id,
+                agent_id=new_agent_id,
+                tar_bytes=_strip_plugin_boot_vectors(tar_bytes, slug=slug),
+            )
+
+        await asyncio.to_thread(_extract)
 
         # Sidecar goes down with the FIRST durable side effect, not at the end.
         # It is what ``_live_install_of`` keys on, and a deploy that dies after
@@ -419,11 +456,14 @@ class CatalogService:
                 "template_slug": slug,
                 "template_version": template_version,
                 "deployed_at": utc_now_iso(),
+                # Slug + seller is the install identity (slugs are not unique
+                # across sellers); ids let the unwind remove this deploy's
+                # appended cron jobs.
+                **({"seller_id": seller_id} if seller_id else {}),
+                "cron_job_ids": [j["id"] for j in remapped_cron_jobs],
             },
         )
 
-        slice_ = slice_ or {}
-        slice_has_agent = bool(slice_.get("agent"))
         agent_entry: dict[str, Any] = {}
         dropped_keys: list[str] = []
 
@@ -586,18 +626,10 @@ class CatalogService:
         # nonexistent agent. Skipped when there's no slice agent — a
         # cron job pointing at an unregistered agent would just error at
         # delivery time.
-        template_cron_jobs = slice_.get("cron_jobs") or []
-        if template_cron_jobs and slice_has_agent:
+        if remapped_cron_jobs:
             from core.services.config_patcher import append_cron_jobs
 
-            await append_cron_jobs(
-                owner_id,
-                _remap_cron_jobs_for_deploy(
-                    template_cron_jobs,
-                    new_agent_id=new_agent_id,
-                    owner_id=owner_id,
-                ),
-            )
+            await append_cron_jobs(owner_id, remapped_cron_jobs)
 
         # ACP coding-harness runtime. If the seller declared the agent
         # delegates to harnesses (manifest.requires_acp), turn on the buyer
@@ -729,6 +761,21 @@ class CatalogService:
             )
             return False
 
+        # Read the sidecar BEFORE unlinking it: it records the cron job ids
+        # this deploy appended, and the unwind below is their only removal
+        # path — a stranded job would keep firing against a dead agent, and
+        # the retry would append duplicates beside it.
+        cron_job_ids: list[str] = []
+        try:
+            sidecar = self._workspace.read_template_sidecar(owner_id, new_agent_id) or {}
+            cron_job_ids = [j for j in (sidecar.get("cron_job_ids") or []) if isinstance(j, str)]
+        except Exception:
+            logger.exception(
+                "unwind_partial_deploy: failed to read sidecar cron ids for agent %s owner %s",
+                new_agent_id,
+                owner_id,
+            )
+
         # FIRST — see the docstring. Unlinking one file is what stops a
         # half-failed unwind from handing the next Hire a dead agent id, so its
         # success is what makes the unwind safe to report as such.
@@ -758,6 +805,19 @@ class CatalogService:
                 new_agent_id,
                 owner_id,
             )
+
+        if cron_job_ids:
+            from core.services.config_patcher import remove_cron_jobs
+
+            try:
+                await remove_cron_jobs(owner_id, cron_job_ids)
+            except Exception:
+                logger.exception(
+                    "unwind_partial_deploy: failed to remove cron jobs %s for agent %s owner %s",
+                    cron_job_ids,
+                    new_agent_id,
+                    owner_id,
+                )
 
         try:
             # cleanup_deleted_agent runs the sync EFS rmtree on a worker thread —
@@ -847,6 +907,10 @@ class CatalogService:
                         "agent_id": agent_id,
                         "template_slug": sidecar.get("template_slug"),
                         "template_version": sidecar.get("template_version"),
+                        # None for legacy sidecars written before the field
+                        # existed — install idempotency falls back to
+                        # slug-only matching for those.
+                        "seller_id": sidecar.get("seller_id"),
                     }
                 )
         return deployed

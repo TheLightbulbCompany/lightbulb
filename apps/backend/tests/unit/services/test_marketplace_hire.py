@@ -132,6 +132,18 @@ _PUBLISHED = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _stub_listing_install_counter():
+    """Keep the listing-row install_count bump off the network — the repo
+    builds its own boto3 handle. Tests asserting the bump request this
+    fixture by name."""
+    with patch(
+        "core.repositories.marketplace_repo.increment_listing_install_count",
+        new_callable=AsyncMock,
+    ) as m:
+        yield m
+
+
 def _approval_for(agent_id=_AGENT_ID, listing_id=_LISTING["listing_id"]):
     return {
         "id": "ap_1",
@@ -361,6 +373,165 @@ async def test_owner_with_no_paperclip_company_degrades_instead_of_raising(resol
     a missing Paperclip company returns None rather than raising."""
     resolve_company.return_value = None
     assert await marketplace_hire.create_hire_approval(owner_id="user_x", issue_id="iss_1", listing=_LISTING) is None
+
+
+# ---------------------------------------------------------------------------
+# Paid listings on the approval path. The buyer route 403s an unpurchased
+# paid listing; the approval path is the SAME install with a different door,
+# so it must refuse at both ends — filing the ask, and (defense in depth)
+# installing on approve.
+# ---------------------------------------------------------------------------
+
+_PAID = {**_PUBLISHED, "price_cents": 1500, "seller_id": "seller_1"}
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_approval_install_refuses_an_unpurchased_paid_listing(
+    get_listing, get_ecs, get_catalog, rollback, has_purchase
+):
+    """A paid listing must not install free through the Teams approval door."""
+    get_listing.return_value = _PAID
+    get_ecs.return_value = _ecs_double()
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock()
+    get_catalog.return_value = catalog
+    has_purchase.return_value = False
+
+    with pytest.raises(RuntimeError, match="purchase required"):
+        await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    catalog.deploy_from_artifact.assert_not_awaited()
+    rollback.assert_awaited_once()
+    assert has_purchase.await_args.kwargs == {"buyer_id": "user_x", "listing_id": _LISTING["listing_id"]}
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_approval_install_passes_for_an_entitled_paid_listing(
+    get_listing, get_ecs, get_catalog, fetch, _pair, has_purchase, monkeypatch
+):
+    get_listing.return_value = _PAID
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    has_purchase.return_value = True
+    _admin_double(monkeypatch)
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    catalog.deploy_from_artifact.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_approval_install_exempts_the_seller_from_the_purchase_check(
+    get_listing, get_ecs, get_catalog, fetch, _pair, has_purchase, monkeypatch
+):
+    """Sellers hold no purchase row for their own listings — same bypass as the
+    buyer route."""
+    get_listing.return_value = {**_PAID, "seller_id": "user_x"}
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    _admin_double(monkeypatch)
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    has_purchase.assert_not_awaited()
+    catalog.deploy_from_artifact.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+@patch(
+    "core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace",
+    new_callable=AsyncMock,
+)
+async def test_ask_is_not_filed_for_an_unpurchased_paid_listing(create_agent, get_listing, has_purchase):
+    """Filing the ask ARMS the post-approve install, so the refusal has to
+    happen here too — not only at install time. Degrades to None (listings are
+    still worth returning) and never pre-creates an agent."""
+    get_listing.return_value = _PAID
+    has_purchase.return_value = False
+
+    result = await marketplace_hire.create_hire_approval(
+        owner_id="user_x", issue_id="iss_1", listing={**_LISTING, "price_cents": 1500}
+    )
+
+    assert result is None
+    create_agent.assert_not_awaited()
+    assert has_purchase.await_args.kwargs == {"buyer_id": "user_x", "listing_id": _LISTING["listing_id"]}
+
+
+@pytest.mark.asyncio
+@patch("core.repositories.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+@patch("core.services.paperclip_admin_session.get_admin_session_cookie", new_callable=AsyncMock)
+@patch(
+    "core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace",
+    new_callable=AsyncMock,
+)
+@patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", new_callable=AsyncMock)
+async def test_ask_is_filed_for_an_entitled_paid_listing(
+    resolve_company, create_agent, cookie, get_listing, has_purchase
+):
+    resolve_company.return_value = "co_1"
+    create_agent.return_value = {"id": _AGENT_ID}
+    cookie.return_value = "ck"
+    get_listing.return_value = _PAID
+    has_purchase.return_value = True
+    admin = MagicMock()
+    admin.update_agent = AsyncMock()
+    admin.create_approval = AsyncMock(return_value={"id": "ap_9"})
+
+    with patch("core.services.paperclip_admin_client.PaperclipAdminClient", return_value=admin):
+        approval_id = await marketplace_hire.create_hire_approval(
+            owner_id="user_x", issue_id="iss_1", listing={**_LISTING, "price_cents": 1500}
+        )
+
+    assert approval_id == "ap_9"
+
+
+@pytest.mark.asyncio
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_approval_install_bumps_listing_install_count(
+    get_listing, get_ecs, get_catalog, fetch, _pair, monkeypatch, _stub_listing_install_counter
+):
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    _admin_double(monkeypatch)
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    _stub_listing_install_counter.assert_awaited_once_with(listing_id=_LISTING["listing_id"], version=9)
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,12 @@ from typing import Any
 from core.repositories import marketplace_repo
 
 
+# Query caps — clamp, don't 400: agent-generated queries can be arbitrarily
+# long, and a failed tool call costs a model turn where truncation only
+# degrades scoring. Bounds the per-request scoring work to tokens × listings.
+_MAX_QUERY_CHARS = 200
+_MAX_QUERY_TOKENS = 20
+
 # Module-level cache state. Reset between tests via _reset_cache().
 _CACHE: list[dict[str, Any]] | None = None
 _CACHE_TIMESTAMP: float = 0.0
@@ -188,7 +194,7 @@ async def search(
         if wanted:
             candidates = [li for li in candidates if li.get("status") in wanted]
 
-    tokens = [t.lower() for t in (query or "").split() if t]
+    tokens = [t.lower() for t in (query or "")[:_MAX_QUERY_CHARS].split() if t][:_MAX_QUERY_TOKENS]
     if not tokens:
         candidates.sort(key=_published_at_key, reverse=True)
         return candidates[:limit]

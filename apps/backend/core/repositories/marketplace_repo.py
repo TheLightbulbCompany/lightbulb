@@ -540,6 +540,26 @@ async def transact_publish_flip(
     )
 
 
+async def increment_listing_install_count(*, listing_id: str, version: int) -> None:
+    """Atomic install-counter bump on a listing row after a successful deploy.
+
+    The seller dashboard reads ``install_count`` off the listing row (the
+    purchase-row counter tracks license-key installs, a different surface).
+    ADD-style if_not_exists so legacy rows without the column start at 0;
+    conditional on the row existing so the bump can never upsert a phantom
+    listing. Callers treat this as best-effort — a counter must never fail
+    a committed deploy — so ClientError propagates for them to swallow.
+    """
+    table = _listings_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"listing_id": listing_id, "version": version},
+        UpdateExpression="SET install_count = if_not_exists(install_count, :zero) + :one",
+        ConditionExpression="attribute_exists(listing_id)",
+        ExpressionAttributeValues={":zero": 0, ":one": 1},
+    )
+
+
 async def mark_taken_down(*, listing_id: str, version: int, now_iso: str) -> None:
     """Flip a row to taken_down. Conditional on attribute_exists so the
     update can't upsert a fake listing for a nonexistent id. ClientError

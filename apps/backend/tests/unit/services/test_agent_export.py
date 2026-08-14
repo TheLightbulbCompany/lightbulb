@@ -714,11 +714,10 @@ async def test_is_reserved_friday_agent_false_for_non_ceo_agent():
 
 
 @pytest.mark.asyncio
-async def test_is_reserved_friday_agent_false_when_no_paperclip_agents():
-    """Paperclip unreachable / not-yet-provisioned → empty list → not reserved.
-
-    Graceful degradation: don't block publishes because Paperclip is down.
-    """
+async def test_is_reserved_friday_agent_false_when_paperclip_genuinely_empty():
+    """A GENUINELY empty agent list (provisioning hasn't run) still allows —
+    there is no Friday to protect yet. Distinct from a fetch FAILURE, which
+    raises and blocks (see the outage test below)."""
     fetch = _StubFetch([])
     result = await agent_export.is_reserved_friday_agent(
         owner_id="user_abc",
@@ -726,6 +725,38 @@ async def test_is_reserved_friday_agent_false_when_no_paperclip_agents():
         fetch_paperclip_agents=fetch,
     )
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_friday_guard_blocks_export_when_paperclip_fetch_fails(monkeypatch):
+    """Fail CLOSED on an outage: the default fetcher's failure used to return
+    [], which the guard read as "allow" — a Paperclip outage let a seller
+    export Friday (owner-keyed identity/memory into an immutable artifact).
+    The typed error propagates so the router can 503 with retry advice."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("core.config.settings.PAPERCLIP_INTERNAL_URL", "http://paperclip.internal", raising=False)
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+        AsyncMock(side_effect=RuntimeError("paperclip down")),
+    )
+
+    with pytest.raises(agent_export.PaperclipUnavailableError, match="retry"):
+        await agent_export.is_reserved_friday_agent(
+            owner_id="user_abc",
+            agent_id="my-custom-agent",
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_apex_ceo_degrades_to_none_when_paperclip_fetch_fails():
+    """Unlike the Friday guard, org-chart placement is a nice-to-have default:
+    a fetch failure yields None (unparented), never a blocked build."""
+
+    async def _boom(*, owner_id):
+        raise agent_export.PaperclipUnavailableError("down")
+
+    assert await agent_export.resolve_apex_ceo_agent_id(owner_id="user_abc", fetch_paperclip_agents=_boom) is None
 
 
 @pytest.mark.asyncio
@@ -776,6 +807,32 @@ def test_export_flags_aws_key_in_memory_file(fake_efs, tmp_path):
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert any(f["pattern"] == "aws-secret-key" and f["severity"] == "high" for f in flags), flags
+
+
+def test_export_scans_every_shipped_text_file_not_just_persona_and_md(fake_efs):
+    """A bare provider token (or curl|bash) ships just as readily in a .sh/.py
+    as in openclaw.json — the content scan used to skip everything but
+    persona/openclaw.json/*.md, so a token in scripts/setup.sh sailed through
+    the wizard unflagged."""
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "scripts" / "setup.sh").write_text(
+        "#!/bin/sh\nexport TOKEN=xoxb-1234567890-abcdefghijklmnop\n", encoding="utf-8"
+    )
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert any(f["pattern"] == "provider-token" and "setup.sh" in f["file"] for f in flags), flags
+
+
+def test_export_scan_skips_oversized_and_binary_files(fake_efs):
+    """The generic bucket is size-capped and binary-sniffed: a >1MB text blob
+    and a NUL-carrying binary must produce no content flags (media/data, not
+    config)."""
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "big.log").write_text("sk-" + "A1b" * 12 + "\n" + "x" * (1024 * 1024 + 10), encoding="utf-8")
+    (agent_dir / "blob.dat").write_bytes(b"\x00\x01sk-" + b"A1b" * 12)
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert not any(f["file"] in ("big.log", "blob.dat") for f in flags), flags
 
 
 def test_export_safety_flag_schema(fake_efs, tmp_path):

@@ -485,7 +485,8 @@ Sellers publish custom OpenClaw agents; buyers discover them and deploy a copy i
 - **draft** — seller's working row, artifact may or may not be uploaded yet.
 - **review** — seller has submitted; awaits admin approval.
 - **published** — buyer-visible. Publishing a new version atomically retires the previous published version (`marketplace_service.publish_v2` via `TransactWriteItems`).
-- **retired / taken_down** — no longer searchable; previously bought entitlements still resolve.
+- **retired** — no longer searchable; previously bought entitlements still resolve.
+- **taken_down** — no longer searchable, and the takedown cascade REVOKES every buyer's license (`takedown_service` → `set_license_revoked`); previously bought entitlements do NOT survive a takedown.
 
 ### Seller publish pipeline
 

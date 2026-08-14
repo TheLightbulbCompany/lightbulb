@@ -146,17 +146,25 @@ async def fetch_paperclip_agents_for_owner(
     owner_id: str,
     repo: PaperclipRepo,
     admin_client: PaperclipAdminClient,
+    raise_on_unavailable: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the live Paperclip agent list for ``owner_id``, or [] if
     none can be fetched.
 
     Returns [] (not raises) when:
       - The owner has no Paperclip company yet (provisioning didn't run).
-      - Paperclip's API is unreachable or returns an error.
+      - Paperclip's API is unreachable or returns an error (default mode).
 
     Container provision is the primary caller. We refuse to fail
     provision on Paperclip availability -- empty list flows through to
     the legacy 'main' agent fallback in build_openclaw_config_dict.
+
+    ``raise_on_unavailable=True`` re-raises availability failures instead of
+    swallowing them into []: the Friday-publish guard treats an empty list as
+    "allow the export", so for it an outage masked as [] fails OPEN — a
+    seller could snapshot Friday (owner-keyed identity + memory) into an
+    immutable artifact while Paperclip is down. No-company-yet still returns
+    [] in both modes — that's a genuine empty roster, not an outage.
     """
     company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
@@ -183,6 +191,8 @@ async def fetch_paperclip_agents_for_owner(
         # Anything else (e.g. KeyError, programming bugs) is NOT caught
         # here so it surfaces in CloudWatch instead of being silently
         # masked as "Paperclip unavailable".
+        if raise_on_unavailable:
+            raise
         logger.warning(
             "paperclip_openclaw_pairing: list_agents failed for owner=%s company=%s -- falling back to empty list: %s",
             owner_id,
@@ -192,6 +202,15 @@ async def fetch_paperclip_agents_for_owner(
         return []
 
     if not isinstance(agents, list):
+        # A 200 with a non-list payload is as unknowable as an outage: the
+        # roster cannot be trusted to be empty. Strict mode must not let it
+        # degrade to [] — the Friday guard reads [] as "allow the export".
+        if raise_on_unavailable:
+            raise PaperclipApiError(
+                "list_agents returned a non-list payload",
+                status_code=502,
+                body=type(agents).__name__,
+            )
         logger.warning(
             "paperclip_openclaw_pairing: list_agents returned non-list for owner=%s -- got %s",
             owner_id,

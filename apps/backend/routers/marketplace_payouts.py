@@ -1,5 +1,6 @@
 """Stripe Connect Express onboarding + dashboard endpoints."""
 
+import asyncio
 import logging
 from typing import Annotated
 
@@ -62,10 +63,15 @@ async def dashboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
     }
     account_id = pa.get("stripe_connect_account_id")
     if not account_id:
-        return {"dashboard_url": None, **balance}
+        return {"dashboard_url": None, "payouts_enabled": False, **balance}
     stripe.api_key = settings.STRIPE_SECRET_KEY
     try:
-        link = stripe.Account.create_login_link(account_id)
+        # Login links resolve while payouts are still pending verification, so
+        # dashboard_url alone is NOT "payable" — payouts_enabled is the real
+        # readiness signal, read off the account itself. Blocking Stripe SDK
+        # calls run on a worker thread.
+        account = await asyncio.to_thread(stripe.Account.retrieve, account_id)
+        link = await asyncio.to_thread(stripe.Account.create_login_link, account_id)
     except stripe.error.StripeError:
         # Graceful degrade: a Connect account that hasn't finished onboarding
         # (or was deleted/invalidated) makes Stripe raise here. Returning the
@@ -76,5 +82,9 @@ async def dashboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
             auth.user_id,
             account_id,
         )
-        return {"dashboard_url": None, **balance}
-    return {"dashboard_url": link.url, **balance}
+        return {"dashboard_url": None, "payouts_enabled": False, **balance}
+    return {
+        "dashboard_url": link.url,
+        "payouts_enabled": bool(account.get("payouts_enabled")),
+        **balance,
+    }

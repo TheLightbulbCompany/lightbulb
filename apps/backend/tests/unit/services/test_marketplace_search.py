@@ -131,6 +131,25 @@ async def test_query_sql_matches_tag_and_description(mock_table):
 
 
 @pytest.mark.asyncio
+async def test_query_clamped_to_twenty_tokens(mock_table):
+    """Clamp, don't 400: tokens past the 20th are ignored, bounding the
+    scoring work an agent-generated query can demand."""
+    padding = " ".join(f"zzz{i}" for i in range(20))
+    # The only matching token sits at position 21 → dropped → zero-score → [].
+    assert await marketplace_search.search(query=f"{padding} postgres") == []
+    # Inside the first 20 tokens it still matches.
+    within = " ".join(f"zzz{i}" for i in range(5)) + " postgres"
+    assert [li["slug"] for li in await marketplace_search.search(query=within)] == ["postgres-helper"]
+
+
+@pytest.mark.asyncio
+async def test_query_clamped_to_200_chars(mock_table):
+    """A token that only begins past the 200-char cut never scores."""
+    results = await marketplace_search.search(query="x" * 200 + " postgres")
+    assert results == []
+
+
+@pytest.mark.asyncio
 async def test_format_filter(mock_table):
     results = await marketplace_search.search(query=None, format="skillmd")
     assert all(li["format"] == "skillmd" for li in results)

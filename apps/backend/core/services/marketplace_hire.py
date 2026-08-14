@@ -40,6 +40,7 @@ because ``activatePendingApproval`` ignores the payload's ``adapterConfig``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,29 @@ async def create_hire_approval(
     from core.services.paperclip_agent_lifecycle import create_paperclip_for_marketplace
     from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
+    # Paid listings never ride the approval path unpurchased: filing the ask
+    # arms deploy_for_approval, which installs on approve — a free install of
+    # a paid artifact. Seller-self is exempt, mirroring the buyer route's
+    # bypass. The passed ``listing`` is the compact search projection (no
+    # seller_id), so re-read the full row. Returning None (not raising) keeps
+    # the recommend response degraded-but-useful, same as the no-company case.
+    if int(listing.get("price_cents", 0) or 0) > 0:
+        from core.repositories import marketplace_repo
+        from core.services import marketplace_service
+
+        row = await marketplace_service.get_published_by_id(listing_id=listing.get("listing_id"))
+        if not row or row.get("status") != "published":
+            return None
+        if row.get("seller_id") != owner_id and not await marketplace_repo.has_unrevoked_purchase(
+            buyer_id=owner_id, listing_id=row["listing_id"]
+        ):
+            logger.info(
+                "create_hire_approval: owner=%s holds no purchase for paid listing %s — not filing",
+                owner_id,
+                row["listing_id"],
+            )
+            return None
+
     repo = PaperclipRepo(table_name="paperclip-companies")
     company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
@@ -223,7 +247,7 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         return
 
     from core.containers import get_ecs_manager
-    from core.repositories import container_repo
+    from core.repositories import container_repo, marketplace_repo
     from core.services import marketplace_service
     from core.services.catalog_service import get_catalog_service
     from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
@@ -233,6 +257,15 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
         # Retired between the ask and the decision.
         await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
         raise RuntimeError(f"listing {listing_id} is no longer published")
+
+    # Entitlement re-check, mirroring the buyer route's 403: defense in depth
+    # against an approval filed before the gate in ``create_hire_approval``
+    # existed (or a purchase revoked while the ask sat in the inbox). Seller-
+    # self exempt, like the buyer route.
+    if int(listing.get("price_cents", 0) or 0) > 0 and listing.get("seller_id") != owner_id:
+        if not await marketplace_repo.has_unrevoked_purchase(buyer_id=owner_id, listing_id=listing_id):
+            await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
+            raise RuntimeError("purchase required to deploy this listing")
 
     try:
         claim_token, _held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=listing_id)
@@ -279,7 +312,8 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
             if container is None or container_ip is None:
                 raise RuntimeError("container is not running — retry the approval in a moment")
 
-            tar_bytes, slice_ = _fetch_artifact(listing)
+            # S3 fetch is blocking boto3 I/O — keep it off the event loop.
+            tar_bytes, slice_ = await asyncio.to_thread(_fetch_artifact, listing)
             await get_catalog_service().deploy_from_artifact(
                 owner_id=owner_id,
                 slug=listing.get("slug"),
@@ -289,6 +323,7 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
                 new_agent_id=agent_id,
                 container_ip=container_ip,
                 container_token=container["gateway_token"],
+                seller_id=listing.get("seller_id"),
             )
         except Exception as exc:
             logger.exception(
@@ -299,6 +334,14 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
             deploy_cause = exc
             await _rollback_agent(owner_id=owner_id, agent_id=agent_id, cause=exc)
             raise
+
+        # Seller-dashboard counter — never worth failing a committed install.
+        try:
+            await marketplace_repo.increment_listing_install_count(
+                listing_id=listing_id, version=int(listing.get("version", 1) or 1)
+            )
+        except Exception:
+            logger.exception("deploy_for_approval: install_count bump failed for listing %s", listing_id)
 
         # Trust the agent's operator device AFTER the install is committed, and
         # best-effort like every other create path: the pairing helper needs the

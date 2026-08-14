@@ -46,6 +46,19 @@ def _stub_deploy_claim():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _stub_listing_install_counter():
+    """Keep the listing-row install_count bump off the network for every test
+    here — same posture as ``_stub_deploy_claim`` above (marketplace_repo
+    builds its own boto3 handle, so the ``boto3.client`` patches don't cover
+    it). Tests asserting the bump request this fixture by name."""
+    with patch(
+        "core.repositories.marketplace_repo.increment_listing_install_count",
+        new_callable=AsyncMock,
+    ) as m:
+        yield m
+
+
 @pytest.fixture
 def unauth_client():
     """Plain TestClient without auth override (for endpoints that 401 unauthenticated).
@@ -519,10 +532,16 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     assert resp.json()["config_registered"] is False
 
 
-def _catalog_with_install(agent_id: str = "agent_first", slug: str = "demo-agent"):
+def _catalog_with_install(agent_id: str = "agent_first", slug: str = "demo-agent", seller_id: str | None = None):
     catalog = MagicMock()
     catalog.list_deployed_for_user.return_value = [
-        {"agent_id": agent_id, "template_slug": slug, "template_version": 1},
+        {
+            "agent_id": agent_id,
+            "template_slug": slug,
+            "template_version": 1,
+            # None = legacy sidecar written before the field existed.
+            "seller_id": seller_id,
+        },
     ]
     catalog.deploy_from_artifact = AsyncMock()
     return catalog
@@ -766,6 +785,137 @@ def test_deploy_ignores_a_stale_sidecar_whose_agent_is_gone(
     assert resp.json().get("already_installed") is None
     assert resp.json()["agent_id"] == "agent_new"
     catalog.deploy_from_artifact.assert_awaited_once()
+
+
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_same_slug_from_another_seller_is_not_already_installed(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_workspace,
+    mock_pair,
+    client,
+):
+    """Slugs are NOT unique across sellers. A buyer holding seller A's "demo-agent"
+    who deploys seller B's "demo-agent" must get seller B's install — not an
+    already_installed pointing at seller A's agent."""
+    listing = _published_listing(price_cents=0)
+    listing["seller_id"] = "seller_b"
+    mock_get_published.return_value = listing
+    catalog = _catalog_with_install(agent_id="agent_from_a", seller_id="seller_a")
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={"slug": "demo-agent", "version": 1, "agent_id": "agent_from_b", "name": "Demo Agent"}
+    )
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents("agent_from_a")
+    mock_create_pc.return_value = {"id": "agent_from_b", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("already_installed") is None
+    assert resp.json()["agent_id"] == "agent_from_b"
+    # Seller identity rides into the sidecar so the NEXT retry can tell the
+    # two sellers' installs apart.
+    assert catalog.deploy_from_artifact.await_args.kwargs["seller_id"] == "seller_b"
+
+
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_legacy_sidecar_without_seller_still_matches_on_slug(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_workspace, client
+):
+    """Sidecars written before seller_id existed fall back to the slug-only
+    match — a republish retry must keep resolving to the existing install."""
+    listing = _published_listing(price_cents=0)
+    listing["seller_id"] = "seller_b"
+    mock_get_published.return_value = listing
+    catalog = _catalog_with_install(seller_id=None)  # legacy sidecar
+    mock_get_catalog.return_value = catalog
+    mock_get_workspace.return_value = _workspace_with_agents("agent_first")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["already_installed"] is True
+    assert resp.json()["agent_id"] == "agent_first"
+    mock_create_pc.assert_not_awaited()
+
+
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_success_bumps_listing_install_count(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_pair,
+    client,
+    _stub_listing_install_counter,
+):
+    """The seller dashboard reads install_count off the LISTING row; a deploy
+    that never writes it leaves the dashboard at 0 forever."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}})
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={"slug": "demo-agent", "version": 1, "agent_id": "agent_abc123", "name": "Demo Agent"}
+    )
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    _stub_listing_install_counter.assert_awaited_once_with(listing_id="lst_1", version=1)
+
+
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_failure_does_not_bump_install_count(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_delete_pc,
+    mock_get_ecs,
+    client,
+    _stub_listing_install_counter,
+):
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "agent_abc123", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object()
+    catalog = MagicMock()
+    catalog.list_deployed_for_user.return_value = []
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("efs exploded"))
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 500
+    _stub_listing_install_counter.assert_not_awaited()
 
 
 @patch("core.repositories.marketplace_repo._purchases_table")
@@ -1756,6 +1906,40 @@ def test_artifact_from_agent_blocks_friday(
     assert resp.status_code == 400
     assert "default agent" in resp.json()["detail"]
     mock_export.assert_not_called()
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.agent_export.export_agent_from_efs")
+def test_artifact_from_agent_503s_when_friday_guard_cannot_reach_paperclip(
+    mock_export,
+    mock_is_friday,
+    authed_client_factory,
+):
+    """The Friday guard must fail CLOSED: a Paperclip outage used to read as
+    "no agents" → allow, letting a seller export Friday (owner-keyed identity
+    and memory into an immutable artifact). Now the export blocks with a
+    retryable 503 and never snapshots the dir."""
+    from core.services.agent_export import PaperclipUnavailableError
+
+    mock_is_friday.side_effect = PaperclipUnavailableError("could not verify the agent against Paperclip")
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.post(
+        "/api/v1/marketplace/listings/lst_42/artifact-from-agent",
+        json={"agent_id": "custom-1"},
+    )
+    assert resp.status_code == 503
+    assert "retry" in resp.json()["detail"] or "Paperclip" in resp.json()["detail"]
+    mock_export.assert_not_called()
+
+
+@patch("routers.marketplace_listings.agent_export.is_reserved_friday_agent", new_callable=AsyncMock)
+def test_artifact_preview_503s_when_friday_guard_cannot_reach_paperclip(mock_is_friday, authed_client_factory):
+    from core.services.agent_export import PaperclipUnavailableError
+
+    mock_is_friday.side_effect = PaperclipUnavailableError("could not verify the agent against Paperclip")
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/me/agents/custom-1/artifact-preview")
+    assert resp.status_code == 503
 
 
 @patch("routers.marketplace_listings.marketplace_service.find_active_listing_for_agent", new_callable=AsyncMock)

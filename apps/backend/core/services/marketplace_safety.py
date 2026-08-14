@@ -95,6 +95,23 @@ _PATTERNS: tuple[_Pattern, ...] = (
         re.compile(rb"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     ),
     _Pattern(
+        "provider-token",
+        "high",
+        # Bare provider-prefixed tokens (mirrors _PROVIDER_KEY_PREFIXES below):
+        # OpenAI/Anthropic sk-*, GitHub ghp_/gho_/ghs_/github_pat_, Slack
+        # xoxb-/xoxp-/xapp-. The hardcoded-secret pattern only fires on
+        # `key = "..."` assignments; a token pasted bare in prose or args
+        # needs its own net.
+        re.compile(
+            rb"\b(?:"
+            rb"sk-[A-Za-z0-9_-]{20,}"
+            rb"|(?:ghp|gho|ghs)_[A-Za-z0-9]{20,}"
+            rb"|github_pat_[A-Za-z0-9_]{20,}"
+            rb"|x(?:oxb|oxp|app)-[A-Za-z0-9-]{10,}"
+            rb")"
+        ),
+    ),
+    _Pattern(
         "process-env-write",
         "medium",
         re.compile(rb"process\.env\.[A-Z_]+\s*="),
@@ -383,11 +400,11 @@ def _first_nonempty_string(value: object) -> str | None:
 
 
 def _walk_slice_entries(slice_: dict) -> Iterable[tuple[str, dict]]:
-    """Yield (path, entry_dict) for each mcp.servers.* and skills.entries.*
-    entry in the slice. ``path`` is a human-readable dotted location used in
-    the flag snippet (no secret in it). Non-dict entries are skipped — the
-    scrub only ever produced dicts, and a stray non-dict can't carry a
-    secret-shaped field.
+    """Yield (path, entry_dict) for each mcp.servers.*, skills.entries.* and
+    plugins.entries.* entry in the slice. ``path`` is a human-readable dotted
+    location used in the flag snippet (no secret in it). Non-dict entries are
+    skipped — the scrub only ever produced dicts, and a stray non-dict can't
+    carry a secret-shaped field.
     """
     mcp_servers = (slice_.get("mcp") or {}).get("servers") or {}
     if isinstance(mcp_servers, dict):
@@ -401,6 +418,16 @@ def _walk_slice_entries(slice_: dict) -> Iterable[tuple[str, dict]]:
         for name, entry in entries.items():
             if isinstance(entry, dict):
                 yield f"skills.entries.{name}", entry
+
+    # Plugin entries carry the same apiKey/env-shaped config as MCP servers;
+    # catalog_slice scrubs them the same way, so the blocking gate must watch
+    # them the same way too.
+    plugins = slice_.get("plugins") or {}
+    plugin_entries = plugins.get("entries") if isinstance(plugins, dict) else None
+    if isinstance(plugin_entries, dict):
+        for name, entry in plugin_entries.items():
+            if isinstance(entry, dict):
+                yield f"plugins.entries.{name}", entry
 
 
 def _walk_for_client_secret(value: object, path: str) -> list[tuple[str, str]]:
@@ -450,7 +477,8 @@ def _walk_for_secret_fields(value: object, path: str, field_names) -> list[tuple
 def assert_slice_scrubbed(openclaw_slice: dict) -> list[SafetyFlag]:
     """Re-check a (supposedly-scrubbed) openclaw-slice for surviving secrets.
 
-    Walks every ``mcp.servers.*`` and ``skills.entries.*`` entry and returns
+    Walks every ``mcp.servers.*``, ``skills.entries.*`` and
+    ``plugins.entries.*`` entry and returns
     a HIGH-severity flag for each credential that survived
     ``catalog_slice._scrub_secret_fields``:
 

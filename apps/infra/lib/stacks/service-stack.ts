@@ -1413,16 +1413,25 @@ export class ServiceStack extends cdk.Stack {
       STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
       ),
-      // Marketplace's Stripe Connect webhook signing secret (separate
-      // from the regular Stripe webhook above — Connect events come
-      // through a different webhook endpoint with its own signing key).
-      // marketplace_purchases.stripe_webhook reads this via
-      // settings.STRIPE_CONNECT_WEBHOOK_SECRET to verify event signatures;
-      // an empty value means stripe.Webhook.construct_event will reject
-      // every event and paid checkouts silently never produce purchase
-      // rows. Operator provisions the secret via
-      // `aws secretsmanager update-secret` with the value from the
-      // Stripe dashboard's Connect webhook (per the Plan 1 runbook).
+      // Marketplace webhook signing secrets. TWO Stripe endpoint
+      // registrations deliver to /webhooks/stripe-marketplace: a
+      // platform-scoped one (checkout/refund events — they originate on
+      // the platform balance) whose secret is STRIPE_MARKETPLACE_WEBHOOK_SECRET,
+      // and a Connect-scoped one (connected-account account.updated) whose
+      // secret is STRIPE_CONNECT_WEBHOOK_SECRET. The route verifies against
+      // both. An empty value means that half's events fail signature
+      // verification: empty MARKETPLACE ⇒ paid checkouts never produce
+      // purchase rows; empty CONNECT ⇒ onboarding-completed payout flushes
+      // never fire. Operator provisions both via `aws secretsmanager
+      // update-secret` with the secrets returned when the endpoints are
+      // created (Stripe API returns each endpoint's secret at creation).
+      STRIPE_MARKETPLACE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+        secretsmanager.Secret.fromSecretNameV2(
+          this,
+          "ImportStripeMarketplaceWebhookSecret",
+          `isol8/${env}/stripe_marketplace_webhook_secret`,
+        ),
+      ),
       STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
         secretsmanager.Secret.fromSecretNameV2(
           this,

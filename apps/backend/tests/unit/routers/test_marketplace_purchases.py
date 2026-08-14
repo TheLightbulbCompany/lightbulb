@@ -17,6 +17,17 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _webhook_secrets(monkeypatch):
+    """The webhook route skips empty secrets entirely (fail-closed), so the
+    hermetic default of "" would 400 every test before construct_event's mock
+    is reached. Both secrets set: the route tries MARKETPLACE first."""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "STRIPE_MARKETPLACE_WEBHOOK_SECRET", "whsec_mkt_test")
+    monkeypatch.setattr(settings, "STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect_test")
+
+
 @patch("core.repositories.marketplace_repo._listings_table")
 @patch("core.repositories.marketplace_repo._purchases_table")
 def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_listings_table, client):
@@ -71,18 +82,21 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_li
     assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
 
 
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 @patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
 def test_webhook_checkout_completed_grants_license(
-    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, client
+    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, mock_pa_table, client
 ):
     mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_111"}
     fake_ddb = MagicMock()
     fake_ddb.transact_write_items = MagicMock(return_value={})
     mock_boto_client.return_value = fake_ddb
+    # No payout account: the fulfillment-time flush no-ops.
+    mock_pa_table.return_value.get_item = MagicMock(return_value={})
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
@@ -185,18 +199,20 @@ def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     mock_pa_table.return_value.update_item.assert_not_called()
 
 
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
 @patch("core.repositories.marketplace_repo._ddb_client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
 def test_webhook_async_payment_succeeded_grants_license(
-    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, client
+    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, mock_pa_table, client
 ):
     mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_async"}
     fake_ddb = MagicMock()
     fake_ddb.transact_write_items = MagicMock(return_value={})
     mock_boto_client.return_value = fake_ddb
+    mock_pa_table.return_value.get_item = MagicMock(return_value={})
     """Regression: async_payment_succeeded is the settle event for delayed
     methods. Must run the same fulfillment path as a synchronous paid
     checkout.session.completed."""
@@ -248,9 +264,10 @@ def test_charge_refunded_debits_held_balance_when_pre_payout(
     mock_construct.return_value = {
         "id": "evt_refund_pre_payout",
         "type": "charge.refunded",
-        "data": {"object": {"payment_intent": "pi_1"}},
+        "data": {"object": {"payment_intent": "pi_1", "refunded": True}},
     }
     # Purchase row WITHOUT seller_transfer_id — refund happened before payout.
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
             "Items": [
@@ -289,26 +306,36 @@ def test_charge_refunded_debits_held_balance_when_pre_payout(
     assert "balance_held_cents - :amt" in pa_update["UpdateExpression"]
 
 
+@patch("routers.marketplace_purchases.stripe.Transfer.create_reversal")
+@patch("routers.marketplace_purchases.stripe.Transfer.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.revoke")
 @patch("core.repositories.marketplace_repo._purchases_table")
 @patch("core.repositories.marketplace_repo._payout_accounts_table")
-def test_charge_refunded_skips_held_balance_debit_when_already_transferred(
-    mock_pa_table, mock_purchases_table, mock_revoke, mock_dedup, mock_construct, client
+def test_charge_refunded_already_booked_transfer_reverses_idempotently_without_debit(
+    mock_pa_table,
+    mock_purchases_table,
+    mock_revoke,
+    mock_dedup,
+    mock_construct,
+    mock_tr_retrieve,
+    mock_reversal,
+    client,
 ):
-    """Regression: when the purchase was already transferred to the seller
-    (seller_transfer_id present), refund_purchase already issues a
-    Transfer Reversal which separately moves the money. The held balance
-    was already drained at flush time, so don't decrement again."""
+    """When the purchase was already transferred AND booked
+    (payout_accounted), the flush's totals already moved the share out of the
+    held balance — charge.refunded re-issues the idempotent reversal (a
+    Stripe-side no-op when /refund already reversed) and must NOT debit."""
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
     mock_construct.return_value = {
         "id": "evt_refund_post_payout",
         "type": "charge.refunded",
-        "data": {"object": {"payment_intent": "pi_2"}},
+        "data": {"object": {"payment_intent": "pi_2", "refunded": True}},
     }
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
     mock_purchases_table.return_value.query = MagicMock(
         return_value={
             "Items": [
@@ -318,7 +345,9 @@ def test_charge_refunded_skips_held_balance_debit_when_already_transferred(
                     "listing_id": "l1",
                     "seller_id": "s1",
                     "price_paid_cents": 2000,
+                    "seller_share_cents": 1700,
                     "seller_transfer_id": "tr_xyz",  # already paid out
+                    "payout_accounted": True,  # flush booked the totals
                     "license_key_revoked": False,
                 }
             ]
@@ -339,8 +368,110 @@ def test_charge_refunded_skips_held_balance_debit_when_already_transferred(
     assert resp.status_code == 200, resp.text
 
     mock_revoke.assert_awaited_once()
-    # Held balance NOT decremented — Transfer Reversal handled the seller side.
+    # Held balance NOT decremented — booking already settled it.
     mock_pa_table.return_value.update_item.assert_not_called()
+    # Reversal re-issued under the shared idempotency key (Stripe no-op).
+    mock_reversal.assert_called_once()
+    assert mock_reversal.call_args.kwargs["idempotency_key"] == "reversal:tr_xyz"
+
+
+@patch("routers.marketplace_purchases.stripe.Transfer.create_reversal")
+@patch("routers.marketplace_purchases.stripe.Transfer.retrieve")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.license_service.revoke")
+@patch("core.repositories.marketplace_repo._purchases_table")
+@patch("core.repositories.marketplace_repo._payout_accounts_table")
+def test_charge_refunded_dashboard_refund_reverses_seller_transfer(
+    mock_pa_table,
+    mock_purchases_table,
+    mock_revoke,
+    mock_dedup,
+    mock_construct,
+    mock_tr_retrieve,
+    mock_reversal,
+    client,
+):
+    """Regression: a refund issued from the STRIPE DASHBOARD (not our /refund
+    route) on an already-transferred purchase arrives with no reversal —
+    without one the buyer gets their money back, the seller keeps theirs,
+    and the platform eats 100%. The webhook must claw back the transfer."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_refund_dashboard",
+        "type": "charge.refunded",
+        "data": {"object": {"payment_intent": "pi_3", "refunded": True}},
+    }
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "p1",
+                    "listing_id": "l1",
+                    "seller_id": "s1",
+                    "price_paid_cents": 2000,
+                    "seller_share_cents": 1700,
+                    "seller_transfer_id": "tr_abc",
+                    "payout_accounted": True,  # flush booked the totals
+                    "license_key_revoked": False,
+                }
+            ]
+        }
+    )
+    mock_tr_retrieve.return_value = {"id": "tr_abc", "amount": 1700, "reversed": False}
+
+    async def fake_revoke(*, purchase_id, buyer_id, reason):
+        return None
+
+    mock_revoke.side_effect = fake_revoke
+    mock_pa_table.return_value.update_item = MagicMock()
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_refund_dashboard"}',
+    )
+    assert resp.status_code == 200, resp.text
+
+    mock_reversal.assert_called_once()
+    args, kwargs = mock_reversal.call_args
+    assert args[0] == "tr_abc"
+    assert kwargs["amount"] == 1700
+    # Same idempotency key refund_purchase uses — whichever path runs first
+    # wins and the other is a Stripe-side no-op.
+    assert kwargs["idempotency_key"] == "reversal:tr_abc"
+    # Held balance untouched (money already left it at flush time).
+    mock_pa_table.return_value.update_item.assert_not_called()
+
+
+@patch("routers.marketplace_purchases.license_service.revoke")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+def test_charge_refunded_partial_refund_is_noop(mock_dedup, mock_construct, mock_revoke, client):
+    """charge.refunded fires on PARTIAL refunds too (refunded=False until the
+    charge is fully refunded). Revoking the license / clawing back the whole
+    seller share on a partial refund would punish a purchase the buyer still
+    holds."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_refund_partial",
+        "type": "charge.refunded",
+        "data": {"object": {"payment_intent": "pi_4", "refunded": False}},
+    }
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_refund_partial"}',
+    )
+    assert resp.status_code == 200, resp.text
+    mock_revoke.assert_not_called()
 
 
 @patch("core.repositories.marketplace_repo._listings_table")
@@ -408,6 +539,7 @@ def test_account_updated_skips_refunded_purchases(
         }
     )
     mock_purchases_table.return_value.update_item = MagicMock()
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
 
     async def fake_transfer(*, connect_account_id, amount_cents, transfer_group):
         return f"tr_{transfer_group}"
@@ -497,13 +629,17 @@ def test_account_updated_skips_already_transferred_purchases_idempotently(
             ]
         }
     )
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
+    # Per purchase the settle path writes stamp then accounted-marker; the
+    # race-loser's STAMP is the conditional failure (third call here).
     mock_purchases_table.return_value.update_item = MagicMock(
         side_effect=[
-            None,
+            None,  # p1 seller_transfer_id stamp
+            None,  # p1 payout_accounted marker
             ClientError(
                 {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
                 "UpdateItem",
-            ),
+            ),  # p2 stamp — another run got there first
         ]
     )
 
@@ -590,6 +726,7 @@ def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
         }
     )
     mock_purchases_table.return_value.update_item = MagicMock()
+    mock_purchases_table.return_value.get_item = MagicMock(return_value={})
 
     async def fake_transfer(*, connect_account_id, amount_cents, transfer_group):
         return f"tr_{transfer_group}"
@@ -609,12 +746,15 @@ def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
     assert "purchase_l1_b1_111" in transfer_groups
     assert "purchase_l1_b2_222" in transfer_groups
 
-    # Each purchase row got its seller_transfer_id stamped.
-    assert mock_purchases_table.return_value.update_item.call_count == 2
+    # Each purchase row got its seller_transfer_id stamped AND its
+    # payout_accounted marker (2 update_item calls per purchase).
+    assert mock_purchases_table.return_value.update_item.call_count == 4
 
-    # Held balance decremented by the sum, not zeroed.
-    pa_update = mock_pa_table.return_value.update_item.call_args.kwargs
-    assert pa_update["ExpressionAttributeValues"][":t"] == 5000
+    # Per-purchase bookkeeping: one decrement per purchase, never zeroed.
+    totals = [
+        call.kwargs["ExpressionAttributeValues"][":t"] for call in mock_pa_table.return_value.update_item.call_args_list
+    ]
+    assert sorted(totals) == [2000, 3000]
 
 
 @patch("routers.marketplace_purchases.webhook_dedup.delete_event")
@@ -657,7 +797,7 @@ def test_webhook_rolls_back_dedup_on_handler_failure(mock_construct, mock_dedup,
         content=b'{"id":"evt_1"}',
     )
     assert resp.status_code == 500
-    mock_delete.assert_called_once_with(event_id="evt_1")
+    mock_delete.assert_called_once_with(event_id="stripe-marketplace:evt_1")
 
 
 # ---------------------------------------------------------------------------

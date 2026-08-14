@@ -290,10 +290,21 @@ class Settings(BaseSettings):
     STRIPE_CONNECT_REFRESH_URL: str = ""
     STRIPE_CONNECT_RETURN_URL: str = ""
 
-    # Stripe Connect webhook signing secret (separate from STRIPE_WEBHOOK_SECRET
-    # used for the platform-account billing webhook). Verified by the
-    # marketplace purchases router on POST /webhooks/stripe-marketplace.
+    # Marketplace webhook signing secrets. TWO Stripe endpoint registrations
+    # deliver to POST /webhooks/stripe-marketplace, each with its own secret:
+    # a platform-scoped one for checkout/refund events (they originate on the
+    # platform balance, so Stripe only delivers them to "events on your
+    # account" endpoints) and a Connect-scoped one for connected-account
+    # account.updated. Both are separate from STRIPE_WEBHOOK_SECRET (the
+    # billing webhook). The route tries MARKETPLACE first, then CONNECT.
+    STRIPE_MARKETPLACE_WEBHOOK_SECRET: str = ""
     STRIPE_CONNECT_WEBHOOK_SECRET: str = ""
+
+    # Platform take rate on paid marketplace listings, in whole percent.
+    # Applied at fulfillment: the seller's held-balance credit (and later
+    # Transfer) is price * (100 - fee) / 100; the buyer always pays the
+    # listed price. 15 = launch decision 2026-08-13.
+    MARKETPLACE_PLATFORM_FEE_PERCENT: int = 15
 
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = ""

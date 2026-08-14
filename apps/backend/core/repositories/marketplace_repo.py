@@ -592,9 +592,17 @@ async def mark_taken_down_if_nonterminal(*, listing_id: str, version: int, now_i
 # ---------------------------------------------------------------------------
 
 
-async def get_purchase(buyer_id: str, purchase_id: str) -> dict | None:
+async def get_purchase(buyer_id: str, purchase_id: str, *, consistent: bool = False) -> dict | None:
+    """consistent=True forces a strongly-consistent base-table read — the
+    payout flush re-reads right before moving money, where the default
+    eventually-consistent get_item could still miss a just-stamped
+    seller_transfer_id. Other callers keep the cheaper default."""
     table = _purchases_table()
-    resp = await run_in_thread(table.get_item, Key={"buyer_id": buyer_id, "purchase_id": purchase_id})
+    resp = await run_in_thread(
+        table.get_item,
+        Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
+        ConsistentRead=consistent,
+    )
     return resp.get("Item")
 
 
@@ -777,6 +785,7 @@ async def transact_record_purchase_and_credit_seller(
     listing_id: str,
     version: int,
     amount_cents: int,
+    seller_share_cents: int | None = None,
     payment_intent_id: str,
     session_id: str,
     transfer_group: str,
@@ -793,7 +802,13 @@ async def transact_record_purchase_and_credit_seller(
     buy = one session). On a replay the conditional fails, the ENTIRE
     transaction cancels, and neither the purchase nor the balance is written
     a second time -- returns False so the caller treats it as a no-op.
+
+    seller_share_cents is the post-platform-fee amount credited to the
+    seller's held balance (and later transferred); amount_cents remains what
+    the buyer paid. None (legacy callers/tests) means no fee: share = amount.
     """
+    if seller_share_cents is None:
+        seller_share_cents = amount_cents
     client = _ddb_client()
     try:
         await run_in_thread(
@@ -810,6 +825,7 @@ async def transact_record_purchase_and_credit_seller(
                             "listing_version_at_purchase": {"N": str(version)},
                             "entitlement_version_floor": {"N": str(version)},
                             "price_paid_cents": {"N": str(amount_cents)},
+                            "seller_share_cents": {"N": str(seller_share_cents)},
                             "stripe_payment_intent_id": {"S": payment_intent_id},
                             "stripe_checkout_session_id": {"S": session_id},
                             "stripe_transfer_group": {"S": transfer_group},
@@ -832,7 +848,7 @@ async def transact_record_purchase_and_credit_seller(
                         ),
                         "ExpressionAttributeValues": {
                             ":zero": {"N": "0"},
-                            ":amt": {"N": str(amount_cents)},
+                            ":amt": {"N": str(seller_share_cents)},
                             ":now": {"S": now_iso},
                         },
                     },
@@ -851,9 +867,12 @@ async def transact_record_purchase_and_credit_seller(
 # ---------------------------------------------------------------------------
 
 
-async def get_payout_account(seller_id: str) -> dict | None:
+async def get_payout_account(seller_id: str, *, consistent: bool = False) -> dict | None:
+    """consistent=True: the payout flush reads this right after the
+    fulfillment transaction credited balance_held_cents — an eventually
+    consistent read can miss that credit and skip the flush entirely."""
     table = _payout_accounts_table()
-    resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id})
+    resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id}, ConsistentRead=consistent)
     return resp.get("Item")
 
 
@@ -885,6 +904,33 @@ async def set_connect_account_if_absent(*, seller_id: str, account_id: str) -> b
     return True
 
 
+async def mark_payout_accounted(*, buyer_id: str, purchase_id: str) -> bool:
+    """CLAIM a purchase's payout bookkeeping. Returns False when another run
+    already claimed it.
+
+    The flush settles per purchase: transfer stamp → this claim →
+    apply_flush_totals. The claim is a set-once conditional because two
+    overlapping flushes can both observe a row stamped-but-unaccounted and
+    apply_flush_totals is a non-idempotent decrement — without ownership one
+    purchase's share would be booked twice, consuming held credit belonging
+    to another sale.
+    """
+    table = _purchases_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"buyer_id": buyer_id, "purchase_id": purchase_id},
+            UpdateExpression="SET payout_accounted = :t",
+            ConditionExpression="attribute_not_exists(payout_accounted)",
+            ExpressionAttributeValues={":t": True},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
+
+
 async def decrement_held_balance(*, seller_id: str, amount_cents: int) -> bool:
     """Decrement the held balance (pre-payout refund reconciliation).
 
@@ -912,14 +958,56 @@ async def apply_flush_totals(*, seller_id: str, transferred_cents: int) -> None:
     """Post-flush bookkeeping: decrement (not zero) the held balance by the
     transferred amount -- a new purchase arriving mid-flush keeps its credit
     for the next flush -- and stamp onboarding completed + lifetime
-    earnings."""
+    earnings.
+
+    Conditional on the balance covering the decrement: a refund debit landing
+    between this flush's read and write can leave the balance short of the
+    transferred total, and an unconditional subtract would drive it negative
+    (rendered as a negative dollar figure on the seller dashboard). A blind
+    "set to zero" fallback is equally wrong — it could stomp a concurrent NEW
+    SALE's credit (transact_record_purchase_and_credit_seller updates the same
+    field unordered), silently discarding seller-owed money. So on conditional
+    failure: consistent-read the current balance and clamp the decrement to
+    what's actually there, retrying a couple of times (each retry re-reads, so
+    a mid-race credit is respected). If contention persists the balance is
+    left alone — a rare, slightly-inflated display — and the lifetime/
+    onboarding stamps still land."""
     table = _payout_accounts_table()
+    decrement = transferred_cents
+    for _ in range(3):
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"seller_id": seller_id},
+                UpdateExpression=(
+                    "SET balance_held_cents = balance_held_cents - :d, "
+                    "    onboarding_status = :done, "
+                    "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
+                ),
+                ConditionExpression="balance_held_cents >= :d",
+                ExpressionAttributeValues={
+                    ":zero": 0,
+                    ":done": "completed",
+                    ":t": transferred_cents,
+                    ":d": decrement,
+                },
+            )
+            return
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            resp = await run_in_thread(table.get_item, Key={"seller_id": seller_id}, ConsistentRead=True)
+            current = int((resp.get("Item") or {}).get("balance_held_cents", 0))
+            decrement = min(decrement, max(current, 0))
+            if decrement <= 0:
+                break
+    # Contention exhausted (or nothing left to decrement): stamp the
+    # non-balance fields only.
     await run_in_thread(
         table.update_item,
         Key={"seller_id": seller_id},
         UpdateExpression=(
-            "SET balance_held_cents = balance_held_cents - :t, "
-            "    onboarding_status = :done, "
+            "SET onboarding_status = :done, "
             "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
         ),
         ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_cents},

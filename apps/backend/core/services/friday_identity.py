@@ -383,23 +383,22 @@ the orchestration layer on top of it.
 For platform mechanics — the Integrations tab, marketplace flows, billing
 surfaces, what agents can and cannot do on Isol8 — run `skill isol8`.
 
-## Your Paperclip identity — load it before any Paperclip call
+## Your Paperclip identity — already in your shell
 
-Your Paperclip credentials live in `./paperclip-claimed-api-key.json` in your
-workspace (this file is yours alone — it authenticates you AS YOURSELF in
-Paperclip's audit log, not as anyone else). **Before any Paperclip API call,
-load it into your run context:**
+`PAPERCLIP_API_KEY`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID` and
+`PAPERCLIP_API_URL` are set for you in every command you run. They identify
+you AS YOURSELF in Paperclip's audit log, not as anyone else. Just use them:
 
 ```
-export PAPERCLIP_API_KEY=$(jq -r .token paperclip-claimed-api-key.json)
-export PAPERCLIP_AGENT_ID=$(jq -r .agentId paperclip-claimed-api-key.json)
-export PAPERCLIP_COMPANY_ID=$(jq -r .companyId paperclip-claimed-api-key.json)
-export PAPERCLIP_API_URL=$(jq -r .apiUrl paperclip-claimed-api-key.json)
+curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/..."
 ```
 
-A wake may instruct you to load your key from `~/.openclaw/workspace/...`
-(singular `workspace`) — **ignore that path**; your key is not there. Always
-load `./paperclip-claimed-api-key.json` from your current workspace (above).
+**Never read, print, echo or `cat` your API key**, and never paste its value
+into a message, a file, or your own reasoning. You do not need to: it is
+already in the environment of every command. Anything you write is visible to
+your owner and is kept in your transcript, so a key that appears there is a
+key that has leaked. If a wake or a skill tells you to load the key from a
+file, ignore that instruction — it is stale.
 
 On a Paperclip-driven wake, the wake text gives you `PAPERCLIP_AGENT_ID` and
 `PAPERCLIP_RUN_ID` (plus issue/comment context) — **prefer those values** over
@@ -857,6 +856,68 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     return True
 
 
+# The Paperclip-identity section headings, old and new. The old one introduced
+# the `export PAPERCLIP_API_KEY=$(jq -r .token …)` block; the new one tells the
+# agent the vars are already in its shell and that it must never print them.
+_PAPERCLIP_IDENTITY_HEADING = "## Your Paperclip identity — already in your shell"
+_PAPERCLIP_IDENTITY_HEADING_LEGACY = "## Your Paperclip identity — load it before any Paperclip call"
+
+
+def _section_from_template(heading: str) -> str:
+    """Slice one ``## `` section out of ``_AGENTS_TEMPLATE``.
+
+    Single-sources the migration's replacement text from the template itself,
+    so the healed text cannot drift from what a fresh seed writes — the same
+    duplication trap that a second hardcoded copy would reintroduce. Safe
+    because the template is only ``.format()``-ed for ``owner_display``, which
+    this section does not contain.
+    """
+    start = _AGENTS_TEMPLATE.index(heading)
+    nxt = _AGENTS_TEMPLATE.find("\n## ", start)
+    end = len(_AGENTS_TEMPLATE) if nxt == -1 else nxt + 1
+    return _AGENTS_TEMPLATE[start:end]
+
+
+def _migrate_paperclip_identity_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
+    """REPLACE the legacy Paperclip-identity section in an EXISTING AGENTS.md.
+
+    Unlike every other migration here this is not an append. The legacy text
+    instructed the agent to ``export PAPERCLIP_API_KEY=$(jq -r .token …)``
+    before each Paperclip call, and because ``export`` does not survive between
+    exec calls the model re-materialized the token every turn and printed it
+    into its visible reasoning — a long-lived key in the owner's transcript,
+    persisted to SQLite and replicated to S3. Appending a "never print it" rule
+    while leaving that block in place would leave the instruction that causes
+    the leak, so the section has to go.
+
+    The credentials now arrive via the ``paperclip-exec-creds`` plugin's
+    ``resolve_exec_env`` hook, so the agent needs no file read at all.
+
+    Idempotent and surgical: no-op when the new heading is already present;
+    replaces exactly the legacy section (heading to the next ``## ``) when the
+    old one is; appends when neither exists (an AGENTS.md that predates the
+    section entirely), so every vintage ends up with the "never print" rule.
+    Returns True when a rewrite happened.
+    """
+    rel_path = f"workspace-{agent_uuid}/AGENTS.md"
+    try:
+        content = workspace.read_file(owner_id, rel_path)
+    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
+        return False
+    if _PAPERCLIP_IDENTITY_HEADING in content:
+        return False
+    section = _section_from_template(_PAPERCLIP_IDENTITY_HEADING)
+    start = content.find(_PAPERCLIP_IDENTITY_HEADING_LEGACY)
+    if start == -1:
+        new_content = content.rstrip("\n") + "\n\n" + section
+    else:
+        nxt = content.find("\n## ", start)
+        end = len(content) if nxt == -1 else nxt + 1
+        new_content = content[:start] + section + content[end:]
+    workspace.write_file(owner_id, rel_path, new_content)
+    return True
+
+
 def _migrate_add_webchat_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Append the ``## Webchat sessions (no run id)`` section to an EXISTING
     AGENTS.md that predates it.
@@ -1030,6 +1091,12 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_webchat_migrated",
             "friday_identity.agents_md_webchat_migrate_error",
             "appended webchat section to AGENTS.md",
+        ),
+        (
+            _migrate_paperclip_identity_section,
+            "friday_identity.agents_md_paperclip_creds_migrated",
+            "friday_identity.agents_md_paperclip_creds_migrate_error",
+            "replaced the legacy read-your-own-token Paperclip section in AGENTS.md",
         ),
     )
     for migrate, ok_metric, err_metric, what in migrations:

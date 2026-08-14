@@ -1,0 +1,13 @@
+{
+  "id": "paperclip-exec-creds",
+  "name": "Paperclip exec credentials",
+  "description": "Injects this agent's PAPERCLIP_API_KEY/AGENT_ID/COMPANY_ID/API_URL into its exec'd commands only, read per-agent from workspace-<agentId>/paperclip-claimed-api-key.json, so the model never has to read the token itself.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

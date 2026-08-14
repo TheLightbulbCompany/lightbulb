@@ -875,6 +875,14 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
       commands only when the owner's connector AWS profile is materialized.
       Inert (returns ``{}``) until that profile exists, so it is safe to enable
       fleet-wide regardless of provider.
+    - ``paperclip-exec-creds`` — baked in-repo plugin whose ``resolve_exec_env``
+      hook injects this AGENT's ``PAPERCLIP_*`` credentials into its exec'd
+      commands only, read per-agent from
+      ``workspace-<agentId>/paperclip-claimed-api-key.json``. Inert (returns
+      ``{}``) for any agent with no key file, so it is safe fleet-wide. Exists
+      so the seeded persona never has to tell the agent to read its own token:
+      it used to, and the model printed the token into its visible reasoning,
+      which persists to the transcript DB and replicates to S3.
     - ``tokenjuice`` — deterministic exec/bash tool-result compaction
       (baked, Dockerfile Layer 13b). Strict-empty configSchema: enable-only,
       never add a ``config`` key or the container crash-loops at boot.
@@ -898,6 +906,7 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
         "lobster": {"enabled": True},
         "llm-task": llm_task_entry,
         "aws-exec-profile": {"enabled": True},
+        "paperclip-exec-creds": {"enabled": True},
         "tokenjuice": {"enabled": True},
         "sage-openclaw": {"enabled": True},
         # Bundled key-less Firecrawl fetch provider — the Readability-failure

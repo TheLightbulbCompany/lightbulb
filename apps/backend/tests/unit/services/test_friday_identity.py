@@ -158,10 +158,12 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     # The bundled skill is named, plus the REST surface it wraps.
     assert "`paperclip` skill" in agents_md
     assert "/api/issues" in agents_md
-    # Per-agent identity: load from the workspace claimed-key file before any
-    # Paperclip call.
-    assert "paperclip-claimed-api-key.json" in agents_md
-    assert "PAPERCLIP_API_KEY=$(jq -r .token" in agents_md
+    # Per-agent identity arrives via the paperclip-exec-creds plugin's
+    # resolve_exec_env hook, so the playbook names the vars but must NEVER
+    # tell the agent to read the key file — that instruction is what had a
+    # live token printed into the owner's transcript.
+    assert "paperclip-claimed-api-key.json" not in agents_md
+    assert "jq -r .token" not in agents_md
     assert "PAPERCLIP_AGENT_ID" in agents_md
     assert "X-Paperclip-Run-Id" in agents_md
     # Heartbeat doctrine from the paperclip skill.
@@ -862,6 +864,11 @@ class _MigrationWs:
 
     def write_file(self, user_id, path, content):
         self.written = (path, content)
+        # A write is visible to the next read, as it is on EFS. Without this
+        # the fake silently breaks migration CHAINING: several migrations touch
+        # AGENTS.md, and if each re-reads the original the last writer wins and
+        # discards the others. Real Workspace.read_file goes to the filesystem.
+        self.content = content
 
 
 def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():
@@ -1002,6 +1009,102 @@ def test_migrate_add_webchat_section_noop_when_present():
 def test_migrate_add_webchat_section_noop_when_missing():
     ws = _MigrationWs(None)
     assert friday_identity._migrate_add_webchat_section(ws, "user_abc", "uuid-f") is False
+
+
+# ---------------------------------------------------------------------------
+# Paperclip identity — the credentials arrive via the paperclip-exec-creds
+# plugin's resolve_exec_env hook, so the agent must never read its own token.
+# Observed live on dev 2026-08-14: the legacy "export …$(jq -r .token …)"
+# instruction had the CEO print a live Paperclip key into its visible
+# reasoning, which persists to the transcript DB and replicates to S3.
+# ---------------------------------------------------------------------------
+
+_LEGACY_PAPERCLIP_SECTION = """## Your Paperclip identity — load it before any Paperclip call
+
+Your Paperclip credentials live in `./paperclip-claimed-api-key.json` in your
+workspace. **Before any Paperclip API call, load it into your run context:**
+
+```
+export PAPERCLIP_API_KEY=$(jq -r .token paperclip-claimed-api-key.json)
+```
+
+## Next section
+
+Kept to prove the replacement stops at the next heading.
+"""
+
+
+def test_agents_md_never_tells_the_agent_to_read_its_own_token():
+    agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    # The instruction that caused the leak must be gone entirely.
+    assert "jq -r .token" not in agents_md
+    assert "export PAPERCLIP_API_KEY=" not in agents_md
+    assert "paperclip-claimed-api-key.json" not in agents_md
+    # And it must be replaced by an explicit prohibition.
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING in agents_md
+    assert "Never read, print, echo or `cat` your API key" in agents_md
+    # The vars are still named, since the agent has to use them.
+    assert "$PAPERCLIP_API_KEY" in agents_md
+    assert "$PAPERCLIP_API_URL" in agents_md
+
+
+def test_migrate_paperclip_replaces_the_legacy_section_in_place():
+    ws = _MigrationWs("# AGENTS.md\n\nIntro.\n\n" + _LEGACY_PAPERCLIP_SECTION)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    path, content = ws.written
+    assert path == "workspace-uuid-f/AGENTS.md"
+    # The leaking instruction is GONE, not merely supplemented — appending a
+    # prohibition while leaving the export block would keep the cause.
+    assert "jq -r .token" not in content
+    assert "export PAPERCLIP_API_KEY=" not in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING_LEGACY not in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING in content
+    # Replacement is bounded: content before and after the section survives.
+    assert content.startswith("# AGENTS.md\n\nIntro.")
+    assert "## Next section" in content
+    assert "Kept to prove the replacement stops at the next heading." in content
+
+
+def test_migrate_paperclip_is_idempotent_on_a_freshly_seeded_file():
+    rendered = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
+    ws = _MigrationWs(rendered)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is False
+    assert ws.written is None
+
+
+def test_migrate_paperclip_reruns_clean_on_its_own_output():
+    ws = _MigrationWs("# AGENTS.md\n\n" + _LEGACY_PAPERCLIP_SECTION)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    once = ws.written[1]
+    ws2 = _MigrationWs(once)
+    assert friday_identity._migrate_paperclip_identity_section(ws2, "user_abc", "uuid-f") is False
+    assert ws2.written is None
+
+
+def test_migrate_paperclip_appends_when_no_section_exists_at_all():
+    # An AGENTS.md vintage predating the section entirely still gets the
+    # "never print your key" rule.
+    ws = _MigrationWs("# AGENTS.md\n\nAncient playbook.\n")
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "Ancient playbook." in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING in content
+
+
+def test_migrate_paperclip_noop_when_missing():
+    ws = _MigrationWs(None)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is False
+
+
+def test_healed_section_is_identical_to_the_freshly_seeded_one():
+    """The migration slices its replacement out of the template, so a healed
+    owner and a fresh one must end up with byte-identical text."""
+    ws = _MigrationWs("# AGENTS.md\n\n" + _LEGACY_PAPERCLIP_SECTION)
+    friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f")
+    healed = ws.written[1]
+    section = friday_identity._section_from_template(friday_identity._PAPERCLIP_IDENTITY_HEADING)
+    assert section in healed
+    assert section in friday_identity._render_templates(_personal_profile())["AGENTS.md"]
 
 
 class _HealWs(_MigrationWs):

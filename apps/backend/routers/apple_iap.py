@@ -167,7 +167,18 @@ async def create_mobile_portal(auth: AuthContext = Depends(get_current_user)):
     ),
 )
 async def apple_notifications(request: Request):
-    body = await request.json()
+    # The body is parsed by hand rather than declared as a Pydantic model
+    # because the payload is one opaque JWS string and the route must answer 400
+    # (not 422) for anything malformed. That means owning the decode error too:
+    # an empty or non-JSON POST would otherwise raise JSONDecodeError and return
+    # 500. A 500 on a webhook is worse than a rejection — providers treat it as
+    # "try again", so a permanently malformed delivery would be retried for days
+    # against an endpoint that can never accept it.
+    try:
+        body = await request.json()
+    except Exception as e:  # noqa: BLE001 — any decode failure is a bad request
+        raise HTTPException(status_code=400, detail="body must be JSON") from e
+
     signed_payload = body.get("signedPayload") if isinstance(body, dict) else None
     if not isinstance(signed_payload, str) or not signed_payload:
         raise HTTPException(status_code=400, detail="signedPayload is required")

@@ -83,22 +83,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # The extended image is ~7.8 GB compressed and the SOCI path holds three
-      # copies at once (docker overlay2, the containerd store it's loaded into,
-      # and the convert staging ref). A hosted runner starts with ~14 GB free,
-      # so drop preinstalled toolchains this build never touches.
-      #
-      # HOSTED ONLY: on the box these paths are the operator's own toolchains
-      # on a persistent disk, not a throwaway VM image — deleting them there
-      # is destructive and buys nothing (the box has the space; per-run bytes
-      # are handled by "Reclaim container storage" below).
-      - name: Reclaim disk
-        if: runner.environment == 'github-hosted'
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/.ghcup /usr/local/share/powershell
-          df -h /
-
       - name: Read version metadata
         id: meta
         run: |

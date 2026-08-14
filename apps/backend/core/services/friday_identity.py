@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
 
 from core.containers.workspace import Workspace
@@ -857,151 +856,6 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
     return True
 
 
-# The Paperclip-identity section headings, old and new. The old one introduced
-# the `export PAPERCLIP_API_KEY=$(jq -r .token …)` block; the new one tells the
-# agent the vars are already in its shell and that it must never print them.
-_PAPERCLIP_IDENTITY_HEADING = "## Your Paperclip identity — already in your shell"
-_PAPERCLIP_IDENTITY_HEADING_LEGACY = "## Your Paperclip identity — load it before any Paperclip call"
-
-# Detection keys on the CONTENT, never the heading. Heading text is prose and
-# has already drifted once (em-dash vs hyphen, wording); a matcher anchored to
-# it silently misses a variant, the migration appends the new section instead
-# of replacing, and every later run then no-ops on the new heading while the
-# export block survives forever. These markers are what actually makes a file
-# dangerous, so they are what decides whether there is work to do.
-_LEGACY_CREDENTIAL_MARKERS = ("jq -r .token", "paperclip-claimed-api-key.json")
-
-
-def _section_from_template(heading: str) -> str:
-    """Slice one ``## `` section out of ``_AGENTS_TEMPLATE``.
-
-    Single-sources the migration's replacement text from the template itself,
-    so the healed text cannot drift from what a fresh seed writes — the same
-    duplication trap that a second hardcoded copy would reintroduce. Safe
-    because the template is only ``.format()``-ed for ``owner_display``, which
-    this section does not contain.
-    """
-    start = _AGENTS_TEMPLATE.index(heading)
-    nxt = _AGENTS_TEMPLATE.find("\n## ", start)
-    end = len(_AGENTS_TEMPLATE) if nxt == -1 else nxt + 1
-    return _AGENTS_TEMPLATE[start:end]
-
-
-def _legacy_section_start(content: str) -> int | None:
-    """Offset of the heading that owns the first credential-loading marker.
-
-    Found by locating the dangerous CONTENT and walking back to the heading
-    above it, so a reworded or re-punctuated heading is handled identically to
-    the canonical one. When the marker sits under no heading at all (a
-    hand-mangled file), the marker's own line is the start — we still remove
-    the instruction, just without a heading to take with it.
-    """
-    hit = min(
-        (content.find(marker) for marker in _LEGACY_CREDENTIAL_MARKERS if marker in content),
-        default=-1,
-    )
-    if hit == -1:
-        return None
-    heading = content.rfind("\n## ", 0, hit)
-    if heading != -1:
-        return heading + 1
-    if content.startswith("## "):
-        return 0
-    line_start = content.rfind("\n", 0, hit)
-    return 0 if line_start == -1 else line_start + 1
-
-
-def _legacy_section_end(content: str, start: int) -> int:
-    """Where the legacy Paperclip section ends, chosen so healing can never
-    delete an owner's own writing.
-
-    AGENTS.md is the agent's living playbook, so an owner (or the agent) may
-    have appended notes below the last seeded section. "Run to the next ``##``
-    heading, else to EOF" would silently take all of that with it whenever the
-    legacy section happens to be last.
-
-    So: prefer the next markdown heading of ANY level — ``###`` subsections
-    below the section are not ours to keep either. Failing that, stop at the
-    close of the fenced ``export`` block, which is the dangerous part and the
-    last thing in the legacy section we can identify positively. Anything after
-    the fence is left alone. Only when there is no fence at all (a truncated or
-    hand-mangled section) does removal run to EOF, and by then there is nothing
-    recognisable left to preserve.
-    """
-    # Skip past the heading LINE rather than a fixed literal, so a heading
-    # variant is bounded the same way the canonical one is.
-    line_end = content.find("\n", start)
-    scan_from = len(content) if line_end == -1 else line_end
-    match = re.search(r"\n#{1,6} ", content[scan_from:])
-    if match:
-        return scan_from + match.start() + 1
-    fence_open = content.find("```", start)
-    if fence_open == -1:
-        return len(content)
-    fence_close = content.find("```", fence_open + 3)
-    if fence_close == -1:
-        return len(content)
-    end = fence_close + 3
-    # Swallow the newline that ends the fence line so the splice does not leave
-    # a stray blank line where the section was.
-    return end + 1 if content[end : end + 1] == "\n" else end
-
-
-def _migrate_paperclip_identity_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
-    """REPLACE the legacy Paperclip-identity section in an EXISTING AGENTS.md.
-
-    Unlike every other migration here this is not an append. The legacy text
-    instructed the agent to ``export PAPERCLIP_API_KEY=$(jq -r .token …)``
-    before each Paperclip call, and because ``export`` does not survive between
-    exec calls the model re-materialized the token every turn and printed it
-    into its visible reasoning — a long-lived key in the owner's transcript,
-    persisted to SQLite and replicated to S3. Appending a "never print it" rule
-    while leaving that block in place would leave the instruction that causes
-    the leak, so the section has to go.
-
-    The credentials now arrive via the ``paperclip-exec-creds`` plugin's
-    ``resolve_exec_env`` hook, so the agent needs no file read at all.
-
-    Idempotent, and what decides whether there is work to do is the presence of
-    the CREDENTIAL-LOADING CONTENT (``_LEGACY_CREDENTIAL_MARKERS``), never the
-    heading spelling. Keying on either heading is unsafe: on the new one, a
-    file carrying both sections keeps the export block forever; on the old one,
-    a heading variant (em-dash vs hyphen, reworded) is missed, the new section
-    is appended, and every later run then no-ops on it while the block
-    survives. Markers are the thing that makes a file dangerous.
-
-    Every legacy occurrence is removed; the new section is added only when
-    absent, so a file with both ends up with one copy of each. Removal is
-    bounded so it can never eat an owner's own content — see
-    ``_legacy_section_end``. Returns True when a rewrite happened.
-    """
-    rel_path = f"workspace-{agent_uuid}/AGENTS.md"
-    try:
-        content = workspace.read_file(owner_id, rel_path)
-    except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
-        return False
-    has_legacy = any(marker in content for marker in _LEGACY_CREDENTIAL_MARKERS)
-    has_new = _PAPERCLIP_IDENTITY_HEADING in content
-    if not has_legacy and has_new:
-        return False
-    section = _section_from_template(_PAPERCLIP_IDENTITY_HEADING)
-    if not has_legacy:
-        workspace.write_file(owner_id, rel_path, content.rstrip("\n") + "\n\n" + section)
-        return True
-    # Excise every dangerous block. The first is replaced by the new section
-    # unless the file already has it, in which case all are simply removed.
-    replacement = "" if has_new else section
-    for _ in range(64):  # bound: a pathological file cannot spin here
-        start = _legacy_section_start(content)
-        if start is None:
-            break
-        end = _legacy_section_end(content, start)
-        content = content[:start] + replacement + content[end:]
-        replacement = ""
-    workspace.write_file(owner_id, rel_path, content)
-    return True
-
-
 def _migrate_add_webchat_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
     """Append the ``## Webchat sessions (no run id)`` section to an EXISTING
     AGENTS.md that predates it.
@@ -1175,12 +1029,6 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             "friday_identity.agents_md_webchat_migrated",
             "friday_identity.agents_md_webchat_migrate_error",
             "appended webchat section to AGENTS.md",
-        ),
-        (
-            _migrate_paperclip_identity_section,
-            "friday_identity.agents_md_paperclip_creds_migrated",
-            "friday_identity.agents_md_paperclip_creds_migrate_error",
-            "replaced the legacy read-your-own-token Paperclip section in AGENTS.md",
         ),
     )
     for migrate, ok_metric, err_metric, what in migrations:

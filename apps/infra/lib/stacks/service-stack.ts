@@ -1852,11 +1852,25 @@ export class ServiceStack extends cdk.Stack {
     const waitWatch = new sfn.Wait(this, "WaitWatchTick", {
       time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
     });
+    // EVERY rule below is ordered so that no comparison can reference a path
+    // that might be absent. That is not style: a Choice rule on a missing
+    // path throws States.Runtime, Choice states cannot Catch, and the
+    // execution would die with the row still leased — reintroducing the exact
+    // orphan this loop exists to prevent (same hazard ClassifyFailure's
+    // IsPresent guard documents below). ASL guarantees rules evaluate IN
+    // ORDER, but does NOT guarantee short-circuiting WITHIN an And/Or, so
+    // every presence check is its own rule rather than a member of a
+    // compound condition.
     const watchChoice = new sfn.Choice(this, "WatchRow")
       // Row deleted mid-provision (account wipe / delete): nothing to drive.
       .when(sfn.Condition.isNotPresent("$.row.Item"), succeedSuperseded)
-      // Terminal success. MUST precede the claim-identity rule below: the
-      // running transition REMOVEs the lease fields
+      // Defensive: a row with no status at all. DynamoDB UpdateItem CREATES
+      // the item when absent, so any unconditioned writer that touches an
+      // owner with no row can leave one with no status. Stand down rather
+      // than let a later rule throw.
+      .when(sfn.Condition.isNotPresent("$.row.Item.status.S"), succeedSuperseded)
+      // Terminal success. MUST precede the claim rules: the running
+      // transition REMOVEs the lease fields
       // (container_repo.update_container_leased), so checking the claim first
       // would read a successful provision as "superseded".
       .when(sfn.Condition.stringEquals("$.row.Item.status.S", "running"), succeedProvisioned)
@@ -1868,32 +1882,28 @@ export class ServiceStack extends cdk.Stack {
       // wrongly-stopped row already belongs to the status poll's auto-retry
       // and release_stranded_stop_to_error.
       .when(sfn.Condition.stringEquals("$.row.Item.status.S", "stopped"), succeedSuperseded)
+      // Lease released by someone else — stand down.
+      .when(sfn.Condition.isNotPresent("$.row.Item.provision_claim_id.S"), succeedSuperseded)
       // The claim changed hands (deliberate reprovision, conversion takeover,
-      // admin door) — stand down quietly, the runner's superseded rule.
+      // admin door) — the runner's superseded rule. Safe to compare: the rule
+      // above already established the attribute exists.
       .when(
-        sfn.Condition.or(
-          sfn.Condition.isNotPresent("$.row.Item.provision_claim_id.S"),
-          sfn.Condition.not(sfn.Condition.stringEqualsJsonPath("$.row.Item.provision_claim_id.S", "$.claim_id")),
-        ),
+        sfn.Condition.not(sfn.Condition.stringEqualsJsonPath("$.row.Item.provision_claim_id.S", "$.claim_id")),
         succeedSuperseded,
       )
-      // Deterministic failure: the runner already wrote error + retryable
-      // false, so there is no row write to make — fail the execution so the
-      // executions-failed alarm sees it (parity with MarkFailedDeterministic
-      // on the ECS leg).
-      .when(
-        sfn.Condition.and(
-          sfn.Condition.stringEquals("$.row.Item.status.S", "error"),
-          sfn.Condition.isPresent("$.row.Item.retryable.BOOL"),
-          sfn.Condition.booleanEquals("$.row.Item.retryable.BOOL", false),
-        ),
-        failProvision,
-      )
-      // Transient failure (retryable true, or a legacy row with the attribute
-      // absent): take the ECS leg. attempt stays 0 and attempt_token stays
-      // claim_id — DISTINCT from the inline token ({claim}-inline) — so the
-      // runner's first-act claim_attempt re-stamp fences any inline straggler
-      // exactly as provision_dispatch.py documents.
+      // Failed attempt: take the ECS leg. attempt stays 0 and attempt_token
+      // stays claim_id — DISTINCT from the inline token ({claim}-inline) — so
+      // the runner's first-act claim_attempt re-stamp fences any inline
+      // straggler exactly as provision_dispatch.py documents.
+      //
+      // Deliberately does NOT branch on the row's `retryable` flag to
+      // short-cut a deterministic failure into Fail. Reading it would mean
+      // comparing $.row.Item.retryable.BOOL, which is absent on any row that
+      // predates the field — and one wrong path here kills the watchdog. The
+      // deterministic case still terminates correctly one attempt later, via
+      // the proven route: the runner exits 10 and ClassifyFailure sends it to
+      // MarkFailedDeterministic. One redundant ECS attempt on a permanently
+      // broken provision is a cheap price for a Choice that cannot throw.
       .when(sfn.Condition.stringEquals("$.row.Item.status.S", "error"), runProvisioner)
       // Dead-runner backstop: still leased to us, still "provisioning", no
       // progress for 40 ticks. The inline child cannot still be alive —

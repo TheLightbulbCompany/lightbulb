@@ -474,6 +474,30 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     const claimIdx = flat.indexOf('"$.row.Item.provision_claim_id.S"');
     expect(runningIdx).toBeGreaterThanOrEqual(0);
     expect(claimIdx).toBeGreaterThan(runningIdx);
+    // (d2) No rule may compare a path that could be absent — a Choice on a
+    // missing path throws States.Runtime, which a Choice cannot Catch, and
+    // the execution would die holding the lease (the very orphan this loop
+    // prevents). ASL guarantees rule ORDER but not short-circuiting inside
+    // And/Or, so each presence check is its own earlier rule.
+    const statusPresentIdx = flat.indexOf(
+      '"Variable":"$.row.Item.status.S","IsPresent":false,"Next":"Superseded"',
+    );
+    expect(statusPresentIdx).toBeGreaterThanOrEqual(0);
+    expect(statusPresentIdx).toBeLessThan(runningIdx);
+    const claimPresentIdx = flat.indexOf(
+      '"Variable":"$.row.Item.provision_claim_id.S","IsPresent":false,"Next":"Superseded"',
+    );
+    const claimComparisonIdx = flat.indexOf('"StringEqualsPath":"$.claim_id"');
+    expect(claimPresentIdx).toBeGreaterThanOrEqual(0);
+    expect(claimComparisonIdx).toBeGreaterThan(claimPresentIdx);
+    // (d3) The watch loop must not read `retryable` at all: it is absent on
+    // rows predating the field, and the deterministic case already
+    // terminates via the runner's exit-10 -> ClassifyFailure route.
+    const watchRowRegion = flat.slice(
+      flat.indexOf('"WatchRow"'),
+      flat.indexOf('"Superseded":{"Type":"Succeed"}'),
+    );
+    expect(watchRowRegion).not.toContain("retryable");
     // (e) The dead-runner backstop: a leased row with no progress for 40
     // ticks gets the ECS leg. 40 x 60s = 2400s MUST exceed the backend's
     // inline queue bound + attempt timeout (300 + 1800 = 2100s,

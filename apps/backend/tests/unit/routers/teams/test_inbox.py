@@ -294,23 +294,98 @@ def test_list_inbox_returns_empty_for_sibling_route_tabs(client, monkeypatch, ta
     admin.list_issues.assert_not_called()
 
 
-def test_list_inbox_runs_returns_failed_runs(client, monkeypatch):
-    """`GET /teams/inbox/runs` lists failed heartbeat runs (the ones the
-    Inbox 'Runs' tab needs)."""
+def _iso(dt):
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _mock_inbox_runs(monkeypatch, rows):
     admin = MagicMock()
-    admin.list_company_heartbeat_runs = AsyncMock(return_value={"runs": [{"id": "run_1", "status": "failed"}]})
+    admin.list_company_heartbeat_runs = AsyncMock(return_value=rows)
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    return admin
+
+
+def test_list_inbox_runs_needs_attention_semantics(client, monkeypatch):
+    """`GET /teams/inbox/runs` only surfaces failures that still need
+    attention: a failure the agent has since recovered from (a later
+    successful run) is resolved, and a failure past the age window is
+    history. Dismissals are per-browser localStorage, so without this
+    every browser re-surfaces the same stale incident forever."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        # Recovered: failed, then succeeded later — drop.
+        {"id": "r_old_fail", "agentId": "ag_1", "status": "failed", "createdAt": _iso(now - timedelta(days=2))},
+        {"id": "r_recovery", "agentId": "ag_1", "status": "succeeded", "createdAt": _iso(now - timedelta(days=1))},
+        # Failure AFTER the agent's last success — keep.
+        {"id": "r_regressed", "agentId": "ag_2", "status": "failed", "createdAt": _iso(now - timedelta(hours=2))},
+        {"id": "r_earlier_ok", "agentId": "ag_2", "status": "succeeded", "createdAt": _iso(now - timedelta(days=1))},
+        # Never recovered but ancient — aged out, drop.
+        {"id": "r_ancient", "agentId": "ag_3", "status": "failed", "createdAt": _iso(now - timedelta(days=15))},
+        # Never recovered, recent — keep.
+        {"id": "r_fresh", "agentId": "ag_4", "status": "failed", "createdAt": _iso(now - timedelta(hours=1))},
+        # Non-failed rows never surface.
+        {"id": "r_running", "agentId": "ag_5", "status": "running", "createdAt": _iso(now)},
+    ]
+    admin = _mock_inbox_runs(monkeypatch, {"runs": rows})
 
     r = client.get("/api/v1/teams/inbox/runs", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    assert r.json() == {"runs": [{"id": "run_1", "status": "failed"}]}
+    ids = [row["id"] for row in r.json()["runs"]]
+    assert ids == ["r_regressed", "r_fresh"]
     admin.list_company_heartbeat_runs.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie",
-        status="failed",
     )
+
+
+def test_list_inbox_runs_orders_recovery_by_terminal_time(client, monkeypatch):
+    """Overlapping runs: a failure CREATED before a success but FINISHING
+    after it is the agent's latest terminal state — it must stay visible.
+    Recovery ordering uses finishedAt, not createdAt."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        # Failure created first but finished LAST — keep.
+        {
+            "id": "r_slow_fail",
+            "agentId": "ag_1",
+            "status": "failed",
+            "createdAt": _iso(now - timedelta(hours=3)),
+            "finishedAt": _iso(now - timedelta(hours=1)),
+        },
+        # Success created later but finished BEFORE the failure did.
+        {
+            "id": "r_quick_ok",
+            "agentId": "ag_1",
+            "status": "succeeded",
+            "createdAt": _iso(now - timedelta(hours=2, minutes=30)),
+            "finishedAt": _iso(now - timedelta(hours=2)),
+        },
+    ]
+    _mock_inbox_runs(monkeypatch, {"runs": rows})
+
+    r = client.get("/api/v1/teams/inbox/runs", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert [row["id"] for row in r.json()["runs"]] == ["r_slow_fail"]
+
+
+def test_list_inbox_runs_fails_open_on_unparseable_timestamps(client, monkeypatch):
+    """Pre-Date-fix Paperclip images serialize timestamps as ``{}`` — a
+    failure whose age we can't establish must stay visible (hiding a real
+    failure is worse than showing a stale one)."""
+    _mock_inbox_runs(
+        monkeypatch,
+        {"runs": [{"id": "run_1", "agentId": "ag_1", "status": "failed", "createdAt": {}}]},
+    )
+
+    r = client.get("/api/v1/teams/inbox/runs", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert [row["id"] for row in r.json()["runs"]] == ["run_1"]
 
 
 def test_list_inbox_live_runs(client, monkeypatch):

@@ -13,6 +13,7 @@ live-run sub-routes.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -141,18 +142,86 @@ async def list_inbox(
     return envelope_list(rows, "items")
 
 
+# A failed run older than this needs no attention regardless of recovery —
+# it's history, not an alert. Insurance for agents that never ran again
+# (e.g. every routine paused), whose failures would otherwise pin the
+# "Needs attention" band forever (dismissals are per-browser localStorage).
+_FAILED_RUN_ATTENTION_WINDOW = timedelta(days=14)
+
+
+def _parse_run_ts(value: Any) -> Optional[datetime]:
+    """Parse an upstream run timestamp; None when absent/unparseable.
+
+    Pre-Date-fix Paperclip images serialize timestamps as ``{}`` — treat
+    anything non-string as unparseable rather than crashing the filter.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _run_ts(run: dict) -> Optional[datetime]:
+    """When the run reached its terminal state (fall back to creation).
+
+    Ordering recovery by creation time is wrong for overlapping runs: a
+    failure created before a success but finishing after it is the agent's
+    LATEST terminal state and must not be hidden by that success.
+    """
+    return (
+        _parse_run_ts(run.get("finishedAt"))
+        or _parse_run_ts(run.get("createdAt"))
+        or _parse_run_ts(run.get("startedAt"))
+    )
+
+
 @router.get("/inbox/runs")
 async def list_inbox_runs(ctx: TeamsContext = Depends(_ctx)):
-    """List failed heartbeat runs — the source for the Inbox 'Runs' tab.
+    """List failed heartbeat runs that still NEED ATTENTION.
 
-    Forwards ``status="failed"`` to upstream so we only surface runs
-    that actually need user attention.
+    Upstream's company heartbeat-runs list has no status filter (the
+    ``status`` param it used to be sent was ignored), so the full recent
+    list arrives either way — use it: a failure only needs attention while
+    the agent has NOT completed a successful run since (once it has, the
+    failure self-resolved), and never past a hard age window. Without
+    this, failures linger forever: dismissals live in per-browser
+    localStorage, so every browser re-surfaces the same week-old incident.
+
+    Fails open — a run whose timestamps are unparseable (pre-Date-fix
+    images send ``{}``) is kept, since hiding a real failure is worse than
+    showing a stale one.
     """
-    return await _agents._admin().list_company_heartbeat_runs(
+    upstream = await _agents._admin().list_company_heartbeat_runs(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
-        status="failed",
     )
+    rows = envelope_list(upstream, "runs")["runs"]
+
+    last_success: dict[str, datetime] = {}
+    for run in rows:
+        agent_id = run.get("agentId")
+        ts = _run_ts(run)
+        if run.get("status") == "succeeded" and isinstance(agent_id, str) and ts:
+            if agent_id not in last_success or ts > last_success[agent_id]:
+                last_success[agent_id] = ts
+
+    cutoff = datetime.now(timezone.utc) - _FAILED_RUN_ATTENTION_WINDOW
+
+    def needs_attention(run: dict) -> bool:
+        if run.get("status") != "failed":
+            return False
+        ts = _run_ts(run)
+        if ts is None:
+            return True  # fail open: unparseable timestamps keep the row
+        if ts < cutoff:
+            return False
+        recovered_at = last_success.get(run.get("agentId") or "")
+        return recovered_at is None or ts > recovered_at
+
+    return {"runs": [run for run in rows if needs_attention(run)]}
 
 
 @router.get("/inbox/live-runs")

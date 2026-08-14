@@ -32,11 +32,18 @@ def clean_inline_registry():
     provision_dispatch._INLINE_ATTEMPTS.clear()
 
 
+@pytest.fixture(autouse=True)
+def stub_claim_attempt(monkeypatch):
+    """The inline path stamps its fencing token at slot-acquire; stub it so
+    tests do not need DynamoDB. Tests that care override this."""
+    monkeypatch.setattr(provision_dispatch.container_repo, "claim_attempt", AsyncMock())
+
+
 async def _await_inline(owner_id: str):
     """Await the spawned inline attempt task for this owner (if any)."""
     entry = provision_dispatch._INLINE_ATTEMPTS.get(owner_id)
     if entry:
-        await entry[1]
+        await entry.task
 
 
 async def test_fresh_dispatch_starts_execution_then_runs_inline(monkeypatch, sfn):
@@ -401,6 +408,77 @@ async def test_handoff_terminates_child_then_stands_the_row_down(monkeypatch, sf
     assert release.await_args.kwargs["attempt_token"] == provision_dispatch.inline_attempt_token("claimuuid-1234")
     assert release.await_args.kwargs["retryable"] is True
     assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
+
+
+async def test_handoff_of_a_QUEUED_attempt_releases_on_the_claim_time_token(monkeypatch, sfn):
+    # An attempt cancelled while still waiting for a slot never stamped the
+    # inline token, so the row still carries the CLAIM-TIME token. Fencing the
+    # release on the inline token here would be conditionally rejected — a
+    # silent no-op leaving the row at "provisioning" to wait out the 40-tick
+    # backstop.
+    monkeypatch.setattr(provision_dispatch, "_INLINE_CONCURRENCY", asyncio.Semaphore(0))
+    stamp = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "claim_attempt", stamp)
+    runner = AsyncMock(return_value=0)
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", runner)
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
+    await asyncio.sleep(0)  # let the attempt reach the semaphore wait
+    await provision_dispatch.handoff_inflight_provisions()
+    stamp.assert_not_awaited()  # never got a slot, so never stamped
+    runner.assert_not_awaited()
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["attempt_token"] == "claimuuid-1234"
+
+
+async def test_handoff_of_a_RUNNING_attempt_releases_on_the_inline_token(monkeypatch, sfn):
+    # The other half of the same rule: once the attempt holds a slot it has
+    # stamped the inline token, so THAT is what the release must fence on —
+    # the claim-time token would also match a live SFN attempt-0 runner and
+    # could clobber machine-owned state.
+    gate = asyncio.Event()
+    running = asyncio.Event()
+
+    async def blocked_runner(owner_id, claim_id):
+        # Reaching here proves the slot was acquired and the token stamped —
+        # deterministic, rather than counting event-loop turns.
+        running.set()
+        await gate.wait()
+        return 0
+
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
+    await running.wait()
+    assert provision_dispatch._INLINE_ATTEMPTS["user_abc"].fence_token == provision_dispatch.inline_attempt_token(
+        "claimuuid-1234"
+    )
+    await provision_dispatch.handoff_inflight_provisions()
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["attempt_token"] == provision_dispatch.inline_attempt_token("claimuuid-1234")
+
+
+async def test_claim_taken_over_while_queued_does_not_run_or_write(monkeypatch, sfn):
+    # The stamp is conditioned on the claim, so a takeover during the queue
+    # wait surfaces as ProvisionSuperseded. The attempt must not run and must
+    # not touch the row — the successor owns it now.
+    monkeypatch.setattr(
+        provision_dispatch.container_repo,
+        "claim_attempt",
+        AsyncMock(side_effect=provision_dispatch.container_repo.ProvisionSuperseded("taken over")),
+    )
+    runner = AsyncMock(return_value=0)
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", runner)
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
+    await _await_inline("user_abc")
+    runner.assert_not_awaited()
+    release.assert_not_awaited()
+    # The permit must still come back or the next attempt queues forever.
+    assert provision_dispatch._INLINE_CONCURRENCY._value == 4
 
 
 async def test_handoff_survives_a_failed_release(monkeypatch, sfn):

@@ -91,6 +91,7 @@ import logging
 import os
 import sys
 import uuid
+from dataclasses import dataclass
 
 import boto3
 from botocore.exceptions import ClientError
@@ -245,7 +246,28 @@ async def _dispatch_inner(owner_id: str) -> None:
 # Live inline attempts, owner_id -> (claim_id, task). The dict holds the strong
 # reference that keeps each attempt task alive; entries are popped by the
 # attempt's own finally.
-_INLINE_ATTEMPTS: dict[str, tuple[str, asyncio.Task]] = {}
+@dataclass
+class _InlineAttempt:
+    """One live inline attempt.
+
+    ``fence_token`` is the ``provision_attempt_token`` value currently ON THE
+    ROW for this attempt, and it changes once: from the claim-time token
+    (``claim_id``, stamped by ``try_claim_provision``) to the inline token,
+    when the attempt acquires a slot and stamps it. Tracking it is load-bearing
+    for ``_stand_down_attempt``: a release fenced on the WRONG token silently
+    no-ops, leaving the row at ``provisioning`` to wait out the 40-tick
+    backstop. The claim-time token cannot simply be used for both, because an
+    SFN attempt-0 runner also carries ``claim_id`` (``execution_input``) while
+    it writes ``status="provisioning"`` — so releasing on ``claim_id`` after
+    the inline attempt is under way could clobber a live machine-owned run.
+    """
+
+    claim_id: str
+    task: asyncio.Task
+    fence_token: str
+
+
+_INLINE_ATTEMPTS: dict[str, _InlineAttempt] = {}
 
 # ponytail: fixed cap of 4 concurrent runner subprocesses (~250MB RSS each
 # against the backend task's memory) — the 5th signup queues behind the
@@ -281,12 +303,15 @@ def inline_attempt_token(claim_id: str) -> str:
 
 def _inline_attempt_live(owner_id: str, claim_id: str) -> bool:
     entry = _INLINE_ATTEMPTS.get(owner_id)
-    return bool(entry and entry[0] == claim_id and not entry[1].done())
+    return bool(entry and entry.claim_id == claim_id and not entry.task.done())
 
 
 def _spawn_inline(owner_id: str, claim_id: str) -> None:
-    task = asyncio.create_task(_run_inline(owner_id, claim_id))
-    _INLINE_ATTEMPTS[owner_id] = (claim_id, task)
+    # fence_token starts at the CLAIM-TIME token: try_claim_provision stamps
+    # provision_attempt_token = claim_id, and nothing has changed it yet.
+    entry = _InlineAttempt(claim_id=claim_id, task=None, fence_token=claim_id)  # type: ignore[arg-type]
+    entry.task = asyncio.create_task(_run_inline(owner_id, claim_id))
+    _INLINE_ATTEMPTS[owner_id] = entry
 
 
 async def _runner_subprocess(owner_id: str, claim_id: str) -> int:
@@ -355,6 +380,26 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
                 logger.exception("inline provision: queue-saturation release failed for owner %s", owner_id)
             return
         try:
+            # Stamp the inline fencing token BEFORE the child exists. The
+            # child re-stamps the same value as its first action anyway (a
+            # documented no-op re-assertion), but doing it here removes the
+            # window where the attempt is under way while the row still
+            # carries the claim-time token — a window in which a stand-down
+            # could not tell which token to fence on. Also refreshes
+            # provision_claimed_at, so a long queue wait never looks stale.
+            try:
+                await container_repo.claim_attempt(owner_id, claim_id, inline_attempt_token(claim_id))
+            except container_repo.ProvisionSuperseded:
+                # The claim was taken over while we queued. Not ours any more:
+                # do not run, do not write.
+                logger.info(
+                    "inline provision for owner %s: claim taken over before the attempt started — standing down",
+                    owner_id,
+                )
+                return
+            entry = _INLINE_ATTEMPTS.get(owner_id)
+            if entry is not None and entry.claim_id == claim_id:
+                entry.fence_token = inline_attempt_token(claim_id)
             # The timeout wraps only the attempt itself, never the queue wait
             # above — a queued signup does not burn its attempt budget.
             code = await asyncio.wait_for(_runner_subprocess(owner_id, claim_id), timeout=_INLINE_ATTEMPT_TIMEOUT_S)
@@ -368,7 +413,14 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
                 owner_id,
                 _INLINE_ATTEMPT_TIMEOUT_S,
             )
-            await _stand_down_attempt(owner_id, claim_id, "inline provision attempt timed out")
+            # By here the slot was acquired and the inline token stamped, so
+            # that is the token on the row.
+            await _stand_down_attempt(
+                owner_id,
+                claim_id,
+                "inline provision attempt timed out",
+                inline_attempt_token(claim_id),
+            )
             return
         finally:
             _INLINE_CONCURRENCY.release()
@@ -406,11 +458,11 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
             logger.exception("inline provision: release failed for owner %s", owner_id)
     finally:
         entry = _INLINE_ATTEMPTS.get(owner_id)
-        if entry and entry[0] == claim_id:
+        if entry and entry.claim_id == claim_id:
             _INLINE_ATTEMPTS.pop(owner_id, None)
 
 
-async def _stand_down_attempt(owner_id: str, claim_id: str, cause: str) -> None:
+async def _stand_down_attempt(owner_id: str, claim_id: str, cause: str, fence_token: str) -> None:
     """Leave a killed inline attempt's row in a state something will act on.
 
     Called from the two paths that terminate a running child (attempt timeout,
@@ -426,13 +478,22 @@ async def _stand_down_attempt(owner_id: str, claim_id: str, cause: str) -> None:
 
     ``_start`` is idempotent on the deterministic name+input, so the normal
     case (execution already RUNNING) is a no-op, and the degraded case
-    genuinely acquires the watchdog Branch B could not get. The release is
-    fenced on the INLINE attempt token, so if the machine has already taken
-    this claim over its runner's ``claim_attempt`` re-stamp makes this a
-    silent no-op rather than a write over machine-owned state. ``retryable``
-    is True — a killed attempt is transient by definition — which the status
-    endpoint treats as silently-retried rather than surfacing to the owner,
-    and which the watch loop turns into the ECS leg on its very next tick.
+    genuinely acquires the watchdog Branch B could not get.
+
+    ``fence_token`` MUST be the value actually on the row for this attempt
+    (``_InlineAttempt.fence_token``), which is the claim-time token before the
+    attempt gets a slot and the inline token after. Passing the inline token
+    unconditionally silently no-ops the release for an attempt cancelled while
+    still queued — the row stays ``provisioning`` and waits out the 40-tick
+    backstop. Passing the claim-time token unconditionally is worse: an SFN
+    attempt-0 runner carries ``claim_id`` too, so it could clobber a live
+    machine-owned run. With the right token, a machine takeover (whose runner
+    re-stamped) makes this a silent no-op, which is exactly what we want.
+
+    ``retryable`` is True — a killed attempt is transient by definition —
+    which the status endpoint treats as silently-retried rather than surfacing
+    to the owner, and which the watch loop turns into the ECS leg on its very
+    next tick.
     """
     outcome = await _start(owner_id, claim_id)
     if outcome != "ok":
@@ -447,7 +508,7 @@ async def _stand_down_attempt(owner_id: str, claim_id: str, cause: str) -> None:
             claim_id,
             last_error=cause,
             retryable=True,
-            attempt_token=inline_attempt_token(claim_id),
+            attempt_token=fence_token,
         )
     except Exception:  # noqa: BLE001 — release is best-effort; the watchdog's backstop still covers it
         logger.exception("inline stand-down: release failed for owner %s", owner_id)
@@ -462,19 +523,26 @@ async def handoff_inflight_provisions() -> None:
     the watchdog and make the row honest, so a deploy roll costs the owner one
     watch tick rather than the 40-tick backstop. Crash-without-SIGTERM cannot
     reach this hook at all; that case is the backstop's."""
-    for owner_id, (claim_id, task) in list(_INLINE_ATTEMPTS.items()):
-        if task.done():
+    for owner_id, entry in list(_INLINE_ATTEMPTS.items()):
+        if entry.task.done():
             continue
-        task.cancel()
+        entry.task.cancel()
         try:
-            await task
+            await entry.task
         except asyncio.CancelledError:
             pass
         except Exception:  # noqa: BLE001 — the attempt is dead either way
             logger.exception("inline provision handoff: attempt for owner %s errored on cancel", owner_id)
         emit_provision_metric("inline_handoff")
         logger.info("inline provision for owner %s terminated for shutdown", owner_id)
-        await _stand_down_attempt(owner_id, claim_id, "backend shutdown during inline provision attempt")
+        # Read fence_token AFTER the cancel: an attempt that was still queued
+        # never stamped the inline token, and one that had a slot did.
+        await _stand_down_attempt(
+            owner_id,
+            entry.claim_id,
+            "backend shutdown during inline provision attempt",
+            entry.fence_token,
+        )
 
 
 async def _start(owner_id: str, claim_id: str) -> str:

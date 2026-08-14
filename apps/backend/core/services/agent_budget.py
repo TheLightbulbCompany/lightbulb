@@ -64,6 +64,53 @@ AGENT_BUDGET_EXCEEDED_DETAIL = (
 )
 
 
+async def is_at_agent_budget(owner_id: str) -> bool:
+    """True when ``owner_id`` may NOT create another agent.
+
+    The decision half, split out from ``enforce_agent_budget`` because not every
+    caller can answer with an HTTP status. ``marketplace_hire.create_hire_approval``
+    runs inside the ``/recommend`` response and its established contract is to
+    return None and stay "degraded-but-useful" rather than fail the whole call,
+    so it needs the boolean.
+
+    False (allow) on every unreadable input — see the fail-open note above.
+    """
+    from core.repositories import billing_repo
+    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
+
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+    except Exception:  # noqa: BLE001 — a billing outage must not block creation.
+        logger.warning("agent-budget: billing read failed for %s; allowing", owner_id, exc_info=True)
+        return False
+    if (account or {}).get("plan") == "ultra_pro":
+        return False
+
+    try:
+        agent_count = await count_paperclip_agents_for_owner(owner_id)
+    except Exception:  # noqa: BLE001 — see the fail-open note in the module docstring.
+        logger.warning("agent-budget: count failed for %s; allowing", owner_id, exc_info=True)
+        return False
+
+    if agent_count == 0:
+        # UNDETERMINABLE, not empty: every provisioned owner has Friday + Atlas,
+        # so a reachable roster is always >= 2. Allow rather than block the
+        # whole fleet's agent creation on a Paperclip blip.
+        put_metric("agent_budget.count_unavailable")
+        return False
+
+    if agent_count >= COMPANY_STANDARD_PLAN_MAX_AGENTS:
+        put_metric("agent_budget.blocked", dimensions={"plan": str((account or {}).get("plan", "unknown"))})
+        logger.info(
+            "agent-budget: refusing create for owner %s — %d agents at the %d limit",
+            owner_id,
+            agent_count,
+            COMPANY_STANDARD_PLAN_MAX_AGENTS,
+        )
+        return True
+    return False
+
+
 async def enforce_agent_budget(owner_id: str) -> None:
     """Raise 409 if creating one more agent would put ``owner_id`` over budget.
 
@@ -75,36 +122,5 @@ async def enforce_agent_budget(owner_id: str) -> None:
     ``routers/marketplace_listings`` — "Requires Ultra Pro" — so clients see one
     shape for "this needs a bigger plan" rather than two.
     """
-    from core.repositories import billing_repo
-    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
-
-    try:
-        account = await billing_repo.get_by_owner_id(owner_id)
-    except Exception:  # noqa: BLE001 — a billing outage must not block creation.
-        logger.warning("agent-budget: billing read failed for %s; allowing", owner_id, exc_info=True)
-        return
-    if (account or {}).get("plan") == "ultra_pro":
-        return
-
-    try:
-        agent_count = await count_paperclip_agents_for_owner(owner_id)
-    except Exception:  # noqa: BLE001 — see the fail-open note in the module docstring.
-        logger.warning("agent-budget: count failed for %s; allowing", owner_id, exc_info=True)
-        return
-
-    if agent_count == 0:
-        # UNDETERMINABLE, not empty: every provisioned owner has Friday + Atlas,
-        # so a reachable roster is always >= 2. Allow rather than block the
-        # whole fleet's agent creation on a Paperclip blip.
-        put_metric("agent_budget.count_unavailable")
-        return
-
-    if agent_count >= COMPANY_STANDARD_PLAN_MAX_AGENTS:
-        put_metric("agent_budget.blocked", dimensions={"plan": str((account or {}).get("plan", "unknown"))})
-        logger.info(
-            "agent-budget: refusing create for owner %s — %d agents at the %d limit",
-            owner_id,
-            agent_count,
-            COMPANY_STANDARD_PLAN_MAX_AGENTS,
-        )
+    if await is_at_agent_budget(owner_id):
         raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL)

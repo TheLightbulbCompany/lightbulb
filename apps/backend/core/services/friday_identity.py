@@ -863,6 +863,14 @@ def _migrate_add_soul_grounding(workspace: Workspace, owner_id: str, agent_uuid:
 _PAPERCLIP_IDENTITY_HEADING = "## Your Paperclip identity — already in your shell"
 _PAPERCLIP_IDENTITY_HEADING_LEGACY = "## Your Paperclip identity — load it before any Paperclip call"
 
+# Detection keys on the CONTENT, never the heading. Heading text is prose and
+# has already drifted once (em-dash vs hyphen, wording); a matcher anchored to
+# it silently misses a variant, the migration appends the new section instead
+# of replacing, and every later run then no-ops on the new heading while the
+# export block survives forever. These markers are what actually makes a file
+# dangerous, so they are what decides whether there is work to do.
+_LEGACY_CREDENTIAL_MARKERS = ("jq -r .token", "paperclip-claimed-api-key.json")
+
 
 def _section_from_template(heading: str) -> str:
     """Slice one ``## `` section out of ``_AGENTS_TEMPLATE``.
@@ -877,6 +885,30 @@ def _section_from_template(heading: str) -> str:
     nxt = _AGENTS_TEMPLATE.find("\n## ", start)
     end = len(_AGENTS_TEMPLATE) if nxt == -1 else nxt + 1
     return _AGENTS_TEMPLATE[start:end]
+
+
+def _legacy_section_start(content: str) -> int | None:
+    """Offset of the heading that owns the first credential-loading marker.
+
+    Found by locating the dangerous CONTENT and walking back to the heading
+    above it, so a reworded or re-punctuated heading is handled identically to
+    the canonical one. When the marker sits under no heading at all (a
+    hand-mangled file), the marker's own line is the start — we still remove
+    the instruction, just without a heading to take with it.
+    """
+    hit = min(
+        (content.find(marker) for marker in _LEGACY_CREDENTIAL_MARKERS if marker in content),
+        default=-1,
+    )
+    if hit == -1:
+        return None
+    heading = content.rfind("\n## ", 0, hit)
+    if heading != -1:
+        return heading + 1
+    if content.startswith("## "):
+        return 0
+    line_start = content.rfind("\n", 0, hit)
+    return 0 if line_start == -1 else line_start + 1
 
 
 def _legacy_section_end(content: str, start: int) -> int:
@@ -896,10 +928,13 @@ def _legacy_section_end(content: str, start: int) -> int:
     hand-mangled section) does removal run to EOF, and by then there is nothing
     recognisable left to preserve.
     """
-    body = content[start + len(_PAPERCLIP_IDENTITY_HEADING_LEGACY) :]
-    match = re.search(r"\n#{1,6} ", body)
+    # Skip past the heading LINE rather than a fixed literal, so a heading
+    # variant is bounded the same way the canonical one is.
+    line_end = content.find("\n", start)
+    scan_from = len(content) if line_end == -1 else line_end
+    match = re.search(r"\n#{1,6} ", content[scan_from:])
     if match:
-        return start + len(_PAPERCLIP_IDENTITY_HEADING_LEGACY) + match.start() + 1
+        return scan_from + match.start() + 1
     fence_open = content.find("```", start)
     if fence_open == -1:
         return len(content)
@@ -927,15 +962,17 @@ def _migrate_paperclip_identity_section(workspace: Workspace, owner_id: str, age
     The credentials now arrive via the ``paperclip-exec-creds`` plugin's
     ``resolve_exec_env`` hook, so the agent needs no file read at all.
 
-    Idempotent, and the LEGACY heading — not the new one — is what decides
-    whether there is work to do. Keying the no-op on the new heading would
-    leave a file that somehow carries both (a hand edit, or an earlier append
-    that ran against a heading variant this matcher missed) sitting on the
-    export block forever, which is exactly the leaking state. Every legacy
-    occurrence is removed; the new section is added only when absent, so a
-    file with both ends up with one copy of each.
+    Idempotent, and what decides whether there is work to do is the presence of
+    the CREDENTIAL-LOADING CONTENT (``_LEGACY_CREDENTIAL_MARKERS``), never the
+    heading spelling. Keying on either heading is unsafe: on the new one, a
+    file carrying both sections keeps the export block forever; on the old one,
+    a heading variant (em-dash vs hyphen, reworded) is missed, the new section
+    is appended, and every later run then no-ops on it while the block
+    survives. Markers are the thing that makes a file dangerous.
 
-    Removal is bounded so it can never eat an owner's own content — see
+    Every legacy occurrence is removed; the new section is added only when
+    absent, so a file with both ends up with one copy of each. Removal is
+    bounded so it can never eat an owner's own content — see
     ``_legacy_section_end``. Returns True when a rewrite happened.
     """
     rel_path = f"workspace-{agent_uuid}/AGENTS.md"
@@ -943,7 +980,7 @@ def _migrate_paperclip_identity_section(workspace: Workspace, owner_id: str, age
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
         return False
-    has_legacy = _PAPERCLIP_IDENTITY_HEADING_LEGACY in content
+    has_legacy = any(marker in content for marker in _LEGACY_CREDENTIAL_MARKERS)
     has_new = _PAPERCLIP_IDENTITY_HEADING in content
     if not has_legacy and has_new:
         return False
@@ -951,13 +988,12 @@ def _migrate_paperclip_identity_section(workspace: Workspace, owner_id: str, age
     if not has_legacy:
         workspace.write_file(owner_id, rel_path, content.rstrip("\n") + "\n\n" + section)
         return True
-    # Excise every legacy occurrence. The first one is replaced by the new
-    # section unless the file already has it, in which case all of them are
-    # simply removed.
+    # Excise every dangerous block. The first is replaced by the new section
+    # unless the file already has it, in which case all are simply removed.
     replacement = "" if has_new else section
-    while True:
-        start = content.find(_PAPERCLIP_IDENTITY_HEADING_LEGACY)
-        if start == -1:
+    for _ in range(64):  # bound: a pathological file cannot spin here
+        start = _legacy_section_start(content)
+        if start is None:
             break
         end = _legacy_section_end(content, start)
         content = content[:start] + replacement + content[end:]

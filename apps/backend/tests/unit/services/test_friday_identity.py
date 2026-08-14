@@ -1154,6 +1154,49 @@ def test_migrate_paperclip_stops_at_a_subsection_heading_too():
     assert "Keep me." in content
 
 
+def test_migrate_paperclip_catches_a_reworded_heading():
+    """Detection must key on the credential content, not the heading prose.
+
+    Codex's scenario: a heading variant (hyphen instead of em-dash, reworded)
+    is missed by an exact-heading matcher, so the new section gets APPENDED
+    and every later run then no-ops on it while the export block survives
+    forever. Content markers make heading spelling irrelevant.
+    """
+    variant = (
+        "# AGENTS.md\n\n"
+        "## Your Paperclip identity - load it first\n\n"  # hyphen, reworded
+        "```\nexport PAPERCLIP_API_KEY=$(jq -r .token paperclip-claimed-api-key.json)\n```\n\n"
+        "## Later section\n\nKeep me.\n"
+    )
+    ws = _MigrationWs(variant)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "jq -r .token" not in content
+    assert "paperclip-claimed-api-key.json" not in content
+    assert "## Your Paperclip identity - load it first" not in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING in content
+    assert "## Later section" in content and "Keep me." in content
+
+
+def test_migrate_paperclip_heals_a_file_that_was_appended_to_by_an_earlier_buggy_run():
+    """The exact end-state Codex described: new section present AND a variant
+    legacy block still there. Must converge, not no-op."""
+    new_section = friday_identity._section_from_template(friday_identity._PAPERCLIP_IDENTITY_HEADING)
+    stuck = (
+        "# AGENTS.md\n\n"
+        "## Paperclip identity (old wording)\n\n"
+        "```\nexport PAPERCLIP_API_KEY=$(jq -r .token paperclip-claimed-api-key.json)\n```\n\n" + new_section
+    )
+    ws = _MigrationWs(stuck)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "jq -r .token" not in content
+    assert content.count(friday_identity._PAPERCLIP_IDENTITY_HEADING) == 1
+    # And it settles — a second pass finds nothing left to do.
+    ws2 = _MigrationWs(content)
+    assert friday_identity._migrate_paperclip_identity_section(ws2, "user_abc", "uuid-f") is False
+
+
 def test_migrate_paperclip_removes_every_legacy_occurrence():
     src = "# AGENTS.md\n\n" + _LEGACY_PAPERCLIP_SECTION + "\n" + _LEGACY_PAPERCLIP_SECTION
     ws = _MigrationWs(src)

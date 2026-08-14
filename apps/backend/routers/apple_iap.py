@@ -120,6 +120,44 @@ async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
 
 
 @router.post(
+    "/billing/apple/portal",
+    summary="Stripe customer portal session that returns into the iOS app",
+    description=(
+        "Same portal as POST /billing/portal, but with a universal-link return "
+        "URL so iOS hands control back to the app when the customer finishes."
+    ),
+)
+async def create_mobile_portal(auth: AuthContext = Depends(get_current_user)):
+    """Exists ONLY for the return URL.
+
+    /billing/portal sends the customer to the web settings page when they are
+    done, which is correct in a browser and wrong from the app — a subscriber
+    who just cancelled would be left standing on isol8.co in Safari instead of
+    back where they started. Stripe's iOS guidance is to point `return_url` at
+    a universal link, which is what this does; the path is covered by the same
+    apple-app-site-association entry as the checkout return.
+
+    The path is chosen HERE, not accepted from the client: a caller-supplied
+    return_url on a billing endpoint is an open redirect.
+
+    Unlike the checkout endpoints there is no org fence. This manages whatever
+    subscription the owner already has — including a Teams per-seat one — and
+    changes no plan shape, so an org admin is a legitimate caller.
+    """
+    account = await billing_repo.get_by_owner_id(auth.owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise HTTPException(status_code=404, detail="Billing account not found")
+
+    try:
+        url = await BillingService().create_portal_session(account, return_path="/checkout_redirect/portal")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("apple_iap.portal_failed owner_id=%s: %s", auth.owner_id, e)
+        raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
+
+    return {"portal_url": url}
+
+
+@router.post(
     "/webhooks/apple-iap",
     summary="App Store Server Notifications V2 receiver",
     description=(

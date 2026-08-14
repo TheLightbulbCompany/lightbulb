@@ -38,6 +38,11 @@ const COPY: Record<string, { heading: string; body: string }> = {
     heading: "Checkout cancelled.",
     body: "Nothing was charged. You can head back to the isol8 app and start again whenever you like.",
   },
+
+  portal: {
+    heading: "Billing updated.",
+    body: "Any changes you made have been saved. Head back to the isol8 app — your plan will reflect them within a few seconds.",
+  },
 };
 
 const FALLBACK = {

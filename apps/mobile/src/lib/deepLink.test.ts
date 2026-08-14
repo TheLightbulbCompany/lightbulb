@@ -57,4 +57,15 @@ describe("parseCheckoutReturn", () => {
   it("rejects an unknown status segment", () => {
     expect(parseCheckoutReturn("https://isol8.co/checkout_redirect/granted")).toBeNull();
   });
+
+// The portal return is a third status: the customer came back from managing
+// or cancelling, so the app must refetch entitlement rather than assume.
+it("recognises the customer-portal return", () => {
+  expect(parseCheckoutReturn("https://isol8.co/checkout_redirect/portal")).toEqual({
+    status: "portal",
+  });
+  expect(parseCheckoutReturn("isol8://checkout_redirect/portal")).toEqual({
+    status: "portal",
+  });
+});
 });

@@ -361,7 +361,7 @@ export default function Settings() {
       let portalUrl: string | null = null;
       if (!isAppleManaged(source)) {
         portalUrl = await api
-          .post("/billing/portal", {})
+          .post("/billing/apple/portal", {})
           .then((body) => (body as { portal_url?: string })?.portal_url ?? null)
           // Swallowed on purpose: openSubscriptionManagement falls back to the
           // web billing page, so a portal outage still leaves them somewhere

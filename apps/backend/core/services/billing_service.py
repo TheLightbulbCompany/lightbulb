@@ -206,15 +206,30 @@ class BillingService:
                     logger.warning("Failed to delete orphan Stripe customer %s", customer_id)
             return winner
 
-    async def create_portal_session(self, billing_account: dict) -> str:
+    async def create_portal_session(self, billing_account: dict, *, return_path: str | None = None) -> str:
+        """Stripe customer portal URL for this account.
+
+        ``return_path`` overrides where Stripe sends the customer when they
+        finish. The default is the web settings page, which is right for a
+        browser and wrong for the app: a mobile subscriber who cancels would be
+        left standing on isol8.co in Safari rather than back where they started.
+        The app passes a universal-link path so iOS hands control back to it.
+
+        It is a PATH chosen from a fixed set by the CALLER, never a URL supplied
+        by the client — a client-controlled return_url on a billing endpoint is
+        an open redirect wearing a Stripe badge.
+        """
         owner_id = billing_account["owner_id"]
-        # 5-minute time bucket — same retry-collapsing intent as checkout.
+        # 5-minute time bucket — same retry-collapsing intent as checkout. The
+        # path is part of the key: two callers wanting different destinations
+        # inside one bucket must not be handed the same cached session.
         bucket = int(time.time() // 300)
+        path = return_path or "/settings/billing"
         with timing("stripe.api.latency", {"op": "billing_portal.session.create"}):
             session = stripe.billing_portal.Session.create(
                 customer=billing_account["stripe_customer_id"],
-                return_url=f"{FRONTEND_URL}/settings/billing",
-                idempotency_key=f"portal:{owner_id}:{bucket}",
+                return_url=f"{FRONTEND_URL}{path}",
+                idempotency_key=f"portal:{owner_id}:{path}:{bucket}",
             )
         return session.url
 

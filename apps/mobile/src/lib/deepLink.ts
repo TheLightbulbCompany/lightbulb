@@ -31,8 +31,8 @@ export function parseAgentDeepLink(url: string): { agentId: string } | null {
  * entitlement from the server. Nothing about a subscription may be granted
  * from a URL a third party can construct.
  */
-export function parseCheckoutReturn(url: string): { status: "success" | "cancel" } | null {
-  const match = /^(?:https:\/\/isol8\.co|isol8:\/\/)\/?checkout_redirect\/(success|cancel)/.exec(url);
+export function parseCheckoutReturn(url: string): { status: "success" | "cancel" | "portal" } | null {
+  const match = /^(?:https:\/\/isol8\.co|isol8:\/\/)\/?checkout_redirect\/(success|cancel|portal)/.exec(url);
   if (!match) return null;
-  return { status: match[1] as "success" | "cancel" };
+  return { status: match[1] as "success" | "cancel" | "portal" };
 }

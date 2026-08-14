@@ -1,34 +1,48 @@
-"""Container-provision dispatch: inline fast path, SFN durability backstop.
+"""Container-provision dispatch: SFN watchdog owns custody, inline fast path.
 
-THE single provisioning funnel. A fresh claim runs the provision runner as
-attempt 0 in a CHILD PROCESS of the backend task (``_run_inline`` — same
-image, same task role, same env, same exit-code ABI as the SFN provisioner
-task), skipping the ~30s ECS cold-launch the state machine pays per
-attempt. A subprocess — not an in-loop coroutine, not a thread — because
-the runner was designed as a standalone process: its call tree contains
-synchronous network/EFS I/O that would stall the backend's event loop, and
-it touches module-global asyncio primitives (the Paperclip admin-session
-lock, the org-seed locks) that must not be awaited from a second event
-loop in the same process. Process isolation removes both classes outright.
-The state machine remains the durable owner of everything after attempt 0:
+THE single provisioning funnel. A fresh claim (Branch B) does three things in
+order: claim the row, START the state-machine execution, then run the
+provision runner as attempt 0 in a CHILD PROCESS of the backend task
+(``_run_inline`` — same image, same task role, same env, same exit-code ABI
+as the SFN provisioner task), skipping the ~30s ECS cold-launch the machine
+pays per attempt. A subprocess — not an in-loop coroutine, not a thread —
+because the runner was designed as a standalone process: its call tree
+contains synchronous network/EFS I/O that would stall the backend's event
+loop, and it touches module-global asyncio primitives (the Paperclip
+admin-session lock, the org-seed locks) that must not be awaited from a
+second event loop in the same process. Process isolation removes both
+classes outright.
+
+**Start-before-spawn is the invariant.** From the instant a claim exists,
+exactly ONE durable thing is responsible for driving it to a terminal state:
+the execution. Its watch loop (``service-stack.ts``) polls the row and takes
+the ECS leg over on its own clock, so the inline attempt is an opportunistic
+accelerator, never a custodian. Nothing in this module hands custody back —
+there is nothing to hand back:
 
 - **Inline failure** (exit 10/11, or a spawn crash): the runner has already
-  released the row to ``error`` with the stamped claim + execution name
-  intact, so the next status poll lands on Branch A below and hands the
-  SAME claim to the state machine — retries stay SFN-owned, paced by the
-  machine's own Wait states, never by the poll.
-- **Backend shutdown** (deploy roll): the lifespan hook calls
-  ``handoff_inflight_provisions`` — terminate the child, await it, then
-  StartExecution with the deterministic name+input. Crash-without-SIGTERM
-  is the pre-existing Branch A "never started" leg, reached from the next
-  ~3s status poll on a surviving instance.
-- **Overlap** (another instance's Branch A re-issue racing a still-live
-  attempt during a rolling deploy): the inline attempt runs under a
-  DISTINCT attempt token (``inline_attempt_token``, via the same
-  ``PROVISION_ATTEMPT_TOKEN`` env contract the state machine uses), so the
-  SFN runner's first-act ``claim_attempt`` re-stamp fences the inline
-  straggler out at its next fenced checkpoint — the same hazard-1 fence
-  that already orders SFN retries (no dual-run window, spec §7).
+  released the row to ``error``; the watch loop observes it within a tick
+  and runs the ECS leg. Retries stay SFN-owned, paced by the machine's own
+  Wait states.
+- **Backend shutdown** (deploy roll) or **crash without SIGTERM**: the
+  lifespan hook terminates the children and exits. The row keeps its lease
+  with no live runner; the watch loop's tick backstop takes over.
+- **Queue saturation**: the inline slot wait is BOUNDED
+  (``_INLINE_QUEUE_TIMEOUT_S``) and releases the row to ``error`` on expiry,
+  so a pileup of wedged attempts can never park a claim behind them.
+- **Overlap** (an SFN attempt racing a still-live inline child): the inline
+  attempt runs under a DISTINCT attempt token (``inline_attempt_token``, via
+  the same ``PROVISION_ATTEMPT_TOKEN`` env contract the state machine uses),
+  so the SFN runner's first-act ``claim_attempt`` re-stamp fences the inline
+  straggler out at its next fenced checkpoint — the same hazard-1 fence that
+  already orders SFN retries (no dual-run window, spec §7).
+
+This replaced a choreography of per-exit-path StartExecution handoffs whose
+common leg (nonzero exit) had no handoff at all: it relied on the FRONTEND's
+~3s status poll to re-dispatch, and a saturated inline queue suppressed even
+that. With no tab open — or with every slot wedged — a claim was simply
+orphaned. Dev broke fleet-wide this way on 2026-08-13 during a Fargate Spot
+drought.
 
 Dispatch stays crash-safe by execution NAME: the claim write stamps the name
 atomically (container_repo), and StartExecution is idempotent for STANDARD
@@ -46,13 +60,17 @@ Two hazards #1388 left open, both closed here (spec §7 "Required reshape"):
    action every attempt (``container_repo.claim_attempt``), fencing out a
    still-running straggler from a superseded attempt at its next checkpoint.
    See ``container_repo.claim_attempt`` docstring for the full hazard.
-2. Branch-B wedge (execution CLOSED without a terminal row write): the
-   design hands this to a ``reconciliation_worker`` (SWEEP) that
-   disambiguates via ``DescribeExecution`` — NOT yet built (SWEEP is
-   Wave 5). ``describe_dispatch_execution`` below is the clean query
-   interface SWEEP will call; until it lands, the wall-clock stale-lease
-   heuristic in ``container_repo.is_provision_claim_stale`` remains the
-   interim bridge (see its docstring) — do not delete it until SWEEP lands.
+2. Execution CLOSED without a terminal row write: the watch loop closes this
+   for every claim it owns — it only exits via Succeed (row ``running`` /
+   superseded / claim gone), Fail (deterministic error), or the ECS retry
+   leg, so a claim cannot outlive its watcher silently. What remains
+   uncovered is the narrow window BEFORE the watchdog exists: a backend that
+   dies between ``try_claim_provision`` and ``_start``. That row holds a
+   lease with no execution, and the wall-clock stale-lease heuristic in
+   ``container_repo.is_provision_claim_stale`` is still its recovery — do not
+   delete that heuristic. ``describe_dispatch_execution`` below stays as the
+   read primitive for an operator (or a future reconciler) that needs to ask
+   what actually happened to a given claim's execution.
 """
 
 from __future__ import annotations
@@ -164,9 +182,10 @@ async def _dispatch_inner(owner_id: str) -> None:
         claim = row.get("provision_claim_id")
         if stamped and claim and stamped == execution_name(owner_id, claim):
             if _inline_attempt_live(owner_id, claim):
-                # This process's inline attempt holds the lease; the ~3s poll
-                # cadence must not hand its claim to the state machine while
-                # it runs.
+                # This process spawned that claim, so its execution is already
+                # RUNNING (Branch B starts before spawning). Re-issuing would
+                # be an idempotent no-op — skip the redundant API call rather
+                # than make one per owner per ~3s poll.
                 return
             outcome = await _start(owner_id, claim)
             if outcome != "closed":
@@ -174,16 +193,35 @@ async def _dispatch_inner(owner_id: str) -> None:
                 # the claim is not ours to release, and a later poll retries.
                 return
 
-    # Branch B: fresh dispatch — mint claim + name in one atomic write, then
-    # run attempt 0 in-process. No StartExecution here: the machine only ever
-    # sees a claim via Branch A (inline failure, shutdown handoff, or another
-    # instance's re-issue), always under the same deterministic name+input.
+    # Branch B: fresh dispatch — mint claim + name in one atomic write, START
+    # the watchdog, then run attempt 0 in-process. The order is the module's
+    # central invariant: the machine is watching this claim before anything
+    # can fail, so no inline outcome needs a handoff.
     claim = str(uuid.uuid4())
     name = execution_name(owner_id, claim)
     won = await container_repo.try_claim_provision(owner_id, claim_id=claim, execution_name=name)
     if won is None:
         logger.info("dispatch_provision: claim lost for owner %s — standing down", owner_id)
         emit_provision_metric("claim_lost")
+        return
+    outcome = await _start(owner_id, claim)
+    if outcome != "ok":
+        # No watchdog means no durable owner, so we must NOT run an unwatched
+        # inline attempt on this claim — that is exactly the orphan this
+        # module exists to prevent. Release to error (retryable) so the next
+        # poll mints a fresh claim and name. "closed" is an 8-hex name
+        # collision on a FRESH claim (the name embeds claim_id[:8]): a closed
+        # execution already holds it, so this claim can never be watched.
+        last_error = (
+            "provision dispatch: execution name collision"
+            if outcome == "closed"
+            else "provision dispatch: StartExecution failed"
+        )
+        try:
+            await container_repo.release_provision_to_error(owner_id, claim, last_error=last_error, retryable=True)
+        except Exception:  # noqa: BLE001 — release is best-effort
+            logger.exception("dispatch_provision: release failed for owner %s", owner_id)
+        emit_provision_metric("dispatch_start_failed")
         return
     _spawn_inline(owner_id, claim)
 
@@ -198,13 +236,23 @@ _INLINE_ATTEMPTS: dict[str, tuple[str, asyncio.Task]] = {}
 # semaphore; raise alongside the task size if signup bursts ever exceed it.
 _INLINE_CONCURRENCY = asyncio.Semaphore(4)
 
-# The state machine bounds every attempt with taskTimeout (30 min,
-# service-stack.ts RunProvisioner). The runner's wait loop is deliberately
-# unbounded and relies on that outer bound, so attempt 0 needs the SAME
-# per-attempt ceiling — without it, a wedged box (deployment never FAILED,
-# gateway never healthy) would hold its semaphore slot and suppress the SFN
-# handoff forever. On expiry the child is terminated and the claim handed to
-# the machine.
+# TIMING IS LOAD-BEARING — these two and the machine's watch backstop (40
+# ticks x 60s = 2400s, service-stack.ts WatchRow) move together. The backstop
+# may only fire once the inline child is DEAD: 300 + 1800 = 2100s < 2400s. If
+# an SFN attempt started while an inline child were still alive, its
+# first-act claim_attempt re-stamp could be stomped by the inline child's own
+# re-stamp and BOTH would keep running against the same row.
+#
+# _INLINE_QUEUE_TIMEOUT_S bounds the wait for a concurrency slot. Unbounded,
+# a pileup of wedged attempts parks later claims indefinitely while Branch A
+# stands down for them on every poll — the machine never takes over (the
+# 2026-08-13 Spot-drought failure).
+#
+# _INLINE_ATTEMPT_TIMEOUT_S mirrors the machine's per-attempt taskTimeout (30
+# min, service-stack.ts RunProvisioner). The runner's wait loop is
+# deliberately unbounded and relies on an outer bound, so attempt 0 needs the
+# same ceiling.
+_INLINE_QUEUE_TIMEOUT_S = 300
 _INLINE_ATTEMPT_TIMEOUT_S = 30 * 60
 
 
@@ -262,39 +310,67 @@ async def _runner_subprocess(owner_id: str, claim_id: str) -> int:
 async def _run_inline(owner_id: str, claim_id: str) -> None:
     bind_log_context(user_id=owner_id)
     try:
-        async with _INLINE_CONCURRENCY:
+        try:
+            await asyncio.wait_for(_INLINE_CONCURRENCY.acquire(), timeout=_INLINE_QUEUE_TIMEOUT_S)
+        except TimeoutError:
+            # No slot in time (a Spot-drought pileup of wedged attempts).
+            # Make the row honest so the watchdog's next tick runs the
+            # attempt as an ECS task instead of this owner queueing behind
+            # wedged siblings. Fenced on the claim-time attempt token —
+            # try_claim_provision stamps provision_attempt_token = claim_id,
+            # and the child that would have re-stamped it never spawned — so
+            # a machine retry that already re-stamped owns the row and this
+            # release silently no-ops.
+            emit_provision_metric("inline_queue_saturated")
+            logger.warning(
+                "inline provision for owner %s waited %ss for a slot — releasing to the machine",
+                owner_id,
+                _INLINE_QUEUE_TIMEOUT_S,
+            )
             try:
-                # The timeout wraps only the attempt itself, never the
-                # semaphore queue wait — a queued signup does not burn budget.
-                code = await asyncio.wait_for(_runner_subprocess(owner_id, claim_id), timeout=_INLINE_ATTEMPT_TIMEOUT_S)
-            except TimeoutError:
-                # wait_for has cancelled the attempt (terminating the child)
-                # — hand the claim to the state machine, exactly like the
-                # shutdown handoff.
-                outcome = await _start(owner_id, claim_id)
-                emit_provision_metric("inline_timeout")
-                logger.error(
-                    "inline provision attempt for owner %s exceeded %ss — handed to SFN (outcome=%s)",
+                await container_repo.release_provision_to_error(
                     owner_id,
-                    _INLINE_ATTEMPT_TIMEOUT_S,
-                    outcome,
+                    claim_id,
+                    last_error="inline queue saturated — machine takes over",
+                    retryable=True,
+                    attempt_token=claim_id,
                 )
-                return
+            except Exception:  # noqa: BLE001 — release is best-effort
+                logger.exception("inline provision: queue-saturation release failed for owner %s", owner_id)
+            return
+        try:
+            # The timeout wraps only the attempt itself, never the queue wait
+            # above — a queued signup does not burn its attempt budget.
+            code = await asyncio.wait_for(_runner_subprocess(owner_id, claim_id), timeout=_INLINE_ATTEMPT_TIMEOUT_S)
+        except TimeoutError:
+            # wait_for has cancelled the attempt (terminating the child). The
+            # row keeps its lease with no live runner; the watchdog's tick
+            # backstop takes the ECS leg over. Nothing to hand off.
+            emit_provision_metric("inline_timeout")
+            logger.error(
+                "inline provision attempt for owner %s exceeded %ss — terminated; "
+                "the machine's watch backstop takes over",
+                owner_id,
+                _INLINE_ATTEMPT_TIMEOUT_S,
+            )
+            return
+        finally:
+            _INLINE_CONCURRENCY.release()
         if code == 0:
             emit_provision_metric("inline_ok")
         else:
             # 10/11/20: the runner already wrote the honest row state (error
-            # with retryability, or verified stand-down). The stamped
-            # claim/name survive release_provision_to_error, so the next poll
-            # lands on Branch A and hands this claim to the state machine.
+            # with retryability, or verified stand-down). The watchdog reads
+            # that row on its next tick and retries, fails, or stands down —
+            # no dispatcher action, and no dependency on a client poll.
             emit_provision_metric("inline_failed")
             logger.warning(
-                "inline provision attempt for owner %s exited %s — SFN takes over on next poll",
+                "inline provision attempt for owner %s exited %s — machine observes within a tick",
                 owner_id,
                 code,
             )
     except asyncio.CancelledError:
-        raise  # shutdown handoff owns the successor dispatch
+        raise  # shutdown: the child is terminated; the machine is already watching
     except Exception:  # noqa: BLE001 — the runner classifies internally; this is the spawn belt
         logger.exception("inline provision attempt crashed for owner %s", owner_id)
         emit_provision_metric("inline_failed")
@@ -319,28 +395,25 @@ async def _run_inline(owner_id: str, claim_id: str) -> None:
 
 
 async def handoff_inflight_provisions() -> None:
-    """Shutdown hook (main.py lifespan): hand every live inline attempt to the
-    state machine before the process exits. Cancel first and AWAIT it — the
-    cancellation path terminates the child process — so no straggler outlives
-    its StartExecution successor. If StartExecution itself fails, the row
-    still holds the stamped claim+name and the next poll's Branch A re-issue
-    self-heals."""
-    for owner_id, (claim_id, task) in list(_INLINE_ATTEMPTS.items()):
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001 — the attempt is dead either way
-                logger.exception("inline provision handoff: attempt for owner %s errored on cancel", owner_id)
-        outcome = await _start(owner_id, claim_id)
+    """Shutdown hook (main.py lifespan): terminate every live inline child
+    before the process exits. Cancel and AWAIT — the cancellation path
+    terminates the child process — so no straggler outlives this instance.
+
+    No StartExecution: the execution has been running since claim time and is
+    watching the row, so it takes the ECS leg over on its own clock. That is
+    also what covers the crash-without-SIGTERM case this hook cannot reach."""
+    for owner_id, (_claim_id, task) in list(_INLINE_ATTEMPTS.items()):
+        if task.done():
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001 — the attempt is dead either way
+            logger.exception("inline provision handoff: attempt for owner %s errored on cancel", owner_id)
         emit_provision_metric("inline_handoff")
-        logger.info(
-            "inline provision handoff for owner %s: StartExecution outcome=%s",
-            owner_id,
-            outcome,
-        )
+        logger.info("inline provision for owner %s terminated for shutdown; machine owns the claim", owner_id)
 
 
 async def _start(owner_id: str, claim_id: str) -> str:

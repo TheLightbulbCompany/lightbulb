@@ -201,9 +201,11 @@ async def _dispatch_inner(owner_id: str) -> None:
                 return
 
     # Branch B: fresh dispatch — mint claim + name in one atomic write, START
-    # the watchdog, then run attempt 0 in-process. The order is the module's
-    # central invariant: the machine is watching this claim before anything
-    # can fail, so no inline outcome needs a handoff.
+    # the watchdog, then run attempt 0 in-process. The order carries the
+    # module's central invariant: whenever a watchdog CAN be had, it is
+    # watching before the attempt exists, so no inline outcome needs a
+    # handoff. The one case where it cannot (below) degrades explicitly
+    # rather than silently.
     claim = str(uuid.uuid4())
     name = execution_name(owner_id, claim)
     won = await container_repo.try_claim_provision(owner_id, claim_id=claim, execution_name=name)

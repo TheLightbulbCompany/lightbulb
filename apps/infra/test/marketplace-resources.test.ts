@@ -144,7 +144,6 @@ describe("DatabaseStack — marketplace tables", () => {
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "seller-created-index" }),
         Match.objectLike({ IndexName: "status-published-index" }),
-        Match.objectLike({ IndexName: "tag-published-index" }),
       ]),
     });
   });

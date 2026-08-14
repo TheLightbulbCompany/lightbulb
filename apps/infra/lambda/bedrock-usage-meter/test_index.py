@@ -328,6 +328,70 @@ def test_handler_unattributed_dlqs_and_never_ingests():
     assert "meter.unattributed" in metrics
 
 
+def test_handler_drops_foreign_env_gateway_without_dlq():
+    """The other env's gateway traffic is dropped, not DLQ'd.
+
+    The subscription filter cannot split the two envs: the dev gate Lambda
+    lives in the prod-named stack, so its generated role name contains the
+    literal `isol8-prod-bedrock-gate` and the PROD filter matches DEV records.
+    Such a record can never resolve against this env's reverse table, so
+    without the guard it DLQs as `unattributed` and looks like a revenue
+    miss. METER_ENV is "dev" here, so a prod-gate session is the foreign one.
+    """
+    import index
+
+    record = _load("inline_record.json")
+    record["identity"]["arn"] = (
+        "arn:aws:sts::877352799272:assumed-role/"
+        "isol8-prod-bedrock-gate-GateFnDevServiceRoleE10163F-t7q3kmHZY2Pl/"
+        "isol8-prod-bedrock-gate"
+    )
+    ingested, dlqd, metrics = [], [], []
+
+    with (
+        _stub_resolver(owner=None, tier=None),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: ingested.append(p)),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        result = index.handler(_awslogs_event(record), None)
+
+    assert result == {"statusCode": 200}
+    assert ingested == []
+    assert dlqd == []
+    assert "meter.foreign_env_skipped" in metrics
+    assert "meter.unattributed" not in metrics
+
+
+def test_handler_own_env_gateway_still_dlqs_when_unattributed():
+    """The foreign-env guard must not swallow a REAL provisioning gap.
+
+    A gateway record from THIS env that fails attribution is still a genuine
+    miss and must keep its DLQ + alarm posture.
+    """
+    import index
+
+    record = _load("inline_record.json")
+    record["identity"]["arn"] = (
+        "arn:aws:sts::877352799272:assumed-role/"
+        "isol8-prod-bedrock-gate-GateFnDevServiceRoleE10163F-t7q3kmHZY2Pl/"
+        "isol8-dev-bedrock-gate"
+    )
+    dlqd, metrics = [], []
+
+    with (
+        _stub_resolver(owner=None, tier=None),
+        patch.object(index, "_ingest_to_metronome", side_effect=lambda p: None),
+        patch.object(index, "_send_to_dlq", side_effect=lambda e, r: dlqd.append((e, r))),
+        patch.object(index, "_emit_metric", side_effect=lambda n, **k: metrics.append(n)),
+    ):
+        index.handler(_awslogs_event(record), None)
+
+    assert len(dlqd) == 1
+    assert dlqd[0][1] == "unattributed"
+    assert "meter.foreign_env_skipped" not in metrics
+
+
 def test_handler_missing_tier_dlqs_and_never_ingests():
     """Owner resolved but no tier on the row: the event could ingest but never
     rate (billable metrics group by tier) — same hold-and-alarm posture."""

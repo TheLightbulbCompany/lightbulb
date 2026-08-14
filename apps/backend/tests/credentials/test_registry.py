@@ -479,7 +479,14 @@ def test_meta_ads_rides_platform_app_not_dcr():
 
 def test_meta_ads_requests_every_documented_scope():
     """ads_mcp_management is what gates the MCP endpoint itself — dropping it (or
-    any of the seven Meta's Get Started lists) yields a token the server refuses."""
+    any of the seven Meta's Get Started lists) yields a token the server refuses.
+
+    pages_manage_metadata is the eighth, and is NOT from that list: it is what
+    Meta requires to POST {page-id}/subscribed_apps, which is how a Page trigger
+    binds to our webhook (inbound_triggers._meta_pages). pages_show_list only
+    lists Pages; it does not authorize binding one. Pinned here because dropping
+    it breaks Page triggers for every owner at subscribe time, and the failure is
+    nowhere near this file."""
     p = registry.get_provider("meta_ads")
     assert set(p.oauth.scopes) == {
         "ads_mcp_management",
@@ -488,6 +495,7 @@ def test_meta_ads_requests_every_documented_scope():
         "business_management",
         "catalog_management",
         "pages_show_list",
+        "pages_manage_metadata",
         "instagram_basic",
     }
     assert p.oauth.scope_separator == " "

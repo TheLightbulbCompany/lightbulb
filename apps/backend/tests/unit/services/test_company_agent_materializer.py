@@ -194,10 +194,14 @@ async def test_skills_bind_via_agent_entry_not_skills_patch():
     # The binding is threaded through the agent entry, not the skills block.
     assert entry["skills"] == ["alpha", "beta"]
     assert call["agent_entry"]["skills"] == ["alpha", "beta"]
-    # Company deploy carries no plugin/mcp/skills-block mutations through here.
+    # Company deploy carries no mcp/skills-block mutations through here.
     assert call["skills_patch"] is None
-    assert call["plugins_patch"] is None
     assert call["mcp_patch"] is None
+    # The ONE plugin mutation it does carry: the credential plugin. It must
+    # ship with the credential rule appended to the body, because that rule
+    # claims PAPERCLIP_* is already in the environment and this is what puts
+    # it there for an owner whose on-disk config predates the plugin.
+    assert call["plugins_patch"] == {"entries": {"paperclip-exec-creds": {"enabled": True}}}
 
 
 @pytest.mark.asyncio

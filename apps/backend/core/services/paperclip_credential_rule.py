@@ -36,5 +36,19 @@ that instruction: it is stale.
 """
 
 # The sentence every seeded playbook must contain, whatever else it says.
-# Asserted across Friday / Atlas / company agents so the three cannot drift.
+# Asserted across every seed path so they cannot drift.
 PAPERCLIP_CREDENTIAL_PROHIBITION = "Never read, print, echo or `cat` your API key"
+
+# The plugin entry that makes the rule above TRUE.
+#
+# Ships with the rule, always. The rule tells an agent its PAPERCLIP_* vars are
+# already set; this is what sets them. An owner provisioned before the plugin
+# existed has the extension baked in by the image roll but NOT enabled — the
+# roll reuses the on-disk openclaw.json and does not regenerate
+# plugins.entries — so any path that writes the new playbook onto such an owner
+# must also write this, or it hands the agent a playbook whose central claim is
+# false and no way to authenticate.
+#
+# Enabling it WITHOUT the rule is harmless (credentials simply arrive twice).
+# The rule without this is the broken direction, so when in doubt, patch this.
+PAPERCLIP_CREDS_PLUGIN_PATCH: dict = {"entries": {"paperclip-exec-creds": {"enabled": True}}}

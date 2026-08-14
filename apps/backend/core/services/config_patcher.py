@@ -921,6 +921,40 @@ async def strip_removed_agent_keys(
     await _locked_rmw(owner_id, _mutate, "strip removed agent keys")
 
 
+async def ensure_plugin_entries(owner_id: str, entries: dict) -> None:
+    """Ensure ``plugins.entries`` contains each of ``entries``.
+
+    ADDITIVE ONLY — adds entries that are absent, never overwrites one the
+    owner already has. A plugin the owner (or a marketplace deploy) configured
+    is theirs; this only fills gaps.
+
+    Exists because nothing else puts a NEW plugin entry on an existing
+    container: the image roll bakes the extension but reuses the on-disk
+    config, and ``replace_provider_block`` rebuilds the plugin subtree only on
+    a provider swap. Without this a baked plugin never activates for anyone
+    provisioned before it shipped.
+    """
+    wanted = dict(entries)
+
+    def _mutate(current: dict) -> bool:
+        plugins = current.get("plugins")
+        if not isinstance(plugins, dict):
+            plugins = {}
+            current["plugins"] = plugins
+        existing = plugins.get("entries")
+        if not isinstance(existing, dict):
+            existing = {}
+            plugins["entries"] = existing
+        changed = False
+        for key, value in wanted.items():
+            if key not in existing:
+                existing[key] = value
+                changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"ensure plugin entries={sorted(wanted)}")
+
+
 async def ensure_redact_patterns(owner_id: str, patterns: Iterable[str]) -> None:
     """Ensure ``logging.redactPatterns`` contains each of ``patterns``.
 

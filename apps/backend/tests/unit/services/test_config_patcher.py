@@ -1646,6 +1646,59 @@ async def test_repin_tool_search_mode_overwrites_drift_but_leaves_the_rest_of_to
 
 
 @pytest.mark.asyncio
+async def test_repin_tool_search_mode_preserves_sibling_toolsearch_settings():
+    """ToolSearchSchema also allows enabled / codeTimeoutMs /
+    searchDefaultLimit / maxSearchLimit, and agents can rewrite their own
+    openclaw.json — so those are a supported on-disk shape. Only `mode` is
+    ours; replacing the block wholesale would silently delete the rest."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "owner_1")
+        os.makedirs(user_dir)
+        path = Path(user_dir) / "openclaw.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "tools": {
+                        "toolSearch": {
+                            "mode": "code",
+                            "enabled": True,
+                            "codeTimeoutMs": 30000,
+                            "searchDefaultLimit": 25,
+                            "maxSearchLimit": 100,
+                        }
+                    }
+                }
+            )
+        )
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await repin_tool_search_mode("owner_1", "tools")
+
+        ts = json.loads(path.read_text())["tools"]["toolSearch"]
+        assert ts["mode"] == "tools"
+        assert ts["enabled"] is True
+        assert ts["codeTimeoutMs"] == 30000
+        assert ts["searchDefaultLimit"] == 25
+        assert ts["maxSearchLimit"] == 100
+
+
+@pytest.mark.asyncio
+async def test_repin_tool_search_mode_replaces_the_plain_boolean_form():
+    """ToolSearchSchema is a union — `toolSearch: true` is valid on disk and
+    carries no siblings, so replacing it with a mode block loses nothing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "owner_1")
+        os.makedirs(user_dir)
+        path = Path(user_dir) / "openclaw.json"
+        path.write_text(json.dumps({"tools": {"toolSearch": True}}))
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            await repin_tool_search_mode("owner_1", "tools")
+
+        assert json.loads(path.read_text())["tools"]["toolSearch"] == {"mode": "tools"}
+
+
+@pytest.mark.asyncio
 async def test_repin_tool_search_mode_is_a_noop_when_already_correct():
     with tempfile.TemporaryDirectory() as tmpdir:
         user_dir = os.path.join(tmpdir, "owner_1")

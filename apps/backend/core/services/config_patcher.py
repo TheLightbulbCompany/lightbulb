@@ -947,8 +947,18 @@ async def repin_tool_search_mode(owner_id: str, mode: str) -> None:
             tools = {}
             current["tools"] = tools
         existing = tools.get("toolSearch")
-        if isinstance(existing, dict) and existing.get("mode") == mode:
-            return False
+        if isinstance(existing, dict):
+            # Mutate ONLY `mode`. ToolSearchSchema also allows `enabled`,
+            # `codeTimeoutMs`, `searchDefaultLimit` and `maxSearchLimit`, and
+            # agents can rewrite their own openclaw.json — so those are a
+            # supported on-disk shape, not hypothetical future growth.
+            # Replacing the block wholesale would silently delete them.
+            if existing.get("mode") == mode:
+                return False
+            existing["mode"] = mode
+            return True
+        # Absent, or the schema's plain-boolean form (`toolSearch: true`),
+        # which carries no siblings to preserve.
         tools["toolSearch"] = {"mode": mode}
         return True
 

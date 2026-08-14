@@ -710,13 +710,6 @@ async def deploy_listing(
         )
         return JSONResponse(status_code=202, content={"started": True, "agent_count": agent_count})
 
-    # Single-agent hire: the company branch above has its own Ultra gate (it
-    # sizes by the PACKAGE's agent_count); this is the one-agent path, which
-    # adds exactly one to the live roster and so uses the same plan budget every
-    # other create path does. Checked before entitlement/payment work so a
-    # refusal never sits behind a purchase.
-    await enforce_agent_budget(resolve_owner_id(auth))
-
     price_cents = int(listing.get("price_cents", 0) or 0)
     # Seller-self-deploy bypass: sellers don't buy their own listings, so
     # they have no marketplace-purchases row pointing at their own
@@ -780,6 +773,19 @@ async def deploy_listing(
             "warnings": [],
             "already_installed": True,
         }
+
+    # Plan agent budget. The company branch above has its own Ultra gate (it
+    # sizes by the PACKAGE's agent_count); this is the one-agent path, which
+    # adds exactly one to the live roster and so uses the same budget every
+    # other create path does.
+    #
+    # Placed AFTER the already-installed short-circuit above, not before it: a
+    # deploy whose response was lost leaves the owner installed but retrying,
+    # and gating first would answer that retry with "upgrade to Ultra" for an
+    # agent they already have and that this call would not create. The retry
+    # must still heal into the existing install. Placed BEFORE the claim below
+    # so a refusal never has to unwind a held claim.
+    await enforce_agent_budget(owner_id)
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both

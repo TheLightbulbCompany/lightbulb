@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -14,6 +15,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
@@ -1824,20 +1826,48 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
+    // Provisioning failures page. This is the signup path — a failed or timed
+    // out execution means a new user never gets a container.
+    //
+    // The topic is imported from a CONSTRUCTED ARN string rather than a
+    // cross-stack reference on purpose. ObservabilityStack (which owns the
+    // topic) already takes this stack's backendService as a prop, so a real
+    // reference in this direction would close a stack dependency cycle. Same
+    // reasoning as the secret-names / KMS-key-ARNs handling elsewhere in this
+    // stack: pass the identifier, not the construct. The topic name is
+    // deterministic, so this stays correct as long as ObservabilityStack keeps
+    // naming it `isol8-{env}-alerts-page`.
+    const pageAction = new cloudwatch_actions.SnsAction(
+      sns.Topic.fromTopicArn(
+        this,
+        "AlertsPageImported",
+        `arn:aws:sns:${this.region}:${this.account}:isol8-${env}-alerts-page`,
+      ),
+    );
+
+    const provisionFailed = new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
       alarmName: `isol8-${env}-provision-executions-failed`,
+      alarmDescription:
+        "PAGE: a provisioning Step Functions execution FAILED. New signups are " +
+        "not getting containers.",
       metric: provisionStateMachine.metricFailed({ period: cdk.Duration.minutes(5) }),
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
-    new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
+    provisionFailed.addAlarmAction(pageAction);
+
+    const provisionTimedOut = new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
       alarmName: `isol8-${env}-provision-executions-timedout`,
+      alarmDescription:
+        "PAGE: a provisioning Step Functions execution TIMED OUT. New signups " +
+        "are not getting containers.",
       metric: provisionStateMachine.metricTimedOut({ period: cdk.Duration.minutes(5) }),
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    provisionTimedOut.addAlarmAction(pageAction);
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `isol8-${env}-backend`,

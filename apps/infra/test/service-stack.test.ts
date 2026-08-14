@@ -498,6 +498,23 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     );
     expect(inline || managed).toBe(true);
   });
+
+  // These two alarms shipped with NO AlarmActions at all — they watched the
+  // signup path and notified nobody. An alarm without an action is decoration
+  // and it fails silently, so assert the wiring, not the alarm's existence.
+  test("provisioning failure alarms page the alerts topic", () => {
+    const alarms = template.findResources("AWS::CloudWatch::Alarm");
+    const provisioning = Object.values(alarms).filter((a: any) =>
+      String(a.Properties?.AlarmName ?? "").includes("provision-executions"),
+    );
+
+    expect(provisioning).toHaveLength(2);
+    for (const alarm of provisioning as any[]) {
+      expect(alarm.Properties.AlarmActions).toEqual([
+        expect.stringContaining("isol8-dev-alerts-page"),
+      ]);
+    }
+  });
 });
 
 describe("ServiceStack — Metronome per-env wiring", () => {

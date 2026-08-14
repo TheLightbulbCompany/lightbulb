@@ -508,6 +508,14 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
     // (f) The watch loop cycles: WaitWatchTick -> TickWatch -> GetContainerRow.
     expect(flat).toContain('"WaitWatchTick"');
     expect(flat).toContain('"Next":"GetContainerRow"');
+    // (f2) The row read must never be able to KILL the watchdog. Its retries
+    // cover only ~14s; a longer DynamoDB/KMS impairment would exhaust them
+    // and, with no Catch, fail the execution while the row is still leased —
+    // the orphaned claim this loop exists to prevent, caused by the loop
+    // itself. It must fall back into the wait/tick cycle and keep trying.
+    expect(flat).toContain(
+      '"Catch":[{"ErrorEquals":["States.ALL"],"ResultPath":null,"Next":"WaitWatchTick"}]',
+    );
     // (g) A stopped row stands down and must be decided BEFORE the tick
     // backstop, or the watchdog would resurrect a deliberately stopped
     // container. update_status("stopped") is not claim-conditioned, so this

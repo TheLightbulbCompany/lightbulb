@@ -36,6 +36,13 @@ there is nothing to hand back:
   so the SFN runner's first-act ``claim_attempt`` re-stamp fences the inline
   straggler out at its next fenced checkpoint — the same hazard-1 fence that
   already orders SFN retries (no dual-run window, spec §7).
+- **No watchdog available** (StartExecution fails, or a closed execution
+  already holds the name): the attempt still runs, UNWATCHED. When no durable
+  owner can be had, an unwatched attempt beats an idle claim — it makes
+  progress and leaves the row honest however it ends, whereas declining to
+  spawn would strand a leased row with nothing running. A degrade to the
+  pre-watchdog behaviour, visible as ``dispatch_start_failed``, and undone by
+  the next poll's Branch A re-issue once SFN is reachable.
 
 This replaced a choreography of per-exit-path StartExecution handoffs whose
 common leg (nonzero exit) had no handoff at all: it relied on the FRONTEND's
@@ -206,23 +213,28 @@ async def _dispatch_inner(owner_id: str) -> None:
         return
     outcome = await _start(owner_id, claim)
     if outcome != "ok":
-        # No watchdog means no durable owner, so we must NOT run an unwatched
-        # inline attempt on this claim — that is exactly the orphan this
-        # module exists to prevent. Release to error (retryable) so the next
-        # poll mints a fresh claim and name. "closed" is an 8-hex name
-        # collision on a FRESH claim (the name embeds claim_id[:8]): a closed
-        # execution already holds it, so this claim can never be watched.
-        last_error = (
-            "provision dispatch: execution name collision"
-            if outcome == "closed"
-            else "provision dispatch: StartExecution failed"
-        )
-        try:
-            await container_repo.release_provision_to_error(owner_id, claim, last_error=last_error, retryable=True)
-        except Exception:  # noqa: BLE001 — release is best-effort
-            logger.exception("dispatch_provision: release failed for owner %s", owner_id)
+        # No watchdog for this claim: either Step Functions is unreachable, or
+        # ("closed") a finished execution already holds this name — the name
+        # embeds claim_id[:8], so an 8-hex collision means this claim can
+        # never be watched.
+        #
+        # Run the attempt anyway. When no durable owner can be had, an
+        # UNWATCHED attempt is strictly better than an idle claim: it makes
+        # real progress, and every way it ends leaves the row honest — success
+        # writes running (no watcher needed), a runner failure releases to
+        # error, a crash hits the release below. Refusing to spawn would leave
+        # a leased row with nothing running at all, recoverable only by a
+        # later request path. This is a deliberate degrade to the pre-watchdog
+        # behaviour for as long as SFN is down; the next poll's Branch A
+        # re-issue attaches a watchdog as soon as it comes back (and on
+        # "closed", Branch A falls through to a fresh claim + name).
         emit_provision_metric("dispatch_start_failed")
-        return
+        logger.error(
+            "dispatch_provision: no watchdog for owner %s (start outcome=%s) — "
+            "running attempt 0 unwatched; recovery falls back to the status poll",
+            owner_id,
+            outcome,
+        )
     _spawn_inline(owner_id, claim)
 
 

@@ -1920,6 +1920,19 @@ export class ServiceStack extends cdk.Stack {
     getRow.next(watchChoice);
     waitWatch.next(tickWatch);
     tickWatch.next(getRow);
+    // The read must not be able to kill the watchdog. The retries above cover
+    // ~14s; a longer DynamoDB or KMS impairment would exhaust them, and with
+    // no Catch the execution FAILS while the row is still leased — precisely
+    // the orphaned claim this loop exists to prevent, now caused by the loop
+    // itself. Fall back into the wait/tick cycle instead: the read is retried
+    // every 60s for as long as the execution lives, ticks keep accruing, and
+    // a read that never recovers still reaches the backstop and runs the ECS
+    // leg. DISCARD keeps the error off the state so tickWatch's rebuild (and
+    // the stale $.row it drops) stay clean.
+    getRow.addCatch(waitWatch, {
+      errors: ["States.ALL"],
+      resultPath: sfn.JsonPath.DISCARD,
+    });
 
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
       stateMachineName: `isol8-${env}-provision`,

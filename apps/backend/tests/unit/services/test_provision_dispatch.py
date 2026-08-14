@@ -71,9 +71,11 @@ async def test_fresh_dispatch_starts_execution_then_runs_inline(monkeypatch, sfn
     assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
 
 
-async def test_branch_b_start_failure_releases_claim_and_skips_inline(monkeypatch, sfn):
-    # No watchdog means no durable owner — the claim must not be left held by
-    # an unwatched inline attempt. Release it so the next poll re-dispatches.
+async def test_branch_b_start_failure_still_runs_attempt_unwatched(monkeypatch, sfn):
+    # SFN unreachable. Refusing to spawn would leave a LEASED row with nothing
+    # running at all — worse than the unwatched attempt, which makes progress
+    # and leaves the row honest however it ends. Deliberate degrade to the
+    # pre-watchdog behaviour; the next poll re-attaches a watchdog.
     monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
     claim_calls = {}
 
@@ -90,22 +92,22 @@ async def test_branch_b_start_failure_releases_claim_and_skips_inline(monkeypatc
         {"Error": {"Code": "ThrottlingException", "Message": "slow down"}}, "StartExecution"
     )
     await provision_dispatch.dispatch_provision("user_abc")
-    runner.assert_not_awaited()
-    assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
-    release.assert_awaited_once()
-    args, kwargs = release.await_args
-    assert args == ("user_abc", claim_calls["claim"])
-    assert kwargs["last_error"] == "provision dispatch: StartExecution failed"
-    assert kwargs["retryable"] is True
+    await _await_inline("user_abc")
+    runner.assert_awaited_once_with("user_abc", claim_calls["claim"])
+    # The claim is NOT released out from under the attempt that is using it.
+    release.assert_not_awaited()
 
 
-async def test_branch_b_closed_execution_releases_claim_and_skips_inline(monkeypatch, sfn):
+async def test_branch_b_closed_execution_still_runs_attempt_unwatched(monkeypatch, sfn):
     # An 8-hex name collision on a FRESH claim: the name embeds claim_id[:8]
     # and a closed execution already holds it, so this claim can never be
-    # watched. Release it — the next poll mints a new claim and name.
+    # watched. Same rule — run it; on failure the runner leaves the row at
+    # error and Branch A falls through to a fresh claim + name.
     monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    claim_calls = {}
 
     async def fake_claim(owner_id, *, claim_id=None, execution_name=None):
+        claim_calls.update(claim=claim_id)
         return claim_id
 
     monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", fake_claim)
@@ -115,9 +117,28 @@ async def test_branch_b_closed_execution_releases_claim_and_skips_inline(monkeyp
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", runner)
     sfn.start_execution.side_effect = _already_exists_error()
     await provision_dispatch.dispatch_provision("user_abc")
-    runner.assert_not_awaited()
-    release.assert_awaited_once()
-    assert release.await_args.kwargs["last_error"] == "provision dispatch: execution name collision"
+    await _await_inline("user_abc")
+    runner.assert_awaited_once_with("user_abc", claim_calls["claim"])
+    release.assert_not_awaited()
+
+
+async def test_branch_b_never_leaves_a_claim_with_nothing_running(monkeypatch, sfn):
+    # The invariant behind both cases above, asserted directly: whatever
+    # StartExecution does, a won claim always ends up with a live attempt.
+    monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+    async def fake_claim(owner_id, *, claim_id=None, execution_name=None):
+        return claim_id
+
+    monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", fake_claim)
+    for outcome in (None, _already_exists_error(), RuntimeError("sfn exploded")):
+        provision_dispatch._INLINE_ATTEMPTS.clear()
+        runner = AsyncMock(return_value=0)
+        monkeypatch.setattr(provision_dispatch, "_runner_subprocess", runner)
+        sfn.start_execution.side_effect = outcome
+        await provision_dispatch.dispatch_provision("user_abc")
+        await _await_inline("user_abc")
+        runner.assert_awaited_once()
 
 
 async def test_execution_input_is_byte_identical_across_calls():

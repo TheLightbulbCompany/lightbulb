@@ -2045,12 +2045,14 @@ def handler(event, _ctx):
       });
 
       // Dev going dark should not wake anyone; prod should.
+      //
+      // No pageAlarmArns registration: that collection existed only to feed
+      // FIS experiment stop-conditions, and FIS was removed. An outside-in
+      // uptime check would be a poor stop-condition anyway — it measures the
+      // public front door rather than the fault being injected.
       alarm.addAlarmAction(
         new cloudwatch_actions.SnsAction(isProd ? this.pageTopic : this.warnTopic),
       );
-      if (isProd) {
-        this.pageAlarmArns.push(alarm.alarmArn);
-      }
     }
   }
 

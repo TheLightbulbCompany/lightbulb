@@ -1273,13 +1273,24 @@ export class ObservabilityStack extends cdk.Stack {
       },
     });
 
-    // Lambda to publish custom metric ONLY on unexpected task stops.
-    // A stop is treated as EXPECTED (and ignored) when either:
-    //   - every container exited cleanly (exitCode == 0 / absent), OR
-    //   - the stoppedReason matches a normal-lifecycle phrase (scaling,
-    //     deployment, service-scheduler, user-initiated).
-    // Anything else (non-zero container exit, OOM, host failure, unknown
-    // reason) is emitted as TaskStoppedUnexpected and pages W39.
+    // Lambda to publish a custom metric ONLY on unexpected task stops.
+    //
+    // Discriminates on ECS's structured `stopCode`, NOT on exit codes. The
+    // previous version checked exit codes FIRST and returned "unexpected" on
+    // any non-zero exit, before it ever looked at the reason. A rolling deploy
+    // SIGTERMs the container, which exits 143 — so W39 fired on EVERY deploy
+    // (confirmed: the backend task stopped 3 min after the 2026-08-14 deploy
+    // with stopCode=ServiceSchedulerInitiated, reason="Scaling activity
+    // initiated by (deployment ...)", exitCode=143). The reason filter that
+    // would have caught it was unreachable.
+    //
+    // A crashing container is reported as EssentialContainerExited, so the
+    // exit code carries no signal the stopCode does not already carry.
+    // SpotInterruption is routine — the whole fleet runs Fargate Spot, and a
+    // reclaim self-heals; a genuine storm still trips W58's crash-loop count.
+    // ServiceSchedulerInitiated is the ambiguous one: the scheduler both rolls
+    // deploys AND replaces tasks that fail health checks, so it is split on
+    // the reason text. An unknown stopCode alarms — fail loud.
     const taskStoppedFn = new lambda.Function(this, "TaskStoppedFn", {
       functionName: `isol8-${this.envName}-task-stopped-metric`,
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -1289,35 +1300,32 @@ export class ObservabilityStack extends cdk.Stack {
 import boto3
 cw = boto3.client('cloudwatch')
 
-# Substrings (lowercased) of stoppedReason values that represent NORMAL
-# lifecycle stops we must NOT alarm on: autoscaling, rolling deploys, the
-# service scheduler draining/replacing tasks, and operator/user-initiated
-# stops (incl. per-user container teardown).
-EXPECTED_REASON_SUBSTRINGS = (
-    'scaling',
-    'deployment',
-    'service-scheduler',
-    'service scheduler',
-    'user initiated',
-    'user-initiated',
-    'stopped by user',
-)
+# stopCodes that are routine lifecycle, never a failure:
+#   UserInitiated     - operator or per-user container teardown
+#   SpotInterruption  - Fargate Spot reclaim; the fleet runs Spot, it self-heals
+EXPECTED_STOP_CODES = ('UserInitiated', 'SpotInterruption')
+
+# Substrings (lowercased) of stoppedReason that mark a ServiceSchedulerInitiated
+# stop as a ROUTINE rollout rather than the scheduler replacing a sick task.
+ROLLOUT_REASON_SUBSTRINGS = ('deployment', 'scaling activity')
 
 def _is_unexpected(detail):
-    # Clean container exits (exitCode 0 / absent) are never unexpected.
-    containers = detail.get('containers') or []
-    if all((c.get('exitCode') or 0) == 0 for c in containers):
-        # Still flag if a non-zero exit hid behind an empty container list
-        # AND the reason looks abnormal — handled by the reason check below.
-        pass
-    else:
-        # At least one container exited non-zero → genuinely unexpected.
-        return True
-    reason = (detail.get('stoppedReason') or '').lower()
-    if not reason:
-        # No reason + clean exits → benign (e.g. normal shutdown).
+    # Exit codes are deliberately NOT consulted. A rolling deploy SIGTERMs the
+    # container (exit 143); treating that as a crash made W39 fire on every
+    # deploy. A real crash arrives as EssentialContainerExited instead.
+    stop_code = detail.get('stopCode') or ''
+
+    if stop_code in EXPECTED_STOP_CODES:
         return False
-    return not any(s in reason for s in EXPECTED_REASON_SUBSTRINGS)
+
+    if stop_code == 'ServiceSchedulerInitiated':
+        # The scheduler both rolls deploys and replaces tasks that fail health
+        # checks. Only the rollout is routine.
+        reason = (detail.get('stoppedReason') or '').lower()
+        return not any(s in reason for s in ROLLOUT_REASON_SUBSTRINGS)
+
+    # EssentialContainerExited, TaskFailedToStart, or an unrecognised code.
+    return True
 
 def handler(event, context):
     detail = event.get('detail', {}) or {}
@@ -1776,11 +1784,21 @@ def handler(event, _ctx):
 
   private createCostAlarms(props: ObservabilityStackProps): void {
     // W49a + W49b: AWS Budget — 80% warn + 100% page
+    //
+    // $500 was far below the actual run rate, so the budget sat permanently
+    // breached and both notifications were pure noise. Observed account spend:
+    // Apr $808, May $2,432, Jun $2,643, Jul $1,654, Aug tracking ~$900.
+    //
+    // $1,500 is a deliberately TIGHT leash for launch — roughly the current
+    // run rate, below the June peak — so it is expected to trip if spend
+    // climbs back toward historical highs. That is the intent: an early
+    // tripwire while launch traffic is unknown, not a ceiling. Raise it once
+    // post-launch spend settles, rather than letting it sit breached again.
     new budgets.CfnBudget(this, "MonthlyBudget", {
       budget: {
         budgetType: "COST",
         timeUnit: "MONTHLY",
-        budgetLimit: { amount: 500, unit: "USD" },
+        budgetLimit: { amount: 1500, unit: "USD" },
         budgetName: `isol8-${this.envName}-monthly`,
       },
       notificationsWithSubscribers: [
@@ -1792,10 +1810,13 @@ def handler(event, _ctx):
             threshold: 80,
             thresholdType: "PERCENTAGE",
           },
+          // Budgets email the address directly — no SNS, so no confirmation
+          // click and none of the silent-expiry problem the topics had. It
+          // still has to be a mailbox somebody reads.
           subscribers: [
             {
               subscriptionType: "EMAIL",
-              address: "alerts@isol8.co",
+              address: "admin@isol8.co",
             },
           ],
         },
@@ -1810,7 +1831,7 @@ def handler(event, _ctx):
           subscribers: [
             {
               subscriptionType: "EMAIL",
-              address: "oncall@isol8.co",
+              address: "admin@isol8.co",
             },
           ],
         },

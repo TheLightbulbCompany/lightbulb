@@ -857,6 +857,37 @@ def _kill_owner_bedrock(owner_id, *, crossed=True):
             logger.exception("meter: kill step %s failed for owner %s: %s", label, owner_id, exc)
 
 
+def _is_foreign_env_gateway(identity_arn):
+    """True iff this record was signed by ANOTHER environment's bedrock-gate.
+
+    Both meters see both envs' gateway traffic, because the subscription
+    filter cannot actually split them. The filter matches on the role name
+    (``isol8-{env}-bedrock-gate``), but the DEV gate Lambda is defined inside
+    the PROD-named stack, so CDK auto-generated its role as
+    ``isol8-prod-bedrock-gate-GateFnDevServiceRole...``. That name contains
+    the literal ``isol8-prod-bedrock-gate``, so the PROD filter matches DEV
+    records.
+
+    The session name is the reliable discriminator. For a Lambda, the STS
+    session name is the function name — exactly ``isol8-{env}-bedrock-gate`` —
+    so the trailing ARN segment carries the true env no matter how the role
+    itself was auto-named.
+
+    This is a DROP, not a DLQ. A foreign-env record is not a revenue miss and
+    not this meter's business; the other env's meter attributes it correctly.
+    DLQ'ing it instead meant the prod meter buried every dev invocation as
+    ``unattributed`` (dev AIPs are absent from the prod reverse table): 155
+    messages and a warn alarm stuck in ALARM for four weeks, none of it real.
+    It is still counted on its own metric — this file never drops silently.
+    """
+    if not identity_arn:
+        return False
+    session = identity_arn.rsplit("/", 1)[-1]
+    if not session.endswith("-bedrock-gate"):
+        return False
+    return session != f"isol8-{os.environ['METER_ENV']}-bedrock-gate"
+
+
 def _is_gateway_identity(identity_arn):
     """True iff this record was signed by the per-env GATEWAY role.
 
@@ -996,6 +1027,14 @@ def handler(event, context):
             logger.warning("meter: extract failed, DLQ + skip: %s", exc)
             _emit_metric("meter.parse_failed")
             _send_to_dlq(log_event, f"extract_failed: {exc}")
+            continue
+        if _is_foreign_env_gateway(parsed.get("identity_arn")):
+            # Not this env's traffic — the other env's meter owns it. Must be
+            # checked BEFORE attribution: a foreign record can never resolve
+            # against this env's reverse table, so it would otherwise be
+            # indistinguishable from a real provisioning gap and DLQ as
+            # `unattributed`.
+            _emit_metric("meter.foreign_env_skipped")
             continue
         owner_id, tier, plan = _resolve_owner_and_tier(record)
         if owner_id is None:

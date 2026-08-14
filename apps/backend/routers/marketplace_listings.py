@@ -38,6 +38,7 @@ from core.services import (
     seller_display,
     seller_profile,
 )
+from core.services.agent_budget import enforce_agent_budget
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import (
@@ -708,6 +709,13 @@ async def deploy_listing(
             company_deploy_service.run_company_deploy(owner_id=owner_id, listing=listing, tar_bytes=tar_bytes)
         )
         return JSONResponse(status_code=202, content={"started": True, "agent_count": agent_count})
+
+    # Single-agent hire: the company branch above has its own Ultra gate (it
+    # sizes by the PACKAGE's agent_count); this is the one-agent path, which
+    # adds exactly one to the live roster and so uses the same plan budget every
+    # other create path does. Checked before entitlement/payment work so a
+    # refusal never sits behind a purchase.
+    await enforce_agent_budget(resolve_owner_id(auth))
 
     price_cents = int(listing.get("price_cents", 0) or 0)
     # Seller-self-deploy bypass: sellers don't buy their own listings, so

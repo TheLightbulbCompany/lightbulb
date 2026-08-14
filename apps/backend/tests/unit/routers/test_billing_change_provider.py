@@ -786,9 +786,12 @@ async def test_change_provider_bedrock_to_chatgpt_hot_path_no_restart(async_clie
         # "Codex-native hosted search engages" — but chatgpt_oauth owners run
         # the EMBEDDED runtime, so dropping it left them with no web search.
         assert web_search_provider == "parallel-free"
-        # Same for toolSearch: never written for chatgpt_oauth at provision,
-        # so the swap must delete any stale embedded-runtime key.
-        assert tool_search_mode is None
+        # Same story for toolSearch, and the same fix. It used to be skipped for
+        # chatgpt_oauth at provision time, so the swap deleted it; it is now
+        # written unconditionally, so the swap must RE-PIN it. Passing None here
+        # would strip the key and drop a swapped owner straight back to carrying
+        # the full MCP tool catalog on every turn.
+        assert tool_search_mode == "code"
         # The harness set follows the provider: a bedrock owner arriving on
         # chatgpt_oauth swaps claude → opencode, and the acpx agents map must
         # ride along (the patcher's plugins.entries rebuild would otherwise

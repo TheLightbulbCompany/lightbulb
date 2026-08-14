@@ -883,6 +883,20 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
       so the seeded persona never has to tell the agent to read its own token:
       it used to, and the model printed the token into its visible reasoning,
       which persists to the transcript DB and replicates to S3.
+
+      FORWARD-ONLY, deliberately. This entry lands in NEWLY generated configs;
+      the fleet image rollout reuses the existing on-disk ``openclaw.json`` and
+      does not regenerate ``plugins.entries`` (``update_service``), so owners
+      provisioned before this keep running without the plugin — and keep their
+      old playbook, which still reads the key file, so they keep working. The
+      two must move together: enabling the plugin without the new playbook is
+      harmless, but the new playbook WITHOUT the plugin tells an agent its
+      credentials are in the environment when they are not, and every Paperclip
+      call fails. Do not "helpfully" patch this key onto existing owners in
+      isolation, and do not rewrite their AGENTS.md in isolation either.
+      Existing owners converge on reprovision, when both are regenerated
+      together. The ``pcp_`` redaction pattern below is what limits their
+      exposure meanwhile.
     - ``tokenjuice`` — deterministic exec/bash tool-result compaction
       (baked, Dockerfile Layer 13b). Strict-empty configSchema: enable-only,
       never add a ``config`` key or the container crash-loops at boot.

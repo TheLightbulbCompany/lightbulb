@@ -895,6 +895,126 @@ interface FromIntegrationResult {
   poll?: boolean;
 }
 
+// Searchable single-select for the event catalog. Providers now carry their
+// FULL event lists (Stripe ~265), so the plain dropdown stopped scaling. With
+// no filter and a big catalog: a "Popular" group (the first PINNED_EVENT_COUNT
+// registry entries — providers.yaml orders the curated picks first) then the
+// rest alphabetized. Typing collapses to one flat list matched
+// case-insensitively against label AND id. Small catalogs (≤8) skip the
+// grouping and list in registry order.
+const PINNED_EVENT_COUNT = 3;
+
+function EventPicker({
+  events,
+  value,
+  onSelect,
+}: {
+  events: { id: string; label: string }[];
+  value: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  // Roving focus over the options (same idiom as the rung radiogroup): Arrow
+  // keys move focus, Enter/Space activate the focused option button natively.
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? events.filter(
+        (e) =>
+          e.label.toLowerCase().includes(q) || e.id.toLowerCase().includes(q),
+      )
+    : null;
+  const grouped = filtered === null && events.length > 8;
+  const popular = grouped ? events.slice(0, PINNED_EVENT_COUNT) : [];
+  const rest = grouped
+    ? [...events.slice(PINNED_EVENT_COUNT)].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      )
+    : (filtered ?? events);
+  const visible = [...popular, ...rest];
+  const selectedIndex = visible.findIndex((e) => e.id === value);
+
+  function onListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const i = optionRefs.current.findIndex(
+      (el) => el === document.activeElement,
+    );
+    const next =
+      e.key === "ArrowDown"
+        ? Math.min(i + 1, visible.length - 1)
+        : Math.max(i - 1, 0);
+    optionRefs.current[next]?.focus();
+  }
+
+  const groupHeading = (text: string) => (
+    <div className="px-3 pt-2 pb-1 text-xs font-medium uppercase tracking-wide text-[var(--mute)]">
+      {text}
+    </div>
+  );
+
+  return (
+    <div>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search events…"
+        aria-label="Search events"
+        className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded px-3 py-2 text-[var(--ink)]"
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            optionRefs.current[0]?.focus();
+          }
+        }}
+      />
+      <div
+        role="listbox"
+        aria-label="Event"
+        onKeyDown={onListKeyDown}
+        className="mt-1 max-h-[260px] overflow-y-auto rounded border border-[var(--edge)] bg-[var(--cream)] pb-1"
+      >
+        {visible.length === 0 && (
+          <p className="px-3 py-2 text-sm text-[var(--mute)]">
+            No events match &ldquo;{query.trim()}&rdquo;.
+          </p>
+        )}
+        {visible.map((e, i) => (
+          <div key={e.id}>
+            {grouped && i === 0 && groupHeading("Popular")}
+            {grouped && i === popular.length && groupHeading("All events")}
+            <button
+              ref={(el) => {
+                optionRefs.current[i] = el;
+              }}
+              type="button"
+              role="option"
+              aria-selected={value === e.id}
+              tabIndex={i === (selectedIndex === -1 ? 0 : selectedIndex) ? 0 : -1}
+              onClick={() => onSelect(e.id)}
+              className={cn(
+                "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm transition-colors",
+                value === e.id
+                  ? "bg-[var(--forest-tint)] text-[var(--ink)]"
+                  : "text-[var(--ink-soft)] hover:bg-[var(--cream-deeper)]",
+              )}
+            >
+              <span className="truncate">{e.label}</span>
+              {value === e.id && (
+                <Check
+                  size={14}
+                  strokeWidth={2}
+                  className="shrink-0 text-[var(--forest)]"
+                />
+              )}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CreateRoutineDialog({
   agents,
   onClose,
@@ -1415,20 +1535,18 @@ function CreateRoutineDialog({
               </div>
             </label>
             {selectedConnection && (
-              <label className="block">
+              <div className="block">
                 <span className="text-sm text-[var(--ink-soft)]">Event</span>
                 <div className="mt-1">
-                  <EditorialSelect
-                    options={connEvents.map((e) => ({
-                      value: e.id,
-                      label: e.label,
-                    }))}
-                    value={connEventId ?? undefined}
-                    onValueChange={setConnEventId}
-                    placeholder="Select an event…"
+                  {/* Keyed by provider so switching apps resets the filter. */}
+                  <EventPicker
+                    key={connProvider}
+                    events={connEvents}
+                    value={connEventId}
+                    onSelect={setConnEventId}
                   />
                 </div>
-              </label>
+              </div>
             )}
             {/* The auto-register shapes' third step — which repo/project to
                 hook. The backend registers the webhook there itself, so

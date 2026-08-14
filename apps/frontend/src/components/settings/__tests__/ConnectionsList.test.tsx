@@ -88,6 +88,24 @@ describe("ConnectionsList — inbound trigger capability", () => {
     expect(screen.getByText(/invoice payment failed, charge refunded/i)).toBeInTheDocument();
   });
 
+  it("truncates the Can trigger line to three events plus a count", () => {
+    // Full catalogs now — a Stripe row carries ~265 labels; the card shows
+    // the curated leaders and counts the rest instead of a wall of text.
+    h.connections = [
+      {
+        provider: "stripe",
+        display_name: "Stripe",
+        acquisition: "direct_oauth",
+        status: "connected",
+        can_trigger: ["One", "Two", "Three", "Four", "Five"],
+      },
+    ];
+    render(<ConnectionsList canManage />);
+
+    expect(screen.getByText(/can trigger: one, two, three and 2 more/i)).toBeInTheDocument();
+    expect(screen.queryByText(/four/i)).toBeNull();
+  });
+
   it("renders no Can trigger line when the provider has no inbound events", () => {
     h.connections = [
       {

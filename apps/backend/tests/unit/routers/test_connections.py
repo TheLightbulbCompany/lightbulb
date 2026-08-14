@@ -264,11 +264,14 @@ class TestListConnections:
         mock_repo.list_for_owner = AsyncMock(return_value=[])
         response = await async_client.get("/api/v1/connections")
         by_key = {c["provider"]: c for c in response.json()["connections"]}
-        assert by_key["stripe"]["can_trigger"] == [
+        # Full catalog now — assert the curated "popular" prefix (the registry
+        # orders those first) rather than pinning all ~265 labels here.
+        assert by_key["stripe"]["can_trigger"][:3] == [
             "Invoice payment failed",
             "Charge refunded",
             "Subscription canceled",
         ]
+        assert len(by_key["stripe"]["can_trigger"]) >= 200
         assert by_key["google"]["can_trigger"] == [
             "Calendar changed",
             "Drive file changed",
@@ -289,14 +292,14 @@ class TestListConnections:
         by_key = {c["provider"]: c for c in response.json()["connections"]}
         # Events carry their per-event `registration` override (None =
         # inherit the block level) so the frontend can branch per-event.
-        assert by_key["stripe"]["inbound"] == {
-            "webhook_registration": "guided_paste",
-            "events": [
-                {"id": "invoice.payment_failed", "label": "Invoice payment failed", "registration": None},
-                {"id": "charge.refunded", "label": "Charge refunded", "registration": None},
-                {"id": "customer.subscription.deleted", "label": "Subscription canceled", "registration": None},
-            ],
-        }
+        # Full catalog now — pin the shape via the curated "popular" prefix
+        # (the registry orders those first) rather than all ~265 events.
+        assert by_key["stripe"]["inbound"]["webhook_registration"] == "guided_paste"
+        assert by_key["stripe"]["inbound"]["events"][:3] == [
+            {"id": "invoice.payment_failed", "label": "Invoice payment failed", "registration": None},
+            {"id": "charge.refunded", "label": "Charge refunded", "registration": None},
+            {"id": "customer.subscription.deleted", "label": "Subscription canceled", "registration": None},
+        ]
         # google is auto-registering (auto_google_watch) with the gmail
         # events overriding per-event; notion still declares no `inbound`.
         assert by_key["google"]["inbound"] == {

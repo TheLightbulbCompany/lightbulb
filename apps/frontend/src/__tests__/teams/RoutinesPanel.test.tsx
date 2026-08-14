@@ -503,16 +503,85 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(screen.queryByRole("option", { name: "Slack" })).not.toBeInTheDocument();
   });
 
-  it("choosing a provider populates the event dropdown from its inbound events", async () => {
+  it("choosing a provider renders its inbound events in the searchable picker", async () => {
     connectionsData = [connection()];
     const user = await openConnectedAppRung();
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
 
-    await user.click(screen.getAllByRole("combobox")[1]);
+    // The picker lists the events inline (no dropdown to open) with a search
+    // input above.
     expect(await screen.findByRole("option", { name: "Invoice payment failed" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Charge refunded" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Search events")).toBeInTheDocument();
+  });
+
+  it("typing in the search input filters events by label and id; selecting a filtered event submits its id", async () => {
+    connectionsData = [connection()];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+    });
+    const user = await openConnectedAppRung();
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+
+    // Label match narrows to the one refund event.
+    await user.type(screen.getByLabelText("Search events"), "refund");
+    expect(screen.getByRole("option", { name: "Charge refunded" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Invoice payment failed" })).not.toBeInTheDocument();
+
+    // Id match works too — labels don't contain the raw id.
+    await user.clear(screen.getByLabelText("Search events"));
+    await user.type(screen.getByLabelText("Search events"), "invoice.payment");
+    expect(screen.getByRole("option", { name: "Invoice payment failed" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Charge refunded" })).not.toBeInTheDocument();
+
+    // Selecting the filtered event submits ITS id, not a positional index.
+    await user.click(screen.getByRole("option", { name: "Invoice payment failed" }));
+    await user.click(screen.getByText("Create"));
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "stripe",
+      event_id: "invoice.payment_failed",
+    });
+  });
+
+  it("a big catalog groups into Popular (the first three registry entries) then All events alphabetized", async () => {
+    // 10 events (>8) triggers the grouping; registry order puts the curated
+    // picks first, so they become the Popular pins.
+    const events = [
+      { id: "invoice.payment_failed", label: "Invoice payment failed" },
+      { id: "charge.refunded", label: "Charge refunded" },
+      { id: "customer.subscription.deleted", label: "Subscription canceled" },
+      ...Array.from({ length: 7 }, (_, i) => ({
+        id: `zz.event_${i}`,
+        label: `Zz event ${i}`,
+      })),
+    ];
+    connectionsData = [connection({ inbound: { webhook_registration: "guided_paste", events } })];
+    const user = await openConnectedAppRung();
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+
+    expect(screen.getByText("Popular")).toBeInTheDocument();
+    expect(screen.getByText("All events")).toBeInTheDocument();
+    // The popular pins come FIRST in DOM order, before the alphabetized rest.
+    const options = screen.getAllByRole("option");
+    expect(options.slice(0, 3).map((o) => o.textContent)).toEqual([
+      "Invoice payment failed",
+      "Charge refunded",
+      "Subscription canceled",
+    ]);
+    expect(options).toHaveLength(10);
+
+    // Filtering collapses the grouping to one flat matched list.
+    await user.type(screen.getByLabelText("Search events"), "zz");
+    expect(screen.queryByText("Popular")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(7);
   });
 
   it("guided (Stripe): submits {provider,event_id}, then shows the proxy URL + a signing-secret field that PUTs it", async () => {
@@ -529,7 +598,6 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
-    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
 
     await user.click(screen.getByText("Create"));
@@ -584,7 +652,6 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
 
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Stripe" }));
-    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
     await user.click(screen.getByText("Create"));
     await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1");
@@ -655,7 +722,6 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     await user.click(screen.getByRole("radio", { name: /A connected app/ }));
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "GitHub" }));
-    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(
       await screen.findByRole("option", { name: "Pull request opened or changed" }),
     );
@@ -675,7 +741,7 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     expect(screen.getByText("Repository")).toBeInTheDocument();
     expect(screen.getByText("Create").closest("button")).toBeDisabled();
 
-    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(screen.getAllByRole("combobox")[1]);
     expect(await screen.findByRole("option", { name: "acme/site" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "acme/api" })).toBeInTheDocument();
   });
@@ -692,7 +758,7 @@ describe("RoutinesPanel — auto_github repo picker", () => {
     });
     const user = await pickGithubEvent();
 
-    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(await screen.findByRole("option", { name: "acme/site" }));
     await user.click(screen.getByText("Create"));
 
@@ -771,7 +837,6 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
     await user.click(screen.getByRole("radio", { name: /A connected app/ }));
     await user.click(screen.getAllByRole("combobox")[0]);
     await user.click(await screen.findByRole("option", { name: "Vercel" }));
-    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(
       await screen.findByRole("option", { name: "Deployment failed" }),
     );
@@ -787,7 +852,7 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
     expect(screen.getByText("Project")).toBeInTheDocument();
     expect(screen.getByText("Create").closest("button")).toBeDisabled();
 
-    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(await screen.findByRole("option", { name: "my-site" }));
     await user.click(screen.getByText("Create"));
 
@@ -865,7 +930,6 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     await user.click(
       await screen.findByRole("option", { name: "Google Workspace" }),
     );
-    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(
       await screen.findByRole("option", { name: "Calendar changed" }),
     );
@@ -881,7 +945,7 @@ describe("RoutinesPanel — auto_google_watch account picker", () => {
     expect(screen.getByText("Google account")).toBeInTheDocument();
     expect(screen.getByText("Create").closest("button")).toBeDisabled();
 
-    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(
       await screen.findByRole("option", { name: "ada@example.com" }),
     );
@@ -1050,7 +1114,7 @@ describe("RoutinesPanel — gmail per-event registration (poll / owner_setup)", 
         "/automations/providers/google/resources",
       ),
     );
-    await user.click(screen.getAllByRole("combobox")[2]);
+    await user.click(screen.getAllByRole("combobox")[1]);
     await user.click(
       await screen.findByRole("option", { name: "ada@example.com" }),
     );

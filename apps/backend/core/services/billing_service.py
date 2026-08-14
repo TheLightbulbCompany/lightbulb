@@ -1660,6 +1660,7 @@ async def _hot_swap_provider(
     back to the cold path.
     """
     from core.containers.config import (
+        TOOL_SEARCH_MODE,
         build_acp_config,
         build_provider_block,
         cheap_model_ref,
@@ -1779,10 +1780,10 @@ async def _hot_swap_provider(
             # must RE-PIN it rather than delete it. Passing None here strips the
             # key, which would drop a swapped owner straight back to carrying the
             # full tool catalog — the exact drift the unconditional setting
-            # exists to prevent. Keep this value identical to the provision-time
-            # one in containers/config.py, or a provider swap silently moves the
-            # owner to a different tool-search mode than a fresh provision.
-            tool_search_mode="tools",
+            # exists to prevent. Shares the provision-time constant rather than
+            # repeating the literal, so the swap cannot drift to a different
+            # mode than a fresh provision.
+            tool_search_mode=TOOL_SEARCH_MODE,
             acp_block=acp_block,
             acpx_entry=acpx_entry,
         )

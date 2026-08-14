@@ -80,23 +80,14 @@ class TestToolSearchAlwaysOn:
         custom = {"my-internal-api": {"command": "node", "args": ["server.js"], "env": {}}}
         assert _cfg("bedrock_claude", integration_mcp_servers=custom)["tools"]["toolSearch"] == {"mode": "tools"}
 
-    def test_provider_swap_repins_the_same_mode_as_a_fresh_provision(self):
-        """The mode lives in two places — provision-time here and the provider
-        swap's re-pin in billing_service — and nothing but this test couples
-        them. Drift means a swapped owner silently runs a different tool-search
-        mode than a freshly provisioned one, which is precisely the class of
-        bug that made the swap delete the key entirely once before.
-        """
-        import inspect
+    def test_provisioned_mode_is_the_shared_constant(self):
+        """Provision-time and the provider swap share one constant, so they
+        cannot drift to different modes. This pins the generator to it; the
+        swap side is covered by test_billing_change_provider, which asserts the
+        kwarg it passes."""
+        from core.containers.config import TOOL_SEARCH_MODE
 
-        from core.services import billing_service
-
-        provisioned = _cfg("bedrock_claude")["tools"]["toolSearch"]["mode"]
-        source = inspect.getsource(billing_service)
-        assert f'tool_search_mode="{provisioned}"' in source, (
-            f"provision-time writes mode={provisioned!r}; billing_service's provider-swap "
-            "re-pin must pass the same value"
-        )
+        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": TOOL_SEARCH_MODE}
 
 
 class TestBrowserBounds:

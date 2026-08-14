@@ -111,6 +111,16 @@ OPENCODE_XDG_DATA_DIR = "/home/node/.openclaw/opencode-data"
 # a ~$2,600 runaway into a ~$27 one.
 AGENT_RUN_TIMEOUT_SECONDS = 1800
 
+# tools.toolSearch.mode. THE single source — provision-time (below) and the
+# provider swap's re-pin (core.services.billing_service) must write the same
+# value, or a swapped owner silently runs a different tool-search mode than a
+# freshly provisioned one. That is not hypothetical: the swap used to delete
+# the key outright, dropping owners back onto the full tool catalog. Sharing
+# one constant makes the drift impossible rather than merely tested for.
+#
+# See the toolSearch block below for why this is "tools" and not "code".
+TOOL_SEARCH_MODE = "tools"
+
 # agents.defaults.runRetries.max — upstream default is 160, and each retry
 # re-arms the deadline above (so 160 × 30m is not a bound at all).
 AGENT_RUN_RETRIES_MAX = 8
@@ -1641,7 +1651,7 @@ def build_openclaw_config_dict(
             #
             # "tools" is upstream's own default fallback for that unsupported
             # case, so it is a well-trodden path rather than an exotic one.
-            "toolSearch": {"mode": "tools"},
+            "toolSearch": {"mode": TOOL_SEARCH_MODE},
             "media": {
                 "image": {"enabled": True},
                 "audio": {"enabled": False},

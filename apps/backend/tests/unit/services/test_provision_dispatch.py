@@ -39,6 +39,24 @@ def stub_claim_attempt(monkeypatch):
     monkeypatch.setattr(provision_dispatch.container_repo, "claim_attempt", AsyncMock())
 
 
+def _row_with_token(token: str) -> dict:
+    """A row carrying just the fencing token the stand-down reads back.
+
+    Deliberately has no ``status``: dispatch's Branch A only engages on
+    provisioning/error rows, so this feeds the stand-down's token read without
+    disturbing tests that exercise Branch B.
+    """
+    return {"provision_attempt_token": token}
+
+
+def _stub_row(monkeypatch, token: str) -> None:
+    monkeypatch.setattr(
+        provision_dispatch.container_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value=_row_with_token(token)),
+    )
+
+
 async def _await_inline(owner_id: str):
     """Await the spawned inline attempt task for this owner (if any)."""
     entry = provision_dispatch._INLINE_ATTEMPTS.get(owner_id)
@@ -266,6 +284,79 @@ async def test_branch_a_transient_failure_leaves_row_untouched(monkeypatch, sfn)
     release.assert_not_awaited()
 
 
+async def test_branch_a_retries_the_start_for_an_UNWATCHED_live_attempt(monkeypatch, sfn):
+    # Branch B degraded (StartExecution failed) but still spawned. If Branch A
+    # then stood down for the live attempt the way it does for a watched one,
+    # the attempt would suppress its own recovery for its whole 30-minute
+    # life, and a hard kill in that window would leave the claim with nothing.
+    name = provision_dispatch.execution_name("user_abc", "claimuuid-1234")
+    row = {
+        "status": "provisioning",
+        "provision_claim_id": "claimuuid-1234",
+        "provision_execution_name": name,
+    }
+    monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    gate = asyncio.Event()
+
+    async def blocked_runner(owner_id, claim_id):
+        await gate.wait()
+        return 0
+
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
+    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234", watched=False)
+    await asyncio.sleep(0)
+
+    # Poll 1: SFN still down — retried, still unwatched.
+    sfn.start_execution.side_effect = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "slow"}}, "StartExecution"
+    )
+    await provision_dispatch.dispatch_provision("user_abc")
+    assert sfn.start_execution.call_count == 1
+    assert provision_dispatch._INLINE_ATTEMPTS["user_abc"].watched is False
+
+    # Poll 2: SFN recovered — the watchdog attaches and the flag flips.
+    sfn.start_execution.side_effect = None
+    await provision_dispatch.dispatch_provision("user_abc")
+    assert sfn.start_execution.call_count == 2
+    assert provision_dispatch._INLINE_ATTEMPTS["user_abc"].watched is True
+
+    # Poll 3: now watched — no further redundant API calls.
+    await provision_dispatch.dispatch_provision("user_abc")
+    assert sfn.start_execution.call_count == 2
+    gate.set()
+    await _await_inline("user_abc")
+
+
+async def test_branch_a_never_mints_a_second_claim_while_an_attempt_is_live(monkeypatch, sfn):
+    # A live UNWATCHED attempt whose name is held by a CLOSED execution must
+    # not fall through to Branch B: that would mint a second claim and run a
+    # second runner for the same owner.
+    name = provision_dispatch.execution_name("user_abc", "claimuuid-1234")
+    row = {
+        "status": "provisioning",
+        "provision_claim_id": "claimuuid-1234",
+        "provision_execution_name": name,
+    }
+    monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    claim = AsyncMock(return_value=None)
+    monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", claim)
+    gate = asyncio.Event()
+
+    async def blocked_runner(owner_id, claim_id):
+        await gate.wait()
+        return 0
+
+    monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
+    provision_dispatch._spawn_inline("user_abc", "claimuuid-1234", watched=False)
+    await asyncio.sleep(0)
+    sfn.start_execution.side_effect = _already_exists_error()
+    await provision_dispatch.dispatch_provision("user_abc")
+    claim.assert_not_awaited()  # no second claim
+    assert provision_dispatch._INLINE_ATTEMPTS["user_abc"].claim_id == "claimuuid-1234"
+    gate.set()
+    await _await_inline("user_abc")
+
+
 async def test_branch_a_stands_down_while_inline_attempt_live(monkeypatch, sfn):
     # The ~3s poll cadence re-enters dispatch while attempt 0 runs in this
     # process; Branch A must NOT hand the live claim to the state machine.
@@ -315,14 +406,19 @@ async def test_inline_failure_exit_code_leaves_row_writes_to_runner(monkeypatch,
     assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
 
 
-async def test_inline_crash_releases_claim_to_error(monkeypatch, sfn):
-    monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
+async def test_inline_crash_stands_the_row_down(monkeypatch, sfn):
+    # A crash anywhere in the attempt (including the pre-spawn stamp) goes
+    # through the stand-down, which fences on the token READ BACK from the row
+    # rather than assuming the stamp landed.
     claim_calls = {}
 
     async def fake_claim(owner_id, *, claim_id=None, execution_name=None):
         claim_calls.update(claim=claim_id)
+        # From here on the row reads back the inline token — the stamp landed.
+        _stub_row(monkeypatch, provision_dispatch.inline_attempt_token(claim_id))
         return claim_id
 
+    monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
     monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", fake_claim)
     release = AsyncMock()
     monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
@@ -332,13 +428,35 @@ async def test_inline_crash_releases_claim_to_error(monkeypatch, sfn):
     release.assert_awaited_once()
     args, kwargs = release.await_args
     assert args == ("user_abc", claim_calls["claim"])
-    # attempt_token fence: after an SFN takeover re-stamps the token, this
-    # release must silently no-op rather than clobber the machine-owned row.
-    assert kwargs == {
-        "last_error": "inline provision attempt crashed",
-        "retryable": True,
-        "attempt_token": provision_dispatch.inline_attempt_token(claim_calls["claim"]),
-    }
+    assert kwargs["last_error"] == "inline provision attempt crashed"
+    assert kwargs["retryable"] is True
+    # After an SFN takeover re-stamps the token, the read sees a value that is
+    # neither of ours and the stand-down writes nothing at all.
+    assert kwargs["attempt_token"] == provision_dispatch.inline_attempt_token(claim_calls["claim"])
+
+
+async def test_stand_down_writes_nothing_when_the_machine_owns_the_row(monkeypatch, sfn):
+    # An SFN retry re-stamped a fresh UUID: the row belongs to the machine's
+    # attempt now, so the stand-down must not flip it to error mid-run.
+    _stub_row(monkeypatch, "some-fresh-sfn-uuid")
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    await provision_dispatch._stand_down_attempt("user_abc", "claimuuid-1234", "cause")
+    release.assert_not_awaited()
+
+
+async def test_stand_down_writes_nothing_when_the_row_read_fails(monkeypatch, sfn):
+    # Never write blind: without knowing the token we cannot fence, and the
+    # watchdog's backstop still covers the row.
+    monkeypatch.setattr(
+        provision_dispatch.container_repo,
+        "get_by_owner_id",
+        AsyncMock(side_effect=RuntimeError("ddb down")),
+    )
+    release = AsyncMock()
+    monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
+    await provision_dispatch._stand_down_attempt("user_abc", "claimuuid-1234", "cause")  # must not raise
+    release.assert_not_awaited()
 
 
 async def test_runner_subprocess_contract(monkeypatch):
@@ -393,6 +511,7 @@ async def test_handoff_terminates_child_then_stands_the_row_down(monkeypatch, sf
 
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
     sfn.start_execution.side_effect = lambda **kw: order.append("started")
+    _stub_row(monkeypatch, provision_dispatch.inline_attempt_token("claimuuid-1234"))
     release = AsyncMock()
     monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
@@ -419,6 +538,8 @@ async def test_handoff_of_a_QUEUED_attempt_releases_on_the_claim_time_token(monk
     monkeypatch.setattr(provision_dispatch, "_INLINE_CONCURRENCY", asyncio.Semaphore(0))
     stamp = AsyncMock()
     monkeypatch.setattr(provision_dispatch.container_repo, "claim_attempt", stamp)
+    # Never stamped, so the row still reads back the claim-time token.
+    _stub_row(monkeypatch, "claimuuid-1234")
     runner = AsyncMock(return_value=0)
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", runner)
     release = AsyncMock()
@@ -448,13 +569,11 @@ async def test_handoff_of_a_RUNNING_attempt_releases_on_the_inline_token(monkeyp
         return 0
 
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", blocked_runner)
+    _stub_row(monkeypatch, provision_dispatch.inline_attempt_token("claimuuid-1234"))
     release = AsyncMock()
     monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
     await running.wait()
-    assert provision_dispatch._INLINE_ATTEMPTS["user_abc"].fence_token == provision_dispatch.inline_attempt_token(
-        "claimuuid-1234"
-    )
     await provision_dispatch.handoff_inflight_provisions()
     release.assert_awaited_once()
     assert release.await_args.kwargs["attempt_token"] == provision_dispatch.inline_attempt_token("claimuuid-1234")
@@ -520,6 +639,7 @@ async def test_inline_timeout_terminates_then_stands_the_row_down(monkeypatch, s
         return 0
 
     monkeypatch.setattr(provision_dispatch, "_runner_subprocess", wedged_runner)
+    _stub_row(monkeypatch, provision_dispatch.inline_attempt_token("claimuuid-1234"))
     release = AsyncMock()
     monkeypatch.setattr(provision_dispatch.container_repo, "release_provision_to_error", release)
     provision_dispatch._spawn_inline("user_abc", "claimuuid-1234")
@@ -531,9 +651,9 @@ async def test_inline_timeout_terminates_then_stands_the_row_down(monkeypatch, s
     assert args == ("user_abc", "claimuuid-1234")
     assert kwargs["last_error"] == "inline provision attempt timed out"
     assert kwargs["retryable"] is True
-    # Fenced on the inline token: if the machine already took this claim over,
-    # its runner re-stamped the token and this release no-ops instead of
-    # clobbering machine-owned state.
+    # Fenced on the token read back from the row, so a machine takeover (whose
+    # runner re-stamped a fresh UUID) makes this a no-op instead of clobbering
+    # machine-owned state.
     assert kwargs["attempt_token"] == provision_dispatch.inline_attempt_token("claimuuid-1234")
     assert "user_abc" not in provision_dispatch._INLINE_ATTEMPTS
 
@@ -548,6 +668,7 @@ async def test_unwatched_attempt_that_times_out_still_gets_a_watchdog(monkeypatc
     monkeypatch.setattr(provision_dispatch.container_repo, "get_by_owner_id", AsyncMock(return_value=None))
 
     async def fake_claim(owner_id, *, claim_id=None, execution_name=None):
+        _stub_row(monkeypatch, provision_dispatch.inline_attempt_token(claim_id))
         return claim_id
 
     monkeypatch.setattr(provision_dispatch.container_repo, "try_claim_provision", fake_claim)

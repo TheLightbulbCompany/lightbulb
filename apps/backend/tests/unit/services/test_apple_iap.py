@@ -346,3 +346,59 @@ async def test_unactionable_notification_is_acked_not_retried():
 
     assert result is None
     set_sub.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# App-to-web checkout (the paywall's link-out half)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_uses_the_app_optimized_origin_context(monkeypatch):
+    """`origin_context="mobile_app"` is what makes Checkout render the
+    app-to-web page rather than the desktop one, and is why Apple Pay shows up
+    on a phone. Losing it silently degrades the whole point of the link-out."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    captured = {}
+
+    async def _fake_build(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="cs_1", url="https://checkout.stripe.com/c/pay/cs_1")
+
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_build)
+
+    session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    assert session.url.startswith("https://checkout.stripe.com/")
+    assert captured["origin_context"] == "mobile_app"
+    assert captured["line_items"] == [{"price": "price_flat", "quantity": 1}]
+    # Promo field is deliberately off on a phone keyboard.
+    assert captured["allow_promotion_codes"] is False
+    # Universal link back into the app, not the settings panel.
+    assert "/checkout_redirect/success" in captured["success_url"]
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_requires_a_configured_price(monkeypatch):
+    from core.services import billing_service
+    from core.services.billing_service import BillingServiceError
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "")
+    with pytest.raises(BillingServiceError):
+        await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+
+def test_web_checkout_omits_origin_context_for_web_callers():
+    """Web checkouts must keep their existing session shape. `origin_context`
+    participates in Stripe's idempotency body-compare, so adding it
+    unconditionally would change every web session's fingerprint."""
+    import inspect
+
+    from core.services import billing_service
+
+    src = inspect.getsource(billing_service._build_subscription_checkout)
+    # Set only under the guard, never in the base kwargs dict.
+    assert "if origin_context:" in src
+    assert 'kwargs["origin_context"] = origin_context' in src

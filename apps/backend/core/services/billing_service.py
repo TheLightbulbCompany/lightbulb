@@ -456,6 +456,7 @@ async def _build_subscription_checkout(
     cancel_url: str,
     idempotency_key: str,
     allow_promotion_codes: bool = True,
+    origin_context: str | None = None,
 ) -> stripe.checkout.Session:
     """Single builder for subscription-mode Stripe Checkout sessions.
 
@@ -502,9 +503,70 @@ async def _build_subscription_checkout(
         # — load-bearing for the single-open-session guard in /trial-checkout.
         expires_at=int(time.time()) + 31 * 60,
     )
+    if origin_context:
+        # "mobile_app" switches Checkout to the UI built for app-to-web
+        # purchases (Stripe: Accept payments for digital goods on iOS).
+        # Omitted entirely for web callers so their session shape — and
+        # therefore their idempotency body-compare — is untouched.
+        kwargs["origin_context"] = origin_context
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
     return session
+
+
+async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Session:
+    """App-to-web Checkout for the iOS paywall's "subscribe on the web" option.
+
+    This is the link-out half of the paywall. It exists because guideline
+    3.1.1(a) lets a U.S.-storefront app send customers to an external purchase
+    page, and because the alternative — dropping them on
+    isol8.co/settings?panel=billing — means signing in and finding a panel
+    before they can pay. Stripe's iOS guide is this exact shape: create a
+    Session server-side, open its URL in Safari, fulfil on the webhook.
+
+    The client opens it in the DEFAULT BROWSER, never a WKWebView. Apple's
+    wording is what binds — U.S.-storefront apps "may link out to the default
+    browser ... for payment mechanisms other than in-app purchase" — and an
+    embedded checkout is not linking out; it is the in-app storefront 3.1.1
+    forbids.
+
+    ``origin_context="mobile_app"`` is what makes the page the app-optimized
+    variant rather than the desktop one. Apple Pay rides along automatically on
+    supported devices, which is the single biggest conversion lever here.
+
+    Differences from ``create_flat_fee_checkout``, all deliberate:
+
+    - **No checkout-slot claim.** That claim exists to stop the onboarding
+      wizard minting two completable subscription sessions from double-clicks.
+      Here the app is the only caller, ``is_trial_blocked`` already refuses an
+      owner who has ever subscribed, and holding a 90-second per-owner lock
+      across a browser hand-off would make a user who backs out of Safari wait
+      it out before retrying.
+    - **No starter-credits line item.** Credits are a Bedrock-onboarding
+      concern; this session sells the plan and nothing else.
+
+    The caller is responsible for the entitlement check. Returns the Session so
+    the router can hand back ``session.url``.
+    """
+    if not settings.STRIPE_FLAT_PRICE_ID:
+        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+
+    return await _build_subscription_checkout(
+        owner_id=owner_id,
+        line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+        metadata={"owner_id": owner_id, "purpose": "mobile_web_checkout"},
+        # A universal link, so iOS hands control back to the app on success and
+        # falls through to the web page when the app is not installed. The
+        # matching apple-app-site-association entry is what makes it deep-link
+        # rather than merely load.
+        success_url=f"{FRONTEND_URL}/checkout_redirect/success",
+        cancel_url=f"{FRONTEND_URL}/checkout_redirect/cancel",
+        # Off for the same reason the credits-bundled path turns it off: a promo
+        # field on a phone keyboard is friction, and nothing here quotes a code.
+        allow_promotion_codes=False,
+        origin_context="mobile_app",
+        idempotency_key=_checkout_idempotency_key("mobile_web_checkout", owner_id, "flat"),
+    )
 
 
 async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:

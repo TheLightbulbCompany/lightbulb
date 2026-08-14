@@ -54,7 +54,12 @@ import { ErrorCode, getStorefront, useIAP } from "expo-iap";
 
 import { WEB_BILLING_URL } from "../../config/env";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
-import { APPLE_IAP_AVAILABLE, APPLE_SUBSCRIPTION_SKU, linkApplePurchase } from "../../lib/appleIap";
+import {
+  APPLE_IAP_AVAILABLE,
+  APPLE_SUBSCRIPTION_SKU,
+  createWebCheckout,
+  linkApplePurchase,
+} from "../../lib/appleIap";
 
 /**
  * Storefronts where an external purchase link + its price may be shown.
@@ -83,6 +88,7 @@ export function PaywallScreen({
   // null = unknown price. An unpriced link is permitted; a WRONG price is a
   // 5.1.1 violation, so a failed fetch omits the figure rather than guessing.
   const [webPriceUsd, setWebPriceUsd] = useState<number | null>(null);
+  const [webBusy, setWebBusy] = useState(false);
 
   // useIAP takes the success handler as an option and RETURNS finishTransaction,
   // so the handler cannot close over it directly (it is declared below). The ref
@@ -187,6 +193,28 @@ export function PaywallScreen({
     }
   }
 
+  /**
+   * Hand off to the web checkout. Asks the server for a Checkout Session and
+   * opens it in the DEFAULT BROWSER — `Linking.openURL`, never a WebView (see
+   * lib/appleIap). Falls back to the billing page if the session cannot be
+   * created, so the option is never a dead button.
+   */
+  async function onWebCheckout() {
+    if (webBusy) return;
+    setWebBusy(true);
+    setError(null);
+    try {
+      const url = await createWebCheckout(api.post);
+      await Linking.openURL(url ?? WEB_BILLING_URL);
+    } catch {
+      await Linking.openURL(WEB_BILLING_URL).catch(() => {
+        setError("Couldn't open checkout. Try again in a moment.");
+      });
+    } finally {
+      setWebBusy(false);
+    }
+  }
+
   async function onRestore() {
     setBusy(true);
     setError(null);
@@ -261,11 +289,14 @@ export function PaywallScreen({
               : "You can also subscribe on isol8.co in your browser, and manage billing there."}
           </Text>
           <Pressable
-            onPress={() => void Linking.openURL(WEB_BILLING_URL)}
+            onPress={() => void onWebCheckout()}
+            disabled={webBusy}
             accessibilityRole="link"
-            style={({ pressed }) => [styles.linkRow, pressed && styles.dim]}
+            style={({ pressed }) => [styles.linkRow, (pressed || webBusy) && styles.dim]}
           >
-            <Text style={styles.linkText}>Subscribe on isol8.co</Text>
+            <Text style={styles.linkText}>
+              {webBusy ? "Opening checkout…" : "Subscribe on isol8.co"}
+            </Text>
           </Pressable>
         </View>
       )}

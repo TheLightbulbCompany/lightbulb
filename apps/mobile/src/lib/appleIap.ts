@@ -32,3 +32,26 @@ export async function linkApplePurchase(
 ): Promise<void> {
   await post("/billing/apple/link", { signed_transaction: purchaseToken });
 }
+
+/**
+ * Ask the server for an app-to-web Stripe Checkout URL.
+ *
+ * Returns a session built with `origin_context: "mobile_app"` — Stripe's
+ * app-optimized page, with Apple Pay on by default.
+ *
+ * The caller MUST open it with `Linking.openURL`, never a WebView. Apple's
+ * wording is the binding source, quoted from our own 0.1.0 (17) rejection:
+ * U.S.-storefront apps "may link out to the DEFAULT BROWSER, using buttons,
+ * external links, or other calls to action, for payment mechanisms other than
+ * in-app purchase." An embedded checkout is not linking out — it is the in-app
+ * storefront the same guideline forbids. Stripe's iOS guide independently
+ * shows this shape: its section is titled "Open Checkout in Safari" and its
+ * sample calls UIApplication.shared.open, which is what Linking.openURL binds
+ * to on iOS.
+ */
+export async function createWebCheckout(
+  post: (path: string, body: unknown) => Promise<unknown>,
+): Promise<string | null> {
+  const body = (await post("/billing/apple/web-checkout", {})) as { url?: string };
+  return typeof body?.url === "string" ? body.url : null;
+}

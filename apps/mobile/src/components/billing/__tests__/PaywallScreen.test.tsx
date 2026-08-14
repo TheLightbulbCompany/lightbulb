@@ -46,12 +46,16 @@ jest.mock("../../../lib/appleIap", () => ({
   APPLE_IAP_AVAILABLE: true,
   APPLE_SUBSCRIPTION_SKU: "co.isol8.mobile.plan.monthly",
   linkApplePurchase: jest.fn(async () => undefined),
+  createWebCheckout: jest.fn(async () => "https://checkout.stripe.com/c/pay/cs_test_123"),
 }));
 
-import { linkApplePurchase } from "../../../lib/appleIap";
+import { Linking } from "react-native";
+
+import { createWebCheckout, linkApplePurchase } from "../../../lib/appleIap";
 import { PaywallScreen } from "../PaywallScreen";
 
 const mockLink = linkApplePurchase as jest.Mock;
+const mockWebCheckout = createWebCheckout as jest.Mock;
 
 describe("PaywallScreen", () => {
   beforeEach(() => {
@@ -182,6 +186,43 @@ describe("PaywallScreen", () => {
     expect(mockLink).not.toHaveBeenCalled();
     expect(mockFinishTransaction).not.toHaveBeenCalled();
     expect(onPurchased).not.toHaveBeenCalled();
+  });
+
+  // The web option opens a real Stripe Checkout session, not the settings
+  // panel — and it must go to the DEFAULT BROWSER. Apple's own wording in our
+  // rejection is that U.S. apps "may link out to the default browser"; an
+  // embedded WebView checkout is not linking out, it is the in-app storefront
+  // 3.1.1 forbids.
+  it("opens a Stripe Checkout session in the default browser", async () => {
+    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
+    await screen.findByText("Subscribe on isol8.co");
+
+    await u.press(screen.getByText("Subscribe on isol8.co"));
+
+    expect(mockWebCheckout).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(openURL).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/cs_test_123"),
+    );
+    openURL.mockRestore();
+  });
+
+  // A failed session must not leave a dead button — fall back to the billing
+  // page rather than stranding someone who is trying to pay us.
+  it("falls back to the billing page when the session cannot be created", async () => {
+    mockWebCheckout.mockRejectedValueOnce(new Error("stripe down"));
+    const openURL = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined as never);
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
+    await screen.findByText("Subscribe on isol8.co");
+
+    await u.press(screen.getByText("Subscribe on isol8.co"));
+
+    await waitFor(() =>
+      expect(openURL).toHaveBeenCalledWith("https://isol8.co/settings?panel=billing"),
+    );
+    openURL.mockRestore();
   });
 
   // Required by Apple for any non-consumable / subscription purchase.

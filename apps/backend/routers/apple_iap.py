@@ -22,7 +22,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user
+from core.repositories import billing_repo
 from core.services.apple_iap import AppleIapError, AppleIapNotConfigured, apply_notification, link_purchase
+from core.services.billing_service import BillingService, BillingServiceError, create_mobile_web_checkout
+from core.services.provision_gate import is_trial_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,44 @@ async def link_apple_purchase(
         "product_id": subscription.product_id,
         "expires_at": subscription.expires_at_ms,
     }
+
+
+@router.post(
+    "/billing/apple/web-checkout",
+    summary="Create an app-to-web Stripe Checkout session for the iOS paywall",
+    description=(
+        "Returns a Stripe Checkout URL optimized for app-to-web purchases. The "
+        "app must open it in the DEFAULT BROWSER — never a WebView, which would "
+        "be an in-app storefront under guideline 3.1.1."
+    ),
+)
+async def create_web_checkout(auth: AuthContext = Depends(get_current_user)):
+    # Mint or reuse the Stripe customer first. The caller is by definition
+    # someone who has not paid yet, and a trial_local row carries no
+    # stripe_customer_id — without this the session build raises and every
+    # free-tier user gets a 400 on the one button meant to convert them.
+    try:
+        await BillingService().create_customer_for_owner(
+            auth.owner_id,
+            owner_type="org" if auth.owner_id.startswith("org_") else "personal",
+            email=auth.email,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("apple_iap.web_checkout_customer_failed owner_id=%s: %s", auth.owner_id, e)
+        raise HTTPException(status_code=502, detail="Could not reach billing provider") from e
+
+    # Same guard the web checkout uses: an owner who already has (or ever had)
+    # a subscription must not be able to mint a second one from the app.
+    account = await billing_repo.get_by_owner_id(auth.owner_id)
+    if is_trial_blocked(account):
+        raise HTTPException(status_code=409, detail="This account already has a subscription")
+
+    try:
+        session = await create_mobile_web_checkout(owner_id=auth.owner_id)
+    except BillingServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return {"url": session.url}
 
 
 @router.post(

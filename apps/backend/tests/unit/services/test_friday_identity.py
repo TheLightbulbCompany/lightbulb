@@ -1096,6 +1096,74 @@ def test_migrate_paperclip_noop_when_missing():
     assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is False
 
 
+def test_migrate_paperclip_strips_legacy_even_when_the_new_section_is_also_present():
+    """A file carrying BOTH sections is the leaking state, not a healed one.
+
+    Keying the no-op on the new heading would leave the export block in place
+    forever. The legacy heading is what decides whether there is work to do.
+    """
+    new_section = friday_identity._section_from_template(friday_identity._PAPERCLIP_IDENTITY_HEADING)
+    both = "# AGENTS.md\n\n" + new_section + "\n" + _LEGACY_PAPERCLIP_SECTION
+    ws = _MigrationWs(both)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "jq -r .token" not in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING_LEGACY not in content
+    # Exactly one copy of the new section — not two.
+    assert content.count(friday_identity._PAPERCLIP_IDENTITY_HEADING) == 1
+    # The trailing section after the legacy block survives.
+    assert "## Next section" in content
+
+
+def test_migrate_paperclip_preserves_owner_content_when_legacy_is_last():
+    """AGENTS.md is a living playbook — owners append their own notes.
+
+    When the legacy section is the LAST heading, a naive 'delete to EOF' takes
+    the owner's writing with it. Removal stops at the close of the export
+    fence instead.
+    """
+    owner_notes = "\nMy own notes that must survive healing.\nAnd a second line.\n"
+    legacy_last = (
+        "# AGENTS.md\n\nIntro.\n\n"
+        "## Your Paperclip identity — load it before any Paperclip call\n\n"
+        "Load it into your run context:\n\n"
+        "```\nexport PAPERCLIP_API_KEY=$(jq -r .token paperclip-claimed-api-key.json)\n```\n" + owner_notes
+    )
+    ws = _MigrationWs(legacy_last)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "jq -r .token" not in content  # the dangerous part is gone
+    assert "My own notes that must survive healing." in content  # the owner's is not
+    assert "And a second line." in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING in content
+
+
+def test_migrate_paperclip_stops_at_a_subsection_heading_too():
+    """A ### under the legacy section is not ours to delete either."""
+    src = (
+        "# AGENTS.md\n\n"
+        "## Your Paperclip identity — load it before any Paperclip call\n\n"
+        "```\nexport PAPERCLIP_API_KEY=$(jq -r .token x.json)\n```\n\n"
+        "### Owner's own subsection\n\nKeep me.\n"
+    )
+    ws = _MigrationWs(src)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "jq -r .token" not in content
+    assert "### Owner's own subsection" in content
+    assert "Keep me." in content
+
+
+def test_migrate_paperclip_removes_every_legacy_occurrence():
+    src = "# AGENTS.md\n\n" + _LEGACY_PAPERCLIP_SECTION + "\n" + _LEGACY_PAPERCLIP_SECTION
+    ws = _MigrationWs(src)
+    assert friday_identity._migrate_paperclip_identity_section(ws, "user_abc", "uuid-f") is True
+    content = ws.written[1]
+    assert "jq -r .token" not in content
+    assert friday_identity._PAPERCLIP_IDENTITY_HEADING_LEGACY not in content
+    assert content.count(friday_identity._PAPERCLIP_IDENTITY_HEADING) == 1
+
+
 def test_healed_section_is_identical_to_the_freshly_seeded_one():
     """The migration slices its replacement out of the template, so a healed
     owner and a fresh one must end up with byte-identical text."""

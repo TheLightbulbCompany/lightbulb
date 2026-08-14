@@ -469,10 +469,11 @@ async def lifespan(app: FastAPI):
 
     try:
         async with asyncio.timeout(20):
-            # First: hand any in-flight inline provision to the state machine
-            # (terminate the runner child, then StartExecution) — it must land
-            # before the SIGKILL window; everything below is process-local
-            # cleanup.
+            # First: terminate any in-flight inline provision child. It must
+            # land before the SIGKILL window so no runner outlives this
+            # instance; everything below is process-local cleanup. No
+            # StartExecution — the state machine has been watching each claim
+            # since it was minted and takes the ECS leg over on its own clock.
             from core.services.provision_dispatch import handoff_inflight_provisions
 
             await handoff_inflight_provisions()

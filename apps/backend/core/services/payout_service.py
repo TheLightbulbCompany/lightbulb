@@ -12,6 +12,7 @@ This module owns steps 2 and 3. Step 1 (Charge) lives in marketplace_service
 account.updated to flush held balances.
 """
 
+import time
 import uuid
 from dataclasses import dataclass
 
@@ -71,20 +72,48 @@ async def create_onboarding_link(*, connect_account_id: str, refresh_url: str, r
     return link.url
 
 
+async def find_transfer_id_by_group(*, transfer_group: str) -> str | None:
+    """The existing Transfer for this purchase's transfer_group, or None.
+
+    Transfer groups are unique per purchase (checkout embeds a timestamp), so
+    at most one legitimate Transfer exists per group. The flush checks this
+    BEFORE creating a transfer and adopts a match instead — closing the
+    crash-before-stamp window generally: a transfer that succeeded but never
+    got recorded on the purchase row is found and stamped on retry rather
+    than duplicated, regardless of which idempotency-key bucket the retry
+    lands in. Same lookup refund_purchase already relies on for reversals.
+    """
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    transfers = stripe.Transfer.list(transfer_group=transfer_group, limit=1)
+    return transfers.data[0].id if transfers.data else None
+
+
 async def transfer_held_balance(*, connect_account_id: str, amount_cents: int, transfer_group: str) -> str:
     """Create a Transfer from platform balance to the connected account.
 
     transfer_group: groups Transfers logically per purchase batch; useful for
     Reversals on refund.
     Returns the Stripe transfer_id.
+
+    The idempotency key is DAY-BUCKETED (UTC): Stripe caches error responses
+    under an idempotency key for 24h, so the old static key let one
+    balance_insufficient failure — the NORMAL first-attempt outcome at
+    fulfillment time, since the buyer's charge is still pending — poison
+    every webhook retry for a day even after funds became available (proven
+    live in dev 2026-08-14). Same-day concurrency still dedups on the shared
+    key; day rollover matches the timescale on which card charges actually
+    settle. The purchase row's set-once seller_transfer_id stamp (checked
+    against a consistent read before every transfer) remains the primary
+    double-pay guard across buckets.
     """
     stripe.api_key = settings.STRIPE_SECRET_KEY
+    day_bucket = time.strftime("%Y%m%d", time.gmtime())
     transfer = stripe.Transfer.create(
         amount=amount_cents,
         currency="usd",
         destination=connect_account_id,
         transfer_group=transfer_group,
-        idempotency_key=f"transfer:{connect_account_id}:{transfer_group}",
+        idempotency_key=f"transfer:{connect_account_id}:{transfer_group}:{day_bucket}",
     )
     return transfer.id
 

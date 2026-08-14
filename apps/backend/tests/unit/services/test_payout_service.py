@@ -100,3 +100,33 @@ async def test_refund_without_transfer_skips_reversal(mock_stripe):
     assert result.refund_id == "re_abc"
     assert result.reversal_id is None
     mock_stripe.Transfer.create_reversal.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.payout_service.stripe")
+async def test_transfer_idempotency_key_is_day_bucketed(mock_stripe):
+    """Regression (live-proven 2026-08-14): Stripe caches ERROR responses
+    under an idempotency key for 24h, and the first flush attempt at
+    fulfillment time normally fails balance_insufficient (the charge is
+    still pending). A static key replayed that cached error on every retry
+    even after funds settled — the day bucket lets the next day's retry
+    through while same-day concurrency still dedups."""
+    import time as _time
+
+    mock_stripe.Transfer.create.return_value = MagicMock(id="tr_1")
+    tid = await payout_service.transfer_held_balance(
+        connect_account_id="acct_x", amount_cents=850, transfer_group="tg_x"
+    )
+    assert tid == "tr_1"
+    key = mock_stripe.Transfer.create.call_args.kwargs["idempotency_key"]
+    day = _time.strftime("%Y%m%d", _time.gmtime())
+    assert key == f"transfer:acct_x:tg_x:{day}"
+
+
+@pytest.mark.asyncio
+@patch("core.services.payout_service.stripe")
+async def test_find_transfer_by_group(mock_stripe):
+    mock_stripe.Transfer.list.return_value = MagicMock(data=[MagicMock(id="tr_x")])
+    assert await payout_service.find_transfer_id_by_group(transfer_group="tg_x") == "tr_x"
+    mock_stripe.Transfer.list.return_value = MagicMock(data=[])
+    assert await payout_service.find_transfer_id_by_group(transfer_group="tg_none") is None

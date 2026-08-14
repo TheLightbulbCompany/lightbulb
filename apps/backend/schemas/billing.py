@@ -44,6 +44,17 @@ class BillingAccountResponse(BaseModel):
     # changed and could only be fixed by shipping a build, so the server owns
     # it.
     flat_price_usd: int | None = None
+    # Which channel the live subscription was bought through: "apple_iap", or
+    # absent/None for the Stripe path (the default, and every pre-IAP row).
+    #
+    # Exists so a client can send the customer to the RIGHT place to manage or
+    # cancel. An Apple subscription is managed only in iOS Settings — Stripe
+    # has no record of it, so the customer portal would be a dead end — while a
+    # Stripe subscription cannot be touched from iOS Settings. Apple's
+    # guidelines expect an app selling auto-renewable subscriptions to point at
+    # the former; getting this backwards strands a paying customer trying to
+    # cancel, which is the complaint that generates refunds and 1-star reviews.
+    subscription_source: str | None = None
     # True only for org owners on a REAL per-seat Stripe subscription (one
     # that recorded subscription_item_id via the webhook). False for
     # personal owners and for flat/comped/grandfathered org subs that have

@@ -877,7 +877,15 @@ async def oauth_callback(provider: str, code: str, state: str):
             if _retains_secret(p):
                 await integration_secret_store.delete(owner_id, prov)
             return RedirectResponse(f"{settings.FRONTEND_URL}/settings/connections?error=apply_failed")
-        await integrations_repo.put_status(owner_id, prov, "connected")
+        # Record the provider-side account id alongside the status. Meta's
+        # deauthorize / data-deletion callbacks identify the user ONLY by this
+        # id, so a connection stored without it can never be resolved back to an
+        # owner when Meta signals a teardown. The OAuth exchange already carries
+        # it (oauth_dance sets credential["provider_user_id"] from Instagram's
+        # token response); this is the only place it reaches a queryable store.
+        await integrations_repo.put_status(
+            owner_id, prov, "connected", provider_user_id=credential.get("provider_user_id")
+        )
     # Google supports multiple accounts under one provider-level "connected"
     # status: each connect adds a distinct account to the owner's inventory so an
     # agent can later be bound to a specific one. The account identity is the

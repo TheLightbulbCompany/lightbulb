@@ -683,3 +683,183 @@ async def test_apple_signed_date_watermark_only_advances(dynamodb_table):
 
     row = await billing_repo.get_by_owner_id("user_1")
     assert row["apple_last_signed_date"] == 9_000
+
+
+# ---------------------------------------------------------------------------
+# Cross-provider entitlement. Apple and Stripe both used to write the shared
+# subscription_status directly, making them last-writer-wins — an Apple expiry
+# cancelled a customer who was still paying Stripe, and vice versa. Each
+# provider now records its own status and the shared field is derived.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apple_expiry_does_not_cancel_a_live_stripe_subscription(dynamodb_table):
+    """The money case: an owner pays Stripe, briefly tried Apple, Apple expires.
+    Before this they lost access while still being charged by Stripe."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_subscription(owner_id="user_1", subscription_id="sub_live", status="active")
+    await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="2000000000000001", status="canceled", expires_at=None
+    )
+
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["apple_subscription_status"] == "canceled"
+    assert row["stripe_subscription_status"] == "active"
+    # The shared field the gates read must still say active.
+    assert row["subscription_status"] == "active"
+
+    from core.services.provision_gate import is_subscription_active
+
+    assert is_subscription_active(row) is True
+
+
+@pytest.mark.asyncio
+async def test_stripe_cancellation_does_not_cancel_a_live_apple_subscription(dynamodb_table):
+    """The inverse, which is just as real once IAP ships."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="2000000000000001", status="active", expires_at=None
+    )
+    await billing_repo.set_subscription(owner_id="user_1", subscription_id=None, status="canceled")
+
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["subscription_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_both_providers_inactive_leaves_the_owner_inactive(dynamodb_table):
+    """The combine must not be a one-way ratchet that never lets go."""
+    from core.repositories import billing_repo
+    from core.services.provision_gate import is_subscription_active
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_subscription(owner_id="user_1", subscription_id=None, status="canceled")
+    await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="2000000000000001", status="canceled", expires_at=None
+    )
+
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["subscription_status"] == "canceled"
+    assert is_subscription_active(row) is False
+
+
+@pytest.mark.asyncio
+async def test_free_tier_row_is_not_clobbered_when_no_provider_has_state(dynamodb_table):
+    """trial_local is written by create_trial_local_if_absent, not by either
+    provider, so the derivation must fall back to it rather than blank it."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("user_2", "personal")
+    row = await billing_repo.get_by_owner_id("user_2")
+    assert row["subscription_status"] == "trial_local"
+    assert billing_repo._effective_status(row) == "trial_local"
+
+
+@pytest.mark.asyncio
+async def test_apple_write_is_rejected_when_a_newer_notification_already_applied(dynamodb_table):
+    """The out-of-order fence, exercised against a real conditional write.
+
+    Two overlapping notifications can both read an old watermark through the
+    eventually-consistent GSI. The condition re-evaluates at write time, so the
+    older one loses regardless of how the reads interleaved.
+    """
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    # Newer EXPIRED lands first.
+    await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="canceled",
+        expires_at=None,
+        signed_date=9_000,
+    )
+
+    # Older DID_RENEW arrives late and must be refused.
+    result = await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="active",
+        expires_at=None,
+        signed_date=1_000,
+    )
+
+    assert result is None, "stale write should be rejected by the condition"
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["apple_subscription_status"] == "canceled"
+    assert row["apple_last_signed_date"] == 9_000
+
+
+@pytest.mark.asyncio
+async def test_apple_write_accepts_a_newer_notification(dynamodb_table):
+    """The fence must not be a wall — a genuinely newer event still applies."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="active",
+        expires_at=None,
+        signed_date=1_000,
+    )
+    result = await billing_repo.set_apple_subscription(
+        "user_1",
+        original_transaction_id="2000000000000001",
+        status="canceled",
+        expires_at=None,
+        signed_date=9_000,
+    )
+
+    assert result is not None
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["apple_subscription_status"] == "canceled"
+    assert row["apple_last_signed_date"] == 9_000
+
+
+@pytest.mark.asyncio
+async def test_a_row_cannot_be_rebound_to_a_different_apple_transaction(dynamodb_table):
+    """Ownership fence, as a real conditional write.
+
+    link_purchase's cross-account lookup reads a non-unique, eventually
+    consistent GSI, so two accounts submitting the same unlinked JWS can both
+    see "unowned". The condition on the row is what actually decides it.
+    """
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="2000000000000001", status="active", expires_at=None
+    )
+
+    rebind = await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="9999999999999999", status="active", expires_at=None
+    )
+
+    assert rebind is None, "a row already bound to one transaction must not be rebound"
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["apple_original_transaction_id"] == "2000000000000001"
+
+
+@pytest.mark.asyncio
+async def test_the_same_transaction_may_be_rewritten_by_its_own_owner(dynamodb_table):
+    """Renewals, expiries and idempotent re-links all rewrite the same id — the
+    fence must not block the normal case it exists alongside."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
+    await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="2000000000000001", status="active", expires_at=None
+    )
+    again = await billing_repo.set_apple_subscription(
+        "user_1", original_transaction_id="2000000000000001", status="canceled", expires_at=None
+    )
+
+    assert again is not None
+    row = await billing_repo.get_by_owner_id("user_1")
+    assert row["apple_subscription_status"] == "canceled"

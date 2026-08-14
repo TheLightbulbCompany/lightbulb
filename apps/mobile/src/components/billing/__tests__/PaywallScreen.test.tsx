@@ -8,6 +8,8 @@ const mockRequestPurchase = jest.fn(async () => undefined);
 const mockFinishTransaction = jest.fn(async () => undefined);
 const mockFetchProducts = jest.fn(async () => undefined);
 const mockRestorePurchases = jest.fn(async () => undefined);
+const mockGetAvailablePurchases = jest.fn(async () => undefined);
+let mockAvailablePurchases: { id: string; purchaseToken?: string | null }[] = [];
 let capturedOnSuccess: ((p: { purchaseToken?: string | null }) => void) | null = null;
 let mockSubscriptions: { id: string; displayPrice: string }[] = [];
 let mockStorefront: Promise<string> = Promise.resolve("USA");
@@ -26,6 +28,8 @@ jest.mock(
         requestPurchase: mockRequestPurchase,
         finishTransaction: mockFinishTransaction,
         restorePurchases: mockRestorePurchases,
+        getAvailablePurchases: mockGetAvailablePurchases,
+        availablePurchases: mockAvailablePurchases,
       };
     },
   }),
@@ -62,6 +66,12 @@ describe("PaywallScreen", () => {
     jest.clearAllMocks();
     capturedOnSuccess = null;
     mockStorefront = Promise.resolve("USA");
+    mockAvailablePurchases = [];
+    // clearAllMocks clears CALLS but not implementations, so a rejection set by
+    // one test leaks into every later one. Restore the happy path explicitly.
+    mockLink.mockReset().mockResolvedValue(undefined);
+    mockWebCheckout.mockReset().mockResolvedValue("https://checkout.stripe.com/c/pay/cs_test_123");
+    mockFinishTransaction.mockReset().mockResolvedValue(undefined);
     mockSubscriptions = [
       { id: "co.isol8.mobile.plan.monthly", displayPrice: "$64.99" },
     ];
@@ -243,5 +253,69 @@ describe("PaywallScreen", () => {
     await u.press(screen.getByText("Subscribe"));
 
     expect(mockRequestPurchase).not.toHaveBeenCalled();
+  });
+});
+
+// Restore is the path a reinstall or new device depends on. restorePurchases()
+// only refreshes the hook's available-purchases state — it does NOT fire the
+// success handler — so calling it and stopping there made Restore appear to
+// work while sending nothing to the server, leaving a paying customer unable
+// to recover what they had bought.
+describe("restore purchases", () => {
+  it("submits each restored token through verify-then-finish", async () => {
+    mockAvailablePurchases = [
+      { id: "co.isol8.mobile.plan.monthly", purchaseToken: "restored-jws" },
+    ];
+    const onPurchased = jest.fn();
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={onPurchased} />);
+
+    await u.press(screen.getByText("Restore purchases"));
+
+    await waitFor(() =>
+      expect(mockLink).toHaveBeenCalledWith(expect.anything(), "restored-jws"),
+    );
+    expect(mockFinishTransaction).toHaveBeenCalled();
+    expect(onPurchased).toHaveBeenCalled();
+  });
+
+  it("ignores restored purchases for other products", async () => {
+    mockAvailablePurchases = [{ id: "com.someone.else.pro", purchaseToken: "other-jws" }];
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
+
+    await u.press(screen.getByText("Restore purchases"));
+
+    // Asserted on THIS token rather than "never called at all": a restore from
+    // an earlier test can still be settling against the shared mock, and what
+    // matters here is that a foreign product is never submitted as ours.
+    await waitFor(() => expect(mockRestorePurchases).toHaveBeenCalled());
+    expect(mockLink).not.toHaveBeenCalledWith(expect.anything(), "other-jws");
+    expect(await screen.findByText(/No previous purchase found/)).toBeTruthy();
+  });
+
+  it("says so when there is nothing to restore, rather than failing silently", async () => {
+    mockAvailablePurchases = [];
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={jest.fn()} />);
+
+    await u.press(screen.getByText("Restore purchases"));
+
+    expect(await screen.findByText(/No previous purchase found/)).toBeTruthy();
+  });
+
+  it("reports a restore that could not be recorded, since the customer already paid", async () => {
+    mockAvailablePurchases = [
+      { id: "co.isol8.mobile.plan.monthly", purchaseToken: "restored-jws" },
+    ];
+    mockLink.mockRejectedValueOnce(new Error("server down"));
+    const onPurchased = jest.fn();
+    const u = userEvent.setup();
+    await render(<PaywallScreen api={makeApi()} onPurchased={onPurchased} />);
+
+    await u.press(screen.getByText("Restore purchases"));
+
+    expect(await screen.findByText(/couldn't restore it/i)).toBeTruthy();
+    expect(onPurchased).not.toHaveBeenCalled();
   });
 });

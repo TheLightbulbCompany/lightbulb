@@ -288,8 +288,16 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
   const { status, refetch } = useContainerStatus();
   // Org context means the container owner is an org_ id, which is billed per
   // seat and must never reach the personal paywall (see the branch below).
-  const { organization } = useOrganization();
-  const isOrgOwner = organization != null;
+  //
+  // `isLoaded` is load-bearing, not defensive noise. While Clerk is still
+  // resolving, `organization` is null — indistinguishable from "personal" — and
+  // /container/status can resolve a purchase gate first. An org admin would
+  // then see the personal StoreKit paywall for that window and could complete a
+  // real charge the backend then refuses to link, leaving them out of pocket.
+  // Unknown owner type must therefore read as "not personal": fail closed.
+  const { organization, isLoaded: orgLoaded } = useOrganization();
+  const ownerTypeKnown = orgLoaded;
+  const isOrgOwner = !ownerTypeKnown || organization != null;
 
   const onRetry = useCallback(() => {
     void refetch();

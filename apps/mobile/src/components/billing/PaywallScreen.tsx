@@ -125,8 +125,16 @@ export function PaywallScreen({
     [api, onPurchased],
   );
 
-  const { connected, subscriptions, fetchProducts, requestPurchase, finishTransaction, restorePurchases } =
-    useIAP({
+  const {
+    connected,
+    subscriptions,
+    availablePurchases,
+    fetchProducts,
+    requestPurchase,
+    finishTransaction,
+    restorePurchases,
+    getAvailablePurchases,
+  } = useIAP({
       onPurchaseSuccess,
       onPurchaseError: (e) => {
         setBusy(false);
@@ -231,11 +239,50 @@ export function PaywallScreen({
     }
   }
 
+  /**
+   * Restore a prior purchase — the path a reinstall or a new device depends on.
+   *
+   * `restorePurchases()` only REFRESHES the hook's available-purchases state;
+   * it does not fire `onPurchaseSuccess` for each restored transaction. Calling
+   * it and stopping there — which is what this did — meant Restore appeared to
+   * work, sent nothing to the server, and left a paying customer with no way to
+   * recover entitlement after reinstalling. Each restored token has to go
+   * through the same verify-then-finish path a fresh purchase takes.
+   */
   async function onRestore() {
     setBusy(true);
     setError(null);
     try {
       await restorePurchases();
+      // Read them back explicitly rather than trusting the state to have
+      // re-rendered: this runs inside the same tick as the call above.
+      await getAvailablePurchases?.();
+
+      const restored = (availablePurchases ?? []).filter(
+        (p) => p?.id === APPLE_SUBSCRIPTION_SKU || p?.productId === APPLE_SUBSCRIPTION_SKU,
+      );
+      const linked = await Promise.allSettled(
+        restored
+          .filter((p) => p?.purchaseToken)
+          .map(async (p) => {
+            await linkApplePurchase(api.post, p.purchaseToken as string);
+            await finishRef.current?.({ purchase: p as never });
+          }),
+      );
+
+      const ok = linked.filter((r) => r.status === "fulfilled").length;
+      if (ok > 0) {
+        onPurchased();
+      } else if (restored.length > 0) {
+        // Purchases exist but none could be recorded — an honest failure beats
+        // silence, since the customer is trying to recover something they paid
+        // for and would otherwise assume it simply did not exist.
+        setError("We found a purchase but couldn't restore it. Contact support@isol8.co.");
+      } else {
+        setError("No previous purchase found on this Apple Account.");
+      }
+    } catch {
+      setError("Couldn't restore purchases. Try again in a moment.");
     } finally {
       setBusy(false);
     }

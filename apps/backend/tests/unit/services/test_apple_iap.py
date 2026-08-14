@@ -244,7 +244,14 @@ async def test_notification_replay_is_skipped():
 @pytest.mark.asyncio
 async def test_stale_notification_does_not_move_entitlement_backwards():
     """Apple does not promise ordering. A retried DID_RENEW landing after an
-    EXPIRED must not restore access that legitimately ended."""
+    EXPIRED must not restore access that legitimately ended.
+
+    Staleness is now enforced as a CONDITION on the write, not a check the
+    caller makes first: the caller's row comes from an eventually-consistent
+    GSI, so two overlapping notifications could both read an old watermark and
+    both believe they were newest. A rejected write returns None, and the
+    caller must treat that as "not applied" rather than reporting success.
+    """
     stale = _notification(notificationType="DID_RENEW", signedDate=1_000)
     with (
         patch.object(apple_iap, "_verifier", return_value=_notification_verifier(stale)),
@@ -258,12 +265,17 @@ async def test_stale_notification_does_not_move_entitlement_backwards():
             "get_by_apple_original_transaction_id",
             AsyncMock(return_value={"owner_id": "user_1", "apple_last_signed_date": 9_000}),
         ),
-        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+        # The conditional write rejects it and reports nothing written.
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value=None)) as set_sub,
     ):
         result = await apple_iap.apply_notification("signed")
 
     assert result is None
-    set_sub.assert_not_awaited()
+    # The write IS attempted — that is where the comparison now happens — and
+    # the signed date is threaded through so the condition has something to
+    # compare against.
+    set_sub.assert_awaited_once()
+    assert set_sub.await_args.kwargs["signed_date"] == 1_000
 
 
 @pytest.mark.asyncio
@@ -368,6 +380,10 @@ async def test_mobile_web_checkout_uses_the_app_optimized_origin_context(monkeyp
         return SimpleNamespace(id="cs_1", url="https://checkout.stripe.com/c/pay/cs_1")
 
     monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_build)
+    # The slot claim + pending marker are real repo writes; this test is about
+    # the session shape, so stub them. Their own behaviour is covered below.
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
 
     session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
 
@@ -445,3 +461,85 @@ def test_product_id_must_be_configured_before_the_verifier_is_live(monkeypatch):
             apple_iap._verifier()
     finally:
         apple_iap._verifier.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_link_rejects_a_transaction_purchased_by_another_account():
+    """appAccountToken is stamped by the client at purchase and echoed inside
+    the SIGNED payload, so a mismatch is proof the buyer was someone else — the
+    strongest binding available, and unlike the GSI lookup it cannot race."""
+    verifier = SimpleNamespace(
+        verify_and_decode_signed_transaction=lambda _: _transaction(appAccountToken="user_OTHER")
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError, match="different account"):
+            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_fails_loudly_when_the_conditional_write_refuses():
+    """A refused write means the row is already bound to another transaction.
+    Returning success there would tell a customer they are subscribed when
+    nothing was recorded."""
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value=None)),
+    ):
+        with pytest.raises(AppleIapError, match="could not link"):
+            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_refuses_a_second_concurrent_session(monkeypatch):
+    """Two completable sessions means two Stripe subscriptions.
+
+    The idempotency key buckets to 5 minutes while a session stays completable
+    for ~31, and is_trial_blocked reads a local row that says nothing until a
+    webhook lands — so "the app is the only caller" does not prevent an
+    authenticated caller from minting a second one across a bucket boundary.
+    """
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    # Slot already held by an in-flight checkout.
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value=None))
+    built = AsyncMock()
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", built)
+
+    with pytest.raises(billing_service.BillingServiceError, match="checkout_in_progress"):
+        await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    built.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mobile_web_checkout_frees_the_slot_when_session_creation_fails(monkeypatch):
+    """A failed create must not wedge the owner out of checkout for the claim TTL."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
+    release = AsyncMock()
+    monkeypatch.setattr(billing_service.billing_repo, "release_checkout_slot", release)
+
+    async def _boom(**_):
+        raise RuntimeError("stripe down")
+
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", _boom)
+
+    with pytest.raises(RuntimeError):
+        await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    release.assert_awaited_once()
+    assert release.await_args.kwargs["token"] == "tok"

@@ -23,14 +23,26 @@ Two entry points, deliberately sharing one mapping function:
   ONLY way we hear about renewals, expiries, refunds and billing retries. The
   client is not involved and may never open the app again.
 
-The status this produces is written into the SAME ``subscription_status`` field
-Stripe writes (see ``billing_repo.set_apple_subscription``), so no entitlement
-predicate anywhere needs to learn that Apple exists.
+The status this produces is stored as Apple's OWN status, and the shared
+``subscription_status`` every entitlement predicate reads is derived from both
+providers (see ``billing_repo._effective_status``). So no predicate needs to
+learn that Apple exists — but neither provider can cancel the other's live
+subscription, which is what happened while both wrote the shared field
+directly.
+
+Two properties are enforced by the DATABASE rather than by checks in this
+module, because every read available here comes from an eventually-consistent
+GSI and therefore cannot decide a race: the ``signedDate`` watermark (Apple does
+not promise delivery order) and the binding of a row to one
+``originalTransactionId`` (two accounts can submit the same JWS at once). Both
+are conditions on the write; a rejected write returns None and MUST NOT be read
+as success.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -96,13 +108,13 @@ def _verifier():
     that into a 503 rather than a 500.
     """
     # APPLE_IAP_PRODUCT_ID is required here, NOT merely checked per-transaction.
-    # The product check in _subscription_from_transaction is written as
-    # `if expected and ...`, so an empty setting would silently skip it — and
-    # the rollout wires the bundle id and certs in a separate step from the
-    # product id, so "verifier live, product id blank" is a reachable state. In
-    # that window ANY validly-signed transaction for our bundle would be
-    # accepted and granted a plan. Failing configuration instead keeps the
-    # whole feature off until all three are present.
+    # The rollout wires the bundle id and certs in a separate step from the
+    # product id, so "verifier live, product id blank" is a reachable state, and
+    # in that window any validly-signed transaction for our bundle could be
+    # granted a plan. Failing configuration keeps the whole feature off until
+    # all three are present. `_subscription_from_transaction` ALSO refuses a
+    # blank expected id rather than skipping its own check — neither guard is
+    # allowed to be conditional on its own configuration existing.
     if not settings.APPLE_IAP_BUNDLE_ID or not settings.APPLE_IAP_ROOT_CERTS_DIR or not settings.APPLE_IAP_PRODUCT_ID:
         raise AppleIapNotConfigured(
             "APPLE_IAP_BUNDLE_ID / APPLE_IAP_ROOT_CERTS_DIR / APPLE_IAP_PRODUCT_ID unset "
@@ -120,23 +132,63 @@ def _verifier():
         raise AppleIapNotConfigured(f"no Apple root certificates found in {certs_dir}")
 
     environment = Environment.PRODUCTION if settings.APPLE_IAP_ENVIRONMENT == "production" else Environment.SANDBOX
+
+    # SignedDataVerifier compares this against Apple's NUMERIC appAppleId, so a
+    # string never matches and every production notification fails verification
+    # — silently, as an ordinary rejection. The setting is a str because env
+    # vars are strings; convert here rather than changing its type, so a
+    # non-numeric value is caught as misconfiguration instead of being passed
+    # through to fail later at a much less obvious place.
+    app_apple_id: int | None = None
+    raw_app_id = (settings.APPLE_IAP_APP_APPLE_ID or "").strip()
+    if raw_app_id:
+        try:
+            app_apple_id = int(raw_app_id)
+        except ValueError as e:
+            raise AppleIapNotConfigured(f"APPLE_IAP_APP_APPLE_ID must be numeric, got {raw_app_id!r}") from e
+    # Apple requires it in production; sandbox tolerates its absence.
+    if environment == Environment.PRODUCTION and app_apple_id is None:
+        raise AppleIapNotConfigured("APPLE_IAP_APP_APPLE_ID is required when APPLE_IAP_ENVIRONMENT=production")
+
     return SignedDataVerifier(
         root_certificates=root_certs,
         enable_online_checks=True,
         environment=environment,
         bundle_id=settings.APPLE_IAP_BUNDLE_ID,
-        app_apple_id=settings.APPLE_IAP_APP_APPLE_ID or None,
+        app_apple_id=app_apple_id,
     )
 
 
-def _status_for(notification_type: str | None, *, revoked: bool = False) -> str:
+def _status_for(
+    notification_type: str | None,
+    *,
+    revoked: bool = False,
+    expires_at_ms: int | None = None,
+    now_ms: int | None = None,
+) -> str:
     """Map an Apple event to the Isol8 ``subscription_status`` vocabulary.
 
     Kept as one function so the link path and the notification path can never
     disagree about what a given event means.
+
+    ``expires_at_ms`` is checked BEFORE any granting branch. A signed StoreKit
+    transaction stays cryptographically valid forever — expiry is a date inside
+    the payload, not a signature property — so verification alone says nothing
+    about whether the subscription is live. The link path passes
+    ``notification_type=None`` (there is no event, just a transaction the client
+    handed us), which would otherwise fall straight through to "active": a user
+    could replay or restore a long-expired transaction and hold paid access
+    indefinitely, since no newer notification would ever arrive to correct it.
     """
     if revoked:
         return "canceled"
+    # An elapsed paid-through date beats every other signal, including a
+    # granting notification type — Apple can only be telling us about a period
+    # that has since ended.
+    if expires_at_ms is not None:
+        current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        if int(expires_at_ms) <= current_ms:
+            return "canceled"
     if notification_type is None or notification_type in _GRANTING_TYPES:
         return "active"
     if notification_type in _REVOKING_TYPES:
@@ -156,19 +208,28 @@ def _subscription_from_transaction(transaction, notification_type: str | None) -
 
     product_id = getattr(transaction, "productId", None) or ""
     expected = settings.APPLE_IAP_PRODUCT_ID
-    if expected and product_id != expected:
+    # Fail CLOSED on an unset expected id. `_verifier` already refuses to build
+    # without APPLE_IAP_PRODUCT_ID, so this is belt-and-braces — but the old
+    # `if expected and ...` form meant a future caller reaching this with the
+    # setting blank would accept a transaction for ANY product of ours and
+    # grant the full plan. The guard must never be conditional on its own
+    # configuration being present.
+    if not expected:
+        raise AppleIapError("APPLE_IAP_PRODUCT_ID is not configured — refusing to grant")
+    if product_id != expected:
         # A transaction for a product we do not sell must never grant a plan.
         raise AppleIapError(f"unexpected productId {product_id!r} (expected {expected!r})")
 
     # revocationDate is set on a refund/revoke even when the notification type
     # itself is something else, so it is checked independently.
     revoked = getattr(transaction, "revocationDate", None) is not None
+    expires_at_ms = getattr(transaction, "expiresDate", None)
 
     return AppleSubscription(
         original_transaction_id=str(original_transaction_id),
         product_id=product_id,
-        expires_at_ms=getattr(transaction, "expiresDate", None),
-        status=_status_for(notification_type, revoked=revoked),
+        expires_at_ms=expires_at_ms,
+        status=_status_for(notification_type, revoked=revoked, expires_at_ms=expires_at_ms),
         owner_hint=getattr(transaction, "appAccountToken", None) or None,
     )
 
@@ -211,8 +272,22 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
 
     subscription = verify_transaction(signed_transaction)
 
+    # `appAccountToken` is the strongest binding available: the client stamps it
+    # at purchase and Apple echoes it inside the SIGNED payload, so a mismatch
+    # means this transaction was bought by someone else. Checked when present —
+    # it is optional, and absent on anything bought before we started sending it.
+    if subscription.owner_hint and subscription.owner_hint != owner_id:
+        raise AppleIapError("this Apple transaction was purchased by a different account")
+
     # Refuse to move a live subscription between accounts. Without this, one
     # Apple ID could be walked across accounts to keep several of them paid.
+    #
+    # This lookup alone is NOT sufficient and is not relied on alone: it reads a
+    # non-unique, eventually-consistent GSI, so two accounts submitting the same
+    # unlinked JWS can both see "unowned". The write below carries a condition
+    # binding the row to this transaction id, which is what actually decides the
+    # race; this check exists to reject an id already owned by a DIFFERENT row,
+    # which no single-row condition can see.
     existing = await billing_repo.get_by_apple_original_transaction_id(subscription.original_transaction_id)
     if existing is not None and existing.get("owner_id") != owner_id:
         raise AppleIapError("this Apple subscription is already linked to another account")
@@ -224,7 +299,10 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         expires_at=subscription.expires_at_ms,
     )
     if written is None:
-        raise AppleIapError(f"no billing row for owner {owner_id}")
+        # Either no billing row, or the conditional write refused because this
+        # row is already bound to a different Apple transaction. Both mean the
+        # link did not happen, and neither should read as success.
+        raise AppleIapError(f"could not link this transaction to owner {owner_id}")
     logger.info(
         "apple_iap.linked owner_id=%s original_transaction_id=%s status=%s",
         owner_id,
@@ -266,12 +344,43 @@ async def apply_notification(signed_payload: str) -> tuple[str, str] | None:
     notification_uuid = getattr(notification, "notificationUUID", None)
     signed_date = getattr(notification, "signedDate", None)
 
-    if notification_uuid:
-        dedup = await webhook_dedup.record_event_or_skip(event_id=f"apple:{notification_uuid}", source="apple-iap")
+    dedup_event_id = f"apple:{notification_uuid}" if notification_uuid else None
+    if dedup_event_id:
+        dedup = await webhook_dedup.record_event_or_skip(event_id=dedup_event_id, source="apple-iap")
         if dedup is WebhookDedupResult.ALREADY_SEEN:
             logger.info("apple_iap.notification_replay uuid=%s", notification_uuid)
             return None
 
+    # Everything past the dedup claim runs under a rollback. The claim is
+    # recorded BEFORE the work (that is what makes it a claim), so any failure
+    # afterwards would otherwise leave the uuid permanently marked seen: this
+    # delivery returns an error, Apple retries, the retry reads ALREADY_SEEN and
+    # is acknowledged without ever applying the renewal, expiry or refund. The
+    # owner silently keeps or loses access against what Apple actually said.
+    # Same rollback pattern the Stripe marketplace webhook uses.
+    try:
+        return await _apply_verified_notification(
+            notification=notification,
+            notification_type=notification_type,
+            signed_date=signed_date,
+        )
+    except Exception:
+        if dedup_event_id:
+            try:
+                await webhook_dedup.delete_event(event_id=dedup_event_id)
+            except Exception:  # noqa: BLE001 — never mask the original failure
+                logger.exception("apple_iap.dedup_rollback_failed uuid=%s", notification_uuid)
+        raise
+
+
+async def _apply_verified_notification(
+    *, notification, notification_type: str | None, signed_date: int | None
+) -> tuple[str, str] | None:
+    """The body of apply_notification, after the dedup claim is held.
+
+    Split out purely so the caller can wrap it in one rollback rather than
+    threading try/except through every early return.
+    """
     data = getattr(notification, "data", None)
     signed_transaction = getattr(data, "signedTransactionInfo", None) if data else None
     if not signed_transaction:
@@ -309,25 +418,29 @@ async def apply_notification(signed_payload: str) -> tuple[str, str] | None:
 
     # Out-of-order guard. Apple does not promise delivery order, so a retried
     # older notification can land after a newer one; applying it would move
-    # entitlement backwards (or, worse, forwards after a cancellation).
-    applied_at = row.get("apple_last_signed_date")
-    if signed_date is not None and applied_at is not None and int(signed_date) < int(applied_at):
-        logger.info(
-            "apple_iap.notification_stale owner_id=%s type=%s signed_date=%s applied=%s",
-            owner_id,
-            notification_type,
-            signed_date,
-            applied_at,
-        )
-        return None
-
-    await billing_repo.set_apple_subscription(
+    # entitlement backwards — or worse, forwards after a cancellation.
+    #
+    # The comparison is made INSIDE the write as a DynamoDB condition, not here.
+    # `row` came from an eventually-consistent GSI read, so a check out here can
+    # be made against a stale watermark, and two overlapping notifications can
+    # both pass it before either writes. The condition re-evaluates against the
+    # item at write time, so the older one is rejected no matter how the reads
+    # interleaved.
+    written = await billing_repo.set_apple_subscription(
         owner_id,
         original_transaction_id=subscription.original_transaction_id,
         status=subscription.status,
         expires_at=subscription.expires_at_ms,
         signed_date=int(signed_date) if signed_date is not None else None,
     )
+    if written is None:
+        logger.info(
+            "apple_iap.notification_stale owner_id=%s type=%s signed_date=%s",
+            owner_id,
+            notification_type,
+            signed_date,
+        )
+        return None
     logger.info(
         "apple_iap.notification_applied owner_id=%s type=%s status=%s",
         owner_id,

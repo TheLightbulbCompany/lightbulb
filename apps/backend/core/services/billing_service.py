@@ -549,16 +549,19 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
     variant rather than the desktop one. Apple Pay rides along automatically on
     supported devices, which is the single biggest conversion lever here.
 
-    Differences from ``create_flat_fee_checkout``, all deliberate:
+    Carries the SAME checkout-slot claim and pending-session marker as
+    ``create_flat_fee_checkout``. An earlier version omitted them on the
+    reasoning that the app is the only caller and ``is_trial_blocked`` already
+    refuses a prior subscriber — both true and both irrelevant. The idempotency
+    key is bucketed to five minutes while a session stays completable for about
+    thirty-one, and ``is_trial_blocked`` reads a local row that says nothing
+    until a checkout webhook lands. So an owner calling twice across a bucket
+    boundary gets two live sessions, completes both, and ends up with two Stripe
+    subscriptions. "The app is the only caller" is not a property of an
+    authenticated HTTP endpoint.
 
-    - **No checkout-slot claim.** That claim exists to stop the onboarding
-      wizard minting two completable subscription sessions from double-clicks.
-      Here the app is the only caller, ``is_trial_blocked`` already refuses an
-      owner who has ever subscribed, and holding a 90-second per-owner lock
-      across a browser hand-off would make a user who backs out of Safari wait
-      it out before retrying.
-    - **No starter-credits line item.** Credits are a Bedrock-onboarding
-      concern; this session sells the plan and nothing else.
+    Still deliberately unlike the flat path: **no starter-credits line item**.
+    Credits are a Bedrock-onboarding concern; this session sells the plan alone.
 
     The caller is responsible for the entitlement check. Returns the Session so
     the router can hand back ``session.url``.
@@ -566,22 +569,54 @@ async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Sessio
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
 
-    return await _build_subscription_checkout(
-        owner_id=owner_id,
-        line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
-        metadata={"owner_id": owner_id, "purpose": "mobile_web_checkout"},
-        # A universal link, so iOS hands control back to the app on success and
-        # falls through to the web page when the app is not installed. The
-        # matching apple-app-site-association entry is what makes it deep-link
-        # rather than merely load.
-        success_url=f"{FRONTEND_URL}/checkout_redirect/success",
-        cancel_url=f"{FRONTEND_URL}/checkout_redirect/cancel",
-        # Off for the same reason the credits-bundled path turns it off: a promo
-        # field on a phone keyboard is friction, and nothing here quotes a code.
-        allow_promotion_codes=False,
-        origin_context="mobile_app",
-        idempotency_key=_checkout_idempotency_key("mobile_web_checkout", owner_id, "flat"),
-    )
+    # Serializes concurrent calls for one owner; self-expires (90s) so a crashed
+    # request cannot wedge them out of checking out. The router maps this to 409.
+    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
+    if not claim_token:
+        raise BillingServiceError("checkout_in_progress")
+
+    try:
+        session = await _build_subscription_checkout(
+            owner_id=owner_id,
+            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+            metadata={"owner_id": owner_id, "purpose": "mobile_web_checkout"},
+            # A universal link, so iOS hands control back to the app on success
+            # and falls through to the web page when the app is not installed.
+            # The matching apple-app-site-association entry is what makes it
+            # deep-link rather than merely load.
+            success_url=f"{FRONTEND_URL}/checkout_redirect/success",
+            cancel_url=f"{FRONTEND_URL}/checkout_redirect/cancel",
+            # Off for the same reason the credits-bundled path turns it off: a
+            # promo field on a phone keyboard is friction, and nothing here
+            # quotes a code.
+            allow_promotion_codes=False,
+            origin_context="mobile_app",
+            idempotency_key=_checkout_idempotency_key("mobile_web_checkout", owner_id, "flat"),
+        )
+    except Exception:
+        # No session exists — free the slot so an immediate retry does not wait
+        # out the claim TTL. Fenced on our own token.
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        raise
+
+    # Record the open session. Without this, once the 90s claim lapses an
+    # unrecorded session stays completable for ~31 minutes and is invisible to
+    # every guard, so a retry can mint a second one and both can be completed.
+    # Fail CLOSED: the caller has not seen this URL yet, so expire it and let the
+    # retry mint fresh.
+    try:
+        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=None)
+    except Exception:
+        logger.exception("Failed to record pending mobile checkout for owner %s", owner_id)
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                stripe.checkout.Session.expire(session.id)
+        except Exception:
+            logger.exception("Failed to expire orphaned mobile checkout session %s", session.id)
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        raise BillingServiceError("could not start checkout — try again")
+
+    return session
 
 
 async def create_team_seat_checkout(*, owner_id: str, member_count: int) -> stripe.checkout.Session:

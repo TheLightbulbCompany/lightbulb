@@ -8,6 +8,7 @@ const mockUseContainerStatus = jest.fn();
 // per seat) or personal. The paywall sells the personal plan only, so the
 // org case must never reach it — see the isOrgOwner guard in ProvisionGate.
 let mockOrganization: { id: string } | null = null;
+let mockOrgLoaded = true;
 
 // IAP forced ON so the paywall branch is genuinely reachable. Without this the
 // org tests below would pass merely because the feature is off — proving
@@ -34,7 +35,7 @@ jest.mock("../../billing/PaywallScreen", () => ({
 
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ signOut: jest.fn() }),
-  useOrganization: () => ({ organization: mockOrganization }),
+  useOrganization: () => ({ organization: mockOrganization, isLoaded: mockOrgLoaded }),
 }));
 
 jest.mock("react-native-safe-area-context", () => ({
@@ -84,6 +85,7 @@ describe("ProvisionGate provider sign-in routing", () => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
+    mockOrgLoaded = true;
     mockIapAvailable = false;
   });
 
@@ -348,6 +350,7 @@ describe("ProvisionGate container-status context", () => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
+    mockOrgLoaded = true;
     mockIapAvailable = false;
   });
 
@@ -424,6 +427,7 @@ describe("ProvisionGate container-error interstitial", () => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
+    mockOrgLoaded = true;
     mockIapAvailable = false;
   });
 
@@ -491,6 +495,7 @@ describe("ProvisionGate teams-degraded affordance (non-blocking)", () => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
     mockOrganization = null;
+    mockOrgLoaded = true;
     mockIapAvailable = false;
   });
 
@@ -605,4 +610,34 @@ describe("ProvisionGate paywall routing is personal-owner only", () => {
     // control that proves the org cases above are blocked BY THE GUARD.
     expect(screen.getByText("MOCK_PAYWALL")).toBeTruthy();
   });
+
+// While Clerk is still resolving, `organization` is null — indistinguishable
+// from a personal owner. If /container/status resolves a purchase gate first,
+// an org admin would see the personal paywall and could complete a REAL charge
+// the backend then refuses to link. Unknown must read as not-personal.
+it("does not show the paywall while Clerk has not resolved the owner type", async () => {
+  mockIapAvailable = true;
+  mockOrgLoaded = false;
+  mockOrganization = null;
+  mockUseContainerStatus.mockReturnValue({
+    status: {
+      kind: "blocked",
+      code: "trial_daily_cap",
+      title: "Daily free limit reached",
+      message: "You've used today's free allowance — Upgrade to keep going.",
+      href: "/settings?panel=billing",
+      actionLabel: "Upgrade",
+      adminOnly: false,
+    },
+    refetch: mockRefetch,
+  });
+
+  await render(
+    <ProvisionGate>
+      <Text>APP</Text>
+    </ProvisionGate>,
+  );
+
+  expect(screen.queryByText("MOCK_PAYWALL")).toBeNull();
+});
 });

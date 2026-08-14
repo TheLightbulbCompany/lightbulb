@@ -83,10 +83,18 @@ def claimed_api_key_path(agent_id: str) -> str:
     Each agent's own workspace is its cwd (``~/.openclaw/workspace-{agentId}/``,
     upstream's per-agent convention — the bare ``~/.openclaw/workspace`` is the
     default-agent dir and would collide across agents). Isol8 pre-stages the per-agent identity file there
-    (``friday_identity.pre_stage_paperclip_identities``), and the seed prompt
-    instructs the agent to load it from its own cwd. We also surface it as the
+    (``friday_identity.pre_stage_paperclip_identities``). We surface it as the
     adapter's ``claimedApiKeyPath`` so Paperclip's native wake flow points at the
     same per-agent file rather than the colliding default.
+
+    NOTE: the AGENT no longer reads this file — the ``paperclip-exec-creds``
+    plugin injects ``PAPERCLIP_*`` into every exec child, and the seeded
+    playbook now forbids reading or printing the key (it used to instruct the
+    read, and the model echoed a live token into its visible reasoning). The
+    path still matters because Paperclip's own wake text is generated from
+    ``claimedApiKeyPath`` and still tells the agent to load the key from it —
+    a fork-side instruction we cannot remove from here, which is why the
+    playbook explicitly tells the agent to ignore it.
     """
     return f"~/.openclaw/workspace-{agent_id}/paperclip-claimed-api-key.json"
 

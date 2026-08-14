@@ -536,6 +536,23 @@ RUN chown -R 1000:1000 /home/node/.sage
 COPY plugins/aws-exec-profile /app/dist/extensions/aws-exec-profile
 RUN chown -R root:root /app/dist/extensions/aws-exec-profile
 
+# ---- Layer 14b: baked paperclip-exec-creds plugin ----
+# Same shape and same rationale as the layer above, for a different secret.
+# Registers a `resolve_exec_env` hook that injects this AGENT's PAPERCLIP_*
+# credentials into its exec'd commands only, read per-agent from
+# workspace-<agentId>/paperclip-claimed-api-key.json (the file
+# core/services/friday_identity.py seeds).
+#
+# WHY: the seeded AGENTS.md used to instruct the agent to
+# `export PAPERCLIP_API_KEY=$(jq -r .token …)` before every Paperclip call,
+# because `export` does not survive between exec calls. The model therefore
+# re-materialized the token every turn and printed it into its visible
+# reasoning — a long-lived key in the owner's chat transcript, which persists
+# to SQLite and replicates to S3. Injecting here means the model never holds
+# the token at all, so it cannot echo what it does not have.
+COPY plugins/paperclip-exec-creds /app/dist/extensions/paperclip-exec-creds
+RUN chown -R root:root /app/dist/extensions/paperclip-exec-creds
+
 # ---- Layer 15: bundled Paperclip skill ----
 # The `paperclip` skill is the agent's operating manual for the Paperclip
 # control plane — checking assignments, updating issues, posting comments,

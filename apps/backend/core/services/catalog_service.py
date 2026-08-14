@@ -45,6 +45,11 @@ from core.observability.metrics import put_metric
 from core.services import agent_export
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
+from core.services.paperclip_credential_rule import (
+    PAPERCLIP_CREDENTIAL_PROHIBITION,
+    PAPERCLIP_CREDENTIAL_RULE,
+    PAPERCLIP_CREDS_PLUGIN_PATCH,
+)
 from core.dynamodb import utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -159,6 +164,41 @@ def warn_rows(manifest: dict) -> list[dict]:
 # these, but published artifacts are immutable — so the deploy strips them
 # too. Stripped and logged, never hard-failed: old listings may carry them.
 _BLOCKED_TAR_BASENAMES = frozenset({"BOOT.md", "openclaw.plugin.json"})
+
+
+def _deep_merge_plugins(base: dict, extra: dict) -> dict:
+    """Merge ``extra`` into ``base`` one level into ``entries``.
+
+    Deliberately narrow: the seller's plugin slice owns everything else, and
+    all we ever add is one ``entries`` key. A blanket deep-merge here would
+    risk reshaping seller-authored plugin config we do not own.
+    """
+    merged = dict(base)
+    entries = dict(merged.get("entries") or {})
+    entries.update(extra.get("entries") or {})
+    merged["entries"] = entries
+    return merged
+
+
+def _append_credential_rule(workspace, owner_id: str, agent_id: str) -> None:
+    """Append the Paperclip credential rule to a hired agent's AGENTS.md.
+
+    Best-effort and idempotent: a hire must not fail because a seller shipped
+    no playbook, or because the rule is already present (a listing published
+    after the rule shipped carries it in the archive). Never raises — the
+    prohibition is a safety net, not a precondition for the deploy.
+    """
+    rel = f"workspace-{agent_id}/AGENTS.md"
+    try:
+        try:
+            body = workspace.read_file(owner_id, rel)
+        except Exception:  # noqa: BLE001 — seller shipped no playbook
+            body = ""
+        if PAPERCLIP_CREDENTIAL_PROHIBITION in body:
+            return
+        workspace.write_file(owner_id, rel, body.rstrip("\n") + "\n" + PAPERCLIP_CREDENTIAL_RULE)
+    except Exception:  # noqa: BLE001 — never fail a hire on the safety net
+        logger.exception("catalog: credential-rule append failed owner=%s agent=%s", owner_id, agent_id)
 
 
 def _strip_plugin_boot_vectors(tar_bytes: bytes, *, slug: str) -> bytes:
@@ -417,6 +457,15 @@ class CatalogService:
                 agent_id=new_agent_id,
                 tar_bytes=_strip_plugin_boot_vectors(tar_bytes, slug=slug),
             )
+            # The seller's AGENTS.md lands verbatim and is frozen in an
+            # immutable artifact, so a listing published before the credential
+            # rule existed — or any seller who simply never wrote one — leaves
+            # this agent with no prohibition while Paperclip's wake text still
+            # tells it to read the claimed-key file. Append ours after the
+            # extract, additively and idempotently, so a hire is covered like
+            # every other seed path. Deliberately AFTER extraction: the tar is
+            # the seller's content and is not ours to rewrite in place.
+            _append_credential_rule(self._workspace, owner_id, new_agent_id)
 
         await asyncio.to_thread(_extract)
 
@@ -578,6 +627,14 @@ class CatalogService:
             # registration) — backwards compatible with pre-bundle
             # listings already in the marketplace.
             plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
+            # The rule appended at extract time claims PAPERCLIP_* is already
+            # in the environment; this is what makes that true. A buyer
+            # provisioned before the plugin shipped has it baked by the image
+            # roll but not enabled (the roll reuses the on-disk config), so a
+            # hire onto such a container would otherwise get a playbook whose
+            # central claim is false. Merged into, not over, the seller's
+            # plugin slice.
+            plugins_patch = _deep_merge_plugins(plugins_patch, PAPERCLIP_CREDS_PLUGIN_PATCH)
             mcp_patch = copy.deepcopy(slice_.get("mcp")) or None
             # Substitute __AGENT_DIR__ → new_agent_id in any mcp args
             # before applying. Pairs with agent_export's publish-time

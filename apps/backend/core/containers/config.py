@@ -111,6 +111,22 @@ OPENCODE_XDG_DATA_DIR = "/home/node/.openclaw/opencode-data"
 # a ~$2,600 runaway into a ~$27 one.
 AGENT_RUN_TIMEOUT_SECONDS = 1800
 
+# logging.redactPatterns. THE single source — provision-time writes these, and
+# `config_patcher.ensure_redact_patterns` carries them onto ALREADY-provisioned
+# containers during an image roll. Both read this tuple, so an owner healed by
+# the roll and one provisioned fresh cannot end up with different rules.
+#
+# Upstream PREPENDS these to its own DEFAULT_REDACT_PATTERNS rather than
+# replacing them, so adding here only ever widens coverage.
+REDACT_PATTERNS: tuple[str, ...] = (
+    # Paperclip agent API keys: `pcp_` + hex. Bounded length so a short
+    # lookalike in documentation prose is not mangled. Upstream's vendor
+    # prefixes cover sk-/ghp_/github_pat_/gho_/ghu_ but not this one, which is
+    # how a live key reached an owner's transcript on 2026-08-14 — it arrived
+    # as prose ("token: pcp_…"), so the KEY=value pattern missed it too.
+    r"(pcp_[A-Za-z0-9]{16,})",
+)
+
 # tools.toolSearch.mode. THE single source — provision-time (below) and the
 # provider swap's re-pin (core.services.billing_service) must write the same
 # value, or a swapped owner silently runs a different tool-search mode than a
@@ -875,6 +891,28 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
       commands only when the owner's connector AWS profile is materialized.
       Inert (returns ``{}``) until that profile exists, so it is safe to enable
       fleet-wide regardless of provider.
+    - ``paperclip-exec-creds`` — baked in-repo plugin whose ``resolve_exec_env``
+      hook injects this AGENT's ``PAPERCLIP_*`` credentials into its exec'd
+      commands only, read per-agent from
+      ``workspace-<agentId>/paperclip-claimed-api-key.json``. Inert (returns
+      ``{}``) for any agent with no key file, so it is safe fleet-wide. Exists
+      so the seeded persona never has to tell the agent to read its own token:
+      it used to, and the model printed the token into its visible reasoning,
+      which persists to the transcript DB and replicates to S3.
+
+      FORWARD-ONLY, deliberately. This entry lands in NEWLY generated configs;
+      the fleet image rollout reuses the existing on-disk ``openclaw.json`` and
+      does not regenerate ``plugins.entries`` (``update_service``), so owners
+      provisioned before this keep running without the plugin — and keep their
+      old playbook, which still reads the key file, so they keep working. The
+      two must move together: enabling the plugin without the new playbook is
+      harmless, but the new playbook WITHOUT the plugin tells an agent its
+      credentials are in the environment when they are not, and every Paperclip
+      call fails. Do not "helpfully" patch this key onto existing owners in
+      isolation, and do not rewrite their AGENTS.md in isolation either.
+      Existing owners converge on reprovision, when both are regenerated
+      together. The ``pcp_`` redaction pattern below is what limits their
+      exposure meanwhile.
     - ``tokenjuice`` — deterministic exec/bash tool-result compaction
       (baked, Dockerfile Layer 13b). Strict-empty configSchema: enable-only,
       never add a ``config`` key or the container crash-loops at boot.
@@ -898,6 +936,7 @@ def workflow_plugin_entries(llm_task_model: str | None = None) -> dict:
         "lobster": {"enabled": True},
         "llm-task": llm_task_entry,
         "aws-exec-profile": {"enabled": True},
+        "paperclip-exec-creds": {"enabled": True},
         "tokenjuice": {"enabled": True},
         "sage-openclaw": {"enabled": True},
         # Bundled key-less Firecrawl fetch provider — the Readability-failure
@@ -1681,6 +1720,25 @@ def build_openclaw_config_dict(
             "store": "/home/node/.openclaw/cron/jobs.json",
             **({"enabled": False} if is_bedrock_trial else {}),
         },
+        # Transcript/log redaction. Upstream already runs this — mode defaults
+        # to "tools" and redactTranscriptMessage is applied on the session
+        # APPEND path, so it covers what is persisted to openclaw-agent.sqlite
+        # (and therefore the litestream S3 replica), what chat.history replays,
+        # and what later turns re-send to the model. It does NOT cover the
+        # single in-flight stream to the UI.
+        #
+        # DEFAULT_REDACT_PATTERNS knows sk-/ghp_/github_pat_/gho_/ghu_, env
+        # assignments, Authorization headers and JSON token fields — but not
+        # Paperclip's `pcp_` keys, which is why a live one reached an owner's
+        # transcript on 2026-08-14 (as prose, so the KEY=value pattern missed
+        # it too). Custom patterns are PREPENDED to the defaults upstream, not
+        # substituted, so nothing is lost by setting this.
+        #
+        # This is the backstop, not the fix: the fix is that the agent is no
+        # longer told to read its key (paperclip-exec-creds injects it into
+        # exec children). This catches the residue — an `env`/`printenv` dump,
+        # a third-party script, or a model that pastes it anyway.
+        "logging": {"redactPatterns": list(REDACT_PATTERNS)},
         "skills": {
             "install": {
                 "nodeManager": "npm",

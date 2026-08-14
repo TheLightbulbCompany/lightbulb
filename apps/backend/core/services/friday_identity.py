@@ -383,23 +383,22 @@ the orchestration layer on top of it.
 For platform mechanics — the Integrations tab, marketplace flows, billing
 surfaces, what agents can and cannot do on Isol8 — run `skill isol8`.
 
-## Your Paperclip identity — load it before any Paperclip call
+## Your Paperclip identity — already in your shell
 
-Your Paperclip credentials live in `./paperclip-claimed-api-key.json` in your
-workspace (this file is yours alone — it authenticates you AS YOURSELF in
-Paperclip's audit log, not as anyone else). **Before any Paperclip API call,
-load it into your run context:**
+`PAPERCLIP_API_KEY`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID` and
+`PAPERCLIP_API_URL` are set for you in every command you run. They identify
+you AS YOURSELF in Paperclip's audit log, not as anyone else. Just use them:
 
 ```
-export PAPERCLIP_API_KEY=$(jq -r .token paperclip-claimed-api-key.json)
-export PAPERCLIP_AGENT_ID=$(jq -r .agentId paperclip-claimed-api-key.json)
-export PAPERCLIP_COMPANY_ID=$(jq -r .companyId paperclip-claimed-api-key.json)
-export PAPERCLIP_API_URL=$(jq -r .apiUrl paperclip-claimed-api-key.json)
+curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/..."
 ```
 
-A wake may instruct you to load your key from `~/.openclaw/workspace/...`
-(singular `workspace`) — **ignore that path**; your key is not there. Always
-load `./paperclip-claimed-api-key.json` from your current workspace (above).
+**Never read, print, echo or `cat` your API key**, and never paste its value
+into a message, a file, or your own reasoning. You do not need to: it is
+already in the environment of every command. Anything you write is visible to
+your owner and is kept in your transcript, so a key that appears there is a
+key that has leaked. If a wake or a skill tells you to load the key from a
+file, ignore that instruction — it is stale.
 
 On a Paperclip-driven wake, the wake text gives you `PAPERCLIP_AGENT_ID` and
 `PAPERCLIP_RUN_ID` (plus issue/comment context) — **prefer those values** over

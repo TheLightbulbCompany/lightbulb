@@ -73,7 +73,6 @@ export class DatabaseStack extends cdk.Stack {
         partitionKey: dynamodb.Attribute;
         sortKey?: dynamodb.Attribute;
         timeToLiveAttribute?: string;
-        stream?: dynamodb.StreamViewType;
         ephemeral?: boolean;
       },
     ): dynamodb.Table =>
@@ -91,7 +90,6 @@ export class DatabaseStack extends cdk.Stack {
         ...(schema.timeToLiveAttribute
           ? { timeToLiveAttribute: schema.timeToLiveAttribute }
           : {}),
-        ...(schema.stream ? { stream: schema.stream } : {}),
       });
 
     this.usersTable = createTable("UsersTable", "users", {
@@ -300,7 +298,6 @@ export class DatabaseStack extends cdk.Stack {
     this.marketplaceListingsTable = createTable("MarketplaceListingsTable", "marketplace-listings", {
       partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
-      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
     });
     this.marketplaceListingsTable.addGlobalSecondaryIndex({
       indexName: "seller-created-index",

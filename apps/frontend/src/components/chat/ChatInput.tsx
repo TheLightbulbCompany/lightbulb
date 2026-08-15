@@ -13,6 +13,15 @@ import { SlashCommandMenu, flattenVisible } from "@/components/chat/SlashCommand
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const FALLBACK_MAX_TEXTAREA_HEIGHT = 200; // Matches Tailwind max-h-50 (12.5rem)
 
+// Chromium honors the `field-sizing: content` inline style on the textarea, so
+// the JS fallback must stand down there — an inline `height` would override
+// field-sizing and double-drive the sizing. Detected once at module load;
+// guarded so SSR (no CSS global) and jsdom (no CSS.supports) fall back to JS.
+const SUPPORTS_FIELD_SIZING =
+  typeof CSS !== "undefined" &&
+  typeof CSS.supports === "function" &&
+  CSS.supports("field-sizing", "content");
+
 interface PendingFile {
   file: File;
   id: string;
@@ -106,11 +115,12 @@ export function ChatInput({
   const menuOpen = slash.isCommand && visible.length > 0 && !slash.argText;
 
   const resizeTextarea = React.useCallback(() => {
+    if (SUPPORTS_FIELD_SIZING) return;
     const el = textareaRef.current;
     if (!el) return;
 
-    // Modern Chromium/Safari can honor `field-sizing: content`, but Firefox and
-    // older engines need an explicit scrollHeight-based fallback. Reset first so
+    // Firefox and older engines lack `field-sizing: content`, so they need an
+    // explicit scrollHeight-based fallback. Reset first so
     // deleting text can shrink the composer, then cap at the same max height as
     // the Tailwind class so overflow only appears once the visible max is reached.
     el.style.height = "auto";

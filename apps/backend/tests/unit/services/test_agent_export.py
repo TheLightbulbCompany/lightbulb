@@ -1305,9 +1305,10 @@ async def test_a_description_carrying_the_sellers_email_is_not_published():
         agent_id="agent-uuid",
         fetch_routine_details=fetch,
     )
-    # The routine still ports — it is a real schedule — but stripped of the
-    # text that names a person.
-    assert out == [{"title": "Check the mail", "description": "", "cron": "*/10 * * * *", "timezone": "UTC"}]
+    # The whole prompt was the thing naming a person, so once it is gone there
+    # is no portable routine left — a bare cron with no instructions looks
+    # like work and is not.
+    assert out == []
 
 
 @pytest.mark.asyncio
@@ -1412,15 +1413,11 @@ async def test_a_registry_title_alone_does_not_make_a_routine_an_automation():
         agent_id="agent-uuid",
         fetch_routine_details=fetch,
     )
-    assert out == [
-        {
-            "title": "Google: New email (checked on a schedule)",
-            "description": "",
-            "cron": "*/10 * * * *",
-            "timezone": "UTC",
-        }
-    ]
-    assert "seller@acme.com" not in json.dumps(out)
+    # Not a requirement (no webhook trigger to recognise) and not a schedule
+    # either: its entire prompt was the seller's mailbox, so what would be
+    # left is a titled cron with no instructions — something that looks like
+    # work and is not.
+    assert out == []
 
 
 @pytest.mark.asyncio
@@ -1428,8 +1425,8 @@ async def test_a_credential_in_a_description_is_not_published_either():
     """The persona pattern set is not only PII — it carries
     ``hardcoded-secret``/``aws-secret-key``/``provider-token`` too, and
     routine capture is appended after ``safety_flags`` are generated, so a
-    credential here would not even reach moderation. Any flag drops the
-    text."""
+    credential here would not even reach moderation. Any flag drops the text —
+    and with the instructions gone there is no portable routine left."""
     fetch = _StubRoutineFetch(
         [
             {
@@ -1445,7 +1442,7 @@ async def test_a_credential_in_a_description_is_not_published_either():
         agent_id="agent-uuid",
         fetch_routine_details=fetch,
     )
-    assert out[0]["description"] == ""
+    assert out == []
 
 
 @pytest.mark.asyncio

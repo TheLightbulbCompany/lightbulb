@@ -1189,11 +1189,11 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
       routine falls through to the schedule branch and keeps its real
       scheduled work.
 
-      A schedule-only seeded automation (the gmail poll shape) likewise ports
-      as an ordinary routine rather than a requirement. That costs the buyer a
-      checklist row, not their safety: the description still goes through
-      ``_publishable_description``, which is what keeps the seller's mailbox
-      out of it.
+      A schedule-only seeded automation (the gmail poll shape) has no webhook
+      trigger to recognise, so it is not a requirement. It does not become a
+      broken schedule either: its whole prompt is the seller's mailbox and the
+      ``gog`` invocation against it, so the scan below takes the description,
+      and a routine stripped of its instructions ports as nothing at all.
 
     - Anything else — one ``{title, description, cron, timezone}`` per schedule
       trigger (title/description repeated per trigger so the deploy side can
@@ -1265,7 +1265,18 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     if not _is_publishable(title):
         return None
 
-    safe_description = description if isinstance(description, str) and _is_publishable(description) else ""
+    had_description = isinstance(description, str) and bool(description)
+    safe_description = description if had_description and _is_publishable(description) else ""
+
+    # A routine whose instructions we had to remove does not port at all. The
+    # seeded gmail poll is the case that matters: schedule-only, so it never
+    # becomes a requirement, and its whole prompt is the seller's mailbox and
+    # the gog invocation against it. Recreating that as a titled cron with an
+    # empty body hands the buyer something that looks like work and is not.
+    # A routine the seller simply never described is untouched — nothing was
+    # taken from it.
+    if had_description and not safe_description:
+        return None
 
     out: list[dict] = []
     for trig in triggers:

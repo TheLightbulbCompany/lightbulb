@@ -1133,3 +1133,50 @@ async def test_a_stale_apple_notification_is_still_refused_not_retried(dynamodb_
     assert result is None
     row = await billing_repo.get_by_owner_id("user_wm")
     assert row["apple_subscription_status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_a_stripe_write_cannot_roll_back_an_apple_renewal(dynamodb_table):
+    """An Apple RENEWAL leaves the status "active" while advancing the watermark
+    and the expiry. A compare-and-set on status alone therefore passes, and the
+    whole-item write restores the PRE-renewal watermark — after which an older
+    refund can clear the monotonicity check and cancel a live subscription."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_renew", "cus_renew")
+    await billing_repo.set_apple_subscription(
+        "user_renew",
+        original_transaction_id="2000000000000030",
+        status="active",
+        expires_at=1_000,
+        signed_date=1_000,
+    )
+
+    real_get = billing_repo.get_by_owner_id
+    interleaved = {"done": False}
+
+    async def _get_then_let_apple_renew(owner_id, **kwargs):
+        row = await real_get(owner_id, **kwargs)
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            billing_repo.get_by_owner_id = real_get
+            # Status stays "active"; only the watermark and expiry move.
+            await billing_repo.set_apple_subscription(
+                "user_renew",
+                original_transaction_id="2000000000000030",
+                status="active",
+                expires_at=9_000,
+                signed_date=9_000,
+            )
+            billing_repo.get_by_owner_id = _get_then_let_apple_renew
+        return row
+
+    billing_repo.get_by_owner_id = _get_then_let_apple_renew
+    try:
+        await billing_repo.set_subscription(owner_id="user_renew", subscription_id="sub_z", status="active")
+    finally:
+        billing_repo.get_by_owner_id = real_get
+
+    row = await billing_repo.get_by_owner_id("user_renew")
+    assert row["apple_last_signed_date"] == 9_000
+    assert row["apple_expires_at"] == 9_000

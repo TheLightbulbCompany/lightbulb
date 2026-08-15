@@ -1018,7 +1018,11 @@ async def test_a_refund_for_an_unlinked_purchase_leaves_a_tombstone(monkeypatch)
             AsyncMock(return_value=None),
         ),
     ):
-        assert await apple_iap.apply_notification("signed") is None
+        # Raises rather than acking: "no row" can just mean the link has not
+        # propagated through the GSI yet, and Apple never redelivers an accepted
+        # notification — so acking would drop the refund permanently.
+        with pytest.raises(AppleIapError, match="retry expected"):
+            await apple_iap.apply_notification("signed")
 
     keys = [c.args[0] if c.args else c.kwargs.get("event_id") for c in marked.await_args_list]
     assert "apple_revoked:2000000000000001" in keys
@@ -1384,7 +1388,8 @@ async def test_an_unlinked_refund_still_leaves_its_tombstone(monkeypatch):
             AsyncMock(return_value=None),
         ),
     ):
-        await apple_iap.apply_notification("signed")
+        with pytest.raises(AppleIapError):
+            await apple_iap.apply_notification("signed")
 
     assert any("apple_revoked:2000000000000001" in str(c) for c in marked.await_args_list)
     assert not any("apple_revoked:2000000000000001" in str(c) for c in cleared.await_args_list)
@@ -1454,3 +1459,57 @@ async def test_an_informational_notification_touches_nothing(monkeypatch):
         assert await apple_iap.apply_notification("signed") is None
 
     set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tombstone_delete_is_not_swallowed_when_unlinked(monkeypatch):
+    """On the unlinked path the tombstone IS the entitlement decision. Acking a
+    notification whose delete failed dedups it forever and locks out a customer
+    who has just paid again, until the 30-day TTL."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+
+    async def _delete_fails(event_id):
+        raise RuntimeError("dynamodb throttled")
+
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", _delete_fails)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        with pytest.raises(RuntimeError):
+            await apple_iap.apply_notification("signed")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tombstone_delete_is_tolerated_once_the_row_is_updated(monkeypatch):
+    """Where the row itself was written, entitlement is already right and a
+    lingering tombstone costs at most one refused re-link — not worth failing a
+    notification that otherwise applied."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+
+    async def _delete_fails(event_id):
+        raise RuntimeError("dynamodb throttled")
+
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", _delete_fails)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        assert await apple_iap.apply_notification("signed") == ("user_1", "active")

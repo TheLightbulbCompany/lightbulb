@@ -294,16 +294,25 @@ async def _mark_revoked(original_transaction_id: str) -> None:
     await webhook_dedup.record_event_or_skip(_revoked_key(original_transaction_id), source="apple-iap-revoked")
 
 
-async def _clear_revoked(original_transaction_id: str) -> None:
+async def _clear_revoked(original_transaction_id: str, *, best_effort: bool = True) -> None:
     """Drop the tombstone when Apple says this subscription is live again.
 
     A resubscribe reuses the SAME originalTransactionId, so without this a
     refunded owner who later genuinely pays again would be refused forever.
+
+    ``best_effort`` only holds where the row itself was updated: entitlement is
+    already correct there and a lingering tombstone costs at most one refused
+    re-link. On the UNLINKED path it must be False — the tombstone IS the
+    entitlement decision, so swallowing a failed delete acks the notification,
+    dedups it permanently, and leaves a paying customer locked out until the TTL
+    expires. Letting it raise rolls back the dedup claim so Apple retries.
     """
     try:
         await webhook_dedup.delete_event(_revoked_key(original_transaction_id))
-    except Exception:  # noqa: BLE001 — best effort; a stale tombstone only ever over-refuses
+    except Exception:
         logger.exception("apple_iap.revoked_clear_failed original_transaction_id=%s", original_transaction_id)
+        if not best_effort:
+            raise
 
 
 def _verify_signed(method: str, blob: str) -> tuple[object, str]:
@@ -734,6 +743,19 @@ async def _apply_verified_notification(
         # tombstone that `link_purchase` consults instead.
         if subscription.status == "canceled":
             await _mark_revoked(subscription.original_transaction_id)
+            # The GSI is eventually consistent, so "no row" can simply mean the
+            # link that just happened has not propagated. Acking here would drop
+            # the revocation permanently — Apple does not redeliver an accepted
+            # notification — and leave a refunded owner active, because nothing
+            # reconciles the tombstone against a row that appears afterwards.
+            # Raising rolls back the dedup claim so the retry (seconds later)
+            # finds the row and applies it properly. A purchase that genuinely
+            # was never linked keeps the tombstone and simply exhausts Apple's
+            # retries, which is the outcome it already had.
+            raise AppleIapError(
+                f"no billing row yet for {subscription.original_transaction_id} — "
+                "revocation not applied, retry expected"
+            )
         else:
             # A resubscribe reuses the SAME originalTransactionId, and if the
             # original purchase was never linked this branch is where its
@@ -742,7 +764,7 @@ async def _apply_verified_notification(
             # refuses a customer who has just paid again — for up to the 30-day
             # TTL. `_clear_revoked` further down only runs once a row exists,
             # which by definition it does not here.
-            await _clear_revoked(subscription.original_transaction_id)
+            await _clear_revoked(subscription.original_transaction_id, best_effort=False)
         logger.warning(
             "apple_iap.notification_unlinked original_transaction_id=%s type=%s status=%s",
             subscription.original_transaction_id,

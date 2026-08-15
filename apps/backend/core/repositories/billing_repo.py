@@ -191,13 +191,37 @@ def _apply_effective_status(row: dict, *, prefer: str) -> None:
 _CAS_ATTEMPTS = 4
 
 
-def _unchanged_since_read(row: dict, field: str, values: dict) -> str:
-    """Condition asserting ``field`` still holds the value ``row`` was read with."""
-    seen = row.get(field)
-    if seen is None:
-        return f"attribute_not_exists({field})"
-    values[":cas_seen"] = seen
-    return f"{field} = :cas_seen"
+def _unchanged_since_read(row: dict, fields: tuple[str, ...], values: dict) -> str:
+    """Condition asserting every one of ``fields`` still holds the value read.
+
+    Plural because a single field is not enough to detect that the other
+    provider wrote. Conditioning the Stripe write on ``apple_subscription_status``
+    alone passed straight through an Apple RENEWAL, which leaves the status
+    "active" while advancing ``apple_last_signed_date`` and ``apple_expires_at``
+    — so the whole-item PutItem then restored the pre-renewal watermark, and a
+    later out-of-order refund could clear the monotonicity check it should have
+    lost and cancel a subscription that had just renewed.
+    """
+    clauses = []
+    for i, field in enumerate(fields):
+        # ABSENT and PRESENT-BUT-NULL are different rows, and conflating them
+        # breaks ordinary writes: set_subscription stores stripe_subscription_id
+        # = None on cancellation, which DynamoDB keeps as a NULL attribute. Ask
+        # attribute_not_exists about that and it is false forever, so every
+        # later write fails its own condition and the retries exhaust.
+        if field not in row:
+            clauses.append(f"attribute_not_exists({field})")
+        else:
+            values[f":cas{i}"] = row[field]
+            clauses.append(f"{field} = :cas{i}")
+    return " AND ".join(clauses)
+
+
+# Everything the OTHER provider owns on the row. A whole-item PutItem rewrites
+# all of it, so a compare-and-set has to cover all of it — anything omitted is a
+# field one provider can silently roll back to its own snapshot.
+_APPLE_OWNED = ("apple_subscription_status", "apple_last_signed_date", "apple_expires_at")
+_STRIPE_OWNED = ("stripe_subscription_status", "stripe_subscription_id")
 
 
 class CrossProviderWriteConflict(Exception):
@@ -229,7 +253,7 @@ async def _put_with_apple_cas(owner_id: str, mutate) -> dict | None:
         # Read BEFORE mutate, so the condition describes the row we based the
         # derived status on rather than the one we are about to write.
         values: dict = {}
-        condition = _unchanged_since_read(existing, "apple_subscription_status", values)
+        condition = _unchanged_since_read(existing, _APPLE_OWNED, values)
 
         mutate(existing)
         existing["updated_at"] = utc_now_iso()
@@ -339,7 +363,7 @@ async def _try_set_apple_subscription(
     # Captured from the row AS READ, before _adopt_legacy_status can write to
     # this very field — the condition is about the pre-write state.
     cas_values: dict = {}
-    cross_provider = _unchanged_since_read(existing, "stripe_subscription_status", cas_values)
+    cross_provider = _unchanged_since_read(existing, _STRIPE_OWNED, cas_values)
 
     existing["apple_original_transaction_id"] = original_transaction_id
     # Must run BEFORE Apple's status joins the row, while the shared field

@@ -233,6 +233,69 @@ describe("AssigneePicker", () => {
     expect(onChange).toHaveBeenCalledWith(null);
   });
 
+  it("keeps an open list stable when recents change under an agents revalidation", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId={null}
+        onChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Unassigned/i }));
+    await user.type(await screen.findByRole("combobox"), "day");
+    const before = screen.getAllByRole("option").map((o) => o.textContent);
+
+    // A foreign tab writes recents while SWR hands back a fresh `agents`
+    // array (same members, new identity). Neither may reorder an open list.
+    localStorage.setItem(
+      "isol8.teams.recent-assignees",
+      JSON.stringify(["ag_3"]),
+    );
+    rerender(
+      <AssigneePicker
+        agents={[...agents]}
+        selectedAgentId={null}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(
+      before,
+    );
+  });
+
+  it("picks up recents written since the last open", async () => {
+    const user = userEvent.setup();
+    render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId={null}
+        onChange={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Unassigned/i });
+    await user.click(trigger);
+    expect((await screen.findAllByRole("option"))[1]).toHaveTextContent(
+      "Friday",
+    );
+    await user.keyboard("{Escape}");
+
+    localStorage.setItem(
+      "isol8.teams.recent-assignees",
+      JSON.stringify(["ag_3"]),
+    );
+    await user.click(trigger);
+
+    const options = await screen.findAllByRole("option");
+    expect(options[1]).toHaveTextContent("Saturday");
+    // The snapshot must also drive the initially-active option.
+    expect(screen.getByRole("combobox")).toHaveAttribute(
+      "aria-activedescendant",
+      options[0].id,
+    );
+  });
+
   it("bubbles recent agents to the top of the list", async () => {
     const user = userEvent.setup();
     // Pre-seed: "Saturday" is the most-recently-picked.

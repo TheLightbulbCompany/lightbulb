@@ -42,6 +42,18 @@ type AssigneeOption =
   | { kind: "agent"; id: string }
   | { kind: "member"; id: string };
 
+/** Merge recent + remainder so frequently-picked bubble up. Recent ids that no
+ * longer match an active agent are dropped. Pure — the caller supplies the
+ * recents, so ordering never depends on when React recomputes. */
+function orderAgents(agents: CompanyAgent[], recentIds: string[]): CompanyAgent[] {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const recentlyPicked = recentIds
+    .map((id) => byId.get(id))
+    .filter((a): a is CompanyAgent => a !== undefined);
+  const recentSet = new Set(recentlyPicked.map((a) => a.id));
+  return [...recentlyPicked, ...agents.filter((a) => !recentSet.has(a.id))];
+}
+
 export function AssigneePicker({
   agents,
   selectedAgentId,
@@ -55,6 +67,7 @@ export function AssigneePicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [recentIds, setRecentIds] = useState<string[]>([]);
   const mouseDownCommittedRef = useRef(false);
   const listboxId = useId();
 
@@ -81,18 +94,15 @@ export function AssigneePicker({
           : "Unassigned";
   const hasAssignee = Boolean(selectedAgent || selectedMember);
 
-  // Merge recent + remainder so frequently-picked bubble up. Recent ids
-  // that no longer match an active agent are dropped.
-  const orderedAgents = useMemo(() => {
-    const recent = getRecentAssignees();
-    const byId = new Map(agents.map((a) => [a.id, a]));
-    const recentlyPicked = recent
-      .map((id) => byId.get(id))
-      .filter((a): a is CompanyAgent => a !== undefined);
-    const recentSet = new Set(recentlyPicked.map((a) => a.id));
-    const rest = agents.filter((a) => !recentSet.has(a.id));
-    return [...recentlyPicked, ...rest];
-  }, [agents]);
+  // Recents are snapshotted when the popover opens and never re-read during
+  // render. getRecentAssignees() reads localStorage, so calling it inside the
+  // memo made row order depend on *when* React recomputed: a foreign-tab write
+  // landing alongside an SWR revalidation of `agents` reshuffled an open list
+  // under the user's pointer.
+  const orderedAgents = useMemo(
+    () => orderAgents(agents, recentIds),
+    [agents, recentIds],
+  );
 
   const q = query.trim().toLowerCase();
   const visibleAgents = q
@@ -111,10 +121,15 @@ export function AssigneePicker({
     ...visibleMembers.map((member) => ({ kind: "member" as const, id: member.userId })),
   ];
 
-  const initialActiveIndex = (queryValue: string) => {
+  // `ordered` is a parameter because the open handler snapshots fresh recents
+  // and must index against that order, not the not-yet-rerendered memo.
+  const initialActiveIndex = (
+    queryValue: string,
+    ordered: CompanyAgent[] = orderedAgents,
+  ) => {
     const normalizedQuery = queryValue.trim().toLowerCase();
     if (normalizedQuery) {
-      const hasAgentMatch = orderedAgents.some((agent) =>
+      const hasAgentMatch = ordered.some((agent) =>
         agent.name.toLowerCase().includes(normalizedQuery),
       );
       const hasMemberMatch =
@@ -127,7 +142,7 @@ export function AssigneePicker({
       return hasAgentMatch || hasMemberMatch ? 1 : -1;
     }
 
-    const selectedAgentIndex = orderedAgents.findIndex(
+    const selectedAgentIndex = ordered.findIndex(
       (agent) => agent.id === selectedAgentId,
     );
     if (selectedAgentIndex >= 0) return selectedAgentIndex + 1;
@@ -136,7 +151,7 @@ export function AssigneePicker({
       ? members.findIndex((member) => member.userId === selectedUserId)
       : -1;
     if (selectedMemberIndex >= 0) {
-      return orderedAgents.length + selectedMemberIndex + 1;
+      return ordered.length + selectedMemberIndex + 1;
     }
     return 0;
   };
@@ -212,7 +227,9 @@ export function AssigneePicker({
     setOpen(next);
     if (next) {
       mouseDownCommittedRef.current = false;
-      setActiveIndex(initialActiveIndex(query));
+      const recent = getRecentAssignees();
+      setRecentIds(recent);
+      setActiveIndex(initialActiveIndex(query, orderAgents(agents, recent)));
     }
     if (!next) {
       setQuery("");

@@ -70,7 +70,7 @@ import {
 import { makeAdapter } from "../../lib/adapter";
 import { APPLE_IAP_AVAILABLE } from "../../lib/appleIap";
 import { ContainerStatusContext } from "../../lib/containerStatusContext";
-import { isPurchaseGate, purchaseGateCopy } from "../../lib/purchaseCta";
+import { isSubscriptionGate, purchaseGateCopy } from "../../lib/purchaseCta";
 import { PaywallScreen } from "../billing/PaywallScreen";
 import { ByoKeyScreen } from "./ByoKeyScreen";
 import { ChatGPTConnectScreen } from "./ChatGPTConnectScreen";
@@ -371,7 +371,12 @@ export function ProvisionGate({ children }: { children: React.ReactNode }) {
     // (provision_gate.py), so a code allowlist would leak every one of them.
     // The backend refuses org owners on both endpoints regardless; this keeps
     // them from seeing a paywall that could only 403.
-    if (APPLE_IAP_AVAILABLE && isPurchaseGate(status.code) && !isOrgOwner) {
+    // isSubscriptionGate, NOT isPurchaseGate. The latter includes
+    // credits_required and payment_past_due, which fire for owners who ALREADY
+    // have an active plan — routing those here sells a second subscription that
+    // adds no credits and fixes no card, so the customer is billed twice and
+    // sees the identical gate afterwards.
+    if (APPLE_IAP_AVAILABLE && isSubscriptionGate(status.code) && !isOrgOwner) {
       return <ConnectedPaywall onPurchased={refetch} />;
     }
 

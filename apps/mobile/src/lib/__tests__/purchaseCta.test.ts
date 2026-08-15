@@ -1,4 +1,9 @@
-import { isPurchaseGate, purchaseGateCopy } from "../purchaseCta";
+import {
+  SUBSCRIPTION_GATES,
+  isPurchaseGate,
+  isSubscriptionGate,
+  purchaseGateCopy,
+} from "../purchaseCta";
 
 // The full gate-code list from apps/backend/core/services/provision_gate.py
 // (grep `code="`). Pinned here so adding a backend gate that costs money and
@@ -46,5 +51,42 @@ describe("purchaseCta", () => {
     const text = `${copy?.title} ${copy?.body}`;
     expect(text).not.toMatch(/upgrade|subscribe|buy|purchase|top up|pick a plan/i);
     expect(text).not.toMatch(/isol8\.co/);
+  });
+});
+
+// A plan paywall can only resolve gates that mean "no subscription". Two of
+// the purchase gates fire for owners who ALREADY pay, and selling those a
+// second monthly plan takes a second payment while leaving the gate in place.
+describe("which gates a paywall can actually resolve", () => {
+  it.each(["trial_daily_cap", "trial_expired", "signup_required", "subscription_required"])(
+    "%s means no plan, so the paywall resolves it",
+    (code) => {
+      expect(isSubscriptionGate(code)).toBe(true);
+    },
+  );
+
+  it.each(["credits_required", "payment_past_due"])(
+    "%s fires for an owner who already pays, so the paywall must NOT show",
+    (code) => {
+      // Still a purchase gate — the server's copy is a CTA either way — but
+      // buying another subscription is not what unblocks them.
+      expect(isPurchaseGate(code)).toBe(true);
+      expect(isSubscriptionGate(code)).toBe(false);
+    },
+  );
+
+  it("never shows the personal paywall for an org gate", () => {
+    expect(isSubscriptionGate("team_billing_required")).toBe(false);
+  });
+
+  it("defaults a new backend gate to NOT showing a paywall", () => {
+    expect(isSubscriptionGate("something_new")).toBe(false);
+    expect(isSubscriptionGate(null)).toBe(false);
+  });
+
+  it("only classifies gates it also carries local copy for", () => {
+    for (const code of SUBSCRIPTION_GATES) {
+      expect(purchaseGateCopy(code)).not.toBeNull();
+    }
   });
 });

@@ -34,16 +34,14 @@ describe("AuthStack — gog file-keyring password secret", () => {
     template.resourceCountIs("AWS::SecretsManager::RotationSchedule", 0);
   });
 
-  test("does not retain the retired platform-ops token secret", () => {
-    const secrets = template.findResources("AWS::SecretsManager::Secret");
-    expect(Object.values(secrets)).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          Properties: expect.objectContaining({
-            Name: "isol8/dev/platform_ops_token_key",
-          }),
-        }),
-      ]),
-    );
+  test("retains the platform-ops secret and live export during removal phase one", () => {
+    template.hasResourceProperties("AWS::SecretsManager::Secret", {
+      Name: "isol8/dev/platform_ops_token_key",
+    });
+    template.hasOutput("ExportsOutputRefPlatformOpsTokenKeyAF16BB4E545E5253", {
+      Export: {
+        Name: "Auth-dev:ExportsOutputRefPlatformOpsTokenKeyAF16BB4E545E5253",
+      },
+    });
   });
 });

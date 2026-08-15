@@ -113,7 +113,50 @@ describe("AssigneePicker", () => {
     );
     await user.click(screen.getByRole("button", { name: /Unassigned/i }));
     await user.click(await screen.findByText("Monday"));
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("ag_2");
+  });
+
+  it("commits the filtered option on mousedown before focus can reset the list", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId={null}
+        onChange={onChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Unassigned/i }));
+    await user.type(await screen.findByRole("combobox"), "Sat");
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: screen.getByRole("button", { name: "Saturday" }),
+    });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith("ag_3");
+  });
+
+  it("selects the first filtered match with ArrowDown and Enter", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId={null}
+        onChange={onChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Unassigned/i }));
+    const search = await screen.findByRole("combobox");
+    await user.type(search, "Mon");
+    await user.keyboard("{ArrowDown}{Enter}");
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith("ag_2");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
 
   it("calls onChange(null) when the None option is clicked", async () => {

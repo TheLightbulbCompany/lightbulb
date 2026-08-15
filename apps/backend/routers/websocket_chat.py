@@ -2237,7 +2237,7 @@ async def _process_agent_chat_background(
                 from core.services import container_wake as _cw
 
                 await _cw.request_wake_silent(owner_id)
-                put_metric("chat.error", dimensions={"reason": "container_waking"})
+                put_metric("chat.error", dimensions={"reason": "container_waking", "reclassified": "false"})
                 logger.info(
                     "[%s] chat.send: container stopped (scaled to zero) for owner=%s — wake dispatched",
                     user_id,
@@ -2255,7 +2255,7 @@ async def _process_agent_chat_background(
                 )
                 return
 
-            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+            put_metric("chat.error", dimensions={"reason": "container_unreachable", "reclassified": "false"})
             logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
             await management_api.send_message_async(
                 connection_id,
@@ -2269,7 +2269,7 @@ async def _process_agent_chat_background(
             return
 
         if not ip:
-            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+            put_metric("chat.error", dimensions={"reason": "container_unreachable", "reclassified": "false"})
             logger.warning("[%s] chat.send FAIL: no IP for owner=%s (container starting)", user_id, owner_id)
             await management_api.send_message_async(
                 connection_id,
@@ -2372,7 +2372,7 @@ async def _process_agent_chat_background(
         # can't keep talking through the gateway indefinitely.
         gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id, session_key=session_key)
         if gate.get("blocked"):
-            put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
+            put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked"), "reclassified": "false"})
             logger.info(
                 "[%s] chat.send BLOCKED agent=%s code=%s",
                 user_id,
@@ -2484,19 +2484,19 @@ async def _process_agent_chat_background(
 
     except asyncio.TimeoutError:
         chat_err = "RPC timed out"
-        put_metric("chat.error", dimensions={"reason": "timeout"})
+        put_metric("chat.error", dimensions={"reason": "timeout", "reclassified": "false"})
         logger.error("[%s] chat.send TIMEOUT agent=%s", user_id, agent_id)
     except ConnectionError as e:
         chat_err = str(e)
-        put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+        put_metric("chat.error", dimensions={"reason": "container_unreachable", "reclassified": "false"})
         logger.error("[%s] chat.send CONNECT FAIL agent=%s: %s", user_id, agent_id, e)
     except RuntimeError as e:
         chat_err = str(e)
-        put_metric("chat.error", dimensions={"reason": "gateway_error"})
+        put_metric("chat.error", dimensions={"reason": "gateway_error", "reclassified": "false"})
         logger.error("[%s] chat.send GATEWAY ERROR agent=%s: %s", user_id, agent_id, e)
     except Exception as e:
         chat_err = str(e)
-        put_metric("chat.error", dimensions={"reason": "unknown"})
+        put_metric("chat.error", dimensions={"reason": "unknown", "reclassified": "false"})
         logger.error("[%s] chat.send FAIL agent=%s: %s", user_id, agent_id, e)
     else:
         return  # success — no error to report
@@ -2624,7 +2624,7 @@ async def _process_agent_abort_background(
         # own terminal will never reach us. Synthesize the aborted terminal so
         # the client unblocks (runId adoption recovers it if the run is in fact
         # still alive after a transient failure).
-        put_metric("chat.error", dimensions={"reason": "abort_failed"})
+        put_metric("chat.error", dimensions={"reason": "abort_failed", "reclassified": "false"})
         logger.warning(
             "[%s] chat.abort FAIL agent=%s: %s — sending synthetic aborted terminal",
             user_id,
@@ -2709,7 +2709,7 @@ async def _process_agent_steer_background(
         steer_reason = await trial_cap.trial_block_reason(owner_id)
         if steer_reason is not None:
             gate = provision_gate.gate_for_trial_reason(steer_reason, owner_role="admin")
-            put_metric("chat.error", dimensions={"reason": steer_reason})
+            put_metric("chat.error", dimensions={"reason": steer_reason, "reclassified": "false"})
             logger.info("[%s] chat.steer BLOCKED (%s) agent=%s", user_id, steer_reason, agent_id)
             await management_api.send_message_async(
                 connection_id,
@@ -2741,7 +2741,7 @@ async def _process_agent_steer_background(
         )
         logger.info("[%s] chat.steer SENT agent=%s", user_id, agent_id)
     except Exception as e:
-        put_metric("chat.error", dimensions={"reason": "steer_failed"})
+        put_metric("chat.error", dimensions={"reason": "steer_failed", "reclassified": "false"})
         logger.warning("[%s] chat.steer FAIL agent=%s: %s", user_id, agent_id, e)
         try:
             await management_api.send_message_async(

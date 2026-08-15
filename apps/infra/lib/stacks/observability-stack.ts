@@ -288,6 +288,46 @@ export class ObservabilityStack extends cdk.Stack {
     return alarm;
   }
 
+  /**
+   * A Sum across every dimension set matching `filters`, whatever the metric's
+   * remaining dimensions happen to be.
+   *
+   * Reach for this when an alarm cares about ONE dimension value
+   * (status="error") but the emitter also tags a qualifier the alarm has no
+   * business enumerating (op, provider). A literal dimensionsMap there binds a
+   * metric identity nothing publishes -- a permanently silent alarm. The
+   * { env, service } rollup put_metric emits is no help either: it collapses
+   * the very dimension being filtered on, so it would count successes too.
+   *
+   * `schema` must name EVERY dimension the emitter publishes -- CloudWatch
+   * matches a search schema exactly. New values of the qualifier (a fourth
+   * channel provider, a third access-point op) are picked up automatically.
+   */
+  private searchSum(opts: {
+    metricName: string;
+    schema: string[];
+    filters: Record<string, string>;
+    periodMinutes: number;
+    label: string;
+  }): cloudwatch.MathExpression {
+    const terms = Object.entries({
+      env: this.envName,
+      service: "isol8-backend",
+      ...opts.filters,
+    })
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(" ");
+    const seconds = opts.periodMinutes * 60;
+    return new cloudwatch.MathExpression({
+      expression:
+        `SUM(SEARCH('{Isol8,${opts.schema.join(",")}} ` +
+        `MetricName="${opts.metricName}" ${terms}', 'Sum', ${seconds}))`,
+      usingMetrics: {},
+      period: cdk.Duration.minutes(opts.periodMinutes),
+      label: opts.label,
+    });
+  }
+
   // =========================================================================
   // Page-tier alarms
   // =========================================================================
@@ -614,16 +654,22 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // W3: container-efs-access-point-fail
+    // The emitter tags { op, status } (op = create | delete), so a literal
+    // { status: "error" } bound a set nothing publishes. Search across ops.
     this.createAlarm({
       id: "W3",
       name: "container-efs-access-point-fail",
-      metricName: "container.efs.access_point",
+      metric: this.searchSum({
+        metricName: "container.efs.access_point",
+        schema: ["env", "service", "op", "status"],
+        filters: { status: "error" },
+        periodMinutes: 1,
+        label: "EFS access point errors (all ops)",
+      }),
       threshold: 0,
       evaluationPeriods: 1,
-      periodMinutes: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
       severity: "warn",
       description: "EFS access point operation failed",
     });
@@ -814,16 +860,22 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Channels (W13-W15) --
 
     // W13: channel-rpc-error-rate
+    // Both channel metrics are tagged { provider, status }, so the old literal
+    // { status: "error" } bound a set nothing publishes. Search across providers.
     this.createAlarm({
       id: "W13",
       name: "channel-rpc-error-rate",
-      metricName: "channel.rpc",
+      metric: this.searchSum({
+        metricName: "channel.rpc",
+        schema: ["env", "service", "provider", "status"],
+        filters: { status: "error" },
+        periodMinutes: 60,
+        label: "Channel RPC errors (all providers)",
+      }),
       threshold: 10,
       evaluationPeriods: 1,
-      periodMinutes: 60,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
       severity: "warn",
       description: "Channel RPC errors exceed 10 per hour",
     });
@@ -832,13 +884,17 @@ export class ObservabilityStack extends cdk.Stack {
     this.createAlarm({
       id: "W14",
       name: "channel-configure-fail",
-      metricName: "channel.configure",
+      metric: this.searchSum({
+        metricName: "channel.configure",
+        schema: ["env", "service", "provider", "status"],
+        filters: { status: "error" },
+        periodMinutes: 1,
+        label: "Channel configure failures (all providers)",
+      }),
       threshold: 0,
       evaluationPeriods: 1,
-      periodMinutes: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      dimensions: { status: "error" },
       severity: "warn",
       description: "Channel configure step failed",
     });

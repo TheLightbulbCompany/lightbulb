@@ -327,8 +327,11 @@ Exit: five installed agents, no orphaned OpenClaw entries or active routines.
 Use separate worktrees and PRs:
 
 1. Agent origin/provenance plus symmetric lifecycle.
-2. Agent-facing Paperclip skill coverage for attention, decision queues,
-   decision effects, `ruleKey` statistics, company search, and extraction.
+2. Agent-facing Paperclip skill coverage for decision creation, decision
+   queues/triage, own-origin `ruleKey` statistics, company search, and
+   extraction. Document the unified attention feed as a board-only output that
+   agents influence through decisions and issue state, not an agent-readable
+   endpoint.
 3. Friday identity contradiction and heal migration.
 4. Remove the agent-facing platform-ops token/auth/config/secret plumbing while
    preserving still-used human admin diagnostics behind Clerk admin auth.
@@ -437,12 +440,18 @@ poll that creates empty wakes and unnecessary inference cost.
 
 ## Founder-only blockers
 
-1. At the final Gmail step, complete any Google reauthentication or consent that
+1. Reauthenticate `isol8-publisher` as the seller identity that owns the live
+   `@isol8` listings before creating immutable vNext versions.
+2. Complete one permitted dev-only `+clerk_test` sign-in in `isol8-dev` before
+   clean-company marketplace and lifecycle validation.
+3. At the final Gmail step, complete any Google reauthentication or consent that
    the existing logged-in browser session cannot satisfy without credentials.
-2. Complete credentials and sign-ins personally.
-3. Supply cash-on-hand, its as-of date, and known non-AWS monthly commitments
+4. Complete credentials and sign-ins personally.
+5. Supply cash-on-hand, its as-of date, and known non-AWS monthly commitments
    before relying on runway or total-burn reporting.
-4. Approve legal, financial, new-spend, and reputation-learning decisions when
+6. Approve one bounded deletion of the eight recorded unreferenced legacy agent
+   workspaces after the target roster is live.
+7. Approve legal, financial, new-spend, and reputation-learning decisions when
    surfaced.
 
 Browser/Chromium repair is not a prerequisite for these loops because direct
@@ -456,8 +465,9 @@ web fetch/search and connected CLIs cover the first versions.
 - Every non-blocked trigger is armed and has a passing production smoke run.
 - Every run emits a resolving artifact or a valid named null outcome.
 - Every routine has external proof, a KPI, recovery, and a bounded stop.
-- Paperclip attention, decisions, decision statistics, and company search are
-  usable by the fleet.
+- Agents can create governed decisions, use decision queues/triage, read their
+  own-origin decision statistics, and search/extract company context; the
+  resulting unified attention feed remains correctly board-only.
 - Forge and Tally use the Settings AWS integration. The agent-facing
   platform-ops token, auth path, configuration, and secret plumbing are gone;
   retained human operator endpoints require Clerk platform-admin auth.

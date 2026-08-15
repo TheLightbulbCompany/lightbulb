@@ -92,8 +92,15 @@ class CreateIssueBody(_Strict):
     assignee_agent_id: Optional[str] = None
     priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     # Compose-time status preset + execution work mode — both forward to
-    # upstream's createIssueSchema. Without these the composer can only file
-    # into the default backlog/standard and must round-trip a PATCH.
+    # upstream's createIssueSchema, so the composer can set the starting state
+    # without a round-trip PATCH.
+    #
+    # Omitting ``status`` is NOT "defaults to backlog". Upstream's
+    # ``resolveCreateIssueStatusDefault`` reads the assignee: with one the
+    # default is ``todo`` (which DISPATCHES a run), without one it is
+    # ``backlog``. An assigned create that omits ``status`` therefore starts an
+    # agent — the misreading behind #1426. ``work_mode`` does default to
+    # ``standard``.
     status: Optional[str] = Field(
         default=None,
         pattern=r"^(backlog|todo|in_progress|in_review|done|blocked|cancelled)$",

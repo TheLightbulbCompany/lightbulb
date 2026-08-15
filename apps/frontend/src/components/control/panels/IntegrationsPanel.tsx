@@ -130,9 +130,14 @@ export function IntegrationsPanel({ variant = "control" }: IntegrationsPanelProp
           </div>
         )}
 
-        <ConnectionsList canManage={canManage} />
-
+        {/* Above the provider catalog, not below it. The catalog is ~15 cards
+            of things you might connect; this is the state of something you
+            already did, and the only place multi-account Google is managed.
+            Below the fold it reads as absent — which is how an owner ends up
+            concluding one Google account is all there is. */}
         {googleConnected && <GoogleAccountsSection canManage={canManage} />}
+
+        <ConnectionsList canManage={canManage} />
 
         {/* Bring-your-own MCP servers. A mainstream act now (vendors hand out
             remote MCP URLs), so it sits in the open — not behind Advanced.

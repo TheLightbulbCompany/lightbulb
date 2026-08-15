@@ -20,6 +20,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
+import { AutomationGoogleAccount } from "@/components/teams/panels/AutomationGoogleAccount";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
@@ -1588,6 +1589,7 @@ function CreateRoutineDialog({
                 hook. The backend registers the webhook there itself, so
                 unlike guided providers there is no paste step after Create. */}
             {isAutoRegister && connEventId != null && (
+              <div className="flex flex-col gap-1.5">
               <label className="block">
                 <span className="text-sm text-[var(--ink-soft)]">
                   {resourceNoun.label}
@@ -1620,6 +1622,21 @@ function CreateRoutineDialog({
                   </span>
                 )}
               </label>
+                {/* Google's "resource" is an identity, not a repo — which
+                    agent reads whose mailbox. That deserves a stated
+                    consequence and a reconciliation with the per-agent
+                    assignment, neither of which a bare dropdown carries. A
+                    sibling of the <label>, not a child: it holds its own
+                    buttons, which a label would hijack. */}
+                {connProvider === "google" && (
+                  <AutomationGoogleAccount
+                    agents={agents}
+                    account={connResource}
+                    accountOptions={resourceOptions}
+                    onSelectAccount={setConnResource}
+                  />
+                )}
+              </div>
             )}
             {/* owner_setup (gmail.message) — the owner's own Pub/Sub topic.
                 The one-time topic/subscription wiring instructions come back

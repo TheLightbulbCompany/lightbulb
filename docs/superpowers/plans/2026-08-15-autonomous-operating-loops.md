@@ -440,8 +440,10 @@ poll that creates empty wakes and unnecessary inference cost.
 
 ## Founder-only blockers
 
-1. Reauthenticate `isol8-publisher` as the seller identity that owns the live
-   `@isol8` listings before creating immutable vNext versions.
+1. Decide whether to transfer the orphaned `@isol8` seller/listing ownership to
+   the current founder identity or publish fresh canonical listings. The
+   current `@isol8` seller user has no Clerk identity or container, so it
+   cannot be reauthenticated before creating immutable vNext versions.
 2. Complete one permitted dev-only `+clerk_test` sign-in in `isol8-dev` before
    clean-company marketplace and lifecycle validation.
 3. At the final Gmail step, complete any Google reauthentication or consent that

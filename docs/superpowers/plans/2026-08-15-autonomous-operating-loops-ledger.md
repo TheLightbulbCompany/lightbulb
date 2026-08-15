@@ -270,7 +270,14 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   Marketplace drawer. The logged-in founder identity owns zero listings; the
   live Vera, Tally, Stitch, Pulse, Lens, Thread, Ora, and Echo packages render
   with byline `@isol8` under another seller identity. Existing immutable
-  versions cannot be revised from the current session.
+  versions cannot be revised from the current session. A read-only production
+  seller-index query resolved `@isol8` to
+  `user_3DBS55XwZuB7LQIfWvwsvYWMFaM`. The authenticated admin UI shows that
+  user has no Clerk identity, no billing record, and no container. The prior
+  instruction to reauthenticate as that seller is therefore not executable;
+  preserving listing lineage now requires an explicit ownership-transfer
+  decision, or the founder must accept fresh canonical listings under the
+  current publisher identity.
 
 ## Founder actions
 
@@ -280,6 +287,10 @@ authority.
 - Development browser authentication is currently not proven. Use the allowed
   `+clerk_test` convention only in dev and verify the `424242` code once before
   relying on it.
+- Decide whether to transfer the orphaned `@isol8` seller/listing ownership to
+  the current founder identity or publish fresh canonical listings. The
+  existing seller user has no Clerk identity, so reauthentication cannot
+  resolve this blocker.
 - Cash, cash as-of date, and fixed non-AWS monthly commitments remain required
   before Tally may calculate runway or complete operating burn.
 - Eight unreferenced legacy agent workspaces require one bounded destructive

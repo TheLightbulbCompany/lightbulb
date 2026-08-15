@@ -100,6 +100,34 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
   });
 
+  it("org status chip renders the shared statusChipLabel (planLabel), not a bespoke raw-enum read", () => {
+    // Regression guard for the org-context status chip: it used to render
+    // `{subscriptionStatus}` directly. That's identical output to
+    // `statusChipLabel` for non-trial_local statuses like "past_due" (planLabel
+    // passes them through unchanged), so this doesn't flip the DOM text —
+    // it pins the chip to the same shared variable + guard the personal card
+    // uses (:504-507), so the two can't drift if planLabel ever grows a new
+    // mapping (the trial_local case orgs structurally can't hit today).
+    billing.isSubscribed = true;
+    billing.account = {
+      is_subscribed: true,
+      current_spend: 1,
+      lifetime_spend: 2,
+      subscription_status: "past_due",
+      trial_end: null,
+      provider_choice: null,
+      byo_provider: null,
+      seat_count: 7,
+      team_seat_price_usd: 20,
+      is_seat_subscription: false,
+    };
+
+    render(<SettingsPage />);
+
+    expect(screen.getByText("Isol8 plan")).toBeInTheDocument();
+    expect(screen.getByText("past_due")).toBeInTheDocument();
+  });
+
   it("real seat-sub org (is_seat_subscription: true, subscribed) renders TeamBillingCard", () => {
     billing.isSubscribed = true;
     billing.account = {

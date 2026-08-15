@@ -191,16 +191,19 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   Backend CI run `31868710323`, and Claude review. `@codex review` was
   requested but the connector declined because its review quota was
   exhausted. PR #1796 was squash-merged as
-  `75ecfa8716320f21a39932ab5cb2ec96a268f974`; deploy run `31871896168` is
-  in progress. Do not claim production deployment until that exact run
-  succeeds.
-- 2026-08-15: Agent-facing Paperclip primitives PR #1797 is open at head
+  `75ecfa8716320f21a39932ab5cb2ec96a268f974`; deploy run `31871896168`
+  completed successfully, including the production service and final Vercel
+  jobs.
+- 2026-08-15: Agent-facing Paperclip primitives PR #1797 was built at head
   `98863f3fcb2e4ea8458fafccc527fb92bfa987e0`. Local evidence is 6,470 unit
   tests passed with 7 skipped, 94 focused proxy tests passed, and 5 frontend
   primitive tests passed. Claude review passed; `@codex review` was requested
   but quota-blocked. The deployed Paperclip fork proves the unified attention
   feed is board-only, so the skill documents decisions/queues as agent inputs
-  to attention rather than falsely claiming an agent-read API.
+  to attention rather than falsely claiming an agent-read API. PR #1797 was
+  squash-merged as `c935eff8a114ec2cfad8d150eed91b9c54545582`;
+  deployment run `31872851837` is in progress and must succeed before runtime
+  use.
 - 2026-08-15: No external platform-ops token-removal PR was visible yet. A
   tested local fallback exists at `d172f4069` but is intentionally unpushed;
   it must not be published while the founder's external agent owns that work.

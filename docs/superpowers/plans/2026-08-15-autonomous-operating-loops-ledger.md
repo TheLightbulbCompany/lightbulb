@@ -373,6 +373,52 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   picker/routine/issue tests passed, TypeScript and ESLint clean, and
   diff-check clean. Frontend CI passed; Claude review is running. The required
   `@codex review` was requested and quota-blocked.
+- 2026-08-15: Agent-delete lock retry PR #1803 passed Backend CI and Claude
+  review, was squash-merged as
+  `d4588741978214cbe22e44d26811f4dfbfda9e8b`, and reached production in
+  successful deploy run `31880709935`. A second Lens deletion through the
+  production inspector proved both retry delays executed, but all three
+  attempts ended with OpenClaw `code=file_lock_timeout`; request
+  `cb513a7a-bf57-44f2-8918-59f6f20a931c` returned 500 and Lens remained
+  visible. Read-only ECS Exec then found
+  `/home/node/.openclaw/openclaw.json.lock` as a zero-byte `node:node` file
+  dated 2026-08-11, days before the current task. Pinned OpenClaw creates the
+  sidecar exclusively before writing owner JSON; a process death in that gap
+  leaves a malformed file its conservative runtime reclaimer cannot remove.
+  This proves bounded retries are correct for transient contention but cannot
+  repair a durable malformed lock.
+- 2026-08-15: Automation-assignee picker PR #1804 reached final head
+  `e5c1344ab009cc4698bee76d4a9159a48529d069` after adding stable filtered
+  pointer selection, suppression of the trailing portal click, keyboard/ARIA
+  combobox behavior, and current/unique-match activation. Twelve focused
+  tests, the complete frontend suite (379 files, 2,688 tests), TypeScript,
+  focused ESLint, Frontend CI, and Claude review passed. `@codex review` was
+  requested on the final head and quota-blocked. It was squash-merged as
+  `aaf93bc3f2c1c3c70212cca4edcd74461a25cee3`; deploy run `31881866070` is
+  in progress, so production UI proof is still pending.
+- 2026-08-15: AWS-integration alarm transport PR #1801 was rebased onto the
+  latest main and pushed at head
+  `082e34e381510aa33b8940660a6163368a642136`. Post-rebase evidence: the full
+  backend unit suite passed 6,663 tests with 7 skipped; the changed frontend
+  routine suite and type-check passed; the focused infra template suite
+  passed. Chaos API completed with 275 passed and 286 skipped; its sole
+  failure was Schemathesis generating a carriage-return header for unrelated
+  `POST /api/v1/ws/disconnect`, rejected by `requests` before the app received
+  it. `@codex review` was requested again in comment `5302007645`; hosted CI
+  and Claude review are running on this exact head.
+- 2026-08-15: Durable OpenClaw config-lock recovery PR #1805 is open at head
+  `f518ba6fbc339bd28039143c5d83274a174d2582`. It removes only the fixed
+  `openclaw.json.lock` sidecar before doctor/gateway starts, and refuses to
+  delete an unexpected non-regular or symlink path. This boundary is safe
+  because every per-owner service already enforces `maximumPercent=100` and
+  `minimumHealthyPercent=0`: the prior task is stopped before the replacement
+  task reaches its startup command, so no OpenClaw process can own the
+  sidecar. Both-environment `ContainerStack` tests passed 29/29, the exact
+  POSIX guard passed `sh -n`, and diff-check passed. The repository-wide infra
+  run reached unrelated Lambda bundling that requires the unavailable local
+  Docker daemon and blocked PyPI, after the focused stack suite had passed.
+  Hosted review/CI is pending; after deployment the founder container must be
+  reprovisioned through the existing admin UI, then Lens deletion retried.
 
 ## Founder actions
 

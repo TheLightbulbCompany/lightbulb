@@ -144,6 +144,43 @@ def test_create_routine_rejects_extra(client):
     assert r.status_code == 422
 
 
+def test_create_routine_forwards_the_execution_policy(client, admin):
+    """A routine's reviewer policy must reach Paperclip verbatim.
+
+    ``extra="forbid"`` means an unlisted field is a 422, so the reviewer
+    stages would never have reached upstream without the schema field.
+    """
+    policy = {
+        "stages": [
+            {"type": "review", "participants": [{"type": "agent", "agentId": "a2"}]},
+        ],
+    }
+    r = client.post(
+        "/api/v1/teams/routines",
+        json={"title": "nightly", "assignee_agent_id": "a1", "execution_policy": policy},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.create_routine.await_args.kwargs["body"]
+    assert body["executionPolicy"] == policy
+
+
+def test_patch_routine_can_clear_the_execution_policy(client, admin, monkeypatch):
+    """An explicit null must survive to Paperclip, or the reviewer cannot be removed."""
+    monkeypatch.setattr(
+        "routers.teams.work._is_nightly_ceo_routine",
+        AsyncMock(return_value=False),
+    )
+    r = client.patch(
+        "/api/v1/teams/routines/rt_1",
+        json={"execution_policy": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.patch_routine.await_args.kwargs["body"]
+    assert body == {"executionPolicy": None}
+
+
 def test_create_routine_trigger(client, admin):
     """POST /teams/routines/{id}/triggers forwards a schedule trigger
     (cron lives here, not on the routine row)."""

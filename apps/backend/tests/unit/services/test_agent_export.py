@@ -5,7 +5,7 @@ import json
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -1291,6 +1291,34 @@ async def test_a_description_carrying_the_sellers_email_is_not_published():
     # The routine still ports — it is a real schedule — but stripped of the
     # text that names a person.
     assert out == [{"title": "Check the mail", "description": "", "cron": "*/10 * * * *", "timezone": "UTC"}]
+
+
+@pytest.mark.asyncio
+async def test_a_dormant_recreate_keeps_the_sellers_timezone():
+    """``build_dormant_trigger_body`` defaults to UTC, so a spec that drops the
+    captured timezone recreates a seller's 9am-local routine as 9am UTC — it
+    fires at the wrong hour the moment the buyer enables it."""
+    from core.services.agent_routine_provisioning import create_agent_routines
+
+    admin = MagicMock()
+    admin.list_routines = AsyncMock(return_value=[])
+    admin.create_routine = AsyncMock(return_value={"id": "rt_1"})
+    admin.create_routine_trigger = AsyncMock(return_value={"id": "tr_1"})
+
+    await create_agent_routines(
+        admin=admin,
+        session_cookie="ck",
+        company_id="co_1",
+        agent_id="agent_new",
+        routines=[
+            {"title": "Morning sweep", "description": "look", "cron": "0 9 * * *", "timezone": "Europe/Berlin"},
+            {"title": "No tz", "description": "look", "cron": "0 9 * * *"},
+        ],
+    )
+    bodies = [c.kwargs["body"] for c in admin.create_routine_trigger.await_args_list]
+    assert [b["timezone"] for b in bodies] == ["Europe/Berlin", "UTC"]
+    # Still dormant — carrying the timezone must not arm anything.
+    assert all(b["enabled"] is False for b in bodies)
 
 
 @pytest.mark.asyncio

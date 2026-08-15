@@ -155,7 +155,10 @@ async def create_agent_routines(
 ) -> list[str]:
     """Create dormant routines for ``agent_id`` in ``company_id``.
 
-    For each spec ``{title, description, cron}``:
+    For each spec ``{title, description, cron}`` (plus optional ``timezone``,
+    which a marketplace-captured routine carries — without it a seller's
+    non-UTC schedule would be recreated as UTC and fire at the wrong local
+    time once the buyer enables it):
       1. skip it if a routine with that title is already assigned to the agent
          (idempotent — re-runs never duplicate);
       2. else ``create_routine`` (→ routine id), then ``create_routine_trigger``
@@ -169,7 +172,8 @@ async def create_agent_routines(
             ``tasks:assign`` authority — these routes require it).
         company_id: the Paperclip company that owns the agent.
         agent_id: the routine assignee (``assigneeAgentId``).
-        routines: list of ``{"title", "description", "cron"}`` dicts.
+        routines: list of ``{"title", "description", "cron"}`` dicts, each
+            optionally carrying ``"timezone"`` (defaults to UTC).
 
     Returns:
         The routine ids we created this call (NOT including skipped ones).
@@ -215,7 +219,7 @@ async def create_agent_routines(
         await admin.create_routine_trigger(
             session_cookie=session_cookie,
             routine_id=routine_id,
-            body=build_dormant_trigger_body(cron),
+            body=build_dormant_trigger_body(cron, timezone=spec.get("timezone") or _DEFAULT_TIMEZONE),
         )
         logger.info(
             "agent_routine_provisioning: created DORMANT routine id=%s title=%r cron=%r agent=%s company=%s",

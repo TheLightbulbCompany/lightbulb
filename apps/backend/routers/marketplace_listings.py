@@ -118,6 +118,10 @@ async def _recreate_routines_for_buyer(
             "title": r["title"],
             "description": r.get("description", ""),
             "cron": r["cron"],
+            # The seller's own timezone. Dropping it recreated every schedule
+            # as UTC, so a routine the seller set for 9am local fired at the
+            # wrong hour the moment the buyer enabled it.
+            "timezone": r.get("timezone"),
         }
         for r in manifest_routines
         if isinstance(r, dict) and r.get("title") and r.get("cron")

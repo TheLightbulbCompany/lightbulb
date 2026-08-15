@@ -1339,6 +1339,36 @@ async def test_a_dormant_recreate_keeps_the_sellers_timezone():
 
 
 @pytest.mark.asyncio
+async def test_a_routine_titled_after_the_seller_does_not_publish_at_all():
+    """The title reaches the public manifest exactly like the description
+    does, and it cannot be blanked and still name anything — so an unsafe one
+    takes the routine with it rather than publishing the seller."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "sweep for seller@acme.com",
+                "description": "look at the board",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            },
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Morning sweep",
+                "description": "look at the board",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 7 * * *", "timezone": "UTC"}],
+            },
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert [e["title"] for e in out] == ["Morning sweep"]
+    assert "seller@acme.com" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
 async def test_an_ordinary_description_ports_intact():
     """The scan must not eat the prompt that makes a ported routine useful."""
     fetch = _StubRoutineFetch(

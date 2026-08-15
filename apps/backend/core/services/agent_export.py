@@ -1134,29 +1134,29 @@ _ROUTINE_PORTABLE_KEYS = ("title", "description")
 _TRIGGER_PORTABLE_KEYS = ("cronExpression", "timezone")
 
 
-def _publishable_description(description: object) -> str:
-    """A routine description safe to put in a public manifest, else ``""``.
+def _is_publishable(text: str) -> bool:
+    """Whether a seller-authored routine string may go in a public manifest.
 
-    ``manifest.json`` is served by ``GET /marketplace/listings/{id}``, so a
-    description is the one seller-authored string that reaches the public
-    without passing the tarball's safety scan — routine capture is appended
-    after ``export_agent_from_efs`` has already produced ``safety_flags``, so
-    a finding here would not even reach moderation. It gets the same patterns
+    ``manifest.json`` is served by ``GET /marketplace/listings/{id}``, and a
+    routine's title and description are the seller-authored strings that reach
+    it WITHOUT passing the tarball's safety scan — routine capture is appended
+    after ``export_agent_from_efs`` has already produced ``safety_flags``, so a
+    finding here would not even reach moderation. They get the same patterns
     the tarball does rather than a second set of regexes.
 
-    ANY flag drops the text, not just the PII ones: the persona set also
-    carries ``hardcoded-secret``, ``aws-secret-key`` and ``provider-token``,
-    and a credential in a public manifest is worse than a lost prompt. The
-    seed's own google descriptions trip ``email-address`` (they interpolate
-    the owner's account), which is the case this started from.
+    ANY flag fails it, not just the PII ones: the persona set also carries
+    ``hardcoded-secret``, ``aws-secret-key`` and ``provider-token``, and a
+    credential in a public manifest is worse than a lost prompt. The seed's
+    own google descriptions trip ``email-address`` (they interpolate the
+    owner's account), which is the case this started from.
 
-    Dropping the description costs the buyer that routine's prompt. Keeping it
-    costs the seller their inbox or their key.
+    This scan — not the automation classifier above it — is what actually
+    fences the seller's data in. The classifier decides what SHAPE a routine
+    ports as, and it reads a trigger label the owner can edit; that makes it a
+    correctness/UX decision, not a security boundary. Nothing seller-authored
+    reaches the manifest without passing through here first.
     """
-    if not isinstance(description, str) or not description:
-        return ""
-    flags = marketplace_safety.scan({"routine-description": description.encode()}, format="persona")
-    return "" if flags else description
+    return not marketplace_safety.scan({"routine-text": text.encode()}, format="persona")
 
 
 def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
@@ -1198,9 +1198,11 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     - Anything else — one ``{title, description, cron, timezone}`` per schedule
       trigger (title/description repeated per trigger so the deploy side can
       recreate one routine+trigger per entry), recreated DORMANT on the buyer.
-      The description goes through ``_publishable_description`` first: it is
-      the one seller-authored string that reaches the public manifest without
-      passing the tarball's safety scan.
+      Both its title and its description go through ``_is_publishable`` first
+      — they are the seller-authored strings that reach the public manifest
+      without passing the tarball's safety scan. An unsafe description is
+      blanked; an unsafe title takes the routine with it, since a title cannot
+      be blanked and still name anything.
 
     ``None`` when the routine is archived, belongs to another agent, or has no
     portable trigger at all.
@@ -1254,6 +1256,17 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
         provider, event_id = automation
         return {"_entries": [{"title": label, "kind": "webhook", "provider": provider, "event_id": event_id}]}
 
+    # An ordinary routine publishes its own title, and that is seller-authored
+    # text like the description is. Unlike the description it cannot simply be
+    # blanked — it IS the routine's identity on the buyer's board — so a title
+    # that fails the scan takes the routine with it. (A seeded automation is
+    # already gone by here, named by its registry label, so a seller renaming
+    # one after their own mailbox costs them nothing.)
+    if not _is_publishable(title):
+        return None
+
+    safe_description = description if isinstance(description, str) and _is_publishable(description) else ""
+
     out: list[dict] = []
     for trig in triggers:
         if not isinstance(trig, dict):
@@ -1266,7 +1279,7 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
         out.append(
             {
                 "title": title,
-                "description": _publishable_description(description),
+                "description": safe_description,
                 "cron": cron,
                 "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
             }

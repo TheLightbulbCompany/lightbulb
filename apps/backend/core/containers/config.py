@@ -2205,9 +2205,11 @@ async def write_openclaw_config(
     # validates against the same vendored schema in CI, so a violation means the
     # schema or the generator drifted and we want the alarm, not a provisioning
     # outage on top of it.
-    gate_config(config, owner_id=user_id, context="write_openclaw_config")
-
+    # Inside the thread, not on the event loop: validating a real config against
+    # the ~280 KB schema is non-trivial CPU, and every other gate call site runs
+    # inside `asyncio.to_thread` already (config_patcher._do_rmw).
     def _write() -> None:
+        gate_config(config, owner_id=user_id, context="write_openclaw_config")
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config, indent=2))
 

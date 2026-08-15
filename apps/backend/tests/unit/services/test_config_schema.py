@@ -75,6 +75,36 @@ def test_invalid_shapes_are_reported(mutation):
     assert errors, f"expected {mutation} to be rejected by the vendored schema"
 
 
+def test_errors_never_echo_the_offending_value():
+    """jsonschema's `err.message` embeds repr(instance). openclaw.json holds real
+    secrets (gateway.auth.token literally; MCP/plugin env + apiKey), the gate
+    validates the WHOLE merged doc, and routers/config.py returns the resulting
+    ConfigPatchError text in an HTTP body — so a violation must never carry the
+    value that caused it."""
+    secret = "sk-live-do-not-log-me"
+    doc = {
+        **VALID_CONFIG,
+        "gateway": {"bind": "lan", "auth": {"mode": "token", "token": secret}},
+        # A whole subtree failing type/anyOf is the dangerous case: the raw
+        # message would embed the entire dict, secret included.
+        "mcp": {"servers": {"jira": ["not", "an", "object", secret]}},
+    }
+    errors = config_schema.schema_errors(doc)
+    assert errors, "fixture must actually violate the schema"
+    assert secret not in "; ".join(errors)
+    # Still pinpoints where the problem is.
+    assert any("mcp.servers.jira" in e for e in errors)
+
+
+def test_gate_error_and_logs_never_echo_the_offending_value(caplog):
+    secret = "sk-live-do-not-log-me"
+    doc = {**VALID_CONFIG, "mcp": {"servers": {"jira": ["not", "an", "object", secret]}}}
+    with pytest.raises(config_schema.ConfigSchemaError) as exc:
+        config_schema.gate_config(doc, owner_id="user_1", context="unit", enforce=True)
+    assert secret not in str(exc.value)
+    assert secret not in caplog.text
+
+
 def test_schema_unavailable_returns_none_not_errors():
     with patch.object(config_schema, "_SCHEMA_PATH", config_schema._SCHEMA_PATH.with_name("nope.json")):
         config_schema._validator.cache_clear()

@@ -81,12 +81,23 @@ def _validator() -> Any | None:
 
 def schema_errors(config: dict) -> list[str] | None:
     """Validate ``config``. Returns None when the schema is unavailable,
-    otherwise a (possibly empty) list of human-readable violations."""
+    otherwise a (possibly empty) list of violations as ``path: rule``.
+
+    NEVER include ``err.message``. jsonschema embeds ``repr(instance)`` in it —
+    the offending VALUE, and for ``anyOf``/``type`` failures on a subtree that is
+    the whole subtree. openclaw.json carries real secrets (``gateway.auth.token``
+    is written literally; MCP/plugin entries carry ``env`` / ``apiKey``), and
+    because the gate validates the whole merged document, a violation anywhere
+    could drag an unrelated secret into a log line — and, via
+    ``routers/config.py``, into an HTTP response body. The JSON path plus the
+    schema rule that failed localizes the problem exactly without ever echoing
+    owner data back; ``err.validator`` is schema-side, so it is ours, not theirs.
+    """
     validator = _validator()
     if validator is None:
         return None
     return [
-        f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
+        f"{'.'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.validator}"
         for err in islice(validator.iter_errors(config), _MAX_REPORTED_ERRORS)
     ]
 

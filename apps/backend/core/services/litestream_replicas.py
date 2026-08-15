@@ -108,6 +108,21 @@ async def delete_replica_prefix(owner_id: str, *, agent_id: str | None = None) -
     if agent_id and ("/" in agent_id or ".." in agent_id or not agent_id.strip()):
         logger.warning("delete_replica_prefix: refusing unsafe agent_id %r", agent_id)
         return False
+    if agent_id is None:
+        # LAST-CHANCE HARVEST: the default agent's replica holds the owner's
+        # ROTATED ChatGPT refresh token — the only live copy the backend can
+        # reach. Deleting the prefix without copying it back to DDB leaves the
+        # spent connect-time seed to be re-staged on the next provision, which
+        # OpenAI rejects while the UI still says Connected. Best-effort: the
+        # delete must proceed regardless (this is a cleanup path whose primary
+        # operation already succeeded).
+        try:
+            from core.services.oauth_service import harvest_rotated_oauth_seed
+
+            await harvest_rotated_oauth_seed(owner_id=owner_id)
+        except Exception:  # noqa: BLE001 — never block the delete
+            logger.exception("oauth seed harvest failed for %s — deleting replicas anyway", owner_id)
+            put_metric("oauth.seed_harvest_failed")
     prefix = f"{owner_id}/agents/{agent_id}/" if agent_id else f"{owner_id}/"
     try:
         deleted = await asyncio.to_thread(_delete_prefix_blocking, bucket, prefix)

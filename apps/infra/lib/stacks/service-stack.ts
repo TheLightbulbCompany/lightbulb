@@ -262,8 +262,11 @@ export class ServiceStack extends cdk.Stack {
     // wipe/reprovision and agent-delete flows must prefix-delete
     // s3://isol8-{env}-openclaw-replicas/{owner}/..., or the next boot's
     // restore resurrects pre-wipe state (sessions, device trust, auth rows
-    // with live OAuth tokens). List+Delete only — the backend never reads
-    // replica bytes.
+    // with live OAuth tokens). List+Delete, plus GetObject for exactly one
+    // read path: the OAuth seed harvest litestream-restores the default
+    // agent's DB right before the prefix delete, to copy the rotated ChatGPT
+    // refresh token back to DynamoDB (oauth_service.harvest_rotated_oauth_seed)
+    // — without it, every wipe-and-reprovision re-stages a spent seed.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaLifecycle",
@@ -273,8 +276,8 @@ export class ServiceStack extends cdk.Stack {
     );
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
-        sid: "LitestreamReplicaDelete",
-        actions: ["s3:DeleteObject"],
+        sid: "LitestreamReplicaObjects",
+        actions: ["s3:DeleteObject", "s3:GetObject"],
         resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*`],
       }),
     );

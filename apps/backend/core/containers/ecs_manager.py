@@ -2217,10 +2217,15 @@ class EcsManager:
         # default agent's auth row here: the container's per-agent SQLite auth
         # store is the source of truth for the LIVE (rotating) token, and this
         # DDB-sourced seed is a stale snapshot the instant the container's first
-        # refresh rotates it. The container's store-row-absent import gate
-        # already consumes this seed ONLY for a container with no credential yet
-        # (fresh provision) and ignores it on a populated store — so re-staging
-        # on a reprovision/recover/config-rewrite never clobbers a live token.
+        # refresh rotates it. The seed stays viable across wipe-and-reprovision
+        # because the flows that destroy the live store's replica harvest the
+        # rotated chain back into the DDB row first (oauth_service.
+        # harvest_rotated_oauth_seed) — so this stage always writes the
+        # freshest credential the backend has seen. The container's
+        # store-row-absent import gate already consumes this seed ONLY for a
+        # container with no credential yet (fresh provision) and ignores it on
+        # a populated store — so re-staging on a reprovision/recover/
+        # config-rewrite never clobbers a live token.
         # Force-reimport (clear_default_agent_auth_profile_row) happens ONLY on a
         # genuine fresh-token event: reconnect (routers/oauth.py /poll) and
         # provider switch (_hot_swap_provider). See

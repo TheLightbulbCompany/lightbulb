@@ -86,6 +86,7 @@ class FakeAdmin:
         reports_to=None,
         budget_monthly_cents=0,
         idempotency_key=None,
+        idempotency_replay_only=False,
     ):
         self._counter += 1
         pid = f"pc_{self._counter}"
@@ -100,6 +101,8 @@ class FakeAdmin:
                 "capabilities": capabilities,
                 "reports_to": reports_to,
                 "budget_monthly_cents": budget_monthly_cents,
+                "idempotency_key": idempotency_key,
+                "idempotency_replay_only": idempotency_replay_only,
             }
         )
         return {"id": pid, "name": name, "role": role}
@@ -298,6 +301,11 @@ async def test_gstack_full_deploy_topological(monkeypatch):
         assert call["adapter_type"] == "openclaw_gateway"
         assert call["budget_monthly_cents"] == 1000
         assert call["adapter_config"]["authToken"] == "svc_tok"
+        # Company deploy has no durable operation row yet. Replaying an agent
+        # UUID here could let one background worker roll back another's live
+        # install, so this path must stay outside create idempotency for now.
+        assert call["idempotency_key"] is None
+        assert call["idempotency_replay_only"] is False
 
     by_name = {c["name"]: c for c in h.admin.create_calls}
     # CEO (package root) and CTO (reports to package ceo) both graft onto Friday.

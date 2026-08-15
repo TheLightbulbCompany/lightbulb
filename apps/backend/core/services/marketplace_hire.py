@@ -122,18 +122,25 @@ async def create_hire_approval(
     (upstream links them via ``issueApprovalsSvc.linkManyForApproval``) rather
     than only in a global list the owner has no reason to open.
 
-    Rolls the agent back if anything after the create fails, so a failed ask
-    never leaves an orphan in the roster. Returns the approval id, or None when
-    the owner has no Paperclip company — a degraded state a recommendation must
-    not raise on, since the listings are still worth returning.
+    Reuses both the agent and an already-filed approval when a caller retries
+    after losing a response. Definitive failures roll the agent back; ambiguous
+    transport/upstream failures keep it visible so the retry can reconcile.
+    Returns the approval id, or None when the owner has no Paperclip company —
+    a degraded state a recommendation must not raise on, since the listings are
+    still worth returning.
     """
     import httpx
 
     from core.config import settings
+    from core.repositories import container_repo
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_admin_client import (
+        PaperclipAdminClient,
+        PaperclipAgentCreateReplayMiss,
+    )
     from core.services.paperclip_admin_session import get_admin_session_cookie
     from core.services.agent_budget import is_at_agent_budget
+    from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
     from core.services.paperclip_agent_lifecycle import create_paperclip_for_marketplace
     from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
@@ -166,36 +173,80 @@ async def create_hire_approval(
         logger.info("create_hire_approval: no paperclip company for owner=%s", owner_id)
         return None
 
-    # Plan agent budget. This is a real agent-creation path — Friday reaches it
-    # headlessly through the container-authenticated ``/recommend`` route, so it
-    # grows the roster with no human in the loop, exactly like the Atlas bridge.
-    # Boolean-not-409 for the same reason as the gates above: this runs inside
-    # the recommend response, which stays degraded-but-useful rather than
-    # failing whole.
-    #
-    # Gated HERE and deliberately NOT in ``deploy_for_approval``: the agent is
-    # minted below, so by approve time it is already IN the count, and a
-    # ``>= limit`` re-check there would refuse a hire that was legitimately
-    # under budget when filed. Refusing at approve time would also strand a
-    # roster agent with no workspace — the state the deploy claim's own comment
-    # exists to prevent.
-    if await is_at_agent_budget(owner_id):
-        logger.info("create_hire_approval: owner=%s is at the agent budget — not filing", owner_id)
+    listing_id = listing["listing_id"]
+    listing_version = int(listing.get("version", 1) or 1)
+    idempotency_key = build_agent_create_idempotency_key(
+        operation="marketplace-approval",
+        owner_id=owner_id,
+        intent={
+            "issueId": issue_id,
+            "listingId": listing_id,
+            "version": listing_version,
+        },
+    )
+
+    # The same owner-wide claim used by installs also closes the concurrent
+    # list-then-create approval race. Unlike workspace deploys this short
+    # critical section fails CLOSED on an unprovable DynamoDB claim; /recommend
+    # can safely omit the hire suggestion and retry later.
+    claim_label = f"approval:{issue_id}:{listing_id}:{listing_version}"
+    claim_token, _held = await container_repo.try_claim_owner_deploy(
+        owner_id,
+        listing_id=claim_label,
+        fail_open=False,
+    )
+    if not claim_token:
+        logger.info(
+            "create_hire_approval: owner=%s has another agent operation in flight — not filing",
+            owner_id,
+        )
         return None
 
-    # Step 1 — create the agent so it carries Isol8's device keypair.
-    agent = await create_paperclip_for_marketplace(
-        buyer_user_id=requested_by_user_id or owner_id,
-        owner_id=owner_id,
-        name=listing.get("name") or listing.get("slug") or "New agent",
-        role=None,
-    )
-    agent_id = agent["id"]
-
-    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
+    operation_cause: BaseException | None = None
+    http: httpx.AsyncClient | None = None
+    agent_id: str | None = None
     try:
+        # At the cap, only an existing operation may replay. A missing key is a
+        # normal degraded recommendation, not a roster mutation or API failure.
+        at_agent_budget = await is_at_agent_budget(owner_id)
+        try:
+            agent = await create_paperclip_for_marketplace(
+                buyer_user_id=requested_by_user_id or owner_id,
+                owner_id=owner_id,
+                name=listing.get("name") or listing.get("slug") or "New agent",
+                role=None,
+                idempotency_key=idempotency_key,
+                idempotency_replay_only=at_agent_budget,
+            )
+        except PaperclipAgentCreateReplayMiss:
+            logger.info(
+                "create_hire_approval: owner=%s is at the agent budget with no matching operation — not filing",
+                owner_id,
+            )
+            return None
+        agent_id = agent["id"]
+
+        http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
+        approvals_payload = await admin.list_approvals(
+            session_cookie=cookie,
+            company_id=company_id,
+        )
+        approvals = approvals_payload if isinstance(approvals_payload, list) else approvals_payload.get("approvals", [])
+        existing = next(
+            (
+                approval
+                for approval in approvals
+                if isinstance(approval, dict)
+                and approval.get("type") == "hire_agent"
+                and hired_agent_id_of(approval.get("payload")) == agent_id
+            ),
+            None,
+        )
+        if existing:
+            return existing.get("id")
+
         # Step 2 — park it inert before it can be assigned work or woken.
         await admin.update_agent(
             session_cookie=cookie,
@@ -213,16 +264,33 @@ async def create_hire_approval(
             },
         )
         return created.get("id")
-    except Exception:
-        logger.exception(
-            "create_hire_approval: failed after creating agent %s for owner=%s — rolling back",
-            agent_id,
-            owner_id,
-        )
-        await _rollback_agent(owner_id=owner_id, agent_id=agent_id)
+    except Exception as exc:
+        operation_cause = exc
+        if agent_id is not None:
+            retryable = isinstance(exc, (httpx.RequestError, TimeoutError)) or bool(getattr(exc, "retryable", False))
+            if retryable:
+                logger.warning(
+                    "create_hire_approval: ambiguous failure after creating agent %s for owner=%s — preserving for retry",
+                    agent_id,
+                    owner_id,
+                )
+            else:
+                logger.exception(
+                    "create_hire_approval: definitive failure after creating agent %s for owner=%s — rolling back",
+                    agent_id,
+                    owner_id,
+                )
+                await _rollback_agent(owner_id=owner_id, agent_id=agent_id, cause=exc)
         raise
     finally:
-        await http.aclose()
+        if http is not None:
+            await http.aclose()
+        await container_repo.release_owner_deploy_claim(
+            owner_id,
+            listing_id=claim_label,
+            token=claim_token,
+            cause=operation_cause,
+        )
 
 
 async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:

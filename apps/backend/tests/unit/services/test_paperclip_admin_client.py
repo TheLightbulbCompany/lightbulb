@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from core.services.paperclip_admin_client import (
+    PaperclipAgentCreateReplayMiss,
     PaperclipAdminClient,
     PaperclipApiError,
 )
@@ -164,6 +165,7 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
     def handler(req: httpx.Request) -> httpx.Response:
         captured["url"] = str(req.url)
         captured["body"] = req.read().decode()
+        captured["idempotency_key"] = req.headers.get("idempotency-key")
         return httpx.Response(201, json={"id": "agent_1"})
 
     client = client_factory(handler)
@@ -179,6 +181,7 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
             "sessionKeyStrategy": "issue",
             "sessionKey": "user_123",
         },
+        idempotency_key="agent-create-1",
     )
     assert "/api/companies/co_abc/agents" in captured["url"]
     body = _json.loads(captured["body"])
@@ -186,6 +189,92 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
     assert body["adapterConfig"]["authToken"] == "svc_token_xyz"
     assert body["adapterConfig"]["sessionKey"] == "user_123"
     assert body["role"] == "ceo"
+    assert "idempotencyKey" not in body
+    assert "idempotencyReplayOnly" not in body
+    assert captured["idempotency_key"] == "agent-create-1"
+
+
+async def test_create_agent_replay_only_reuses_the_same_header_key(client_factory):
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["key"] = req.headers.get("idempotency-key")
+        captured["replay_only"] = req.headers.get("idempotency-replay-only")
+        captured["body"] = req.read().decode()
+        return httpx.Response(200, json={"id": "agent_1"})
+
+    client = client_factory(handler)
+    await client.create_agent(
+        session_cookie="sess_owner",
+        company_id="co_abc",
+        name="Main Agent",
+        role="ceo",
+        adapter_type="openclaw_gateway",
+        adapter_config={},
+        idempotency_key="agent-create-1",
+        idempotency_replay_only=True,
+    )
+
+    assert captured["key"] == "agent-create-1"
+    assert captured["replay_only"] == "true"
+    body = _json.loads(captured["body"])
+    assert "idempotencyKey" not in body
+    assert "idempotencyReplayOnly" not in body
+
+
+async def test_create_agent_maps_only_the_structured_replay_miss_code(client_factory):
+    def replay_miss(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"code": "agent_create_idempotency_replay_miss"})
+
+    client = client_factory(replay_miss)
+    with pytest.raises(PaperclipAgentCreateReplayMiss):
+        await client.create_agent(
+            session_cookie="sess_owner",
+            company_id="co_abc",
+            name="Main Agent",
+            role="ceo",
+            adapter_type="openclaw_gateway",
+            adapter_config={},
+            idempotency_key="agent-create-1",
+            idempotency_replay_only=True,
+        )
+
+    def unrelated_conflict(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={"error": "text mentions agent_create_idempotency_replay_miss but has no code"},
+        )
+
+    client = client_factory(unrelated_conflict)
+    with pytest.raises(PaperclipApiError) as exc:
+        await client.create_agent(
+            session_cookie="sess_owner",
+            company_id="co_abc",
+            name="Main Agent",
+            role="ceo",
+            adapter_type="openclaw_gateway",
+            adapter_config={},
+            idempotency_key="agent-create-1",
+            idempotency_replay_only=True,
+        )
+    assert type(exc.value) is PaperclipApiError
+
+
+async def test_create_agent_replay_only_requires_the_operation_key(client_factory):
+    def must_not_send(_req: httpx.Request) -> httpx.Response:
+        raise AssertionError("request must not be sent")
+
+    client = client_factory(must_not_send)
+    with pytest.raises(ValueError, match="requires idempotency_key"):
+        await client.create_agent(
+            session_cookie="sess_owner",
+            company_id="co_abc",
+            name="Main Agent",
+            role="ceo",
+            adapter_type="openclaw_gateway",
+            adapter_config={},
+            idempotency_replay_only=True,
+        )
 
 
 async def test_create_child_issue_posts_to_issue_scoped_path(client_factory):

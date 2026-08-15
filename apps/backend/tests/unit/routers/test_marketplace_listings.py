@@ -1374,6 +1374,7 @@ def test_deploy_threads_reports_to_into_paperclip_create(
     )
     assert resp.status_code == 200, resp.text
     assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-agent-id"
+    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:marketplace-deploy:")
 
 
 def test_deploy_request_blank_reports_to_coerced_to_none():

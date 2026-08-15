@@ -624,9 +624,10 @@ class PaperclipProvisioning:
             # On the reconcile path an earlier attempt may already have seeded
             # Atlas (a failed row can only carry Atlas — Friday's presence is
             # exactly what marks the row active). Carry those ids forward so we
-            # don't drop them, and skip the Atlas re-create below (Paperclip
-            # ignores Idempotency-Key, so re-creating would spawn a SECOND Atlas
-            # and orphan the first). The ternary short-circuits before touching
+            # don't drop them, and skip the Atlas re-create below. Native
+            # agent-create idempotency now makes the retry safe, but preserving
+            # the stored id avoids needless upstream work and supports old pins
+            # during rollout. The ternary short-circuits before touching
             # ``existing`` unless reconciling_company is True (which implies
             # existing is not None).
             seeded_agent_ids: list[str] = list(existing.seeded_agent_ids or []) if reconciling_company else []
@@ -653,7 +654,7 @@ class PaperclipProvisioning:
                         user_id=owner_user_id,
                     ),
                     session_cookie=new_user_session_cookie,
-                    idempotency_key=f"{owner_user_id}:main-agent",
+                    idempotency_key="seed:friday:v1",
                 )
                 if isinstance(friday, dict) and friday.get("id"):
                     friday_agent_id = friday["id"]
@@ -683,10 +684,10 @@ class PaperclipProvisioning:
             #     Skip the create entirely when RECONCILING a failed row that
             #     already carries Atlas. A failed row's seeded_agent_ids can
             #     only ever be Atlas (Friday's presence is what flips the row
-            #     active), and Paperclip ignores our Idempotency-Key — so
-            #     re-creating here would spawn a SECOND Atlas and orphan the
-            #     first (it drops out of seeded_agent_ids, losing its
-            #     delete-protection). Accepted residual: the carried-forward
+            #     active). The stable seed key would replay the same Atlas on a
+            #     current Paperclip pin; the explicit skip also protects a
+            #     staged rollout and keeps the persisted seed id authoritative.
+            #     Accepted residual: the carried-forward
             #     Atlas keeps reports_to=None (it was seeded before Friday
             #     existed) — one correctly-counted unparented Atlas beats two
             #     with one orphaned; re-parenting would need an extra
@@ -718,7 +719,7 @@ class PaperclipProvisioning:
                             user_id=owner_user_id,
                         ),
                         session_cookie=new_user_session_cookie,
-                        idempotency_key=f"{owner_user_id}:atlas-agent",
+                        idempotency_key="seed:atlas:v1",
                     )
                     if isinstance(atlas, dict) and atlas.get("id"):
                         seeded_agent_ids.append(atlas["id"])

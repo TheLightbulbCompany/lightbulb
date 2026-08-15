@@ -43,7 +43,11 @@ from core.services.operator_proxy import (
 )
 from core.services.paperclip_adapter_config import PAPERCLIP_OPERATOR_CLIENT_ID
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
+from core.services.paperclip_admin_client import (
+    PaperclipAdminClient,
+    PaperclipAgentCreateReplayMiss,
+    PaperclipApiError,
+)
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_chat,
@@ -1469,18 +1473,23 @@ async def _intercept_agents_create(
         else None
     )
 
-    # Plan agent budget. This path CONSUMES the RPC (it never forwards to the
-    # gateway), so a refusal has to be delivered as an error ``res`` frame on the
-    # original req id — raising here would leave the frontend waiting forever on
-    # a request nobody is going to answer. Checked before the Paperclip mint so a
-    # refusal leaves no row behind.
-    from fastapi import HTTPException as _HTTPException
+    # At the plan cap, Paperclip is allowed to replay this exact logical create
+    # but atomically refuses a missing key. That lets a lost-response retry heal
+    # its original UUID without opening an 11th roster slot.
+    from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 
-    from core.services.agent_budget import enforce_agent_budget
-
+    at_agent_budget = await is_at_agent_budget(owner_id)
     try:
-        await enforce_agent_budget(owner_id)
-    except _HTTPException as exc:
+        paperclip_agent = await create_paperclip_for_chat(
+            creator_user_id=user_id,
+            owner_id=owner_id,
+            name=name,
+            role=role,
+            model=model,
+            meta=meta,
+            idempotency_replay_only=at_agent_budget,
+        )
+    except PaperclipAgentCreateReplayMiss:
         management_api = await get_management_api_client()
         await management_api.send_message_async(
             connection_id,
@@ -1490,21 +1499,12 @@ async def _intercept_agents_create(
                 "ok": False,
                 "error": {
                     "code": "agent_budget_exceeded",
-                    "message": str(exc.detail),
+                    "message": AGENT_BUDGET_EXCEEDED_DETAIL,
                     "details": {"reason": "agent_budget_exceeded"},
                 },
             },
         )
         return True
-
-    paperclip_agent = await create_paperclip_for_chat(
-        creator_user_id=user_id,
-        owner_id=owner_id,
-        name=name,
-        role=role,
-        model=model,
-        meta=meta,
-    )
 
     # pair_with_openclaw issues both agents.create and agents.update RPCs
     # to the gateway, registering the agent under its Paperclip UUID

@@ -6,6 +6,7 @@ import logging
 from core.observability.logging import (
     JsonFormatter,
     bind_request_context,
+    configure_logging,
     request_id_var,
     user_id_var,
 )
@@ -97,3 +98,20 @@ def test_bind_request_context_user_optional():
     assert request_id_var.get() == "req-only"
     assert user_id_var.get() is None
     request_id_var.set(None)
+
+
+def test_configure_logging_quiets_httpx_request_urls():
+    """httpx's INFO line is the full request URL, query string and all.
+
+    Provider endpoints that only accept credentials as query params (Meta's token
+    exchange) therefore wrote live secrets into CloudWatch. WARNING is the
+    single-point fix for every httpx call site, so it must survive refactors.
+    """
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    try:
+        configure_logging()
+        assert logging.getLogger("httpx").level == logging.WARNING
+        assert logging.getLogger("httpcore").level == logging.WARNING
+    finally:
+        root.handlers[:] = saved_handlers

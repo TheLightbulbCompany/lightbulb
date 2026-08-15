@@ -42,6 +42,12 @@ def test_write_seeds_skill_and_credentials(mock_get, mock_set, tmp_path):
         identity = instagram_cli.write("org_1", "instagram", CRED)
 
     assert identity == "isol8ai"
+    # The token authenticates via the Authorization header, never the query
+    # string: the request URL is logged (httpx's own line, any proxy's access
+    # log), so an ?access_token= there is a live credential written to CloudWatch.
+    _, kwargs = mock_get.call_args
+    assert kwargs["headers"] == {"Authorization": "Bearer LONG60D"}
+    assert kwargs["params"] == {"fields": "user_id,username"}
     skill_dir = tmp_path / "skills" / "instagram"
     assert (skill_dir / "SKILL.md").exists()
     # The seeded SKILL.md is the agent-facing contract: it must point at the

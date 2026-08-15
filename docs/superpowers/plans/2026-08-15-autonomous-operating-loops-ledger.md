@@ -430,6 +430,23 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   29/29 stack evidence plus the documented Docker/PyPI limitation. After
   deployment the founder container must be reprovisioned through the existing
   admin UI, then Lens deletion retried.
+- 2026-08-15: The customer-facing blank-agent flow was exercised without a
+  successful mutation. Creating Forge is currently blocked by the workspace's
+  10-specialist plan limit (`This workspace is at its 10-agent limit`), so
+  roster deletion is also a hard prerequisite for the marketplace foundry,
+  not just final cleanup. The dialog was cancelled and no agent was created.
+  The production publisher drawer was then opened read-only and closed without
+  saving: the current founder identity has no marketplace handle and must pick
+  one before publishing, while the historical `@isol8` handle belongs to the
+  orphaned seller identity. The drawer correctly lists Friday as not
+  publishable and the other current agents as selectable.
+- 2026-08-15: All six superseded production automations were individually
+  archived through the customer UI while paused: `Community signal watch`,
+  `Discoverability check`, `GitHub: Issue opened or changed`, `Google: New
+  email (checked on a schedule)`, `Nightly CEO progress`, and `Prospect signal
+  sweep`. A final production snapshot shows `No automations yet.` None was run
+  or activated during cleanup; their historical run issues remain in
+  Paperclip while the active routine surface is clean for the 13 contracts.
 
 ## Founder actions
 

@@ -156,6 +156,25 @@ def warn_rows(manifest: dict) -> list[dict]:
     ]
 
 
+def emit_agent_deployed(*, owner_id: str, slug: str | None, agent_id: str, seller_id: str | None = None) -> None:
+    """Record the deploy funnel event — ONE emitter for all three deploy
+    surfaces (marketplace deploy, approval hire, agent builder) so the
+    properties can't drift apart.
+
+    Deliberately NOT called from ``deploy_from_artifact``: the install isn't
+    committed when that returns. Every caller still runs rollback-wrapped
+    steps after it (operator-device pairing, routine recreate), and a failure
+    there unwinds the container install and deletes the Paperclip agent.
+    Emitting from inside would count those rolled-back hires as deployments.
+    Each caller emits once its own commit steps have survived.
+    """
+    capture_product_event(
+        distinct_id=owner_id,
+        event="catalog_agent_deployed",
+        properties={"slug": slug, "agent_id": agent_id, "seller_id": seller_id},
+    )
+
+
 # Seller-authored files that become code or an autonomous run the moment
 # they land on the buyer's EFS: OpenClaw discovers a workspace
 # ``openclaw.plugin.json`` (or a package.json carrying an
@@ -704,15 +723,6 @@ class CatalogService:
                 "deploy: ACP enable failed for %s; agent deployed without harness delegation",
                 owner_id,
             )
-
-        # Funnel event. Emitted here rather than per-router because every
-        # deploy surface (marketplace deploy, agent hiring, agent builder)
-        # funnels through this method.
-        capture_product_event(
-            distinct_id=owner_id,
-            event="catalog_agent_deployed",
-            properties={"slug": slug, "agent_id": new_agent_id, "seller_id": seller_id},
-        )
 
         return {
             "slug": slug,

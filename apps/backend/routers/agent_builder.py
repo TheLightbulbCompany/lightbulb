@@ -29,7 +29,7 @@ from core.containers import get_ecs_manager
 from core.repositories import container_repo
 from core.services import agent_export
 from core.services.agent_budget import enforce_agent_budget
-from core.services.catalog_service import get_catalog_service
+from core.services.catalog_service import emit_agent_deployed, get_catalog_service
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
@@ -339,6 +339,10 @@ async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentReq
             status_code=502,
             detail=f"deploy into container failed ({reason}) — retry the build in a moment",
         ) from exc
+
+    # Committed: the deploy + pairing envelope above survived. Emitting from
+    # inside deploy_from_artifact counted builds the rollback had undone.
+    emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
 
     # Surface sanitizer-dropped keys so Atlas learns its bundle emitted
     # non-schema config instead of the loss dying in a CloudWatch warn.

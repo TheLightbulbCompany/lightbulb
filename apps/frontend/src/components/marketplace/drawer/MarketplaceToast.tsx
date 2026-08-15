@@ -62,6 +62,18 @@ export function MarketplaceToast() {
           Open in chat →
         </button>
       </div>
+      {!!toast.automationsPending && (
+        <p
+          data-testid="toast-automations-pending"
+          className="mt-2 text-[12px] text-white/85 leading-snug"
+        >
+          {toast.automationsPending === 1
+            ? "1 automation needs wiring"
+            : `${toast.automationsPending} automations need wiring`}{" "}
+          — each one listens to an account only you can connect. Open Automations to finish
+          setting them up.
+        </p>
+      )}
       {toast.acpNote === "enabled" && (
         <p data-testid="toast-acp-enabled" className="mt-2 text-[12px] text-white/85 leading-snug">
           This agent can delegate coding tasks to a Claude Code / Codex harness

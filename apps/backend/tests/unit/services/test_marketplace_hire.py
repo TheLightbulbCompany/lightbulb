@@ -251,6 +251,56 @@ async def test_pairing_failure_does_not_roll_back_a_committed_install(
 
 
 @pytest.mark.asyncio
+@patch("core.services.catalog_service.emit_agent_deployed")
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_a_rolled_back_approval_install_is_not_counted_as_a_deployment(
+    get_listing, get_ecs, get_catalog, fetch, rollback, emit
+):
+    """A hire the rollback undid is not a deployment. The funnel event belongs
+    after the install commits, not inside ``deploy_from_artifact``."""
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(side_effect=RuntimeError("efs exploded"))
+    get_catalog.return_value = catalog
+
+    with pytest.raises(RuntimeError, match="efs exploded"):
+        await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    emit.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.catalog_service.emit_agent_deployed")
+@patch("core.services.paperclip_openclaw_pairing.ensure_operator_device_paired", autospec=True)
+@patch("core.services.marketplace_hire._fetch_artifact")
+@patch("core.services.catalog_service.get_catalog_service")
+@patch("core.containers.get_ecs_manager")
+@patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+async def test_a_committed_approval_install_is_counted_as_a_deployment(
+    get_listing, get_ecs, get_catalog, fetch, pair, emit, monkeypatch
+):
+    get_listing.return_value = _PUBLISHED
+    get_ecs.return_value = _ecs_double()
+    fetch.return_value = (b"tar", {"agent": {"name": "Pulse"}})
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": _AGENT_ID})
+    get_catalog.return_value = catalog
+    _admin_double(monkeypatch)
+
+    await marketplace_hire.deploy_for_approval(approval=_approval_for(), owner_id="user_x")
+
+    emit.assert_called_once()
+    assert emit.call_args.kwargs["agent_id"] == _AGENT_ID
+    assert emit.call_args.kwargs["owner_id"] == "user_x"
+
+
+@pytest.mark.asyncio
 @patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
 @patch("core.services.marketplace_hire._fetch_artifact")
 @patch("core.services.catalog_service.get_catalog_service")

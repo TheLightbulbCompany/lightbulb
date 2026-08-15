@@ -338,6 +338,22 @@ def automation_requirement(provider_key: str, event_id: str) -> dict[str, Any] |
     }
 
 
+def _agent_rows(listed: Any) -> list:
+    """The agent rows out of whatever ``list_agents`` returned.
+
+    Upstream's ``GET /companies/{companyId}/agents`` returns a bare JSON array,
+    but the client is typed ``-> dict`` and the BFF envelopes it under
+    ``"agents"`` — so accept both, same defensiveness (and same reason) as
+    ``company_deploy_service._find_friday_id`` and
+    ``agent_routine_provisioning._existing_titles_for_agent``. Iterating the
+    enveloped dict directly walks its KEYS, which would fail every assignee
+    check below against a roster the agent really is on.
+    """
+    if isinstance(listed, dict):
+        listed = listed.get("agents") or listed.get("items") or []
+    return listed if isinstance(listed, list) else []
+
+
 def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, label: str) -> dict[str, Any]:
     """The webhook-kind create_routine_trigger body — the ``kind="webhook"``
     counterpart to ``agent_routine_provisioning.build_dormant_trigger_body``'s
@@ -850,7 +866,7 @@ async def _seed_trigger_routine(
         cookie = await get_admin_session_cookie(http)
         admin = PaperclipAdminClient(http_client=http)
 
-        agents = await admin.list_agents(session_cookie=cookie, company_id=company_id)
+        agents = _agent_rows(await admin.list_agents(session_cookie=cookie, company_id=company_id))
         if assignee_agent_id is not None:
             # Never trust a client-supplied agent id: it has to be on the
             # CALLER's own company roster, the same tenancy fence every Teams

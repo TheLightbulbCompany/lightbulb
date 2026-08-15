@@ -493,6 +493,134 @@ def test_deploy_recreates_captured_routines_remapped_to_buyer_agent(
     assert [r["title"] for r in rk["manifest_routines"]] == ["Morning sweep", "Weekly report"]
 
 
+def _catalog_stub(agent_id: str = "paperclip-uuid-1234"):
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": agent_id,
+            "name": "Demo Agent",
+            "skills_added": [],
+            "plugins_enabled": [],
+            "cron_jobs_added": 0,
+            "config_registered": True,
+        }
+    )
+    return catalog
+
+
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_returns_the_webhook_automations_the_buyer_must_wire(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, mock_pair, mock_recreate, client
+):
+    """Webhook automations bind a SELLER-specific resource, so the deploy arms
+    nothing and hands the buyer the to-do list instead. The response field is
+    what the hire toast counts — without it the agent arrives silently
+    incomplete."""
+    listing = _published_listing(price_cents=0)
+    listing["manifest_json"] = {
+        "name": "Demo Agent",
+        "format": "openclaw",
+        "routines": [
+            {"title": "Nightly", "cron": "0 6 * * *"},
+            {
+                "title": "On failed invoice",
+                "kind": "webhook",
+                "provider": "stripe",
+                "event_id": "invoice.payment_failed",
+            },
+        ],
+    }
+    mock_get_published.return_value = listing
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    mock_get_catalog.return_value = _catalog_stub()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["automations_pending"] == [
+        {"provider": "stripe", "event_id": "invoice.payment_failed", "needs_resource": False}
+    ]
+
+
+@patch("routers.marketplace_listings.emit_agent_deployed")
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_emits_the_funnel_event_after_the_commit_steps(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_pair,
+    mock_recreate,
+    mock_emit,
+    client,
+):
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    mock_get_catalog.return_value = _catalog_stub()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    mock_emit.assert_called_once()
+    assert mock_emit.call_args.kwargs["agent_id"] == "paperclip-uuid-1234"
+    assert mock_emit.call_args.kwargs["slug"] == "demo-agent"
+
+
+@patch("routers.marketplace_listings.emit_agent_deployed")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_does_not_report_deployed_when_a_commit_step_fails(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_pair,
+    mock_recreate,
+    mock_delete_pc,
+    mock_emit,
+    client,
+):
+    """The routine recreate runs INSIDE the rollback envelope: a failure there
+    unwinds the container install and deletes the Paperclip agent. A hire that
+    was rolled back is not a deployment, so the funnel event must not fire."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    catalog = _catalog_stub()
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+    mock_recreate.side_effect = RuntimeError("no paperclip company for owner")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 500
+    mock_emit.assert_not_called()
+
+
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")

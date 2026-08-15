@@ -1525,6 +1525,37 @@ async def test_seed_trigger_routine_assigns_the_supplied_agent():
 
 
 @pytest.mark.asyncio
+async def test_seed_trigger_routine_assigns_the_supplied_agent_from_an_enveloped_roster():
+    """``list_agents`` is typed ``-> dict`` and the BFF envelopes the roster as
+    ``{"agents": [...]}``. Validating the assignee against the raw payload
+    iterates the DICT KEYS, so every real assignee reads as "not in this
+    workspace" — normalize first, exactly like ``_find_friday_id`` does."""
+    admin = _fake_admin(friday_id="friday_1")
+    admin.list_agents = AsyncMock(
+        return_value={"agents": [{"id": "friday_1", "role": "ceo"}, {"id": "agent_support", "role": "member"}]}
+    )
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_support")
+
+    assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "agent_support"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_rejects_an_agent_outside_an_enveloped_roster():
+    """The tenancy fence still bites once the roster is normalized — an
+    enveloped response must not become a way to smuggle a foreign agent id in."""
+    admin = _fake_admin()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "friday_1", "role": "ceo"}]})
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
+        await seed_trigger_routine(
+            "owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_someone_elses"
+        )
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_seed_trigger_routine_rejects_an_agent_outside_the_company():
     """Client-supplied agent ids are never trusted — the id must be on the
     CALLER's own company roster, the same tenancy fence the Teams routes

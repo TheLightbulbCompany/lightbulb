@@ -700,9 +700,13 @@ async def test_deploy_sidecar_records_seller_id():
 
 
 @pytest.mark.asyncio
-async def test_deploy_emits_catalog_agent_deployed(monkeypatch):
-    """Every deploy surface (marketplace deploy, hire, agent builder) funnels
-    through here, so the funnel event belongs here rather than on each router."""
+async def test_deploy_does_not_emit_the_funnel_event_itself(monkeypatch):
+    """The install is not committed when this method returns: every caller
+    still runs rollback-wrapped steps after it (device pairing, routine
+    recreate), and a failure there unwinds the whole deploy. Emitting here
+    would count those rolled-back hires as deployments, so the event is the
+    CALLER's to emit — via ``emit_agent_deployed`` — once its own commit
+    steps have survived."""
     calls = []
     monkeypatch.setattr(
         "core.services.catalog_service.capture_product_event",
@@ -720,6 +724,20 @@ async def test_deploy_emits_catalog_agent_deployed(monkeypatch):
         new_agent_id="agent_abc",
         seller_id="seller_1",
     )
+    assert calls == []
+
+
+def test_emit_agent_deployed_shape(monkeypatch):
+    """One emitter for all three deploy surfaces, so the funnel event's
+    properties can't drift between them."""
+    from core.services.catalog_service import emit_agent_deployed
+
+    calls = []
+    monkeypatch.setattr(
+        "core.services.catalog_service.capture_product_event",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    emit_agent_deployed(owner_id="user_buyer", slug="demo", agent_id="agent_abc", seller_id="seller_1")
     assert len(calls) == 1
     assert calls[0]["event"] == "catalog_agent_deployed"
     assert calls[0]["distinct_id"] == "user_buyer"

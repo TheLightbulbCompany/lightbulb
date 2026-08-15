@@ -218,6 +218,47 @@ def test_register_happy_path_pairs_operator_device(
     assert kwargs["ip"] == "10.0.0.1"
 
 
+@patch("routers.agent_builder.emit_agent_deployed")
+@patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"
+)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_a_build_rolled_back_by_a_pairing_failure_is_not_counted_as_deployed(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_catalog,
+    _mock_ceo,
+    mock_pair,
+    mock_emit,
+    client,
+):
+    """Pairing sits inside this route's rollback envelope — a failure there
+    unwinds the install and deletes the Paperclip agent. That is not a
+    deployment, so the funnel event must not have fired already."""
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "new-agent-uuid", "name": "Lex"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "new-agent-uuid"})
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+    mock_pair.side_effect = RuntimeError("gateway refused the device")
+
+    resp = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 502, resp.text
+    mock_emit.assert_not_called()
+
+
 @patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
 @patch(
     "routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday-uuid"

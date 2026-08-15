@@ -46,6 +46,7 @@ from core.services.inbound_triggers import automation_requirement
 from core.services.catalog_service import (
     CatalogService,
     MissingCredentialsError,
+    emit_agent_deployed,
     get_catalog_service,
     warn_rows,
 )
@@ -1070,6 +1071,16 @@ async def deploy_listing(
                 status_code=500,
                 detail="deploy failed",
             ) from exc
+
+        # Committed: everything inside the rollback envelope survived. Only now
+        # is this a deployment — emitting from inside deploy_from_artifact
+        # counted hires the rollback had already undone.
+        emit_agent_deployed(
+            owner_id=owner_id,
+            slug=listing.get("slug"),
+            agent_id=new_agent_id,
+            seller_id=listing.get("seller_id"),
+        )
 
         # Seller-dashboard counter on the listing row (My Listings reads it).
         # Best-effort: never worth failing a committed install over.

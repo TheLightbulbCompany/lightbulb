@@ -353,6 +353,17 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
             await _rollback_agent(owner_id=owner_id, agent_id=agent_id, cause=exc)
             raise
 
+        # Committed: the install survived its rollback envelope. Emitting from
+        # inside deploy_from_artifact counted hires the rollback had undone.
+        from core.services.catalog_service import emit_agent_deployed
+
+        emit_agent_deployed(
+            owner_id=owner_id,
+            slug=listing.get("slug"),
+            agent_id=agent_id,
+            seller_id=listing.get("seller_id"),
+        )
+
         # Seller-dashboard counter — never worth failing a committed install.
         try:
             await marketplace_repo.increment_listing_install_count(

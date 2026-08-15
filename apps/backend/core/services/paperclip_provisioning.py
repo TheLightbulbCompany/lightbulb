@@ -641,6 +641,9 @@ class PaperclipProvisioning:
             # Friday mint fails so Atlas simply seeds unparented.
             friday_agent_id: str | None = None
             try:
+                # Paperclip scopes this stable key by company, so the literal
+                # cannot replay another owner's seed. Its mapping cascades on
+                # agent deletion, allowing an intentional reseed after delete.
                 friday = await self._admin.create_agent(
                     company_id=company_id,
                     name="Friday",
@@ -695,6 +698,7 @@ class PaperclipProvisioning:
             atlas_already_seeded = reconciling_company and bool(existing.seeded_agent_ids)
             if not atlas_already_seeded:
                 try:
+                    # Like Friday's key, this is company-scoped by Paperclip.
                     atlas = await self._admin.create_agent(
                         company_id=company_id,
                         name="Atlas",

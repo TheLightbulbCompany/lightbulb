@@ -27,6 +27,12 @@ def build_agent_create_idempotency_key(
 
     ``intent`` must contain only stable business inputs. Never pass an adapter
     config, service token, operator private key, request id, or actor id.
+
+    For the unanchored chat and Teams create paths, identical semantic inputs
+    deliberately identify the same active-agent intent. Paperclip's mapping is
+    deleted with the agent, so deleting that agent permits the same intent to
+    create a fresh identity later. Anchored workflows (marketplace and Atlas)
+    include their durable listing, issue, or staging identity in ``intent``.
     """
 
     if not _OPERATION_RE.fullmatch(operation):

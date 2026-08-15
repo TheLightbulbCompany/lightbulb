@@ -610,6 +610,11 @@ async def try_claim_owner_deploy(
     incident), and Atlas registering an agent it built
     (``routers/agent_builder.register_built_agent``).
 
+    ``marketplace_hire.create_hire_approval`` also takes this claim before its
+    Paperclip pre-create and approval reconciliation. It installs no workspace,
+    but must serialize with those paths so concurrent recommendations cannot
+    file duplicate approvals for one logical hire.
+
     NOT FENCED — ``company_deploy_service.run_company_deploy``, deliberately. It
     creates and pairs N agents in one background run, so its wall clock is N x a
     single deploy's; no single lease can cover it without a wedge far longer than

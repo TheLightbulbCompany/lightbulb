@@ -141,6 +141,59 @@ describe("AutomationGoogleAccount", () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
+  it("still names the runner and flags the conflict for a legacy company", () => {
+    // No persisted seeded_agent_ids (company provisioned before they were
+    // recorded) or a transiently empty lookup → the BFF stamps every agent
+    // `seeded: false`. The backend still assigns the automation to the rootless
+    // role="ceo" agent, so the rail must not go silent about the mailbox.
+    const legacy = [
+      { id: "friday", name: "Friday", role: "ceo", seeded: false },
+      { id: "vera", name: "Vera", role: "general", seeded: false },
+    ];
+    setAssignments({ friday: "admin@isol8.co" });
+    render(
+      <AutomationGoogleAccount
+        agents={legacy}
+        account="support@isol8.co"
+        accountOptions={OPTIONS}
+        onSelectAccount={vi.fn()}
+      />,
+    );
+    const conflict = screen.getByText(
+      /standing instructions say to always use that account/i,
+    );
+    expect(conflict.textContent).toContain("Friday");
+    expect(conflict.textContent).toContain("admin@isol8.co");
+    expect(
+      screen.getByRole("button", {
+        name: /make support@isol8\.co friday's account/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("names the rootless CEO, not a deployed package's division head", () => {
+    // A company deploy leaves a second role="ceo" agent reporting to Friday,
+    // and list order is not contractually Friday-first.
+    const withDivision = [
+      { id: "nova", name: "Nova", role: "ceo", reportsTo: "friday" },
+      { id: "friday", name: "Friday", role: "ceo", seeded: true },
+    ];
+    setAssignments({ nova: "nova@isol8.co", friday: "admin@isol8.co" });
+    const onSelectAccount = vi.fn();
+    render(
+      <AutomationGoogleAccount
+        agents={withDivision}
+        account={null}
+        accountOptions={OPTIONS}
+        onSelectAccount={onSelectAccount}
+      />,
+    );
+    expect(onSelectAccount).toHaveBeenCalledWith("admin@isol8.co");
+    expect(
+      screen.getByText(/runs this automation/i).textContent,
+    ).toContain("Friday");
+  });
+
   it("offers a way out of a single-option dead end", () => {
     render(
       <AutomationGoogleAccount

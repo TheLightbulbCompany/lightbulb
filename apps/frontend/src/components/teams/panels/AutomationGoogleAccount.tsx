@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
+import { resolveAutomationRunner } from "@/components/teams/shared/lib/automationRunner";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { useGoogleAccounts } from "@/hooks/useGoogleAccounts";
 import { notifyApiError } from "@/lib/notify";
@@ -60,8 +60,12 @@ export function AutomationGoogleAccount({
   // selection back to empty must not silently re-fill it.
   const defaulted = useRef(false);
 
-  const ceoId = resolveCeoAgentId(agents);
-  const ceo = ceoId ? agents.find((a) => a.id === ceoId) : undefined;
+  // Resolved with the automation backend's OWN rootless-CEO rule, not the
+  // `seeded` stamp — see resolveAutomationRunner. A legacy company with no
+  // persisted seeded_agent_ids still gets its runner named and its mailbox
+  // conflict flagged, because the backend still creates the automation for it.
+  const ceo = resolveAutomationRunner(agents);
+  const ceoId = ceo?.id;
   const ceoName = ceo?.name ?? "Your CEO";
   const assigned = ceoId ? (assignments[ceoId] ?? null) : null;
 

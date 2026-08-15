@@ -187,6 +187,16 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   linked them to the measurable goal through the project goal picker, set four
   active and two planned states, and verified IDs/status/links through a
   post-save authenticated list read.
+- 2026-08-15: Created seven finite, high-priority, unassigned `Todo` issues
+  through the production task dialog so no legacy agent woke before roster
+  replacement: ISOA-115 real 45-second demo, ISOA-116 public read-only board,
+  ISOA-117 first 50-founder outbound cohort, ISOA-118 verified webhook event
+  reference, ISOA-119 Sentry/Linear directory submissions, ISOA-120 Show HN,
+  and ISOA-121 five activation/churn interviews. Each issue is attached to its
+  named GTM project and the 50-customer/65%-activation goal. The production UI
+  showed all seven persisted as `Todo` and `Unassigned`; issue-create requests
+  returned 200. Descriptions distinguish agent preparation from the founder's
+  irreducible first-touch, interview, disclosure, and publication authority.
 - 2026-08-15: Friday delegation-boundary PR #1796 passed primary review,
   Backend CI run `31868710323`, and Claude review. `@codex review` was
   requested but the connector declined because its review quota was

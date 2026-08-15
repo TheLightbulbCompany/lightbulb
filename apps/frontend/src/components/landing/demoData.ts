@@ -105,10 +105,10 @@ export const DEMO_ISSUES: Issue[] = [
   {
     id: "iss-name",
     identifier: "NWC-2",
-    title: "Name it and take the handle",
+    title: "Name it and take the address",
     description:
-      "Settle the studio name, register the domain, and claim the same " +
-      "handle on Instagram and TikTok before anyone else does.",
+      "Settle the studio name. It becomes the company's email subdomain, so " +
+      "the name we pick is the address we keep — it can't be changed later.",
     status: "in_progress",
     priority: "high",
     labels: [{ id: "lbl-brand", name: "brand" }],
@@ -177,9 +177,10 @@ export const DEMO_COMMENTS: Record<string, IssueComment[]> = {
       id: "cmt-name-1",
       body:
         "Shortlist: **Northwind Ceramics**, Kiln & Coast, Second Firing. " +
-        "Northwind wins on memorability and the handle is free everywhere — " +
-        "@northwindceramics is open on Instagram and TikTok, and the .com is " +
-        "unregistered. Claiming all three now.",
+        "Northwind wins on memorability and nothing else is trading under it, " +
+        "so that's the name. Minting the address now — you'll reach me at " +
+        "**friday@northwindceramics.isol8.co**, and the rest of the team gets " +
+        "addresses on the same domain.",
       createdAt: minutesAgo(14),
       authorAgentId: FRIDAY_ID,
       authorKind: "agent",
@@ -267,23 +268,23 @@ export const DEMO_RENDER_GROUPS: RenderGroup[] = [
               type: "tool_use",
               id: "tool-handle",
               name: "web_search",
-              input: { query: "northwind ceramics handle + domain availability" },
+              input: { query: "\"northwind ceramics\" existing brands + name collisions" },
             },
             {
               type: "tool_result",
               tool_use_id: "tool-handle",
               content:
-                "@northwindceramics — open on Instagram and TikTok. " +
-                "northwindceramics.com is unregistered.",
+                "No active ceramics brand trading as Northwind in the US or " +
+                "EU. Clear to use.",
             },
             {
               type: "text",
               text:
                 "Here's where I'd start:\n\n" +
-                "1. **Name it and take the handle** — I have a shortlist; the strongest one is free everywhere. I'm on it now.\n" +
+                "1. **Name it and take the address** — I have a shortlist, and the name becomes your company's email domain. I'm on it now.\n" +
                 "2. **Find the first fifty buyers** — designers and small hotels, warm outreach. Stitch takes this.\n" +
                 "3. **Price it against the market** — retail ladder plus a wholesale tier. Tally takes this.\n\n" +
-                "Market research is already done and on the board. You'll see each task move as we work — anything you'd steer differently, say so.",
+                "Market research is done and on the board — the full write-up is in your inbox. You'll see each task move as we work; anything you'd steer differently, say so.",
             },
           ],
         },

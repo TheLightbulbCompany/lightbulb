@@ -20,6 +20,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { AssigneePicker } from "@/components/teams/issues/pickers/AssigneePicker";
+import { AutomationGoogleAccount } from "@/components/teams/panels/AutomationGoogleAccount";
 import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useApi } from "@/lib/api";
@@ -867,10 +868,15 @@ const START_RUNGS: ReadonlyArray<{
 // resource the backend hooks ("owner/repo" for GitHub, a project for Vercel,
 // a connected Google account email for Google watch channels).
 // The label heads the dropdown; the plural feeds its placeholder copy.
+// Keyed by registration shape, with an optional "<shape>:<provider>" override:
+// auto_meta is the one shape two providers share, and its resource is a Page
+// for Meta Ads but an account for Instagram.
 const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
   auto_github: { label: "Repository", plural: "repositories" },
   auto_vercel: { label: "Project", plural: "projects" },
   auto_google_watch: { label: "Google account", plural: "accounts" },
+  "auto_meta:meta_ads": { label: "Page", plural: "Pages" },
+  "auto_meta:instagram": { label: "Instagram account", plural: "accounts" },
 };
 
 // POST /automations/from-integration's response (core/services/
@@ -878,12 +884,16 @@ const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
 // paste the proxy URL into the provider's own dashboard and then paste back
 // the signing secret it hands them. `secret_hint` names the provider's term
 // for that secret ("whsec_…" for Stripe, "Client Secret" for Sentry) and
-// becomes the paste input's placeholder. `resource` echoes the auto-registered
-// target ("owner/repo" for GitHub, the project id for Vercel) so the success
-// copy can name it. `poll` -> a schedule-backed automation (gmail.poll): no
-// webhook exists, so trigger_public_id/proxy_url are null. Non-guided results
-// may still carry `instructions` (gmail.message's one-time Pub/Sub setup) —
-// informational only, Done is never gated on them.
+// becomes the paste input's placeholder. `webhook_secret` -> the REVERSE-
+// guided variant (PostHog): the secret flows the other way — the owner sets
+// it as the provider-side Authorization header, shown once here with no
+// paste-back step, so Done is never gated on it. `resource` echoes the
+// auto-registered target ("owner/repo" for GitHub, the project id for
+// Vercel) so the success copy can name it. `poll` -> a schedule-backed
+// automation (gmail.poll): no webhook exists, so trigger_public_id/proxy_url
+// are null. Non-guided results may still carry `instructions`
+// (gmail.message's one-time Pub/Sub setup) — informational only, Done is
+// never gated on them.
 interface FromIntegrationResult {
   routine_id: string;
   trigger_public_id: string | null;
@@ -891,6 +901,7 @@ interface FromIntegrationResult {
   guided: boolean;
   instructions?: string | null;
   secret_hint?: string | null;
+  webhook_secret?: string | null;
   resource?: string | null;
   poll?: boolean;
 }
@@ -1089,9 +1100,15 @@ function CreateRoutineDialog({
   // block-level auto_google_watch shape).
   const selectedEvent = connEvents.find((e) => e.id === connEventId) ?? null;
   const isOwnerSetup = selectedEvent?.registration === "owner_setup";
+  const registrationShape =
+    selectedConnection?.inbound?.webhook_registration ?? "";
   const resourceNoun = AUTO_RESOURCE_NOUNS[
-    selectedConnection?.inbound?.webhook_registration ?? ""
-  ] ?? { label: "Resource", plural: "resources" };
+    `${registrationShape}:${connProvider}`
+  ] ??
+    AUTO_RESOURCE_NOUNS[registrationShape] ?? {
+      label: "Resource",
+      plural: "resources",
+    };
 
   useEffect(() => {
     if (
@@ -1294,7 +1311,12 @@ function CreateRoutineDialog({
     // unsigned automation with no UI left to finish it (the detail panel
     // treats a "none"-signing trigger as non-rotatable). Auto (GitHub/
     // Vercel) results are already fully armed by the time this dialog shows.
-    const mustSaveSecretFirst = connResult.guided && !whsecSaved;
+    // Reverse-guided (webhook_secret present) results have no paste-back —
+    // the trigger is born armed with its own secret and the owner wires the
+    // provider side by hand — so Done is never gated for them either.
+    const isReverseGuided = !!connResult.webhook_secret;
+    const mustSaveSecretFirst =
+      connResult.guided && !isReverseGuided && !whsecSaved;
     // Poll results (gmail.poll) are schedule-backed: nothing to wire, no URL.
     const isPoll = connResult.poll === true;
     // Non-guided results carrying instructions (gmail.message) still need a
@@ -1311,7 +1333,9 @@ function CreateRoutineDialog({
         }
         description={
           connResult.guided
-            ? `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
+            ? isReverseGuided
+              ? `Copy this URL and Authorization header value into ${providerName} — the secret is shown only once.`
+              : `Paste this URL into ${providerName}'s webhook settings, then paste the signing secret it gives you back here.`
             : isPoll
               ? `Checks ${resourceLabel ?? "the account"}'s inbox every 10 minutes — this automation is live.`
               : needsOwnerSetup
@@ -1339,12 +1363,21 @@ function CreateRoutineDialog({
           {connResult.proxy_url && (
             <SecretField label="Webhook URL" value={connResult.proxy_url} />
           )}
+          {/* Reverse-guided: the FULL header value ("Bearer <secret>"), not
+              the bare secret — copying it whole eliminates the classic
+              forgot-the-Bearer-prefix failure. */}
+          {connResult.webhook_secret && (
+            <SecretField
+              label="Authorization header value"
+              value={`Bearer ${connResult.webhook_secret}`}
+            />
+          )}
           {connResult.instructions && (
             <p className="text-xs text-[var(--mute)]">
               {connResult.instructions}
             </p>
           )}
-          {connResult.guided ? (
+          {connResult.guided && !isReverseGuided ? (
             <>
               <label className="block">
                 <span className="text-sm text-[var(--ink-soft)]">
@@ -1374,9 +1407,13 @@ function CreateRoutineDialog({
               )}
             </>
           ) : (
-            <p className="text-sm" style={{ color: "var(--forest)" }}>
-              Registered.
-            </p>
+            // Reverse-guided is guided-but-unwired: "Registered." would claim
+            // a liveness the owner's PostHog-side setup hasn't earned yet.
+            !connResult.guided && (
+              <p className="text-sm" style={{ color: "var(--forest)" }}>
+                Registered.
+              </p>
+            )
           )}
           {err && (
             <div
@@ -1552,6 +1589,7 @@ function CreateRoutineDialog({
                 hook. The backend registers the webhook there itself, so
                 unlike guided providers there is no paste step after Create. */}
             {isAutoRegister && connEventId != null && (
+              <div className="flex flex-col gap-1.5">
               <label className="block">
                 <span className="text-sm text-[var(--ink-soft)]">
                   {resourceNoun.label}
@@ -1584,6 +1622,21 @@ function CreateRoutineDialog({
                   </span>
                 )}
               </label>
+                {/* Google's "resource" is an identity, not a repo — which
+                    agent reads whose mailbox. That deserves a stated
+                    consequence and a reconciliation with the per-agent
+                    assignment, neither of which a bare dropdown carries. A
+                    sibling of the <label>, not a child: it holds its own
+                    buttons, which a label would hijack. */}
+                {connProvider === "google" && (
+                  <AutomationGoogleAccount
+                    agents={agents}
+                    account={connResource}
+                    accountOptions={resourceOptions}
+                    onSelectAccount={setConnResource}
+                  />
+                )}
+              </div>
             )}
             {/* owner_setup (gmail.message) — the owner's own Pub/Sub topic.
                 The one-time topic/subscription wiring instructions come back

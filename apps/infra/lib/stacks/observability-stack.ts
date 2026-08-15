@@ -14,6 +14,8 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as rds from "aws-cdk-lib/aws-rds";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 // ---------------------------------------------------------------------------
@@ -110,28 +112,88 @@ export class ObservabilityStack extends cdk.Stack {
     // SNS Topics
     // -----------------------------------------------------------------------
 
-    // Page tier: SMS + email — fires on customer-impacting events
+    // Page tier: fires on customer-impacting events.
     this.pageTopic = new sns.Topic(this, "AlertsPage", {
       topicName: `isol8-${props.envName}-alerts-page`,
       displayName: "Isol8 Page",
     });
 
-    // Email subscription (always present)
-    this.pageTopic.addSubscription(
-      new subs.EmailSubscription("oncall@isol8.co"),
-    );
-
-    // SMS subscription will be added manually after the oncall phone secret
-    // is created in Secrets Manager.
-
-    // Warn tier: email only
+    // Warn tier.
     this.warnTopic = new sns.Topic(this, "AlertsWarn", {
       topicName: `isol8-${props.envName}-alerts-warn`,
       displayName: "Isol8 Warn",
     });
-    this.warnTopic.addSubscription(
-      new subs.EmailSubscription("alerts@isol8.co"),
-    );
+
+    // -----------------------------------------------------------------------
+    // Alert destinations
+    // -----------------------------------------------------------------------
+    //
+    // READ THIS BEFORE CHANGING AN ADDRESS. An SNS email subscription is only
+    // live once a human clicks the confirmation link, and SNS DELETES the
+    // subscription if nobody clicks within 3 days. CloudFormation does not
+    // notice: it keeps reporting CREATE_COMPLETE against a subscription that
+    // no longer exists, so no future `cdk deploy` recreates it.
+    //
+    // That is not hypothetical — it already happened here. Both topics ran
+    // with ZERO subscribers while ~105 alarms fired into the void, and a
+    // real alarm (bedrock-meter DLQ) sat unnoticed in ALARM for four weeks.
+    //
+    // So: changing an address here is NOT enough. CDK only replaces the
+    // subscription when the CONSTRUCT ID changes (the address is part of the
+    // generated id, so a new address does force a new resource) — but the
+    // deploy is only half the job. Someone must then click the confirmation
+    // link in the new inbox, and verify with:
+    //
+    //   aws sns list-subscriptions-by-topic --topic-arn <arn>
+    //
+    // A subscription is only real when that command shows a SubscriptionArn
+    // that is not the literal string "PendingConfirmation".
+    const alertEmail = "admin@isol8.co";
+
+    this.pageTopic.addSubscription(new subs.EmailSubscription(alertEmail));
+    this.warnTopic.addSubscription(new subs.EmailSubscription(alertEmail));
+
+    // NOTE: there is deliberately no SMS subscription. SNS cannot send SMS
+    // from this account — it has no registered US origination identity and
+    // sits in the SMS sandbox, so `CreateSMSSandboxPhoneNumber` fails with
+    // "No origination entities available to send". Adding an SMS subscription
+    // here would deploy clean and silently never deliver. Wire it only once a
+    // toll-free number is registered AND the account has left the sandbox.
+    //
+    // PagerDuty covers that gap instead: it turns a page into a phone push
+    // with escalation, needs no carrier registration, and — unlike the email
+    // subscriptions above — CANNOT silently rot, because PagerDuty answers
+    // SNS's confirmation callback programmatically. There is no link to click
+    // and no 3-day expiry window.
+    if (props.envName === "prod") {
+      // The URL embeds the integration key, so it lives in SSM rather than in
+      // this file. Read with valueForStringParameter (a deploy-time CFN
+      // dynamic reference), NOT valueFromLookup, which would resolve at synth
+      // and bake the key into the committed template.
+      const pagerDutyUrl = ssm.StringParameter.valueForStringParameter(
+        this,
+        "/isol8/prod/pagerduty-page-url",
+      );
+
+      // sns.Subscription directly, NOT pageTopic.addSubscription(new
+      // UrlSubscription(...)). UrlSubscription hardcodes its subscriberId to
+      // the URL string, and the URL here is an unresolved token — that would
+      // put `${Token[TOKEN.nnn]}` in the construct id, which shifts between
+      // synths and churns the resource. This spells the id out instead.
+      new sns.Subscription(this, "PagerDutyPage", {
+        topic: this.pageTopic,
+        endpoint: pagerDutyUrl,
+        protocol: sns.SubscriptionProtocol.HTTPS,
+        // Must stay false. PagerDuty's CloudWatch integration parses the SNS
+        // envelope and expects a nested JSON-encoded object in the Message
+        // property; raw delivery strips that and nothing triggers.
+        rawMessageDelivery: false,
+      });
+    }
+
+    // Warn tier stays email-only on purpose. Routing ~90 warn alarms into
+    // PagerDuty would create an incident per blip and train you to ignore the
+    // thing whose entire job is to be impossible to ignore.
 
     // -----------------------------------------------------------------------
     // Alarms
@@ -141,6 +203,7 @@ export class ObservabilityStack extends cdk.Stack {
     this.createWarnAwsNativeAlarms(props);
     this.createPaperclipTierAlarms(props);
     this.createCostAlarms(props);
+    this.createUptimeChecks();
 
     // -----------------------------------------------------------------------
     // Dashboard
@@ -1273,13 +1336,24 @@ export class ObservabilityStack extends cdk.Stack {
       },
     });
 
-    // Lambda to publish custom metric ONLY on unexpected task stops.
-    // A stop is treated as EXPECTED (and ignored) when either:
-    //   - every container exited cleanly (exitCode == 0 / absent), OR
-    //   - the stoppedReason matches a normal-lifecycle phrase (scaling,
-    //     deployment, service-scheduler, user-initiated).
-    // Anything else (non-zero container exit, OOM, host failure, unknown
-    // reason) is emitted as TaskStoppedUnexpected and pages W39.
+    // Lambda to publish a custom metric ONLY on unexpected task stops.
+    //
+    // Discriminates on ECS's structured `stopCode`, NOT on exit codes. The
+    // previous version checked exit codes FIRST and returned "unexpected" on
+    // any non-zero exit, before it ever looked at the reason. A rolling deploy
+    // SIGTERMs the container, which exits 143 — so W39 fired on EVERY deploy
+    // (confirmed: the backend task stopped 3 min after the 2026-08-14 deploy
+    // with stopCode=ServiceSchedulerInitiated, reason="Scaling activity
+    // initiated by (deployment ...)", exitCode=143). The reason filter that
+    // would have caught it was unreachable.
+    //
+    // A crashing container is reported as EssentialContainerExited, so the
+    // exit code carries no signal the stopCode does not already carry.
+    // SpotInterruption is routine — the whole fleet runs Fargate Spot, and a
+    // reclaim self-heals; a genuine storm still trips W58's crash-loop count.
+    // ServiceSchedulerInitiated is the ambiguous one: the scheduler both rolls
+    // deploys AND replaces tasks that fail health checks, so it is split on
+    // the reason text. An unknown stopCode alarms — fail loud.
     const taskStoppedFn = new lambda.Function(this, "TaskStoppedFn", {
       functionName: `isol8-${this.envName}-task-stopped-metric`,
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -1289,35 +1363,32 @@ export class ObservabilityStack extends cdk.Stack {
 import boto3
 cw = boto3.client('cloudwatch')
 
-# Substrings (lowercased) of stoppedReason values that represent NORMAL
-# lifecycle stops we must NOT alarm on: autoscaling, rolling deploys, the
-# service scheduler draining/replacing tasks, and operator/user-initiated
-# stops (incl. per-user container teardown).
-EXPECTED_REASON_SUBSTRINGS = (
-    'scaling',
-    'deployment',
-    'service-scheduler',
-    'service scheduler',
-    'user initiated',
-    'user-initiated',
-    'stopped by user',
-)
+# stopCodes that are routine lifecycle, never a failure:
+#   UserInitiated     - operator or per-user container teardown
+#   SpotInterruption  - Fargate Spot reclaim; the fleet runs Spot, it self-heals
+EXPECTED_STOP_CODES = ('UserInitiated', 'SpotInterruption')
+
+# Substrings (lowercased) of stoppedReason that mark a ServiceSchedulerInitiated
+# stop as a ROUTINE rollout rather than the scheduler replacing a sick task.
+ROLLOUT_REASON_SUBSTRINGS = ('deployment', 'scaling activity')
 
 def _is_unexpected(detail):
-    # Clean container exits (exitCode 0 / absent) are never unexpected.
-    containers = detail.get('containers') or []
-    if all((c.get('exitCode') or 0) == 0 for c in containers):
-        # Still flag if a non-zero exit hid behind an empty container list
-        # AND the reason looks abnormal — handled by the reason check below.
-        pass
-    else:
-        # At least one container exited non-zero → genuinely unexpected.
-        return True
-    reason = (detail.get('stoppedReason') or '').lower()
-    if not reason:
-        # No reason + clean exits → benign (e.g. normal shutdown).
+    # Exit codes are deliberately NOT consulted. A rolling deploy SIGTERMs the
+    # container (exit 143); treating that as a crash made W39 fire on every
+    # deploy. A real crash arrives as EssentialContainerExited instead.
+    stop_code = detail.get('stopCode') or ''
+
+    if stop_code in EXPECTED_STOP_CODES:
         return False
-    return not any(s in reason for s in EXPECTED_REASON_SUBSTRINGS)
+
+    if stop_code == 'ServiceSchedulerInitiated':
+        # The scheduler both rolls deploys and replaces tasks that fail health
+        # checks. Only the rollout is routine.
+        reason = (detail.get('stoppedReason') or '').lower()
+        return not any(s in reason for s in ROLLOUT_REASON_SUBSTRINGS)
+
+    # EssentialContainerExited, TaskFailedToStart, or an unrecognised code.
+    return True
 
 def handler(event, context):
     detail = event.get('detail', {}) or {}
@@ -1776,12 +1847,34 @@ def handler(event, _ctx):
 
   private createCostAlarms(props: ObservabilityStackProps): void {
     // W49a + W49b: AWS Budget — 80% warn + 100% page
+    //
+    // $500 was far below the actual run rate, so the budget sat permanently
+    // breached and both notifications were pure noise. Observed account spend:
+    // Apr $808, May $2,432, Jun $2,643, Jul $1,654, Aug tracking ~$900.
+    //
+    // $1,500 is a deliberately TIGHT leash for launch — roughly the current
+    // run rate, below the June peak — so it is expected to trip if spend
+    // climbs back toward historical highs. That is the intent: an early
+    // tripwire while launch traffic is unknown, not a ceiling. Raise it once
+    // post-launch spend settles, rather than letting it sit breached again.
+    // DO NOT set an explicit budgetName here. `notificationsWithSubscribers`
+    // is an update-requires-REPLACEMENT property, so any change to the alert
+    // addresses makes CloudFormation create a new budget BEFORE deleting the
+    // old one. With a fixed name the two collide and the deploy dies with:
+    //
+    //   A budget or resource with the same name but a different internalId
+    //   already exists (Service: Budgets, Status Code: 400)
+    //
+    // which is exactly what happened repointing these from oncall@/alerts@ to
+    // admin@. Letting CloudFormation generate the physical name costs a less
+    // readable string in the Budgets console and buys a resource that can
+    // actually be updated. The budget is identified by the alarm/notification
+    // it produces, not by its console name.
     new budgets.CfnBudget(this, "MonthlyBudget", {
       budget: {
         budgetType: "COST",
         timeUnit: "MONTHLY",
-        budgetLimit: { amount: 500, unit: "USD" },
-        budgetName: `isol8-${this.envName}-monthly`,
+        budgetLimit: { amount: 1500, unit: "USD" },
       },
       notificationsWithSubscribers: [
         {
@@ -1792,10 +1885,13 @@ def handler(event, _ctx):
             threshold: 80,
             thresholdType: "PERCENTAGE",
           },
+          // Budgets email the address directly — no SNS, so no confirmation
+          // click and none of the silent-expiry problem the topics had. It
+          // still has to be a mailbox somebody reads.
           subscribers: [
             {
               subscriptionType: "EMAIL",
-              address: "alerts@isol8.co",
+              address: "admin@isol8.co",
             },
           ],
         },
@@ -1810,7 +1906,7 @@ def handler(event, _ctx):
           subscribers: [
             {
               subscriptionType: "EMAIL",
-              address: "oncall@isol8.co",
+              address: "admin@isol8.co",
             },
           ],
         },
@@ -1892,6 +1988,120 @@ def handler(event, _ctx):
     // W52 token-volume alarm (above) plus the per-owner invocation-logging
     // meter; if managed $-anomaly detection is wanted, configure it ONCE at
     // account scope, not in this per-env stack.
+  }
+
+  // =========================================================================
+  // Uptime checks (P13, P14)
+  // =========================================================================
+
+  /**
+   * Outside-in uptime checks on the two public front doors.
+   *
+   * Every other alarm in this stack is an INTERNAL signal — a metric the
+   * backend emits about itself, or an AWS metric about our own resources.
+   * All of them can look perfectly healthy while a customer cannot reach the
+   * product at all: an expired certificate, a broken Vercel deploy, a DNS
+   * mistake, a dead Clerk dependency, or a WAF rule that blackholes the world
+   * are invisible from the inside. These two checks are the only thing here
+   * that asks the question a user asks.
+   *
+   * Route53 health checks rather than CloudWatch Synthetics on purpose. A
+   * Synthetics canary needs an artifacts bucket, an execution role and a
+   * bundled script to answer "does this URL return 200"; a Route53 health
+   * check is a config block that probes from multiple AWS regions and
+   * publishes HealthCheckStatus natively. Reach for Synthetics when we want
+   * the real signup->ready journey in a browser, which is deliberately NOT
+   * this — that belongs after launch, and it is a different alarm.
+   *
+   * Note the metric only exists in us-east-1 regardless of where the check
+   * runs, which is where this stack already lives.
+   */
+  private createUptimeChecks(): void {
+    const isProd = this.envName === "prod";
+
+    // Mirrors api-stack (`api.isol8.co` / `api-{env}.isol8.co`) and
+    // isol8-stage (`isol8.co` / `dev.isol8.co`).
+    const appHost = isProd ? "isol8.co" : `${this.envName}.isol8.co`;
+    const apiHost = isProd ? "api.isol8.co" : `api-${this.envName}.isol8.co`;
+
+    const targets = [
+      {
+        id: "P13",
+        name: "app-unreachable",
+        host: appHost,
+        path: "/",
+        description:
+          "The marketing/app front door is failing its health check from " +
+          "multiple AWS regions. Users cannot load the product.",
+      },
+      {
+        id: "P14",
+        name: "api-unreachable",
+        host: apiHost,
+        // Unauthenticated 200 {"status":"healthy"} — the only public path
+        // that answers without a Clerk token.
+        path: "/health",
+        description:
+          "The backend API is failing its health check from multiple AWS " +
+          "regions. Chat, billing and provisioning are all down.",
+      },
+    ];
+
+    for (const target of targets) {
+      const check = new route53.CfnHealthCheck(this, `${target.id}HealthCheck`, {
+        healthCheckConfig: {
+          type: "HTTPS",
+          fullyQualifiedDomainName: target.host,
+          resourcePath: target.path,
+          port: 443,
+          // Route53 probes from several regions on this interval and flips
+          // the status only after failureThreshold consecutive failures, so
+          // a single blip or one bad region cannot page.
+          requestInterval: 30,
+          failureThreshold: 3,
+          enableSni: true,
+          measureLatency: false,
+        },
+        healthCheckTags: [
+          { key: "Name", value: `isol8-${this.envName}-${target.name}` },
+        ],
+      });
+
+      const metric = new cloudwatch.Metric({
+        namespace: "AWS/Route53",
+        metricName: "HealthCheckStatus",
+        // Minimum, not Average: if ANY probing region says down, treat it as
+        // down rather than letting healthy regions average the outage away.
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: { HealthCheckId: check.attrHealthCheckId },
+      });
+
+      const alarm = new cloudwatch.Alarm(this, target.id, {
+        alarmName: `isol8-${this.envName}-${target.id}-${target.name}`,
+        alarmDescription: target.description,
+        metric,
+        threshold: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        // ~90s of probe failures before the status flips, then 2 minutes of
+        // that status before we page.
+        evaluationPeriods: 2,
+        // Route53 publishes this every minute unconditionally. Missing data
+        // means the check itself is gone or not reporting, which we cannot
+        // distinguish from an outage and must not silently treat as healthy.
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      });
+
+      // Dev going dark should not wake anyone; prod should.
+      //
+      // No pageAlarmArns registration: that collection existed only to feed
+      // FIS experiment stop-conditions, and FIS was removed. An outside-in
+      // uptime check would be a poor stop-condition anyway — it measures the
+      // public front door rather than the fault being injected.
+      alarm.addAlarmAction(
+        new cloudwatch_actions.SnsAction(isProd ? this.pageTopic : this.warnTopic),
+      );
+    }
   }
 
   // =========================================================================

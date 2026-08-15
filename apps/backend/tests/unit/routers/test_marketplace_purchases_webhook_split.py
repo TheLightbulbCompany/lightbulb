@@ -29,6 +29,18 @@ def _webhook_secrets(monkeypatch):
     monkeypatch.setattr(settings, "STRIPE_CONNECT_WEBHOOK_SECRET", "whsec_connect_test")
 
 
+@pytest.fixture(autouse=True)
+def _no_existing_transfers(monkeypatch):
+    """The flush adopts an existing Transfer for the purchase's group before
+    creating one; default every test to "none found" so create-path
+    expectations hold. Adoption tests override."""
+    from unittest.mock import AsyncMock as _AsyncMock
+
+    from core.services import payout_service as _ps
+
+    monkeypatch.setattr(_ps, "find_transfer_id_by_group", _AsyncMock(return_value=None))
+
+
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 def test_webhook_falls_back_to_connect_secret(mock_construct, mock_dedup, client):
@@ -525,3 +537,56 @@ def test_flush_skips_purchase_when_fresh_read_shows_transfer(
     mock_transfer.assert_not_called()
     # No transfers → no flush-totals write.
     mock_pa_table.return_value.update_item.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_adopts_existing_transfer_instead_of_creating(monkeypatch):
+    """Regression (codex, PR #1751): a transfer that succeeded but crashed
+    before its stamp landed — or a retry straddling the idempotency-key day
+    boundary — must be ADOPTED via the transfer_group lookup, never minted a
+    second time. The set-once stamp then records it."""
+    from routers.marketplace_purchases import _flush_seller_held_balance
+
+    purchase_row = {
+        "buyer_id": "b1",
+        "purchase_id": "cs_a",
+        "seller_share_cents": 850,
+        "stripe_transfer_group": "tg_a",
+    }
+    with (
+        patch("routers.marketplace_purchases.marketplace_repo.get_payout_account", new_callable=AsyncMock) as mock_pa,
+        patch("routers.marketplace_purchases.marketplace_repo.get_purchase", new_callable=AsyncMock) as mock_get,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.list_listings_by_seller",
+            new_callable=AsyncMock,
+        ) as mock_listings,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.set_seller_transfer_if_absent",
+            new_callable=AsyncMock,
+        ) as mock_stamp,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.apply_flush_totals", new_callable=AsyncMock
+        ) as mock_totals,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.mark_payout_accounted", new_callable=AsyncMock
+        ) as mock_mark,
+        patch(
+            "routers.marketplace_purchases.payout_service.find_transfer_id_by_group", new_callable=AsyncMock
+        ) as mock_find,
+        patch(
+            "routers.marketplace_purchases.payout_service.transfer_held_balance", new_callable=AsyncMock
+        ) as mock_transfer,
+    ):
+        mock_pa.return_value = {"seller_id": "s1", "balance_held_cents": 850}
+        mock_listings.return_value = []
+        mock_get.return_value = purchase_row
+        mock_find.return_value = "tr_orphaned"
+        mock_stamp.return_value = True
+        mock_mark.return_value = True
+
+        await _flush_seller_held_balance(seller_id="s1", connect_account_id="acct_1", known_purchase_key=("b1", "cs_a"))
+
+    mock_find.assert_awaited_once_with(transfer_group="tg_a")
+    mock_transfer.assert_not_awaited()
+    assert mock_stamp.await_args.kwargs["transfer_id"] == "tr_orphaned"
+    mock_totals.assert_awaited_once_with(seller_id="s1", transferred_cents=850)

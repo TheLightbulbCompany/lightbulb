@@ -649,6 +649,24 @@ export class ContainerStack extends cdk.Stack {
       "mkdir -p /home/node/.openclaw/mcporter || exit 1",
       "[ -e /home/node/.mcporter ] && [ ! -L /home/node/.mcporter ] && { mv /home/node/.mcporter /home/node/.mcporter.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/mcporter /home/node/.mcporter || exit 1",
+      // Step C2b — xurl (the X CLI) reads its token store from `$HOME/.xurl` and
+      // honours ONLY $HOME: store.resolveHomeDir() reads $HOME then falls back to
+      // os.UserHomeDir(), with no XDG and no XURL_HOME override. So unlike gh/gog
+      // (XDG_CONFIG_HOME) and the aws CLI (AWS_CONFIG_FILE), xurl CANNOT be pointed
+      // at the EFS state dir by env — a symlink is the only bridge. The backend
+      // materializes the store to owner_efs_root/.xurl (xurl_cli materializer),
+      // which surfaces here as /home/node/.openclaw/.xurl; without this link xurl
+      // reads an absent /home/node/.xurl and every X call runs unauthenticated.
+      // Unlike the relocations above, the target is a FILE, and a dangling link is
+      // fine: xurl's saveToFile does os.WriteFile, which follows the link and
+      // creates the EFS target on first write.
+      // CEILING — this assumes xurl's single-FILE store, which is what the pinned
+      // 1.2.3 uses. Upstream past 1.2.3 moved to a DIRECTORY (`~/.xurl/auth.yml`,
+      // migrating a legacy file on first use), so a version bump must re-point
+      // this link at the directory; leaving it as-is degrades to a real ephemeral
+      // dir holding a symlink, which works but re-migrates on every task start.
+      "[ -e /home/node/.xurl ] && [ ! -L /home/node/.xurl ] && { mv /home/node/.xurl /home/node/.xurl.efs-archive-$(date +%s) || exit 1; }",
+      "ln -sfn /home/node/.openclaw/.xurl /home/node/.xurl || exit 1",
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot
       // SQLite state from S3 (or migrates it off EFS on the first cutover

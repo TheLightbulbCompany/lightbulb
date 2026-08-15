@@ -336,6 +336,29 @@ describe("ContainerStack — dev", () => {
     });
   });
 
+  test("openclaw bridges $HOME/.xurl to the EFS state dir so the X CLI can see its materialized token", () => {
+    // xurl resolves its token store as `$HOME/.xurl` and honours ONLY $HOME —
+    // no XDG, no XURL_HOME — so unlike gh/gog (XDG_CONFIG_HOME) and the aws CLI
+    // (AWS_CONFIG_FILE) it cannot be pointed at EFS by env. The backend
+    // materializes the store to owner_efs_root/.xurl, which surfaces in the
+    // container as /home/node/.openclaw/.xurl. Without this symlink xurl reads
+    // an absent /home/node/.xurl and every X call silently runs unauthenticated
+    // — the connection shows "connected" while nothing works.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(".*ln -sfn /home/node/\\.openclaw/\\.xurl /home/node/\\.xurl.*"),
+          ],
+        }),
+      ]),
+    });
+  });
+
   test("openclaw migrates a legacy real `_npx` dir aside with `mv`, never a boot-path `rm -rf`", () => {
     // A legacy `_npx` on EFS can be tens of thousands of files; an `rm -rf` of
     // it on the gateway-boot path is a synchronous NFS unlink storm that could

@@ -420,12 +420,12 @@ async def replace_provider_block(
                     if not search:
                         web.pop("search", None)
 
-        # tools.toolSearch is provision-time gated (embedded runtimes with
-        # merged MCP servers only; NEVER written for chatgpt_oauth) — the swap
-        # must mirror that: None deletes any stale key so a Codex-bound config
-        # matches a fresh provision (the Codex runtime ignores it today, but a
-        # swap back — or a runtime that stops ignoring it — would hide the
-        # entire catalog behind the bridge); a value (re)pins the mode.
+        # tools.toolSearch is written unconditionally at provision time, for every
+        # provider choice — so callers should pass a mode to (re)pin it and the
+        # swap keeps matching a fresh provision. None still deletes the key, kept
+        # for callers that genuinely want it gone; it is no longer what a provider
+        # swap wants, since stripping it drops the owner back to carrying the full
+        # tool catalog.
         tools = current.get("tools")
         if tool_search_mode is not None:
             if not isinstance(tools, dict):
@@ -919,6 +919,79 @@ async def strip_removed_agent_keys(
         return changed
 
     await _locked_rmw(owner_id, _mutate, "strip removed agent keys")
+
+
+async def ensure_plugin_entries(owner_id: str, entries: dict) -> None:
+    """Ensure ``plugins.entries`` contains each of ``entries``.
+
+    ADDITIVE ONLY — adds entries that are absent, never overwrites one the
+    owner already has. A plugin the owner (or a marketplace deploy) configured
+    is theirs; this only fills gaps.
+
+    Exists because nothing else puts a NEW plugin entry on an existing
+    container: the image roll bakes the extension but reuses the on-disk
+    config, and ``replace_provider_block`` rebuilds the plugin subtree only on
+    a provider swap. Without this a baked plugin never activates for anyone
+    provisioned before it shipped.
+    """
+    wanted = dict(entries)
+
+    def _mutate(current: dict) -> bool:
+        plugins = current.get("plugins")
+        if not isinstance(plugins, dict):
+            plugins = {}
+            current["plugins"] = plugins
+        existing = plugins.get("entries")
+        if not isinstance(existing, dict):
+            existing = {}
+            plugins["entries"] = existing
+        changed = False
+        for key, value in wanted.items():
+            if key not in existing:
+                existing[key] = value
+                changed = True
+        return changed
+
+    await _locked_rmw(owner_id, _mutate, f"ensure plugin entries={sorted(wanted)}")
+
+
+async def ensure_redact_patterns(owner_id: str, patterns: Iterable[str]) -> None:
+    """Ensure ``logging.redactPatterns`` contains each of ``patterns``.
+
+    ADDITIVE ONLY — appends what is missing, never removes or reorders. The
+    owner (or a future generator) may have patterns of their own, and upstream
+    prepends whatever is here to its own defaults, so nothing is lost either
+    way.
+
+    Exists because a redaction rule is worthless if it only reaches owners
+    provisioned after it shipped. Nothing else carries new config keys onto an
+    existing container: the image roll only STRIPS removed keys
+    (``migrate_removed_config_keys``) and heals seeded files, and
+    ``replace_provider_block`` rebuilds the provider/plugin subtrees but never
+    ``logging``. So an existing owner would keep the playbook that reads their
+    Paperclip key while never gaining the pattern that redacts it — the one
+    cohort that needs it most.
+
+    Safe to run on anyone: adding a redaction pattern cannot change agent
+    behaviour, only what reaches the transcript. Idempotent.
+    """
+    wanted = list(patterns)
+
+    def _mutate(current: dict) -> bool:
+        logging_cfg = current.get("logging")
+        if not isinstance(logging_cfg, dict):
+            logging_cfg = {}
+            current["logging"] = logging_cfg
+        existing = logging_cfg.get("redactPatterns")
+        if not isinstance(existing, list):
+            existing = []
+        missing = [p for p in wanted if p not in existing]
+        if not missing:
+            return False
+        logging_cfg["redactPatterns"] = existing + missing
+        return True
+
+    await _locked_rmw(owner_id, _mutate, "ensure redact patterns")
 
 
 async def set_openclaw_config_path(

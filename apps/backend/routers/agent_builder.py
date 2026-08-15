@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from core.containers import get_ecs_manager
 from core.repositories import container_repo
 from core.services import agent_export
+from core.services.agent_budget import enforce_agent_budget
 from core.services.catalog_service import get_catalog_service
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
@@ -124,6 +125,13 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     before the Paperclip mint, so a refusal costs nothing to undo.
     """
     auth_container = await _require_hook_token(owner_id, request)
+
+    # Plan agent budget, BEFORE the deploy claim and the Paperclip mint. Atlas
+    # recruits on its own initiative from inside the container, so this bridge —
+    # not the /chat interception — is where its creates are countable. Refusing
+    # here costs nothing to undo; refusing after the mint would leave a Paperclip
+    # row with no container-side agent.
+    await enforce_agent_budget(owner_id)
 
     # ``listing_id`` is a diagnostics label on this claim, not a key (the claim
     # is owner-wide) — tag it so a held claim reads as an Atlas build in the log.

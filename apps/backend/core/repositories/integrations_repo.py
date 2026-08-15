@@ -19,18 +19,27 @@ def _table():
     return get_table("integrations")  # short name; table prefix auto-applied
 
 
-async def put_status(owner_id: str, provider: str, status: str = "connected") -> None:
+async def put_status(owner_id: str, provider: str, status: str = "connected", identity: str | None = None) -> None:
+    """Record that this owner has this provider connected.
+
+    ``identity`` is the human-readable handle the materializer resolved for the
+    account actually connected — an Instagram username, a Google email. It is NOT
+    a credential and never a token; it exists so Settings can say WHICH account is
+    wired up, which matters most where an owner could plausibly have several.
+    Optional because it only lands on connects made after this shipped: older rows
+    have none and the UI simply omits the line.
+    """
     now = int(time.time())
-    await run_in_thread(
-        _table().put_item,
-        Item={
-            "owner_id": owner_id,
-            "provider": provider,
-            "status": status,
-            "connected_at": now,
-            "updated_at": now,
-        },
-    )
+    item: dict = {
+        "owner_id": owner_id,
+        "provider": provider,
+        "status": status,
+        "connected_at": now,
+        "updated_at": now,
+    }
+    if identity:
+        item["identity"] = identity
+    await run_in_thread(_table().put_item, Item=item)
 
 
 async def get(owner_id: str, provider: str) -> dict | None:
@@ -107,12 +116,48 @@ async def set_google_watch_channels(owner_id: str, channels: list[dict]) -> None
     )
 
 
+async def get_meta_webhook_bindings(owner_id: str, provider: str) -> list[dict]:
+    """The owner's Meta asset↔trigger bindings for ``provider`` (``meta_ads``
+    Pages / ``instagram`` accounts) — a list attribute on the existing
+    ``(owner_id, provider)`` status row, same shape as the gmail watch list
+    above rather than a table of its own.
+
+    Each entry binds one Meta asset to one automation:
+    ``{asset_id, asset_name, object_type, event_id, fields,
+    trigger_public_id, trigger_secret}``. The secret is stored for the same
+    reason the gmail entry's ``channel_token`` is: Meta signs deliveries with
+    the APP secret, not a per-trigger one, so the app-level ingress
+    (``routers/meta_webhook.py``) must inject the trigger's own bearer itself
+    and Paperclip has no secret read-back. The trigger seed is the only
+    writer; that route is the only reader."""
+    row = await get(owner_id, provider)
+    return list((row or {}).get("meta_webhook_bindings") or [])
+
+
+async def set_meta_webhook_bindings(owner_id: str, provider: str, bindings: list[dict]) -> None:
+    """Overwrite the ``meta_webhook_bindings`` list on the owner's ``provider``
+    row. UpdateExpression (not put_item) so the row's status fields survive —
+    identical posture, and identical lost-update tolerance, to
+    ``set_google_watch_channels``."""
+    now = int(time.time())
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": provider},
+        UpdateExpression="SET meta_webhook_bindings = :bindings, updated_at = :now",
+        ExpressionAttributeValues={":bindings": bindings, ":now": now},
+    )
+
+
 async def scan_all() -> list[dict]:
     """Every row in the table, paginated.
 
-    Only the orphan sweep uses this — a full scan is the ONLY way to find rows
-    whose owner no longer exists, because the owner id is gone from everywhere
-    that would let you query for it. Not for request-path use.
+    Used by the orphan sweep — a full scan is the ONLY way to find rows whose
+    owner no longer exists, because the owner id is gone from everywhere that
+    would let you query for it — and by the Meta app-level webhook's
+    asset→owner routing map, which faces the same shape of problem: the
+    delivery names an asset id and nothing else, so there is no key to query
+    by. That reader caches the map (see routers/meta_webhook.py) rather than
+    scanning per request.
     """
     table = _table()
     items: list[dict] = []

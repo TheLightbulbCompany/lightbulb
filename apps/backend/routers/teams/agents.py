@@ -30,6 +30,7 @@ from core.services.paperclip_adapter_config import (
     synthesize_openclaw_adapter,
 )
 from core.services.paperclip_admin_client import PaperclipAdminClient, shared_admin_client
+from core.services.agent_budget import enforce_agent_budget
 from core.services.agent_redaction import strip_agent_secrets
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
@@ -524,6 +525,9 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
     """
     creator_user_id = _creator_user_id(ctx)
     owner_id = _resolve_owner_id(ctx)
+    # Plan agent budget, BEFORE anything is minted or created upstream — a
+    # refusal here leaves no Paperclip row to reconcile.
+    await enforce_agent_budget(owner_id)
     # Mint the service token with owner_id (NOT the creator's user_id).
     # The OpenClaw container is keyed by owner_id (org_id for org members,
     # user_id for personal owners). The WS Lambda authorizer puts service

@@ -320,7 +320,18 @@ async def run(owner_id: str, claim_id: str) -> int:
     if status == "running":
         return EXIT_OK
     if status == "error":
-        return EXIT_TRANSIENT if (row or {}).get("retryable", True) else EXIT_DETERMINISTIC
+        # The row-flipped-under-us path. It used to exit silently, which made
+        # every incident here start with "why did this exit 11 with nothing in
+        # the logs" — the cause is already on the row, so say it.
+        retryable = (row or {}).get("retryable", True)
+        logger.warning(
+            "provision run for owner %s ended with the row at error (retryable=%s, last_error=%r) — exiting %s",
+            owner_id,
+            retryable,
+            (row or {}).get("last_error"),
+            EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC,
+        )
+        return EXIT_TRANSIENT if retryable else EXIT_DETERMINISTIC
     # Any other status (stopped/deleted/provisioning-under-new-lease): an
     # external actor owns the row now — succeed quietly, write nothing.
     logger.info("owner %s left provisioning externally (status=%s)", owner_id, status)

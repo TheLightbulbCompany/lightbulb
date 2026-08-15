@@ -409,7 +409,8 @@ class EcsManager:
 
         ``ultra_pro`` owners run the large ``ULTRA_CPU`` / ``ULTRA_MEMORY_MIB``
         box (large marketplace companies past the flat tier's agent budget);
-        everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box.
+        everyone else the flat ``PER_USER_CPU`` / ``PER_USER_MEMORY_MIB`` box —
+        UNLESS their live agent count is over the standard budget, see below.
 
         Deriving the size from the billing plan HERE is what makes the Ultra
         size DURABLE. The upgrade webhook resizes the running container, but the
@@ -420,10 +421,40 @@ class EcsManager:
         image-roll apply (``update_service.apply_update``), which resizes with no
         size of its own — so the box always tracks the owner's plan.
 
-        Fail-safe: a provision must NEVER fail because billing is momentarily
-        unreadable. Any read error (or an absent row) falls back to the standard
-        size — worst case an Ultra owner's reprovision lands standard-sized and
-        the next reprovision restores it, which beats a failed provision.
+        **Agent count is the second input, and it is a RELIABILITY floor, not a
+        billing signal.** ``COMPANY_STANDARD_PLAN_MAX_AGENTS`` was previously
+        enforced only where an owner acquires many agents AT ONCE — a marketplace
+        company-package deploy, or a Stripe plan transition. Nothing watched
+        ORGANIC growth, and agents arrive one at a time from several paths: the
+        /chat ``agents.create`` RPC, the Teams REST endpoint, a marketplace
+        single-agent hire, and Atlas (the in-house recruiter) creating them
+        against Paperclip directly. An owner could therefore cross the budget
+        without any of the existing gates firing and stay on the flat box.
+
+        That is not hypothetical: prod owner with 11 agents on the flat box
+        crash-looped on boot 2026-08-14. 24 SQLite databases restoring +
+        replicating concurrently saturated the single vCPU (gateway got 13% of a
+        core), so its state-DB writes blew OpenClaw's hardcoded 5s busy timeout
+        and the gateway died with "database is locked" — repeatedly, until three
+        failures tripped the ECS deployment circuit breaker.
+
+        Reading the LIVE roster rather than hooking each create path is
+        deliberate: it cannot be bypassed by a creation path nobody remembered
+        to instrument, including agents Atlas creates without the backend in the
+        loop. It converges on the owner's next task-def registration rather than
+        bouncing the container the instant someone adds an agent.
+
+        This only ever sizes UP. Shrinking stays owned by
+        ``stripe_webhook_handlers._apply_ultra_resize``, which has the OOM-safe
+        deferral rules; a count-driven shrink here would fight it.
+
+        Fail-safe: a provision must NEVER fail because billing or Paperclip is
+        momentarily unreadable. A billing read error (or an absent row) falls
+        back to the standard size — worst case an Ultra owner's reprovision lands
+        standard-sized and the next reprovision restores it, which beats a failed
+        provision. An agent count of 0 means UNDETERMINABLE (every provisioned
+        owner has Friday + Atlas, so a reachable roster is >= 2), so it is
+        treated as no signal and leaves the plan-derived size alone.
         """
         try:
             account = await billing_repo.get_by_owner_id(owner_id)
@@ -435,6 +466,33 @@ class EcsManager:
             )
             account = None
         if (account or {}).get("plan") == "ultra_pro":
+            return ULTRA_CPU, ULTRA_MEMORY_MIB
+
+        from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
+        from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
+
+        try:
+            agent_count = await count_paperclip_agents_for_owner(owner_id)
+        except Exception:  # noqa: BLE001 — sizing must never fail a provision.
+            # The helper already swallows Paperclip/DDB errors into 0, so this
+            # is the belt to that braces: an unexpected raise here (import
+            # failure, a future refactor changing its contract) must degrade to
+            # "no signal", never take down provisioning for every owner.
+            logger.warning(
+                "agent-count sizing lookup failed for owner %s; leaving the plan-derived size",
+                owner_id,
+                exc_info=True,
+            )
+            agent_count = 0
+        if agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS:
+            logger.info(
+                "owner %s has %d live agents (> %d) on a non-Ultra plan; sizing the "
+                "container to the Ultra box so its boot does not contend itself to death",
+                owner_id,
+                agent_count,
+                COMPANY_STANDARD_PLAN_MAX_AGENTS,
+            )
+            put_metric("container.size_upgraded_by_agent_count", dimensions={"reason": "organic_growth"})
             return ULTRA_CPU, ULTRA_MEMORY_MIB
         return PER_USER_CPU, PER_USER_MEMORY_MIB
 

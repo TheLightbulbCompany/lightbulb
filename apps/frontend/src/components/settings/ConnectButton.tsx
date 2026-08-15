@@ -186,7 +186,9 @@ export function ConnectButton({
           </Link>
         )}
         <ol className="list-decimal pl-4 text-xs text-[var(--mute)] space-y-0.5">
-          <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
+          {provider !== "x" && (
+            <li>Create an OAuth client ID — application type <strong>Web application</strong>.</li>
+          )}
           {provider === "google" && (
             <li>
               Enable the <strong>Gmail</strong>, <strong>Google Calendar</strong> and{" "}
@@ -195,8 +197,16 @@ export function ConnectButton({
           )}
           {provider === "x" && (
             <li>
-              In the X developer portal, enable <strong>OAuth 2.0 user context</strong>{" "}
-              with read, write, DM, follow, like, media and offline access scopes.
+              Set the app type to a <strong>confidential</strong> client —{" "}
+              <strong>Web App</strong>, <strong>Automated App</strong> or{" "}
+              <strong>Bot</strong>. Native App and Single Page App are public clients and
+              are never issued a client secret, which this connection requires.
+            </li>
+          )}
+          {provider === "x" && (
+            <li>
+              Set <strong>App permissions</strong> to a level that covers what you want the
+              agent to do — reading, posting, and Direct Messages are separate levels.
             </li>
           )}
           <li>Add the authorized redirect URI shown below.</li>
@@ -204,9 +214,19 @@ export function ConnectButton({
             <li>On the OAuth consent screen, add your Google account as a <strong>Test user</strong>.</li>
           )}
           {provider === "x" && (
-            <li>X API package/app permissions may limit posting, reads, DMs or media until enabled by X.</li>
+            <li>
+              Which endpoints actually work depends on your X API access level — if calls
+              come back 403, check your plan on X rather than these settings.
+            </li>
           )}
-          <li>Paste the Client ID and secret here.</li>
+          {provider === "x" ? (
+            <li>
+              Paste the <strong>Client ID and Client Secret</strong> here — the OAuth 2.0
+              pair, <em>not</em> the API Key and Secret.
+            </li>
+          ) : (
+            <li>Paste the Client ID and secret here.</li>
+          )}
         </ol>
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[var(--mute)]">Authorized redirect URI to register:</span>
@@ -433,6 +453,19 @@ export function ConnectButton({
           {busy ? "Connecting…" : "Connect"}
         </Button>
       </div>
+      {/* An OAuth row needs no instructions — the provider's own consent screen
+          is the flow. An API-key row is a blank box, so without this the owner
+          has to go find the right settings page themselves. */}
+      {connection.token_setup_url && (
+        <a
+          href={connection.token_setup_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-[var(--mute)] underline underline-offset-2 hover:text-[#1c1917]"
+        >
+          Where do I find this?
+        </a>
+      )}
       {err && (
         <p id={errorId} className="text-xs text-[#b63025]" role="alert">
           {err}

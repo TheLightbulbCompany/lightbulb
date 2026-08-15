@@ -227,8 +227,11 @@ you cannot guess from the filename:
   entry point, called only from `GET /container/status`. Owner path seeds
   Paperclip synchronously, then dispatches the container provision as a
   background task.
-- `provision_dispatch.py` — `dispatch_provision`, the SFN executor every
-  provisioning trigger funnels through. There is no inline fallback.
+- `provision_dispatch.py` — `dispatch_provision`, the single provisioning
+  funnel. A fresh claim starts the SFN watchdog execution FIRST, then runs
+  attempt 0 as a backend child process for speed. The machine watches the
+  row (watch loop in `service-stack.ts`) and takes the ECS leg over on
+  error or after its tick backstop — custody never depends on a client poll.
 - `paperclip_provisioning.py` — owns `provision_org`, which seeds Friday + Atlas.
 - `config_patcher.py` — EFS-safe JSON deep-merge under NFS-compatible
   `fcntl.lockf` (not `flock`).

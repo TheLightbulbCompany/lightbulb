@@ -8,6 +8,7 @@ import { UserButton } from "@clerk/nextjs";
 
 import { Logo } from "@/components/Logo";
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
+import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { useConnections } from "@/hooks/useConnections";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import { SETTINGS_NAV_SECTIONS } from "@/components/settings/settings-nav-config";
@@ -62,8 +63,18 @@ function ConnectionsPageInner() {
 
   const canManage = isAdmin;
 
-  const { mutate } = useConnections();
+  const { connections, mutate } = useConnections();
   const [banner, setBanner] = useState<Banner>(null);
+
+  // Google is the one provider that holds MANY accounts behind a single
+  // connection row, and this page is where its own "connect another" OAuth
+  // round trip LANDS — so the multi-account surface has to be here. It used to
+  // live only in the Control dashboard's Integrations tab, which meant the
+  // page called "Connections" showed a connected Google as a single account
+  // with nothing but a Disconnect button.
+  const googleConnected = connections.some(
+    (c) => c.provider === "google" && c.status === "connected",
+  );
 
   // OAuth return handling. The provider redirects here with ?connected= or
   // ?error=; we surface a banner, refresh the list so the freshly-connected
@@ -149,6 +160,12 @@ function ConnectionsPageInner() {
               {!canManage && (
                 <div className="settings-alert settings-alert-error" role="status">
                   Only organization admins can manage connections.
+                </div>
+              )}
+
+              {googleConnected && (
+                <div className="mb-4">
+                  <GoogleAccountsSection canManage={canManage} />
                 </div>
               )}
 

@@ -49,6 +49,7 @@ from routers import (
     hooks_credentials,
     hooks_proxy,
     integrations,
+    meta_webhook,
     metronome_webhook,
     oauth,
     onboarding,
@@ -470,10 +471,11 @@ async def lifespan(app: FastAPI):
 
     try:
         async with asyncio.timeout(20):
-            # First: hand any in-flight inline provision to the state machine
-            # (terminate the runner child, then StartExecution) — it must land
-            # before the SIGKILL window; everything below is process-local
-            # cleanup.
+            # First: terminate any in-flight inline provision child. It must
+            # land before the SIGKILL window so no runner outlives this
+            # instance; everything below is process-local cleanup. No
+            # StartExecution — the state machine has been watching each claim
+            # since it was minted and takes the ECS leg over on its own clock.
             from core.services.provision_dispatch import handoff_inflight_provisions
 
             await handoff_inflight_provisions()
@@ -871,6 +873,10 @@ app.include_router(hooks_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
 # /api/v1/hooks/t/{owner_id}/{public_id}. No edge auth — Paperclip verifies
 # the per-trigger signature upstream. See routers/paperclip_trigger_proxy.py.
 app.include_router(paperclip_trigger_proxy.router, prefix="/api/v1/hooks", tags=["hooks"])
+# App-LEVEL Meta ingress at /api/v1/hooks/meta — deliberately ownerless, because
+# a Meta app has ONE callback URL for every user. Routed by the asset id in the
+# payload, authenticated by the app-secret signature. See routers/meta_webhook.py.
+app.include_router(meta_webhook.router, prefix="/api/v1/hooks", tags=["hooks"])
 # Platform-ops operator console + owner-scoped agent access (dual auth). See
 # routers/ops.py for the Clerk-admin OR platform_ops-token model.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])

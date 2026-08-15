@@ -279,6 +279,9 @@ def _connection_row(
         "byo_required": v.byo_required,
         "byo_configured": byo,
         "byo_setup_url": v.byo_setup_url,
+        # Where a paste_token provider's key is minted, so an API-key row isn't
+        # just a blank box the owner has to go hunting for.
+        "token_setup_url": v.token_setup_url,
         # can_trigger: this provider's inbound event labels (registry `inbound`,
         # T1) — the Integrations card's "Can trigger" line. Empty when the
         # provider isn't (yet) wired as an Automations trigger source.

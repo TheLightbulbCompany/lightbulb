@@ -11,10 +11,18 @@ import {
   ObservabilityStackProps,
 } from "../lib/stacks/observability-stack";
 
-describe("ObservabilityStack", () => {
-  let template: Template;
-
-  beforeAll(() => {
+/**
+ * Synthesize the stack for one environment.
+ *
+ * Parameterized on envName because several code paths are prod-only, and a
+ * suite that synthesizes ONLY dev cannot see them. That gap has already cost
+ * a red main: a prod-only branch referenced a property deleted by the FIS
+ * cleanup, every dev test passed, and `cdk synth` broke on deploy. vitest
+ * compiles through esbuild, which strips types without checking them, so
+ * green tests are not evidence the prod path even compiles.
+ */
+function buildTemplate(envName: "dev" | "prod"): Template {
+  {
     const app = new cdk.App();
     const env = {
       account: "123456789012",
@@ -90,9 +98,9 @@ describe("ObservabilityStack", () => {
 
     const props: ObservabilityStackProps = {
       env,
-      envName: "dev",
+      envName,
       backendService: service,
-      backendLogGroupName: "/ecs/isol8-dev",
+      backendLogGroupName: `/ecs/isol8-${envName}`,
       alb,
       targetGroup: tg,
       wsApiId: "test-ws-api-id",
@@ -108,8 +116,8 @@ describe("ObservabilityStack", () => {
         companySlugsTable: makeTable("CompanySlugs"),
         agentEmailAddressesTable: makeTable("AgentEmailAddresses"),
       },
-      connectionsTableName: "isol8-dev-ws-connections",
-      authorizerFunctionName: "isol8-dev-ws-authorizer",
+      connectionsTableName: `isol8-${envName}-ws-connections`,
+      authorizerFunctionName: `isol8-${envName}-ws-authorizer`,
       paperclipDbCluster,
       paperclipService,
     };
@@ -119,7 +127,19 @@ describe("ObservabilityStack", () => {
       "TestObservabilityStack",
       props,
     );
-    template = Template.fromStack(obsStack);
+    return Template.fromStack(obsStack);
+  }
+}
+
+// Prod synthesis is asserted on separately below; building it here also means
+// a prod-only compile/synth break fails the suite instead of the deploy.
+const PROD_TEMPLATE = buildTemplate("prod");
+
+describe("ObservabilityStack", () => {
+  let template: Template;
+
+  beforeAll(() => {
+    template = buildTemplate("dev");
   });
 
   test("creates 2 SNS topics", () => {
@@ -150,18 +170,54 @@ describe("ObservabilityStack", () => {
     template.resourceCountIs("AWS::Budgets::Budget", 1);
   });
 
-  test("page topic has email subscription", () => {
-    template.hasResourceProperties("AWS::SNS::Subscription", {
-      Protocol: "email",
-      Endpoint: "oncall@isol8.co",
-    });
+  // Both tiers must have a live destination. Alarms are worthless without one:
+  // these topics previously ran with ZERO subscribers while ~105 alarms fired
+  // into the void. Assert on BOTH topics, and assert the count, so a
+  // subscription that gets dropped rather than repointed also fails here.
+  test("both alert topics subscribe the alert email", () => {
+    const subs = template.findResources("AWS::SNS::Subscription");
+    const byTopic = Object.values(subs).map((s: any) => ({
+      topic: JSON.stringify(s.Properties.TopicArn),
+      endpoint: s.Properties.Endpoint,
+      protocol: s.Properties.Protocol,
+    }));
+
+    expect(byTopic).toHaveLength(2);
+    expect(new Set(byTopic.map((s) => s.topic)).size).toBe(2); // page + warn, not two on one
+    for (const s of byTopic) {
+      expect(s.protocol).toBe("email");
+      expect(s.endpoint).toBe("admin@isol8.co");
+    }
   });
 
-  test("warn topic has email subscription", () => {
-    template.hasResourceProperties("AWS::SNS::Subscription", {
-      Protocol: "email",
-      Endpoint: "alerts@isol8.co",
-    });
+  // The only outside-in signal in the stack. Every other alarm is internal
+  // and can look healthy while users cannot reach the product at all.
+  test("creates Route53 health checks for the app and API front doors", () => {
+    const checks = template.findResources("AWS::Route53::HealthCheck");
+    const hosts = Object.values(checks).map(
+      (c: any) => c.Properties.HealthCheckConfig.FullyQualifiedDomainName,
+    );
+    expect(hosts.sort()).toEqual(["api-dev.isol8.co", "dev.isol8.co"]);
+
+    for (const c of Object.values(checks) as any[]) {
+      expect(c.Properties.HealthCheckConfig.Type).toBe("HTTPS");
+    }
+  });
+
+  test("uptime alarms treat missing data as breaching", () => {
+    // Route53 publishes HealthCheckStatus every minute unconditionally, so
+    // absent data means the check is gone — indistinguishable from an
+    // outage, and must never be read as healthy.
+    for (const alarmName of [
+      "isol8-dev-P13-app-unreachable",
+      "isol8-dev-P14-api-unreachable",
+    ]) {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: alarmName,
+        ComparisonOperator: "LessThanThreshold",
+        TreatMissingData: "breaching",
+      });
+    }
   });
 
   test("page-tier alarm P1 exists with correct name", () => {
@@ -230,4 +286,57 @@ describe("ObservabilityStack", () => {
   // and had been failing on main since Phase 1. The heartbeat test above still
   // holds — Phase 1 kept gateway.running.count, renaming its alarm to
   // backend-liveness.
+});
+
+describe("ObservabilityStack — prod-only paths", () => {
+  const template = PROD_TEMPLATE;
+
+  // PagerDuty is what turns a page into a phone push. It is prod-only, so
+  // nothing in the dev suite covers it.
+  test("prod page topic also delivers to PagerDuty over HTTPS", () => {
+    const subs = Object.values(template.findResources("AWS::SNS::Subscription"));
+    const https = subs.filter((s: any) => s.Properties.Protocol === "https");
+
+    expect(https).toHaveLength(1);
+    // Raw delivery MUST stay off: PagerDuty's CloudWatch integration parses
+    // the SNS envelope and expects a nested JSON object in Message. Raw
+    // delivery strips it and no incident is ever created.
+    expect(https[0].Properties.RawMessageDelivery).toBe(false);
+  });
+
+  // The URL embeds the integration key. It must arrive as a deploy-time SSM
+  // reference, never as a literal baked into the synthesized template.
+  test("the PagerDuty integration key is not baked into the template", () => {
+    const rendered = JSON.stringify(template.toJSON());
+    expect(rendered).not.toMatch(/events\.pagerduty\.com/);
+
+    const subs = Object.values(template.findResources("AWS::SNS::Subscription"));
+    const https: any = subs.find((s: any) => s.Properties.Protocol === "https");
+    expect(https.Properties.Endpoint).toHaveProperty("Ref");
+  });
+
+  test("dev does NOT get a PagerDuty subscription", () => {
+    const devSubs = Object.values(
+      buildTemplate("dev").findResources("AWS::SNS::Subscription"),
+    );
+    expect(devSubs.every((s: any) => s.Properties.Protocol === "email")).toBe(true);
+  });
+
+  test("prod uptime alarms page rather than warn", () => {
+    for (const name of [
+      "isol8-prod-P13-app-unreachable",
+      "isol8-prod-P14-api-unreachable",
+    ]) {
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        AlarmName: name,
+        AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
+      });
+    }
+  });
+
+  test("prod health checks target the real public hostnames", () => {
+    const hosts = Object.values(template.findResources("AWS::Route53::HealthCheck"))
+      .map((c: any) => c.Properties.HealthCheckConfig.FullyQualifiedDomainName);
+    expect(hosts.sort()).toEqual(["api.isol8.co", "isol8.co"]);
+  });
 });

@@ -42,36 +42,93 @@ def _cfg(provider_choice: str = "bedrock_claude", **kwargs) -> dict:
     return build_openclaw_config_dict(**defaults)
 
 
-class TestToolSearchGated:
-    def test_enabled_for_mcp_heavy_embedded_runtime_owners(self):
-        """Tool search pays off only when merged MCP servers inflate the tool
-        catalog, and only on the embedded runtime (Codex has its own)."""
+class TestToolSearchAlwaysOn:
+    """Tool search is unconditional — every owner, every provider choice, with
+    or without MCP servers connected at config-write time.
+
+    The catalog is unbounded from the generator's point of view: any owner can
+    connect an MCP integration at any moment, and the config written today is
+    what the container reads for its whole life. Meta's ads MCP alone measured
+    95 tools / ~172k tokens against the live endpoint, so gating on what happens
+    to be connected at write time is exactly how an owner ends up carrying a full
+    catalog afterwards.
+    """
+
+    def test_present_for_every_provider_choice(self):
         for choice, kwargs in (
             ("bedrock_claude", {}),
             ("byo_key", {"byo_provider": "anthropic"}),
             ("byo_key", {"byo_provider": "openai"}),
+            # Inert on Codex (its runtime never reads the key) but harmless, and
+            # excluding it only made the condition harder to reason about.
+            ("chatgpt_oauth", {}),
+            # Trial owners can connect integrations too, and a $3 cap is the
+            # least forgiving place to carry a full catalog.
+            ("bedrock_trial", {}),
         ):
             cfg = _cfg(choice, integration_mcp_servers=_MCP, **kwargs)
-            assert cfg["tools"]["toolSearch"] == {"mode": "code"}, choice
+            assert cfg["tools"]["toolSearch"] == {"mode": "tools"}, choice
 
-    def test_absent_without_mcp_servers(self):
-        assert "toolSearch" not in _cfg("bedrock_claude")["tools"]
+    def test_present_even_with_no_mcp_servers(self):
+        """No servers today does not mean no servers tomorrow — the owner can
+        connect one without the config being regenerated."""
+        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": "tools"}
+        assert _cfg("chatgpt_oauth")["tools"]["toolSearch"] == {"mode": "tools"}
+        assert _cfg("bedrock_trial")["tools"]["toolSearch"] == {"mode": "tools"}
 
-    def test_manual_mcp_servers_also_trigger_the_gate(self):
-        """DELIBERATE (Codex P2 follow-up): the gate keys on ANY merged MCP
-        server — registry integration or user-added custom server — because
-        every server contributes schemas of unknowable size at config-write
-        time and churns the cached prompt prefix. Erring toward enablement
-        for MCP users is the chosen posture; plain owners stay direct."""
+    def test_manual_mcp_servers_are_covered_too(self):
         custom = {"my-internal-api": {"command": "node", "args": ["server.js"], "env": {}}}
-        cfg = _cfg("bedrock_claude", integration_mcp_servers=custom)
-        assert cfg["tools"]["toolSearch"] == {"mode": "code"}
+        assert _cfg("bedrock_claude", integration_mcp_servers=custom)["tools"]["toolSearch"] == {"mode": "tools"}
 
-    def test_absent_on_codex_and_trial(self):
-        """Codex runtime ignores tools.toolSearch (native tool search); trial
-        keeps the minimal surface."""
-        assert "toolSearch" not in _cfg("chatgpt_oauth", integration_mcp_servers=_MCP)["tools"]
-        assert "toolSearch" not in _cfg("bedrock_trial", integration_mcp_servers=_MCP)["tools"]
+    def test_provisioned_mode_is_the_shared_constant(self):
+        """Provision-time and the provider swap share one constant, so they
+        cannot drift to different modes. This pins the generator to it; the
+        swap side is covered by test_billing_change_provider, which asserts the
+        kwarg it passes."""
+        from core.containers.config import TOOL_SEARCH_MODE
+
+        assert _cfg("bedrock_claude")["tools"]["toolSearch"] == {"mode": TOOL_SEARCH_MODE}
+
+
+class TestTranscriptRedaction:
+    """Paperclip keys must be redacted from persisted transcripts.
+
+    Upstream already runs transcript redaction (mode defaults to "tools",
+    applied on the session append path) but its default vendor prefixes cover
+    sk-/ghp_/github_pat_/gho_/ghu_ and NOT Paperclip's `pcp_`. A live key
+    reached an owner's transcript on 2026-08-14 through exactly that gap.
+    """
+
+    def test_paperclip_key_pattern_is_configured_for_every_provider_choice(self):
+        for choice, kwargs in (
+            ("bedrock_claude", {}),
+            ("byo_key", {"byo_provider": "anthropic"}),
+            ("chatgpt_oauth", {}),
+            ("bedrock_trial", {}),
+        ):
+            patterns = _cfg(choice, **kwargs)["logging"]["redactPatterns"]
+            assert any("pcp_" in p for p in patterns), choice
+
+    def test_the_pattern_matches_every_shape_the_leak_actually_took(self):
+        import re
+
+        pattern = next(p for p in _cfg("bedrock_claude")["logging"]["redactPatterns"] if "pcp_" in p)
+        compiled = re.compile(pattern)
+        key = "pcp_e7cb205d2877971e2aef28e674fc886579317e12cdbcf3fe"
+        # The observed leak was PROSE in the model's reasoning, which is why
+        # the default KEY=value pattern did not catch it.
+        assert compiled.search(f"token: {key}")
+        # And the shapes an `env` dump or a pasted header would produce.
+        assert compiled.search(f"PAPERCLIP_API_KEY={key}")
+        assert compiled.search(f"Authorization: Bearer {key}")
+        assert compiled.search(f'{{"token":"{key}"}}')
+
+    def test_the_pattern_leaves_a_bare_prefix_mention_alone(self):
+        import re
+
+        pattern = next(p for p in _cfg("bedrock_claude")["logging"]["redactPatterns"] if "pcp_" in p)
+        # Documentation prose about the prefix is not a credential.
+        assert not re.compile(pattern).search("keys start with the pcp_ prefix")
 
 
 class TestBrowserBounds:

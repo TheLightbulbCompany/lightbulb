@@ -1,0 +1,5 @@
+# This plugin's dist/ is HAND-WRITTEN source (baked into the image by the
+# Dockerfile via `COPY plugins/paperclip-exec-creds`), NOT build output.
+# Override the repo-root `dist/` ignore so it is tracked.
+!dist/
+!dist/**

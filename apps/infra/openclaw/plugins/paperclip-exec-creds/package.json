@@ -1,0 +1,11 @@
+{
+  "name": "paperclip-exec-creds",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Injects this agent's PAPERCLIP_* credentials into its exec environment only.",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "runtimeExtensions": ["./dist/index.js"]
+  }
+}

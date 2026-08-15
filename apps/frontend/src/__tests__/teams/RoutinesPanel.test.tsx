@@ -681,6 +681,62 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(doneButton).toBeEnabled();
   });
 
+  it("reverse-guided (PostHog): shows the URL + full Authorization header value, no paste step, Done immediately enabled", async () => {
+    connectionsData = [
+      connection({
+        provider: "posthog",
+        display_name: "PostHog",
+        can_trigger: ["Exception captured"],
+        inbound: {
+          webhook_registration: "guided_paste",
+          events: [{ id: "$exception", label: "Exception captured" }],
+        },
+      }),
+    ];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+      instructions:
+        "In PostHog, open Data pipelines → Destinations and create a new 'HTTP Webhook' destination.",
+      secret_hint: null,
+      webhook_secret: "pcsec_ph",
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "PostHog" }));
+    await user.click(
+      await screen.findByRole("option", { name: "Exception captured" }),
+    );
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "posthog",
+      event_id: "$exception",
+    });
+
+    expect(
+      await screen.findByText("https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1"),
+    ).toBeInTheDocument();
+    // The FULL header value, Bearer prefix included — copying it whole
+    // eliminates the forgot-the-prefix failure.
+    expect(screen.getByText("Bearer pcsec_ph")).toBeInTheDocument();
+    expect(screen.getByText(/data pipelines/i)).toBeInTheDocument();
+
+    // The secret flows Isol8 → PostHog: no paste-back input, no arming PUT,
+    // and no "Registered." claim — the owner still has PostHog-side setup.
+    expect(screen.queryByLabelText(/signing secret/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Registered.")).not.toBeInTheDocument();
+    const doneButton = screen.getByRole("button", { name: "Done" });
+    expect(doneButton).toBeEnabled();
+    await user.click(doneButton);
+    expect(mockMutate).toHaveBeenCalled();
+    expect(mockAutomationsPut).not.toHaveBeenCalled();
+  });
+
 });
 
 describe("RoutinesPanel — auto_github repo picker", () => {
@@ -876,6 +932,112 @@ describe("RoutinesPanel — auto_vercel project picker", () => {
     expect(doneButton).toBeEnabled();
     await user.click(doneButton);
     expect(mockMutate).toHaveBeenCalled();
+  });
+});
+
+describe("RoutinesPanel — auto_meta asset picker", () => {
+  // auto_meta is the one registration shape TWO providers share, and its
+  // resource is a different thing in each — so the noun map needs a
+  // per-provider override, which is what these two cases pin.
+  function metaConnection(provider: string, displayName: string, events: { id: string; label: string }[]) {
+    return {
+      provider,
+      display_name: displayName,
+      acquisition: "direct_oauth",
+      status: "connected",
+      can_trigger: [events[0].label],
+      inbound: { webhook_registration: "auto_meta", events },
+    };
+  }
+
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+  });
+
+  it("labels the Meta Ads picker 'Page' and submits the Page id", async () => {
+    connectionsData = [
+      metaConnection("meta_ads", "Meta Ads", [
+        { id: "leadgen", label: "New lead" },
+        { id: "feed", label: "Page post activity" },
+      ]),
+    ];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "1112223334", label: "Acme Page" },
+    ]);
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: false,
+      instructions: null,
+      secret_hint: null,
+      // The backend echoes the asset NAME here (a numeric Page id names
+      // nothing to the owner), so the success copy uses it as-is.
+      resource: "Acme Page",
+    });
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Meta Ads" }));
+    await user.click(await screen.findByRole("option", { name: "New lead" }));
+
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/meta_ads/resources",
+      ),
+    );
+    expect(screen.getByText("Page")).toBeInTheDocument();
+    expect(screen.getByText("Create").closest("button")).toBeDisabled();
+
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "Acme Page" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith(
+      "/automations/from-integration",
+      { provider: "meta_ads", event_id: "leadgen", resource: "1112223334" },
+    );
+    expect(
+      await screen.findByText(
+        /Meta Ads registered the webhook on Acme Page — this automation is live\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("labels the Instagram picker 'Instagram account'", async () => {
+    connectionsData = [
+      metaConnection("instagram", "Instagram", [
+        { id: "comments", label: "New comment" },
+        { id: "messages", label: "New DM" },
+      ]),
+    ];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "7778889990", label: "acme.co" },
+    ]);
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Instagram" }));
+    await user.click(await screen.findByRole("option", { name: "New comment" }));
+
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith(
+        "/automations/providers/instagram/resources",
+      ),
+    );
+    // Same shape as Meta Ads, different noun — the per-provider override.
+    expect(screen.getByText("Instagram account")).toBeInTheDocument();
+    expect(screen.queryByText("Page")).not.toBeInTheDocument();
   });
 });
 

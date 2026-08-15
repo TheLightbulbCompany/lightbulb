@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -14,6 +15,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3deploy from "aws-cdk-lib/aws-s3-deployment";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as sns from "aws-cdk-lib/aws-sns";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as tasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
@@ -1812,10 +1814,160 @@ export class ServiceStack extends cdk.Stack {
       resultPath: "$.error",
     });
 
+    runProvisioner.next(succeedProvisioned);
+
+    // ------------------------------------------------------------------
+    // Watch loop — custody from t=0.
+    //
+    // The backend starts this execution AT CLAIM TIME
+    // (provision_dispatch._dispatch_inner Branch B) and then runs attempt 0
+    // as its own child process, which is ~30s faster than an ECS cold
+    // launch. So this machine's job is to OBSERVE the row: succeed when the
+    // runner lands "running", stand down when the claim changes hands, take
+    // the ECS leg when the row goes error+retryable, and take it
+    // unconditionally after the tick backstop (a runner that died without
+    // writing — a SIGKILLed backend task).
+    //
+    // Before this, the machine STARTED at RunProvisioner and the backend had
+    // to hand each claim over per exit path. The common leg — a nonzero
+    // runner exit — had no handoff at all: it relied on the frontend's ~3s
+    // status poll to re-dispatch, which orphans the claim whenever no tab is
+    // open, and a saturated inline queue suppressed even that. Dev broke
+    // fleet-wide that way on 2026-08-13 during a Fargate Spot drought.
+    //
+    // watch_ticks is seeded HERE, not in the StartExecution input: Branch-A
+    // idempotency requires that input to stay byte-identical per claim.
+    const initWatch = new sfn.Pass(this, "InitWatch", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "attempt_token.$": "$.attempt_token",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+        watch_ticks: 0,
+      },
+    });
+    const getRow = new tasks.DynamoGetItem(this, "GetContainerRow", {
+      table: props.database.containersTable,
+      key: {
+        owner_id: tasks.DynamoAttributeValue.fromString(sfn.JsonPath.stringAt("$.owner_id")),
+      },
+      // The runner may have written the terminal row milliseconds ago; an
+      // eventually-consistent read would burn a whole tick on stale data (or
+      // mis-route on a half-visible write).
+      consistentRead: true,
+      resultPath: "$.row",
+    });
+    // Same reasoning as the ddbWrite retriers: a single DDB throttle must not
+    // kill the watchdog and orphan the claim it exists to protect.
+    getRow.addRetry({
+      errors: ["States.ALL"],
+      interval: cdk.Duration.seconds(2),
+      backoffRate: 2,
+      maxAttempts: 3,
+    });
+    const tickWatch = new sfn.Pass(this, "TickWatch", {
+      parameters: {
+        "attempt.$": "$.attempt",
+        "attempt_token.$": "$.attempt_token",
+        "claim_id.$": "$.claim_id",
+        "command.$": "$.command",
+        "owner_id.$": "$.owner_id",
+        "watch_ticks.$": "States.MathAdd($.watch_ticks, 1)",
+      },
+    });
+    const waitWatch = new sfn.Wait(this, "WaitWatchTick", {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(60)),
+    });
+    // EVERY rule below is ordered so that no comparison can reference a path
+    // that might be absent. That is not style: a Choice rule on a missing
+    // path throws States.Runtime, Choice states cannot Catch, and the
+    // execution would die with the row still leased — reintroducing the exact
+    // orphan this loop exists to prevent (the same hazard ClassifyFailure's
+    // IsPresent guard documents below).
+    //
+    // ASL guarantees rules evaluate IN ORDER, and AWS documents that an
+    // IsPresent member short-circuits the rest of its And. Either mechanism
+    // is sufficient; this uses ordering because a flat list of single-purpose
+    // rules reads better than nested compound conditions, and it stays
+    // correct without depending on the short-circuit at all.
+    const watchChoice = new sfn.Choice(this, "WatchRow")
+      // Row deleted mid-provision (account wipe / delete): nothing to drive.
+      .when(sfn.Condition.isNotPresent("$.row.Item"), succeedSuperseded)
+      // Defensive: a row with no status at all. DynamoDB UpdateItem CREATES
+      // the item when absent, so any unconditioned writer that touches an
+      // owner with no row can leave one with no status. Stand down rather
+      // than let a later rule throw.
+      .when(sfn.Condition.isNotPresent("$.row.Item.status.S"), succeedSuperseded)
+      // Terminal success. MUST precede the claim rules: the running
+      // transition REMOVEs the lease fields
+      // (container_repo.update_container_leased), so checking the claim first
+      // would read a successful provision as "superseded".
+      .when(sfn.Condition.stringEquals("$.row.Item.status.S", "running"), succeedProvisioned)
+      // Something deliberately stopped this box (trial park, conversion
+      // revert, admin stop). update_status is NOT claim-conditioned, so this
+      // CAN land on a row still holding our claim — and without this rule the
+      // tick backstop below would resurrect a container someone chose to
+      // stop. Never fight that decision from a watchdog: recovery for a
+      // wrongly-stopped row already belongs to the status poll's auto-retry
+      // and release_stranded_stop_to_error.
+      .when(sfn.Condition.stringEquals("$.row.Item.status.S", "stopped"), succeedSuperseded)
+      // Lease released by someone else — stand down.
+      .when(sfn.Condition.isNotPresent("$.row.Item.provision_claim_id.S"), succeedSuperseded)
+      // The claim changed hands (deliberate reprovision, conversion takeover,
+      // admin door) — the runner's superseded rule. Safe to compare: the rule
+      // above already established the attribute exists.
+      .when(
+        sfn.Condition.not(sfn.Condition.stringEqualsJsonPath("$.row.Item.provision_claim_id.S", "$.claim_id")),
+        succeedSuperseded,
+      )
+      // Failed attempt: take the ECS leg. attempt stays 0 and attempt_token
+      // stays claim_id — DISTINCT from the inline token ({claim}-inline) — so
+      // the runner's first-act claim_attempt re-stamp fences any inline
+      // straggler exactly as provision_dispatch.py documents.
+      //
+      // Deliberately does NOT branch on the row's `retryable` flag to
+      // short-cut a deterministic failure straight to Fail. Such a rule would
+      // be safe to write (guard $.row.Item.retryable.BOOL with IsPresent —
+      // it is absent on rows predating the field), but it buys only the
+      // skipping of one ECS attempt: the deterministic case already
+      // terminates correctly via the proven route, where the runner exits 10
+      // and ClassifyFailure routes to MarkFailedDeterministic. The row is
+      // honest either way, so the user-visible error is identical. Add the
+      // branch only if that wasted attempt ever shows up as a real cost.
+      .when(sfn.Condition.stringEquals("$.row.Item.status.S", "error"), runProvisioner)
+      // Dead-runner backstop: still leased to us, still "provisioning", no
+      // progress for 40 ticks. The inline child cannot still be alive —
+      // 40 x 60s = 2400s exceeds the backend's queue bound + attempt timeout
+      // (300 + 1800 = 2100s, provision_dispatch.py) — so running the ECS leg
+      // here cannot collide with a live attempt. Move one, move all three.
+      .when(sfn.Condition.numberGreaterThanEquals("$.watch_ticks", 40), runProvisioner)
+      .otherwise(waitWatch);
+    initWatch.next(getRow);
+    getRow.next(watchChoice);
+    waitWatch.next(tickWatch);
+    tickWatch.next(getRow);
+    // The read must not be able to kill the watchdog. The retries above cover
+    // ~14s; a longer DynamoDB or KMS impairment would exhaust them, and with
+    // no Catch the execution FAILS while the row is still leased — precisely
+    // the orphaned claim this loop exists to prevent, now caused by the loop
+    // itself. Fall back into the wait/tick cycle instead: the read is retried
+    // every 60s for as long as the execution lives, ticks keep accruing, and
+    // a read that never recovers still reaches the backstop and runs the ECS
+    // leg. DISCARD keeps the error off the state so tickWatch's rebuild (and
+    // the stale $.row it drops) stay clean.
+    getRow.addCatch(waitWatch, {
+      errors: ["States.ALL"],
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
     const provisionStateMachine = new sfn.StateMachine(this, "ProvisionStateMachine", {
       stateMachineName: `isol8-${env}-provision`,
-      definitionBody: sfn.DefinitionBody.fromChainable(runProvisioner.next(succeedProvisioned)),
-      timeout: cdk.Duration.hours(2), // hard ceiling across all attempts
+      definitionBody: sfn.DefinitionBody.fromChainable(initWatch),
+      // 40 watch ticks (~40 min) + up to 3 x 30-min ECS attempts + retry
+      // waits ~= 132 min. The old 2h ceiling would time the execution out
+      // mid-final-attempt.
+      timeout: cdk.Duration.hours(3),
     });
 
     // The MarkRetrying/MarkFailed* DynamoUpdateItem tasks auto-grant only
@@ -1849,20 +2001,48 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
+    // Provisioning failures page. This is the signup path — a failed or timed
+    // out execution means a new user never gets a container.
+    //
+    // The topic is imported from a CONSTRUCTED ARN string rather than a
+    // cross-stack reference on purpose. ObservabilityStack (which owns the
+    // topic) already takes this stack's backendService as a prop, so a real
+    // reference in this direction would close a stack dependency cycle. Same
+    // reasoning as the secret-names / KMS-key-ARNs handling elsewhere in this
+    // stack: pass the identifier, not the construct. The topic name is
+    // deterministic, so this stays correct as long as ObservabilityStack keeps
+    // naming it `isol8-{env}-alerts-page`.
+    const pageAction = new cloudwatch_actions.SnsAction(
+      sns.Topic.fromTopicArn(
+        this,
+        "AlertsPageImported",
+        `arn:aws:sns:${this.region}:${this.account}:isol8-${env}-alerts-page`,
+      ),
+    );
+
+    const provisionFailed = new cloudwatch.Alarm(this, "ProvisionExecutionsFailedAlarm", {
       alarmName: `isol8-${env}-provision-executions-failed`,
+      alarmDescription:
+        "PAGE: a provisioning Step Functions execution FAILED. New signups are " +
+        "not getting containers.",
       metric: provisionStateMachine.metricFailed({ period: cdk.Duration.minutes(5) }),
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
-    new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
+    provisionFailed.addAlarmAction(pageAction);
+
+    const provisionTimedOut = new cloudwatch.Alarm(this, "ProvisionExecutionsTimedOutAlarm", {
       alarmName: `isol8-${env}-provision-executions-timedout`,
+      alarmDescription:
+        "PAGE: a provisioning Step Functions execution TIMED OUT. New signups " +
+        "are not getting containers.",
       metric: provisionStateMachine.metricTimedOut({ period: cdk.Duration.minutes(5) }),
       threshold: 1,
       evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+    provisionTimedOut.addAlarmAction(pageAction);
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
       family: `isol8-${env}-backend`,

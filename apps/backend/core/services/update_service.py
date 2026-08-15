@@ -386,6 +386,38 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
             if new_image:
                 await migrate_removed_config_keys(owner_id)
 
+                # Carry redaction rules onto already-provisioned containers.
+                # Nothing else does: the strip above only REMOVES keys, and
+                # replace_provider_block rebuilds provider/plugin subtrees but
+                # never `logging`. Without this an existing owner keeps the
+                # playbook that reads their Paperclip key while never gaining
+                # the pattern that redacts it — the cohort that needs it most.
+                # Additive and behaviour-free, so it is safe on every owner.
+                from core.containers.config import REDACT_PATTERNS
+                from core.services.config_patcher import (
+                    ensure_plugin_entries,
+                    ensure_redact_patterns,
+                )
+                from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
+
+                try:
+                    await ensure_redact_patterns(owner_id, REDACT_PATTERNS)
+                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                    logger.exception("update_service: redact-pattern patch failed for owner=%s", owner_id)
+
+                # Enable the credential plugin on the way in. The roll bakes
+                # the extension but reuses the on-disk config, so without this
+                # an existing owner carries a plugin that never activates —
+                # and any later path that writes the new playbook (a company
+                # import, a marketplace hire) would be claiming credentials
+                # are in the environment when nothing puts them there.
+                # Enabling it alone is harmless: an agent still reading the
+                # key file simply has the credentials twice.
+                try:
+                    await ensure_plugin_entries(owner_id, PAPERCLIP_CREDS_PLUGIN_PATCH["entries"])
+                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                    logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
+
                 # Image rolls are the fleet's routine touch-point, but they
                 # never rewrite configs — so the seeded-file heal pass that
                 # rides the provision/config-rewrite path would otherwise

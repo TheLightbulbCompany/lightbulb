@@ -133,6 +133,7 @@ async def create_hire_approval(
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.paperclip_admin_client import PaperclipAdminClient
     from core.services.paperclip_admin_session import get_admin_session_cookie
+    from core.services.agent_budget import is_at_agent_budget
     from core.services.paperclip_agent_lifecycle import create_paperclip_for_marketplace
     from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
@@ -163,6 +164,23 @@ async def create_hire_approval(
     company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
     if company_id is None:
         logger.info("create_hire_approval: no paperclip company for owner=%s", owner_id)
+        return None
+
+    # Plan agent budget. This is a real agent-creation path — Friday reaches it
+    # headlessly through the container-authenticated ``/recommend`` route, so it
+    # grows the roster with no human in the loop, exactly like the Atlas bridge.
+    # Boolean-not-409 for the same reason as the gates above: this runs inside
+    # the recommend response, which stays degraded-but-useful rather than
+    # failing whole.
+    #
+    # Gated HERE and deliberately NOT in ``deploy_for_approval``: the agent is
+    # minted below, so by approve time it is already IN the count, and a
+    # ``>= limit`` re-check there would refuse a hire that was legitimately
+    # under budget when filed. Refusing at approve time would also strand a
+    # roster agent with no workspace — the state the deploy claim's own comment
+    # exists to prevent.
+    if await is_at_agent_budget(owner_id):
+        logger.info("create_hire_approval: owner=%s is at the agent budget — not filing", owner_id)
         return None
 
     # Step 1 — create the agent so it carries Isol8's device keypair.

@@ -577,29 +577,14 @@ def _bridge_subscription_state(
 async def _count_owner_paperclip_agents(owner_id: str) -> int:
     """Live Paperclip agent count for an owner, or 0 if it can't be fetched.
 
-    Constructs the httpx client + repo + admin_client the same way
-    ``agent_export`` and ``ecs_manager`` do, then delegates to
-    ``fetch_paperclip_agents_for_owner`` (which returns [] — never raises — when
-    the owner has no company yet or Paperclip is unreachable). Best-effort: any
-    construction failure degrades to 0.
+    Thin alias kept for this module's readers; the implementation lives beside
+    the roster fetch it wraps, and is shared with ``ecs_manager._size_for_owner``
+    so the "how many agents does this owner have" question has ONE answer.
+    0 still means UNDETERMINABLE here — see the deferral rules below.
     """
-    import httpx
+    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 
-    from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services.paperclip_admin_client import PaperclipAdminClient
-    from core.services.paperclip_openclaw_pairing import fetch_paperclip_agents_for_owner
-
-    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
-    try:
-        repo = PaperclipRepo(table_name="paperclip-companies")
-        admin_client = PaperclipAdminClient(http_client=http)
-        agents = await fetch_paperclip_agents_for_owner(owner_id=owner_id, repo=repo, admin_client=admin_client)
-        return len(agents)
-    except Exception:
-        logger.exception("Failed to count Paperclip agents for owner %s", owner_id)
-        return 0
-    finally:
-        await http.aclose()
+    return await count_paperclip_agents_for_owner(owner_id)
 
 
 async def _apply_ultra_resize(owner_id: str, *, old_plan: str, new_plan: str) -> None:

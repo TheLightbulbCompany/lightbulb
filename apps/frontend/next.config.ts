@@ -10,16 +10,24 @@ import path from "path";
 // Cloudflare Turnstile (Clerk bot-check), Vercel (analytics scripts), plus our
 // own REST API + WebSocket gateway for connect-src. 'unsafe-inline'/'unsafe-eval'
 // are required until a nonce-based policy is wired (a follow-up before enforcing).
+//
+// Termly (app.termly.io) needs BOTH script-src and connect-src: the SDK is a
+// cross-origin <script> (components/legal/TermlyEmbed.tsx) which then fetches
+// the policy body over XHR. Missing either blanks EVERY legal page — /privacy,
+// /terms and the five other embedded documents — and a blank privacy-policy URL
+// is an App Store 5.1.1 rejection, not merely a broken page. Report-only mode
+// is the only reason that has not bitten; promoting this header to enforcing
+// without these two entries is exactly the trap this note exists to prevent.
 const reportOnlyCsp = [
   "default-src 'self'",
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://*.clerk.accounts.dev https://clerk.isol8.co https://challenges.cloudflare.com https://va.vercel-scripts.com",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://*.clerk.accounts.dev https://clerk.isol8.co https://challenges.cloudflare.com https://va.vercel-scripts.com https://app.termly.io",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://*.clerk.accounts.dev https://clerk.isol8.co https://api.isol8.co https://api-dev.isol8.co https://api.stripe.com wss://ws.isol8.co wss://ws-dev.isol8.co https://us.i.posthog.com https://us-assets.i.posthog.com",
+  "connect-src 'self' https://*.clerk.accounts.dev https://clerk.isol8.co https://api.isol8.co https://api-dev.isol8.co https://api.stripe.com wss://ws.isol8.co wss://ws-dev.isol8.co https://us.i.posthog.com https://us-assets.i.posthog.com https://app.termly.io",
   "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://challenges.cloudflare.com https://*.clerk.accounts.dev https://clerk.isol8.co",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
@@ -67,9 +75,9 @@ const nextConfig: NextConfig = {
         // Apple will not associate the domain unless this file is served as
         // application/json. It deliberately has no file extension, so Next
         // otherwise serves it as application/octet-stream and Universal Links
-        // fail SILENTLY — the Stripe return link just opens Safari instead of
-        // handing back to the app, with no error surfaced anywhere. Verify
-        // after any deploy that touches static serving:
+        // fail SILENTLY — the link just opens Safari instead of handing back to
+        // the app, with no error surfaced anywhere. Verify after any deploy
+        // that touches static serving:
         //   curl -I https://isol8.co/.well-known/apple-app-site-association
         source: "/.well-known/apple-app-site-association",
         headers: [{ key: "Content-Type", value: "application/json" }],

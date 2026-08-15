@@ -37,6 +37,7 @@ from core.config import settings
 from core.containers.workspace import Workspace
 from core.observability.metrics import put_metric
 from core.services.friday_identity import seed_workspace_state
+from core.services.paperclip_credential_rule import PAPERCLIP_CREDENTIAL_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -344,9 +345,13 @@ async def pre_stage_atlas(
     # means Atlas ships the vanilla AGENTS.md the loop writes.
     try:
         base_agents = (_FILES_DIR / "AGENTS.md").read_text(encoding="utf-8")
+        # The credential rule rides along for the same reason the ACP section
+        # does: the vendored AGENTS.md says nothing about credentials, but
+        # Paperclip wakes Atlas with text that still tells it to load the key
+        # from a file, so without this it follows that and prints a live key.
         wrote_acp = _stage(
             f"workspace-{atlas_uuid}/AGENTS.md",
-            base_agents + _ACP_DELEGATION_SECTION,
+            base_agents + _ACP_DELEGATION_SECTION + PAPERCLIP_CREDENTIAL_RULE,
         )
         # Record so the loop skips AGENTS.md under force (keeps the augmented
         # copy instead of overwriting it with the vanilla vendored one).

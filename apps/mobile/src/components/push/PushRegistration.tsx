@@ -13,16 +13,49 @@ import { configureNotificationHandler } from "../../lib/notifications";
 import { getDeviceId, LAST_REG_KEY } from "../../lib/pushDevice";
 import { sessionIdFromKey } from "@isol8/shared";
 
-/** Route a tapped notification (warm OR cold-start launch) to its agent chat,
- * landing on the session the reply belongs to (sessionKey → ?sessionId, which
- * the chat screen already consumes via useNavParamConsumer). */
+/** Route a tapped notification (warm OR cold-start launch) to whatever it is
+ * about: an agent chat, landing on the session the reply belongs to (sessionKey
+ * → ?sessionId, which the chat screen already consumes via
+ * useNavParamConsumer), or the Teams issue an agent is waiting on.
+ *
+ * The Teams case is checked FIRST because it is the one that used to fall
+ * through. Teams pushes deliberately carry no `agentId` — the backend omits it
+ * because the id in that payload is a Paperclip agent uuid, which would route
+ * into a gateway chat that does not exist (see `push_data` in
+ * routers/paperclip_events.py) — so a tap matched neither branch below and
+ * routed NOWHERE. The app opened wherever it last was, and "A task needs you"
+ * left the reader hunting for a task with no way to reach it, usually via the
+ * Approvals tab, which holds approvals only and so was empty. The identifiers
+ * were already in the payload, shipped under a docstring promising "future
+ * tap-routing"; this is that future.
+ */
 function routeFromResponse(
   response: Notifications.NotificationResponse | null,
 ): void {
   if (!response) return;
   const data = response.notification.request.content.data as
-    | { agentId?: string; sessionKey?: string; url?: string }
+    | {
+        agentId?: string;
+        sessionKey?: string;
+        url?: string;
+        source?: string;
+        issueId?: string;
+      }
     | undefined;
+
+  // Every Teams push concerns an issue — a thread interaction waiting on a
+  // reply, an approval, or a finished/failed run — so the issue detail screen
+  // is the right landing spot for all of them. `source` is required as well as
+  // `issueId` so an unrelated future payload carrying an issueId cannot
+  // silently claim this route.
+  if (data?.source === "teams" && data.issueId) {
+    router.push({
+      pathname: "/(app)/teams/issue/[id]",
+      params: { id: data.issueId },
+    });
+    return;
+  }
+
   const agentId = data?.agentId;
   if (agentId) {
     const sessionId = sessionIdFromKey(data?.sessionKey);

@@ -102,8 +102,17 @@ async def test_writes_agents_md_to_agent_workspace():
     )
 
     # AGENTS.md is the agent's identity — write-if-missing, at the agent's
-    # EFS-relative workspace path.
-    assert (OWNER, f"workspace-{AGENT_ID}/AGENTS.md", planned.body_md) in ws.missing_writes
+    # EFS-relative workspace path. The planner's body is preserved verbatim,
+    # with the Paperclip credential rule appended: body_md is model-authored
+    # and says nothing about credentials, while Paperclip's wake text still
+    # tells the agent to load its key from a file.
+    from core.services.paperclip_credential_rule import PAPERCLIP_CREDENTIAL_PROHIBITION
+
+    writes = [w for w in ws.missing_writes if w[1] == f"workspace-{AGENT_ID}/AGENTS.md"]
+    assert len(writes) == 1
+    body = writes[0][2]
+    assert body.startswith(planned.body_md.rstrip("\n"))
+    assert PAPERCLIP_CREDENTIAL_PROHIBITION in body
 
 
 @pytest.mark.asyncio
@@ -185,10 +194,14 @@ async def test_skills_bind_via_agent_entry_not_skills_patch():
     # The binding is threaded through the agent entry, not the skills block.
     assert entry["skills"] == ["alpha", "beta"]
     assert call["agent_entry"]["skills"] == ["alpha", "beta"]
-    # Company deploy carries no plugin/mcp/skills-block mutations through here.
+    # Company deploy carries no mcp/skills-block mutations through here.
     assert call["skills_patch"] is None
-    assert call["plugins_patch"] is None
     assert call["mcp_patch"] is None
+    # The ONE plugin mutation it does carry: the credential plugin. It must
+    # ship with the credential rule appended to the body, because that rule
+    # claims PAPERCLIP_* is already in the environment and this is what puts
+    # it there for an owner whose on-disk config predates the plugin.
+    assert call["plugins_patch"] == {"entries": {"paperclip-exec-creds": {"enabled": True}}}
 
 
 @pytest.mark.asyncio

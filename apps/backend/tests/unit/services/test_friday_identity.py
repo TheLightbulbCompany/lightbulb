@@ -158,10 +158,12 @@ async def test_personal_owner_writes_four_files(monkeypatch):
     # The bundled skill is named, plus the REST surface it wraps.
     assert "`paperclip` skill" in agents_md
     assert "/api/issues" in agents_md
-    # Per-agent identity: load from the workspace claimed-key file before any
-    # Paperclip call.
-    assert "paperclip-claimed-api-key.json" in agents_md
-    assert "PAPERCLIP_API_KEY=$(jq -r .token" in agents_md
+    # Per-agent identity arrives via the paperclip-exec-creds plugin's
+    # resolve_exec_env hook, so the playbook names the vars but must NEVER
+    # tell the agent to read the key file — that instruction is what had a
+    # live token printed into the owner's transcript.
+    assert "paperclip-claimed-api-key.json" not in agents_md
+    assert "jq -r .token" not in agents_md
     assert "PAPERCLIP_AGENT_ID" in agents_md
     assert "X-Paperclip-Run-Id" in agents_md
     # Heartbeat doctrine from the paperclip skill.
@@ -862,6 +864,11 @@ class _MigrationWs:
 
     def write_file(self, user_id, path, content):
         self.written = (path, content)
+        # A write is visible to the next read, as it is on EFS. Without this
+        # the fake silently breaks migration CHAINING: several migrations touch
+        # AGENTS.md, and if each re-reads the original the last writer wins and
+        # discards the others. Real Workspace.read_file goes to the filesystem.
+        self.content = content
 
 
 def test_migrate_legacy_user_md_swaps_lines_and_preserves_content():

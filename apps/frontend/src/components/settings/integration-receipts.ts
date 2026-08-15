@@ -20,4 +20,10 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   aws: { delivers: "read-only AWS access — describe & list your account's resources" },
   instagram: { delivers: "publish posts & Reels, moderate comments & answer DMs on your Instagram" },
   x: { delivers: "X posting, reading, search, replies, DMs, follows, likes & media through xurl" },
+  meta_ads: {
+    delivers: "campaign, ad set & creative management plus performance insights for your ad accounts",
+  },
+  posthog: { delivers: "product analytics — query events, funnels & session recordings" },
+  intercom: { delivers: "conversation search & reply tools for your Intercom inbox" },
+  attio: { delivers: "CRM record search & editing across your Attio workspace" },
 };

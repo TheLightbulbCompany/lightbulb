@@ -61,20 +61,20 @@ def _is_openclaw_file_lock_timeout(exc: RuntimeError) -> bool:
     return _OPENCLAW_FILE_LOCK_TIMEOUT_MARKER in str(exc).lower()
 
 
-async def _delete_runtime_agent_with_lock_retry(
+async def delete_runtime_agent_with_lock_retry(
     *,
     gateway: Any,
     owner_id: str,
     agent_id: str,
     ip: str,
     token: str,
-) -> None:
+) -> Any:
     """Delete from a running OpenClaw, retrying only its transient file lock."""
 
     total_attempts = len(_AGENT_DELETE_LOCK_RETRY_DELAYS_S) + 1
     for attempt in range(1, total_attempts + 1):
         try:
-            await gateway.send_rpc(
+            return await gateway.send_rpc(
                 user_id=owner_id,
                 req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
                 method="agents.delete",
@@ -82,7 +82,6 @@ async def _delete_runtime_agent_with_lock_retry(
                 ip=ip,
                 token=token,
             )
-            return
         except RuntimeError as exc:
             if not _is_openclaw_file_lock_timeout(exc) or attempt == total_attempts:
                 raise
@@ -233,7 +232,7 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
             "agents",
         )
         if any(agent.get("id") == agent_id for agent in live_agents):
-            await _delete_runtime_agent_with_lock_retry(
+            await delete_runtime_agent_with_lock_retry(
                 gateway=gateway,
                 owner_id=owner_id,
                 agent_id=agent_id,

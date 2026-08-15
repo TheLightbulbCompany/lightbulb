@@ -278,7 +278,7 @@ async def test_delete_runtime_agent_does_not_retry_unrelated_gateway_error():
 
     with patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep:
         with pytest.raises(RuntimeError, match="gateway unavailable"):
-            await lifecycle._delete_runtime_agent_with_lock_retry(
+            await lifecycle.delete_runtime_agent_with_lock_retry(
                 gateway=gateway,
                 owner_id="owner",
                 agent_id="retiring",

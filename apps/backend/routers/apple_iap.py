@@ -21,7 +21,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user, is_org_owner_id, resolve_owner_id
+from core.auth import AuthContext, get_current_user, is_org_owner_id, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo
 from core.services.apple_iap import AppleIapError, AppleIapNotConfigured, apply_notification, link_purchase
 from core.services.billing_service import BillingService, BillingServiceError, create_mobile_web_checkout
@@ -158,10 +158,18 @@ async def create_mobile_portal(auth: AuthContext = Depends(get_current_user)):
     The path is chosen HERE, not accepted from the client: a caller-supplied
     return_url on a billing endpoint is an open redirect.
 
-    Unlike the checkout endpoints there is no org fence. This manages whatever
-    subscription the owner already has — including a Teams per-seat one — and
-    changes no plan shape, so an org admin is a legitimate caller.
+    Unlike the checkout endpoints there is no org-OWNER fence: this manages
+    whatever subscription the owner already has, including a Teams per-seat one,
+    and changes no plan shape — so an org admin is a legitimate caller.
+    An org MEMBER is not. `resolve_owner_id` returns the ORG's billing row in
+    org context, so without the admin check any member could open a portal
+    session that cancels the whole team's subscription. `/billing/portal` has
+    carried this check all along; the mobile return-to-app twin was written from
+    its behaviour and inherited the reasoning without the guard.
     """
+    if auth.is_org_context:
+        require_org_admin(auth)
+
     owner_id = resolve_owner_id(auth)
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account or not account.get("stripe_customer_id"):

@@ -1772,3 +1772,57 @@ async def test_the_subscribed_notification_can_convert_when_it_beats_the_link(mo
 
     assert provider.await_args.kwargs["provider_choice"] == "bedrock_claude"
     assert started == [("user_1", "2000000000000001")]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_provider_write_is_retried_by_the_next_notification(monkeypatch):
+    """Keyed on the missing STATE, not the trial→paid EDGE. An edge fires once:
+    a transient failure writing the provider used to be permanent, because the
+    row had already left trial_local and every later call saw "active", skipped
+    the conversion, and left the customer stuck behind provider_required."""
+    attempts: list[str] = []
+
+    async def _flaky(owner_id, **kwargs):
+        attempts.append(owner_id)
+        if len(attempts) == 1:
+            raise RuntimeError("dynamodb throttled")
+
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", _flaky)
+
+    started: list[tuple] = []
+
+    async def _start(owner_id, flight_key):
+        started.append((owner_id, flight_key))
+        return True
+
+    import core.services.stripe_webhook_handlers as swh
+
+    monkeypatch.setattr(swh, "start_trial_conversion", _start)
+
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    # The row keeps NO provider_choice throughout — which is exactly the
+    # condition the retry keys on. Its subscription_status is irrelevant.
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "active"}),
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        # First link: the provider write fails.
+        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+        assert started == [], "reprovision dispatched without a provider to resolve"
+
+        # Second: it succeeds, and the conversion completes.
+        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert len(attempts) == 2
+    assert started == [("user_1", "2000000000000001")]

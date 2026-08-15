@@ -114,11 +114,30 @@ class AppleSubscription:
 # first purchase and on a resubscribe; DID_RENEW on every successful renewal.
 # DID_CHANGE_RENEWAL_STATUS fires when auto-renew is toggled — access continues
 # to the paid-through date either way, so it is deliberately NOT a revoke.
-_GRANTING_TYPES = frozenset({"SUBSCRIBED", "DID_RENEW", "OFFER_REDEEMED"})
+# RENEWAL_EXTENDED / RENEWAL_EXTENSION are Apple pushing the paid-through date
+# out (a customer-service extension). The transaction carries the new date, so
+# they grant for the same reason a renewal does.
+_GRANTING_TYPES = frozenset({"SUBSCRIBED", "DID_RENEW", "OFFER_REDEEMED", "RENEWAL_EXTENDED", "RENEWAL_EXTENSION"})
 
 # Types that END access immediately. REFUND and REVOKE are money-back events;
 # EXPIRED is the paid-through date passing with no renewal.
-_REVOKING_TYPES = frozenset({"EXPIRED", "REFUND", "REVOKE"})
+#
+# GRACE_PERIOD_EXPIRED is the close of the window the grace handling above
+# opens, and it MUST be here. Nothing re-evaluates entitlement on a timer: the
+# gates read the stored ``subscription_status``, never ``apple_expires_at``, so
+# a row left "active" by a grace notification stays active until some LATER
+# notification is mapped to a revoke. Leaving this type unmapped meant it raised
+# as unhandled, was acked as unactionable, and the subscriber kept paid access
+# indefinitely after grace ran out.
+_REVOKING_TYPES = frozenset({"EXPIRED", "REFUND", "REVOKE", "GRACE_PERIOD_EXPIRED"})
+
+# Types that RESTORE access previously revoked. REFUND_REVERSED is Apple undoing
+# a refund it had granted (a dispute resolved in the seller's favour) and the
+# guidance is to restore the content. It needs its own set rather than joining
+# _GRANTING_TYPES because the transaction can still carry a revocationDate from
+# the original refund, and that check fires before any type mapping — so
+# "granting" alone would still resolve to canceled.
+_REINSTATING_TYPES = frozenset({"REFUND_REVERSED"})
 
 # Billing retry: Apple could not charge and may still recover. Mapped to
 # "past_due", matching the Stripe path — and "past_due" is NOT in
@@ -132,6 +151,36 @@ _REVOKING_TYPES = frozenset({"EXPIRED", "REFUND", "REVOKE"})
 # access, which is the same class of bug as an Apple expiry cancelling a live
 # Stripe subscription.
 _GRACE_TYPES = frozenset({"DID_FAIL_TO_RENEW"})
+
+# Types that change NOTHING about entitlement. Enumerated rather than left to
+# fall through, because an unmapped type raises and is acked as unactionable —
+# which looks identical in the logs to a type we have never seen. Two rounds of
+# review found real bugs hiding in that noise (GRACE_PERIOD_EXPIRED and
+# REFUND_REVERSED both sat there), so "considered and deliberately ignored" and
+# "unknown" must be distinguishable.
+#
+# DID_CHANGE_RENEWAL_PREF/STATUS: a plan change or an auto-renew toggle. Access
+#   runs to the paid-through date regardless; EXPIRED arrives later if it lapses.
+# PRICE_INCREASE / PRICE_CHANGE / REFUND_DECLINED: informational.
+# CONSUMPTION_REQUEST / TEST: carry no transaction at all.
+# ONE_TIME_CHARGE / EXTERNAL_PURCHASE_TOKEN / RESCIND_CONSENT / METADATA_UPDATE /
+#   MIGRATION: other commerce shapes we do not sell.
+_INFORMATIONAL_TYPES = frozenset(
+    {
+        "DID_CHANGE_RENEWAL_PREF",
+        "DID_CHANGE_RENEWAL_STATUS",
+        "PRICE_INCREASE",
+        "PRICE_CHANGE",
+        "REFUND_DECLINED",
+        "CONSUMPTION_REQUEST",
+        "TEST",
+        "ONE_TIME_CHARGE",
+        "EXTERNAL_PURCHASE_TOKEN",
+        "RESCIND_CONSENT",
+        "METADATA_UPDATE",
+        "MIGRATION",
+    }
+)
 
 
 @lru_cache(maxsize=4)
@@ -347,7 +396,10 @@ def _status_for(
     could replay or restore a long-expired transaction and hold paid access
     indefinitely, since no newer notification would ever arrive to correct it.
     """
-    if revoked:
+    # A REFUND_REVERSED transaction can still carry the revocationDate from the
+    # refund Apple has just undone, so this check has to yield to it or the
+    # reinstatement can never take effect.
+    if revoked and notification_type not in _REINSTATING_TYPES:
         return "canceled"
     # An elapsed paid-through date beats every other signal, including a
     # granting notification type — Apple can only be telling us about a period
@@ -361,7 +413,12 @@ def _status_for(
     # the subscriber to keep their access until the grace deadline. Mapping it
     # to "past_due" cut off a customer Apple still considered entitled —
     # "past_due" is not in provision_gate._ACTIVE_STATUSES.
-    if in_grace_period or notification_type is None or notification_type in _GRANTING_TYPES:
+    if (
+        in_grace_period
+        or notification_type is None
+        or notification_type in _GRANTING_TYPES
+        or notification_type in _REINSTATING_TYPES
+    ):
         return "active"
     if notification_type in _REVOKING_TYPES:
         return "canceled"
@@ -623,6 +680,13 @@ async def _apply_verified_notification(
     Split out purely so the caller can wrap it in one rollback rather than
     threading try/except through every early return.
     """
+    if notification_type in _INFORMATIONAL_TYPES:
+        # Deliberately no entitlement change — see _INFORMATIONAL_TYPES. Handled
+        # here rather than by falling through to the mapper so it is logged as a
+        # decision instead of as an unhandled type.
+        logger.info("apple_iap.notification_informational type=%s", notification_type)
+        return None
+
     data = getattr(notification, "data", None)
     signed_transaction = getattr(data, "signedTransactionInfo", None) if data else None
     if not signed_transaction:
@@ -670,6 +734,15 @@ async def _apply_verified_notification(
         # tombstone that `link_purchase` consults instead.
         if subscription.status == "canceled":
             await _mark_revoked(subscription.original_transaction_id)
+        else:
+            # A resubscribe reuses the SAME originalTransactionId, and if the
+            # original purchase was never linked this branch is where its
+            # SUBSCRIBED lands too. Without clearing here, the tombstone from
+            # the earlier refund outlives the new purchase and `link_purchase`
+            # refuses a customer who has just paid again — for up to the 30-day
+            # TTL. `_clear_revoked` further down only runs once a row exists,
+            # which by definition it does not here.
+            await _clear_revoked(subscription.original_transaction_id)
         logger.warning(
             "apple_iap.notification_unlinked original_transaction_id=%s type=%s status=%s",
             subscription.original_transaction_id,

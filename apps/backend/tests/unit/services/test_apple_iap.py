@@ -1303,3 +1303,154 @@ async def test_undecodable_renewal_info_falls_back_rather_than_granting(monkeypa
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
         assert await apple_iap.apply_notification("signed") == ("user_1", "past_due")
+
+
+# ---------------------------------------------------------------------------
+# Closing the grace window, and reversing a refund. Both are types the mapping
+# did not know, and an unknown type is acked as unactionable — which means the
+# LAST known status stands forever.
+# ---------------------------------------------------------------------------
+
+
+def test_grace_period_expired_ends_access():
+    """The other half of the grace fix. Nothing re-evaluates entitlement on a
+    timer — the gates read the stored status, never apple_expires_at — so if
+    this type is unmapped the subscriber keeps paid access indefinitely."""
+    assert apple_iap._status_for("GRACE_PERIOD_EXPIRED") == "canceled"
+
+
+def test_a_reversed_refund_restores_access():
+    """Apple undid the refund; the customer is owed their content back."""
+    assert apple_iap._status_for("REFUND_REVERSED") == "active"
+
+
+def test_a_reversed_refund_beats_the_stale_revocation_date():
+    """The reinstated transaction can still carry the revocationDate from the
+    refund Apple just undid, and that check runs before any type mapping — so
+    without an explicit yield the reinstatement could never take effect."""
+    assert apple_iap._status_for("REFUND_REVERSED", revoked=True) == "active"
+
+
+def test_a_reversed_refund_after_the_paid_period_does_not_grant():
+    """Reinstatement is not immunity from the calendar."""
+    assert apple_iap._status_for("REFUND_REVERSED", revoked=True, expires_at_ms=1_000, now_ms=2_000) == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_an_unlinked_resubscribe_clears_its_own_tombstone(monkeypatch):
+    """The gap the tombstone opened. If the original purchase was never linked,
+    the resubscribe's SUBSCRIBED lands in the SAME no-row branch — so the
+    tombstone outlived the new purchase and link_purchase refused a customer
+    who had just paid again, for up to the 30-day TTL."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    cleared = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", cleared)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),  # still unlinked
+        ),
+    ):
+        assert await apple_iap.apply_notification("signed") is None
+
+    keys = [c.args[0] if c.args else c.kwargs.get("event_id") for c in cleared.await_args_list]
+    assert "apple_revoked:2000000000000001" in keys
+
+
+@pytest.mark.asyncio
+async def test_an_unlinked_refund_still_leaves_its_tombstone(monkeypatch):
+    """The clear must not be unconditional — that would undo the protection in
+    the very branch that creates it."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="REFUND"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    marked = AsyncMock()
+    cleared = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "record_event_or_skip", marked)
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", cleared)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        await apple_iap.apply_notification("signed")
+
+    assert any("apple_revoked:2000000000000001" in str(c) for c in marked.await_args_list)
+    assert not any("apple_revoked:2000000000000001" in str(c) for c in cleared.await_args_list)
+
+
+def test_every_apple_notification_type_is_classified():
+    """The guard against the pattern that produced two rounds of findings.
+
+    GRACE_PERIOD_EXPIRED and REFUND_REVERSED were both bugs of the same shape:
+    a type Apple sends that no map mentioned, so it raised, got acked as
+    unactionable, and silently froze entitlement at whatever came before. Fixing
+    them one at a time as a reviewer notices is not a strategy — this fails the
+    moment Apple's own enum contains something nobody here has decided about.
+    """
+    from appstoreserverlibrary.models.NotificationTypeV2 import NotificationTypeV2
+
+    classified = (
+        apple_iap._GRANTING_TYPES
+        | apple_iap._REVOKING_TYPES
+        | apple_iap._REINSTATING_TYPES
+        | apple_iap._GRACE_TYPES
+        | apple_iap._INFORMATIONAL_TYPES
+    )
+    unclassified = {t.value for t in NotificationTypeV2} - classified
+    assert not unclassified, (
+        f"Apple sends these and nothing decides what they mean: {sorted(unclassified)}. "
+        "Add each to the granting, revoking, reinstating, grace, or informational set."
+    )
+
+
+def test_the_classifications_do_not_overlap():
+    """A type in two sets is a coin toss over someone's access."""
+    sets = {
+        "granting": apple_iap._GRANTING_TYPES,
+        "revoking": apple_iap._REVOKING_TYPES,
+        "reinstating": apple_iap._REINSTATING_TYPES,
+        "informational": apple_iap._INFORMATIONAL_TYPES,
+    }
+    seen: dict[str, str] = {}
+    for name, members in sets.items():
+        for t in members:
+            assert t not in seen, f"{t} is in both {seen[t]} and {name}"
+            seen[t] = name
+
+
+def test_a_service_extension_keeps_the_subscriber_active():
+    """Apple pushed the paid-through date out; the transaction carries the new
+    one. Left unmapped this raised, so a customer Apple had just extended saw no
+    change at all."""
+    future = int(time.time() * 1000) + 86_400_000
+    assert apple_iap._status_for("RENEWAL_EXTENDED", expires_at_ms=future) == "active"
+    assert apple_iap._status_for("RENEWAL_EXTENSION", expires_at_ms=future) == "active"
+
+
+@pytest.mark.asyncio
+async def test_an_informational_notification_touches_nothing(monkeypatch):
+    """An auto-renew toggle must not move entitlement — access runs to the
+    paid-through date either way."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="DID_CHANGE_RENEWAL_STATUS"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        assert await apple_iap.apply_notification("signed") is None
+
+    set_sub.assert_not_awaited()

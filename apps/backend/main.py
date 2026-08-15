@@ -32,6 +32,7 @@ from routers import (
     agent_builder,
     agent_mail_relay,
     agent_mail_send,
+    apple_iap,
     automations,
     billing,
     channels,
@@ -791,6 +792,12 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
+
+# Apple In-App Purchase: the app's link endpoint + Apple's notification
+# receiver. The router carries its own /billing and /webhooks paths because the
+# two live on different auth models (Clerk token vs JWS signature), so it is
+# mounted at the API root rather than under either prefix.
+app.include_router(apple_iap.router, prefix=settings.API_V1_STR, tags=["billing"])
 
 # Support ticket capture
 app.include_router(support_tickets.router, prefix="/api/v1/support", tags=["support"])

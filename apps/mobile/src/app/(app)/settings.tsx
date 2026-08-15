@@ -11,11 +11,13 @@ import {
   Text,
   View,
 } from "react-native";
+import { deepLinkToSubscriptions } from "expo-iap";
 import { ApiError, createApiClient } from "@isol8/shared";
 
 import { usePulse } from "../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { isAppleManaged, openSubscriptionManagement } from "../../lib/manageSubscription";
 import { unregisterDevice } from "../../lib/pushDevice";
 
 // Billing is READ-ONLY here. This screen used to carry "Upgrade on isol8.co"
@@ -37,6 +39,14 @@ interface BillingAccount {
   trial_end: number | null;
   provider_choice: "chatgpt_oauth" | "byo_key" | "bedrock_claude" | null;
   byo_provider: "openai" | "anthropic" | null;
+  /**
+   * Which channel took the money — "apple_iap", or absent for Stripe (every
+   * pre-IAP row). Decides where Manage subscription sends the customer: the
+   * two systems cannot see each other's subscriptions, so the wrong one shows
+   * "no subscriptions" and they conclude they already cancelled. See
+   * lib/manageSubscription.
+   */
+  subscription_source?: string | null;
 }
 
 interface CreditsBalance {
@@ -287,7 +297,7 @@ export default function Settings() {
   // then require the account email typed back (same guard as the backend),
   // then run the server-side teardown and sign out. Org members get the
   // backend's 403 message (workspace deletion is support-only).
-  const confirmDeleteAccount = useCallback(() => {
+  const promptDeleteAccount = useCallback(() => {
     Alert.alert(
       "Delete account",
       "This permanently deletes your account, agents, workspace, and data. It cannot be undone.",
@@ -339,6 +349,65 @@ export default function Settings() {
       ],
     );
   }, [api, email, signOut]);
+
+  const confirmDeleteAccount = useCallback(() => {
+    // An Apple subscription OUTLIVES the account. `wipe_account` deletes the
+    // Stripe customer, the billing row and the Clerk user — it cannot touch
+    // StoreKit, which only the customer can cancel from iOS Settings. Delete
+    // without cancelling and Apple keeps charging for a subscription that now
+    // entitles nothing, and the appAccountToken binding means the purchase
+    // cannot be restored onto a replacement account either. So say so, and put
+    // the cancellation one tap away, BEFORE the irreversible step.
+    const source = state.kind === "ready" ? state.account.subscription_source : null;
+    if (isAppleManaged(source)) {
+      Alert.alert(
+        "Cancel your subscription first",
+        "Your subscription is billed through your Apple Account. Deleting this account does NOT cancel it — Apple will keep charging you, and the purchase can't be moved to a new account. Cancel in iOS Settings first.",
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Open iOS Settings",
+            onPress: () => void openSubscriptionManagement({
+              source,
+              portalUrl: null,
+              openAppleSubscriptions: deepLinkToSubscriptions,
+            }).catch(() => {}),
+          },
+          { text: "Delete anyway", style: "destructive", onPress: () => promptDeleteAccount() },
+        ],
+      );
+      return;
+    }
+    promptDeleteAccount();
+  }, [state, promptDeleteAccount]);
+
+
+  /**
+   * Send the subscriber to whichever system actually bills them. The Stripe
+   * portal session is minted on demand rather than kept around: portal URLs
+   * are short-lived, so a URL fetched at render time would often be dead by
+   * the time anyone tapped it.
+   */
+  const onManageSubscription = useCallback(
+    async (source: string | null | undefined) => {
+      let portalUrl: string | null = null;
+      if (!isAppleManaged(source)) {
+        portalUrl = await api
+          .post("/billing/apple/portal", {})
+          .then((body) => (body as { portal_url?: string })?.portal_url ?? null)
+          // Swallowed on purpose: openSubscriptionManagement falls back to the
+          // web billing page, so a portal outage still leaves them somewhere
+          // they can act rather than on a dead button.
+          .catch(() => null);
+      }
+      await openSubscriptionManagement({
+        source,
+        portalUrl,
+        openAppleSubscriptions: deepLinkToSubscriptions,
+      });
+    },
+    [api],
+  );
 
   const confirmSignOut = useCallback(() => {
     Alert.alert("Sign out", "Are you sure you want to sign out?", [
@@ -441,6 +510,29 @@ export default function Settings() {
                 ? "Prepaid balance for Bedrock inference. Top up on isol8.co."
                 : "Balance unavailable right now."}
             </Text>
+          </Card>
+        )}
+
+        {/* Apple requires an app selling auto-renewable subscriptions to give
+            subscribers a way to manage them. This is management, never a
+            purchase call to action, so it renders only for someone who
+            ALREADY pays — a free-tier user sees nothing here and 3.1.3(f)
+            stays intact for as long as we are still relying on it. */}
+        {account.is_subscribed && (
+          <Card>
+            <Text style={styles.overline}>SUBSCRIPTION</Text>
+            <Text style={styles.captionText}>
+              {isAppleManaged(account.subscription_source)
+                ? "Billed through your Apple Account. Manage or cancel in iOS Settings."
+                : "Billed through isol8.co. Manage or cancel in the billing portal."}
+            </Text>
+            <Pressable
+              style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+              onPress={() => void onManageSubscription(account.subscription_source)}
+              accessibilityRole="button"
+            >
+              <Text style={styles.linkText}>Manage subscription</Text>
+            </Pressable>
           </Card>
         )}
 

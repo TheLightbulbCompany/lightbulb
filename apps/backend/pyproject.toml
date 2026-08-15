@@ -19,6 +19,10 @@ dependencies = [
     "python-ulid>=3.1.0",
     "pyyaml>=6.0.3",
     "posthog>=3.5.0,<6.0.0",
+    # Apple's own App Store Server library — StoreKit JWS verification (x5c
+    # chain building + root pinning). See core/services/apple_iap.py for why
+    # this is not hand-rolled on the PyJWT we already have.
+    "app-store-server-library>=3.1.2,<4.0.0",
 ]
 
 [tool.uv]

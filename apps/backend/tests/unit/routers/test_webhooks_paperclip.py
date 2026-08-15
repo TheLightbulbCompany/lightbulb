@@ -573,6 +573,13 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             new=AsyncMock(return_value=mock_provisioning),
         ),
+        # Teardown now asks whether ANY provider still pays before running —
+        # Stripe ending is no longer the same question as the entitlement
+        # ending. Nothing else pays here, so it proceeds and disable is called.
+        patch(
+            "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "user_owner", "subscription_status": "canceled"}),
+        ),
     ):
         mock_ecs.return_value.delete_user_service = AsyncMock(return_value=None)
         resp = await async_client.post(

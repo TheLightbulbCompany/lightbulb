@@ -55,20 +55,28 @@ def _create_tables(resource):
         waiters.append(name)
         return t
 
-    # billing-accounts: PK owner_id, GSI stripe-customer-index
+    # billing-accounts: PK owner_id, GSIs stripe-customer-index +
+    # apple-original-transaction-index (mirror database-stack.ts exactly — a
+    # fixture missing a prod GSI cannot catch empty-string-on-index writes).
     _make(
         f"{_PREFIX}billing-accounts",
         [{"AttributeName": "owner_id", "KeyType": "HASH"}],
         [
             {"AttributeName": "owner_id", "AttributeType": "S"},
             {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
+            {"AttributeName": "apple_original_transaction_id", "AttributeType": "S"},
         ],
         gsis=[
             {
                 "IndexName": "stripe-customer-index",
                 "KeySchema": [{"AttributeName": "stripe_customer_id", "KeyType": "HASH"}],
                 "Projection": {"ProjectionType": "ALL"},
-            }
+            },
+            {
+                "IndexName": "apple-original-transaction-index",
+                "KeySchema": [{"AttributeName": "apple_original_transaction_id", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            },
         ],
     )
     # usage-counters: PK owner_id, SK period

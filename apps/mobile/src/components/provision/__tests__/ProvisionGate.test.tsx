@@ -4,8 +4,38 @@ import { Text } from "react-native";
 const mockRefetch = jest.fn();
 const mockUseContainerStatus = jest.fn();
 
+// `organization` decides whether this poller's container is an org (billed
+// per seat) or personal. The paywall sells the personal plan only, so the
+// org case must never reach it — see the isOrgOwner guard in ProvisionGate.
+let mockOrganization: { id: string } | null = null;
+let mockOrgLoaded = true;
+
+// IAP forced ON so the paywall branch is genuinely reachable. Without this the
+// org tests below would pass merely because the feature is off — proving
+// nothing about the guard they exist to pin.
+let mockIapAvailable = false;
+
+jest.mock("../../../lib/appleIap", () => ({
+  // Getter, not a literal: the 3.1.3(f) fallback tests need IAP OFF while the
+  // org-fence tests need it ON, and the guard is only meaningful when on.
+  get APPLE_IAP_AVAILABLE() {
+    return mockIapAvailable;
+  },
+  APPLE_SUBSCRIPTION_SKU: "co.isol8.mobile.plan.monthly",
+  linkApplePurchase: jest.fn(),
+  createWebCheckout: jest.fn(),
+}));
+
+jest.mock("../../billing/PaywallScreen", () => ({
+  PaywallScreen: () => {
+    const { Text } = require("react-native");
+    return <Text>MOCK_PAYWALL</Text>;
+  },
+}));
+
 jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ signOut: jest.fn() }),
+  useOrganization: () => ({ organization: mockOrganization, isLoaded: mockOrgLoaded }),
 }));
 
 jest.mock("react-native-safe-area-context", () => ({
@@ -54,6 +84,9 @@ describe("ProvisionGate provider sign-in routing", () => {
   beforeEach(() => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
+    mockOrganization = null;
+    mockOrgLoaded = true;
+    mockIapAvailable = false;
   });
 
   it("renders ChatGPTConnectScreen for blocked.code === oauth_required, wired to refetch", async () => {
@@ -316,6 +349,9 @@ describe("ProvisionGate container-status context", () => {
   beforeEach(() => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
+    mockOrganization = null;
+    mockOrgLoaded = true;
+    mockIapAvailable = false;
   });
 
   it("provides the polled ready status (with onboarded) to descendants", async () => {
@@ -390,6 +426,9 @@ describe("ProvisionGate container-error interstitial", () => {
   beforeEach(() => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
+    mockOrganization = null;
+    mockOrgLoaded = true;
+    mockIapAvailable = false;
   });
 
   it("renders a blocking 'Setup failed' interstitial with Retry + Sign out for status.kind === 'error'", async () => {
@@ -455,6 +494,9 @@ describe("ProvisionGate teams-degraded affordance (non-blocking)", () => {
   beforeEach(() => {
     mockRefetch.mockReset();
     mockUseContainerStatus.mockReset();
+    mockOrganization = null;
+    mockOrgLoaded = true;
+    mockIapAvailable = false;
   });
 
   it("renders the Teams affordance OVER the live children (chat not blocked) when ready + teams_status failed", async () => {
@@ -506,4 +548,96 @@ describe("ProvisionGate teams-degraded affordance (non-blocking)", () => {
     expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.queryByText(/Teams setup didn.t finish/)).toBeNull();
   });
+});
+
+// PR-review finding: the paywall sells the PERSONAL flat plan — one Apple
+// product, one Stripe flat price. An org pays base + per-seat. Routing an org
+// into it takes real money through StoreKit for a plan that cannot be
+// recorded: a team_billing_required org has no billing row by construction, so
+// the link call fails permanently and the customer is left charged.
+//
+// Gated on OWNER TYPE, not gate code — payment_past_due, subscription_required,
+// credits_required and signup_required all fire for orgs too, so a code
+// allowlist would leak every one of them.
+describe("ProvisionGate paywall routing is personal-owner only", () => {
+  const purchaseGate = {
+    kind: "blocked" as const,
+    code: "team_billing_required",
+    title: "Set up Teams billing",
+    message: "Your team needs an active per-seat subscription to start.",
+    href: "/settings/billing",
+    actionLabel: "Set up billing",
+    adminOnly: true,
+  };
+
+  it.each([
+    ["team_billing_required"],
+    ["payment_past_due"],
+    ["subscription_required"],
+    ["credits_required"],
+  ])("never shows the personal paywall to an org owner on a %s gate", async (code) => {
+    mockIapAvailable = true;
+    mockOrganization = { id: "org_abc" };
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...purchaseGate, code },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    expect(screen.queryByText("MOCK_PAYWALL")).toBeNull();
+  });
+
+  it("still shows the paywall to a personal owner", async () => {
+    mockOrganization = null;
+    mockIapAvailable = true;
+    mockUseContainerStatus.mockReturnValue({
+      status: { ...purchaseGate, code: "trial_daily_cap", adminOnly: false },
+      refetch: mockRefetch,
+    });
+
+    await render(
+      <ProvisionGate>
+        <Text>APP</Text>
+      </ProvisionGate>,
+    );
+
+    // Same gate, same feature flag — only the owner type differs. This is the
+    // control that proves the org cases above are blocked BY THE GUARD.
+    expect(screen.getByText("MOCK_PAYWALL")).toBeTruthy();
+  });
+
+// While Clerk is still resolving, `organization` is null — indistinguishable
+// from a personal owner. If /container/status resolves a purchase gate first,
+// an org admin would see the personal paywall and could complete a REAL charge
+// the backend then refuses to link. Unknown must read as not-personal.
+it("does not show the paywall while Clerk has not resolved the owner type", async () => {
+  mockIapAvailable = true;
+  mockOrgLoaded = false;
+  mockOrganization = null;
+  mockUseContainerStatus.mockReturnValue({
+    status: {
+      kind: "blocked",
+      code: "trial_daily_cap",
+      title: "Daily free limit reached",
+      message: "You've used today's free allowance — Upgrade to keep going.",
+      href: "/settings?panel=billing",
+      actionLabel: "Upgrade",
+      adminOnly: false,
+    },
+    refetch: mockRefetch,
+  });
+
+  await render(
+    <ProvisionGate>
+      <Text>APP</Text>
+    </ProvisionGate>,
+  );
+
+  expect(screen.queryByText("MOCK_PAYWALL")).toBeNull();
+});
 });

@@ -115,6 +115,23 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "stripe-customer-index",
       partitionKey: { name: "stripe_customer_id", type: dynamodb.AttributeType.STRING },
     });
+    // App Store Server Notifications identify a subscription only by its
+    // originalTransactionId — they carry no owner_id — so renewals, expiries
+    // and refunds resolve the account through this index.
+    //
+    // SPARSE by construction: billing_repo.set_apple_subscription is the only
+    // writer and refuses an empty value, because an empty string on a GSI key
+    // attribute makes DynamoDB reject the ENTIRE PutItem. On this table's
+    // read-then-put writers that would brick every unrelated billing write for
+    // the owner — the shape of the 2026-08-02 paperclip-companies outage. Test
+    // fixtures must mirror this index or they cannot catch that class at all.
+    this.billingTable.addGlobalSecondaryIndex({
+      indexName: "apple-original-transaction-index",
+      partitionKey: {
+        name: "apple_original_transaction_id",
+        type: dynamodb.AttributeType.STRING,
+      },
+    });
 
     this.usageCountersTable = createTable("UsageCountersTable", "usage-counters", {
       partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },

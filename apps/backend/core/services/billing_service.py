@@ -206,15 +206,30 @@ class BillingService:
                     logger.warning("Failed to delete orphan Stripe customer %s", customer_id)
             return winner
 
-    async def create_portal_session(self, billing_account: dict) -> str:
+    async def create_portal_session(self, billing_account: dict, *, return_path: str | None = None) -> str:
+        """Stripe customer portal URL for this account.
+
+        ``return_path`` overrides where Stripe sends the customer when they
+        finish. The default is the web settings page, which is right for a
+        browser and wrong for the app: a mobile subscriber who cancels would be
+        left standing on isol8.co in Safari rather than back where they started.
+        The app passes a universal-link path so iOS hands control back to it.
+
+        It is a PATH chosen from a fixed set by the CALLER, never a URL supplied
+        by the client — a client-controlled return_url on a billing endpoint is
+        an open redirect wearing a Stripe badge.
+        """
         owner_id = billing_account["owner_id"]
-        # 5-minute time bucket — same retry-collapsing intent as checkout.
+        # 5-minute time bucket — same retry-collapsing intent as checkout. The
+        # path is part of the key: two callers wanting different destinations
+        # inside one bucket must not be handed the same cached session.
         bucket = int(time.time() // 300)
+        path = return_path or "/settings/billing"
         with timing("stripe.api.latency", {"op": "billing_portal.session.create"}):
             session = stripe.billing_portal.Session.create(
                 customer=billing_account["stripe_customer_id"],
-                return_url=f"{FRONTEND_URL}/settings/billing",
-                idempotency_key=f"portal:{owner_id}:{bucket}",
+                return_url=f"{FRONTEND_URL}{path}",
+                idempotency_key=f"portal:{owner_id}:{path}:{bucket}",
             )
         return session.url
 
@@ -456,6 +471,7 @@ async def _build_subscription_checkout(
     cancel_url: str,
     idempotency_key: str,
     allow_promotion_codes: bool = True,
+    origin_context: str | None = None,
 ) -> stripe.checkout.Session:
     """Single builder for subscription-mode Stripe Checkout sessions.
 
@@ -502,8 +518,180 @@ async def _build_subscription_checkout(
         # — load-bearing for the single-open-session guard in /trial-checkout.
         expires_at=int(time.time()) + 31 * 60,
     )
+    if origin_context:
+        # "mobile_app" switches Checkout to the UI built for app-to-web
+        # purchases (Stripe: Accept payments for digital goods on iOS).
+        # Omitted entirely for web callers so their session shape — and
+        # therefore their idempotency body-compare — is untouched.
+        kwargs["origin_context"] = origin_context
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)
+    return session
+
+
+async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | None:
+    """The owner's still-open MOBILE Checkout Session, or None if there is none.
+
+    Reads the ``pending_checkout_session_id`` marker and asks Stripe what it
+    actually is, because the marker alone cannot say: it is written at create
+    time and nothing clears it when a session expires or completes. The
+    session's LIVE status is the truth, so a stale marker self-heals into None.
+
+    **The marker is shared by every checkout flow** — the flat browser checkout,
+    the Ultra checkout and this one all write it — so "an open session exists"
+    is a different question from "an open session for what this caller sells".
+    Reusing on status alone handed the mobile caller whichever session happened
+    to be open: an owner who abandoned an Ultra session ($150) and then tapped
+    the mobile paywall's flat option ($50) would be sent back to the Ultra page
+    and charged for line items the app never quoted. A session for anything else
+    is expired and replaced, the way the web route already treats a provider or
+    credit-amount switch.
+
+    Raises ``already_subscribed:checkout_completed`` when the pending session is
+    already paid. The subscription exists at Stripe but the webhook has not
+    landed, so every local guard still reads "not subscribed" — minting another
+    session here is precisely how an owner ends up charged twice.
+    """
+    account = await billing_repo.get_by_owner_id(owner_id)
+    pending_id = (account or {}).get("pending_checkout_session_id")
+    if not pending_id:
+        return None
+
+    try:
+        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+            pending = stripe.checkout.Session.retrieve(pending_id)
+    except stripe.error.InvalidRequestError:
+        # Unretrievable (wrong mode, deleted, never existed) — dead marker.
+        logger.info("Pending checkout session %s not retrievable — minting fresh", pending_id)
+        return None
+
+    status = pending.get("status")
+    if status == "complete":
+        raise BillingServiceError("already_subscribed:checkout_completed")
+    if status != "open":
+        return None
+
+    # Read the purpose off the SESSION rather than a stored column: one source
+    # of truth, no migration, and the same dict the grant webhook reads.
+    purpose = (pending.get("metadata") or {}).get("purpose")
+    if purpose == "mobile_web_checkout":
+        return pending
+
+    # Someone else's open session. Expire it before minting ours, or both stay
+    # completable and the owner can be charged twice.
+    logger.info("Pending checkout session %s is for %s, not mobile — expiring it", pending_id, purpose)
+    try:
+        with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+            stripe.checkout.Session.expire(pending_id)
+    except stripe.error.InvalidRequestError:
+        # Thin race: it can complete between retrieve and expire (checkout
+        # finishing in a browser tab). Minting a fresh session here would leave
+        # BOTH chargeable — re-check and stop unless it genuinely expired.
+        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+            recheck = stripe.checkout.Session.retrieve(pending_id)
+        if recheck.get("status") != "expired":
+            raise BillingServiceError("already_subscribed:checkout_completed") from None
+    return None
+
+
+async def create_mobile_web_checkout(*, owner_id: str) -> stripe.checkout.Session:
+    """App-to-web Checkout for the iOS paywall's "subscribe on the web" option.
+
+    This is the link-out half of the paywall. It exists because guideline
+    3.1.1(a) lets a U.S.-storefront app send customers to an external purchase
+    page, and because the alternative — dropping them on
+    isol8.co/settings?panel=billing — means signing in and finding a panel
+    before they can pay. Stripe's iOS guide is this exact shape: create a
+    Session server-side, open its URL in Safari, fulfil on the webhook.
+
+    The client opens it in the DEFAULT BROWSER, never a WKWebView. Apple's
+    wording is what binds — U.S.-storefront apps "may link out to the default
+    browser ... for payment mechanisms other than in-app purchase" — and an
+    embedded checkout is not linking out; it is the in-app storefront 3.1.1
+    forbids.
+
+    ``origin_context="mobile_app"`` is what makes the page the app-optimized
+    variant rather than the desktop one. Apple Pay rides along automatically on
+    supported devices, which is the single biggest conversion lever here.
+
+    Carries the SAME checkout-slot claim, pending-session marker, AND
+    single-open-session guard as ``create_flat_fee_checkout``. An earlier
+    version omitted them on the reasoning that the app is the only caller and
+    ``is_trial_blocked`` already refuses a prior subscriber — both true and both
+    irrelevant. The idempotency key is bucketed to five minutes while a session
+    stays completable for about thirty-one, and ``is_trial_blocked`` reads a
+    local row that says nothing until a checkout webhook lands. So an owner
+    calling twice across a bucket boundary gets two live sessions, completes
+    both, and ends up with two Stripe subscriptions. "The app is the only
+    caller" is not a property of an authenticated HTTP endpoint.
+
+    The version after that WROTE the marker but never READ it, which fixed
+    nothing: recording an open session prevents a second one only if something
+    checks for it. Hence the ``_open_pending_checkout`` call below — the same
+    guard the web route runs, minus the intent-comparison, because this
+    session's body never varies (one price, no credits, no provider choice), so
+    an already-open session is always the right one to hand back.
+
+    Still deliberately unlike the flat path: **no starter-credits line item**.
+    Credits are a Bedrock-onboarding concern; this session sells the plan alone.
+
+    The caller is responsible for the entitlement check. Returns the Session so
+    the router can hand back ``session.url``.
+    """
+    if not settings.STRIPE_FLAT_PRICE_ID:
+        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+
+    existing = await _open_pending_checkout(owner_id)
+    if existing is not None:
+        return existing
+
+    # Serializes concurrent calls for one owner; self-expires (90s) so a crashed
+    # request cannot wedge them out of checking out. The router maps this to 409.
+    claim_token = await billing_repo.try_claim_checkout_slot(owner_id)
+    if not claim_token:
+        raise BillingServiceError("checkout_in_progress")
+
+    try:
+        session = await _build_subscription_checkout(
+            owner_id=owner_id,
+            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+            metadata={"owner_id": owner_id, "purpose": "mobile_web_checkout"},
+            # A universal link, so iOS hands control back to the app on success
+            # and falls through to the web page when the app is not installed.
+            # The matching apple-app-site-association entry is what makes it
+            # deep-link rather than merely load.
+            success_url=f"{FRONTEND_URL}/checkout_redirect/success",
+            cancel_url=f"{FRONTEND_URL}/checkout_redirect/cancel",
+            # Off for the same reason the credits-bundled path turns it off: a
+            # promo field on a phone keyboard is friction, and nothing here
+            # quotes a code.
+            allow_promotion_codes=False,
+            origin_context="mobile_app",
+            idempotency_key=_checkout_idempotency_key("mobile_web_checkout", owner_id, "flat"),
+        )
+    except Exception:
+        # No session exists — free the slot so an immediate retry does not wait
+        # out the claim TTL. Fenced on our own token.
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        raise
+
+    # Record the open session. Without this, once the 90s claim lapses an
+    # unrecorded session stays completable for ~31 minutes and is invisible to
+    # every guard, so a retry can mint a second one and both can be completed.
+    # Fail CLOSED: the caller has not seen this URL yet, so expire it and let the
+    # retry mint fresh.
+    try:
+        await billing_repo.set_pending_checkout(owner_id, session_id=session.id, provider_choice=None)
+    except Exception:
+        logger.exception("Failed to record pending mobile checkout for owner %s", owner_id)
+        try:
+            with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+                stripe.checkout.Session.expire(session.id)
+        except Exception:
+            logger.exception("Failed to expire orphaned mobile checkout session %s", session.id)
+        await billing_repo.release_checkout_slot(owner_id, token=claim_token)
+        raise BillingServiceError("could not start checkout — try again")
+
     return session
 
 

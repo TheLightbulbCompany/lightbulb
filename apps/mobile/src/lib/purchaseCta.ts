@@ -28,6 +28,33 @@
  * They cost nothing and direct nobody to a purchase.
  */
 
+/**
+ * Gates that mean "this account has NO subscription", and are therefore the
+ * only ones a plan paywall can actually resolve.
+ *
+ * The distinction is not cosmetic. `credits_required` and `payment_past_due`
+ * both fire for owners who ALREADY PAY: the first has an active plan and an
+ * empty prepaid balance, the second has an active plan whose card failed.
+ * Selling either of them another monthly subscription takes a second payment,
+ * adds no credits, fixes no card, and leaves the very same gate in place — so
+ * the customer is billed twice and still blocked.
+ *
+ * Kept separate from PURCHASE_GATE_COPY below, which is a different question:
+ * that one asks "would the server's copy read as a call to action on iOS",
+ * which is true of every money-shaped gate including these two.
+ */
+export const SUBSCRIPTION_GATES = new Set([
+  "trial_daily_cap",
+  "trial_expired",
+  "signup_required",
+  "subscription_required",
+]);
+
+/** True when a plan purchase is what actually unblocks this owner. */
+export function isSubscriptionGate(code: string | null | undefined): boolean {
+  return code != null && SUBSCRIPTION_GATES.has(code);
+}
+
 /** Gate codes where following the CTA would lead to a purchase. */
 const PURCHASE_GATE_COPY: Record<string, { title: string; body: string }> = {
   trial_daily_cap: {

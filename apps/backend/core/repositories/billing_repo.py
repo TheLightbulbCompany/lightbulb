@@ -60,6 +60,484 @@ async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def get_by_apple_original_transaction_id(original_transaction_id: str) -> dict | None:
+    """Resolve the billing row an Apple auto-renewable subscription belongs to.
+
+    App Store Server Notifications identify a subscription only by its
+    ``originalTransactionId`` — they carry no Isol8 owner id — so this is how a
+    renewal, expiry, or refund finds the account to update. The mapping is
+    written by :func:`set_apple_subscription` when the purchase is first linked.
+
+    The backing GSI is SPARSE: ``apple_original_transaction_id`` is written only
+    for rows that actually have an Apple subscription, and never as an empty
+    string, because an empty value on a GSI key attribute makes DynamoDB reject
+    the ENTIRE PutItem — which, on this table's read-then-put writers, would
+    brick every unrelated billing write for that owner.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        IndexName="apple-original-transaction-index",
+        KeyConditionExpression=Key("apple_original_transaction_id").eq(original_transaction_id),
+    )
+    items = response.get("Items", [])
+    return items[0] if items else None
+
+
+# Ranked best-to-worst. The effective status is the BEST any provider reports,
+# because an owner paying either Apple or Stripe is entitled — the question the
+# gates ask is "may this owner use the platform", and one live subscription is
+# a yes regardless of what the other provider says.
+_STATUS_RANK = ("active", "trialing", "trial_local", "past_due", "canceled")
+
+
+def _adopt_legacy_status(row: dict) -> None:
+    """Claim a pre-IAP row's shared status for the Stripe side, once.
+
+    Every row written before Apple IAP existed carries only the shared
+    ``subscription_status`` — nothing ever set ``stripe_subscription_status``,
+    because the field did not exist. Left alone, the first Apple write makes
+    :func:`_effective_status` see exactly one candidate (Apple's) and skip the
+    fallback, so an Apple expiry, refund, or restored-but-expired transaction
+    would set an actively-paying legacy Stripe owner to "canceled" and cut off
+    a customer who is still being charged.
+
+    Gated on the row having NO Apple state yet, which is the only condition
+    under which the shared field is guaranteed to be purely non-Apple. Gating
+    instead on "stripe_subscription_status is missing" is not enough and was the
+    first attempt: a row that has only ever paid Apple never gets that field, so
+    every subsequent Apple write would copy the DERIVED (Apple-sourced) value
+    into the Stripe slot, and the owner would keep access forever after
+    canceling. Called before Apple's status joins the row, so "no Apple state"
+    means no PRIOR Apple state.
+    """
+    if row.get("apple_subscription_status"):
+        return
+    existing = row.get("subscription_status")
+    # "trial_local" is NOT a Stripe status. It is written by
+    # create_trial_local_if_absent for a card-less free tier with no Stripe
+    # object behind it at all, and it is the status of the row in the ORDINARY
+    # first-Apple-purchase flow — so adopting it invents a phantom Stripe trial
+    # on almost every IAP customer. _STATUS_RANK puts trial_local above
+    # "canceled", so that phantom then outranks Apple's own expiry: the shared
+    # status stays trial_local, teardown_if_unentitled reads it as still
+    # entitled and skips cancellation entirely, and the billing surfaces show a
+    # lapsed subscriber as being back on the free plan.
+    if existing and existing != "trial_local" and not row.get("stripe_subscription_status"):
+        row["stripe_subscription_status"] = existing
+
+
+def _effective_status(row: dict, *, prefer: str | None = None) -> tuple[str | None, str | None]:
+    """Combine per-provider statuses into ``(subscription_status, source)``.
+
+    Exists because both providers used to write the shared field directly,
+    making them last-writer-wins: an Apple expiry set the row to "canceled" for
+    an owner whose Stripe subscription was still live and still charging them —
+    ``is_subscription_active`` reads "canceled" as inactive, so a paying
+    customer lost access. The inverse happened when a Stripe cancellation
+    landed while Apple was active.
+
+    The winning provider also names ``subscription_source``, which decides
+    where the billing surfaces send someone to cancel. Deriving it here rather
+    than pinning it at the Apple write is what stops an owner who has since
+    moved to Stripe from being sent to iOS Settings, where their subscription
+    does not exist and cannot be canceled.
+
+    ``prefer`` breaks a tie toward the provider currently being written, so two
+    simultaneously-active subscriptions resolve to the one the owner most
+    recently acted on. Entitlement is identical either way — only the
+    management destination differs.
+
+    Falls back to the row's existing values when neither provider has recorded
+    a status, so a card-less ``trial_local`` row (written by
+    ``create_trial_local_if_absent``, not by any provider) is never clobbered.
+    """
+    candidates = [
+        ("stripe", row.get("stripe_subscription_status")),
+        ("apple_iap", row.get("apple_subscription_status")),
+    ]
+    present = [(src, status) for src, status in candidates if status]
+    if not present:
+        return row.get("subscription_status"), row.get("subscription_source")
+    if prefer:
+        present.sort(key=lambda c: c[0] != prefer)
+    for rank in _STATUS_RANK:
+        for src, status in present:
+            if status == rank:
+                # "trial_local" is the card-less free tier — there is no
+                # subscription to manage, so naming a provider for it would
+                # point the manage button at a portal with nothing in it.
+                return status, (None if status == "trial_local" else src)
+    # An unranked provider value (a status neither map produces today) is still
+    # better information than dropping it.
+    return present[0][1], present[0][0]
+
+
+def _apply_effective_status(row: dict, *, prefer: str) -> None:
+    """Write the derived status + source onto ``row`` in place."""
+    status, source = _effective_status(row, prefer=prefer)
+    row["subscription_status"] = status
+    if source:
+        row["subscription_source"] = source
+
+
+# Every setter here is a read-then-whole-item PutItem, so it derives the shared
+# status from a snapshot that may be stale by the time it writes — and then
+# replaces the WHOLE item, restoring the other provider's overwritten field
+# along with it. Two providers writing at once is enough:
+#
+#   Stripe reads {stripe: active, apple: active}
+#   Apple  reads {stripe: active, apple: active}
+#   Apple  writes {apple: canceled, stripe: active}   -> derived "active"
+#   Stripe writes {stripe: canceled, apple: active}   -> derived "active"
+#
+# Both subscriptions have ended and the row says active, with a phantom live
+# provider that nothing will ever clear. Splitting the field per provider is
+# what made this reachable: before it, the second write simply won.
+#
+# So each setter asserts the OTHER provider's status is still what it read, and
+# retries against fresh state when it is not. Cheap because the conflict needs
+# simultaneous dual-provider webhooks for one owner.
+_CAS_ATTEMPTS = 4
+
+
+def _unchanged_since_read(row: dict, fields: tuple[str, ...], values: dict) -> str:
+    """Condition asserting every one of ``fields`` still holds the value read.
+
+    Plural because a single field is not enough to detect that the other
+    provider wrote. Conditioning the Stripe write on ``apple_subscription_status``
+    alone passed straight through an Apple RENEWAL, which leaves the status
+    "active" while advancing ``apple_last_signed_date`` and ``apple_expires_at``
+    — so the whole-item PutItem then restored the pre-renewal watermark, and a
+    later out-of-order refund could clear the monotonicity check it should have
+    lost and cancel a subscription that had just renewed.
+    """
+    clauses = []
+    for i, field in enumerate(fields):
+        # ABSENT and PRESENT-BUT-NULL are different rows, and conflating them
+        # breaks ordinary writes: set_subscription stores stripe_subscription_id
+        # = None on cancellation, which DynamoDB keeps as a NULL attribute. Ask
+        # attribute_not_exists about that and it is false forever, so every
+        # later write fails its own condition and the retries exhaust.
+        if field not in row:
+            clauses.append(f"attribute_not_exists({field})")
+        else:
+            values[f":cas{i}"] = row[field]
+            clauses.append(f"{field} = :cas{i}")
+    return " AND ".join(clauses)
+
+
+# Everything the OTHER provider owns on the row. A whole-item PutItem rewrites
+# all of it, so a compare-and-set has to cover all of it — anything omitted is a
+# field one provider can silently roll back to its own snapshot.
+_APPLE_OWNED = ("apple_subscription_status", "apple_last_signed_date", "apple_expires_at")
+_STRIPE_OWNED = ("stripe_subscription_status", "stripe_subscription_id")
+
+
+class CrossProviderWriteConflict(Exception):
+    """Lost the cross-provider compare-and-set too many times running.
+
+    Raised rather than silently returning, because the callers are webhook
+    handlers: Stripe and Apple both redeliver on a 5xx, so failing loudly gets
+    the update applied later, while swallowing it drops a cancellation on the
+    floor and leaves someone with access they stopped paying for.
+    """
+
+
+async def _write_changed_fields(
+    owner_id: str,
+    before: dict,
+    after: dict,
+    *,
+    condition: str,
+    values: dict,
+) -> None:
+    """Persist ONLY what ``after`` changed relative to ``before``.
+
+    A whole-item ``PutItem`` rewrites every attribute, including ones this
+    caller never looked at — so any field another writer changed between the
+    read and the write is silently restored from the stale snapshot. Widening
+    the compare-and-set to cover each such field in turn is whack-a-mole; three
+    separate review findings landed that way (Stripe status, then the Apple
+    watermark and expiry, then ``provider_choice``, which no billing writer
+    owns at all and which reverting can send a paying owner back to
+    ``provider_required``).
+
+    Writing a diff removes the class instead of the instances: a field nobody
+    touched is not in the expression, so nobody can roll it back. The
+    cross-provider condition still rides along, because the DERIVED status in
+    the diff was computed from the snapshot and is only valid if the other
+    provider has not moved.
+
+    Every attribute goes through ``ExpressionAttributeNames``. Several plausible
+    column names here are DynamoDB reserved words, and a reserved word in a raw
+    update expression fails the whole call.
+    """
+    sets: list[str] = []
+    removes: list[str] = []
+    names: dict[str, str] = {}
+    update_values = dict(values)
+
+    for key in set(before) | set(after):
+        if key == "owner_id":
+            continue  # the partition key is not updatable
+        placeholder = f"#f{len(names)}"
+        if key not in after:
+            names[placeholder] = key
+            removes.append(placeholder)
+        elif key not in before or before[key] != after[key]:
+            names[placeholder] = key
+            update_values[f":v{len(update_values)}"] = after[key]
+            sets.append(f"{placeholder} = :v{len(update_values) - 1}")
+
+    if not sets and not removes:
+        return
+
+    expression = ""
+    if sets:
+        expression += "SET " + ", ".join(sets)
+    if removes:
+        expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
+
+    kwargs: dict = {
+        "Key": {"owner_id": owner_id},
+        "UpdateExpression": expression,
+        "ConditionExpression": condition,
+        "ExpressionAttributeNames": names,
+    }
+    if update_values:
+        kwargs["ExpressionAttributeValues"] = update_values
+    await run_in_thread(_get_table().update_item, **kwargs)
+
+
+async def _put_with_apple_cas(owner_id: str, mutate) -> dict | None:
+    """Read-modify-write the billing row, asserting Apple's status held still.
+
+    The Stripe half of the compare-and-set described above. ``mutate(row)``
+    applies the Stripe-owned changes in place; everything about reading,
+    conditioning, retrying and publishing is identical for both Stripe setters,
+    so it lives here rather than being copied into each.
+
+    Returns None only when there is no billing row — the existing "a stray
+    webhook must not upsert a phantom row" contract both setters already had.
+    """
+    for attempt in range(_CAS_ATTEMPTS):
+        existing = await get_by_owner_id(owner_id)
+        if existing is None:
+            return None
+
+        # Read BEFORE mutate, so the condition describes the row we based the
+        # derived status on rather than the one we are about to write.
+        values: dict = {}
+        condition = _unchanged_since_read(existing, _APPLE_OWNED, values)
+
+        before = dict(existing)
+        mutate(existing)
+        existing["updated_at"] = utc_now_iso()
+
+        try:
+            await _write_changed_fields(owner_id, before, existing, condition=condition, values=values)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            logger.info(
+                "billing_repo.stripe_cas_retry owner_id=%s attempt=%s — Apple wrote underneath us",
+                owner_id,
+                attempt + 1,
+            )
+            continue
+
+        publish_status_changed(owner_id)
+        return existing
+
+    raise CrossProviderWriteConflict(f"stripe write for {owner_id} lost the cross-provider CAS {_CAS_ATTEMPTS} times")
+
+
+async def set_apple_subscription(
+    owner_id: str,
+    *,
+    original_transaction_id: str,
+    status: str,
+    expires_at: int | None,
+    signed_date: int | None = None,
+) -> dict | None:
+    """Persist Apple IAP subscription identity + status onto the billing account.
+
+    Apple's status is written to ``apple_subscription_status``; the shared
+    ``subscription_status`` that every ``provision_gate`` predicate reads is
+    DERIVED from both providers by :func:`_effective_status`. Apple used to
+    write the shared field directly, which made the two providers
+    last-writer-wins and let an Apple expiry cancel an owner who was still
+    paying — and still being charged by — Stripe.
+
+    ``subscription_source`` — which channel billing surfaces send the customer
+    to for cancellation — is derived alongside the status, not pinned here. An
+    Apple subscription can only be managed in iOS Settings and opening the
+    Stripe portal for one is a dead end, but the reverse is worse: pinning the
+    source at the Apple write stranded an owner who later moved to Stripe in
+    iOS Settings, where there was nothing to cancel.
+
+    ``stripe_subscription_id`` is deliberately left alone. An owner who once had
+    a Stripe subscription and now pays through Apple must not have that history
+    erased by a renewal notification.
+
+    Returns None — meaning NOTHING WAS WRITTEN — in three cases, all of which
+    callers must treat as "did not happen" rather than success:
+      - no billing row exists (a notification for an owner we do not have),
+      - the write lost the ``signedDate`` watermark race (an older notification
+        arriving after a newer one),
+      - the row is already bound to a DIFFERENT Apple transaction.
+    The last two are enforced as conditions on the write itself, because the
+    callers' reads come from an eventually-consistent GSI and cannot decide
+    either race on their own.
+    """
+    if not original_transaction_id:
+        # Never "" — it keys a GSI, and DynamoDB rejects the whole PutItem.
+        raise ValueError("original_transaction_id must be non-empty (it keys a GSI)")
+
+    for attempt in range(_CAS_ATTEMPTS):
+        written = await _try_set_apple_subscription(
+            owner_id,
+            original_transaction_id=original_transaction_id,
+            status=status,
+            expires_at=expires_at,
+            signed_date=signed_date,
+        )
+        if written is not _CAS_LOST:
+            return written  # type: ignore[return-value]
+        logger.info(
+            "billing_repo.apple_cas_retry owner_id=%s attempt=%s — Stripe wrote underneath us",
+            owner_id,
+            attempt + 1,
+        )
+    raise CrossProviderWriteConflict(f"apple write for {owner_id} lost the cross-provider CAS {_CAS_ATTEMPTS} times")
+
+
+#: Sentinel distinguishing "lost the cross-provider CAS, retry" from None,
+#: which means "deliberately not applied" and must never be retried.
+_CAS_LOST = object()
+
+
+async def _try_set_apple_subscription(
+    owner_id: str,
+    *,
+    original_transaction_id: str,
+    status: str,
+    expires_at: int | None,
+    signed_date: int | None,
+):
+    """One attempt. Returns the row, None (do not retry), or ``_CAS_LOST``."""
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+
+    # Captured from the row AS READ, before _adopt_legacy_status can write to
+    # this very field — the condition is about the pre-write state.
+    cas_values: dict = {}
+    cross_provider = _unchanged_since_read(existing, _STRIPE_OWNED, cas_values)
+    # Snapshot BEFORE any mutation, so the write below can be a diff rather than
+    # a whole-item replace — see _write_changed_fields.
+    before = dict(existing)
+
+    existing["apple_original_transaction_id"] = original_transaction_id
+    # Must run BEFORE Apple's status joins the row, while the shared field
+    # still holds purely non-Apple state.
+    _adopt_legacy_status(existing)
+    # Apple's own status lives in its own field; the shared one and the
+    # management source are DERIVED from both providers below. Writing
+    # subscription_status directly here is what made an Apple expiry cancel a
+    # live Stripe subscription.
+    existing["apple_subscription_status"] = status
+    _apply_effective_status(existing, prefer="apple_iap")
+    if expires_at is not None:
+        existing["apple_expires_at"] = expires_at
+    else:
+        existing.pop("apple_expires_at", None)
+    # Watermark for the notification out-of-order guard (apple_iap). Only ever
+    # advances — a caller with no signedDate (the link path) leaves it alone
+    # rather than clearing it, or a purchase-link would reopen the window for
+    # every already-applied notification to be replayed.
+    if signed_date is not None:
+        existing["apple_last_signed_date"] = signed_date
+    existing["updated_at"] = utc_now_iso()
+
+    # The watermark comparison is a CONDITION on the write, not a check the
+    # caller makes first. Callers read the row through an eventually-consistent
+    # GSI, so two overlapping notifications can both observe an old watermark
+    # and both decide they are newest; the loser then writes last and restores
+    # access that had legitimately ended. Evaluated here, against the item as it
+    # actually is at write time, the older one is rejected however the reads
+    # interleaved.
+    #
+    # Returns None on rejection — the same "nothing was written" signal the
+    # missing-row case uses, which the caller already handles.
+    conditions: list[str] = []
+    values: dict = {}
+
+    if signed_date is not None:
+        conditions.append("(attribute_not_exists(apple_last_signed_date) OR apple_last_signed_date <= :sd)")
+        values[":sd"] = signed_date
+
+    # Ownership fence. The row must either have no Apple transaction yet or
+    # already own THIS one. Without it, `link_purchase`'s cross-account check —
+    # a query against an eventually-consistent, non-unique GSI followed by a
+    # write to a different row — lets two accounts submitting the same JWS both
+    # observe "unowned" and both go active on one subscription. The condition is
+    # evaluated against the row at write time, so the second writer loses.
+    #
+    # This fences the row, which is the half that matters for the common race
+    # (same transaction, two accounts, one of them wins). It does NOT make the
+    # id globally unique across rows — DynamoDB cannot condition on a GSI — so
+    # `link_purchase` still runs its lookup first to reject an id already owned
+    # elsewhere. See the note there.
+    conditions.append("(attribute_not_exists(apple_original_transaction_id) OR apple_original_transaction_id = :otid)")
+    values[":otid"] = original_transaction_id
+
+    # Cross-provider compare-and-set. Without it this whole-item write puts back
+    # the Stripe status from our snapshot, silently resurrecting a subscription
+    # Stripe cancelled a moment ago.
+    conditions.append(cross_provider)
+    values.update(cas_values)
+
+    try:
+        await _write_changed_fields(
+            owner_id,
+            before,
+            existing,
+            condition=" AND ".join(conditions),
+            values=values,
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # DynamoDB does not say WHICH condition failed, so re-read and ask our
+        # own fences directly. If they still refuse, the write was deliberately
+        # rejected and must NOT be retried — retrying a stale notification is
+        # how an expiry gets undone. Anything else means only the cross-provider
+        # value moved, which is exactly what a retry fixes.
+        fresh = await get_by_owner_id(owner_id)
+        if fresh is None:
+            return None
+        bound_to = fresh.get("apple_original_transaction_id")
+        if bound_to is not None and bound_to != original_transaction_id:
+            logger.info(
+                "billing_repo.apple_write_rejected owner_id=%s — row bound to a different transaction",
+                owner_id,
+            )
+            return None
+        if signed_date is not None and (fresh.get("apple_last_signed_date") or 0) > signed_date:
+            logger.info(
+                "billing_repo.apple_write_stale owner_id=%s signed_date=%s — newer already applied",
+                owner_id,
+                signed_date,
+            )
+            return None
+        return _CAS_LOST
+
+    publish_status_changed(owner_id)
+    return existing
+
+
 async def get_by_metronome_customer_id(metronome_customer_id: str) -> dict | None:
     """Resolve the billing row from a Metronome customer UUID.
 
@@ -425,28 +903,27 @@ async def set_subscription(
     ``set_team_subscription`` separately/afterward to (re)populate seat
     fields for live per-seat subs.
     """
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
 
-    existing["stripe_subscription_id"] = subscription_id
-    existing["subscription_status"] = status
-    # Always overwrite trial_end so a cancellation (trial_end=None) actually
-    # clears the field (otherwise a stale trial countdown lingers after
-    # subscription.deleted).
-    if trial_end is not None:
-        existing["trial_end"] = trial_end
-    else:
-        existing.pop("trial_end", None)
-    if clear_seat_fields:
-        existing.pop("subscription_item_id", None)
-        existing.pop("seat_count", None)
-    existing["updated_at"] = utc_now_iso()
+    def _mutate(existing: dict) -> None:
+        existing["stripe_subscription_id"] = subscription_id
+        # Stripe's own status, recorded alongside the shared one so the two
+        # providers can be COMBINED rather than overwriting each other (see
+        # _effective_status). Without this the shared field is last-writer-wins
+        # and an Apple expiry cancels a live Stripe subscription — or vice versa.
+        existing["stripe_subscription_status"] = status
+        _apply_effective_status(existing, prefer="stripe")
+        # Always overwrite trial_end so a cancellation (trial_end=None) actually
+        # clears the field (otherwise a stale trial countdown lingers after
+        # subscription.deleted).
+        if trial_end is not None:
+            existing["trial_end"] = trial_end
+        else:
+            existing.pop("trial_end", None)
+        if clear_seat_fields:
+            existing.pop("subscription_item_id", None)
+            existing.pop("seat_count", None)
 
-    table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
-    publish_status_changed(owner_id)
-    return existing
+    return await _put_with_apple_cas(owner_id, _mutate)
 
 
 async def set_team_subscription(
@@ -464,20 +941,18 @@ async def set_team_subscription(
     billing row exists, so a stray team webhook can never upsert a phantom
     ``{owner_id, ...}`` row with no stripe_customer_id.
     """
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
 
-    existing["stripe_subscription_id"] = subscription_id
-    existing["subscription_status"] = status
-    existing["subscription_item_id"] = subscription_item_id
-    existing["seat_count"] = seat_count
-    existing["updated_at"] = utc_now_iso()
+    def _mutate(existing: dict) -> None:
+        existing["stripe_subscription_id"] = subscription_id
+        # Same derivation as set_subscription — this is a Stripe writer too, and
+        # writing the shared field directly would make it last-writer-wins
+        # against Apple for any org that also has an IAP subscription.
+        existing["stripe_subscription_status"] = status
+        _apply_effective_status(existing, prefer="stripe")
+        existing["subscription_item_id"] = subscription_item_id
+        existing["seat_count"] = seat_count
 
-    table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
-    publish_status_changed(owner_id)
-    return existing
+    return await _put_with_apple_cas(owner_id, _mutate)
 
 
 _VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth"})

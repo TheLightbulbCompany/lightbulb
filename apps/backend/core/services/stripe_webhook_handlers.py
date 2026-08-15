@@ -273,6 +273,35 @@ def dispatch_metronome_provisioning(owner_id: str) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+async def start_trial_conversion(owner_id: str, flight_key: str) -> bool:
+    """Begin the trial→paid conversion for one owner, at most once.
+
+    The claim/stamp/dispatch/rollback dance below is provider-AGNOSTIC despite
+    living in a Stripe-named module — it turns the locked-down trial container
+    into a paid one, which has nothing to do with who took the money. Apple IAP
+    needs exactly the same thing on its own purchase path, so this is the seam
+    rather than a second copy of the sequence.
+
+    ``flight_key`` single-flights the entry: the Stripe path passes the
+    subscription id (several events arrive per change, unordered), the Apple
+    path the originalTransactionId (a link call and a SUBSCRIBED notification
+    describe the same purchase). Returns True iff this caller ran it.
+    """
+    if not await _claim_conversion_entry(owner_id, flight_key):
+        return False
+    try:
+        await _stamp_conversion_dispatch(owner_id)
+        asyncio.create_task(run_conversion_reprovision(owner_id))
+        return True
+    except Exception:
+        logger.exception("Trial-conversion dispatch failed for owner %s", owner_id)
+        # Free the claim so a sibling event or redelivery can retry a
+        # conversion that never got as far as the stamp. If the stamp DID land,
+        # the conversion_pending self-heal is the recovery path either way.
+        await _rollback_conversion_entry(owner_id, flight_key)
+        return False
+
+
 async def run_conversion_reprovision(owner_id: str) -> None:
     """Reprovision a converted owner's container off the trial shape, then
     release the row. asyncio.create_task target — never raises.
@@ -1093,53 +1122,15 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     except Exception:
         logger.exception("Failed to reset plan to standard on cancel for owner %s", account["owner_id"])
 
-    # Refresh the owner-facts file before teardown: teardown is best-effort
-    # and may be delayed or fail, and a still-running container's agents must
-    # not keep reporting an active paid plan. Status rides as an override —
-    # same-process pinning that outranks any row read. Internally best-effort.
-    from core.services.owner_facts import write_owner_facts
+    # Owner-facts refresh + container teardown + Paperclip disable, but ONLY if
+    # nothing else is still paying. Stripe ending is no longer the same question
+    # as the entitlement ending: an owner can hold a live Apple subscription on
+    # the same row, in which case the shared status stays active and tearing
+    # their container down would take away exactly what they are still paying
+    # for — with no further webhook coming to put it back.
+    from core.services.entitlement_teardown import teardown_if_unentitled
 
-    await write_owner_facts(account["owner_id"], account_overrides={"subscription_status": "canceled"})
-
-    # Tear down the user's container — they no longer have an active
-    # subscription. Best-effort; log and continue on failure so we
-    # don't 500 the webhook back to Stripe.
-    try:
-        from core.containers import get_ecs_manager
-
-        await get_ecs_manager().delete_user_service(account["owner_id"])
-    except Exception:
-        logger.exception(
-            "Container teardown on subscription.deleted failed for owner %s",
-            account["owner_id"],
-        )
-
-    # Disable Paperclip for this owner with a 30-day grace window —
-    # T13's cleanup cron purges the Paperclip-side artifacts after
-    # the grace elapses. Only THIS user is disabled; if they own a
-    # multi-member org the other members keep access until their
-    # own subscriptions cancel (or the org is deleted in Clerk).
-    from core.services.paperclip_provisioning import (
-        build_paperclip_provisioning,
-        close_paperclip_provisioning,
-    )
-
-    provisioning = None
-    try:
-        provisioning = await build_paperclip_provisioning()
-        await provisioning.disable(user_id=account["owner_id"])
-        put_metric(
-            "paperclip.webhook.disable",
-            dimensions={"trigger": "subscription_deleted"},
-        )
-    except Exception:
-        logger.exception(
-            "Paperclip disable on subscription.deleted failed for owner %s",
-            account["owner_id"],
-        )
-    finally:
-        if provisioning is not None:
-            await close_paperclip_provisioning(provisioning)
+    await teardown_if_unentitled(account["owner_id"], trigger="subscription_deleted")
     return None
 
 

@@ -152,3 +152,53 @@ describe("Settings account controls (App Store readiness)", () => {
     promptSpy.mockRestore();
   });
 });
+
+// An Apple subscription OUTLIVES the account: wipe_account deletes the Stripe
+// customer, the billing row and the Clerk user, but cannot touch StoreKit.
+// Delete without cancelling and Apple keeps charging for something that now
+// entitles nothing — and the appAccountToken binding means the purchase cannot
+// be restored onto a replacement account either.
+describe("deleting an Apple-billed account", () => {
+  it("warns and offers iOS Settings before the irreversible step", async () => {
+    const { Alert } = jest.requireActual("react-native");
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      subscription_source: "apple_iap",
+      trial_end: null,
+      provider_choice: "bedrock_claude",
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    fireEvent.press(await screen.findByText("Delete account"));
+
+    const [title, body, buttons] = alertSpy.mock.calls[0] as [
+      string,
+      string,
+      { text: string }[],
+    ];
+    expect(title).toMatch(/cancel your subscription first/i);
+    expect(body).toMatch(/does not cancel/i);
+    expect(buttons.map((b) => b.text)).toEqual(["Not now", "Open iOS Settings", "Delete anyway"]);
+    alertSpy.mockRestore();
+  });
+
+  it("goes straight to the normal confirmation for a Stripe subscriber", async () => {
+    const { Alert } = jest.requireActual("react-native");
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockAccountFixture = {
+      is_subscribed: true,
+      subscription_status: "active",
+      subscription_source: "stripe",
+      trial_end: null,
+      provider_choice: "bedrock_claude",
+      byo_provider: null,
+    };
+    await render(<Settings />);
+    fireEvent.press(await screen.findByText("Delete account"));
+
+    expect(alertSpy.mock.calls[0][0]).toBe("Delete account");
+    alertSpy.mockRestore();
+  });
+});

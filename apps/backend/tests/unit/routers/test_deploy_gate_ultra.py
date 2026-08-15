@@ -154,3 +154,129 @@ def test_standard_owner_ultra_company_409(
     mock_boto.assert_not_called()
     mock_run.assert_not_called()
     mock_create_task.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Agent budget on the deploy paths
+# ---------------------------------------------------------------------------
+
+
+def _standard_company_listing(agent_count: int = 5) -> dict:
+    """A company listing that needs Ultra on NOBODY's reading of its own size."""
+    listing = _ultra_company_listing()
+    listing["listing_id"] = "l_small"
+    listing["slug"] = "smallco"
+    listing["name"] = "SmallCo"
+    listing["manifest_json"] = {"company": {"agent_count": agent_count, "min_plan": "standard", "agent_slugs": ["a"]}}
+    return listing
+
+
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.count_paperclip_agents_for_owner", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_company_deploy_budgets_the_sum_not_just_the_package(
+    mock_billing, mock_get_published, mock_count, mock_create_task, admin_client
+):
+    """company_deploy_service ADDS its agents to the existing team rather than
+    replacing it, so a 'standard' package can still put a standard owner over
+    the cap. 8 existing + a 5-agent package = 13 -> needs Ultra -> 409.
+
+    Without the sum this returns 202 and lands 13 agents on the small box.
+    """
+    mock_billing.return_value = {"owner_id": "user_admin", "plan": "standard"}
+    mock_get_published.return_value = _standard_company_listing(agent_count=5)
+    mock_count.return_value = 8
+
+    resp = admin_client.post("/api/v1/marketplace/listings/smallco/deploy")
+
+    assert resp.status_code == 409, resp.text
+    assert "Ultra Pro" in resp.json()["detail"]
+    mock_create_task.assert_not_called()
+
+
+@patch("routers.marketplace_listings.asyncio.create_task")
+@patch("routers.marketplace_listings.company_deploy_service.run_company_deploy")
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.count_paperclip_agents_for_owner", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.billing_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_company_deploy_undeterminable_count_does_not_block(
+    mock_billing, mock_get_published, mock_count, mock_boto, mock_run, mock_create_task, admin_client
+):
+    """0 from the count means Paperclip was unreachable, NOT an empty roster.
+
+    It must drop out of the sum rather than read as 'no existing agents' — and
+    equally must not be treated as over-budget. Fail open, like every other
+    budget site: the deploy proceeds.
+    """
+    mock_billing.return_value = {"owner_id": "user_admin", "plan": "standard"}
+    mock_get_published.return_value = _standard_company_listing(agent_count=5)
+    mock_count.return_value = 0
+    mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
+
+    resp = admin_client.post("/api/v1/marketplace/listings/smallco/deploy")
+
+    assert resp.status_code == 202, resp.text
+    mock_create_task.assert_called_once()
+
+
+def _single_agent_listing() -> dict:
+    """A free, published, single-agent (non-company) listing."""
+    return {
+        "listing_id": "l_solo",
+        "version": 1,
+        "slug": "solo",
+        "name": "Solo",
+        "format": "agent",
+        "status": "published",
+        "price_cents": 0,
+        "tags": [],
+        "seller_id": "seller_x",
+        "s3_prefix": "listings/l_solo/v1/",
+        "manifest_json": {},
+    }
+
+
+@patch("routers.marketplace_listings._live_install_of", return_value=None)
+@patch("routers.marketplace_listings.enforce_agent_budget", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_single_agent_hire_is_budget_gated(mock_get_published, mock_enforce, _mock_live, admin_client):
+    """The one-agent hire path adds exactly one to the roster, so it carries the
+    same budget as every other create path."""
+    from fastapi import HTTPException
+
+    mock_get_published.return_value = _single_agent_listing()
+    mock_enforce.side_effect = HTTPException(status_code=409, detail="at limit")
+
+    resp = admin_client.post("/api/v1/marketplace/listings/solo/deploy")
+
+    assert resp.status_code == 409, resp.text
+    mock_enforce.assert_awaited_once()
+
+
+@patch("routers.marketplace_listings._live_install_of")
+@patch("routers.marketplace_listings.enforce_agent_budget", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_already_installed_retry_is_not_refused_at_the_limit(mock_get_published, mock_enforce, mock_live, admin_client):
+    """ORDERING GUARANTEE — the P2 regression this locks in.
+
+    A deploy whose response was lost leaves the owner installed but retrying.
+    The budget gate must sit BELOW the already-installed short-circuit, or that
+    retry is answered with "upgrade to Ultra Pro" for an agent they already have
+    and that this call would not create. Moving the gate back above the
+    short-circuit reintroduces the bug and fails here.
+    """
+    from fastapi import HTTPException
+
+    mock_get_published.return_value = _single_agent_listing()
+    mock_live.return_value = {"agent_id": "agent-existing", "template_version": 1}
+    # Over budget: if the gate ran first, this would 409 the retry.
+    mock_enforce.side_effect = HTTPException(status_code=409, detail="at limit")
+
+    resp = admin_client.post("/api/v1/marketplace/listings/solo/deploy")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["already_installed"] is True
+    assert resp.json()["agent_id"] == "agent-existing"
+    mock_enforce.assert_not_awaited()

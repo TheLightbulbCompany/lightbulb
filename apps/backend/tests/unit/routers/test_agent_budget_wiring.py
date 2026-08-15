@@ -8,12 +8,13 @@ IN THE SHAPE THAT PATH USES:
 
   /chat            -> an error ``res`` frame (the RPC is consumed, never forwarded)
   Teams REST       -> HTTPException 409
-  marketplace hire -> HTTPException 409
   Atlas bridge     -> HTTPException 409
   hire approval    -> returns None (runs inside /recommend, must degrade not fail)
 
-The approval path's own refusal is covered in test_marketplace_hire.py; the four
-raising/consuming paths are covered here.
+The marketplace single-agent hire (and the ordering guarantee that keeps its
+gate below the already-installed short-circuit) lives in
+test_deploy_gate_ultra.py, next to the other deploy-route gates; the approval
+path's boolean refusal is in test_marketplace_hire.py.
 """
 
 import os

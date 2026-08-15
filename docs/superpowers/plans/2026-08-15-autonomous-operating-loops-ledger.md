@@ -558,6 +558,13 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   support address is a Workspace mailbox rather than a Group. Reassign the
   account to the clean marketplace Vera's new ID during roster replacement;
   perform the mailbox and Pub/Sub smoke test only in the final trigger phase.
+- 2026-08-15: Founder sequencing correction: do not rely on EventBridge during
+  the current build. Forge and Tally must use only the already-connected
+  Settings AWS integration for outbound reads. PR #1801 remains open and
+  unmerged; its connector-stack update and controlled alarm-delivery proof move
+  to the final provider-transport phase alongside Gmail Pub/Sub. The Forge
+  reliability routine may be created paused, but its alarm trigger must not be
+  armed and #1801 is not a current critical-path dependency.
 
 ## Founder actions
 
@@ -568,10 +575,10 @@ authority.
   the current founder identity or publish fresh canonical listings. The
   existing seller user has no Clerk identity, so reauthentication cannot
   resolve this blocker.
-- Apply the latest versioned Isol8 AWS connector-stack template once after the
-  EventBridge API Destination feature deploys. The current connector already
-  has `PowerUserAccess`; this update adds the missing dedicated invoke role and
-  does not require changing the selected AWS scope.
+- At the final provider-transport phase, decide whether to deploy #1801. Only if
+  deployed, apply the latest versioned Isol8 AWS connector-stack template once;
+  the update adds the dedicated invoke role and does not change the selected
+  AWS scope.
 - Cash, cash as-of date, and fixed non-AWS monthly commitments remain required
   before Tally may calculate runway or complete operating burn.
 - Eight unreferenced legacy agent workspaces require one bounded destructive

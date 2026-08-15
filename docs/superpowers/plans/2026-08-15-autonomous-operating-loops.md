@@ -147,11 +147,14 @@ role remain the owner's explicit choice; this plan does not add a hidden
 founder credential or a marketplace-only exception.
 
 The AWS connection is outbound access; it does not by itself push CloudWatch
-alarm transitions into a routine. Alarm registration belongs to the AWS
-integration setup: configure an EventBridge API Destination to POST signed alarm
-events to the routine webhook when the connected role permits it. Otherwise the
-marketplace routine remains dormant with an explicit one-time AWS setup step.
-This uses the AWS integration and AWS event system, not a platform-ops token.
+alarm transitions into a routine. Current engineering, cost, and diagnostic
+work relies only on this existing Settings connection. Create the reliability
+routine paused and verify its on-demand AWS reads without adding another auth
+rail. EventBridge API Destination is an optional final delivery step, alongside
+Gmail Pub/Sub, and is not a prerequisite for the other loops. If it is enabled
+later, it posts signed alarm events to the routine webhook through the owner's
+AWS account. Otherwise the marketplace routine remains dormant with an
+explicit one-time setup step.
 
 ## Lobster workflow decision
 
@@ -335,7 +338,9 @@ Use separate worktrees and PRs:
 3. Friday identity contradiction and heal migration.
 4. Remove the agent-facing platform-ops token/auth/config/secret plumbing while
    preserving still-used human admin diagnostics behind Clerk admin auth.
-5. AWS-integration alarm registration through EventBridge API Destination.
+5. Verify outbound AWS reads through the existing Settings integration. Keep
+   EventBridge alarm delivery deferred and unmerged until the final transport
+   phase.
 6. Routine-native reviewer support from the separate owner.
 
 Exit: dev proves all primitives through the same UI and container paths a
@@ -418,14 +423,17 @@ These are smoke-test gates, not multi-week phases:
 1. Measurement and control: Gauge, Tally, Friday.
 2. Customer and reliability: Vera and Forge.
 3. Demand: Pulse community, SEO/content, and outbound.
-4. Final delivery plumbing: create/verify Gmail Pub/Sub, attach the OIDC push
-   subscription to Vera's routine webhook, send one controlled support message,
-   and prove end-to-end event delivery before arming the trigger.
+4. Final AWS delivery plumbing: only after the non-transport loops pass, decide
+   whether to deploy EventBridge API Destination, apply the connector-stack
+   update, and prove one controlled CloudWatch ALARM transition end to end.
+5. Final Gmail delivery plumbing: create/verify Gmail Pub/Sub, attach the OIDC
+   push subscription to Vera's routine webhook, send one controlled support
+   message, and prove end-to-end event delivery before arming the trigger.
 
 Arm each routine as soon as it passes. Do not wait for weeks of results between
-waves. The support Google integration is already connected. Gmail alone remains
-paused until the final Pub/Sub step passes; do not fall back to the 10-minute
-poll that creates empty wakes and unnecessary inference cost.
+waves. The reliability alarm trigger and Gmail trigger remain paused until their
+respective final transport steps pass. Do not replace either with polling that
+creates empty wakes and unnecessary inference cost.
 
 ### Phase 8: Operate and earn autonomy
 

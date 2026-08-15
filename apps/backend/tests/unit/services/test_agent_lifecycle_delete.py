@@ -272,6 +272,25 @@ async def test_delete_everywhere_exhausts_file_lock_retries_before_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_delete_runtime_agent_does_not_retry_unrelated_gateway_error():
+    gateway = MagicMock()
+    gateway.send_rpc = AsyncMock(side_effect=RuntimeError("gateway unavailable"))
+
+    with patch.object(lifecycle.asyncio, "sleep", new=AsyncMock()) as retry_sleep:
+        with pytest.raises(RuntimeError, match="gateway unavailable"):
+            await lifecycle._delete_runtime_agent_with_lock_retry(
+                gateway=gateway,
+                owner_id="owner",
+                agent_id="retiring",
+                ip="10.0.0.7",
+                token="token",
+            )
+
+    gateway.send_rpc.assert_awaited_once()
+    retry_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_delete_everywhere_reconciles_persistence_when_container_is_stopped():
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=(None, None))

@@ -29,7 +29,7 @@ is complete.
 |---|---|---|
 | `isol8-founder` | production | Authenticated as Isol8 Admin; `/settings/connections?connected=google` rendered the founder integration inventory. |
 | `isol8-publisher` | production | Authenticated as the same Isol8 Admin founder company. The visible Marketplace `My listings` view reports 0 active listings and 0 total installs, while the eight curated packages are owned by a different seller identity with byline `@isol8`. Reauthenticate this session as that seller before any vNext listing mutation. |
-| `isol8-dev` | development | Session rendered the public landing page and was advanced only to the Clerk sign-up form. Automated credential entry was refused under the founder credential boundary, so authenticated dev state is not proven; the founder must complete one allowed `+clerk_test` sign-in before clean-company UI mutations. |
+| `isol8-dev` | development | Authenticated as disposable dev identity `Codex Loops` using the permitted `+clerk_test` convention. Authenticated API evidence shows a clean company with exactly Friday and Atlas, both `Seed`. The replacement ECS task was running while the UI still displayed the transient provisioning state; preserve the session for clean-company marketplace tests. |
 
 ## Founder integration baseline
 
@@ -307,13 +307,17 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   `df942fc8-8fa7-414a-9e9e-59bfcec06184`, then OpenClaw rejected
   `agents.delete` with stable `code=file_lock_timeout`; request
   `a1ce453d-6308-4de9-9120-e60d38129548` returned 500 and Lens remained
-  visible. PR #1803 (`fix/agent-delete-lock-retry`, current head `573651867`)
-  adds two bounded retries only for OpenClaw's stable lock code, keeps all
-  unrelated errors and ambiguous RPC timeouts fail-closed, and proves cleanup
-  does not advance after exhaustion. Pre-review full unit evidence is 6,644
-  passed/7 skipped; post-review focused evidence is 106 passed. Final-head CI
-  and Claude review are in progress; `@codex review` was requested and the
-  connector again reported its quota exhausted.
+  visible. PR #1803 (`fix/agent-delete-lock-retry`, corrected head
+  `4e27ae276a27924ea987b732d39f7b65500ba67f`) adds two bounded retries only
+  for OpenClaw's stable lock code, keeps all unrelated errors and ambiguous
+  RPC timeouts fail-closed, and proves cleanup does not advance after
+  exhaustion. Claude review correctly found that head `573651867` covered the
+  REST route but not the WebSocket route used by the UI. The corrected head
+  routes both paths through one helper while preserving the browser request
+  ID. Corrected-head evidence is 68 focused tests, 154 complete
+  WebSocket/lifecycle tests, and the full backend unit suite with 6,646 passed
+  and 7 skipped; Ruff, formatting, and diff checks pass. Backend CI and Claude
+  review are running on the corrected head; `@codex review` was re-requested.
 - 2026-08-15: Authenticated production inventory returned 11 agents and six
   paused routines. Six non-terminal manual issues belong to deletion
   candidates and are protected by the lifecycle reassignment: `ISOA-31`,
@@ -335,6 +339,14 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   role, proving the integration credentials remain isolated from the runtime
   role. The existing AWS connection is sufficient for finance and reliability
   reads; no platform-ops token or AWS reconnect is required.
+- 2026-08-15: The same connected Cost Explorer source reports estimated
+  2026-08-01 through 2026-08-16 unblended AWS spend of `465.4811232512 USD`.
+  A straight-line 31-day projection is approximately `962 USD`, before known
+  non-AWS commitments. Largest visible service groups were ECS `126.153`,
+  EC2-Other `61.929`, S3 `56.505`, RDS `42.060`, ELB `30.185`, Secrets Manager
+  `29.866`, WAF `16.177`, and ECR `7.070` USD. This is below the `$2,000`
+  ceiling on known AWS spend but is not total company burn; Tally must retain
+  the incomplete-source refusal until fixed non-AWS commitments are supplied.
 - 2026-08-15: Read-only IAM inventory shows the connected
   `isol8-connector` role already has AWS-managed `PowerUserAccess`; the
   reliability setup therefore needs no scope upgrade. The dedicated
@@ -342,15 +354,21 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   routine must remain paused until the founder applies the latest versioned
   Isol8 connector-stack template. That one-time stack update, not a reconnect,
   is the remaining AWS authority edge.
+- 2026-08-15: The permitted dev-only sign-up was completed in `isol8-dev`.
+  Authenticated `GET /api/v1/teams/agents` returned exactly Friday and Atlas,
+  both `origin=Seed`. During a deployment replacement the status endpoint
+  reported `container_substatus=restarting`; ECS then showed task
+  `655324c7f9dc41e1a6c065a8f1351b9c` running on task definition
+  `isol8-dev-openclaw-user:162`. The prior healthy task was stopped by the ECS
+  service scheduler, not by an application crash. Recheck the UI readiness
+  state after rollout settles before using this company for marketplace smoke
+  tests.
 
 ## Founder actions
 
 Record only precise actions that cannot be completed without reserved founder
 authority.
 
-- Development browser authentication is currently not proven. Use the allowed
-  `+clerk_test` convention only in dev and verify the `424242` code once before
-  relying on it.
 - Decide whether to transfer the orphaned `@isol8` seller/listing ownership to
   the current founder identity or publish fresh canonical listings. The
   existing seller user has no Clerk identity, so reauthentication cannot

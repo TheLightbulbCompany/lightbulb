@@ -444,16 +444,14 @@ poll that creates empty wakes and unnecessary inference cost.
    the current founder identity or publish fresh canonical listings. The
    current `@isol8` seller user has no Clerk identity or container, so it
    cannot be reauthenticated before creating immutable vNext versions.
-2. Complete one permitted dev-only `+clerk_test` sign-in in `isol8-dev` before
-   clean-company marketplace and lifecycle validation.
-3. At the final Gmail step, complete any Google reauthentication or consent that
+2. At the final Gmail step, complete any Google reauthentication or consent that
    the existing logged-in browser session cannot satisfy without credentials.
-4. Complete credentials and sign-ins personally.
-5. Supply cash-on-hand, its as-of date, and known non-AWS monthly commitments
+3. Complete credentials and sign-ins personally.
+4. Supply cash-on-hand, its as-of date, and known non-AWS monthly commitments
    before relying on runway or total-burn reporting.
-6. Approve one bounded deletion of the eight recorded unreferenced legacy agent
+5. Approve one bounded deletion of the eight recorded unreferenced legacy agent
    workspaces after the target roster is live.
-7. Approve legal, financial, new-spend, and reputation-learning decisions when
+6. Approve legal, financial, new-spend, and reputation-learning decisions when
    surfaced.
 
 Browser/Chromium repair is not a prerequisite for these loops because direct

@@ -428,7 +428,10 @@ def catalog_efs_dir():
         os.makedirs(user_dir)
         config = {
             "agents": {"list": [{"id": "existing_agent", "name": "Existing"}]},
-            "plugins": {"memory": {"enabled": True}},
+            # Real plugin shape (plugins.entries.<name>) — this fixture feeds
+            # apply_deploy_aux_mutations, whose writes are schema-ENFORCED, so a
+            # made-up shape here would fail the gate rather than the assertion.
+            "plugins": {"entries": {"memory-core": {"enabled": True}}},
             "tools": {"allowed": ["web-search"]},
         }
         with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
@@ -661,7 +664,7 @@ async def test_apply_deploy_aux_mutations_merges_plugins(catalog_efs_dir):
         result = json.load(f)
 
     # Plugins deep-merged under entries.{name} (real OpenClaw schema).
-    assert result["plugins"]["memory"]["enabled"] is True
+    assert result["plugins"]["entries"]["memory-core"]["enabled"] is True
     assert result["plugins"]["entries"]["browser"]["enabled"] is True
     # agents.list NOT touched (aux mutation never writes there now).
     assert [a["id"] for a in result["agents"]["list"]] == ["existing_agent"]

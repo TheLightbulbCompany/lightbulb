@@ -18791,5 +18791,6 @@ var OpenClawSchema = external_exports.strictObject(OpenClawSchemaShape).superRef
   }
 });
 export {
-  OpenClawSchema as ConfigSchema
+  OpenClawSchema as ConfigSchema,
+  external_exports as z
 };

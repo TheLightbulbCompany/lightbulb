@@ -17,6 +17,7 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
+from core.services.config_schema import gate_config
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
     PaperclipMeta,
@@ -2197,6 +2198,14 @@ async def write_openclaw_config(
         channel_accounts=channel_accounts,
         acp_enabled=acp_enabled,
     )
+
+    # Full-file write — this path does NOT go through config_patcher._locked_rmw,
+    # so it carries its own schema gate (issue #941). Audit-only on purpose: the
+    # input here is our own generator, whose output the chaos suite already
+    # validates against the same vendored schema in CI, so a violation means the
+    # schema or the generator drifted and we want the alarm, not a provisioning
+    # outage on top of it.
+    gate_config(config, owner_id=user_id, context="write_openclaw_config")
 
     def _write() -> None:
         config_path.parent.mkdir(parents=True, exist_ok=True)

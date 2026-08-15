@@ -105,6 +105,16 @@ instruction, but still uses a shared keyring underneath. Safety claims must not
 pretend prompt text or an allowlist prevents another in-container agent from
 using a shared CLI credential.
 
+### Dev account testing
+
+The logged-in `isol8-dev` browser session may create disposable Clerk accounts
+when a clean company or first-run journey is required. In dev only, use an email
+subaddress containing `+clerk_test` and the static verification code `424242`.
+Verify this convention once through the current dev UI before automating further
+accounts. Never use it in production, and never use
+`isol8-e2e-testing@mailsac.com`; that account is reserved for the automated E2E
+journey and its state is intentionally destructive.
+
 ## AWS and platform operations decision
 
 The Settings AWS connection materializes an `isol8-connector` AWS CLI profile
@@ -351,7 +361,7 @@ clean company with only advertised integrations.
 2. Hire Forge and Gauge.
 3. Confirm Friday/Atlas show Seed and all five specialists show Marketplace
    with canonical listing versions.
-4. Assign the connected Google support mailbox to Vera after the founder grant.
+4. Assign the already-connected Google support mailbox to Vera.
 
 Exit: seven installed, six active, no active Custom agent.
 
@@ -381,6 +391,12 @@ For every routine prove:
 - no unintended external action;
 - circuit breaker behavior.
 
+For Vera, first prove mailbox identity, message retrieval, classification,
+reply construction, artifact creation, and Forge handoff through an on-demand
+run against a known support thread. Do not create a temporary polling trigger.
+The actual Gmail push-delivery smoke test is deliberately deferred to the final
+Pub/Sub arming step.
+
 Exit: one recorded passing run per routine in the founder company.
 
 ### Phase 7: Arm in dependency waves
@@ -390,10 +406,14 @@ These are smoke-test gates, not multi-week phases:
 1. Measurement and control: Gauge, Tally, Friday.
 2. Customer and reliability: Vera and Forge.
 3. Demand: Pulse community, SEO/content, and outbound.
+4. Final delivery plumbing: create/verify Gmail Pub/Sub, attach the OIDC push
+   subscription to Vera's routine webhook, send one controlled support message,
+   and prove end-to-end event delivery before arming the trigger.
 
 Arm each routine as soon as it passes. Do not wait for weeks of results between
-waves. Gmail alone may remain paused until `support@isol8.co` is confirmed as a
-Workspace mailbox, connected, assigned to Vera, and configured for Pub/Sub.
+waves. The support Google integration is already connected. Gmail alone remains
+paused until the final Pub/Sub step passes; do not fall back to the 10-minute
+poll that creates empty wakes and unnecessary inference cost.
 
 ### Phase 8: Operate and earn autonomy
 
@@ -408,10 +428,10 @@ Workspace mailbox, connected, assigned to Vera, and configured for Pub/Sub.
 
 ## Founder-only blockers
 
-1. Connect and assign `support@isol8.co`; confirm it is a mailbox, not a Group.
-2. Create/grant Gmail Pub/Sub resources and complete the OIDC push subscription.
-3. Complete credentials and sign-ins personally.
-4. Approve legal, financial, and reputation-learning decisions when surfaced.
+1. At the final Gmail step, complete any Google reauthentication or consent that
+   the existing logged-in browser session cannot satisfy without credentials.
+2. Complete credentials and sign-ins personally.
+3. Approve legal, financial, and reputation-learning decisions when surfaced.
 
 Browser/Chromium repair is not a prerequisite for these loops because direct
 web fetch/search and connected CLIs cover the first versions.

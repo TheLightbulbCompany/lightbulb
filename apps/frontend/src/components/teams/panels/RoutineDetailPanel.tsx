@@ -1099,7 +1099,9 @@ function EditRoutineDialog({
   const namedVars = vars.filter((v) => v.name.trim() !== "");
   const canSave = title.trim() !== "";
   const reviewerAgents = agents.filter(
-    (agent) => agent.id !== assigneeAgentId && agent.status !== "terminated",
+    (agent) =>
+      agent.id === reviewerAgentId ||
+      (agent.id !== assigneeAgentId && agent.status !== "terminated"),
   );
 
   function selectAssignee(nextAgentId: string | null) {

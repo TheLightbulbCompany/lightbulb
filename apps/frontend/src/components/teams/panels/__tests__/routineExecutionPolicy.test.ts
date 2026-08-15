@@ -105,4 +105,32 @@ describe("routineExecutionPolicy", () => {
     });
     expect(next?.stages).toEqual([]);
   });
+
+  it("retains unmodeled human and additional-agent reviewers", () => {
+    const additionalAgent = "88888888-8888-4888-8888-888888888888";
+    const humanReviewer = "99999999-9999-4999-8999-999999999999";
+    const policy: IssueExecutionPolicy = {
+      ...reviewerPolicy(),
+      stages: [
+        {
+          ...reviewerPolicy().stages![0],
+          participants: [
+            reviewerPolicy().stages![0].participants[0],
+            { type: "user", userId: humanReviewer, agentId: null },
+            { type: "agent", agentId: additionalAgent, userId: null },
+          ],
+        },
+      ],
+    };
+
+    const next = withRoutineReviewer(policy, nextReviewer);
+
+    expect(next?.stages?.[0]?.participants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "agent", agentId: nextReviewer }),
+        expect.objectContaining({ type: "user", userId: humanReviewer }),
+        expect.objectContaining({ type: "agent", agentId: additionalAgent }),
+      ]),
+    );
+  });
 });

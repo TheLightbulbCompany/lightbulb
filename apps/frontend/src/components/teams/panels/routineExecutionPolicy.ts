@@ -24,7 +24,23 @@ export function withRoutineReviewer(
   policy: IssueExecutionPolicy | null | undefined,
   reviewerAgentId: string | null,
 ): IssueExecutionPolicy | null {
+  const desiredReviewer = reviewerAgentId ? `agent:${reviewerAgentId}` : null;
+  let replacedPrimaryAgent = false;
+  const reviewerValues = stageParticipantValues(policy, "review").flatMap(
+    (value) => {
+      // The routine UI deliberately exposes only one agent reviewer. Retain
+      // every unmodeled participant so editing that one control cannot erase a
+      // human reviewer or an additional agent configured elsewhere.
+      if (!replacedPrimaryAgent && value.startsWith("agent:")) {
+        replacedPrimaryAgent = true;
+        return desiredReviewer ? [desiredReviewer] : [];
+      }
+      return [value];
+    },
+  );
+  if (!replacedPrimaryAgent && desiredReviewer) reviewerValues.push(desiredReviewer);
+
   return patchExecutionPolicy(policy, {
-    reviewers: reviewerAgentId ? [`agent:${reviewerAgentId}`] : [],
+    reviewers: reviewerValues,
   });
 }

@@ -431,6 +431,7 @@ def test_deploy_free_listing_succeeds(
     # catalog so it can drive ``agents.create`` / ``agents.update`` RPCs.
     assert kwargs["container_ip"] == "10.0.0.1"
     assert kwargs["container_token"] == "gw-tok"
+    assert kwargs["listing_id"] == "lst_1"
     # The deployed agent's operator device is paired into the running container
     # + its authToken bound, so Paperclip's first relayed wake isn't rejected
     # NOT_PAIRED. catalog deploy only RPC-registers; pairing is the route's job.
@@ -660,7 +661,12 @@ def test_deploy_legacy_listing_without_slice_falls_back(
     assert resp.json()["config_registered"] is False
 
 
-def _catalog_with_install(agent_id: str = "agent_first", slug: str = "demo-agent", seller_id: str | None = None):
+def _catalog_with_install(
+    agent_id: str = "agent_first",
+    slug: str = "demo-agent",
+    seller_id: str | None = None,
+    listing_id: str | None = None,
+):
     catalog = MagicMock()
     catalog.list_deployed_for_user.return_value = [
         {
@@ -669,6 +675,7 @@ def _catalog_with_install(agent_id: str = "agent_first", slug: str = "demo-agent
             "template_version": 1,
             # None = legacy sidecar written before the field existed.
             "seller_id": seller_id,
+            "listing_id": listing_id,
         },
     ]
     catalog.deploy_from_artifact = AsyncMock()
@@ -709,9 +716,43 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     # installed marker key off this, so the retry reads as success.
     assert body["agent_id"] == "agent_first"
     assert body["agent_uuid"] == "agent_first"
+    assert body["origin"] == "Custom"
+    assert "marketplace" not in body
     # No second Paperclip mint, no second artifact fetch, no second deploy.
     mock_create_pc.assert_not_awaited()
     catalog.deploy_from_artifact.assert_not_awaited()
+    mock_boto.assert_not_called()
+
+
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_retry_reports_canonical_marketplace_provenance(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_workspace, client
+):
+    listing = _published_listing(price_cents=0)
+    listing["seller_id"] = "seller-1"
+    mock_get_published.return_value = listing
+    mock_get_catalog.return_value = _catalog_with_install(
+        seller_id="seller-1",
+        listing_id="lst_1",
+    )
+    mock_get_workspace.return_value = _workspace_with_agents("agent_first")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["origin"] == "Marketplace"
+    assert resp.json()["marketplace"] == {
+        "listingId": "lst_1",
+        "slug": "demo-agent",
+        "version": 1,
+        "seller": "seller-1",
+    }
+    mock_create_pc.assert_not_awaited()
+    mock_get_catalog.return_value.deploy_from_artifact.assert_not_awaited()
     mock_boto.assert_not_called()
 
 

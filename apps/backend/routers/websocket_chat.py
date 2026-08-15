@@ -48,6 +48,7 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_chat,
     delete_paperclip_for_chat,
+    prepare_paperclip_agent_delete,
 )
 from core.services.paperclip_meta import PaperclipMeta, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
@@ -1965,6 +1966,15 @@ async def _process_rpc_background(
             req_id=req_id,
         ):
             return
+
+        # Preserve durable business state before OpenClaw removes the agent.
+        # Paperclip's native delete otherwise hard-deletes assigned routines
+        # and unassigns open issues. This preflight is idempotent, so the Teams
+        # REST path and a retried gateway delete converge on the same state.
+        if method == "agents.delete":
+            agent_id = (params or {}).get("agentId")
+            if isinstance(agent_id, str) and agent_id:
+                await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
 
         pool = get_gateway_pool()
         result = await pool.send_rpc(

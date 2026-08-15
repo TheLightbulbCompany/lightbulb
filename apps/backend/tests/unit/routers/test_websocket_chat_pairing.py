@@ -458,6 +458,10 @@ async def test_chat_delete_cascades_to_paperclip(monkeypatch):
     """
     paperclip_delete_mock = AsyncMock()
     monkeypatch.setattr(
+        "routers.websocket_chat.prepare_paperclip_agent_delete",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
         "routers.websocket_chat.delete_paperclip_for_chat",
         paperclip_delete_mock,
     )
@@ -532,6 +536,10 @@ async def test_chat_delete_paperclip_failure_is_non_fatal(monkeypatch):
     """
     paperclip_delete_mock = AsyncMock(
         side_effect=RuntimeError("paperclip transient outage"),
+    )
+    monkeypatch.setattr(
+        "routers.websocket_chat.prepare_paperclip_agent_delete",
+        AsyncMock(return_value={}),
     )
     monkeypatch.setattr(
         "routers.websocket_chat.delete_paperclip_for_chat",

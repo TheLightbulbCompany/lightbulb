@@ -4,7 +4,6 @@
 import { useCallback } from "react";
 import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
 // All /teams reads use keys prefixed "/teams". The agents LIST key is
@@ -15,8 +14,7 @@ import type { CompanyAgent } from "@/components/teams/shared/types";
 const AGENTS_KEY = "/teams/agents";
 
 export function useAgentMutations() {
-  const { patch, post } = useTeamsApi();
-  const callRpc = useGatewayRpcMutation();
+  const { patch, post, del } = useTeamsApi();
   const { mutate } = useSWRConfig();
 
   const revalidate = useCallback(
@@ -75,19 +73,13 @@ export function useAgentMutations() {
     [post, revalidate],
   );
 
-  // Delete goes through the OpenClaw gateway (removes the container entry +
-  // cascades to Paperclip via the websocket_chat interceptor). The Teams BFF
-  // DELETE would only remove the Paperclip row, which a reprovision resurrects.
+  // The Teams lifecycle endpoint owns the whole transaction: preserve open
+  // Paperclip work, remove OpenClaw/config/workspace state, then remove the
+  // Paperclip row. Keeping this behind one backend call also works while the
+  // user's container is stopped.
   const remove = useCallback(
     async (agentId: string) => {
-      await callRpc("agents.delete", { agentId, deleteFiles: true });
-      // The gateway acks agents.delete BEFORE the backend cascades the
-      // Paperclip row removal: websocket_chat sends the WS success, THEN runs
-      // EFS cleanup + delete_paperclip_for_chat. A blind revalidate here races
-      // that cascade and can refetch the still-present row, resurrecting the
-      // agent in the UI until a manual refresh. Drop it from the caches
-      // optimistically WITHOUT refetching — the agent is gone; any natural
-      // later revalidation reflects the server once the cascade has run.
+      await del(`/agents/${agentId}`);
       mutate(
         AGENTS_KEY,
         (cur: { agents?: CompanyAgent[] } | undefined) =>
@@ -96,7 +88,7 @@ export function useAgentMutations() {
       );
       mutate(`${AGENTS_KEY}/${agentId}`, undefined, { revalidate: false });
     },
-    [callRpc, mutate],
+    [del, mutate],
   );
 
   return { setReportsTo, pause, resume, resetSession, clearError, remove };

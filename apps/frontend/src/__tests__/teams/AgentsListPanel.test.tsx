@@ -14,6 +14,8 @@ interface AgentRow {
   role: string;
   status?: string;
   seeded?: boolean;
+  origin?: "Seed" | "Marketplace" | "Custom";
+  marketplace?: { listingId: string; slug: string; version: number; seller: string };
 }
 interface AgentsResp {
   data: { agents: AgentRow[] };
@@ -194,6 +196,27 @@ describe("AgentsListPanel", () => {
       "href",
       "/chat?panel=agent-inspector&agent=a1",
     );
+  });
+
+  it("renders marketplace origin and canonical version", () => {
+    mockRead.mockReturnValueOnce({
+      data: {
+        agents: [
+          {
+            id: "forge",
+            name: "Forge",
+            role: "engineer",
+            origin: "Marketplace",
+            marketplace: { listingId: "listing-1", slug: "forge", version: 3, seller: "seller-1" },
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+      mutate: mockMutate,
+    });
+    render(<AgentsListPanel />);
+    expect(screen.getByText("Marketplace · forge v3")).toBeInTheDocument();
   });
 
   it("row pause action calls pause; delete hidden for seeded agents", async () => {

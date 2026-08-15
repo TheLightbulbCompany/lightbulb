@@ -818,6 +818,22 @@ async def deploy_listing(
             "agent_id": already.get("agent_id"),
             "agent_uuid": already.get("agent_id"),
             "name": listing.get("name") or listing.get("slug"),
+            # A legacy sidecar without the canonical listing id is not enough
+            # evidence to claim Marketplace origin. The retry still heals to
+            # the live install, but provenance stays conservatively Custom.
+            "origin": ("Marketplace" if already.get("listing_id") and already.get("seller_id") else "Custom"),
+            **(
+                {
+                    "marketplace": {
+                        "listingId": already.get("listing_id"),
+                        "slug": listing.get("slug"),
+                        "version": already.get("template_version") or listing.get("version", 1),
+                        "seller": already.get("seller_id"),
+                    }
+                }
+                if already.get("listing_id") and already.get("seller_id")
+                else {}
+            ),
             "skills_added": [],
             "plugins_enabled": [],
             # Nothing was installed this call, so there is nothing new to warn
@@ -989,6 +1005,7 @@ async def deploy_listing(
                 new_agent_id=new_agent_id,
                 container_ip=container_ip,
                 container_token=container_token,
+                listing_id=listing.get("listing_id"),
                 seller_id=listing.get("seller_id"),
             )
 

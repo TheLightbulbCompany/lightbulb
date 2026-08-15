@@ -679,9 +679,8 @@ async def test_deploy_carries_cron_jobs_with_remapped_id_and_agent():
 
 
 @pytest.mark.asyncio
-async def test_deploy_sidecar_records_seller_id():
-    """Slugs are not unique across sellers; the sidecar's seller_id is what
-    lets install idempotency tell two sellers' same-slug listings apart."""
+async def test_deploy_sidecar_records_canonical_marketplace_identity():
+    """Trusted listing identity is persisted outside the seller artifact."""
     svc, ws, _aux, _pair, _gw = _make_service()
     await svc.deploy_from_artifact(
         owner_id="user_buyer",
@@ -692,9 +691,11 @@ async def test_deploy_sidecar_records_seller_id():
         container_ip="10.0.0.1",
         container_token="tok",
         new_agent_id="agent_abc",
+        listing_id="listing_1",
         seller_id="seller_1",
     )
     content = ws.write_template_sidecar.call_args.kwargs["content"]
+    assert content["listing_id"] == "listing_1"
     assert content["seller_id"] == "seller_1"
     assert content["cron_job_ids"] == []
 
@@ -811,7 +812,12 @@ def test_list_deployed_for_user_keyed_by_owner_id():
     workspace = MagicMock()
     workspace.list_workspace_agent_dirs.return_value = ["agent_a", "agent_b", "agent_c"]
     workspace.read_template_sidecar.side_effect = [
-        {"template_slug": "pitch", "template_version": 3, "seller_id": "seller_p"},
+        {
+            "listing_id": "listing_p",
+            "template_slug": "pitch",
+            "template_version": 3,
+            "seller_id": "seller_p",
+        },
         None,
         {"template_slug": "scout", "template_version": 1},
     ]
@@ -825,10 +831,22 @@ def test_list_deployed_for_user_keyed_by_owner_id():
 
     workspace.list_workspace_agent_dirs.assert_called_once_with("org_xyz")
     assert out == [
-        {"agent_id": "agent_a", "template_slug": "pitch", "template_version": 3, "seller_id": "seller_p"},
+        {
+            "agent_id": "agent_a",
+            "template_slug": "pitch",
+            "template_version": 3,
+            "listing_id": "listing_p",
+            "seller_id": "seller_p",
+        },
         # Legacy sidecar without the field surfaces seller_id=None so the
         # idempotency check knows to fall back to slug-only matching.
-        {"agent_id": "agent_c", "template_slug": "scout", "template_version": 1, "seller_id": None},
+        {
+            "agent_id": "agent_c",
+            "template_slug": "scout",
+            "template_version": 1,
+            "listing_id": None,
+            "seller_id": None,
+        },
     ]
 
 

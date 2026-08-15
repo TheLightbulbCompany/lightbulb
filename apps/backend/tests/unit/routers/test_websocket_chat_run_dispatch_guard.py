@@ -105,6 +105,7 @@ def _harness(monkeypatch, *, rpc_result=None, seeded=False, create_consumed=Fals
     monkeypatch.setattr(wc, "_intercept_agents_create", AsyncMock(return_value=create_consumed))
     monkeypatch.setattr(wc, "_intercept_agents_update", AsyncMock(return_value=False))
     monkeypatch.setattr(wc, "is_seeded_agent", AsyncMock(return_value=seeded))
+    monkeypatch.setattr(wc, "prepare_paperclip_agent_delete", AsyncMock(return_value={}))
     monkeypatch.setattr(wc, "delete_paperclip_for_chat", AsyncMock(return_value=None))
     import core.containers as containers
 

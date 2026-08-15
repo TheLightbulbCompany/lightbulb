@@ -1112,23 +1112,14 @@ class TestAgentDelete:
 
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"deleted": True})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
+        delete_everywhere = AsyncMock(return_value={"deleted": True, "agent_id": "agent_42"})
+        with patch(
+            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            delete_everywhere,
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
         assert res.status_code == 200
-        pool.send_rpc.assert_awaited_once()
-        kwargs = pool.send_rpc.await_args.kwargs
-        # method + agent_id forwarded to the gateway RPC
-        assert kwargs.get("method") == "agents.delete"
-        assert kwargs.get("user_id") == "u_target"
-        params = kwargs.get("params") or {}
-        assert params.get("agent_id") == "agent_42"
+        delete_everywhere.assert_awaited_once_with(owner_id="u_target", agent_id="agent_42")
 
     @pytest.mark.asyncio
     async def test_403_for_non_admin(self, async_client, non_admin_env):
@@ -1137,13 +1128,9 @@ class TestAgentDelete:
 
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"deleted": True})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
+        with patch(
+            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            new=AsyncMock(return_value={"deleted": True}),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/agents/agent_42/delete")
         assert res.status_code == 200

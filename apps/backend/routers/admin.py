@@ -803,7 +803,7 @@ async def _admin_agent_rpc(
 
 @router.post(
     "/users/{user_id}/agents/{agent_id}/delete",
-    description="Delete a user's agent via gateway agents.delete RPC.",
+    description="Delete an agent while preserving its durable company work.",
 )
 @audit_admin_action("agent.delete")
 async def admin_agent_delete(
@@ -812,22 +812,13 @@ async def admin_agent_delete(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    result = await _admin_agent_rpc(
-        user_id=user_id,
-        agent_id=agent_id,
-        method="agents.delete",
-        req_prefix="admin-agent-delete-",
-    )
-    # Same post-delete reclamation the chat path does. OpenClaw's own
-    # movePathToTrash cannot cross the EFS->overlay device boundary, so the
-    # agent's directories leak without this; under the local-sqlite layout its S3 replica
-    # prefix would also survive and re-materialize the deleted agent's database
-    # on every subsequent boot. Best-effort — the delete already succeeded.
-    from core.containers.workspace import cleanup_deleted_agent
+    from core.services.paperclip_agent_lifecycle import delete_agent_everywhere
 
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    await cleanup_deleted_agent(owner_id, agent_id)
-    return result
+    try:
+        return await delete_agent_everywhere(owner_id=owner_id, agent_id=agent_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.post(

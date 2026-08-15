@@ -20,17 +20,10 @@ import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutat
 import { isSeededAgent } from "@/components/teams/agents/AgentManageSection";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 
-interface Agent {
-  id: string;
-  name: string;
-  role: string;
-  status?: string;
-}
-
 export function AgentsListPanel() {
   const { read } = useTeamsApi();
   const { pause, resume, remove } = useAgentMutations();
-  const { data, isLoading, error, mutate } = read<{ agents: Agent[] }>(
+  const { data, isLoading, error, mutate } = read<{ agents: CompanyAgent[] }>(
     "/agents",
   );
   const [creating, setCreating] = useState(false);
@@ -41,7 +34,9 @@ export function AgentsListPanel() {
     const list = agents ?? [];
     return search
       ? list.filter((a) =>
-          (a.name + " " + a.role).toLowerCase().includes(search.toLowerCase()),
+          (a.name + " " + (a.role ?? "") + " " + (a.origin ?? ""))
+            .toLowerCase()
+            .includes(search.toLowerCase()),
         )
       : list;
   }, [agents, search]);
@@ -54,7 +49,7 @@ export function AgentsListPanel() {
     );
   }
 
-  const columns: PanelDataColumn<Agent>[] = [
+  const columns: PanelDataColumn<CompanyAgent>[] = [
     {
       key: "name",
       header: "Name",
@@ -73,11 +68,23 @@ export function AgentsListPanel() {
       ),
     },
     {
+      key: "origin",
+      header: "Origin",
+      cell: (a) => (
+        <span className="text-xs text-[var(--ink-soft)]">
+          {a.origin ?? "Custom"}
+          {a.origin === "Marketplace" && a.marketplace
+            ? ` · ${a.marketplace.slug} v${a.marketplace.version}`
+            : ""}
+        </span>
+      ),
+    },
+    {
       key: "actions",
       header: "",
       align: "right",
       cell: (a) => {
-        const seeded = isSeededAgent(a as unknown as CompanyAgent);
+        const seeded = isSeededAgent(a);
         const paused = a.status === "paused";
         return (
           <span className="flex items-center justify-end gap-2">
@@ -153,7 +160,7 @@ export function AgentsListPanel() {
           action={{ label: "New agent", onClick: () => setCreating(true) }}
         />
       ) : (
-        <PanelDataTable<Agent>
+        <PanelDataTable<CompanyAgent>
           rows={filtered}
           columns={columns}
           rowKey={(a) => a.id}
@@ -181,7 +188,7 @@ function CreateAgentDialog({
 }: {
   /** Existing roster — the manager picker's candidates. A brand-new agent
    *  has no descendants, so every existing agent is an eligible manager. */
-  agents: Agent[];
+  agents: CompanyAgent[];
   onClose: () => void;
   onCreated: () => void;
 }) {

@@ -810,49 +810,32 @@ class TestAdminMutationOwnerResolution:
         assert mock_patch.await_args.kwargs.get("owner_id") == "org_abc"
 
     @pytest.mark.asyncio
-    async def test_agent_delete_uses_org_owner_id_and_unique_req_id(self, async_client, admin_env, org_mode):
-        """Dispatch targets org_id AND the req_id carries a uuid4 nonce so
-        concurrent deletes on the same shared agent don't collide in the
-        gateway pending-RPC dict."""
-        import re
-
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"deleted": True})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
+    async def test_agent_delete_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        delete_everywhere = AsyncMock(return_value={"deleted": True})
+        with patch(
+            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            new=delete_everywhere,
         ):
             res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
 
         assert res.status_code == 200
-        # ECS container lookup uses org_id.
-        ecs.resolve_running_container.assert_awaited_once_with("org_abc")
-        # RPC user_id is org_id; req_id carries an 8-hex-char uuid nonce.
-        kwargs = pool.send_rpc.await_args.kwargs
-        assert kwargs["user_id"] == "org_abc"
-        assert re.fullmatch(r"admin-agent-delete-agt_42-[0-9a-f]{8}", kwargs["req_id"])
+        delete_everywhere.assert_awaited_once_with(owner_id="org_abc", agent_id="agt_42")
 
     @pytest.mark.asyncio
-    async def test_agent_delete_req_ids_are_unique_across_calls(self, async_client, admin_env, org_mode):
-        """P1: two concurrent delete calls on the same agent must produce
-        different req_ids so the gateway's pending-RPC dict keyed by req_id
-        doesn't clobber one future with another."""
-        pool = MagicMock()
-        pool.send_rpc = AsyncMock(return_value={"deleted": True})
-        ecs = MagicMock()
-        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
-        with (
-            patch("routers.admin.get_gateway_pool", return_value=pool),
-            patch("routers.admin.get_ecs_manager", return_value=ecs),
+    async def test_agent_delete_delegates_each_call_to_lifecycle(self, async_client, admin_env, org_mode):
+        delete_everywhere = AsyncMock(return_value={"deleted": True})
+        with patch(
+            "core.services.paperclip_agent_lifecycle.delete_agent_everywhere",
+            new=delete_everywhere,
         ):
             r1 = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
             r2 = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
+
         assert r1.status_code == r2.status_code == 200
-        req_ids = [c.kwargs["req_id"] for c in pool.send_rpc.await_args_list]
-        assert len(req_ids) == 2
-        assert req_ids[0] != req_ids[1]
+        assert delete_everywhere.await_count == 2
+        assert all(
+            call.kwargs == {"owner_id": "org_abc", "agent_id": "agt_42"} for call in delete_everywhere.await_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_agent_clear_sessions_uses_org_owner_id_and_unique_req_id(self, async_client, admin_env, org_mode):

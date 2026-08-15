@@ -35,7 +35,16 @@ class Settings(BaseSettings):
 
     # Clerk Auth
     CLERK_ISSUER: str = "https://your-clerk-domain.clerk.accounts.dev"
-    CLERK_AUDIENCE: str | None = None
+    # SEC-8 token-origin fence. Clerk session tokens carry NO `aud` claim (all
+    # our clients call plain getToken(), no JWT template), so the origin check
+    # is the `azp` (authorized party) claim — the frontend origin that minted
+    # the token. Comma-separated allowlist of origins whose tokens this API
+    # accepts; empty disables the check. Native-app tokens (mobile) carry no
+    # `azp` and always pass, per Clerk's own SDK semantics.
+    CLERK_AUTHORIZED_PARTIES: str = ""
+    # "audit" → log + metric on mismatch, never reject; "enforce" → reject.
+    # Rollout: deploy in audit, confirm zero mismatches in CloudWatch, flip.
+    CLERK_AZP_MODE: str = "audit"
 
     # DynamoDB
     DYNAMODB_TABLE_PREFIX: str = "isol8-dev-"
@@ -64,6 +73,11 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def clerk_authorized_parties_list(self) -> list[str]:
+        """Parse CLERK_AUTHORIZED_PARTIES as comma-separated list."""
+        return [p.strip() for p in self.CLERK_AUTHORIZED_PARTIES.split(",") if p.strip()]
 
     # --- ECS Fargate ---
     ECS_CLUSTER_ARN: str = ""
@@ -438,6 +452,13 @@ class Settings(BaseSettings):
             raise ValueError("CLERK_ISSUER not configured. Set the CLERK_ISSUER environment variable.")
         return v
 
+    @field_validator("CLERK_AZP_MODE")
+    @classmethod
+    def validate_clerk_azp_mode(cls, v: str) -> str:
+        if v not in ("audit", "enforce"):
+            raise ValueError(f"CLERK_AZP_MODE must be 'audit' or 'enforce'; got {v!r}")
+        return v
+
     @model_validator(mode="after")
     def _validate_deployed_security(self) -> "Settings":
         """Fail LOUD at boot rather than silently fail open in a deployment.
@@ -484,14 +505,17 @@ class Settings(BaseSettings):
                 "WS internal-caller enforcement must be ON with a secret in a deployed environment; "
                 "otherwise /ws/connect can be re-bound to another user via forged headers."
             )
-        # CLERK_AUDIENCE is NOT wired yet, so requiring it would crash every
-        # backend deploy on boot. Enabling `aud` verification (SEC-8) needs a
-        # Clerk JWT-template audience configured and wired into the task def
-        # FIRST; until then, warn loudly rather than fail.
-        if not self.CLERK_AUDIENCE:
+        # SEC-8: token-origin (`azp`) verification. In enforce mode an empty
+        # allowlist would silently verify nothing while looking secure — fail
+        # closed. In audit mode, warn loudly so the gap can't go quiet again.
+        if self.CLERK_AZP_MODE == "enforce" and not self.clerk_authorized_parties_list:
+            raise ValueError(
+                "CLERK_AZP_MODE=enforce requires CLERK_AUTHORIZED_PARTIES to be set in a deployed environment (SEC-8)."
+            )
+        if self.CLERK_AZP_MODE != "enforce":
             logging.getLogger(__name__).warning(
-                "CLERK_AUDIENCE is unset in a deployed environment — JWT 'aud' verification is "
-                "DISABLED; any token minted on this Clerk instance authenticates. Wire it (SEC-8)."
+                "Clerk azp verification is in AUDIT mode — token-origin mismatches are logged, "
+                "not rejected. Flip CLERK_AZP_MODE=enforce once audit shows zero mismatches (SEC-8)."
             )
         return self
 

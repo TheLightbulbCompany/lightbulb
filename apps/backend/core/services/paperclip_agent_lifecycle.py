@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_ISSUE_STATUSES = {"done", "cancelled"}
 _ISSUE_PAGE_SIZE = 1000
+_AGENT_DELETE_LOCK_RETRY_DELAYS_S: tuple[float, ...] = (0.25, 1.0)
 
 
 def _rows(payload: Any, key: str) -> list[dict]:
@@ -47,6 +48,56 @@ def _rows(payload: Any, key: str) -> list[dict]:
     else:
         rows = []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _is_openclaw_file_lock_timeout(exc: RuntimeError) -> bool:
+    """Return whether OpenClaw rejected a config mutation on its file lock."""
+
+    return "file_lock_timeout" in str(exc).lower()
+
+
+async def _delete_runtime_agent_with_lock_retry(
+    *,
+    gateway: Any,
+    owner_id: str,
+    agent_id: str,
+    ip: str,
+    token: str,
+) -> None:
+    """Delete from a running OpenClaw, retrying only its transient file lock."""
+
+    for attempt, delay_s in enumerate(_AGENT_DELETE_LOCK_RETRY_DELAYS_S, start=1):
+        try:
+            await gateway.send_rpc(
+                user_id=owner_id,
+                req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
+                method="agents.delete",
+                params={"agentId": agent_id, "deleteFiles": True},
+                ip=ip,
+                token=token,
+            )
+            return
+        except RuntimeError as exc:
+            if not _is_openclaw_file_lock_timeout(exc):
+                raise
+            logger.info(
+                "OpenClaw config lock blocked agent delete for owner=%s agent=%s (attempt %d/%d); retrying in %.2fs",
+                owner_id,
+                agent_id,
+                attempt,
+                len(_AGENT_DELETE_LOCK_RETRY_DELAYS_S) + 1,
+                delay_s,
+            )
+            await asyncio.sleep(delay_s)
+
+    await gateway.send_rpc(
+        user_id=owner_id,
+        req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
+        method="agents.delete",
+        params={"agentId": agent_id, "deleteFiles": True},
+        ip=ip,
+        token=token,
+    )
 
 
 async def prepare_paperclip_agent_delete(
@@ -184,11 +235,10 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
             "agents",
         )
         if any(agent.get("id") == agent_id for agent in live_agents):
-            await gateway.send_rpc(
-                user_id=owner_id,
-                req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
-                method="agents.delete",
-                params={"agentId": agent_id, "deleteFiles": True},
+            await _delete_runtime_agent_with_lock_retry(
+                gateway=gateway,
+                owner_id=owner_id,
+                agent_id=agent_id,
                 ip=ip,
                 token=container["gateway_token"],
             )

@@ -322,6 +322,19 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   exactly eight published OpenClaw listings, all under orphan seller
   `user_3DBS55XwZuB7LQIfWvwsvYWMFaM`: Vera v9, Tally v8, Stitch v9, Pulse v9,
   Lens v9, Thread v3, Ora v3, and Echo v3. Forge and Gauge do not yet exist.
+- 2026-08-15: Atlas was paused through the production agent inspector. The
+  inspector changed its action to `Resume`; a post-mutation authenticated
+  `GET /api/v1/teams/agents` returned Atlas with `status=paused` and
+  `origin=Seed`. Atlas remains installed as the dormant recruiter and no
+  routine may target it unless a deliberate hiring gap reactivates it.
+- 2026-08-15: The exact Cost Explorer capability check succeeded inside the
+  live founder task when run through the materialized `isol8-connector`
+  profile. `ce:GetCostAndUsage` returned estimated unblended cost
+  `185.4606969874 USD` for 2026-08-01 through 2026-08-07. The same command
+  without the connector profile was denied as the container's base ECS task
+  role, proving the integration credentials remain isolated from the runtime
+  role. The existing AWS connection is sufficient for finance and reliability
+  reads; no platform-ops token or AWS reconnect is required.
 
 ## Founder actions
 

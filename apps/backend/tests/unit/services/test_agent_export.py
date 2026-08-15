@@ -1238,6 +1238,83 @@ async def test_capture_routines_never_publishes_a_seeded_automations_description
 
 
 @pytest.mark.asyncio
+async def test_a_renamed_watch_routine_still_ports_nothing_of_the_seller():
+    """A title is MUTABLE — the routine detail panel supports title-only
+    edits. Rename a seeded Google watch and a title-keyed rule would hand it
+    to the ordinary schedule branch, publishing the renewal cron plus a
+    description holding the seller's mailbox and proxy URL. The webhook
+    trigger is what a rename cannot touch, so that is what decides."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "My calendar thing",
+                "description": "read /home/node/.openclaw/google-watch/pub_seller123.json ... -a seller@acme.com",
+                "triggers": [
+                    {"kind": "webhook"},
+                    {"kind": "schedule", "cronExpression": "0 6 * * 1,4", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    # Unnameable as a requirement (the title no longer inverts) and unsafe as
+    # a schedule — so it ports as nothing at all.
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_a_description_carrying_the_sellers_email_is_not_published():
+    """Routine capture runs AFTER scan_tarball, so a description is the one
+    seller-authored string reaching the public manifest unscanned. It gets the
+    same PII patterns the tarball does — which also catches the schedule-only
+    poll shape after a rename, where no trigger gives the automation away."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Check the mail",
+                "description": "poll seller@acme.com every ten minutes and triage",
+                "triggers": [{"kind": "schedule", "cronExpression": "*/10 * * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    # The routine still ports — it is a real schedule — but stripped of the
+    # text that names a person.
+    assert out == [{"title": "Check the mail", "description": "", "cron": "*/10 * * * *", "timezone": "UTC"}]
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_description_ports_intact():
+    """The scan must not eat the prompt that makes a ported routine useful."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Morning sweep",
+                "description": "Summarise what changed overnight and post it to the team.",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out[0]["description"] == "Summarise what changed overnight and post it to the team."
+
+
+@pytest.mark.asyncio
 async def test_capture_routines_ports_a_poll_automation_as_a_requirement_too():
     """The poll shape has no webhook trigger at all — just the */10 cron — but
     its description still names the seller's mailbox, and recreating the cron

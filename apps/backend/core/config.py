@@ -366,6 +366,21 @@ class Settings(BaseSettings):
     # from Secrets Manager + KMS by the CDK service stack at deploy time.
     # Re-used by paperclip_proxy to sign the proxy's own session cookie.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = ""
+
+    # Monitoring → Paperclip reliability loop. The webhook secret gates incoming
+    # Sentry/CloudWatch adapter traffic; Paperclip credentials are service-token
+    # only and are never echoed in evidence bundles. Empty secret disables routes.
+    RELIABILITY_WEBHOOK_SECRET: str = ""
+    SENTRY_WEBHOOK_SECRET: str = ""
+    RELIABILITY_PAPERCLIP_API_URL: str = ""
+    RELIABILITY_PAPERCLIP_API_KEY: str = ""
+    RELIABILITY_PAPERCLIP_COMPANY_ID: str = ""
+    RELIABILITY_JARVIS_AGENT_ID: str = ""
+    RELIABILITY_OWNER_AGENT_ID: str = ""
+    RELIABILITY_ESCALATION_AGENT_ID: str = ""
+    RELIABILITY_DEDUP_WINDOW_HOURS: int = 24
+    RELIABILITY_PARENT_ISSUE_ID: str = ""
+    RELIABILITY_PAPERCLIP_RUN_ID: str = ""
     # Shared bearer token the isol8.notifications Paperclip plugin sends on
     # POST /webhooks/paperclip-events. Empty disables the receiver (404).
     # Populated from Secrets Manager by the CDK service stack; the same secret

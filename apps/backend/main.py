@@ -56,6 +56,7 @@ from routers import (
     ops,
     orgs,
     paperclip_events,
+    reliability_events,
     paperclip_proxy,
     paperclip_trigger_proxy,
     platform_info,
@@ -786,6 +787,9 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 # Paperclip isol8.notifications plugin events (approvals + run lifecycle →
 # push notifications). Bearer-secret auth; disabled when the secret is unset.
 app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
+# Monitoring adapters (Sentry + CloudWatch) route safe evidence into Paperclip.
+app.include_router(reliability_events.router, prefix="/api/v1/hooks", tags=["hooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")

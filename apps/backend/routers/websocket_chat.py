@@ -48,6 +48,7 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_chat,
     delete_paperclip_for_chat,
+    delete_runtime_agent_with_lock_retry,
     prepare_paperclip_agent_delete,
 )
 from core.services.paperclip_meta import PaperclipMeta, read_from_agent_entry
@@ -1977,14 +1978,24 @@ async def _process_rpc_background(
                 await prepare_paperclip_agent_delete(owner_id=owner_id, agent_id=agent_id)
 
         pool = get_gateway_pool()
-        result = await pool.send_rpc(
-            user_id=owner_id,
-            req_id=req_id,
-            method=method,
-            params=params,
-            ip=ip,
-            token=container["gateway_token"],
-        )
+        agent_id = (params or {}).get("agentId") if method == "agents.delete" else None
+        if isinstance(agent_id, str) and agent_id:
+            result = await delete_runtime_agent_with_lock_retry(
+                gateway=pool,
+                owner_id=owner_id,
+                agent_id=agent_id,
+                ip=ip,
+                token=container["gateway_token"],
+            )
+        else:
+            result = await pool.send_rpc(
+                user_id=owner_id,
+                req_id=req_id,
+                method=method,
+                params=params,
+                ip=ip,
+                token=container["gateway_token"],
+            )
         # Scope sessions.list to the caller — the container returns every
         # session on the shared per-owner box (paperclip/cron/other members).
         if method == "sessions.list":

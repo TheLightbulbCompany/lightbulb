@@ -233,6 +233,33 @@ async def test_agents_delete_still_forwards_and_cascades(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_agents_delete_retries_transient_openclaw_file_lock(monkeypatch):
+    sent, pool, _ = _harness(monkeypatch)
+    pool.send_rpc.side_effect = [
+        RuntimeError(
+            '{"code":"UNAVAILABLE","message":"file lock timeout for '
+            '/home/node/.openclaw/openclaw.json: code=file_lock_timeout"}'
+        ),
+        {"ok": True},
+    ]
+
+    import core.services.paperclip_agent_lifecycle as lifecycle
+
+    retry_sleep = AsyncMock()
+    monkeypatch.setattr(lifecycle.asyncio, "sleep", retry_sleep)
+
+    await _run("agents.delete", {"agentId": "agent_bob"})
+
+    assert pool.send_rpc.await_count == 2
+    delete_calls = pool.send_rpc.await_args_list
+    assert all(call.kwargs["method"] == "agents.delete" for call in delete_calls)
+    assert delete_calls[0].kwargs["req_id"] != delete_calls[1].kwargs["req_id"]
+    retry_sleep.assert_awaited_once_with(0.25)
+    assert sent[-1]["ok"] is True
+    wc.delete_paperclip_for_chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_seeded_agent_delete_guard_still_consumes(monkeypatch):
     sent, pool, _ = _harness(monkeypatch, seeded=True)
 

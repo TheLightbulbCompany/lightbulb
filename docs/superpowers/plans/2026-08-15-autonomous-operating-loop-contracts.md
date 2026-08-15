@@ -91,7 +91,8 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Forge / Friday.
 - **Trigger:** GitHub `issues`; process only actions `opened` or `reopened`.
-- **Variables:** `GITHUB_REPOSITORY=Isol8AI/isol8`, `DEFAULT_BRANCH=main`.
+- **Variables:** `{{GITHUB_REPOSITORY}}=Isol8AI/isol8`,
+  `{{DEFAULT_BRANCH}}=main`.
 - **Outcome:** Turn a real issue into verified triage and, when warranted, a
   reviewable code change.
 - **Inputs:** webhook payload, canonical GitHub issue, repository code/tests,
@@ -117,7 +118,8 @@ file with the plan when the goal closes.
 - **Owner / reviewer:** Forge / Friday.
 - **Trigger:** EventBridge API Destination carrying CloudWatch transitions to
   `ALARM` only, signed by the routine webhook secret.
-- **Variables:** `AWS_PROFILE=isol8-connector`, connected AWS region, repository.
+- **Variables:** `{{AWS_PROFILE}}=isol8-connector`, `{{AWS_REGION}}`, and
+  `{{GITHUB_REPOSITORY}}`.
 - **Outcome:** Explain and resolve, or explicitly contain, a production alarm.
 - **Inputs:** alarm payload, `describe-alarm-history`, relevant CloudWatch
   metrics/logs, current deployment state, repository, and related incidents.
@@ -139,8 +141,9 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Pulse / Gauge.
 - **Trigger:** `0 9 * * *`.
-- **Variables:** ICP, product facts URL, disallowed-claims list, daily result
-  limit, and channel list `HN,Reddit,X`.
+- **Variables:** `{{ICP}}`, `{{PRODUCT_FACTS_URL}}`,
+  `{{DISALLOWED_CLAIMS}}`, `{{DAILY_RESULT_LIMIT}}=1`, and
+  `{{CHANNELS}}=HN,Reddit,X`.
 - **Outcome:** Solve one current ICP problem in public and make Isol8
   discoverable through usefulness, not a pitch.
 - **Inputs:** current HN/Reddit/X discussions, company search for prior answers,
@@ -162,8 +165,9 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Pulse / Gauge.
 - **Trigger:** `0 9 * * 2`.
-- **Variables:** ICP queries, site/repository, product-facts URL, content
-  backlog/project ID, disallowed claims.
+- **Variables:** `{{ICP_QUERY_SET}}`, `{{SITE_AND_REPOSITORY}}`,
+  `{{PRODUCT_FACTS_URL}}`, `{{CONTENT_PROJECT_ID}}`, and
+  `{{DISALLOWED_CLAIMS}}`.
 - **Outcome:** Close the highest-evidence discovery gap with a useful,
   technically accurate asset.
 - **Inputs:** search results/snippets, company search, current site content,
@@ -186,8 +190,9 @@ file with the plan when the goal closes.
 
 - **Owner / audit owner:** Pulse / Vera via reply evidence.
 - **Trigger:** `0 10 * * 1-5`.
-- **Variables:** ICP, exclusion list, `DAILY_PROSPECT_LIMIT=10`, first-outbound
-  project ID, founder sending mailbox.
+- **Variables:** `{{ICP}}`, `{{EXCLUSION_LIST}}`,
+  `{{DAILY_PROSPECT_LIMIT}}=10`, `{{OUTBOUND_PROJECT_ID}}`, and
+  `{{FOUNDER_SENDING_MAILBOX}}`.
 - **Outcome:** Supply ten evidence-backed prospects and a specific reason-now
   for founder learning; never manufacture a generic lead list.
 - **Inputs:** recent Show HN/launch/funding/hiring/product signals from public
@@ -211,8 +216,9 @@ file with the plan when the goal closes.
 - **Owner / audit owner:** Vera / weekly customer-health routine.
 - **Trigger:** Gmail `gmail.message` push for the assigned
   `support@isol8.co` mailbox; never polling.
-- **Variables:** support mailbox assignment, product-facts URL, response policy,
-  repository, SLA target.
+- **Variables:** `{{SUPPORT_MAILBOX}}`, `{{PRODUCT_FACTS_URL}}`,
+  `{{RESPONSE_POLICY}}`, `{{GITHUB_REPOSITORY}}`, and
+  `{{SLA_TARGET_MINUTES}}`.
 - **Outcome:** Resolve the customer request in one thread or route a concrete
   product defect to Forge without losing the customer reply.
 - **Inputs:** Gmail thread via `gog`, verified account identity, company search,
@@ -235,7 +241,8 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Vera / Gauge.
 - **Trigger:** `0 8 * * 1`.
-- **Variables:** support mailbox, risk thresholds, intervention policy.
+- **Variables:** `{{SUPPORT_MAILBOX}}`, `{{RISK_THRESHOLDS}}`, and
+  `{{INTERVENTION_POLICY}}`.
 - **Outcome:** Identify real customer risk and complete the smallest helpful
   intervention before churn.
 - **Inputs:** Stripe customer/subscription state, Gmail support/reply history,
@@ -259,7 +266,8 @@ file with the plan when the goal closes.
 - **Owner / audit owner:** Vera / weekly customer-health routine.
 - **Trigger:** Stripe `invoice.payment_failed`, `customer.subscription.deleted`,
   and `charge.refunded` events as one routine with multiple triggers.
-- **Variables:** support mailbox, recovery policy, authorization lookback.
+- **Variables:** `{{SUPPORT_MAILBOX}}`, `{{RECOVERY_POLICY}}`, and
+  `{{AUTHORIZATION_LOOKBACK_DAYS}}`.
 - **Outcome:** Help a customer recover legitimate access/revenue state and
   detect unauthorized financial actions without taking financial authority.
 - **Inputs:** canonical Stripe object/event, customer Gmail thread, company
@@ -281,7 +289,8 @@ file with the plan when the goal closes.
 - **Owner / reviewer:** Gauge / Friday.
 - **Trigger:** PostHog webhook filtered in PostHog to browser-emitted
   `onboarding_gate_blocked`; the routine rejects unrelated event names.
-- **Variables:** repository, CloudWatch namespace `Isol8`, blocker thresholds.
+- **Variables:** `{{GITHUB_REPOSITORY}}`,
+  `{{CLOUDWATCH_NAMESPACE}}=Isol8`, and `{{BLOCKER_THRESHOLDS}}`.
 - **Outcome:** Turn a named onboarding wall into a reproduced, owned product
   issue before acquisition is scaled.
 - **Inputs:** PostHog browser event and person/session context, surrounding
@@ -304,8 +313,9 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Gauge / Friday.
 - **Trigger:** `0 9 * * 1`.
-- **Variables:** D30/D60/D90 targets, GTM goal/project IDs, cohort timezone,
-  acquisition channel mapping.
+- **Variables:** `{{GTM_TARGETS}}` containing the D30/D60/D90 targets,
+  `{{GTM_GOAL_ID}}`, ordered `{{GTM_PROJECT_IDS}}`,
+  `{{COHORT_TIMEZONE}}=America/Aruba`, and `{{CHANNEL_MAPPING}}`.
 - **Outcome:** Publish the weekly constraint-setting scorecard and assign the
   single most important evidence-backed follow-up.
 - **Inputs:** browser-emitted PostHog events, persistent
@@ -330,9 +340,10 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Tally / Gauge.
 - **Trigger:** `0 7 * * 1`.
-- **Variables:** `AWS_PROFILE=isol8-connector`,
-  `MONTHLY_SPEND_CAP_USD=2000`, `CASH_ON_HAND_USD`, `CASH_AS_OF`,
-  `FIXED_MONTHLY_COMMITTED_SPEND_USD`, source-coverage list.
+- **Variables:** `{{AWS_PROFILE}}=isol8-connector`,
+  `{{MONTHLY_SPEND_CAP_USD}}=2000`, `{{FINANCE_MANUAL_INPUTS}}` containing
+  cash on hand, cash as-of date, and fixed monthly committed spend, plus
+  `{{SOURCE_COVERAGE}}`.
 - **Outcome:** State what Isol8 has spent, earns, and can safely commit without
   pretending incomplete accounting is complete.
 - **Inputs:** AWS Cost Explorer, Stripe final state, inference usage counters,

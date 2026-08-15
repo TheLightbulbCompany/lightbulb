@@ -498,6 +498,25 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   contract was simplified to two variables, which is the better operating
   shape independently of that layout defect. The missing `{{NAME}}` validation
   and modal overflow are filed together as #1807.
+- 2026-08-15: External reliability PR #1806 was monitored rather than
+  duplicated. Its current patch adds global backend settings for one Paperclip
+  company, one Jarvis agent, and a static Paperclip key, then creates issues
+  directly. No infrastructure change wires those values, and the path bypasses
+  routine runs/review/circuit breaking, marketplace packaging, buyer-local
+  identities, the Settings AWS connection, and the approved Forge owner in
+  #1801. A blocking evidence comment was posted as PR comment `5302266226`;
+  #1806 remains open and unmerged.
+- 2026-08-15: The clean dev company was used to exercise the blank-agent
+  customer path for Forge. Both bounded Create attempts failed before mutation
+  with `Connect call failed ('10.0.3.64', 18789)` and the roster remained
+  Friday/Atlas. AWS read-only evidence showed that exact address belonged to a
+  newly launched dev task
+  `63673393c2fa4771b5e0095149faee1a` for service
+  `openclaw-user_3Hwnrt08fmjmk5c46lV1BzQQEfo-00fb1677f007`, started at the
+  first attempt and still `RUNNING` with health `UNKNOWN`; the dev backend and
+  Paperclip tasks were healthy. This is a cold-container readiness boundary,
+  not a partially created source agent. Retry only after the same task is
+  demonstrably ready.
 
 ## Founder actions
 

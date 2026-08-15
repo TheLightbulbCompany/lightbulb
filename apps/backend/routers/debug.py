@@ -1,7 +1,8 @@
 """
 Dev-only container provisioning endpoints.
 
-Bypasses Stripe for local testing — disabled in production.
+Bypasses Stripe for local testing — served only in dev/local/test
+(see ``assert_debug_enabled``), refused everywhere else.
 """
 
 import logging
@@ -33,11 +34,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ALLOWLIST, not a blacklist. These endpoints bypass Stripe, wipe a tenant's
+# data and probe EFS, so they may exist only in a developer sandbox — any
+# ENVIRONMENT value we don't recognise as one is refused. The old
+# `== "prod"` test failed OPEN for every value nobody remembered to add:
+# `staging` is a legal deployed value (core/config.py _DEPLOYED_ENVIRONMENTS)
+# and would have exposed the whole /debug surface the day a staging stage
+# was created. Empty = unset = local dev / CI.
+_DEBUG_ENVIRONMENTS = frozenset({"dev", "local", "test", ""})
+
+
+def assert_debug_enabled(endpoint: str = "debug") -> None:
+    """Raise 403 unless ENVIRONMENT is a developer sandbox.
+
+    The single gate for every /debug route. Routes that can use a FastAPI
+    dependency go through ``require_non_production``; handlers that need the
+    per-endpoint metric label call this directly. Do not re-inline the check.
+    """
+    if settings.ENVIRONMENT not in _DEBUG_ENVIRONMENTS:
+        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": endpoint})
+        raise HTTPException(status_code=403, detail="Not available in this environment")
+
+
 async def require_non_production() -> None:
-    """Dependency that blocks access in production environments."""
-    if settings.ENVIRONMENT == "prod":
-        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "debug"})
-        raise HTTPException(status_code=403, detail="Not available in production")
+    """Route-dependency form of :func:`assert_debug_enabled`."""
+    assert_debug_enabled()
 
 
 @router.post(
@@ -50,7 +71,7 @@ async def require_non_production() -> None:
     operation_id="debug_provision_container",
     dependencies=[Depends(require_non_production)],
     responses={
-        403: {"description": "Not available in production"},
+        403: {"description": "Not available outside dev/local/test"},
         409: {"description": "Container already running"},
         503: {"description": "Provisioning failed"},
     },
@@ -120,7 +141,7 @@ async def provision_container(
     operation_id="debug_redeploy_container",
     dependencies=[Depends(require_non_production)],
     responses={
-        403: {"description": "Not available in production"},
+        403: {"description": "Not available outside dev/local/test"},
         404: {"description": "No container found"},
         503: {"description": "Redeploy failed"},
     },
@@ -175,7 +196,7 @@ async def redeploy_container(
     operation_id="debug_remove_container",
     dependencies=[Depends(require_non_production)],
     responses={
-        403: {"description": "Not available in production"},
+        403: {"description": "Not available outside dev/local/test"},
         404: {"description": "No container found"},
     },
 )
@@ -207,13 +228,11 @@ async def remove_container(
     ),
     operation_id="debug_delete_user_data",
     responses={
-        403: {"description": "Disabled in production"},
+        403: {"description": "Not available outside dev/local/test"},
     },
 )
 async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
-    if settings.ENVIRONMENT == "prod":
-        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "user-data"})
-        raise HTTPException(status_code=403, detail="Disabled in production")
+    assert_debug_enabled("user-data")
 
     # Mirror /debug/provision DELETE — non-admin org members must not be able
     # to wipe shared org-scoped state (containers, billing, api-keys, etc.)
@@ -415,13 +434,11 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     operation_id="debug_efs_exists",
     responses={
         400: {"description": "Path outside the workspace mount root"},
-        403: {"description": "Disabled in production"},
+        403: {"description": "Not available outside dev/local/test"},
     },
 )
 async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
-    if settings.ENVIRONMENT == "prod":
-        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "efs-exists"})
-        raise HTTPException(status_code=403, detail="Disabled in production")
+    assert_debug_enabled("efs-exists")
 
     # Scope the probe to the caller's own workspace dir. Without this, any
     # authenticated dev/staging user could probe whether files exist in
@@ -451,7 +468,7 @@ async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
     ),
     operation_id="debug_ddb_rows",
     responses={
-        403: {"description": "Disabled in production"},
+        403: {"description": "Not available outside dev/local/test"},
     },
 )
 async def ddb_rows(
@@ -459,9 +476,7 @@ async def ddb_rows(
     user_id: str | None = None,
     auth: AuthContext = Depends(get_current_user),
 ):
-    if settings.ENVIRONMENT == "prod":
-        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "ddb-rows"})
-        raise HTTPException(status_code=403, detail="Disabled in production")
+    assert_debug_enabled("ddb-rows")
 
     # Restrict to caller-owned data. The endpoint is meant for the test
     # harness to verify ITS OWN teardown — anyone passing a different

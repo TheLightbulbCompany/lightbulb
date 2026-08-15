@@ -218,20 +218,32 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   feed is board-only, so the skill documents decisions/queues as agent inputs
   to attention rather than falsely claiming an agent-read API. PR #1797 was
   squash-merged as `c935eff8a114ec2cfad8d150eed91b9c54545582`;
-  deployment run `31872851837` is in progress and must succeed before runtime
-  use.
+  deployment run `31872851837` completed successfully through the production
+  service, observability, and final Vercel jobs. Image build run `31872851843`
+  also succeeded and published tag `2026.7.2-isol8.4-c935eff` at digest
+  `sha256:8a39ad18da59c2b93861143833d896919ebe7829870664595475fa6fcb568115`.
+  Runtime use still requires the explicit image pin and per-owner roll below.
 - 2026-08-15: No external platform-ops token-removal PR was visible yet. A
   tested local fallback exists at `d172f4069` but is intentionally unpushed;
   it must not be published while the founder's external agent owns that work.
-- 2026-08-15: Agent provenance and symmetric lifecycle PR #1799 is open at
+- 2026-08-15: Agent provenance and symmetric lifecycle PR #1799 was built at
   head `c46e40901120984db81361bf1e8842f4c39fb74f`. Primary review found and
   fixed two asymmetries: approval-driven hires omitted `listing_id` and were
   stamped Custom, and a deletion retry could not converge when OpenClaw had
   already removed the runtime agent. The focused post-fix service suite passed
   87 tests; Ruff, format-check, and diff-check passed. Frontend CI, full Backend
   CI, and Claude review passed on the new head.
-  `@codex review` was re-requested in comment `5301140224`; the PR remains
-  unmerged and undeployed.
+  `@codex review` was re-requested in comment `5301140224`. PR #1799 was
+  squash-merged as `0ccee31285eac46f0c46985724b11af3cd0c876b`; deployment
+  run `31873768016` is in progress and must succeed before roster deletion.
+- 2026-08-15: Explicit image-pin PR #1802 is open at head `479c467d6`. It
+  changes both environment defaults to the already-built
+  `2026.7.2-isol8.4-c935eff` image and records the complete skill-only delta.
+  The JSON validates against `openclaw-version.schema.json`; 42 focused
+  backend version/admin tests and 28 container-stack tests passed, and
+  diff-check is clean. `@codex review` was requested in comment `5301301999`.
+  The pin changes no existing owner; the founder container must be rolled
+  explicitly after merge and deployment.
 - 2026-08-15: Read-only ECS inspection found 19 top-level agent workspaces but
   only 11 live OpenClaw agent entries. The eight unreferenced directories are
   five 88-KB UUID-keyed Jarvis remnants plus `workspace-jarvis` (436 KB),

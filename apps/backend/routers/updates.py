@@ -17,7 +17,12 @@ from core.auth import (
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
-from core.services.update_service import apply_update, queue_fleet_image_update
+from core.services.update_service import (
+    TASK_DEFINITION_REFRESH_KIND,
+    apply_update,
+    queue_fleet_image_update,
+    queue_fleet_task_definition_refresh,
+)
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -40,7 +45,10 @@ class ApplyRequest(BaseModel):
 
 class AdminUpdateRequest(BaseModel):
     owner_id: str = Field(..., description="Owner ID or 'all' for fleet-wide")
-    update_type: str = Field(..., description="Type of update (e.g. 'image_update', 'container_resize')")
+    update_type: str = Field(
+        ...,
+        description="Type of update (e.g. 'image_update', 'container_resize', 'task_definition_refresh')",
+    )
     description: str = Field(..., description="Human-readable description")
     changes: dict = Field(default_factory=dict, description="Change payload")
     force_by: Optional[str] = Field(default=None, description="ISO timestamp deadline")
@@ -110,7 +118,7 @@ async def apply_or_schedule_update(
     "/updates",
     summary="Admin: create updates",
     description=(
-        "Create a pending update for a specific owner or all owners (fleet-wide image update). "
+        "Create an update for a specific owner, or a fleet image/base-task-definition rollout. "
         "Platform-admin only: targets arbitrary owner_ids (incl. 'all'), so leaving it open to any "
         "signed-in user would let a non-admin queue updates for anyone else's container. The earlier "
         "is_org_context-only guard was effectively unauthenticated in personal context."
@@ -126,6 +134,10 @@ async def admin_create_update(
             raise HTTPException(status_code=400, detail="changes.new_image is required for fleet image updates")
         count = await queue_fleet_image_update(new_image, body.description)
         return {"status": "queued", "count": count}
+
+    if body.owner_id == "all" and body.update_type == TASK_DEFINITION_REFRESH_KIND:
+        queued, skipped = await queue_fleet_task_definition_refresh(body.description)
+        return {"status": "scheduled", "queued": queued, "skipped": skipped}
 
     # Single owner update
     item = await update_repo.create(

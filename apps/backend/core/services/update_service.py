@@ -20,7 +20,8 @@ import logging
 import time
 
 from core.observability.metrics import put_metric
-from core.repositories import update_repo
+from core.repositories import container_repo, update_repo
+from core.dynamodb import utc_now_iso
 from core.services.catalog_slice import REMOVED_AGENT_ENTRY_KEYS
 from core.services.config_patcher import patch_openclaw_config, strip_removed_agent_keys
 from core.services.friday_identity import heal_seeded_files
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 # the right amount of paranoia. Public name (no underscore) since both
 # the webhook router and tests import it.
 PAPERCLIP_RETRY_KIND = "paperclip_provision"
+TASK_DEFINITION_REFRESH_KIND = "task_definition_refresh"
+TASK_DEFINITION_REFRESH_CHANGE = "refresh_from_base"
 
 # Daily purge pass cadence, in seconds.
 _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
@@ -111,6 +114,53 @@ async def queue_fleet_image_update(new_image: str, description: str | None = Non
 
     logger.info("Queued fleet image update for %d owners, image=%s", count, new_image)
     return count
+
+
+async def queue_fleet_task_definition_refresh(description: str | None = None) -> tuple[int, int]:
+    """Schedule a durable, sequential base-clone refresh for every owner.
+
+    The update worker processes due rows one at a time. Each apply waits for
+    the owner's ECS service to become stable, so this is a bounded fleet roll
+    rather than a burst of detached deployments. Existing task-definition
+    updates are skipped to preserve the per-owner single-roll invariant.
+    """
+
+    rows = await container_repo.scan_all()
+    scheduled_at = utc_now_iso()
+    queued = skipped = 0
+    for row in rows:
+        owner_id = row.get("owner_id")
+        if (
+            not owner_id
+            or not row.get("access_point_id")
+            or not row.get("task_definition_arn")
+            or row.get("status") not in {"running", "stopped"}
+            or row.get("needs_provision")
+        ):
+            skipped += 1
+            continue
+        in_flight = await update_repo.get_in_flight(owner_id)
+        if any(
+            isinstance(update.get("changes"), dict)
+            and any(
+                key in update["changes"]
+                for key in ("new_image", "new_cpu", "new_memory", TASK_DEFINITION_REFRESH_CHANGE)
+            )
+            for update in in_flight
+        ):
+            skipped += 1
+            continue
+        await update_repo.create(
+            owner_id=owner_id,
+            update_type=TASK_DEFINITION_REFRESH_KIND,
+            description=description or "Refresh task definition for config-lock recovery",
+            changes={TASK_DEFINITION_REFRESH_CHANGE: True},
+            scheduled_at=scheduled_at,
+        )
+        queued += 1
+
+    logger.info("Scheduled task-definition refresh for %d owners (%d skipped)", queued, skipped)
+    return queued, skipped
 
 
 # Keys upstream removed from the strict OpenClaw schema that an older
@@ -374,85 +424,97 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
         new_cpu = changes.get("new_cpu")
         new_memory = changes.get("new_memory")
 
-        if new_image or new_cpu or new_memory:
+        refresh_from_base = changes.get(TASK_DEFINITION_REFRESH_CHANGE) is True
+        if refresh_from_base and (new_image or new_cpu or new_memory):
+            raise ValueError("refresh_from_base cannot be combined with image or size changes")
+
+        if refresh_from_base or new_image or new_cpu or new_memory:
             from core.containers import get_ecs_manager
 
             ecs = get_ecs_manager()
 
-            # An image roll reuses the container's existing on-disk
-            # openclaw.json. Strip keys the new image's strict schema no
-            # longer accepts so the rolled gateway doesn't crash-loop at
-            # boot. No-op on a config already free of them.
-            if new_image:
-                await migrate_removed_config_keys(owner_id)
-
-                # Carry redaction rules onto already-provisioned containers.
-                # Nothing else does: the strip above only REMOVES keys, and
-                # replace_provider_block rebuilds provider/plugin subtrees but
-                # never `logging`. Without this an existing owner keeps the
-                # playbook that reads their Paperclip key while never gaining
-                # the pattern that redacts it — the cohort that needs it most.
-                # Additive and behaviour-free, so it is safe on every owner.
-                from core.containers.config import REDACT_PATTERNS
-                from core.services.config_patcher import (
-                    ensure_plugin_entries,
-                    ensure_redact_patterns,
+            if refresh_from_base:
+                await ecs.rollout_config_lock_protocol(owner_id)
+                logger.info(
+                    "Task-definition refresh reached ECS stability for owner=%s (update=%s)",
+                    owner_id,
+                    update_id,
                 )
-                from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
+            else:
+                # An image roll reuses the container's existing on-disk
+                # openclaw.json. Strip keys the new image's strict schema no
+                # longer accepts so the rolled gateway doesn't crash-loop at
+                # boot. No-op on a config already free of them.
+                if new_image:
+                    await migrate_removed_config_keys(owner_id)
 
-                try:
-                    await ensure_redact_patterns(owner_id, REDACT_PATTERNS)
-                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
-                    logger.exception("update_service: redact-pattern patch failed for owner=%s", owner_id)
+                    # Carry redaction rules onto already-provisioned containers.
+                    # Nothing else does: the strip above only REMOVES keys, and
+                    # replace_provider_block rebuilds provider/plugin subtrees but
+                    # never `logging`. Without this an existing owner keeps the
+                    # playbook that reads their Paperclip key while never gaining
+                    # the pattern that redacts it — the cohort that needs it most.
+                    # Additive and behaviour-free, so it is safe on every owner.
+                    from core.containers.config import REDACT_PATTERNS
+                    from core.services.config_patcher import (
+                        ensure_plugin_entries,
+                        ensure_redact_patterns,
+                    )
+                    from core.services.paperclip_credential_rule import PAPERCLIP_CREDS_PLUGIN_PATCH
 
-                # Enable the credential plugin on the way in. The roll bakes
-                # the extension but reuses the on-disk config, so without this
-                # an existing owner carries a plugin that never activates —
-                # and any later path that writes the new playbook (a company
-                # import, a marketplace hire) would be claiming credentials
-                # are in the environment when nothing puts them there.
-                # Enabling it alone is harmless: an agent still reading the
-                # key file simply has the credentials twice.
-                try:
-                    await ensure_plugin_entries(owner_id, PAPERCLIP_CREDS_PLUGIN_PATCH["entries"])
-                except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
-                    logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
+                    try:
+                        await ensure_redact_patterns(owner_id, REDACT_PATTERNS)
+                    except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                        logger.exception("update_service: redact-pattern patch failed for owner=%s", owner_id)
 
-                # Image rolls are the fleet's routine touch-point, but they
-                # never rewrite configs — so the seeded-file heal pass that
-                # rides the provision/config-rewrite path would otherwise
-                # never reach an already-provisioned Friday. Run it here so a
-                # promotion carries playbook fixes fleet-wide. Best-effort by
-                # contract (never raises).
-                from core.containers import get_workspace
+                    # Enable the credential plugin on the way in. The roll bakes
+                    # the extension but reuses the on-disk config, so without this
+                    # an existing owner carries a plugin that never activates —
+                    # and any later path that writes the new playbook (a company
+                    # import, a marketplace hire) would be claiming credentials
+                    # are in the environment when nothing puts them there.
+                    # Enabling it alone is harmless: an agent still reading the
+                    # key file simply has the credentials twice.
+                    try:
+                        await ensure_plugin_entries(owner_id, PAPERCLIP_CREDS_PLUGIN_PATCH["entries"])
+                    except Exception:  # noqa: BLE001 — never block a roll on a safety-net patch
+                        logger.exception("update_service: plugin-enable patch failed for owner=%s", owner_id)
 
-                await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
+                    # Image rolls are the fleet's routine touch-point, but they
+                    # never rewrite configs — so the seeded-file heal pass that
+                    # rides the provision/config-rewrite path would otherwise
+                    # never reach an already-provisioned Friday. Run it here so a
+                    # promotion carries playbook fixes fleet-wide. Best-effort by
+                    # contract (never raises).
+                    from core.containers import get_workspace
 
-            # An image-only roll carries NO size — queue_image_update /
-            # queue_fleet_image_update write {"new_image": X} only. Passing the
-            # resulting None/None straight through would default the re-register
-            # to the standard PER_USER_* box and silently shrink an Ultra Pro
-            # owner's container on every routine image bump / fleet-force-apply
-            # — the exact revert plan-derived sizing exists to prevent. Fill the
-            # gap from the owner's plan ONLY when the change specifies neither
-            # dimension; a real resize (explicit cpu/memory) is left untouched.
-            if new_cpu is None and new_memory is None:
-                new_cpu, new_memory = await ecs._size_for_owner(owner_id)
+                    await heal_seeded_files(owner_id=owner_id, workspace=get_workspace())
 
-            await ecs.resize_user_container(
-                user_id=owner_id,
-                new_cpu=new_cpu,
-                new_memory=new_memory,
-                new_image=new_image,
-            )
-            logger.info(
-                "ECS update applied for owner=%s image=%s cpu=%s mem=%s (update=%s)",
-                owner_id,
-                new_image,
-                new_cpu,
-                new_memory,
-                update_id,
-            )
+                # An image-only roll carries NO size — queue_image_update /
+                # queue_fleet_image_update write {"new_image": X} only. Passing the
+                # resulting None/None straight through would default the re-register
+                # to the standard PER_USER_* box and silently shrink an Ultra Pro
+                # owner's container on every routine image bump / fleet-force-apply
+                # — the exact revert plan-derived sizing exists to prevent. Fill the
+                # gap from the owner's plan ONLY when the change specifies neither
+                # dimension; a real resize (explicit cpu/memory) is left untouched.
+                if new_cpu is None and new_memory is None:
+                    new_cpu, new_memory = await ecs._size_for_owner(owner_id)
+
+                await ecs.resize_user_container(
+                    user_id=owner_id,
+                    new_cpu=new_cpu,
+                    new_memory=new_memory,
+                    new_image=new_image,
+                )
+                logger.info(
+                    "ECS update applied for owner=%s image=%s cpu=%s mem=%s (update=%s)",
+                    owner_id,
+                    new_image,
+                    new_cpu,
+                    new_memory,
+                    update_id,
+                )
 
         # Step 4: mark as applied. The ECS/config changes above already took
         # effect, so the apply itself succeeded regardless of this flip — but if

@@ -10,6 +10,7 @@ for data isolation. Task IPs are discovered via AWS Cloud Map
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import secrets
 import socket
@@ -1705,6 +1706,89 @@ class EcsManager:
             raise
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
+
+    async def rollout_config_lock_protocol(
+        self,
+        user_id: str,
+        *,
+        timeout_s: float = 900.0,
+        poll_interval_s: float = 15.0,
+    ) -> str:
+        """Re-register one owner from the latest base and wait for stability.
+
+        ContainerStack updates only the CDK base task definition; existing
+        per-user clones do not inherit its startup command. This operation
+        deliberately routes through ``resize_user_container`` so the clone
+        keeps per-user env/secrets and uses ``SINGLE_WRITER_DEPLOYMENT_CONFIG``.
+        Passing the currently registered size prevents this protocol rollout
+        from accidentally resizing an owner.
+
+        The ECS waiter is part of the contract: fleet callers may bound their
+        concurrency around this method knowing a slot remains occupied until
+        the stop-first replacement is stable (or the bounded waiter fails).
+        A stopped service is already stable; its new revision runs recovery on
+        the next ordinary scale-up.
+        """
+
+        if timeout_s <= 0 or poll_interval_s <= 0:
+            raise ValueError("timeout_s and poll_interval_s must be positive")
+        base_resp = await asyncio.to_thread(
+            self._ecs.describe_task_definition,
+            taskDefinition=self._base_task_def_family,
+        )
+        base_defs = (base_resp.get("taskDefinition") or {}).get("containerDefinitions") or []
+        base_openclaw = next((definition for definition in base_defs if definition.get("name") == "openclaw"), None)
+        base_command = " ".join((base_openclaw or {}).get("command") or [])
+        required_fragments = (
+            "${ISOL8_CONFIG_LOCK_PROTOCOL:-}",
+            'protocol_path = lock_path + ".isol8-protocol"',
+            "|| exit 1",
+        )
+        if not all(fragment in base_command for fragment in required_fragments):
+            raise EcsManagerError(
+                "CDK base task definition does not contain fail-fast config-lock recovery",
+                user_id,
+            )
+        current_size = await self.current_container_size(user_id)
+        if current_size is None:
+            raise EcsManagerError(f"No registered task definition for user {user_id}", user_id)
+
+        new_task_def_arn = await self.resize_user_container(
+            user_id,
+            new_cpu=current_size[0],
+            new_memory=current_size[1],
+        )
+        waiter = self._ecs.get_waiter("services_stable")
+        max_attempts = max(1, math.ceil(timeout_s / poll_interval_s))
+        await asyncio.to_thread(
+            waiter.wait,
+            cluster=self._cluster,
+            services=[self._service_name(user_id)],
+            WaiterConfig={"Delay": max(1, math.ceil(poll_interval_s)), "MaxAttempts": max_attempts},
+        )
+        service_resp = await asyncio.to_thread(
+            self._ecs.describe_services,
+            cluster=self._cluster,
+            services=[self._service_name(user_id)],
+        )
+        services = service_resp.get("services") or []
+        service = services[0] if services else {}
+        primary = next(
+            (deployment for deployment in service.get("deployments") or [] if deployment.get("status") == "PRIMARY"),
+            {},
+        )
+        actual_task_def_arn = primary.get("taskDefinition") or service.get("taskDefinition")
+        if actual_task_def_arn != new_task_def_arn:
+            if actual_task_def_arn:
+                # A circuit-breaker rollback can satisfy services_stable on the
+                # prior revision. Keep the DDB pointer honest before surfacing
+                # failure so a retry reads the task definition that will run.
+                await self._update_container(user_id, task_definition_arn=actual_task_def_arn)
+            raise EcsManagerError(
+                "Config-lock protocol rollout stabilized on a different task definition",
+                user_id,
+            )
+        return new_task_def_arn
 
     async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
         """Poll until the user's ECS service has no running or pending tasks.

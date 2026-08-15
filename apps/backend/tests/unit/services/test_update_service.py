@@ -16,6 +16,85 @@ from core.services import update_service
 
 
 @pytest.mark.asyncio
+async def test_queue_fleet_task_definition_refresh_is_atomic_and_skips_conflicts():
+    rows = [
+        {
+            "owner_id": "owner-a",
+            "access_point_id": "fsap-a",
+            "task_definition_arn": "arn:a",
+            "status": "running",
+        },
+        {
+            "owner_id": "owner-b",
+            "access_point_id": "fsap-b",
+            "task_definition_arn": "arn:b",
+            "status": "stopped",
+        },
+        {
+            "owner_id": "owner-provisioning",
+            "access_point_id": "fsap-provisioning",
+            "task_definition_arn": "arn:provisioning",
+            "status": "provisioning",
+        },
+    ]
+    repo = MagicMock()
+    repo.get_in_flight = AsyncMock(
+        side_effect=[
+            [],
+            [{"changes": {"new_image": "image:already-rolling"}}],
+        ]
+    )
+    repo.create = AsyncMock()
+
+    with (
+        patch.object(update_service, "container_repo") as container_repo,
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service, "utc_now_iso", return_value="2026-08-15T12:00:00+00:00"),
+    ):
+        container_repo.scan_all = AsyncMock(return_value=rows)
+        queued, skipped = await update_service.queue_fleet_task_definition_refresh("Protocol rollout")
+
+    assert (queued, skipped) == (1, 2)
+    repo.create.assert_awaited_once_with(
+        owner_id="owner-a",
+        update_type=update_service.TASK_DEFINITION_REFRESH_KIND,
+        description="Protocol rollout",
+        changes={update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
+        scheduled_at="2026-08-15T12:00:00+00:00",
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_task_definition_refresh_waits_for_protocol_rollout():
+    owner_id, update_id = "owner-refresh", "upd-refresh"
+    update_item = {
+        "owner_id": owner_id,
+        "update_id": update_id,
+        "update_type": update_service.TASK_DEFINITION_REFRESH_KIND,
+        "changes": {update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
+    }
+    repo = MagicMock()
+    repo.set_status_conditional = AsyncMock(return_value=True)
+    repo.mark_applied = AsyncMock(return_value=True)
+    ecs = MagicMock()
+    ecs.rollout_config_lock_protocol = AsyncMock(return_value="arn:new")
+    ecs.resize_user_container = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.dynamodb.get_table", return_value=MagicMock()),
+        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+    ):
+        result = await update_service.apply_update(owner_id, update_id)
+
+    assert result is True
+    ecs.rollout_config_lock_protocol.assert_awaited_once_with(owner_id)
+    ecs.resize_user_container.assert_not_awaited()
+    repo.mark_applied.assert_awaited_once_with(owner_id, update_id)
+
+
+@pytest.mark.asyncio
 async def test_migrate_removed_config_keys_scrubs_defaults_and_entries():
     with patch.object(update_service, "strip_removed_agent_keys", new=AsyncMock()) as strip_mock:
         await update_service.migrate_removed_config_keys("owner_1")

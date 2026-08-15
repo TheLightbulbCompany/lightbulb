@@ -320,6 +320,43 @@ async def test_retry_pass_list_failure_does_not_raise():
 # ----------------------------------------------------------------------
 
 
+async def test_run_scheduled_worker_applies_due_task_refreshes_sequentially(monkeypatch):
+    events: list[str] = []
+
+    async def apply(owner_id, _update_id):
+        events.append(f"start:{owner_id}")
+        await update_service.asyncio.sleep(0)
+        events.append(f"end:{owner_id}")
+        return True
+
+    class _StopLoop(Exception):
+        pass
+
+    async def stop_after_first(awaitable, **_kwargs):
+        awaitable.close()
+        raise _StopLoop()
+
+    monkeypatch.setattr(
+        update_service.update_repo,
+        "get_due_scheduled",
+        AsyncMock(
+            return_value=[
+                {"owner_id": "owner-a", "update_id": "upd-a"},
+                {"owner_id": "owner-b", "update_id": "upd-b"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(update_service, "apply_update", apply)
+    monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
+    monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", AsyncMock())
+    monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
+
+    with pytest.raises(_StopLoop):
+        await update_service.run_scheduled_worker()
+
+    assert events == ["start:owner-a", "end:owner-a", "start:owner-b", "end:owner-b"]
+
+
 async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
     monkeypatch,
 ):

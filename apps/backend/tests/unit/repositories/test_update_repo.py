@@ -83,6 +83,24 @@ async def test_create_with_force_by(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_create_scheduled_is_atomic(dynamodb_table):
+    from core.repositories import update_repo
+
+    result = await update_repo.create(
+        owner_id="user_1",
+        update_type="task_definition_refresh",
+        description="Refresh from base",
+        changes={"refresh_from_base": True},
+        scheduled_at="2026-08-15T12:00:00+00:00",
+    )
+
+    assert result["status"] == "scheduled"
+    assert result["scheduled_at"] == "2026-08-15T12:00:00+00:00"
+    stored = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": result["update_id"]})["Item"]
+    assert stored["status"] == "scheduled"
+
+
+@pytest.mark.asyncio
 async def test_get_pending(dynamodb_table):
     from core.repositories import update_repo
 

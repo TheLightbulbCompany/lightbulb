@@ -20,6 +20,19 @@ function buildStack(environment: "dev" | "prod"): Template {
   return Template.fromStack(containerStack);
 }
 
+function openclawStartupCommand(template: Template, env: "dev" | "prod"): string {
+  const resources = Object.values(template.findResources("AWS::ECS::TaskDefinition")) as Array<{
+    Properties?: {
+      Family?: string;
+      ContainerDefinitions?: Array<{ Name?: string; Command?: string[] }>;
+    };
+  }>;
+  const taskDef = resources.find((resource) => resource.Properties?.Family === `isol8-${env}-openclaw`);
+  const container = taskDef?.Properties?.ContainerDefinitions?.find(({ Name }) => Name === "openclaw");
+  expect(container?.Command?.slice(0, 2)).toEqual(["sh", "-c"]);
+  return container?.Command?.[2] ?? "";
+}
+
 // The local-sqlite layout is unconditional — no per-env `storage` gate — so
 // both envs are asserted against the same shape. Extracted rather than
 // duplicated so a future divergence has to be written deliberately.
@@ -215,38 +228,35 @@ describe("ContainerStack — dev", () => {
   });
 
   test("openclaw container migrates legacy /home/node/.openclaw/browser and symlinks it to ephemeral storage", () => {
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
-      Family: "isol8-dev-openclaw",
-      ContainerDefinitions: Match.arrayWith([
-        Match.objectLike({
-          Name: "openclaw",
-          // ECS Command array for command=["sh","-c",<startupCommand>]
-          // renders as exactly those three array elements in synthesized
-          // CFN. Three ordered segments separated by `.*`:
-          //   1) the archive-rename guard for a legacy REAL directory
-          //   2) the actual mv to a timestamped archive path
-          //   3) mkdir + symlink to ephemeral /tmp/openclaw-browser
-          //      then `exec` into the baked local-sqlite boot chain, which
-          //      owns doctor + gateway as a litestream-supervised child.
-          Command: [
-            "sh",
-            "-c",
-            Match.stringLikeRegexp(
-              // Migration step + mandatory `|| exit 1` on each required
-              // action so an NFS hiccup that fails `mv` doesn't let
-              // Step B silently nest the symlink inside the legacy real
-              // directory. `\\|` escapes the regex alternation operator
-              // so we match a literal `|`.
-              "^\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
-              + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
-              + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
-              + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
-              + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
-            ),
-          ],
-        }),
-      ]),
-    });
+    const command = openclawStartupCommand(template, "dev");
+    const recovery = command.indexOf("python3 -c");
+    const migration = command.indexOf("[ -e /home/node/.openclaw/browser ]");
+    const move = command.indexOf("mv /home/node/.openclaw/browser /home/node/.openclaw/browser.efs-archive-");
+    const mkdir = command.indexOf("mkdir -p /tmp/openclaw-browser || exit 1");
+    const symlink = command.indexOf("ln -sfn /tmp/openclaw-browser /home/node/.openclaw/browser || exit 1");
+    const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+
+    expect([recovery, migration, move, mkdir, symlink, boot].every((index) => index >= 0)).toBe(true);
+    expect(recovery).toBeLessThan(migration);
+    expect(migration).toBeLessThan(move);
+    expect(move).toBeLessThan(mkdir);
+    expect(mkdir).toBeLessThan(symlink);
+    expect(symlink).toBeLessThan(boot);
+  });
+
+  test("openclaw container performs a guarded one-time protocol transition", () => {
+    const command = openclawStartupCommand(template, "dev");
+    expect(command).toMatch(/^if \[ "\$\{ISOL8_CONFIG_LOCK_PROTOCOL:-\}" = "guard-v1" \]; then/);
+    expect(command).toContain('guard_path = lock_path + ".isol8-guard"');
+    expect(command).toContain('protocol_path = lock_path + ".isol8-protocol"');
+    expect(command).toContain("acquire_until(guard_fd, deadline");
+    expect(command).toContain("fcntl.LOCK_EX | fcntl.LOCK_NB");
+    expect(command).toContain("current.st_ino == opened.st_ino");
+    expect(command).toContain("write_protocol(migrating_protocol)");
+    expect(command).toContain("write_protocol(ephemeral_protocol)");
+    expect(command).toContain("recovered abandoned ephemeral openclaw.json.lock");
+    expect(command).toContain("|| exit 1; else echo '[boot] config lock recovery skipped");
+    expect(command).not.toContain("rm -f /home/node/.openclaw/openclaw.json.lock");
   });
 
   test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {

@@ -47,7 +47,11 @@ from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
 from core.services.provision_dispatch import dispatch_provision
-from core.services.update_service import apply_update, reapply_owner_config
+from core.services.update_service import (
+    TASK_DEFINITION_REFRESH_CHANGE,
+    apply_update,
+    reapply_owner_config,
+)
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -109,7 +113,7 @@ class QueueImageUpdateRequest(BaseModel):
 # the force-apply guard treats a row carrying any of them as a conflict —
 # regardless of its update_type label (a paperclip_provision retry or a pure
 # config_patch hot-reload carries none of these and is not a conflict).
-_TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory")
+_TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory", TASK_DEFINITION_REFRESH_CHANGE)
 
 
 def _rolls_task_def(changes: object) -> bool:

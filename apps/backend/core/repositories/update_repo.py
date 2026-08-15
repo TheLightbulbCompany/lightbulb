@@ -30,8 +30,9 @@ async def create(
     description: str,
     changes: dict,
     force_by: str | None = None,
+    scheduled_at: str | None = None,
 ) -> dict:
-    """Create a new pending update with a ULID-like ID."""
+    """Create a pending update, or an atomically scheduled update when set."""
     table = _get_table()
     now = utc_now_iso()
     update_id = _generate_ulid_like()
@@ -41,12 +42,14 @@ async def create(
         "update_type": update_type,
         "description": description,
         "changes": changes,
-        "status": "pending",
+        "status": "scheduled" if scheduled_at is not None else "pending",
         "created_at": now,
         "updated_at": now,
     }
     if force_by is not None:
         item["force_by"] = force_by
+    if scheduled_at is not None:
+        item["scheduled_at"] = scheduled_at
     await run_in_thread(table.put_item, Item=item)
     return item
 

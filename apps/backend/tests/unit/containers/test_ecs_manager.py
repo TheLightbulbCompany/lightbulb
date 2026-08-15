@@ -2849,6 +2849,163 @@ class TestResizeUserContainer:
 
 
 # ---------------------------------------------------------------------------
+# config-lock protocol rollout
+# ---------------------------------------------------------------------------
+
+
+class TestConfigLockProtocolRollout:
+    @pytest.mark.asyncio
+    async def test_reclones_current_size_and_waits_for_service_stability(self, manager, mock_ecs_client):
+        manager.current_container_size = AsyncMock(return_value=("2048", "8192"))
+        manager.resize_user_container = AsyncMock(return_value="arn:task-def:new")
+        waiter = MagicMock()
+        mock_ecs_client.get_waiter.return_value = waiter
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "command": [
+                            "sh",
+                            "-c",
+                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                    }
+                ]
+            }
+        }
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "taskDefinition": "arn:task-def:new",
+                    "deployments": [
+                        {
+                            "status": "PRIMARY",
+                            "taskDefinition": "arn:task-def:new",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread:
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            result = await manager.rollout_config_lock_protocol(
+                "user_test_123",
+                timeout_s=31,
+                poll_interval_s=10,
+            )
+
+        assert result == "arn:task-def:new"
+        manager.resize_user_container.assert_awaited_once_with(
+            "user_test_123",
+            new_cpu="2048",
+            new_memory="8192",
+        )
+        mock_ecs_client.get_waiter.assert_called_once_with("services_stable")
+        waiter.wait.assert_called_once_with(
+            cluster=manager._cluster,
+            services=[manager._service_name("user_test_123")],
+            WaiterConfig={"Delay": 10, "MaxAttempts": 4},
+        )
+
+    @pytest.mark.asyncio
+    async def test_refuses_circuit_breaker_rollback_reported_as_stable(self, manager, mock_ecs_client):
+        manager.current_container_size = AsyncMock(return_value=("1024", "4096"))
+        manager.resize_user_container = AsyncMock(return_value="arn:task-def:new")
+        manager._update_container = AsyncMock()
+        waiter = MagicMock()
+        mock_ecs_client.get_waiter.return_value = waiter
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "command": [
+                            "sh",
+                            "-c",
+                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                    }
+                ]
+            }
+        }
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "taskDefinition": "arn:task-def:old",
+                    "deployments": [
+                        {
+                            "status": "PRIMARY",
+                            "taskDefinition": "arn:task-def:old",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread:
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            with pytest.raises(EcsManagerError, match="stabilized on a different task definition"):
+                await manager.rollout_config_lock_protocol("user_test_123")
+
+        manager._update_container.assert_awaited_once_with(
+            "user_test_123",
+            task_definition_arn="arn:task-def:old",
+        )
+
+    @pytest.mark.asyncio
+    async def test_requires_registered_task_definition(self, manager):
+        manager._ecs.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "command": [
+                            "sh",
+                            "-c",
+                            '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                    }
+                ]
+            }
+        }
+        manager.current_container_size = AsyncMock(return_value=None)
+        manager.resize_user_container = AsyncMock()
+
+        with pytest.raises(EcsManagerError, match="No registered task definition"):
+            await manager.rollout_config_lock_protocol("user_test_123")
+
+        manager.resize_user_container.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refuses_rollout_before_recovery_base_is_deployed(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {"name": "openclaw", "command": ["sh", "-c", "exec openclaw gateway"]},
+                ]
+            }
+        }
+        manager.current_container_size = AsyncMock(return_value=("1024", "4096"))
+        manager.resize_user_container = AsyncMock()
+
+        with pytest.raises(EcsManagerError, match="does not contain fail-fast config-lock recovery"):
+            await manager.rollout_config_lock_protocol("user_test_123")
+
+        manager.current_container_size.assert_not_awaited()
+        manager.resize_user_container.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # provision_user_container (full provisioning flow + recovery branches)
 # ---------------------------------------------------------------------------
 

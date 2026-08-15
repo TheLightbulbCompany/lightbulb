@@ -160,6 +160,44 @@ describe("AssigneePicker", () => {
     );
   });
 
+  it("marks the current assignee active when the picker opens", async () => {
+    const user = userEvent.setup();
+    render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId="ag_2"
+        onChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Monday/i }));
+
+    const currentOption = screen.getByRole("option", { name: "Monday" });
+    expect(currentOption).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("combobox")).toHaveAttribute(
+      "aria-activedescendant",
+      currentOption.id,
+    );
+  });
+
+  it("selects the only filtered match with Enter", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId={null}
+        onChange={onChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Unassigned/i }));
+    await user.type(await screen.findByRole("combobox"), "Mon{Enter}");
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith("ag_2");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
   it("selects the first filtered match with ArrowDown and Enter", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

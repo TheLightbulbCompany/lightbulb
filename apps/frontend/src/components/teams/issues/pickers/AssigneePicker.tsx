@@ -111,6 +111,36 @@ export function AssigneePicker({
     ...visibleMembers.map((member) => ({ kind: "member" as const, id: member.userId })),
   ];
 
+  const initialActiveIndex = (queryValue: string) => {
+    const normalizedQuery = queryValue.trim().toLowerCase();
+    if (normalizedQuery) {
+      const hasAgentMatch = orderedAgents.some((agent) =>
+        agent.name.toLowerCase().includes(normalizedQuery),
+      );
+      const hasMemberMatch =
+        peopleEnabled &&
+        members.some((member) =>
+          `${member.name ?? ""} ${member.email ?? ""}`
+            .toLowerCase()
+            .includes(normalizedQuery),
+        );
+      return hasAgentMatch || hasMemberMatch ? 1 : -1;
+    }
+
+    const selectedAgentIndex = orderedAgents.findIndex(
+      (agent) => agent.id === selectedAgentId,
+    );
+    if (selectedAgentIndex >= 0) return selectedAgentIndex + 1;
+
+    const selectedMemberIndex = peopleEnabled
+      ? members.findIndex((member) => member.userId === selectedUserId)
+      : -1;
+    if (selectedMemberIndex >= 0) {
+      return orderedAgents.length + selectedMemberIndex + 1;
+    }
+    return 0;
+  };
+
   // Picking an agent clears any human assignee, and vice versa — the two are
   // mutually exclusive. The host wires that clear via the change handlers
   // (selecting an agent sends assigneeUserId: null and conversely).
@@ -162,11 +192,12 @@ export function AssigneePicker({
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       setActiveIndex((current) => {
+        const firstIndex = q && options.length > 1 ? 1 : 0;
         if (event.key === "ArrowUp") {
-          return current <= 0 ? options.length - 1 : current - 1;
+          return current <= firstIndex ? options.length - 1 : current - 1;
         }
-        if (current < 0) return q && options.length > 1 ? 1 : 0;
-        return (current + 1) % options.length;
+        if (current < firstIndex || current >= options.length - 1) return firstIndex;
+        return current + 1;
       });
       return;
     }
@@ -179,7 +210,10 @@ export function AssigneePicker({
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
-    if (next) mouseDownCommittedRef.current = false;
+    if (next) {
+      mouseDownCommittedRef.current = false;
+      setActiveIndex(initialActiveIndex(query));
+    }
     if (!next) {
       setQuery("");
       setActiveIndex(-1);
@@ -217,7 +251,7 @@ export function AssigneePicker({
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
-            setActiveIndex(-1);
+            setActiveIndex(initialActiveIndex(e.target.value));
           }}
           onKeyDown={handleSearchKeyDown}
           placeholder={peopleEnabled ? "Search agents & people..." : "Search agents..."}

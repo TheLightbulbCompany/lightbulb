@@ -335,6 +335,13 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   role, proving the integration credentials remain isolated from the runtime
   role. The existing AWS connection is sufficient for finance and reliability
   reads; no platform-ops token or AWS reconnect is required.
+- 2026-08-15: Read-only IAM inventory shows the connected
+  `isol8-connector` role already has AWS-managed `PowerUserAccess`; the
+  reliability setup therefore needs no scope upgrade. The dedicated
+  `isol8-eventbridge-api-destination` invoke role is absent, so the CloudWatch
+  routine must remain paused until the founder applies the latest versioned
+  Isol8 connector-stack template. That one-time stack update, not a reconnect,
+  is the remaining AWS authority edge.
 
 ## Founder actions
 
@@ -348,6 +355,10 @@ authority.
   the current founder identity or publish fresh canonical listings. The
   existing seller user has no Clerk identity, so reauthentication cannot
   resolve this blocker.
+- Apply the latest versioned Isol8 AWS connector-stack template once after the
+  EventBridge API Destination feature deploys. The current connector already
+  has `PowerUserAccess`; this update adds the missing dedicated invoke role and
+  does not require changing the selected AWS scope.
 - Cash, cash as-of date, and fixed non-AWS monthly commitments remain required
   before Tally may calculate runway or complete operating burn.
 - Eight unreferenced legacy agent workspaces require one bounded destructive

@@ -171,14 +171,27 @@ async def delete_agent_everywhere(*, owner_id: str, agent_id: str) -> dict[str, 
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
     if container is not None and ip:
-        await get_gateway_pool().send_rpc(
-            user_id=owner_id,
-            req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
-            method="agents.delete",
-            params={"agentId": agent_id, "deleteFiles": True},
-            ip=ip,
-            token=container["gateway_token"],
+        gateway = get_gateway_pool()
+        live_agents = _rows(
+            await gateway.send_rpc(
+                user_id=owner_id,
+                req_id=f"agent-list-before-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
+                method="agents.list",
+                params={},
+                ip=ip,
+                token=container["gateway_token"],
+            ),
+            "agents",
         )
+        if any(agent.get("id") == agent_id for agent in live_agents):
+            await gateway.send_rpc(
+                user_id=owner_id,
+                req_id=f"agent-delete-{agent_id}-{uuid.uuid4().hex[:8]}",
+                method="agents.delete",
+                params={"agentId": agent_id, "deleteFiles": True},
+                ip=ip,
+                token=container["gateway_token"],
+            )
 
     # Belt-and-suspenders persistence cleanup: gateway deletion updates a
     # running process, while this guarantees a stopped/restarted container

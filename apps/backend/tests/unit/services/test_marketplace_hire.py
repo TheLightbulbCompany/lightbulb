@@ -124,6 +124,7 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
 _PUBLISHED = {
     "listing_id": _LISTING["listing_id"],
+    "seller_id": "seller_1",
     "slug": "pulse",
     "name": "Pulse",
     "status": "published",
@@ -214,6 +215,8 @@ async def test_install_targets_the_preapproved_agent_and_pairs_its_device(
     assert kwargs["container_ip"] == "10.0.0.5"
     assert kwargs["container_token"] == "gwt"
     assert kwargs["tar_bytes"] == b"tar"
+    assert kwargs["listing_id"] == _PUBLISHED["listing_id"]
+    assert kwargs["seller_id"] == _PUBLISHED["seller_id"]
     # Manifest comes from the listing ROW, mirroring deploy_listing.
     assert kwargs["manifest"]["version"] == 9
     pair.assert_awaited_once()

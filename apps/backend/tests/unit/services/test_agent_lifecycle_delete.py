@@ -80,7 +80,11 @@ async def test_delete_everywhere_removes_runtime_config_workspace_then_paperclip
     ecs = MagicMock()
     ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "token"}, "10.0.0.7"))
     gateway = MagicMock()
-    gateway.send_rpc = AsyncMock(side_effect=lambda **_: events.append("gateway"))
+    gateway.send_rpc = AsyncMock(
+        side_effect=lambda **kwargs: (
+            {"agents": [{"id": "retiring"}]} if kwargs["method"] == "agents.list" else events.append("gateway")
+        )
+    )
     workspace = MagicMock()
     workspace.remove_template_sidecar = MagicMock(side_effect=lambda *_: events.append("sidecar"))
 
@@ -127,9 +131,53 @@ async def test_delete_everywhere_removes_runtime_config_workspace_then_paperclip
 
     assert events == ["gateway", "config", "sidecar", "workspace", "paperclip"]
     assert result["deleted"] is True
-    rpc = gateway.send_rpc.await_args.kwargs
+    assert [call.kwargs["method"] for call in gateway.send_rpc.await_args_list] == ["agents.list", "agents.delete"]
+    rpc = gateway.send_rpc.await_args_list[1].kwargs
     assert rpc["method"] == "agents.delete"
     assert rpc["params"] == {"agentId": "retiring", "deleteFiles": True}
+
+
+@pytest.mark.asyncio
+async def test_delete_everywhere_retries_after_runtime_agent_is_already_absent():
+    events: list[str] = []
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "token"}, "10.0.0.7"))
+    gateway = MagicMock()
+    gateway.send_rpc = AsyncMock(return_value={"agents": [{"id": "friday"}]})
+    workspace = MagicMock()
+    workspace.remove_template_sidecar = MagicMock(side_effect=lambda *_: events.append("sidecar"))
+
+    async def record_config(*_args, **_kwargs):
+        events.append("config")
+
+    async def record_workspace(*_args, **_kwargs):
+        events.append("workspace")
+
+    async def record_paperclip(**_kwargs):
+        events.append("paperclip")
+
+    with (
+        patch("core.services.paperclip_openclaw_pairing.is_seeded_agent", new=AsyncMock(return_value=False)),
+        patch.object(lifecycle, "prepare_paperclip_agent_delete", new=AsyncMock(return_value={})),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        patch("core.containers.get_gateway_pool", return_value=gateway),
+        patch("core.containers.get_workspace", return_value=workspace),
+        patch(
+            "core.services.config_patcher.remove_from_openclaw_config_list",
+            new=AsyncMock(side_effect=record_config),
+        ),
+        patch(
+            "core.containers.workspace.cleanup_deleted_agent",
+            new=AsyncMock(side_effect=record_workspace),
+        ),
+        patch.object(lifecycle, "delete_paperclip_for_chat", new=AsyncMock(side_effect=record_paperclip)),
+    ):
+        result = await lifecycle.delete_agent_everywhere(owner_id="owner", agent_id="retiring")
+
+    assert result["deleted"] is True
+    assert events == ["config", "sidecar", "workspace", "paperclip"]
+    gateway.send_rpc.assert_awaited_once()
+    assert gateway.send_rpc.await_args.kwargs["method"] == "agents.list"
 
 
 @pytest.mark.asyncio

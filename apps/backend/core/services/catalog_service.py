@@ -499,10 +499,9 @@ class CatalogService:
         # "not installed"), and a non-timeout failure runs
         # ``unwind_partial_deploy``, which unlinks the sidecar FIRST — before
         # the two correlated, best-effort removals that can both fail and leave
-        # the ``agents.list`` entry standing. Neither covers the Teams REST
-        # delete (``routers/teams/agents.py``), which drops only the Paperclip
-        # row and leaves both the sidecar and the config entry behind; that
-        # predates this ordering and is not fixed by it.
+        # the ``agents.list`` entry standing. The Teams lifecycle endpoint also
+        # removes the sidecar and persisted config before dropping Paperclip,
+        # so the normal owner-facing delete converges on the same invariant.
         #
         # ``manifest["version"]`` is sourced from the listing row's
         # ``manifest_json`` column (boto3 returns DDB Numbers as ``Decimal``), or

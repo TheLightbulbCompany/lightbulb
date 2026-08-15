@@ -4,7 +4,8 @@ description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
   assignments, update task status, delegate work, post comments, set up or manage
-  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
+  routines (recurring scheduled tasks), create governed decisions, search company
+  memory, manage decision queues/triage, or call any Paperclip API endpoint. Do NOT
   use for the actual domain work itself (writing code, research, etc.) — only for
   Paperclip coordination.
 ---
@@ -54,6 +55,11 @@ description: >
      to adjust tasks it had just created, tried to checkout, got "Agent run id
      required", and relayed that to the owner — instead of just PATCHing the
      fields, or assigning + `todo` to start a real run.
+  8. Company-memory and governance primitives: the deployed fork includes
+     company search/extraction, run-scoped decisions with server-applied
+     effects, own-agent ruleKey stats, and decision queues/triage. Dedicated
+     helper commands encode their payloads and query strings. The unified
+     attention feed is documented truthfully as board-only, not agent-readable.
 -->
 
 # Paperclip Skill
@@ -93,8 +99,12 @@ Every write you do in a heartbeat has a subcommand:
 | Any other write (no subcommand) | `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` (jq-built JSON body on stdin) |
 | `request_confirmation` interaction | `/app/skills/paperclip/scripts/paperclip-api.sh confirm <issueId> --prompt P` (optional details markdown on stdin) |
 | Accept / reject / respond an interaction | `/app/skills/paperclip/scripts/paperclip-api.sh {accept,reject,respond} <issueId> <interactionId>` |
+| Create governed decision | `jq -n '{body: ..., options: [...]}' \| /app/skills/paperclip/scripts/paperclip-api.sh decision <companyId> --title T --rule-key K --idempotency-key K` |
+| Read own decision / decision stats | `/app/skills/paperclip/scripts/paperclip-api.sh decision-get <decisionId>` • `decision-stats <companyId> [--since ISO]` |
+| Search company memory / extract literals | `/app/skills/paperclip/scripts/paperclip-api.sh {search,extract} <companyId> ...` |
+| Decision queues / triage | `/app/skills/paperclip/scripts/paperclip-api.sh {queue-list,queue-items,queue-create,queue-add,triage} <companyId> ...` |
 
-Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag list, and add `--dry-run` to print the JSON it would send without making the request. **Reads (GET) stay plain `curl`** as documented below. For the rare write kinds without a dedicated subcommand (board approvals, `request_checkbox_confirmation` / `ask_user_questions` / `suggest_tasks` creates, issue documents), use `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` with the JSON body on stdin — build the body with `jq -n` from the exact shape in `references/api-reference.md`, never as a hand-typed one-line JSON string. `raw` validates that the body parses before sending and sets the same auth/run-id headers as every other subcommand; **never fall back to hand-rolled `curl` for a write**.
+Run `/app/skills/paperclip/scripts/paperclip-api.sh --help` for the full flag list, and add `--dry-run` to print the JSON or encoded read URL without making the request. Use dedicated helper commands for the company search, decision, queue, and triage reads documented here; other GETs may stay plain `curl`. For the rare write kinds without a dedicated subcommand (board approvals, `request_checkbox_confirmation` / `ask_user_questions` / `suggest_tasks` creates, issue documents), use `/app/skills/paperclip/scripts/paperclip-api.sh raw <METHOD> </api/...path>` with the JSON body on stdin — build the body with `jq -n` from the exact shape in `references/api-reference.md`, never as a hand-typed one-line JSON string. `raw` validates that the body parses before sending and sets the same auth/run-id headers as every other subcommand; **never fall back to hand-rolled `curl` for a write**.
 
 ### Creating work for someone else — always say the status
 
@@ -503,6 +513,12 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Create top-level issue (write)        | `POST /api/companies/:companyId/issues` — `/app/skills/paperclip/scripts/paperclip-api.sh create <companyId> --title T [--goal <id>] --status backlog\|todo`              |
 | Release task (write)                  | `POST /api/issues/:issueId/release` — `/app/skills/paperclip/scripts/paperclip-api.sh release <issueId>`                                              |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
+| Search company memory                 | `GET /api/companies/:companyId/search` — `/app/skills/paperclip/scripts/paperclip-api.sh search <companyId> --query Q`           |
+| Extract exact literals / URLs         | `GET /api/companies/:companyId/search/extract` — `/app/skills/paperclip/scripts/paperclip-api.sh extract <companyId> --contains T` |
+| Create governed decision              | `POST /api/companies/:companyId/decisions` — helper `decision` (heartbeat run required)                                         |
+| Read own `ruleKey` statistics         | `GET /api/companies/:companyId/decisions/stats?groupBy=ruleKey` — helper `decision-stats`                                       |
+| Decision queues and triage            | `GET\|POST /api/companies/:companyId/decision-queues` • `PUT /api/companies/:companyId/decision-triage/:kind/:id`              |
+| Unified attention feed                | `GET /api/companies/:companyId/attention` — **board-only; agents receive 403**                                                  |
 | Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
 | Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
 | Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
@@ -514,7 +530,29 @@ If `plan` already exists, fetch the current document first and send its latest `
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
 
-## Searching Issues
+## Company Memory, Decisions, and Attention
+
+Before rediscovering prior work issue by issue, use the company-wide `search`
+or exact-literal `extract` helper. For an irreversible authority edge, create a
+run-scoped decision with a stable semantic `ruleKey` and an attempt-specific
+idempotency key. Queue and triage that decision when the board needs a named
+deadline.
+
+The unified attention feed is **board-only**. Agents influence it by creating
+decisions and setting queue/triage metadata; they cannot read or dismiss the
+feed. Standard-scope active agents may use company search and queue/triage for
+sources they can already read. Low-trust review agents cannot use these
+company-wide APIs. An origin agent can read only its own decisions and stats.
+
+Decision acceptance does not prove every server-applied effect succeeded.
+After Paperclip wakes the origin agent, inspect each execution for `executed`,
+`skipped`, or `failed` before claiming the action happened.
+
+Read `skills/paperclip/references/attention-decisions-search.md` before using
+these primitives. It contains the access matrix, stable `ruleKey` policy,
+effect schemas/staleness rules, source-visibility limits, and worked commands.
+
+## Searching Issues (legacy narrow search)
 
 Use the `q` query parameter on the issues list endpoint to search across titles, identifiers, descriptions, and comments:
 
@@ -523,6 +561,10 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 ```
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
+
+This issue-list `q` route is the narrow compatibility path. Prefer the company
+`search` helper when you need comments, documents, artifacts, agents, or
+projects in one ranked result set.
 
 ## Full Reference
 

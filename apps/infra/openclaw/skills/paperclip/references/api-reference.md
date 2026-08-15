@@ -992,6 +992,77 @@ An assigned issue in any status other than `backlog` dispatches an agent run on 
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
 
+### Company Search and Extraction
+
+Standard-scope same-company agents and board users may call these routes.
+Low-trust review agents, task-bridge keys, and skill-test tokens are denied by
+the `company_scope:read` authorization boundary.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/api/companies/:companyId/search` | Ranked company search. Query: `q`, `scope=all\|issues\|comments\|documents\|artifacts\|agents\|projects`, `limit` (1-50), `offset` (0-200), issue filters, time filters, and `sort`. |
+| GET | `/api/companies/:companyId/search/extract` | Exact literal/URL extraction. Required `contains` (2-200 chars); optional `kind=literal\|url`, `scope=all\|issues\|comments\|documents`, `limit` (1-200), `offset` (0-5000), `matchesPerIssue` (1-200), status and time filters. |
+
+Use helper `search` or `extract`; both safely encode query values. Both routes
+return rate-limit headers and may return `429` with `Retry-After`.
+
+### Attention, Decisions, Queues, and Triage
+
+`GET /attention` is board-only. Agents produce attention items through
+decisions and triage but receive `403` if they try to read the unified feed.
+Decision creation requires an authenticated agent heartbeat run. An agent may
+read only its own decision and own `ruleKey` statistics. Active standard-scope
+agents may manage queues and triage, but source-level visibility still applies.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/api/companies/:companyId/attention` | Unified ranked attention feed. **Board user context required.** |
+| POST | `/api/companies/:companyId/decisions` | Create a run-scoped governed decision. Helper: `decision`. |
+| POST | `/api/companies/:companyId/decision-bundles` | Create 1-50 decisions under a shared title/summary. Agent run required. |
+| GET | `/api/companies/:companyId/decisions` | List decisions. Board-only. |
+| GET | `/api/companies/:companyId/decisions/stats?groupBy=ruleKey[&since=ISO]` | Agent is server-scoped to its own origin ID. Helper: `decision-stats`. |
+| GET | `/api/decisions/:id` | Outcome plus effect executions. Origin agent or board; non-origin agents receive `403`. Helper: `decision-get`. |
+| POST | `/api/decisions/:id/decide` | Choose an option. Board-only. |
+| POST | `/api/decisions/:id/dismiss` | Explicitly reject/dismiss. Board-only. |
+| POST | `/api/decisions/:id/cancel` | Cancel an open decision. Board or accessible agent context. |
+| GET | `/api/companies/:companyId/decision-queue-seed-rules` | List server-provided queue seed rules. |
+| GET\|POST | `/api/companies/:companyId/decision-queues` | List/create named queues. Helpers: `queue-list`, `queue-create`. |
+| PATCH | `/api/companies/:companyId/decision-queues/:key` | Update title, description, retention, or seed-rule state. |
+| GET\|POST | `/api/companies/:companyId/decision-queues/:key/items` | List/add visible attention sources. Helpers: `queue-items`, `queue-add`. |
+| DELETE | `/api/companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId` | Remove a source; optional `{reason}` body. |
+| GET\|PUT | `/api/companies/:companyId/decision-triage/:sourceKind/:sourceId` | Read/set `decideBy` and `snoozedUntil`. Helper: `triage`. |
+| PATCH | `/api/companies/:companyId/decision-retention/:sourceKind/:sourceId` | Set `{keep: boolean}`. |
+| POST | `/api/companies/:companyId/decision-retention/:sourceKind/:sourceId/archive` | Archive one aging-shelf source. |
+| POST | `/api/companies/:companyId/decision-retention/:sourceKind/:sourceId/revive` | Revive one archived source. |
+
+Decision create body:
+
+```json
+{
+  "title": "Authorize this action?",
+  "body": "Evidence and consequence",
+  "ruleKey": "support.refund",
+  "idempotencyKey": "support-refund:<issue-id>:v1",
+  "continuationPolicy": "wake_origin_agent",
+  "options": [
+    {"id": "approve", "label": "Approve", "effects": []},
+    {"id": "decline", "label": "Decline", "effects": []}
+  ]
+}
+```
+
+`ruleKey` names the stable policy class; never include dates, run IDs, issue
+IDs, customer IDs, or revisions. `idempotencyKey` identifies this attempt and
+may include issue/revision identity. Options support these server-applied
+effects: `comment_on_issue`, `create_issue`, `update_issue_status`,
+`assign_issue`, `resolve_blocker`, and `cancel_issue_tree`. Every effect carries
+`targetIssueId` and `staleness` (`strict` or `lenient`). Read the decision after
+wake and verify every execution is `executed`, `skipped`, or `failed` before
+claiming the effect occurred.
+
+Exact examples, authorization details, effect schemas, visibility rules, and
+safe helper commands are in `attention-decisions-search.md`.
+
 ### Routines
 
 | Method | Path | Description |

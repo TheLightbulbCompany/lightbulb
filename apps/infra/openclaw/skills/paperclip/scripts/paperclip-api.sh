@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Paperclip write-path CLI.
+# Paperclip coordination CLI.
 #
 # Every Paperclip API call that *writes* (comments, status patches, checkout,
 # issues, subtasks, issue-thread interactions) must go through this helper instead of a
@@ -15,13 +15,13 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Paperclip write-path helper. Builds every request body safely with jq.
+Paperclip coordination helper. Builds request bodies and query strings safely.
 
 Usage:
   scripts/paperclip-api.sh <subcommand> [args] [--dry-run]
 
 Global options:
-  --dry-run     Build and print the JSON body (no HTTP request).
+  --dry-run     Print the JSON body or encoded read URL (no HTTP request).
   --help, -h    Show this help.
 
 Environment (required for live requests; not needed for --dry-run):
@@ -109,6 +109,51 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       here instead of silently at the API. Pass either the answers array, e.g.
         [{"questionId":"q1","optionIds":["o1"]}]
       or a full object { "answers": [...], "summaryMarkdown": "..." }.
+
+  decision <companyId> --title T --rule-key K --idempotency-key K
+           [--expires-at ISO] [--continuation none|wake_origin_agent]
+      POST /api/companies/{companyId}/decisions
+      Reads a jq-built object with `body`, `options`, and optional `inputs` or
+      `metadata` from stdin. The helper supplies the title, stable ruleKey,
+      idempotency key, expiry, and continuation policy. Live calls require a
+      real PAPERCLIP_RUN_ID because decisions are run-scoped.
+
+  decision-stats <companyId> [--since ISO]
+      GET /api/companies/{companyId}/decisions/stats?groupBy=ruleKey
+      Agents are always server-scoped to their own originAgentId.
+
+  decision-get <decisionId>
+      GET /api/decisions/{decisionId}
+      Origin agents use this after wake to verify every effect execution.
+
+  search <companyId> --query Q [--scope S] [--status CSV] [--priority CSV]
+         [--assignee-agent ID|null] [--project ID] [--label ID]
+         [--updated-within D|--updated-after ISO] [--sort S]
+         [--limit N] [--offset N]
+      GET /api/companies/{companyId}/search with safely encoded filters.
+
+  extract <companyId> --contains TEXT [--kind literal|url] [--scope S]
+          [--status CSV] [--updated-within D|--updated-after ISO]
+          [--matches-per-issue N] [--limit N] [--offset N]
+      GET /api/companies/{companyId}/search/extract.
+
+  queue-list <companyId>
+      GET /api/companies/{companyId}/decision-queues.
+
+  queue-items <companyId> --key K
+      GET /api/companies/{companyId}/decision-queues/{key}/items.
+
+  queue-create <companyId> --key K --title T [--description D]
+               [--retention-days N]
+      POST /api/companies/{companyId}/decision-queues.
+
+  queue-add <companyId> --key K --source-kind K --source-id ID
+      POST /api/companies/{companyId}/decision-queues/{key}/items.
+
+  triage <companyId> --source-kind K --source-id ID
+         [--decide-by today|this_week|whenever|YYYY-MM-DD|--clear-decide-by]
+         [--snoozed-until ISO|--clear-snooze]
+      PUT /api/companies/{companyId}/decision-triage/{kind}/{id}.
 
   raw <METHOD> </api/...path>
       Escape hatch for endpoints without a dedicated subcommand (board
@@ -306,6 +351,46 @@ send() {
   cat "$response_file"
   printf '\n'
   rm -f "$response_file"
+}
+
+# Read-only commands print their fully encoded URL in --dry-run mode. The
+# generic send() keeps its historical payload-only dry-run contract for writes.
+send_read() {
+  local url="$1"
+  if [[ "$dry_run" == "1" ]]; then
+    printf 'GET %s\n' "$url"
+    return 0
+  fi
+  send GET "$url"
+}
+
+urlencode() {
+  jq -rn --arg value "$1" '$value | @uri'
+}
+
+append_query() {
+  local url="$1" key="$2" value="$3" separator="?"
+  [[ "$url" == *\?* ]] && separator="&"
+  printf '%s%s%s=%s' "$url" "$separator" "$(urlencode "$key")" "$(urlencode "$value")"
+}
+
+require_integer_between() {
+  local command="$1" field="$2" value="$3" minimum="$4" maximum="$5"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$command: $field must be an integer."
+  local numeric=$((10#$value))
+  (( numeric >= minimum && numeric <= maximum )) \
+    || die "$command: $field must be between $minimum and $maximum."
+}
+
+require_choice() {
+  local command="$1" field="$2" value="$3" choices="$4"
+  local option
+  local -a allowed=()
+  IFS=',' read -r -a allowed <<<"$choices"
+  for option in "${allowed[@]}"; do
+    [[ "$value" == "$option" ]] && return 0
+  done
+  die "$command: $field must be one of: $choices."
 }
 
 cmd_comment() {
@@ -681,6 +766,306 @@ cmd_respond() {
   send POST "$(api_base)/issues/$issue_id/interactions/$interaction_id/respond" "$payload"
 }
 
+cmd_decision() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'decision: missing <companyId>.'
+  local title="" rule_key="" idempotency_key="" expires_at="" continuation="wake_origin_agent"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --title) title="${2:-}"; shift 2 ;;
+      --rule-key) rule_key="${2:-}"; shift 2 ;;
+      --idempotency-key) idempotency_key="${2:-}"; shift 2 ;;
+      --expires-at) expires_at="${2:-}"; shift 2 ;;
+      --continuation) continuation="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "decision: unknown argument: $1" ;;
+    esac
+  done
+
+  [[ -n "$title" ]] || die 'decision: --title is required.'
+  [[ -n "$rule_key" ]] || die 'decision: --rule-key is required.'
+  [[ ${#rule_key} -le 240 ]] || die 'decision: --rule-key must be at most 240 characters.'
+  [[ "$rule_key" =~ ^[a-z][a-z0-9]*([._-][a-z0-9]+)+$ ]] \
+    || die 'decision: --rule-key must be a stable lowercase dotted/dashed key such as support.refund.'
+  [[ -n "$idempotency_key" ]] || die 'decision: --idempotency-key is required.'
+  require_choice decision --continuation "$continuation" "none,wake_origin_agent"
+  if [[ "$dry_run" != "1" && -z "${PAPERCLIP_RUN_ID:-}" ]]; then
+    die 'decision: PAPERCLIP_RUN_ID is required for a live run-scoped decision; never invent one.'
+  fi
+
+  local spec
+  spec="$(read_stdin)"
+  [[ -n "$spec" ]] || die 'decision: a jq-built {body, options, inputs?, metadata?} object is required on stdin.'
+
+  local payload
+  if ! payload="$(
+    jq -ce \
+      --arg title "$title" \
+      --arg ruleKey "$rule_key" \
+      --arg idempotencyKey "$idempotency_key" \
+      --arg expiresAt "$expires_at" \
+      --arg continuationPolicy "$continuation" '
+        if type != "object" then error("decision spec must be an object")
+        elif ((keys - ["body", "inputs", "metadata", "options"]) | length) > 0
+          then error("decision spec may contain only body, options, inputs, and metadata")
+        elif (.body | type) != "string" then error("decision spec body must be a string")
+        elif (.options | type) != "array" or (.options | length) < 1
+          then error("decision spec options must be a non-empty array")
+        else .
+          + {
+              title: $title,
+              ruleKey: $ruleKey,
+              idempotencyKey: $idempotencyKey,
+              continuationPolicy: $continuationPolicy
+            }
+          + (if $expiresAt == "" then {} else {expiresAt: $expiresAt} end)
+        end
+      ' <<<"$spec"
+  )"; then
+    die 'decision: stdin is not a valid decision spec; build it with jq -n.'
+  fi
+  send POST "$(api_base)/companies/$company_id/decisions" "$payload"
+}
+
+cmd_decision_stats() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'decision-stats: missing <companyId>.'
+  local since=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --since) since="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "decision-stats: unknown argument: $1" ;;
+    esac
+  done
+  local url
+  url="$(api_base)/companies/$company_id/decisions/stats"
+  url="$(append_query "$url" groupBy ruleKey)"
+  [[ -z "$since" ]] || url="$(append_query "$url" since "$since")"
+  send_read "$url"
+}
+
+cmd_decision_get() {
+  local decision_id="${1:-}"
+  shift || true
+  [[ -n "$decision_id" ]] || die 'decision-get: missing <decisionId>.'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --dry-run) dry_run=1; shift ;; *) die "decision-get: unknown argument: $1" ;; esac
+  done
+  send_read "$(api_base)/decisions/$(urlencode "$decision_id")"
+}
+
+cmd_search() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'search: missing <companyId>.'
+  local query="" scope="" status="" priority="" assignee_agent="" project="" label=""
+  local updated_within="" updated_after="" sort="" limit="" offset=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --query) query="${2:-}"; shift 2 ;;
+      --scope) scope="${2:-}"; shift 2 ;;
+      --status) status="${2:-}"; shift 2 ;;
+      --priority) priority="${2:-}"; shift 2 ;;
+      --assignee-agent) assignee_agent="${2:-}"; shift 2 ;;
+      --project) project="${2:-}"; shift 2 ;;
+      --label) label="${2:-}"; shift 2 ;;
+      --updated-within) updated_within="${2:-}"; shift 2 ;;
+      --updated-after) updated_after="${2:-}"; shift 2 ;;
+      --sort) sort="${2:-}"; shift 2 ;;
+      --limit) limit="${2:-}"; shift 2 ;;
+      --offset) offset="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "search: unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "$query" ]] || die 'search: --query is required; use a bounded company-memory query.'
+  [[ -z "$updated_within" || -z "$updated_after" ]] \
+    || die 'search: --updated-within and --updated-after are mutually exclusive.'
+  [[ -z "$scope" ]] || require_choice search --scope "$scope" "all,issues,comments,documents,artifacts,agents,projects"
+  [[ -z "$sort" ]] || require_choice search --sort "$sort" "relevance,updated,created,priority"
+  [[ -z "$limit" ]] || require_integer_between search --limit "$limit" 1 50
+  [[ -z "$offset" ]] || require_integer_between search --offset "$offset" 0 200
+
+  local url
+  url="$(api_base)/companies/$company_id/search"
+  url="$(append_query "$url" q "$query")"
+  local pair key value
+  for pair in \
+    "scope=$scope" "status=$status" "priority=$priority" \
+    "assigneeAgentId=$assignee_agent" "projectId=$project" "labelId=$label" \
+    "updatedWithin=$updated_within" "updatedAfter=$updated_after" \
+    "sort=$sort" "limit=$limit" "offset=$offset"; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    [[ -z "$value" ]] || url="$(append_query "$url" "$key" "$value")"
+  done
+  send_read "$url"
+}
+
+cmd_extract() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'extract: missing <companyId>.'
+  local contains="" kind="" scope="" status="" updated_within="" updated_after=""
+  local matches_per_issue="" limit="" offset=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --contains) contains="${2:-}"; shift 2 ;;
+      --kind) kind="${2:-}"; shift 2 ;;
+      --scope) scope="${2:-}"; shift 2 ;;
+      --status) status="${2:-}"; shift 2 ;;
+      --updated-within) updated_within="${2:-}"; shift 2 ;;
+      --updated-after) updated_after="${2:-}"; shift 2 ;;
+      --matches-per-issue) matches_per_issue="${2:-}"; shift 2 ;;
+      --limit) limit="${2:-}"; shift 2 ;;
+      --offset) offset="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "extract: unknown argument: $1" ;;
+    esac
+  done
+  [[ ${#contains} -ge 2 ]] || die 'extract: --contains must be at least two characters.'
+  [[ -z "$updated_within" || -z "$updated_after" ]] \
+    || die 'extract: --updated-within and --updated-after are mutually exclusive.'
+  [[ -z "$kind" ]] || require_choice extract --kind "$kind" "literal,url"
+  [[ -z "$scope" ]] || require_choice extract --scope "$scope" "all,issues,comments,documents"
+  [[ -z "$matches_per_issue" ]] || require_integer_between extract --matches-per-issue "$matches_per_issue" 1 200
+  [[ -z "$limit" ]] || require_integer_between extract --limit "$limit" 1 200
+  [[ -z "$offset" ]] || require_integer_between extract --offset "$offset" 0 5000
+
+  local url
+  url="$(api_base)/companies/$company_id/search/extract"
+  url="$(append_query "$url" contains "$contains")"
+  local pair key value
+  for pair in \
+    "kind=$kind" "scope=$scope" "status=$status" \
+    "updatedWithin=$updated_within" "updatedAfter=$updated_after" \
+    "matchesPerIssue=$matches_per_issue" "limit=$limit" "offset=$offset"; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    [[ -z "$value" ]] || url="$(append_query "$url" "$key" "$value")"
+  done
+  send_read "$url"
+}
+
+cmd_queue_list() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'queue-list: missing <companyId>.'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --dry-run) dry_run=1; shift ;; *) die "queue-list: unknown argument: $1" ;; esac
+  done
+  send_read "$(api_base)/companies/$company_id/decision-queues"
+}
+
+cmd_queue_items() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'queue-items: missing <companyId>.'
+  local key=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --key) key="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "queue-items: unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "$key" ]] || die 'queue-items: --key is required.'
+  send_read "$(api_base)/companies/$company_id/decision-queues/$(urlencode "$key")/items"
+}
+
+cmd_queue_create() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'queue-create: missing <companyId>.'
+  local key="" title="" description="" retention_days=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --key) key="${2:-}"; shift 2 ;;
+      --title) title="${2:-}"; shift 2 ;;
+      --description) description="${2:-}"; shift 2 ;;
+      --retention-days) retention_days="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "queue-create: unknown argument: $1" ;;
+    esac
+  done
+  [[ "$key" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || die 'queue-create: --key must be lowercase kebab-case.'
+  [[ -n "$title" ]] || die 'queue-create: --title is required.'
+  [[ -z "$retention_days" ]] || require_integer_between queue-create --retention-days "$retention_days" 1 3650
+  local payload
+  payload="$(jq -nc \
+    --arg key "$key" --arg title "$title" --arg description "$description" --arg retentionDays "$retention_days" '
+      {key: $key, title: $title}
+      + (if $description == "" then {} else {description: $description} end)
+      + (if $retentionDays == "" then {} else {retentionDays: ($retentionDays | tonumber)} end)
+    ')"
+  send POST "$(api_base)/companies/$company_id/decision-queues" "$payload"
+}
+
+cmd_queue_add() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'queue-add: missing <companyId>.'
+  local key="" source_kind="" source_id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --key) key="${2:-}"; shift 2 ;;
+      --source-kind) source_kind="${2:-}"; shift 2 ;;
+      --source-id) source_id="${2:-}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "queue-add: unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "$key" && -n "$source_kind" && -n "$source_id" ]] \
+    || die 'queue-add: --key, --source-kind, and --source-id are required.'
+  require_choice queue-add --source-kind "$source_kind" \
+    "approval,decision,issue_thread_interaction,join_request,recovery_action,productivity_review,blocker_attention,review,failed_run,budget_alert,agent_error_alert"
+  local payload
+  payload="$(jq -nc --arg sourceKind "$source_kind" --arg sourceId "$source_id" \
+    '{sourceKind: $sourceKind, sourceId: $sourceId}')"
+  send POST "$(api_base)/companies/$company_id/decision-queues/$(urlencode "$key")/items" "$payload"
+}
+
+cmd_triage() {
+  local company_id="${1:-}"
+  shift || true
+  [[ -n "$company_id" ]] || die 'triage: missing <companyId>.'
+  local source_kind="" source_id="" decide_by="" snoozed_until=""
+  local decide_by_set=0 snooze_set=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --source-kind) source_kind="${2:-}"; shift 2 ;;
+      --source-id) source_id="${2:-}"; shift 2 ;;
+      --decide-by) decide_by="${2:-}"; decide_by_set=1; shift 2 ;;
+      --clear-decide-by) decide_by=""; decide_by_set=1; shift ;;
+      --snoozed-until) snoozed_until="${2:-}"; snooze_set=1; shift 2 ;;
+      --clear-snooze) snoozed_until=""; snooze_set=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      *) die "triage: unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "$source_kind" && -n "$source_id" ]] \
+    || die 'triage: --source-kind and --source-id are required.'
+  (( decide_by_set == 1 || snooze_set == 1 )) \
+    || die 'triage: set or clear at least one deadline/snooze field.'
+  require_choice triage --source-kind "$source_kind" \
+    "approval,decision,issue_thread_interaction,join_request,recovery_action,productivity_review,blocker_attention,review,failed_run,budget_alert,agent_error_alert"
+  if [[ "$decide_by_set" == "1" && -n "$decide_by" ]]; then
+    [[ "$decide_by" =~ ^(today|this_week|whenever|[0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] \
+      || die 'triage: --decide-by must be today, this_week, whenever, or YYYY-MM-DD.'
+  fi
+  local payload
+  payload="$(jq -nc \
+    --arg decideBy "$decide_by" --arg snoozedUntil "$snoozed_until" \
+    --argjson decideBySet "$decide_by_set" --argjson snoozeSet "$snooze_set" '
+      (if $decideBySet == 1 then {decideBy: (if $decideBy == "" then null else $decideBy end)} else {} end)
+      + (if $snoozeSet == 1 then {snoozedUntil: (if $snoozedUntil == "" then null else $snoozedUntil end)} else {} end)
+    ')"
+  send PUT "$(api_base)/companies/$company_id/decision-triage/$(urlencode "$source_kind")/$(urlencode "$source_id")" "$payload"
+}
+
 cmd_raw() {
   local method="${1:-}"
   local path="${2:-}"
@@ -752,6 +1137,16 @@ main() {
     accept)   cmd_accept "$@" ;;
     reject)   cmd_reject "$@" ;;
     respond)  cmd_respond "$@" ;;
+    decision) cmd_decision "$@" ;;
+    decision-stats) cmd_decision_stats "$@" ;;
+    decision-get) cmd_decision_get "$@" ;;
+    search) cmd_search "$@" ;;
+    extract) cmd_extract "$@" ;;
+    queue-list) cmd_queue_list "$@" ;;
+    queue-items) cmd_queue_items "$@" ;;
+    queue-create) cmd_queue_create "$@" ;;
+    queue-add) cmd_queue_add "$@" ;;
+    triage) cmd_triage "$@" ;;
     raw)      cmd_raw "$@" ;;
     *)
       printf 'Unknown subcommand: %s\n\n' "$subcommand" >&2

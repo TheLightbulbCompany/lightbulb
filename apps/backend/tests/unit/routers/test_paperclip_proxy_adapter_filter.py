@@ -148,6 +148,16 @@ def test_leading_slash_is_tolerated():
         ("POST", "api/companies/c1/issues", b'{"title":"bug"}'),  # issue create, no adapter
         ("PATCH", "api/agents/a1/permissions", b'{"canAssignTasks":true}'),
         ("GET", "api/companies/c1/threads", b""),
+        # Native company operating primitives. The proxy deny-list protects
+        # host-exec surfaces; it must not shadow Paperclip's own authz for these.
+        ("GET", "api/companies/c1/attention", b""),
+        ("POST", "api/companies/c1/decisions", b'{"title":"x"}'),
+        ("GET", "api/companies/c1/decisions/stats", b""),
+        ("GET", "api/companies/c1/decision-queues", b""),
+        ("POST", "api/companies/c1/decision-queues/q/items", b'{"sourceKind":"decision","sourceId":"d1"}'),
+        ("PUT", "api/companies/c1/decision-triage/decision/d1", b'{"decideBy":"today"}'),
+        ("GET", "api/companies/c1/search", b""),
+        ("GET", "api/companies/c1/search/extract", b""),
     ],
 )
 def test_teams_inbox_routes_pass_through(method, path, body):

@@ -34,6 +34,9 @@ export interface AssigneePickerProps {
   /** Display variant: `"row"` is the IssueProperties left-aligned style; `"inline"` is
    * the IssueHeader chip style (sits next to status + priority pickers). */
   variant?: "row" | "inline";
+  /** Noun used by empty/search copy. Routine forms reuse the same
+   * company-agent picker for their reviewer. */
+  noun?: "assignee" | "reviewer";
   className?: string;
 }
 
@@ -50,6 +53,7 @@ export function AssigneePicker({
   selectedUserId = null,
   onUserChange,
   variant = "row",
+  noun = "assignee",
   className,
 }: AssigneePickerProps) {
   const [open, setOpen] = useState(false);
@@ -75,10 +79,14 @@ export function AssigneePicker({
     : selectedMember
       ? selectedMember.name ?? selectedMember.email ?? "Unknown member"
       : selectedAgentId
-        ? "Unknown agent"
+        ? noun === "reviewer"
+          ? "Unknown reviewer"
+          : "Unknown agent"
         : selectedUserId
           ? "Unknown member"
-          : "Unassigned";
+          : noun === "reviewer"
+            ? "No reviewer"
+            : "Unassigned";
   const hasAssignee = Boolean(selectedAgent || selectedMember);
 
   // Merge recent + remainder so frequently-picked bubble up. Recent ids
@@ -254,7 +262,13 @@ export function AssigneePicker({
             setActiveIndex(initialActiveIndex(e.target.value));
           }}
           onKeyDown={handleSearchKeyDown}
-          placeholder={peopleEnabled ? "Search agents & people..." : "Search agents..."}
+          placeholder={
+            noun === "reviewer"
+              ? "Search reviewers..."
+              : peopleEnabled
+                ? "Search agents & people..."
+                : "Search agents..."
+          }
           role="combobox"
           aria-autocomplete="list"
           aria-controls={listboxId}
@@ -285,7 +299,7 @@ export function AssigneePicker({
               )}
               style={{ color: "var(--mute)" }}
             >
-              No assignee
+              No {noun}
             </button>
           </li>
           {peopleEnabled && (

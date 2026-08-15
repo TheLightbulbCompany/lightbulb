@@ -271,6 +271,11 @@ export interface IssueExecutionPolicy {
    * round-trip; the rail does not edit it, so the builder keeps whatever the
    * issue already carried (defaulting to "normal"). */
   mode?: "normal" | "auto";
+  /** Fields the routine reviewer UI does not edit but must round-trip exactly. */
+  commentRequired?: boolean;
+  reviewPreset?: unknown;
+  authorizationPolicy?: unknown;
+  maxReviewRounds?: number | null;
   monitor?: IssueMonitorPolicy | null;
   /** Reviewer + approver stages. Each ``type`` appears at most once. Absent or
    * empty means no review/approval gate. */
@@ -522,6 +527,9 @@ export interface RoutineDetail {
   // Variable definitions the routine declares. A run-now caller must collect a
   // value per variable; empty/absent means the routine takes no input.
   variables?: RoutineVariable[];
+  // Policy copied onto every issue this routine generates. The UI exposes a
+  // single agent reviewer while preserving every other policy field on edits.
+  executionPolicy?: IssueExecutionPolicy | null;
   // Upstream Routine carries createdAt/updatedAt verbatim through the BFF;
   // surfaced in the detail page's Properties aside.
   createdAt?: string | null;

@@ -222,8 +222,8 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   fixed two asymmetries: approval-driven hires omitted `listing_id` and were
   stamped Custom, and a deletion retry could not converge when OpenClaw had
   already removed the runtime agent. The focused post-fix service suite passed
-  87 tests; Ruff, format-check, and diff-check passed. Frontend CI and Claude
-  review passed on the new head; full Backend CI remains in progress.
+  87 tests; Ruff, format-check, and diff-check passed. Frontend CI, full Backend
+  CI, and Claude review passed on the new head.
   `@codex review` was re-requested in comment `5301140224`; the PR remains
   unmerged and undeployed.
 - 2026-08-15: Read-only ECS inspection found 19 top-level agent workspaces but

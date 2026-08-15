@@ -209,6 +209,19 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   frontend type-check passed; Ruff and diff-check passed. `@codex review` was
   requested in comment `5301001137`. Backend, frontend, and Claude checks were
   running at record time; the PR remains unmerged and undeployed.
+- 2026-08-15: AWS-integration CloudWatch alarm transport PR #1801 is open at
+  head `d0d38f61f`. It creates an ALARM-only EventBridge API Destination in the
+  owner's connected region through the existing Settings AWS role, persists
+  only secret-free lifecycle names, and cleans external resources before
+  routine/trigger deletion, AWS disconnect, or account wipe. Verification:
+  6,636 backend unit tests passed with 7 skipped; 276 chaos API tests passed
+  with 286 skipped; 5 focused EventBridge tests and 39 focused RoutinesPanel
+  tests passed; frontend type-check, focused infra template test, AWS
+  CloudFormation validation, Ruff, and diff-check passed. SDK-shape review
+  caught and fixed an invalid `DeleteConnection` argument before commit.
+  `@codex review` was requested in comment `5301117545`. The PR remains
+  unmerged and no live alarm delivery is claimed until deploy, connector-stack
+  update, UI creation, and a controlled CloudWatch transition all pass.
 
 ## Founder actions
 

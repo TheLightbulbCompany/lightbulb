@@ -11,6 +11,16 @@ import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { SlashCommandMenu, flattenVisible } from "@/components/chat/SlashCommandMenu";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const FALLBACK_MAX_TEXTAREA_HEIGHT = 200; // Matches Tailwind max-h-50 (12.5rem)
+
+// Chromium honors the `field-sizing: content` inline style on the textarea, so
+// the JS fallback must stand down there — an inline `height` would override
+// field-sizing and double-drive the sizing. Detected once at module load;
+// guarded so SSR (no CSS global) and jsdom (no CSS.supports) fall back to JS.
+const SUPPORTS_FIELD_SIZING =
+  typeof CSS !== "undefined" &&
+  typeof CSS.supports === "function" &&
+  CSS.supports("field-sizing", "content");
 
 interface PendingFile {
   file: File;
@@ -103,6 +113,29 @@ export function ChatInput({
   const { commands } = useSlashCommands(agentId ?? null);
   const visible = slash.isCommand ? flattenVisible(commands, slash.query) : [];
   const menuOpen = slash.isCommand && visible.length > 0 && !slash.argText;
+
+  const resizeTextarea = React.useCallback(() => {
+    if (SUPPORTS_FIELD_SIZING) return;
+    const el = textareaRef.current;
+    if (!el) return;
+
+    // Firefox and older engines lack `field-sizing: content`, so they need an
+    // explicit scrollHeight-based fallback. Reset first so
+    // deleting text can shrink the composer, then cap at the same max height as
+    // the Tailwind class so overflow only appears once the visible max is reached.
+    el.style.height = "auto";
+    const computedMaxHeight = Number.parseFloat(window.getComputedStyle(el).maxHeight);
+    const maxHeight = Number.isFinite(computedMaxHeight)
+      ? computedMaxHeight
+      : FALLBACK_MAX_TEXTAREA_HEIGHT;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
+  React.useLayoutEffect(() => {
+    resizeTextarea();
+  }, [input, resizeTextarea]);
 
   // Keep the highlighted row in range as the query (and therefore the visible
   // set) changes — resetting to the top is the least-surprising behavior.

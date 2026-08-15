@@ -147,14 +147,14 @@ export function UsagePanel() {
         <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">ChatGPT plan limits</h3>
-            {spend.plan && <span className="text-xs uppercase text-[var(--mute)]">{spend.plan}</span>}
+            {spend.plan && <span className="text-xs text-[var(--mute)]">{spend.plan}</span>}
           </div>
           {(spend.windows ?? []).map((w) => (
             <div key={w.label} className="space-y-1">
               <div className="flex items-center justify-between text-xs">
                 <span>{w.label} limit</span>
                 <span className="text-[var(--mute)]">
-                  {Math.round(w.used_percent)}% used
+                  {w.used_percent > 0 && w.used_percent < 1 ? "<1" : Math.round(w.used_percent)}% used
                   {w.resets_at_ms
                     ? ` · resets ${new Date(w.resets_at_ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`
                     : ""}
@@ -169,6 +169,9 @@ export function UsagePanel() {
             </div>
           ))}
           <p className="text-[10px] text-[var(--mute)]/60">Included in your ChatGPT plan.</p>
+          <p className="text-[10px] text-[var(--mute)]/60">
+            Rolling plan windows — separate from the monthly token totals below.
+          </p>
         </div>
       )}
 

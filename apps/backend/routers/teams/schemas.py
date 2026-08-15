@@ -243,6 +243,12 @@ class CreateRoutineBody(_Strict):
     auto_pause_threshold: Optional[int] = Field(default=None, ge=1, le=100)
     variables: Optional[list[dict]] = None
     env: Optional[dict] = None
+    # Upstream ``issueExecutionPolicySchema``, carried on the routine so every
+    # run issue it generates is born with review stages and flows through
+    # Paperclip's existing reviewer lifecycle. Forwarded verbatim — upstream
+    # validates the shape AND that every agent participant belongs to the
+    # company, so this layer must not second-guess either.
+    execution_policy: Optional[dict] = None
 
 
 class PatchRoutineBody(_Strict):
@@ -275,6 +281,10 @@ class PatchRoutineBody(_Strict):
     auto_pause_threshold: Optional[int] = Field(default=None, ge=1, le=100)
     variables: Optional[list[dict]] = None
     env: Optional[dict] = None
+    # Same field as ``CreateRoutineBody``. The PATCH handler dumps with
+    # ``exclude_unset`` (not ``exclude_none``), so sending an explicit null
+    # here is how a reviewer is removed — an omitted key leaves it alone.
+    execution_policy: Optional[dict] = None
     base_revision_id: Optional[str] = None
 
 

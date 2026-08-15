@@ -29,7 +29,7 @@ is complete.
 |---|---|---|
 | `isol8-founder` | production | Authenticated as Isol8 Admin; `/settings/connections?connected=google` rendered the founder integration inventory. |
 | `isol8-publisher` | production | Authenticated as the same Isol8 Admin founder company. The visible Marketplace `My listings` view reports 0 active listings and 0 total installs, while the eight curated packages are owned by a different seller identity with byline `@isol8`. Reauthenticate this session as that seller before any vNext listing mutation. |
-| `isol8-dev` | development | Authenticated as disposable dev identity `Codex Loops` using the permitted `+clerk_test` convention. Authenticated API evidence shows a clean company with exactly Friday and Atlas, both `Seed`. The replacement ECS task was running while the UI still displayed the transient provisioning state; preserve the session for clean-company marketplace tests. |
+| `isol8-dev` | development | Authenticated as disposable dev identity `Codex Loops` using the permitted `+clerk_test` convention. Authenticated API and final UI evidence show a clean company with exactly Friday and Atlas, both `Seed`, and a connected gateway. Preserve the session for clean-company marketplace tests. |
 
 ## Founder integration baseline
 
@@ -360,9 +360,19 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   reported `container_substatus=restarting`; ECS then showed task
   `655324c7f9dc41e1a6c065a8f1351b9c` running on task definition
   `isol8-dev-openclaw-user:162`. The prior healthy task was stopped by the ECS
-  service scheduler, not by an application crash. Recheck the UI readiness
-  state after rollout settles before using this company for marketplace smoke
-  tests.
+  service scheduler, not by an application crash. After the rollout, backend
+  logs showed the stale frontend connection cleared, the status-poll self-heal
+  dial established the gateway in `207 ms`, and a new browser WebSocket began
+  forwarding `agents.list`. A fresh UI snapshot then showed `Connected` and
+  exactly Friday and Atlas. This company is ready for marketplace smoke tests.
+- 2026-08-15: Automation-assignee picker repair PR #1804 is open at head
+  `aa92536cb9b7b88a1b56ef9c187442826523ef43`. It commits primary mouse
+  selection before the search field can blur and the portal can rerender under
+  the pointer, and adds Arrow/Enter/Escape combobox behavior. Local evidence is
+  the full frontend suite with 379 files and 2,685 tests passed, 91 focused
+  picker/routine/issue tests passed, TypeScript and ESLint clean, and
+  diff-check clean. Frontend CI passed; Claude review is running. The required
+  `@codex review` was requested and quota-blocked.
 
 ## Founder actions
 

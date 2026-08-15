@@ -116,7 +116,8 @@ file with the plan when the goal closes.
   metrics/logs, current deployment state, repository, and related incidents.
 - **Autonomous authority:** read AWS; correlate deployments; create/reuse an
   incident issue; implement a repository fix and PR; add evidence comments.
-  The current read-only AWS tier does not authorize production mutation.
+  The connected AWS tier may technically permit mutation, but this routine's
+  policy does not authorize production mutation.
 - **Authority edge:** customer communication, rollback requiring elevated AWS
   access, data repair, spend increase, or a change that weakens a safety fence.
   Use `ruleKey=reliability.production-authority`.

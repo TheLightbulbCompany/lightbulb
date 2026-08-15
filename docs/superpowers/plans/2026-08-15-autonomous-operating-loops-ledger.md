@@ -202,6 +202,13 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
 - 2026-08-15: No external platform-ops token-removal PR was visible yet. A
   tested local fallback exists at `d172f4069` but is intentionally unpushed;
   it must not be published while the founder's external agent owns that work.
+- 2026-08-15: Agent provenance and symmetric lifecycle PR #1799 is open at
+  head `c6059f3aa3893c2e5b2af3cd64dbc1165f786cee`. Local verification: 6,472
+  backend unit tests passed with 7 skipped; router chaos suite 272 passed with
+  282 skipped; 298 focused backend tests passed; 24 focused frontend tests and
+  frontend type-check passed; Ruff and diff-check passed. `@codex review` was
+  requested in comment `5301001137`. Backend, frontend, and Claude checks were
+  running at record time; the PR remains unmerged and undeployed.
 
 ## Founder actions
 

@@ -447,6 +447,34 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   sweep`. A final production snapshot shows `No automations yet.` None was run
   or activated during cleanup; their historical run issues remain in
   Paperclip while the active routine surface is clean for the 13 contracts.
+- 2026-08-15: Open work was removed from agents slated for deletion without
+  creating hidden execution. A first direct reassignment of in-review
+  `ISOA-31` proved the Paperclip assignment wake immediately: Friday run
+  `d310a7bb-cbba-4438-91db-ebfe36f435ac` started. Its linked PR #1715 is
+  closed unmerged and the task is superseded by the new reliability contract,
+  so the task was marked Cancelled and the run became cancelled. `ISOA-44` and
+  `ISOA-82` were then moved to Backlog before reassignment to Friday; their run
+  counts stayed 2→2 and 1→1. Already-backlogged `ISOA-65`, `ISOA-86`, and
+  `ISOA-87` were reassigned to Friday with run counts 0→0. No remaining useful
+  nonterminal issue is owned by jarvis, Platform Operations, or Product
+  Analytics, and the backlog-first ordering prevents an avoidable inference
+  wake during later agent deletion.
+
+- 2026-08-15: A read-only founder-container audit established the minimal
+  package boundary for the replacement marketplace agents. GitHub, Gmail,
+  Isol8/Paperclip, browser, and coding skills are image-global; Stripe,
+  PostHog, and Meta are shared MCP connections; AWS is exposed through the
+  buyer-authorized `isol8-connector` profile. No current agent has a per-agent
+  model or skill allow-list. The legacy Pulse, Vera, and Tally workspaces do
+  contain copied Lobster, n8n, Taskr, CRM, bookkeeping, Slack, and private
+  specialist skills, but none is needed for the target operating contracts.
+  The clean package specification is now frozen in
+  `2026-08-15-marketplace-agent-contracts.md`: core identity files only, no
+  private workflow/state/credential material, no heartbeat business scan,
+  inherited company model, dormant schedules, pending webhooks, and
+  company-local reviewers assigned only after install. Firecrawl/Parallel
+  result quality remains an explicit pre-arm smoke gate for Pulse rather than
+  an assumed capability.
 
 ## Founder actions
 

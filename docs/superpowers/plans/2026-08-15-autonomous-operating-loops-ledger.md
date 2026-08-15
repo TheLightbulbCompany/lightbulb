@@ -548,6 +548,16 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   behavior. Sanitized issue #1809 records the blocker. Do not create further
   target agents in production until one logical create converges to one
   Paperclip and one OpenClaw identity across retries.
+- 2026-08-15: The production Connections UI showed both Google accounts and,
+  after the agent roster finished loading, exposed the per-agent account
+  selectors delivered by #1792. Vera was changed from `Default` to
+  `support@isol8.co` through that customer dropdown. The immediate summary
+  changed to `1 agent acts as this account`, and a full page reload preserved
+  Vera's selected account. `admin@isol8.co` remains unassigned. This proves
+  multi-account assignment persistence, not Gmail push readiness or that the
+  support address is a Workspace mailbox rather than a Group. Reassign the
+  account to the clean marketplace Vera's new ID during roster replacement;
+  perform the mailbox and Pub/Sub smoke test only in the final trigger phase.
 
 ## Founder actions
 

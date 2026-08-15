@@ -102,6 +102,11 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
           onChange={(e) => {
             setName(e.target.value);
             setError(null);
+            // Clear the limit state with the error it belongs to. The upgrade
+            // card renders on this flag alone, so leaving it set would keep an
+            // upgrade prompt (above a now-empty message) on screen while the
+            // user types a different name.
+            setAtAgentLimit(false);
           }}
           placeholder="e.g. Research Assistant"
           disabled={creating}

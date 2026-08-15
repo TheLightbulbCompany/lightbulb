@@ -475,6 +475,29 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   company-local reviewers assigned only after install. Firecrawl/Parallel
   result quality remains an explicit pre-arm smoke gate for Pulse rather than
   an assumed capability.
+- 2026-08-15: Friday's replacement control routines were created through the
+  production customer UI and paused before any run. `Daily company control`
+  is routine `17338ee2-2ad0-461f-bf5b-2b4b4efdea93`, scheduled
+  `0 8 * * *` in `America/Aruba`; it persists `{{GTM_GOAL_ID}}` with default
+  `06039473-42eb-4d55-8f8e-0251a949236c` and numeric
+  `{{MONTHLY_SPEND_CAP_USD}}=2000`. `Weekly product/customer synthesis` is
+  routine `741aaa81-8949-4120-87ea-d17a31293e2c`, scheduled
+  `0 11 * * 1` in `America/Aruba`; it persists the same goal plus an ordered
+  comma-separated `{{GTM_PROJECT_IDS}}` default for the six finite projects.
+  Reloaded edit forms proved every default persisted; both detail pages showed
+  `Paused` and `No runs yet`. The initial plain variable names were correctly
+  removed by Paperclip's `syncRoutineVariablesWithTemplate`; definitions must
+  be referenced as `{{NAME}}`, a constraint the UI currently does not explain.
+- 2026-08-15: Customer-path setup also exposed two remaining routine-editor
+  gaps. PR #1794 made `executionPolicy` pass through the BFF, but neither the
+  create nor edit UI presents a routine reviewer, so Gauge cannot yet be set as
+  Friday's native review stage through the customer surface; this is filed as
+  #1808. Also, seven variable rows make the modal footer fall outside a
+  1280x720 viewport and the
+  Save button cannot be clicked or scrolled into view; the production weekly
+  contract was simplified to two variables, which is the better operating
+  shape independently of that layout defect. The missing `{{NAME}}` validation
+  and modal overflow are filed together as #1807.
 
 ## Founder actions
 

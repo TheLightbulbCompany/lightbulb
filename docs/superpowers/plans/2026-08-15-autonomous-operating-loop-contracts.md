@@ -9,6 +9,11 @@ file with the plan when the goal closes.
 
 - Timezone is `America/Aruba`. Scheduled triggers skip missed runs and use
   `coalesce_if_active`.
+- Every structured routine variable must appear in the title or description as
+  `{{VARIABLE_NAME}}`. Paperclip synchronizes definitions to template
+  references and removes unreferenced definitions. Prefer one ordered ID-list
+  variable over many equivalent scalar IDs when it keeps the customer editor
+  auditable.
 - Every routine starts paused, auto-pauses after three consecutive failures,
   and is armed only after a passing on-demand or controlled-event smoke run.
 - Search Paperclip before creating work. Reuse an open issue or external ID
@@ -36,7 +41,7 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Friday / Gauge.
 - **Trigger:** `0 8 * * *`.
-- **Variables:** `GTM_GOAL_ID`, `MONTHLY_SPEND_CAP_USD=2000`.
+- **Variables:** `{{GTM_GOAL_ID}}`, `{{MONTHLY_SPEND_CAP_USD}}=2000`.
 - **Outcome:** Advance the single current company constraint.
 - **Inputs:** active goal and projects, authorized decision queues/triage, open
   work, latest Gauge/Tally/Vera artifacts, current failures, and unresolved
@@ -60,7 +65,9 @@ file with the plan when the goal closes.
 
 - **Owner / reviewer:** Friday / Gauge.
 - **Trigger:** `0 11 * * 1`.
-- **Variables:** `GTM_GOAL_ID`, six GTM project IDs.
+- **Variables:** `{{GTM_GOAL_ID}}`, plus `{{GTM_PROJECT_IDS}}` containing the
+  six finite project IDs in demo, outbound, content, directories, Show HN,
+  discovery order.
 - **Outcome:** Publish one prioritized operating plan for the next seven days.
 - **Inputs:** the current week's Gauge scorecard, Tally snapshot, Vera health
   report, Forge reliability/engineering outcomes, Pulse artifacts, customer

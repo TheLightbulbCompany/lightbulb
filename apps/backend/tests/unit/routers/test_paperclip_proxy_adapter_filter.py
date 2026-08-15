@@ -191,9 +191,9 @@ def test_approval_hire_missing_nested_adapter_is_blocked():
     assert _blocked("POST", "api/companies/c1/approvals", body)
 
 
-def test_approval_hire_with_nested_gateway_adapter_is_allowed():
+def test_approval_hire_with_nested_gateway_adapter_is_blocked():
     body = json.dumps({"type": "hire_agent", "payload": {"adapterType": "openclaw_gateway"}}).encode()
-    assert not _blocked("POST", "api/companies/c1/approvals", body)
+    assert _blocked("POST", "api/companies/c1/approvals", body)
 
 
 def test_non_hire_approval_without_payload_passes():
@@ -284,9 +284,9 @@ def test_resubmit_payload_without_adapter_is_blocked():
     assert _blocked("POST", "api/approvals/ap1/resubmit", body)
 
 
-def test_resubmit_payload_gateway_is_allowed():
+def test_resubmit_payload_gateway_is_blocked():
     body = json.dumps({"payload": {"adapterType": "openclaw_gateway"}}).encode()
-    assert not _blocked("POST", "api/approvals/ap1/resubmit", body)
+    assert _blocked("POST", "api/approvals/ap1/resubmit", body)
 
 
 def test_resubmit_without_payload_passes():

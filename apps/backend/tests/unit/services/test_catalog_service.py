@@ -40,6 +40,7 @@ def _make_service(call_order: list[str] | None = None):
         pair_fn.side_effect = lambda **_: call_order.append("pair")
         apply_aux.side_effect = lambda *_a, **_k: call_order.append("aux")
         workspace.write_template_sidecar = MagicMock(side_effect=lambda **_: call_order.append("sidecar"))
+        workspace.mark_template_install_complete = MagicMock(side_effect=lambda *_: call_order.append("complete"))
     else:
         workspace.extract_tarball_to_workspace = MagicMock(return_value=None)
         workspace.write_template_sidecar = MagicMock(return_value=None)
@@ -96,7 +97,7 @@ async def test_deploy_calls_pair_before_aux_merge():
         new_agent_id="agent_abc",
     )
 
-    assert order == ["extract", "sidecar", "pair", "aux"], order
+    assert order == ["extract", "sidecar", "pair", "aux", "complete"], order
 
 
 @pytest.mark.asyncio
@@ -372,6 +373,25 @@ async def test_deploy_legacy_slice_with_no_agent_skips_pair_and_aux():
     # Sidecar is written either way so the buyer can still see it in the
     # installed-templates list.
     ws.write_template_sidecar.assert_called_once()
+    ws.mark_template_install_complete.assert_called_once_with("user_buyer", "agent_legacy")
+
+
+@pytest.mark.asyncio
+async def test_deploy_completion_marker_failure_propagates_for_caller_unwind():
+    svc, ws, _aux, _pair, _gw = _make_service()
+    ws.mark_template_install_complete.side_effect = OSError("efs marker write failed")
+
+    with pytest.raises(OSError, match="marker write failed"):
+        await svc.deploy_from_artifact(
+            owner_id="user_buyer",
+            slug="demo",
+            manifest={"name": "Demo", "version": 1},
+            slice_=_slice_with_agent(),
+            tar_bytes=b"<gz>",
+            container_ip="10.0.0.1",
+            container_token="tok",
+            new_agent_id="agent_abc",
+        )
 
 
 def _make_tar_gz(files: dict[str, bytes]) -> bytes:
@@ -856,6 +876,7 @@ def test_live_install_for_agent_requires_sidecar_and_registered_agent():
         "template_slug": "lex",
         "template_version": 2,
         "listing_id": "listing_1",
+        "install_state": "complete",
     }
     workspace.read_openclaw_config.return_value = {"agents": {"list": [{"id": "other"}, {"id": "agent_abc"}]}}
     svc = CatalogService(
@@ -873,6 +894,10 @@ def test_live_install_for_agent_requires_sidecar_and_registered_agent():
     }
 
     workspace.read_openclaw_config.return_value = {"agents": {"list": [{"id": "other"}]}}
+    assert svc.live_install_for_agent("org_xyz", "agent_abc") is None
+
+    workspace.read_template_sidecar.return_value = {"template_slug": "lex", "install_state": "installing"}
+    workspace.read_openclaw_config.return_value = {"agents": {"list": [{"id": "agent_abc"}]}}
     assert svc.live_install_for_agent("org_xyz", "agent_abc") is None
 
     workspace.read_template_sidecar.return_value = None
@@ -1300,3 +1325,5 @@ async def test_sidecar_survives_a_pair_timeout_so_the_retry_can_see_the_install(
     assert kwargs["agent_id"] == "agent_abc"
     assert kwargs["content"]["template_slug"] == "demo"
     assert kwargs["content"]["template_version"] == 3
+    assert kwargs["content"]["install_state"] == "installing"
+    ws.mark_template_install_complete.assert_not_called()

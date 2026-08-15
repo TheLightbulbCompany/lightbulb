@@ -458,11 +458,9 @@ _ADAPTER_CREATE_ROUTES = (
 # as null and defaults to "process" when the join-request is later approved.
 _INVITE_ACCEPT_ROUTES = (re.compile(r"^api/invites/[^/]+/accept/?$"),)
 
-# Approval create/resubmit carry the hire's adapterType NESTED at
-# ``payload.adapterType``; ``/approve`` applies it with a ``?? "process"``
-# fallback (paperclip services/approvals.ts). The top-level check misses these.
-# Resubmit is separate because it need not repeat ``type`` and REPLACES the
-# stored payload, so a payload that merely omits adapterType still resets it.
+# Approval create/resubmit can mint an agent later when a hire approval is
+# approved. Isol8-owned marketplace code files those approvals internally; the
+# customer proxy must not expose a second, ungated create path.
 _APPROVAL_CREATE_ROUTES = (re.compile(r"^api/companies/[^/]+/approvals/?$"),)
 _APPROVAL_RESUBMIT_ROUTES = (re.compile(r"^api/approvals/[^/]+/resubmit/?$"),)
 
@@ -485,13 +483,6 @@ def _parse_json_object(body: bytes) -> dict | None:
 
 def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def _require_nested_gateway(payload: object) -> None:
-    """Reject unless ``payload`` is a dict whose adapterType is allowlisted."""
-    nested = _str_or_none(payload.get("adapterType")) if isinstance(payload, dict) else None
-    if nested is None or nested not in _ALLOWED_ADAPTER_TYPES:
-        raise HTTPException(status_code=403, detail="Adapter not permitted")
 
 
 def _assert_paperclip_request_allowed(
@@ -583,24 +574,23 @@ def _assert_paperclip_request_allowed(
         if adapter_type not in _ALLOWED_ADAPTER_TYPES:
             raise HTTPException(status_code=403, detail="adapterType required")
 
-    # Approval CREATE: the hire's adapterType is nested at payload.adapterType,
-    # and approve applies it with a "process" fallback. Require gateway on any
-    # hire-shaped create body.
+    # Approval CREATE: approving a hire-shaped payload mints an agent without
+    # Isol8's budget/idempotency boundary. Non-hire approvals still pass.
     if any(r.match(p) for r in _APPROVAL_CREATE_ROUTES):
         payload = data.get("payload")
         is_hire = data.get("type") == "hire_agent" or (
             isinstance(payload, dict) and ("adapterType" in payload or "adapterConfig" in payload)
         )
         if is_hire:
-            _require_nested_gateway(payload)
+            raise HTTPException(status_code=403, detail="Route not permitted")
 
-    # Approval RESUBMIT replaces the stored payload and need not repeat `type`,
-    # so a payload without adapterType resets it to "process" on approve. Any
-    # resubmit carrying a payload must name a gateway adapter.
+    # RESUBMIT omits the approval type from the request. A payload replacement
+    # could turn a revision-requested hire into a fresh agent mint, so only a
+    # state-only resubmit (which preserves the already-filtered payload) passes.
     if any(r.match(p) for r in _APPROVAL_RESUBMIT_ROUTES):
         payload = data.get("payload")
         if isinstance(payload, dict):
-            _require_nested_gateway(payload)
+            raise HTTPException(status_code=403, detail="Route not permitted")
 
 
 def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:

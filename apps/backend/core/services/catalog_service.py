@@ -522,6 +522,7 @@ class CatalogService:
                 "template_slug": slug,
                 "template_version": template_version,
                 "deployed_at": utc_now_iso(),
+                "install_state": "installing",
                 **({"listing_id": listing_id} if listing_id else {}),
                 # Slug + seller is the install identity (slugs are not unique
                 # across sellers); ids let the unwind remove this deploy's
@@ -721,6 +722,12 @@ class CatalogService:
                 "deploy: ACP enable failed for %s; agent deployed without harness delegation",
                 owner_id,
             )
+
+        # This is the commit record for retrying callers. The early sidecar and
+        # agents.list entry are intentionally only a discoverable PARTIAL
+        # footprint; pairing can persist them before aux config and cron jobs
+        # land. A marker failure propagates so the caller unwinds the install.
+        self._workspace.mark_template_install_complete(owner_id, new_agent_id)
 
         return {
             "slug": slug,
@@ -984,7 +991,7 @@ class CatalogService:
         durable boundary used by retrying deploy callers.
         """
         sidecar = self._workspace.read_template_sidecar(owner_id, agent_id)
-        if not isinstance(sidecar, dict):
+        if not isinstance(sidecar, dict) or sidecar.get("install_state") != "complete":
             return None
 
         config = self._workspace.read_openclaw_config(owner_id) or {}

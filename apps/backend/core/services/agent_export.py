@@ -558,7 +558,7 @@ def _summarize_openclaw_config(agent_dir: Path) -> dict:
     }
 
 
-def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
+def _scan_tarball_for_safety_flags(tarball_bytes: bytes, *, include_snippets: bool = False) -> list[dict]:
     """Walk the snapshot tarball, partition files by safety-scan format
     (persona / openclaw / skillmd), run each bucket, return the union as
     JSON-shaped dicts ready for the manifest.
@@ -567,6 +567,12 @@ def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
     the seller can review + scrub before submit. Nothing here redacts.
     Non-text / binary files are skipped (the scanner's binary heuristic
     + size cap handles them).
+
+    ``snippet`` — the raw matching source line — is STRIPPED by default:
+    everything this feeds except the preview ends up in a manifest, and
+    manifests are served by the unauthenticated listing-detail + search
+    routes (see ``marketplace_safety.flags_without_snippets``). Only the
+    authenticated seller-preview opts back in.
     """
     persona_files: dict[str, bytes] = {}
     openclaw_files: dict[str, bytes] = {}
@@ -605,7 +611,8 @@ def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
     if skillmd_files:
         flags.extend(marketplace_safety.scan(skillmd_files, format="skillmd"))
 
-    return [dataclasses.asdict(f) for f in flags]
+    dicts = [dataclasses.asdict(f) for f in flags]
+    return dicts if include_snippets else marketplace_safety.flags_without_snippets(dicts)
 
 
 def export_agent_from_efs(
@@ -1024,7 +1031,10 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     # tarball itself — just the flags. ``contents`` (the shipped-file list)
     # scopes the requirements scan below to exactly what ships.
     tarball_bytes, contents = _build_tarball(agent_dir)
-    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
+    # Snippets stay ON here and ONLY here: the preview is an authenticated,
+    # seller-scoped response showing the seller their OWN workspace lines so
+    # they can fix a finding before submit. It is never persisted.
+    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes, include_snippets=True)
 
     # Surface (but do NOT block on) any credential that would survive the
     # scrub in the published slice. Preview is informational — the wizard's

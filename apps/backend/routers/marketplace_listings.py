@@ -33,6 +33,7 @@ from core.services import (
     company_deploy_service,
     curator,
     marketplace_hire,
+    marketplace_safety,
     marketplace_search,
     marketplace_service,
     seller_display,
@@ -228,6 +229,20 @@ def _compact_items(items: list[dict]) -> list[dict]:
         }
         for item in items
     ]
+
+
+def _public_row(listing: dict) -> dict:
+    """Listing row with safety-scan snippets stripped from ``manifest_json``.
+
+    The row itself is returned by the UNAUTHENTICATED search + detail routes
+    under ``Cache-Control: public``, and it carries the whole manifest — so
+    the read side has to scrub what already-published (immutable) artifacts
+    persisted before the write-side strip landed. Returns the original object
+    untouched when there is nothing to strip, so clean rows aren't copied.
+    """
+    manifest = listing.get("manifest_json")
+    scrubbed = marketplace_safety.manifest_without_snippets(manifest)
+    return listing if scrubbed is manifest else {**listing, "manifest_json": scrubbed}
 
 
 def _fetch_agent_artifact(listing: dict) -> tuple[bytes, dict]:
@@ -437,7 +452,7 @@ async def search_listings(
         # extra round trip whose output the compact projection drops anyway.
         return {"items": _compact_items(items)}
     await seller_display.attach_seller_names(items)
-    return {"items": items}
+    return {"items": [_public_row(i) for i in items]}
 
 
 @router.get("/featured-listings")
@@ -472,7 +487,7 @@ async def featured_listings(
         return {"items": []}
     items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
     await seller_display.attach_seller_names(items)
-    return {"items": items}
+    return {"items": [_public_row(i) for i in items]}
 
 
 @router.get("/me/installed-templates")
@@ -575,7 +590,9 @@ async def get_listing(listing_id: str, response: Response):
             )
             manifest = None
 
-    return {"listing": listing, "manifest": manifest}
+    # Both copies of the manifest reach this unauthenticated, publicly-cached
+    # response — the S3 one and the one carried on the row.
+    return {"listing": _public_row(listing), "manifest": marketplace_safety.manifest_without_snippets(manifest)}
 
 
 def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:

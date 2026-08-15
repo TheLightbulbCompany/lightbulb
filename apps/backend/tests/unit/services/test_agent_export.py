@@ -836,15 +836,34 @@ def test_export_scan_skips_oversized_and_binary_files(fake_efs):
 
 
 def test_export_safety_flag_schema(fake_efs, tmp_path):
-    """SafetyFlag is JSON-serializable (dataclass-as-dict). Manifest
-    consumers (frontend + admin preview) read pattern/severity/file/line/snippet."""
+    """SafetyFlag is JSON-serializable (dataclass-as-dict). Manifest consumers
+    read pattern/severity/file/line — and NOT snippet, which never reaches a
+    manifest (see the leak test below)."""
     seller_id, agent_id, agent_dir = fake_efs
     (agent_dir / "USER.md").write_text("alice@example.com\n", encoding="utf-8")
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert flags, "expected at least one flag"
     f = flags[0]
-    assert {"pattern", "severity", "file", "line", "snippet"}.issubset(f.keys())
+    assert {"pattern", "severity", "file", "line"}.issubset(f.keys())
+
+
+def test_export_manifest_never_carries_snippets(fake_efs):
+    """The manifest is uploaded to S3 + persisted on the DDB listing row, and
+    served verbatim by the UNAUTHENTICATED listing-detail route under a public
+    cache header. ``snippet`` is 80 raw chars of the seller's source line — by
+    construction the field most likely to hold a credential — so it must never
+    ride into a manifest.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "MEMORY.md").write_text("key AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
+    (agent_dir / "USER.md").write_text("- Email: alice@example.com\n", encoding="utf-8")
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert flags, "expected at least one flag"
+    assert all("snippet" not in f for f in flags), flags
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(pkg.manifest)
+    assert "alice@example.com" not in json.dumps(pkg.manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +920,18 @@ def test_enumerate_for_preview_carries_safety_flags(fake_efs, tmp_path):
     preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
     flags = preview["safety_flags"]
     assert any(f["pattern"] == "email-address" for f in flags)
+
+
+def test_enumerate_for_preview_keeps_snippets(fake_efs):
+    """The preview is authenticated + seller-scoped and shows the seller their
+    OWN workspace lines so they can fix a finding before submit. It is never
+    persisted, so — unlike the manifest — it keeps ``snippet``.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "USER.md").write_text("Email: alice@example.com\n", encoding="utf-8")
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    flag = next(f for f in preview["safety_flags"] if f["pattern"] == "email-address")
+    assert "alice@example.com" in flag["snippet"]
 
 
 # ---------------------------------------------------------------------------

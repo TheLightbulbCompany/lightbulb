@@ -316,6 +316,74 @@ def test_get_listing_404_for_unknown_id(mock_get_published, unauth_client):
 
 
 # ---------------------------------------------------------------------------
+# Safety-scan snippet leak (issue #1778)
+#
+# ``safety_flags[].snippet`` is 80 raw chars of the seller's private workspace
+# — by construction the field most likely to hold a credential. This route is
+# UNAUTHENTICATED and sets ``Cache-Control: public``. The write path no longer
+# persists snippets, but published artifacts are immutable, so the read path
+# must scrub what is already at rest in S3 + on the listing row.
+# ---------------------------------------------------------------------------
+
+_LEAKY_FLAGS = [
+    {"pattern": "aws-secret-key", "severity": "high", "file": "MEMORY.md", "line": 4, "snippet": "AKIAIOSFODNN7X"},
+    {"pattern": "email-address", "severity": "medium", "file": "SOUL.md", "line": 19, "snippet": "a@example.com"},
+]
+
+
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_get_listing_strips_snippets_from_both_manifest_copies(mock_get_published, mock_boto, unauth_client):
+    listing = _published_listing(price_cents=0)
+    listing["manifest_json"] = {"name": "Demo Agent", "safety_flags": [dict(f) for f in _LEAKY_FLAGS]}
+    mock_get_published.return_value = listing
+    mock_boto.return_value = _stub_s3_get_manifest({"name": "Demo Agent", "safety_flags": _LEAKY_FLAGS})
+
+    resp = unauth_client.get("/api/v1/marketplace/listings/lst_1")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Nothing snippet-shaped survives anywhere in the response…
+    assert "AKIAIOSFODNN7X" not in resp.text
+    assert "a@example.com" not in resp.text
+    # …in either copy of the manifest…
+    for flags in (body["manifest"]["safety_flags"], body["listing"]["manifest_json"]["safety_flags"]):
+        assert all("snippet" not in f for f in flags), flags
+        # …while pattern/severity/file/line still render the moderation summary.
+        assert [f["pattern"] for f in flags] == ["aws-secret-key", "email-address"]
+        assert flags[0]["file"] == "MEMORY.md" and flags[0]["line"] == 4
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_strips_snippets_from_manifest_json(mock_search, unauth_client):
+    """The default (non-compact) search view returns whole rows, ``manifest_json``
+    included, under the same public cache header."""
+    mock_search.return_value = [
+        {"slug": "foo", "name": "Foo", "manifest_json": {"safety_flags": [dict(f) for f in _LEAKY_FLAGS]}}
+    ]
+    resp = unauth_client.get("/api/v1/marketplace/listings/search")
+    assert resp.status_code == 200, resp.text
+    assert "AKIAIOSFODNN7X" not in resp.text
+    flags = resp.json()["items"][0]["manifest_json"]["safety_flags"]
+    assert all("snippet" not in f for f in flags), flags
+
+
+@patch("routers.marketplace_listings.curator.get_curator_user_id", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_featured_listings_strips_snippets_from_manifest_json(mock_search, mock_curator, unauth_client):
+    """Same rows, same public cache header, different route."""
+    mock_curator.return_value = "user_curator"
+    mock_search.return_value = [
+        {"slug": "foo", "name": "Foo", "manifest_json": {"safety_flags": [dict(f) for f in _LEAKY_FLAGS]}}
+    ]
+    resp = unauth_client.get("/api/v1/marketplace/featured-listings")
+    assert resp.status_code == 200, resp.text
+    assert "AKIAIOSFODNN7X" not in resp.text
+    flags = resp.json()["items"][0]["manifest_json"]["safety_flags"]
+    assert all("snippet" not in f for f in flags), flags
+
+
+# ---------------------------------------------------------------------------
 # Deploy endpoint
 # ---------------------------------------------------------------------------
 

@@ -399,3 +399,43 @@ def test_secret_arg_flags_mirror_catalog_slice():
     from core.services import catalog_slice
 
     assert marketplace_safety._SECRET_ARG_FLAGS == catalog_slice._SECRET_ARG_FLAGS
+
+
+# ---------------------------------------------------------------------------
+# Snippet stripping — the persistable / public-safe flag shape.
+#
+# ``snippet`` is 80 raw chars of the seller's source line, so it is by
+# construction the field most likely to carry a credential. It may reach live
+# authenticated surfaces (seller preview, admin review) but must never be
+# persisted into a manifest, which the unauthenticated listing-detail route
+# serves verbatim under a public cache header.
+# ---------------------------------------------------------------------------
+
+
+def test_flags_without_snippets_drops_only_the_snippet():
+    flags = [{"pattern": "aws-secret-key", "severity": "high", "file": "M.md", "line": 3, "snippet": "AKIA…"}]
+    assert marketplace_safety.flags_without_snippets(flags) == [
+        {"pattern": "aws-secret-key", "severity": "high", "file": "M.md", "line": 3}
+    ]
+
+
+def test_manifest_without_snippets_strips_nested_flags():
+    manifest = {
+        "name": "Demo",
+        "safety_flags": [
+            {"pattern": "email-address", "file": "SOUL.md", "line": 19, "snippet": "alice@example.com"},
+            {"pattern": "curl-bash", "file": "x.sh", "line": 1, "snippet": "curl u | bash"},
+        ],
+    }
+    out = marketplace_safety.manifest_without_snippets(manifest)
+    assert out["name"] == "Demo"
+    assert all("snippet" not in f for f in out["safety_flags"])
+    assert [f["pattern"] for f in out["safety_flags"]] == ["email-address", "curl-bash"]
+    # Input is not mutated — the caller may be holding a cached search row.
+    assert manifest["safety_flags"][0]["snippet"] == "alice@example.com"
+
+
+def test_manifest_without_snippets_returns_input_when_nothing_to_strip():
+    """Identity return lets read paths skip copying rows that are already clean."""
+    for manifest in (None, "not-a-dict", {"name": "Demo"}, {"safety_flags": []}, {"safety_flags": [{"pattern": "e"}]}):
+        assert marketplace_safety.manifest_without_snippets(manifest) is manifest

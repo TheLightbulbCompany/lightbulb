@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from core.observability.metrics import put_metric
+from core.observability.product_analytics import capture_product_event
 from core.services import agent_export
 from core.services.catalog_slice import sanitize_agent_entry_for_schema
 from core.services.credentials.mcp_server import reconcile_integrations
@@ -153,6 +154,25 @@ def warn_rows(manifest: dict) -> list[dict]:
         for r in (manifest or {}).get("requirements", []) or []
         if isinstance(r, dict) and r.get("disposition") in ("byo", "unavailable")
     ]
+
+
+def emit_agent_deployed(*, owner_id: str, slug: str | None, agent_id: str, seller_id: str | None = None) -> None:
+    """Record the deploy funnel event — ONE emitter for all three deploy
+    surfaces (marketplace deploy, approval hire, agent builder) so the
+    properties can't drift apart.
+
+    Deliberately NOT called from ``deploy_from_artifact``: the install isn't
+    committed when that returns. Every caller still runs rollback-wrapped
+    steps after it (operator-device pairing, routine recreate), and a failure
+    there unwinds the container install and deletes the Paperclip agent.
+    Emitting from inside would count those rolled-back hires as deployments.
+    Each caller emits once its own commit steps have survived.
+    """
+    capture_product_event(
+        distinct_id=owner_id,
+        event="catalog_agent_deployed",
+        properties={"slug": slug, "agent_id": agent_id, "seller_id": seller_id},
+    )
 
 
 # Seller-authored files that become code or an autonomous run the moment

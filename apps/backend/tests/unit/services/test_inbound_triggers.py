@@ -1501,3 +1501,158 @@ async def test_list_instagram_accounts_not_connected():
         pytest.raises(LookupError, match="Instagram is not connected"),
     ):
         await list_instagram_accounts("owner_1")
+
+
+# ---------------------------------------------------------------------------
+# Assignee threading — a seeded automation is not necessarily Friday's
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_assigns_the_supplied_agent():
+    """An explicit assignee wins over the Friday default: seeding a Gmail
+    automation for the support agent must produce a support-owned routine,
+    not a Friday-owned one somebody reassigns by hand afterwards."""
+    admin = _fake_admin(friday_id="friday_1")
+    admin.list_agents = AsyncMock(
+        return_value=[{"id": "friday_1", "role": "ceo"}, {"id": "agent_support", "role": "member"}]
+    )
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_support")
+
+    assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "agent_support"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_assigns_the_supplied_agent_from_an_enveloped_roster():
+    """``list_agents`` is typed ``-> dict`` and the BFF envelopes the roster as
+    ``{"agents": [...]}``. Validating the assignee against the raw payload
+    iterates the DICT KEYS, so every real assignee reads as "not in this
+    workspace" — normalize first, exactly like ``_find_friday_id`` does."""
+    admin = _fake_admin(friday_id="friday_1")
+    admin.list_agents = AsyncMock(
+        return_value={"agents": [{"id": "friday_1", "role": "ceo"}, {"id": "agent_support", "role": "member"}]}
+    )
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_support")
+
+    assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "agent_support"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_rejects_an_agent_outside_an_enveloped_roster():
+    """The tenancy fence still bites once the roster is normalized — an
+    enveloped response must not become a way to smuggle a foreign agent id in."""
+    admin = _fake_admin()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "friday_1", "role": "ceo"}]})
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
+        await seed_trigger_routine(
+            "owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_someone_elses"
+        )
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_rejects_an_agent_outside_the_company():
+    """Client-supplied agent ids are never trusted — the id must be on the
+    CALLER's own company roster, the same tenancy fence the Teams routes
+    apply via ctx.company_id. Nothing is created upstream."""
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="not in this workspace"):
+        await seed_trigger_routine(
+            "owner_1", "stripe", "invoice.payment_failed", assignee_agent_id="agent_someone_elses"
+        )
+    admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_without_assignee_still_defaults_to_friday():
+    admin = _fake_admin(friday_id="friday_xyz")
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client:
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+
+    assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "friday_xyz"
+
+
+# ---------------------------------------------------------------------------
+# Registry title inversion — how a published routine names its automation
+# ---------------------------------------------------------------------------
+
+
+def test_automation_titles_are_unique_across_the_registry():
+    """The marketplace recovers (provider, event) from a seeded routine's
+    TITLE, so two events rendering the same title would make that ambiguous
+    and silently ship the wrong requirement. Keep titles unique."""
+    from core.services.credentials import registry
+
+    titles = [
+        p.inbound.template.title.format(event_label=event.label)
+        for p in registry.all_providers().values()
+        if p.inbound is not None
+        for event in p.inbound.events
+    ]
+    assert len(set(titles)) == len(titles)
+
+
+def test_automation_from_title_inverts_the_seed_rendering():
+    from core.services.inbound_triggers import automation_from_title
+
+    assert automation_from_title("GitHub: Issue opened or changed") == ("github", "issues")
+    assert automation_from_title("Stripe: Charge refunded") == ("stripe", "charge.refunded")
+    assert automation_from_title("Nightly sweep") is None
+
+
+def test_automation_requirement_flags_the_buyer_specific_resource():
+    """guided_paste needs nothing but the proxy URL; every auto/poll shape
+    binds a provider-side resource only the BUYER can name."""
+    from core.services.inbound_triggers import automation_requirement
+
+    assert automation_requirement("stripe", "charge.refunded") == {
+        "provider": "stripe",
+        "event_id": "charge.refunded",
+        "needs_resource": False,
+    }
+    assert automation_requirement("github", "issues")["needs_resource"] is True
+    assert automation_requirement("google", "gmail.message")["needs_resource"] is True
+    assert automation_requirement("notion", "whatever") is None
+    assert automation_requirement("github", "not.an.event") is None
+    assert automation_requirement("no_such_provider", "issues") is None
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_emits_automation_armed():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin)
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch("core.services.inbound_triggers.capture_product_event") as capture,
+    ):
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+
+    capture.assert_called_once()
+    assert capture.call_args.kwargs["event"] == "automation_armed"
+    assert capture.call_args.kwargs["distinct_id"] == "owner_1"
+    assert capture.call_args.kwargs["properties"]["provider"] == "stripe"
+    assert capture.call_args.kwargs["properties"]["event_id"] == "invoice.payment_failed"
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_does_not_emit_when_it_fails():
+    admin = _fake_admin()
+    p_repo, p_cookie, p_client = _env(admin, company_status="seeding")
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch("core.services.inbound_triggers.capture_product_event") as capture,
+        pytest.raises(ValueError),
+    ):
+        await seed_trigger_routine("owner_1", "stripe", "invoice.payment_failed")
+    capture.assert_not_called()

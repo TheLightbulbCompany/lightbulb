@@ -34,6 +34,7 @@ from core.services.catalog_slice import (
     extract_agent_slice,
     filter_cron_jobs_for_agent,
 )
+from core.services.inbound_triggers import automation_from_title
 from core.services.marketplace.requirements import (
     build_manifest_requirements,
     load_effective_config,
@@ -1133,20 +1134,91 @@ _ROUTINE_PORTABLE_KEYS = ("title", "description")
 _TRIGGER_PORTABLE_KEYS = ("cronExpression", "timezone")
 
 
+def _is_publishable(text: str) -> bool:
+    """Whether a seller-authored routine string may go in a public manifest.
+
+    ``manifest.json`` is served by ``GET /marketplace/listings/{id}``, and a
+    routine's title and description are the seller-authored strings that reach
+    it WITHOUT passing the tarball's safety scan — routine capture is appended
+    after ``export_agent_from_efs`` has already produced ``safety_flags``, so a
+    finding here would not even reach moderation. They get the same patterns
+    the tarball does rather than a second set of regexes.
+
+    ANY flag fails it, not just the PII ones: the persona set also carries
+    ``hardcoded-secret``, ``aws-secret-key`` and ``provider-token``, and a
+    credential in a public manifest is worse than a lost prompt. The seed's
+    own google descriptions trip ``email-address`` (they interpolate the
+    owner's account), which is the case this started from.
+
+    This scan — not the automation classifier above it — is what actually
+    fences the seller's data in. The classifier decides what SHAPE a routine
+    ports as, and it reads a trigger label the owner can edit; that makes it a
+    correctness/UX decision, not a security boundary. Nothing seller-authored
+    reaches the manifest without passing through here first.
+    """
+    return not marketplace_safety.scan({"routine-text": text.encode()}, format="persona")
+
+
 def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     """Strip a Paperclip RoutineDetail down to its buyer-portable shape.
 
-    Returns ``{title, description, cron, timezone}`` (one entry per schedule
-    trigger; the routine's title/description are repeated per trigger so the
-    deploy side can recreate one routine+trigger per entry) — or ``None`` when
-    the routine has no schedule trigger to carry (webhook/api triggers don't
-    port; a routine with zero schedule triggers has no cron to recreate).
+    Two shapes, decided per ROUTINE:
+
+    - A **seeded automation** — it carries a webhook trigger whose ``label``
+      inverts through the registry — ports as the single requirement
+      ``{title, kind: "webhook", provider, event_id}``, whatever else it
+      carries. The buyer arms it themselves: the live trigger's resource
+      (repo / project / Page / mailbox) is the SELLER's, and a deploy must not
+      silently arm a trigger the buyer didn't ask for.
+
+      It carries NO description and NONE of its schedules, because both are
+      seller-instance state. The seed interpolates the concrete account, proxy
+      URL and watch state-file path into the description, and the manifest is
+      served publicly by ``GET /marketplace/listings/{id}`` — so copying it
+      would publish the seller's own mailbox and endpoint. Its schedule
+      triggers are the watch's twice-weekly self-renewal, which on a buyer
+      would re-arm a watch that does not exist. Only the title ports, and that
+      is rendered from the registry, not from the seller.
+
+      Recognition is the trigger LABEL, because the routine's own title is
+      both mutable and guessable: renaming a routine is a title-only edit the
+      detail panel supports, and nothing stops a seller titling an ordinary
+      cron exactly like a registry automation. A rename never reaches a
+      trigger, and the user-authored webhook path ("Any other app" in
+      ``RoutinesPanel``) sets no label at all — so a hand-built webhook
+      routine falls through to the schedule branch and keeps its real
+      scheduled work.
+
+      A schedule-only seeded automation (the gmail poll shape) has no webhook
+      trigger to recognise, so it is not a requirement. It does not become a
+      broken schedule either: its whole prompt is the seller's mailbox and the
+      ``gog`` invocation against it, so the scan below takes the description,
+      and a routine stripped of its instructions ports as nothing at all.
+
+    - Anything else — one ``{title, description, cron, timezone}`` per schedule
+      trigger (title/description repeated per trigger so the deploy side can
+      recreate one routine+trigger per entry), recreated DORMANT on the buyer.
+      Both its title and its description go through ``_is_publishable`` first
+      — they are the seller-authored strings that reach the public manifest
+      without passing the tarball's safety scan. An unsafe description is
+      blanked; an unsafe title takes the routine with it, since a title cannot
+      be blanked and still name anything.
+
+    ``None`` when the routine is archived, belongs to another agent, or has no
+    portable trigger at all.
+
+    Archived routines are skipped because ``delete_routine`` ARCHIVES rather
+    than deletes (upstream has no DELETE route) — the same filter
+    ``GET /teams/routines`` applies, for the same reason: an archived row is
+    work the seller deleted, and a republish would ship it to every buyer.
 
     Company / agent / instance ids and revision fields are dropped — the buyer
     side remaps ``assigneeAgentId`` to the freshly-minted agent and Paperclip
     generates new routine/trigger ids.
     """
     if not isinstance(detail, dict):
+        return None
+    if detail.get("status") == "archived":
         return None
     if detail.get("assigneeAgentId") != agent_id:
         return None
@@ -1157,6 +1229,55 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     triggers = detail.get("triggers")
     if not isinstance(triggers, list):
         return None
+
+    # A seeded automation ports as a requirement and nothing else — see the
+    # docstring for why its description and schedules stay behind.
+    #
+    # It identifies itself on its TRIGGER, not on the routine: the seed passes
+    # the registry-rendered title as the webhook trigger's ``label``, and the
+    # user-authored path ("Any other app") sets none. That is the only signal
+    # here that is neither editable nor guessable — a routine rename is a
+    # title-only edit that never reaches a trigger, and a seller titling an
+    # ordinary cron "GitHub: Issue opened or changed" does not acquire a
+    # labelled webhook trigger by doing so.
+    #
+    # The label is also what the requirement is NAMED by. It came from the
+    # registry, so unlike the routine's own title it cannot carry seller text
+    # into a public manifest.
+    for trig in triggers:
+        if not isinstance(trig, dict) or trig.get("kind") != "webhook":
+            continue
+        label = trig.get("label")
+        automation = automation_from_title(label) if isinstance(label, str) else None
+        if automation is None:
+            # A webhook the owner built themselves. It has no requirement to
+            # express, but it may carry real scheduled work — fall through.
+            continue
+        provider, event_id = automation
+        return {"_entries": [{"title": label, "kind": "webhook", "provider": provider, "event_id": event_id}]}
+
+    # An ordinary routine publishes its own title, and that is seller-authored
+    # text like the description is. Unlike the description it cannot simply be
+    # blanked — it IS the routine's identity on the buyer's board — so a title
+    # that fails the scan takes the routine with it. (A seeded automation is
+    # already gone by here, named by its registry label, so a seller renaming
+    # one after their own mailbox costs them nothing.)
+    if not _is_publishable(title):
+        return None
+
+    had_description = isinstance(description, str) and bool(description)
+    safe_description = description if had_description and _is_publishable(description) else ""
+
+    # A routine whose instructions we had to remove does not port at all. The
+    # seeded gmail poll is the case that matters: schedule-only, so it never
+    # becomes a requirement, and its whole prompt is the seller's mailbox and
+    # the gog invocation against it. Recreating that as a titled cron with an
+    # empty body hands the buyer something that looks like work and is not.
+    # A routine the seller simply never described is untouched — nothing was
+    # taken from it.
+    if had_description and not safe_description:
+        return None
+
     out: list[dict] = []
     for trig in triggers:
         if not isinstance(trig, dict):
@@ -1169,7 +1290,7 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
         out.append(
             {
                 "title": title,
-                "description": description if isinstance(description, str) else "",
+                "description": safe_description,
                 "cron": cron,
                 "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
             }
@@ -1190,11 +1311,14 @@ async def capture_agent_routines(
 ) -> list[dict]:
     """Capture an agent's Paperclip routines into a buyer-portable list.
 
-    Each entry is ``{title, description, cron, timezone}`` with all
-    company/agent/instance ids and revision fields stripped (mirrors
-    ``filter_cron_jobs_for_agent``). The cron lives on the routine's schedule
-    *trigger*, so we read each routine's detail (which carries its triggers) to
-    pull it.
+    Entries are either a schedule (``{title, description, cron, timezone}``) or
+    an automation requirement (``{title, kind: "webhook", provider, event_id}``
+    — no description, it is seller-instance state) — see
+    ``_portable_routine_from_detail`` for why a seeded automation ships as a
+    requirement and never as a live trigger. All company/agent/instance ids and
+    revision fields are stripped (mirrors ``filter_cron_jobs_for_agent``). Both
+    the cron and the trigger kind live on the routine's *triggers*, so we read
+    each routine's detail (which carries them) to pull them.
 
     Best-effort: any failure (Paperclip down, no company, malformed shape) logs
     and returns ``[]`` so routine capture never fails the export. The fetcher is
@@ -1255,6 +1379,11 @@ async def _default_fetch_routine_details(*, owner_id: str, agent_id: str) -> lis
         details: list[dict] = []
         for r in items:
             if not isinstance(r, dict) or r.get("assigneeAgentId") != agent_id:
+                continue
+            # Archived == the seller deleted it (upstream archives instead of
+            # deleting). Skipped here as well as in the portable strip, so a
+            # board full of archived rows doesn't cost a detail fetch each.
+            if r.get("status") == "archived":
                 continue
             rid = r.get("id")
             if not isinstance(rid, str):

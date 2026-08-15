@@ -121,6 +121,54 @@ describe("useHire — ACP note mapping", () => {
   });
 });
 
+describe("useHire — pending automations", () => {
+  beforeEach(() => {
+    mockDeploy.mockReset();
+    mockRefreshAgents.mockReset();
+    mockShowInstallToast.mockReset();
+    mockShowErrorToast.mockReset();
+    mockMarkInstalled.mockReset();
+    mockClose.mockReset();
+    mockRefreshAgents.mockResolvedValue(undefined);
+  });
+
+  it("counts the webhook automations the deploy left for the buyer to wire", async () => {
+    // The deploy deliberately arms nothing for webhook triggers (each binds a
+    // resource only the buyer can name). Without this count the hired agent
+    // arrives silently incomplete — the whole point of shipping automations.
+    mockDeploy.mockResolvedValue(
+      deployResult({
+        automations_pending: [
+          { provider: "github", event_id: "push", needs_resource: true },
+          { provider: "stripe", event_id: "invoice.payment_failed", needs_resource: false },
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useHire());
+    await act(async () => {
+      await result.current.hire(listing());
+    });
+    await waitFor(() =>
+      expect(mockShowInstallToast).toHaveBeenCalledWith(
+        expect.objectContaining({ automationsPending: 2 }),
+      ),
+    );
+  });
+
+  it("passes no count when the listing ships no webhook automations", async () => {
+    mockDeploy.mockResolvedValue(deployResult());
+    const { result } = renderHook(() => useHire());
+    await act(async () => {
+      await result.current.hire(listing());
+    });
+    await waitFor(() =>
+      expect(mockShowInstallToast).toHaveBeenCalledWith(
+        expect.objectContaining({ automationsPending: undefined }),
+      ),
+    );
+  });
+});
+
 describe("useHire — reliability", () => {
   beforeEach(() => {
     mockDeploy.mockReset();

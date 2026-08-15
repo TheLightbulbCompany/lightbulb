@@ -267,7 +267,7 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
     from core.containers import get_ecs_manager
     from core.repositories import container_repo, marketplace_repo
     from core.services import marketplace_service
-    from core.services.catalog_service import get_catalog_service
+    from core.services.catalog_service import emit_agent_deployed, get_catalog_service
     from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
 
     listing = await marketplace_service.get_published_by_id(listing_id=listing_id)
@@ -352,6 +352,15 @@ async def deploy_for_approval(*, approval: dict, owner_id: str) -> None:
             deploy_cause = exc
             await _rollback_agent(owner_id=owner_id, agent_id=agent_id, cause=exc)
             raise
+
+        # Committed: the install survived its rollback envelope. Emitting from
+        # inside deploy_from_artifact counted hires the rollback had undone.
+        emit_agent_deployed(
+            owner_id=owner_id,
+            slug=listing.get("slug"),
+            agent_id=agent_id,
+            seller_id=listing.get("seller_id"),
+        )
 
         # Seller-dashboard counter — never worth failing a committed install.
         try:

@@ -77,6 +77,10 @@ export function useHire() {
             agentName: listing.name,
             agentId: result.agent_id ?? listing.listing_id,
             acpNote,
+            // The deploy arms no webhook automation — each binds a resource
+            // only the buyer can name — so the hire has to SAY what's left,
+            // or the agent arrives looking complete and never fires.
+            automationsPending: result.automations_pending?.length,
           });
           // 700ms delay before closing matches the mock spec.
           setTimeout(() => close(), 700);

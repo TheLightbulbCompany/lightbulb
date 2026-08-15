@@ -493,6 +493,134 @@ def test_deploy_recreates_captured_routines_remapped_to_buyer_agent(
     assert [r["title"] for r in rk["manifest_routines"]] == ["Morning sweep", "Weekly report"]
 
 
+def _catalog_stub(agent_id: str = "paperclip-uuid-1234"):
+    catalog = MagicMock()
+    catalog.deploy_from_artifact = AsyncMock(
+        return_value={
+            "slug": "demo-agent",
+            "version": 1,
+            "agent_id": agent_id,
+            "name": "Demo Agent",
+            "skills_added": [],
+            "plugins_enabled": [],
+            "cron_jobs_added": 0,
+            "config_registered": True,
+        }
+    )
+    return catalog
+
+
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_returns_the_webhook_automations_the_buyer_must_wire(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_ecs, mock_pair, mock_recreate, client
+):
+    """Webhook automations bind a SELLER-specific resource, so the deploy arms
+    nothing and hands the buyer the to-do list instead. The response field is
+    what the hire toast counts — without it the agent arrives silently
+    incomplete."""
+    listing = _published_listing(price_cents=0)
+    listing["manifest_json"] = {
+        "name": "Demo Agent",
+        "format": "openclaw",
+        "routines": [
+            {"title": "Nightly", "cron": "0 6 * * *"},
+            {
+                "title": "On failed invoice",
+                "kind": "webhook",
+                "provider": "stripe",
+                "event_id": "invoice.payment_failed",
+            },
+        ],
+    }
+    mock_get_published.return_value = listing
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    mock_get_catalog.return_value = _catalog_stub()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["automations_pending"] == [
+        {"provider": "stripe", "event_id": "invoice.payment_failed", "needs_resource": False}
+    ]
+
+
+@patch("routers.marketplace_listings.emit_agent_deployed")
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_emits_the_funnel_event_after_the_commit_steps(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_pair,
+    mock_recreate,
+    mock_emit,
+    client,
+):
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    mock_get_catalog.return_value = _catalog_stub()
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    mock_emit.assert_called_once()
+    assert mock_emit.call_args.kwargs["agent_id"] == "paperclip-uuid-1234"
+    assert mock_emit.call_args.kwargs["slug"] == "demo-agent"
+
+
+@patch("routers.marketplace_listings.emit_agent_deployed")
+@patch("routers.marketplace_listings.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings._recreate_routines_for_buyer", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.get_ecs_manager")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_deploy_does_not_report_deployed_when_a_commit_step_fails(
+    mock_get_published,
+    mock_get_catalog,
+    mock_boto,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_pair,
+    mock_recreate,
+    mock_delete_pc,
+    mock_emit,
+    client,
+):
+    """The routine recreate runs INSIDE the rollback envelope: a failure there
+    unwinds the container install and deletes the Paperclip agent. A hire that
+    was rolled back is not a deployment, so the funnel event must not fire."""
+    mock_get_published.return_value = _published_listing(price_cents=0)
+    mock_create_pc.return_value = {"id": "paperclip-uuid-1234", "name": "Demo Agent"}
+    mock_get_ecs.return_value = _stub_ecs_manager()
+    mock_boto.return_value = _stub_s3_get_object(_slice={"agent": {"name": "Demo Agent"}, "cron_jobs": []})
+    catalog = _catalog_stub()
+    catalog.unwind_partial_deploy = AsyncMock(return_value=True)
+    mock_get_catalog.return_value = catalog
+    mock_recreate.side_effect = RuntimeError("no paperclip company for owner")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 500
+    mock_emit.assert_not_called()
+
+
 @patch("routers.marketplace_listings.get_ecs_manager")
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.boto3.client")
@@ -585,6 +713,44 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     mock_create_pc.assert_not_awaited()
     catalog.deploy_from_artifact.assert_not_awaited()
     mock_boto.assert_not_called()
+
+
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_a_healed_retry_still_reports_the_automations_that_need_wiring(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_workspace, client
+):
+    """The lost-response retry is EXACTLY the case where the buyer never saw
+    the wiring list. Pending automations describe the agent's standing state,
+    not this call's work, so unlike ``warnings`` they ride the healed response
+    too — otherwise the agent silently never fires."""
+    listing = _published_listing(price_cents=0)
+    listing["manifest_json"] = {
+        "name": "Demo Agent",
+        "routines": [
+            {"title": "Nightly", "cron": "0 6 * * *"},
+            {
+                "title": "Stripe: Charge refunded",
+                "kind": "webhook",
+                "provider": "stripe",
+                "event_id": "charge.refunded",
+            },
+        ],
+    }
+    mock_get_published.return_value = listing
+    mock_get_catalog.return_value = _catalog_with_install()
+    mock_get_workspace.return_value = _workspace_with_agents("agent_first")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["already_installed"] is True
+    assert body["automations_pending"] == [
+        {"provider": "stripe", "event_id": "charge.refunded", "needs_resource": False}
+    ]
 
 
 @patch(
@@ -2545,3 +2711,65 @@ def test_discard_requires_version_query_param(authed_client_factory):
     client = authed_client_factory("u_seller", "seller@example.com")
     r = client.delete("/api/v1/marketplace/listings/lst_1")
     assert r.status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# Manifest routines: schedules recreate DORMANT, webhooks come back as pending
+# --------------------------------------------------------------------------- #
+
+
+def test_pending_automations_maps_webhook_entries_only():
+    from routers.marketplace_listings import _pending_automations
+
+    assert _pending_automations(
+        [
+            {"title": "Morning sweep", "cron": "0 6 * * *", "timezone": "UTC"},
+            {"title": "GitHub: Issue opened or changed", "kind": "webhook", "provider": "github", "event_id": "issues"},
+            {
+                "title": "Stripe: Charge refunded",
+                "kind": "webhook",
+                "provider": "stripe",
+                "event_id": "charge.refunded",
+            },
+        ]
+    ) == [
+        {"provider": "github", "event_id": "issues", "needs_resource": True},
+        {"provider": "stripe", "event_id": "charge.refunded", "needs_resource": False},
+    ]
+
+
+def test_pending_automations_dedupes_and_drops_unknown_pairs():
+    from routers.marketplace_listings import _pending_automations
+
+    assert _pending_automations(
+        [
+            {"kind": "webhook", "provider": "github", "event_id": "issues"},
+            {"kind": "webhook", "provider": "github", "event_id": "issues"},
+            {"kind": "webhook", "provider": "github", "event_id": "gone.from.registry"},
+            {"kind": "webhook"},
+            "not-a-dict",
+        ]
+    ) == [{"provider": "github", "event_id": "issues", "needs_resource": True}]
+
+
+@pytest.mark.asyncio
+async def test_recreate_routines_never_arms_a_webhook_entry():
+    """Webhook manifest entries carry no cron, so the dormant-schedule
+    recreate path drops them before it ever resolves a company — a deploy
+    must never silently arm a live trigger the buyer didn't ask for."""
+    from routers.marketplace_listings import _recreate_routines_for_buyer
+
+    with patch("routers.marketplace_listings.create_agent_routines", new_callable=AsyncMock) as mock_create:
+        await _recreate_routines_for_buyer(
+            owner_id="u_buyer",
+            new_agent_id="agent_new",
+            manifest_routines=[
+                {
+                    "title": "GitHub: Issue opened or changed",
+                    "kind": "webhook",
+                    "provider": "github",
+                    "event_id": "issues",
+                }
+            ],
+        )
+    mock_create.assert_not_awaited()

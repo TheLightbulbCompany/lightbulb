@@ -32,7 +32,12 @@ class TestFromIntegration:
         assert response.status_code == 200
         assert response.json()["guided"] is True
         mock_seed.assert_awaited_once_with(
-            "user_test_123", "stripe", "invoice.payment_failed", resource=None, topic=None
+            "user_test_123",
+            "stripe",
+            "invoice.payment_failed",
+            resource=None,
+            topic=None,
+            assignee_agent_id=None,
         )
 
     @pytest.mark.asyncio
@@ -98,7 +103,14 @@ class TestFromIntegration:
         )
         assert response.status_code == 200
         assert response.json()["resource"] == "acme/site"
-        mock_seed.assert_awaited_once_with("user_test_123", "github", "pull_request", resource="acme/site", topic=None)
+        mock_seed.assert_awaited_once_with(
+            "user_test_123",
+            "github",
+            "pull_request",
+            resource="acme/site",
+            topic=None,
+            assignee_agent_id=None,
+        )
 
     @pytest.mark.asyncio
     @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
@@ -135,6 +147,35 @@ class TestFromIntegration:
             "gmail.message",
             resource="ada@example.com",
             topic="projects/my-project/topics/isol8-gmail",
+            assignee_agent_id=None,
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.seed_trigger_routine", new_callable=AsyncMock)
+    @patch("routers.teams._guards.billing_repo")
+    async def test_assignee_passes_through_to_seed(self, mock_billing, mock_seed, async_client):
+        """An explicit assignee reaches the seed untouched — the tenancy check
+        (is this agent in the caller's own company) lives there, next to the
+        agent roster the seed already fetches."""
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"subscription_status": "active"})
+        mock_seed.return_value = {"routine_id": "rt_1", "trigger_public_id": "pub_1"}
+
+        response = await async_client.post(
+            "/api/v1/automations/from-integration",
+            json={
+                "provider": "stripe",
+                "event_id": "invoice.payment_failed",
+                "assignee_agent_id": "agent_support",
+            },
+        )
+        assert response.status_code == 200
+        mock_seed.assert_awaited_once_with(
+            "user_test_123",
+            "stripe",
+            "invoice.payment_failed",
+            resource=None,
+            topic=None,
+            assignee_agent_id="agent_support",
         )
 
 

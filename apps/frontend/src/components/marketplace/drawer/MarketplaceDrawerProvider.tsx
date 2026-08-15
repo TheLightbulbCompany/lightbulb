@@ -36,7 +36,16 @@ export interface DrawerState {
   installedSlugs: Set<string>;
   /** ``error`` set ⇒ the toast renders its failure variant (no "Open in
    * chat"). Success toasts leave it undefined. */
-  toast: { agentName: string; agentId: string; acpNote?: AcpNote; error?: string; sticky?: boolean } | null;
+  toast: {
+    agentName: string;
+    agentId: string;
+    acpNote?: AcpNote;
+    /** How many webhook automations the hire left for the buyer to wire (the
+     * deploy arms none — each binds a resource only the buyer can name). */
+    automationsPending?: number;
+    error?: string;
+    sticky?: boolean;
+  } | null;
 }
 
 export interface OpenOptions {
@@ -52,7 +61,12 @@ interface DrawerContextValue {
   setView: (view: DrawerView) => void;
   startEditListing: (listing: Listing) => void;
   openListingDetail: (listingId: string) => void;
-  showInstallToast: (toast: { agentName: string; agentId: string; acpNote?: AcpNote }) => void;
+  showInstallToast: (toast: {
+    agentName: string;
+    agentId: string;
+    acpNote?: AcpNote;
+    automationsPending?: number;
+  }) => void;
   /** Surface a failed Hire. Without this a rejected deploy was an unhandled
    * promise rejection — the dialog just froze ("the screen bugging out"). */
   showErrorToast: (message: string, opts?: { sticky?: boolean }) => void;
@@ -144,7 +158,7 @@ export function MarketplaceDrawerProvider({ children }: { children: ReactNode })
   }, []);
 
   const showInstallToast = useCallback(
-    (toast: { agentName: string; agentId: string; acpNote?: AcpNote }) => {
+    (toast: { agentName: string; agentId: string; acpNote?: AcpNote; automationsPending?: number }) => {
       setState((prev) => ({ ...prev, toast }));
     },
     [],

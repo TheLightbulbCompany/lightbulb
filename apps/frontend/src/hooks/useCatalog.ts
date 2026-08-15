@@ -45,6 +45,11 @@ export interface DeployResult {
    * Both default-absent on listings published before ACP shipped. */
   acp_requested?: boolean;
   acp_enabled?: boolean;
+  /** Webhook automations the listing ships that the deploy deliberately did
+   * NOT arm — each binds a provider-side resource only the buyer can name
+   * (their repo, their mailbox, their Page). Handed back as the buyer's
+   * "finish wiring me up" list; absent on listings with none. */
+  automations_pending?: { provider: string; event_id: string; needs_resource: boolean }[];
 }
 
 interface MarketplaceListing {

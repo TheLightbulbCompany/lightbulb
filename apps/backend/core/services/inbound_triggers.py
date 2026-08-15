@@ -130,12 +130,14 @@ import asyncio
 import json
 import logging
 import re
+from functools import lru_cache
 from typing import Any
 
 import httpx
 
 from core.auth import is_org_owner_id
 from core.config import settings
+from core.observability.product_analytics import capture_product_event
 from core.repositories import google_accounts_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import google_watch
@@ -278,6 +280,78 @@ async def _company_id_for_owner(owner_id: str) -> str | None:
         return await repo.get_org_company_id(owner_id)
     row = await repo.get(owner_id)
     return row.company_id if row is not None and row.status == "active" else None
+
+
+@lru_cache(maxsize=1)
+def _titles_to_automation() -> dict[str, tuple[str, str]]:
+    """Rendered routine title -> ``(provider_key, event_id)``.
+
+    The exact inverse of what ``seed_trigger_routine`` names a seeded routine
+    and its webhook trigger (``inbound.template.title.format(event_label=…)``).
+    Both halves come from the registry, so the mapping inverts deterministically
+    — which is how the marketplace recovers what automation a captured routine
+    represents, having only its title. Titles are unique across the whole
+    registry (pinned by ``test_automation_titles_are_unique_across_the_registry``);
+    a collision would make this ambiguous, so keep them that way.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for key, provider in registry.all_providers().items():
+        inbound = provider.inbound
+        if inbound is None:
+            continue
+        for event in inbound.events:
+            out[inbound.template.title.format(event_label=event.label)] = (key, event.id)
+    return out
+
+
+def automation_from_title(title: str) -> tuple[str, str] | None:
+    """``(provider_key, event_id)`` for a title the seed rendered, else None
+    (a hand-made routine, or an event the registry no longer carries)."""
+    return _titles_to_automation().get(title)
+
+
+def automation_requirement(provider_key: str, event_id: str) -> dict[str, Any] | None:
+    """One webhook automation as a buyer-facing REQUIREMENT —
+    ``{provider, event_id, needs_resource}`` — or None when the registry no
+    longer carries that provider/event.
+
+    ``needs_resource`` is True for every registration shape that binds a
+    provider-side resource only the buyer can name (their repo, Vercel
+    project, Meta Page, Google account); guided_paste needs nothing but the
+    proxy URL Isol8 hands them.
+    """
+    try:
+        provider = registry.get_provider(provider_key)
+    except KeyError:
+        return None
+    inbound = provider.inbound
+    if inbound is None:
+        return None
+    event = next((e for e in inbound.events if e.id == event_id), None)
+    if event is None:
+        return None
+    registration = event.registration or inbound.webhook_registration
+    return {
+        "provider": provider_key,
+        "event_id": event_id,
+        "needs_resource": registration != "guided_paste",
+    }
+
+
+def _agent_rows(listed: Any) -> list:
+    """The agent rows out of whatever ``list_agents`` returned.
+
+    Upstream's ``GET /companies/{companyId}/agents`` returns a bare JSON array,
+    but the client is typed ``-> dict`` and the BFF envelopes it under
+    ``"agents"`` — so accept both, same defensiveness (and same reason) as
+    ``company_deploy_service._find_friday_id`` and
+    ``agent_routine_provisioning._existing_titles_for_agent``. Iterating the
+    enveloped dict directly walks its KEYS, which would fail every assignee
+    check below against a roster the agent really is on.
+    """
+    if isinstance(listed, dict):
+        listed = listed.get("agents") or listed.get("items") or []
+    return listed if isinstance(listed, list) else []
 
 
 def _build_webhook_trigger_body(*, signing_mode: str, replay_window_sec: int, label: str) -> dict[str, Any]:
@@ -626,9 +700,14 @@ async def seed_trigger_routine(
     event_id: str,
     resource: str | None = None,
     topic: str | None = None,
+    assignee_agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a routine + trigger pre-filled from ``provider_key``'s registry
-    ``inbound`` declaration, for the event named ``event_id``.
+    ``inbound`` declaration, for the event named ``event_id``, and record the
+    funnel event on success.
+
+    Thin wrapper so ``automation_armed`` fires from ONE place instead of once
+    per registration shape's return — every shape below is a success path.
 
     Returns ``{routine_id, trigger_public_id, proxy_url, guided, instructions,
     secret_hint}``; bearer-guided providers add ``webhook_secret`` (the
@@ -641,14 +720,44 @@ async def seed_trigger_routine(
     trigger_public_id/proxy_url — there is no webhook); owner_setup
     additionally needs ``topic``, the owner's own Pub/Sub topic.
 
+    ``assignee_agent_id`` is who the routine lands on. Omitted, it resolves to
+    the owner's Friday as before; supplied, it must be an agent on the
+    CALLER's own Paperclip company roster (a Gmail automation for the support
+    agent should not arrive Friday-owned and need reassigning by hand).
+
     Raises ``ValueError`` for any caller-facing input problem (unknown
     provider/event, provider not wired as a trigger source, missing/invalid
     resource or topic, GitHub/Vercel/Google refusing the registration, no
-    active Paperclip company, no resolvable suggested agent) — the router
-    maps these to a 4xx. Raises ``RuntimeError`` on a malformed upstream
-    response (Paperclip is expected to always return an id / publicId /
-    secretMaterial).
+    active Paperclip company, no resolvable suggested agent, an assignee
+    outside the caller's company) — the router maps these to a 4xx. Raises
+    ``RuntimeError`` on a malformed upstream response (Paperclip is expected
+    to always return an id / publicId / secretMaterial).
     """
+    out = await _seed_trigger_routine(
+        owner_id,
+        provider_key,
+        event_id,
+        resource=resource,
+        topic=topic,
+        assignee_agent_id=assignee_agent_id,
+    )
+    capture_product_event(
+        distinct_id=owner_id,
+        event="automation_armed",
+        properties={"provider": provider_key, "event_id": event_id, "source": "from_integration"},
+    )
+    return out
+
+
+async def _seed_trigger_routine(
+    owner_id: str,
+    provider_key: str,
+    event_id: str,
+    resource: str | None = None,
+    topic: str | None = None,
+    assignee_agent_id: str | None = None,
+) -> dict[str, Any]:
+    """The seed itself — see ``seed_trigger_routine`` for the contract."""
     provider = registry.get_provider(provider_key)
     inbound = provider.inbound
     if inbound is None:
@@ -729,8 +838,10 @@ async def seed_trigger_routine(
         raise ValueError(f"unsupported inbound.signing_mode {inbound.signing_mode!r}")
 
     # Only "friday" is used by any live registry template today (Stripe's).
-    # Extend this when a second suggested_agent shows up.
-    if inbound.template.suggested_agent != "friday":
+    # Extend this when a second suggested_agent shows up. An explicit assignee
+    # bypasses the suggestion entirely — the caller named the agent, so there
+    # is nothing to resolve.
+    if assignee_agent_id is None and inbound.template.suggested_agent != "friday":
         raise ValueError(f"no agent resolver for suggested_agent={inbound.template.suggested_agent!r}")
 
     company_id = await _company_id_for_owner(owner_id)
@@ -755,10 +866,18 @@ async def seed_trigger_routine(
         cookie = await get_admin_session_cookie(http)
         admin = PaperclipAdminClient(http_client=http)
 
-        agents = await admin.list_agents(session_cookie=cookie, company_id=company_id)
-        agent_id = _find_friday_id(agents)
-        if agent_id is None:
-            raise ValueError(f"no CEO agent (Friday) found in company {company_id!r}")
+        agents = _agent_rows(await admin.list_agents(session_cookie=cookie, company_id=company_id))
+        if assignee_agent_id is not None:
+            # Never trust a client-supplied agent id: it has to be on the
+            # CALLER's own company roster, the same tenancy fence every Teams
+            # route applies via ctx.company_id. The roster is already in hand.
+            if not any(isinstance(a, dict) and a.get("id") == assignee_agent_id for a in agents):
+                raise ValueError(f"agent {assignee_agent_id!r} is not in this workspace")
+            agent_id = assignee_agent_id
+        else:
+            agent_id = _find_friday_id(agents)
+            if agent_id is None:
+                raise ValueError(f"no CEO agent (Friday) found in company {company_id!r}")
 
         routine = await admin.create_routine(
             session_cookie=cookie,

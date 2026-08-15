@@ -54,6 +54,9 @@ function DeploySuccessInner() {
     "idle" | "deploying" | "ready" | "entitlement_pending" | "in_progress" | "error"
   >(initialAgentUuid ? "ready" : "idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // ?pending= is set by BuyButton, which ran the deploy itself — on that path
+  // this page never sees the response, so the count has to ride the redirect.
+  const [automationsPending, setAutomationsPending] = useState(Number(params.get("pending")) || 0);
   const [errorRetryable, setErrorRetryable] = useState(true);
   const [detail, setDetail] = useState<ListingDetailResponse | null>(null);
 
@@ -163,8 +166,15 @@ function DeploySuccessInner() {
           }
           throw new Error(typeof d === "string" ? d : `deploy failed (${resp.status})`);
         }
-        const body = (await resp.json()) as { agent_uuid?: string };
+        const body = (await resp.json()) as {
+          agent_uuid?: string;
+          automations_pending?: unknown[];
+        };
         if (body.agent_uuid) setAgentUuid(body.agent_uuid);
+        // Webhook automations the deploy deliberately did NOT arm — each binds
+        // an account only the buyer can connect. Say so, or the agent looks
+        // complete and quietly never fires.
+        setAutomationsPending(body.automations_pending?.length ?? 0);
         setPhase("ready");
       } catch (e) {
         if (cancelled) return;
@@ -276,6 +286,18 @@ function DeploySuccessInner() {
           <p className="mt-3 text-sm leading-6 text-[var(--mute)]">
             {editorial.name} is settling in. Open chat to introduce yourself.
           </p>
+          {automationsPending > 0 && (
+            <p
+              data-testid="deploy-automations-pending"
+              className="mx-auto mt-3 max-w-md text-sm leading-6 text-[var(--mute)]"
+            >
+              {automationsPending === 1
+                ? "1 automation needs wiring"
+                : `${automationsPending} automations need wiring`}{" "}
+              — each one listens to an account only you can connect. Finish setting them up in
+              Automations.
+            </p>
+          )}
           <Link
             href={
               agentUuid

@@ -5,7 +5,7 @@ import json
 import os
 import tarfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -1159,6 +1159,408 @@ async def test_capture_routines_multiple_schedule_triggers_flatten():
     )
     assert [e["cron"] for e in out] == ["0 6 * * *", "0 8 * * 1"]
     assert all(e["title"] == "Two-trigger" for e in out)
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_carries_webhook_triggers_as_requirements():
+    """A webhook automation ships as a REQUIREMENT, never as a live trigger:
+    the (provider, event) pair is recovered by inverting the seed's title
+    rendering, and the seller's resource (repo/mailbox/page) never ports."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "GitHub: Issue opened or changed",
+                "description": "triage it",
+                "triggers": [
+                    {
+                        "id": "t1",
+                        "kind": "webhook",
+                        "signingMode": "github_hmac",
+                        "label": "GitHub: Issue opened or changed",
+                    }
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "GitHub: Issue opened or changed",
+            "kind": "webhook",
+            "provider": "github",
+            "event_id": "issues",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_never_publishes_a_seeded_automations_description():
+    """The seed patches the seller's own Google account, proxy URL and watch
+    state-file path INTO the routine description — and manifest.json is served
+    publicly by ``GET /marketplace/listings/{id}``. Routine capture runs after
+    the tarball safety scan, so nothing else would catch it: the requirement
+    carries the registry-rendered title and nothing of the seller's."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Google: Calendar changed",
+                "description": (
+                    "Every run, FIRST do maintenance: read "
+                    "/home/node/.openclaw/google-watch/pub_seller123.json ... "
+                    "--address https://hooks.isol8.co/t/pub_seller123 -a seller@acme.com"
+                ),
+                "triggers": [
+                    {"kind": "webhook", "label": "Google: Calendar changed"},
+                    # The self-renewal the google shapes attach as a SECOND
+                    # trigger on the SAME routine. Exporting it as an ordinary
+                    # schedule would recreate a dormant routine on the buyer
+                    # that re-arms a watch they do not have — and carry the
+                    # same description with it.
+                    {"kind": "schedule", "cronExpression": "0 6 * * 1,4", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Google: Calendar changed",
+            "kind": "webhook",
+            "provider": "google",
+            "event_id": "calendar.changed",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
+    assert "pub_seller123" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_watch_routine_is_still_recognised_by_its_trigger():
+    """A routine title is MUTABLE — the detail panel supports title-only
+    edits. Rename a seeded Google watch and a title-keyed rule would hand it
+    to the ordinary schedule branch, publishing the renewal cron plus a
+    description holding the seller's mailbox and proxy URL. The rename never
+    reaches the TRIGGER, whose label the seed set from the registry — so the
+    automation is still recognised, still named correctly, and still ports
+    none of the seller."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "My calendar thing",
+                "description": "read /home/node/.openclaw/google-watch/pub_seller123.json ... -a seller@acme.com",
+                "triggers": [
+                    {"kind": "webhook", "label": "Google: Calendar changed"},
+                    {"kind": "schedule", "cronExpression": "0 6 * * 1,4", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Google: Calendar changed",
+            "kind": "webhook",
+            "provider": "google",
+            "event_id": "calendar.changed",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
+    assert "pub_seller123" not in json.dumps(out)
+    assert "My calendar thing" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+async def test_a_description_carrying_the_sellers_email_is_not_published():
+    """Routine capture runs AFTER scan_tarball, so a description is the one
+    seller-authored string reaching the public manifest unscanned. It gets the
+    same PII patterns the tarball does — which also catches the schedule-only
+    poll shape after a rename, where no trigger gives the automation away."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Check the mail",
+                "description": "poll seller@acme.com every ten minutes and triage",
+                "triggers": [{"kind": "schedule", "cronExpression": "*/10 * * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    # The whole prompt was the thing naming a person, so once it is gone there
+    # is no portable routine left — a bare cron with no instructions looks
+    # like work and is not.
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_a_dormant_recreate_keeps_the_sellers_timezone():
+    """``build_dormant_trigger_body`` defaults to UTC, so a spec that drops the
+    captured timezone recreates a seller's 9am-local routine as 9am UTC — it
+    fires at the wrong hour the moment the buyer enables it."""
+    from core.services.agent_routine_provisioning import create_agent_routines
+
+    admin = MagicMock()
+    admin.list_routines = AsyncMock(return_value=[])
+    admin.create_routine = AsyncMock(return_value={"id": "rt_1"})
+    admin.create_routine_trigger = AsyncMock(return_value={"id": "tr_1"})
+
+    await create_agent_routines(
+        admin=admin,
+        session_cookie="ck",
+        company_id="co_1",
+        agent_id="agent_new",
+        routines=[
+            {"title": "Morning sweep", "description": "look", "cron": "0 9 * * *", "timezone": "Europe/Berlin"},
+            {"title": "No tz", "description": "look", "cron": "0 9 * * *"},
+        ],
+    )
+    bodies = [c.kwargs["body"] for c in admin.create_routine_trigger.await_args_list]
+    assert [b["timezone"] for b in bodies] == ["Europe/Berlin", "UTC"]
+    # Still dormant — carrying the timezone must not arm anything.
+    assert all(b["enabled"] is False for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_a_routine_titled_after_the_seller_does_not_publish_at_all():
+    """The title reaches the public manifest exactly like the description
+    does, and it cannot be blanked and still name anything — so an unsafe one
+    takes the routine with it rather than publishing the seller."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "sweep for seller@acme.com",
+                "description": "look at the board",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            },
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Morning sweep",
+                "description": "look at the board",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 7 * * *", "timezone": "UTC"}],
+            },
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert [e["title"] for e in out] == ["Morning sweep"]
+    assert "seller@acme.com" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_description_ports_intact():
+    """The scan must not eat the prompt that makes a ported routine useful."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Morning sweep",
+                "description": "Summarise what changed overnight and post it to the team.",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out[0]["description"] == "Summarise what changed overnight and post it to the team."
+
+
+@pytest.mark.asyncio
+async def test_a_registry_title_alone_does_not_make_a_routine_an_automation():
+    """A title is guessable as well as editable — nothing stops a seller
+    titling an ordinary cron exactly like a registry automation. Classifying
+    on the title would publish it as a setup task the buyer cannot complete
+    and throw the real schedule away, so the webhook trigger is the only
+    signal. Its description is still scrubbed, which is what keeps the
+    schedule-only poll shape safe without a title rule."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Google: New email (checked on a schedule)",
+                "description": "watch seller@acme.com for new mail",
+                "triggers": [{"kind": "schedule", "cronExpression": "*/10 * * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    # Not a requirement (no webhook trigger to recognise) and not a schedule
+    # either: its entire prompt was the seller's mailbox, so what would be
+    # left is a titled cron with no instructions — something that looks like
+    # work and is not.
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_a_credential_in_a_description_is_not_published_either():
+    """The persona pattern set is not only PII — it carries
+    ``hardcoded-secret``/``aws-secret-key``/``provider-token`` too, and
+    routine capture is appended after ``safety_flags`` are generated, so a
+    credential here would not even reach moderation. Any flag drops the text —
+    and with the instructions gone there is no portable routine left."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Nightly push",
+                "description": 'upload the report using api_key = "sk-live-abcdefghijklmnopqrstuvwxyz0123"',
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_drops_webhook_titles_the_registry_cannot_resolve():
+    """A hand-made webhook routine names no registry event — we drop it
+    rather than guess at a provider the buyer would then be told to wire."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "My bespoke hook",
+                "triggers": [{"kind": "webhook"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_a_hand_built_webhook_routine_keeps_its_real_schedule():
+    """The "Any other app" rung creates webhook triggers with NO label, and
+    the detail panel lets the owner add a schedule to the same routine. That
+    schedule is legitimate work — treating any webhook trigger as seeded
+    provenance would silently drop it from every hire."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Ping me when the CRM fires",
+                "description": "Post a summary to the team channel.",
+                "triggers": [
+                    {"kind": "webhook", "signingMode": "hmac_sha256"},
+                    {"kind": "schedule", "cronExpression": "0 8 * * 1", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Ping me when the CRM fires",
+            "description": "Post a summary to the team channel.",
+            "cron": "0 8 * * 1",
+            "timezone": "UTC",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_requirement_is_named_by_the_registry_not_by_the_seller():
+    """The seed puts the registry-rendered title on the trigger's ``label``,
+    which a routine rename never reaches. Naming the requirement from the
+    label rather than the routine's title means no seller-authored string
+    reaches the public manifest at all — and the rename still resolves."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "seller@acme.com's issue triage",
+                "description": "triage it",
+                "triggers": [
+                    {"kind": "webhook", "label": "GitHub: Issue opened or changed"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "GitHub: Issue opened or changed",
+            "kind": "webhook",
+            "provider": "github",
+            "event_id": "issues",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_skips_archived():
+    """``delete_routine`` archives rather than deletes, so an archived row is
+    a routine the seller DELETED — republishing must not resurrect it into
+    every buyer's manifest."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "status": "archived",
+                "title": "Old sweep",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            },
+            {
+                "assigneeAgentId": "agent-uuid",
+                "status": "active",
+                "title": "Live sweep",
+                "triggers": [{"kind": "schedule", "cronExpression": "0 7 * * *", "timezone": "UTC"}],
+            },
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert [e["title"] for e in out] == ["Live sweep"]
 
 
 # --------------------------------------------------------------------------- #

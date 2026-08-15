@@ -42,9 +42,11 @@ from core.services.agent_budget import enforce_agent_budget
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from core.services.agent_routine_provisioning import create_agent_routines
+from core.services.inbound_triggers import automation_requirement
 from core.services.catalog_service import (
     CatalogService,
     MissingCredentialsError,
+    emit_agent_deployed,
     get_catalog_service,
     warn_rows,
 )
@@ -100,6 +102,10 @@ async def _recreate_routines_for_buyer(
     propagates and triggers the existing ``delete_paperclip_for_marketplace``
     rollback, keeping deploys all-or-nothing.
 
+    Webhook entries (``kind: "webhook"``) carry no cron and are dropped by the
+    filter below — they are REQUIREMENTS the buyer arms themselves, surfaced by
+    ``_pending_automations``, never armed here.
+
     No-op when the listing carries no routines (legacy listings, or agents that
     had none). Resolving the buyer's company is required — if it's missing the
     buyer has no Paperclip company yet, which shouldn't happen post-mint, so we
@@ -112,6 +118,10 @@ async def _recreate_routines_for_buyer(
             "title": r["title"],
             "description": r.get("description", ""),
             "cron": r["cron"],
+            # The seller's own timezone. Dropping it recreated every schedule
+            # as UTC, so a routine the seller set for 9am local fired at the
+            # wrong hour the moment the buyer enabled it.
+            "timezone": r.get("timezone"),
         }
         for r in manifest_routines
         if isinstance(r, dict) and r.get("title") and r.get("cron")
@@ -142,6 +152,35 @@ async def _recreate_routines_for_buyer(
         )
     finally:
         await http.aclose()
+
+
+def _pending_automations(manifest_routines: list) -> list[dict]:
+    """The listing's webhook automations as buyer-facing REQUIREMENTS.
+
+    A hired agent should arrive as a working loop, but a webhook trigger binds
+    a provider-side resource that is the SELLER's (their repo, their mailbox,
+    their Page) — so the deploy hands the buyer the list to wire instead of
+    arming anything: ``{provider, event_id, needs_resource}`` per automation,
+    enough for the UI to route into the Automations create dialog.
+
+    Deduped (two routines can want the same event) and order-preserving; pairs
+    the registry no longer carries are dropped rather than shown as a step the
+    buyer can't complete.
+    """
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for r in manifest_routines:
+        if not isinstance(r, dict) or r.get("kind") != "webhook":
+            continue
+        key = (r.get("provider") or "", r.get("event_id") or "")
+        if key in seen:
+            continue
+        requirement = automation_requirement(*key)
+        if requirement is None:
+            continue
+        seen.add(key)
+        out.append(requirement)
+    return out
 
 
 _COMPACT_SUMMARY_MAX = 200
@@ -784,6 +823,10 @@ async def deploy_listing(
             # Nothing was installed this call, so there is nothing new to warn
             # about — the warnings belong to the deploy that actually ran.
             "warnings": [],
+            # Pending automations are NOT of that kind: they describe the
+            # agent's standing state, not this call's work, and a heal after a
+            # lost response is exactly when the buyer never saw the list.
+            "automations_pending": _pending_automations((listing.get("manifest_json") or {}).get("routines") or []),
             "already_installed": True,
         }
 
@@ -1037,6 +1080,16 @@ async def deploy_listing(
                 detail="deploy failed",
             ) from exc
 
+        # Committed: everything inside the rollback envelope survived. Only now
+        # is this a deployment — emitting from inside deploy_from_artifact
+        # counted hires the rollback had already undone.
+        emit_agent_deployed(
+            owner_id=owner_id,
+            slug=listing.get("slug"),
+            agent_id=new_agent_id,
+            seller_id=listing.get("seller_id"),
+        )
+
         # Seller-dashboard counter on the listing row (My Listings reads it).
         # Best-effort: never worth failing a committed install over.
         try:
@@ -1053,7 +1106,15 @@ async def deploy_listing(
         # unavailable requirements the platform can't inject or verify. These never
         # block the deploy (the hard gate already ran inside deploy_from_artifact);
         # they let the buyer-facing UI tell the truth about what won't run.
-        return {"agent_uuid": result["agent_id"], "warnings": warn_rows(manifest), **result}
+        return {
+            "agent_uuid": result["agent_id"],
+            "warnings": warn_rows(manifest),
+            **result,
+            # The webhook automations the seller's agent runs on. NOT armed by
+            # this deploy — each binds a buyer-specific resource — so they ride
+            # back as the "finish wiring me up" list.
+            "automations_pending": _pending_automations(manifest.get("routines") or []),
+        }
     finally:
         await container_repo.release_owner_deploy_claim(
             owner_id, listing_id=listing["listing_id"], token=claim_token, cause=deploy_cause

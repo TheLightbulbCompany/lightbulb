@@ -92,7 +92,7 @@ export function AssigneePicker({
   // Merge recent + remainder so frequently-picked bubble up. Recent ids
   // that no longer match an active agent are dropped.
   const orderedAgents = useMemo(() => {
-    const recent = getRecentAssignees();
+    const recent = getRecentAssignees(noun);
     const byId = new Map(agents.map((a) => [a.id, a]));
     const recentlyPicked = recent
       .map((id) => byId.get(id))
@@ -100,7 +100,7 @@ export function AssigneePicker({
     const recentSet = new Set(recentlyPicked.map((a) => a.id));
     const rest = agents.filter((a) => !recentSet.has(a.id));
     return [...recentlyPicked, ...rest];
-  }, [agents]);
+  }, [agents, noun]);
 
   const q = query.trim().toLowerCase();
   const visibleAgents = q
@@ -153,7 +153,7 @@ export function AssigneePicker({
   // mutually exclusive. The host wires that clear via the change handlers
   // (selecting an agent sends assigneeUserId: null and conversely).
   const handleSelectAgent = (agentId: string | null) => {
-    if (agentId !== null) trackRecentAssignee(agentId);
+    if (agentId !== null) trackRecentAssignee(agentId, noun);
     onChange(agentId);
     setOpen(false);
     setQuery("");

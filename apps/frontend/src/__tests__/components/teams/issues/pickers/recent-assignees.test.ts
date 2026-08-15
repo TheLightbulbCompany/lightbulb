@@ -3,6 +3,7 @@ import {
   trackRecentAssignee,
   getRecentAssignees,
   RECENT_ASSIGNEES_KEY,
+  RECENT_REVIEWERS_KEY,
 } from "@/components/teams/issues/pickers/recent-assignees";
 
 // Node 22+ ships a built-in `localStorage` that requires `--localstorage-file`
@@ -51,6 +52,17 @@ describe("recent-assignees", () => {
     expect(getRecentAssignees()).toEqual(["ag_1"]);
   });
 
+  it("keeps reviewer history separate from assignee history", () => {
+    trackRecentAssignee("worker", "assignee");
+    trackRecentAssignee("reviewer", "reviewer");
+
+    expect(getRecentAssignees("assignee")).toEqual(["worker"]);
+    expect(getRecentAssignees("reviewer")).toEqual(["reviewer"]);
+    expect(localStorage.getItem(RECENT_REVIEWERS_KEY)).toBe(
+      JSON.stringify(["reviewer"]),
+    );
+  });
+
   it("most-recently-tracked appears first", () => {
     trackRecentAssignee("ag_1");
     trackRecentAssignee("ag_2");
@@ -66,7 +78,7 @@ describe("recent-assignees", () => {
   });
 
   it("caps the list at 5 entries (oldest dropped)", () => {
-    ["a", "b", "c", "d", "e", "f"].forEach(trackRecentAssignee);
+    ["a", "b", "c", "d", "e", "f"].forEach((id) => trackRecentAssignee(id));
     const recent = getRecentAssignees();
     expect(recent).toHaveLength(5);
     expect(recent[0]).toBe("f");

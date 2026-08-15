@@ -1,0 +1,29 @@
+import { redirectSystemPath } from "../+native-intent";
+
+// The app claims /checkout_redirect/* via associated domains so Stripe can hand
+// control back after a web purchase. There is no route by that name, so without
+// a rewrite the customer lands on the unmatched-route screen immediately after
+// paying — and App Review hits it too if they use the web option.
+describe("checkout return links", () => {
+  it.each(["/checkout_redirect/success", "/checkout_redirect/cancel", "/checkout_redirect/portal"])(
+    "sends %s to the app entry point instead of a dead route",
+    (path) => {
+      expect(redirectSystemPath({ path, initial: true })).toBe("/");
+    },
+  );
+
+  it("handles the path without a leading slash", () => {
+    expect(redirectSystemPath({ path: "checkout_redirect/success", initial: false })).toBe("/");
+  });
+
+  it("leaves every other deep link alone", () => {
+    expect(redirectSystemPath({ path: "/(app)/teams/issue/42", initial: false })).toBe(
+      "/(app)/teams/issue/42",
+    );
+    // Guards the regex boundary: a route that merely starts with the same
+    // letters is a real destination and must still resolve.
+    expect(redirectSystemPath({ path: "/checkout_redirection", initial: false })).toBe(
+      "/checkout_redirection",
+    );
+  });
+});

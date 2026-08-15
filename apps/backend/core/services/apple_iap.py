@@ -120,10 +120,17 @@ _GRANTING_TYPES = frozenset({"SUBSCRIBED", "DID_RENEW", "OFFER_REDEEMED"})
 # EXPIRED is the paid-through date passing with no renewal.
 _REVOKING_TYPES = frozenset({"EXPIRED", "REFUND", "REVOKE"})
 
-# Billing retry: Apple could not charge, but the subscription is in a grace
-# window and may still recover. Mapped to "past_due" — the same status the
-# Stripe path uses for exactly this situation, so the existing gate copy and
-# predicates already handle it.
+# Billing retry: Apple could not charge and may still recover. Mapped to
+# "past_due", matching the Stripe path — and "past_due" is NOT in
+# provision_gate._ACTIVE_STATUSES, so it ends access.
+#
+# That is right for a plain retry and WRONG for the GRACE_PERIOD subtype, where
+# Apple explicitly keeps the subscriber entitled while it retries. Those are
+# separated at the call site by `in_grace_period`, because the difference is not
+# in the type — it is in the subtype plus a deadline that lives in the renewal
+# info. Cutting a grace-period subscriber off makes a paying customer lose
+# access, which is the same class of bug as an Apple expiry cancelling a live
+# Stripe subscription.
 _GRACE_TYPES = frozenset({"DID_FAIL_TO_RENEW"})
 
 
@@ -194,6 +201,32 @@ def _verifier(environment_name: str = ""):
         bundle_id=settings.APPLE_IAP_BUNDLE_ID,
         app_apple_id=app_apple_id,
     )
+
+
+def _grace_period_expiry(data) -> int | None:
+    """The grace deadline from a notification's renewal info, if it is still ahead.
+
+    Separate from the transaction because Apple puts it there: the transaction
+    only knows the paid-through date, which has already elapsed during grace.
+    Best effort — if the renewal info is absent or will not decode, the caller
+    falls back to the ordinary mapping (``past_due``), which is the conservative
+    answer rather than an indefinite free extension.
+    """
+    signed_renewal_info = getattr(data, "signedRenewalInfo", None) if data else None
+    if not signed_renewal_info:
+        return None
+    try:
+        renewal, _env = _verify_signed("verify_and_decode_renewal_info", signed_renewal_info)
+    except Exception:  # noqa: BLE001 — an undecodable renewal info is not a grant
+        logger.warning("apple_iap.renewal_info_undecodable — grace period not honoured")
+        return None
+    expires = getattr(renewal, "gracePeriodExpiresDate", None)
+    if expires is None:
+        return None
+    if int(expires) <= int(time.time() * 1000):
+        # Grace already over; let the normal mapping cancel.
+        return None
+    return int(expires)
 
 
 def _revoked_key(original_transaction_id: str) -> str:
@@ -298,6 +331,7 @@ def _status_for(
     revoked: bool = False,
     expires_at_ms: int | None = None,
     now_ms: int | None = None,
+    in_grace_period: bool = False,
 ) -> str:
     """Map an Apple event to the Isol8 ``subscription_status`` vocabulary.
 
@@ -322,7 +356,12 @@ def _status_for(
         current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         if int(expires_at_ms) <= current_ms:
             return "canceled"
-    if notification_type is None or notification_type in _GRANTING_TYPES:
+    # A billing grace period is a GRANTING state, even though its notification
+    # type is DID_FAIL_TO_RENEW: Apple is still retrying the card and expects
+    # the subscriber to keep their access until the grace deadline. Mapping it
+    # to "past_due" cut off a customer Apple still considered entitled —
+    # "past_due" is not in provision_gate._ACTIVE_STATUSES.
+    if in_grace_period or notification_type is None or notification_type in _GRANTING_TYPES:
         return "active"
     if notification_type in _REVOKING_TYPES:
         return "canceled"
@@ -334,7 +373,11 @@ def _status_for(
 
 
 def _subscription_from_transaction(
-    transaction, notification_type: str | None, environment: str = "sandbox"
+    transaction,
+    notification_type: str | None,
+    environment: str = "sandbox",
+    *,
+    grace_period_expires_ms: int | None = None,
 ) -> AppleSubscription:
     """Project a verified transaction payload onto :class:`AppleSubscription`."""
     original_transaction_id = getattr(transaction, "originalTransactionId", None)
@@ -359,12 +402,23 @@ def _subscription_from_transaction(
     # itself is something else, so it is checked independently.
     revoked = getattr(transaction, "revocationDate", None) is not None
     expires_at_ms = getattr(transaction, "expiresDate", None)
+    # In a billing grace period the paid-through date has already passed, so the
+    # grace deadline IS the effective expiry — entitlement runs to it, and the
+    # ordinary elapsed-expiry check then ends access when it lapses without any
+    # special casing.
+    if grace_period_expires_ms is not None:
+        expires_at_ms = grace_period_expires_ms
 
     return AppleSubscription(
         original_transaction_id=str(original_transaction_id),
         product_id=product_id,
         expires_at_ms=expires_at_ms,
-        status=_status_for(notification_type, revoked=revoked, expires_at_ms=expires_at_ms),
+        status=_status_for(
+            notification_type,
+            revoked=revoked,
+            expires_at_ms=expires_at_ms,
+            in_grace_period=grace_period_expires_ms is not None,
+        ),
         owner_hint=getattr(transaction, "appAccountToken", None) or None,
         environment=environment,
         signed_date_ms=getattr(transaction, "signedDate", None),
@@ -582,8 +636,21 @@ async def _apply_verified_notification(
     except Exception as e:  # noqa: BLE001
         raise AppleIapError(f"notification transaction failed verification: {e}") from e
 
+    # Billing GRACE PERIOD. Apple keeps the subscriber entitled while it retries
+    # the card, and says to keep serving them — but the transaction's own
+    # expiresDate has already passed by then (that is why a renewal was
+    # attempted), so both the type mapping and the elapsed-expiry check would
+    # otherwise cancel a customer who is still a customer. The grace deadline
+    # lives in the renewal info, not the transaction, so it has to be decoded
+    # separately and substituted as the effective expiry.
+    grace_until = None
+    if notification_type == "DID_FAIL_TO_RENEW" and getattr(notification, "subtype", None) == "GRACE_PERIOD":
+        grace_until = _grace_period_expiry(data)
+
     try:
-        subscription = _subscription_from_transaction(transaction, notification_type)
+        subscription = _subscription_from_transaction(
+            transaction, notification_type, grace_period_expires_ms=grace_until
+        )
     except AppleIapError as e:
         # An unmapped type or a foreign product is not a verification failure:
         # answering 400 would make Apple retry it forever. Log and ack.

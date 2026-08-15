@@ -7,6 +7,7 @@ a subscription cannot be walked between accounts, and that Apple's retry /
 out-of-order delivery cannot corrupt entitlement.
 """
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -39,6 +40,7 @@ def _notification(**overrides):
     base = dict(
         notificationType="DID_RENEW",
         notificationUUID="uuid-1",
+        subtype=None,
         signedDate=1_700_000_000_000,
         data=SimpleNamespace(signedTransactionInfo="signed-tx"),
     )
@@ -1173,3 +1175,131 @@ async def test_a_foreign_session_that_completes_mid_expire_stops_the_flow(monkey
         await billing_service.create_mobile_web_checkout(owner_id="user_1")
 
     built.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Billing grace period. Apple keeps the subscriber entitled while it retries the
+# card; "past_due" is not in provision_gate._ACTIVE_STATUSES, so mapping grace
+# to it cuts off a customer who is still a customer.
+# ---------------------------------------------------------------------------
+
+
+def test_past_due_really_does_end_access():
+    """The premise of the grace fix. If this ever changes, the special-casing
+    below is unnecessary and should go."""
+    from core.services.provision_gate import _ACTIVE_STATUSES
+
+    assert "past_due" not in _ACTIVE_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_a_grace_period_subscriber_keeps_access(monkeypatch):
+    grace_until = int(time.time() * 1000) + 5 * 24 * 60 * 60 * 1000
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(
+            notificationType="DID_FAIL_TO_RENEW",
+            subtype="GRACE_PERIOD",
+            data=SimpleNamespace(signedTransactionInfo="tx", signedRenewalInfo="renewal"),
+        ),
+        # The paid-through date has ALREADY passed — that is why a renewal was
+        # attempted — so the elapsed-expiry check would cancel without the
+        # grace deadline standing in for it.
+        verify_and_decode_signed_transaction=lambda _: _transaction(expiresDate=int(time.time() * 1000) - 60_000),
+        verify_and_decode_renewal_info=lambda _: SimpleNamespace(gracePeriodExpiresDate=grace_until),
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(
+            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
+        ) as set_sub,
+    ):
+        result = await apple_iap.apply_notification("signed")
+
+    assert result == ("user_1", "active")
+    # Entitlement runs to the GRACE deadline, not the elapsed paid-through date.
+    assert set_sub.await_args.kwargs["expires_at"] == grace_until
+
+
+@pytest.mark.asyncio
+async def test_a_plain_billing_retry_is_still_past_due(monkeypatch):
+    """Only the GRACE_PERIOD subtype keeps access. A bare DID_FAIL_TO_RENEW
+    means Apple is not extending anything."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="DID_FAIL_TO_RENEW", subtype=None),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        assert await apple_iap.apply_notification("signed") == ("user_1", "past_due")
+
+
+@pytest.mark.asyncio
+async def test_an_elapsed_grace_period_ends_access(monkeypatch):
+    """Grace is not an indefinite extension — once the deadline passes the
+    ordinary expiry check has to end it."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(
+            notificationType="DID_FAIL_TO_RENEW",
+            subtype="GRACE_PERIOD",
+            data=SimpleNamespace(signedTransactionInfo="tx", signedRenewalInfo="renewal"),
+        ),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+        verify_and_decode_renewal_info=lambda _: SimpleNamespace(
+            gracePeriodExpiresDate=int(time.time() * 1000) - 60_000
+        ),
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        assert await apple_iap.apply_notification("signed") == ("user_1", "past_due")
+
+
+@pytest.mark.asyncio
+async def test_undecodable_renewal_info_falls_back_rather_than_granting(monkeypatch):
+    """Fail closed. An unreadable grace deadline must not become an open-ended
+    free extension."""
+
+    def _boom(_):
+        raise ValueError("bad renewal info")
+
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(
+            notificationType="DID_FAIL_TO_RENEW",
+            subtype="GRACE_PERIOD",
+            data=SimpleNamespace(signedTransactionInfo="tx", signedRenewalInfo="renewal"),
+        ),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+        verify_and_decode_renewal_info=_boom,
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        assert await apple_iap.apply_notification("signed") == ("user_1", "past_due")

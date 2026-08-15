@@ -1744,6 +1744,12 @@ async def test_the_subscribed_notification_can_convert_when_it_beats_the_link(mo
     id, so whichever path lands first runs it exactly once."""
     provider = AsyncMock()
     monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
+    # The helper decides against its own consistent re-read, not the GSI row.
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "trial_local"}),
+    )
 
     started: list[tuple] = []
 
@@ -1825,4 +1831,54 @@ async def test_a_failed_provider_write_is_retried_by_the_next_notification(monke
         await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
 
     assert len(attempts) == 2
+    assert started == [("user_1", "2000000000000001")]
+
+
+@pytest.mark.asyncio
+async def test_a_trial_owner_with_a_pre_picked_provider_still_gets_reprovisioned(monkeypatch):
+    """The abandoned-web-checkout case. /trial-checkout persists provider_choice
+    BEFORE the Stripe session exists, so a trial_local row WITH a provider is
+    the state of everyone who started a web checkout and bailed. Skipping them
+    left a paying customer active on the locked-down trial container — and the
+    idle reaper only scales down trial_local rows, so nothing ever wakes it
+    through the config-rewriting branch again."""
+    provider = AsyncMock()
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={
+                "owner_id": "user_1",
+                "subscription_status": "trial_local",
+                "provider_choice": "chatgpt_oauth",
+            }
+        ),
+    )
+
+    started: list[tuple] = []
+
+    async def _start(owner_id, flight_key):
+        started.append((owner_id, flight_key))
+        return True
+
+    import core.services.stripe_webhook_handlers as swh
+
+    monkeypatch.setattr(swh, "start_trial_conversion", _start)
+
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    # Their chosen provider is NOT overwritten with the Bedrock default...
+    provider.assert_not_awaited()
+    # ...but the trial container is still rolled to the paid shape.
     assert started == [("user_1", "2000000000000001")]

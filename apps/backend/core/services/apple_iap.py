@@ -278,7 +278,7 @@ def _grace_period_expiry(data) -> int | None:
     return int(expires)
 
 
-async def _convert_trial_if_needed(owner_id: str, *, row: dict | None, subscription: AppleSubscription) -> None:
+async def _convert_trial_if_needed(owner_id: str, *, was_trial: bool, subscription: AppleSubscription) -> None:
     """Finish the job a purchase actually started, for an owner coming off the
     free tier.
 
@@ -301,26 +301,50 @@ async def _convert_trial_if_needed(owner_id: str, *, row: dict | None, subscript
     App Store sheet has no provider picker and adding one would put a second
     decision in front of a purchase. It is changeable in-app afterwards.
 
-    Keyed on the MISSING STATE (an active subscription with no provider) rather
-    than on the trial_local→paid EDGE. An edge fires once: the first version
-    keyed on it, so a transient failure writing the provider was permanent —
-    the row had already left trial_local, every later link and notification saw
-    "active", skipped the conversion, and left the customer stuck behind
-    provider_required forever. Keyed on the state, any subsequent link or
-    renewal notification retries it until it sticks.
+    The provider half is keyed on the MISSING STATE (an active subscription
+    with no provider) rather than on the trial_local→paid EDGE. An edge fires
+    once: the first version keyed on it, so a transient failure writing the
+    provider was permanent — the row had already left trial_local, every later
+    link and notification saw "active", skipped the conversion, and left the
+    customer stuck behind provider_required forever. Keyed on the state, any
+    subsequent link or renewal notification retries it until it sticks.
+
+    The REPROVISION half additionally fires on ``was_trial`` even when a
+    provider is already stored, because the two can genuinely diverge:
+    ``/trial-checkout`` persists ``provider_choice`` synchronously BEFORE the
+    Stripe session is created, so every owner who started a web checkout and
+    abandoned it is a trial_local row WITH a provider. Skipping them left a
+    paying customer active on the locked-down trial container — and nothing
+    self-heals it, since the idle reaper only scales down trial_local rows, so
+    the box never wakes through the config-rewriting branch again.
+
+    The provider decision is made against a strongly consistent re-read, not
+    the caller's snapshot. The notification path's row comes from an eventually
+    consistent GSI, and a stale miss there must not overwrite a provider the
+    owner picked moments ago with the Bedrock default. ``was_trial`` stays with
+    the caller because it is an observation of the PRE-write row — after
+    ``set_apple_subscription`` the status has already left trial_local.
     """
-    if subscription.status != "active" or (row or {}).get("provider_choice"):
+    if subscription.status != "active":
         return
 
-    try:
-        await billing_repo.set_provider_choice(owner_id, provider_choice="bedrock_claude", byo_provider=None)
-    except Exception:
-        # Do NOT dispatch the reprovision without a provider — it would roll the
-        # container to a shape that still cannot resolve one. Returning leaves
-        # provider_choice unset, which is exactly the condition this function
-        # keys on, so the next link or notification tries again.
-        logger.exception("apple_iap.trial_conversion_provider_failed owner_id=%s", owner_id)
+    row = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    if not row:
         return
+    needs_provider = not row.get("provider_choice")
+    if not (needs_provider or was_trial):
+        return
+
+    if needs_provider:
+        try:
+            await billing_repo.set_provider_choice(owner_id, provider_choice="bedrock_claude", byo_provider=None)
+        except Exception:
+            # Do NOT dispatch the reprovision without a provider — it would roll
+            # the container to a shape that still cannot resolve one. Returning
+            # leaves provider_choice unset, which is exactly the condition this
+            # function keys on, so the next link or notification tries again.
+            logger.exception("apple_iap.trial_conversion_provider_failed owner_id=%s", owner_id)
+            return
 
     try:
         from core.services.stripe_webhook_handlers import start_trial_conversion
@@ -641,8 +665,8 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         )
         raise AppleIapError("this Apple transaction was refunded or revoked and cannot be linked")
 
-    # Read BEFORE the write only to avoid a second round trip; the conversion
-    # keys on provider_choice, which set_apple_subscription never touches.
+    # Captured BEFORE the write: was_trial is an observation of the pre-write
+    # row, and set_apple_subscription moves the status off trial_local.
     before = await billing_repo.get_by_owner_id(owner_id)
 
     written = await billing_repo.set_apple_subscription(
@@ -679,7 +703,11 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
             return replace(subscription, status=authoritative)
         # No billing row, or the row is bound to a different Apple transaction.
         raise AppleIapError(f"could not link this transaction to owner {owner_id}")
-    await _convert_trial_if_needed(owner_id, row=before, subscription=subscription)
+    await _convert_trial_if_needed(
+        owner_id,
+        was_trial=(before or {}).get("subscription_status") == "trial_local",
+        subscription=subscription,
+    )
     logger.info(
         # environment is logged because a "sandbox" grant is a REAL plan given
         # away for free — expected from TestFlight testers, and the only way to
@@ -878,7 +906,11 @@ async def _apply_verified_notification(
         # app can die before making it), so the conversion has to be reachable
         # from here too. start_trial_conversion single-flights on the
         # transaction id, so whichever path arrives first runs it exactly once.
-        await _convert_trial_if_needed(owner_id, row=row, subscription=subscription)
+        await _convert_trial_if_needed(
+            owner_id,
+            was_trial=row.get("subscription_status") == "trial_local",
+            subscription=subscription,
+        )
 
     if subscription.status != "canceled":
         # Apple says this subscription is live again — a resubscribe reuses the

@@ -339,21 +339,24 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   role, proving the integration credentials remain isolated from the runtime
   role. The existing AWS connection is sufficient for finance and reliability
   reads; no platform-ops token or AWS reconnect is required.
-- 2026-08-15: The same connected Cost Explorer source reports estimated
-  2026-08-01 through 2026-08-16 unblended AWS spend of `465.4811232512 USD`.
-  A straight-line 31-day projection is approximately `962 USD`, before known
-  non-AWS commitments. Largest visible service groups were ECS `126.153`,
-  EC2-Other `61.929`, S3 `56.505`, RDS `42.060`, ELB `30.185`, Secrets Manager
-  `29.866`, WAF `16.177`, and ECR `7.070` USD. This is below the `$2,000`
-  ceiling on known AWS spend but is not total company burn; Tally must retain
-  the incomplete-source refusal until fixed non-AWS commitments are supplied.
+- 2026-08-15: A later customer-path smoke test selected the production Tally
+  chat and requested exactly one read-only Cost Explorer call through
+  `AWS_PROFILE=isol8-connector` in `us-east-1`. It succeeded with estimated
+  2026-08-01 through 2026-08-16 unblended AWS spend of `475.0508907665 USD`.
+  Fifteen elapsed billing days project to `981.77 USD` over 31 days, leaving
+  `1,018.23 USD` of the `$2,000` ceiling. The earlier same-day snapshot was
+  `465.4811232512 USD`; estimates accrue during the day, so every finance
+  artifact must include its observation time. This covers AWS only and remains
+  below the `$1,600` known-spend warning. Tally must retain the incomplete-source
+  refusal until fixed non-AWS commitments are supplied. The legacy Tally also
+  prefaced the bounded result with unrelated Bootstrap dependencies for Google,
+  Bank of Bots, QuickBooks, and Xero; do not carry that package behavior into
+  the clean finance contract.
 - 2026-08-15: Read-only IAM inventory shows the connected
-  `isol8-connector` role already has AWS-managed `PowerUserAccess`; the
-  reliability setup therefore needs no scope upgrade. The dedicated
-  `isol8-eventbridge-api-destination` invoke role is absent, so the CloudWatch
-  routine must remain paused until the founder applies the latest versioned
-  Isol8 connector-stack template. That one-time stack update, not a reconnect,
-  is the remaining AWS authority edge.
+  `isol8-connector` role already has AWS-managed `PowerUserAccess`; outbound
+  finance and diagnostic reads need no reconnect or scope upgrade. The
+  dedicated EventBridge invoke role is absent, but alarm transport is deferred
+  to the final provider-transport phase and is not a current dependency.
 - 2026-08-15: The permitted dev-only sign-up was completed in `isol8-dev`.
   Authenticated `GET /api/v1/teams/agents` returned exactly Friday and Atlas,
   both `origin=Seed`. During a deployment replacement the status endpoint

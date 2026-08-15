@@ -73,13 +73,16 @@ Gauge, Tally.
 | Tally | `bb7be85d-c645-4cfd-8980-746ef7bb900d` | no | Keep until clean-install validation, then replace with marketplace vNext. |
 | Thread | `4c6f38a5-a13b-4d7e-a842-226e7192120d` | no | Delete after lifecycle proof; no open non-routine work found. |
 | Stitch | `69393575-4b47-4a1a-985a-7b8b58cb23d7` | no | Delete after archiving its obsolete prospect routine; no open non-routine work found. |
-| jarvis | `b48ae2de-8a18-4e0f-aa1e-ae480f2aa5f0` | no | Reassign `ISOA-31` and `ISOA-44`, archive its routine, then delete. |
+| jarvis | `b48ae2de-8a18-4e0f-aa1e-ae480f2aa5f0` | no | Reassign `ISOA-31`, `ISOA-44`, and `ISOA-82`, archive its routine, then delete. |
 | Lens | `c648083b-4938-4685-adfb-f282ba6ba83b` | no | Delete after lifecycle proof; no open non-routine work found. |
 | Platform Operations & Reliability | `db1516d1-f79b-41a0-8c14-c673783e3b10` | no | Reassign `ISOA-65` and `ISOA-86`, then delete. |
 | Product Analytics & Company Scorecard | `f024fa76-2cbe-48ce-bbe1-95af93e329ee` | no | Reassign `ISOA-87`, then delete; Gauge replaces this function. |
 
-The current API exposes only `seeded: bool`; it does not yet expose the
-required `Seed | Marketplace | Custom` origin or canonical listing provenance.
+The deployed API now exposes `Seed | Marketplace | Custom`. A 2026-08-15
+authenticated production read reports Friday and Atlas as `Seed` and all nine
+non-seed agents as `Custom`, including Pulse, Vera, and Tally. The latter three
+must therefore be replaced by clean marketplace installs; a name match is not
+marketplace provenance.
 
 ## Live-object migration inventory
 
@@ -156,8 +159,9 @@ an auto-pause threshold. The simultaneous status updates were recorded around
 
 ### Open-work reassignment before deletion
 
-- jarvis: `ISOA-31` (`in_review`) and `ISOA-44` (`todo`) must move to Friday
-  before jarvis deletion, preserving their review and parent relationships.
+- jarvis: `ISOA-31` (`in_review`), `ISOA-44` (`todo`), and `ISOA-82`
+  (`in_review`) must move to Friday before jarvis deletion, preserving their
+  review and parent relationships.
 - Platform Operations & Reliability: `ISOA-65` and `ISOA-86` are backlog and
   must move to Friday before deletion.
 - Product Analytics & Company Scorecard: `ISOA-87` is backlog and must move to
@@ -278,6 +282,46 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   preserving listing lineage now requires an explicit ownership-transfer
   decision, or the founder must accept fresh canonical listings under the
   current publisher identity.
+- 2026-08-15: Native routine reviewer support is deployed end to end. Paperclip
+  fork PR #19 merged as `556cd64e1de6bf35e65bcb5140b2e38b6284b5fd`;
+  Isol8 pins/promotes #1798 and #1800 reached production in deploy run
+  `31870847605`. Production Paperclip is stable on task definition revision 31.
+  Routine reviewer policy now persists, dispatches, validates live reviewers,
+  records dead-reviewer failures, and participates in revision restore and
+  circuit-breaker handling.
+- 2026-08-15: Agent provenance/lifecycle PR #1799 deployed successfully in run
+  `31873768016` as main commit
+  `0ccee31285eac46f0c46985724b11af3cd0c876b`. Explicit image-pin PR #1802
+  merged as `79baf9ce0f2a7447744a16393970eee18fbe8db3`; build run
+  `31875008230` and deploy run `31875008293` succeeded. The founder service was
+  rolled through the production admin control onto task definition
+  `isol8-prod-openclaw-user:189`, task `d58d22e5f69b46a98ca3fd4039c7a303`,
+  image `2026.7.2-isol8.4-c935eff`. ECS reports rollout `COMPLETED`, one running,
+  zero pending and zero failed; an explicit Playwright reload shows the same
+  task and `running` status in the production admin UI. ECS Exec against that
+  exact task proved the live Paperclip helper exposes decision/stats/get,
+  company search/extract, queue/triage, and safe issue/subtask commands.
+- 2026-08-15: The first customer-path deletion test targeted Lens through the
+  production inspector. Paperclip preservation successfully patched routines
+  `ead36d5e-4279-4ebb-9fc6-c1094498ad7c` and
+  `df942fc8-8fa7-414a-9e9e-59bfcec06184`, then OpenClaw rejected
+  `agents.delete` with stable `code=file_lock_timeout`; request
+  `a1ce453d-6308-4de9-9120-e60d38129548` returned 500 and Lens remained
+  visible. PR #1803 (`fix/agent-delete-lock-retry`, current head `573651867`)
+  adds two bounded retries only for OpenClaw's stable lock code, keeps all
+  unrelated errors and ambiguous RPC timeouts fail-closed, and proves cleanup
+  does not advance after exhaustion. Pre-review full unit evidence is 6,644
+  passed/7 skipped; post-review focused evidence is 106 passed. Final-head CI
+  and Claude review are in progress; `@codex review` was requested and the
+  connector again reported its quota exhausted.
+- 2026-08-15: Authenticated production inventory returned 11 agents and six
+  paused routines. Six non-terminal manual issues belong to deletion
+  candidates and are protected by the lifecycle reassignment: `ISOA-31`,
+  `ISOA-44`, `ISOA-82` (jarvis), `ISOA-65`, `ISOA-86` (Platform Operations),
+  and `ISOA-87` (Product Analytics). The public marketplace inventory contains
+  exactly eight published OpenClaw listings, all under orphan seller
+  `user_3DBS55XwZuB7LQIfWvwsvYWMFaM`: Vera v9, Tally v8, Stitch v9, Pulse v9,
+  Lens v9, Thread v3, Ora v3, and Echo v3. Forge and Gauge do not yet exist.
 
 ## Founder actions
 

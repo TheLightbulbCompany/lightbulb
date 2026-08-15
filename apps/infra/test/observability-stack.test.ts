@@ -357,7 +357,12 @@ describe("ObservabilityStack", () => {
   // -------------------------------------------------------------------
 
   test("every Isol8-namespace alarm binds a dimension set an emitter publishes", () => {
-    const offenders = isol8MetricBindings(template)
+    const bindings = isol8MetricBindings(template);
+    // Anti-vacuity: a CloudFormation shape change that stops the walker from
+    // finding anything would otherwise make this test pass on an empty list.
+    expect(bindings.length).toBeGreaterThan(30);
+
+    const offenders = bindings
       .map((b) => {
         const emitted = EMITTED_DIMENSION_SETS[b.metricName];
         if (!emitted) {

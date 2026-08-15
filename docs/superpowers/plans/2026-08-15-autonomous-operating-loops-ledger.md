@@ -394,8 +394,14 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   tests, the complete frontend suite (379 files, 2,688 tests), TypeScript,
   focused ESLint, Frontend CI, and Claude review passed. `@codex review` was
   requested on the final head and quota-blocked. It was squash-merged as
-  `aaf93bc3f2c1c3c70212cca4edcd74461a25cee3`; deploy run `31881866070` is
-  in progress, so production UI proof is still pending.
+  `aaf93bc3f2c1c3c70212cca4edcd74461a25cee3`; deploy run `31881866070`
+  completed successfully. Production UI proof used a temporary scheduled
+  routine that was paused before testing and never ran. After reloading the
+  browser onto the deployed bundle, filtering to Atlas exposed only
+  `No assignee` and Atlas, marked Atlas as the active ARIA option, and `Enter`
+  selected Atlas. A mouse selection also persisted the correct Atlas ID. The
+  temporary routine was archived, and a no-save check against `Community
+  signal watch` confirmed Cancel preserved its Pulse assignment.
 - 2026-08-15: AWS-integration alarm transport PR #1801 was rebased onto the
   latest main and pushed at head
   `082e34e381510aa33b8940660a6163368a642136`. Post-rebase evidence: the full
@@ -417,8 +423,13 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   POSIX guard passed `sh -n`, and diff-check passed. The repository-wide infra
   run reached unrelated Lambda bundling that requires the unavailable local
   Docker daemon and blocked PyPI, after the focused stack suite had passed.
-  Hosted review/CI is pending; after deployment the founder container must be
-  reprovisioned through the existing admin UI, then Lens deletion retried.
+  Claude review completed with no correctness findings; `@codex review` was
+  requested in comment `5302020181` and quota-blocked. No hosted infra test is
+  configured for this path, and a managed production approval gate rejected
+  the merge until the founder explicitly approves proceeding with the focused
+  29/29 stack evidence plus the documented Docker/PyPI limitation. After
+  deployment the founder container must be reprovisioned through the existing
+  admin UI, then Lens deletion retried.
 
 ## Founder actions
 

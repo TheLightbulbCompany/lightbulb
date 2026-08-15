@@ -255,6 +255,16 @@ export default async function AdminUserProvisioningPage({ params }: PageProps) {
             mono
           />
           <DefRow
+            label="Send attempted at"
+            value={<RelativeTimestamp value={paperclipRow?.bootstrap_send_attempted_at} />}
+            mono
+          />
+          <DefRow
+            label="Sent at"
+            value={<RelativeTimestamp value={paperclipRow?.bootstrap_sent_at} />}
+            mono
+          />
+          <DefRow
             label="Delivered at"
             value={<RelativeTimestamp value={paperclipRow?.bootstrap_delivered_at} />}
             mono

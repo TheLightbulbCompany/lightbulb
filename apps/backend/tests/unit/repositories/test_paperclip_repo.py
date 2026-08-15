@@ -1121,8 +1121,116 @@ async def test_rearm_bootstrap_dispatch_never_downgrades_a_resolved_dispatch(rep
 
 
 # ---------------------------------------------------------------------------
+# mark_bootstrap_send_attempted / mark_bootstrap_sent — the two stamps between
+# the claim and the terminal marks. They are what a later poll reads to tell a
+# dead claimant that never sent from one that may already have.
+# ---------------------------------------------------------------------------
+
+
+async def _claimed(repo, generation="01G"):
+    await repo.put(
+        _make_company(
+            user_id="u1", onboarding_generation=generation, funnel_state="submitted", bootstrap_state="not_started"
+        )
+    )
+    _, dispatch_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation=generation)
+    return dispatch_id
+
+
+async def test_send_attempted_then_sent_walks_the_ladder(repo):
+    dispatch_id = await _claimed(repo)
+    assert await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    attempted = await repo.get("u1")
+    # Stamp 2 records the intent WITHOUT resolving the state — the row is
+    # still `dispatched`, because nothing is known about the outcome yet.
+    assert attempted.bootstrap_state == "dispatched"
+    assert attempted.bootstrap_send_attempted_at is not None
+    assert attempted.bootstrap_sent_at is None
+
+    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    sent = await repo.get("u1")
+    assert sent.bootstrap_state == "sent"
+    assert sent.bootstrap_sent_at is not None
+    assert sent.funnel_state == "submitted"  # completion, not delivery, completes the funnel
+
+
+async def test_send_attempted_returns_false_when_the_claim_moved_on(repo):
+    """The caller must not send when it no longer holds the claim."""
+    await _claimed(repo)
+    assert not await repo.mark_bootstrap_send_attempted(
+        "u1", onboarding_generation="01G", dispatch_id="someone-elses-claim"
+    )
+    assert (await repo.get("u1")).bootstrap_send_attempted_at is None
+
+
+async def test_terminal_marks_accept_a_sent_row(repo):
+    """`sent` is a live post-claim state: the completion observer's
+    delivered/failed writes sit on top of it unchanged."""
+    dispatch_id = await _claimed(repo)
+    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    await repo.mark_bootstrap_delivered("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    delivered = await repo.get("u1")
+    assert delivered.bootstrap_state == "delivered"
+    assert delivered.funnel_state == "complete"
+
+
+async def test_terminal_failure_accepts_a_sent_row(repo):
+    dispatch_id = await _claimed(repo)
+    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="chat.aborted")
+    failed = await repo.get("u1")
+    assert failed.bootstrap_state == "failed"
+    assert failed.bootstrap_last_error == "chat.aborted"
+
+
+async def test_a_new_claim_clears_the_previous_attempts_stamps(repo):
+    """A re-armed row must start a CLEAN per-attempt record: a leftover
+    send_attempted stamp would make the NEXT dead claim look ambiguous
+    (never re-armed) when it provably sent nothing."""
+    dispatch_id = await _claimed(repo)
+    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    await repo.rearm_bootstrap_dispatch(
+        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="connect refused"
+    )
+    _, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
+    reclaimed = await repo.get("u1")
+    assert second_id != dispatch_id
+    assert reclaimed.bootstrap_send_attempted_at is None
+    assert reclaimed.bootstrap_sent_at is None
+
+
+# ---------------------------------------------------------------------------
 # reset_bootstrap_for_retry
 # ---------------------------------------------------------------------------
+
+
+async def test_reset_bootstrap_for_retry_recovers_an_expired_dispatched_claim(repo):
+    """The admin lever's stuck-'dispatched' case (the row's claimant died).
+    Fenced on the observed dispatch_id, so a claim that landed in between is
+    never stomped."""
+    dispatch_id = await _claimed(repo)
+    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+
+    assert not await repo.reset_bootstrap_for_retry(
+        "u1", onboarding_generation="01G", expected_dispatch_id="a-different-claim"
+    )
+    assert (await repo.get("u1")).bootstrap_state == "dispatched"
+
+    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G", expected_dispatch_id=dispatch_id)
+    reset = await repo.get("u1")
+    assert reset.bootstrap_state == "not_started"
+    assert reset.bootstrap_attempts == 0
+    assert reset.funnel_state == "submitted"
+
+
+async def test_reset_bootstrap_for_retry_without_a_dispatch_id_still_only_takes_failed(repo):
+    """The no-fence form is the original failed-only lever, unchanged."""
+    dispatch_id = await _claimed(repo)
+    assert not await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G")
+    assert (await repo.get("u1")).bootstrap_state == "dispatched"
+    await repo.mark_bootstrap_failed("u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="boom")
+    assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G")
+    assert (await repo.get("u1")).bootstrap_state == "not_started"
 
 
 async def test_reset_bootstrap_for_retry_lands_on_failed_row(repo):

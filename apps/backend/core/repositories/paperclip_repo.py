@@ -136,7 +136,7 @@ class BootstrapClaimResult(str, Enum):
 
 PaperclipCompanyStatus = Literal["seeding", "provisioning", "active", "failed", "disabled"]
 FunnelState = Literal["not_started", "submitted", "complete"]
-BootstrapState = Literal["not_started", "dispatched", "delivered", "failed"]
+BootstrapState = Literal["not_started", "dispatched", "sent", "delivered", "failed"]
 
 
 # Reserved user_id namespace for per-org "company create" claim sentinels.
@@ -277,12 +277,33 @@ class PaperclipCompany:
     claim-scoped fields."""
 
     bootstrap_state: Optional[BootstrapState] = None
-    """``not_started`` (set at G2) -> ``dispatched`` -> ``delivered`` |
-    ``failed``. Written by the bootstrap dispatcher; this declaration
-    establishes the attribute and its G2-time initial value."""
+    """``not_started`` (set at G2) -> ``dispatched`` -> ``sent`` ->
+    ``delivered`` | ``failed``. Written by the bootstrap dispatcher; this
+    declaration establishes the attribute and its G2-time initial value.
+
+    ``dispatched`` is CLAIMED, ``sent`` is DELIVERED (the chat.send RPC was
+    acked by OpenClaw), ``delivered`` is COMPLETED (Friday's ``chat.final``
+    was observed). The middle rung is what makes a stuck row diagnosable
+    rather than permanent: a ``dispatched`` row that stops moving lost its
+    claimant BEFORE delivery (recoverable), a ``sent`` one only lost the
+    completion bookkeeping and must never be re-sent."""
 
     bootstrap_dispatch_id: Optional[str] = None
     bootstrap_dispatched_at: Optional[datetime] = None
+
+    bootstrap_send_attempted_at: Optional[datetime] = None
+    """Write-ahead stamp: set immediately BEFORE the chat.send RPC is issued
+    (``mark_bootstrap_send_attempted``), while the outcome is still unknown.
+    Its presence on an expired ``dispatched`` claim is what separates the two
+    recovery cases — absent means nothing was ever written to the socket
+    (provably unsent, safe to re-arm), present without ``bootstrap_sent_at``
+    means the send may already have been ACCEPTED (ambiguous, never
+    re-sent). See ``core.services.bootstrap_dispatcher``'s staleness rule."""
+
+    bootstrap_sent_at: Optional[datetime] = None
+    """Stamped with the ``dispatched -> sent`` transition, the instant the
+    chat.send RPC returns its ack."""
+
     bootstrap_delivered_at: Optional[datetime] = None
     bootstrap_attempts: Optional[int] = None
     bootstrap_last_error: Optional[str] = None
@@ -389,6 +410,10 @@ class PaperclipRepo:
             item["bootstrap_dispatch_id"] = company.bootstrap_dispatch_id
         if company.bootstrap_dispatched_at is not None:
             item["bootstrap_dispatched_at"] = company.bootstrap_dispatched_at.isoformat()
+        if company.bootstrap_send_attempted_at is not None:
+            item["bootstrap_send_attempted_at"] = company.bootstrap_send_attempted_at.isoformat()
+        if company.bootstrap_sent_at is not None:
+            item["bootstrap_sent_at"] = company.bootstrap_sent_at.isoformat()
         if company.bootstrap_delivered_at is not None:
             item["bootstrap_delivered_at"] = company.bootstrap_delivered_at.isoformat()
         if company.bootstrap_attempts is not None:
@@ -465,6 +490,14 @@ class PaperclipRepo:
             bootstrap_dispatch_id=item.get("bootstrap_dispatch_id"),
             bootstrap_dispatched_at=(
                 datetime.fromisoformat(item["bootstrap_dispatched_at"]) if item.get("bootstrap_dispatched_at") else None
+            ),
+            bootstrap_send_attempted_at=(
+                datetime.fromisoformat(item["bootstrap_send_attempted_at"])
+                if item.get("bootstrap_send_attempted_at")
+                else None
+            ),
+            bootstrap_sent_at=(
+                datetime.fromisoformat(item["bootstrap_sent_at"]) if item.get("bootstrap_sent_at") else None
             ),
             bootstrap_delivered_at=(
                 datetime.fromisoformat(item["bootstrap_delivered_at"]) if item.get("bootstrap_delivered_at") else None
@@ -547,6 +580,8 @@ class PaperclipRepo:
                 "bootstrap_state": "not_started",
                 "bootstrap_dispatch_id": None,
                 "bootstrap_dispatched_at": None,
+                "bootstrap_send_attempted_at": None,
+                "bootstrap_sent_at": None,
                 "bootstrap_delivered_at": None,
                 "bootstrap_attempts": 0,
                 "bootstrap_last_error": None,
@@ -609,6 +644,8 @@ class PaperclipRepo:
             "bootstrap_state": getattr(company, "bootstrap_state", None) or "not_started",
             "bootstrap_dispatch_id": getattr(company, "bootstrap_dispatch_id", None),
             "bootstrap_dispatched_at": _iso(getattr(company, "bootstrap_dispatched_at", None)),
+            "bootstrap_send_attempted_at": _iso(getattr(company, "bootstrap_send_attempted_at", None)),
+            "bootstrap_sent_at": _iso(getattr(company, "bootstrap_sent_at", None)),
             "bootstrap_delivered_at": _iso(getattr(company, "bootstrap_delivered_at", None)),
             "bootstrap_attempts": getattr(company, "bootstrap_attempts", None) or 0,
             "bootstrap_last_error": getattr(company, "bootstrap_last_error", None),
@@ -1255,9 +1292,10 @@ class PaperclipRepo:
         would risk a double-send.
 
         A stuck ``sending`` — the process died between claim and settle — is
-        deliberately NOT recovered here, matching ``claim_bootstrap_dispatch``'s
-        posture on a stuck ``dispatched``: that is the generalized
-        reconciliation worker's job, not a second recovery path invented here.
+        deliberately NOT recovered here: recovery belongs to an observer that
+        can date the claim, the way the bootstrap dispatcher's staleness rule
+        dates ``bootstrap_dispatched_at``, not to a second escape hatch inside
+        the claim itself.
 
         Never raises.
         """
@@ -1383,11 +1421,13 @@ class PaperclipRepo:
         Unlike ``claim_funnel_submission`` this has NO retry loop: the
         funnel claim can be reverted and re-claimed on the SAME generation
         by a caller whose downstream seed failed, but a bootstrap dispatch
-        has no such same-request rollback -- a stuck ``dispatched`` (chat.send
-        issued but no terminal observed) or a recorded ``failed`` is retried
-        by resetting ``bootstrap_state`` back to ``not_started``, which is
-        the generalized ``reconciliation_worker``'s job (spec PR-8), not
-        this method's.
+        has no such same-request rollback -- a stuck ``dispatched`` (the
+        claimant's process died mid-window) is recovered by the dispatcher's
+        LAZY staleness rule on a later ``/container/status`` poll
+        (``bootstrap_dispatcher._recover_stale_dispatch``, which re-arms via
+        ``rearm_bootstrap_dispatch`` or settles the ambiguous case
+        ``failed``), and a recorded ``failed`` by the admin lever
+        ``reset_bootstrap_for_retry`` -- never by this method.
 
         Returns ``(BootstrapClaimResult.WON, dispatch_id)`` on success, else
         ``(<NOT_READY|STALE_GENERATION>, None)``.
@@ -1403,7 +1443,13 @@ class PaperclipRepo:
                     "SET bootstrap_state = :dispatched, bootstrap_dispatch_id = :did, "
                     "bootstrap_dispatched_at = :t, "
                     "bootstrap_attempts = if_not_exists(bootstrap_attempts, :zero) + :one, "
-                    "updated_at = :u"
+                    "updated_at = :u "
+                    # A claim starts a CLEAN per-attempt record: the previous
+                    # attempt's ack stamps must not be readable as this one's,
+                    # or a re-armed row that dies pre-send would look
+                    # send-attempted (ambiguous) to the staleness rule instead
+                    # of provably unsent.
+                    "REMOVE bootstrap_send_attempted_at, bootstrap_sent_at"
                 ),
                 ConditionExpression=(
                     "onboarding_generation = :gen AND funnel_state = :submitted AND bootstrap_state = :not_started"
@@ -1432,8 +1478,83 @@ class PaperclipRepo:
             return BootstrapClaimResult.STALE_GENERATION, None
         return BootstrapClaimResult.NOT_READY, None
 
+    async def mark_bootstrap_send_attempted(
+        self, user_id: str, *, onboarding_generation: str, dispatch_id: str
+    ) -> bool:
+        """Stamp ``bootstrap_send_attempted_at`` -- the WRITE-AHEAD of chat.send.
+
+        Written immediately BEFORE the send RPC is issued, while its outcome
+        is still unknown, and fenced like every other post-claim write
+        (generation + dispatch_id + still ``dispatched``). It is the ONLY
+        thing that separates the two stale-claim cases a later poll can find
+        after a process death: no stamp means nothing was ever written to the
+        socket (provably unsent -- safe to re-arm), a stamp with no
+        ``bootstrap_sent_at`` means OpenClaw may already have ACCEPTED the run
+        (ambiguous -- never re-sent). See
+        ``bootstrap_dispatcher._recover_stale_dispatch``.
+
+        Returns False when the write did NOT land -- the row moved on under
+        this claim (superseded generation, an admin reset, a stale-claim
+        recovery that already re-armed it), which means the caller no longer
+        holds the claim and MUST NOT send.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression="SET bootstrap_send_attempted_at = :t, updated_at = :t",
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":t": utc_now_iso(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    async def mark_bootstrap_sent(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
+        """Conditional ``bootstrap_state: dispatched -> sent`` (+
+        ``bootstrap_sent_at``), written the instant the chat.send RPC returns
+        its ack. Fenced exactly like ``mark_bootstrap_delivered``.
+
+        ``sent`` is DELIVERY OBSERVED; ``delivered`` stays COMPLETION OBSERVED
+        (both terminal marks accept either state, so the existing transitions
+        sit on top of this one unchanged). Recording the ack is what bounds
+        the ambiguous window to the milliseconds between the write-ahead stamp
+        and this write, instead of the whole agent run.
+
+        Guard-fail is swallowed for the same reason as the marks below -- and
+        one more: the send ALREADY happened, so a bookkeeping loss must never
+        surface as a dispatch failure.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression="SET bootstrap_state = :sent, bootstrap_sent_at = :t, updated_at = :t",
+                ConditionExpression=(
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                ),
+                ExpressionAttributeValues={
+                    ":sent": "sent",
+                    ":t": utc_now_iso(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                    ":dispatched": "dispatched",
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
     async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
-        """Conditional ``bootstrap_state: dispatched -> delivered``, fenced
+        """Conditional ``bootstrap_state: dispatched|sent -> delivered``, fenced
         on ``onboarding_generation`` AND ``bootstrap_dispatch_id`` (so a
         stale completion observer from a superseded dispatch attempt can
         never mark a LATER attempt delivered). Also flips
@@ -1442,6 +1563,11 @@ class PaperclipRepo:
         event the architecture spec calls "the funnel's completion signal"
         (§2, ``FunnelState`` docstring), replacing the older
         thread-emptiness inference.
+
+        Accepts BOTH live post-claim states: ``sent`` is the normal one (the
+        chat.send ack is stamped before Friday can possibly finish), while
+        ``dispatched`` is still admitted for a terminal that beats the
+        ack-time bookkeeping write.
 
         A lost guard (``ConditionalCheckFailedException`` -- the generation
         moved on, or a duplicate/re-delivered terminal for a dispatch that
@@ -1460,7 +1586,8 @@ class PaperclipRepo:
                     "funnel_state = :complete, funnel_completed_at = :t, updated_at = :t"
                 ),
                 ConditionExpression=(
-                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND "
+                    "(bootstrap_state = :dispatched OR bootstrap_state = :sent)"
                 ),
                 ExpressionAttributeValues={
                     ":delivered": "delivered",
@@ -1469,6 +1596,7 @@ class PaperclipRepo:
                     ":gen": onboarding_generation,
                     ":did": dispatch_id,
                     ":dispatched": "dispatched",
+                    ":sent": "sent",
                 },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -1477,10 +1605,10 @@ class PaperclipRepo:
     async def mark_bootstrap_failed(
         self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str
     ) -> None:
-        """Conditional ``bootstrap_state: dispatched -> failed``, fenced the
+        """Conditional ``bootstrap_state: dispatched|sent -> failed``, fenced the
         same way as ``mark_bootstrap_delivered`` (generation + dispatch_id +
-        still-``dispatched``). Records *reason* on ``bootstrap_last_error``
-        for observability.
+        either live post-claim state). Records *reason* on
+        ``bootstrap_last_error`` for observability.
 
         Deliberately does NOT touch ``funnel_state`` -- a failed kickoff
         leaves the funnel ``submitted`` (not ``complete``), so the
@@ -1496,7 +1624,8 @@ class PaperclipRepo:
                 Key={"user_id": user_id},
                 UpdateExpression=("SET bootstrap_state = :failed, bootstrap_last_error = :err, updated_at = :u"),
                 ConditionExpression=(
-                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND "
+                    "(bootstrap_state = :dispatched OR bootstrap_state = :sent)"
                 ),
                 ExpressionAttributeValues={
                     ":failed": "failed",
@@ -1505,6 +1634,7 @@ class PaperclipRepo:
                     ":gen": onboarding_generation,
                     ":did": dispatch_id,
                     ":dispatched": "dispatched",
+                    ":sent": "sent",
                 },
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -1532,6 +1662,13 @@ class PaperclipRepo:
         them). Does NOT touch ``funnel_state`` — the standing ``submitted``
         funnel is what makes the row re-dispatchable at all.
 
+        Also the write the dispatcher's lazy staleness recovery makes for an
+        EXPIRED claim whose ``bootstrap_send_attempted_at`` is absent (the
+        claimant provably died before writing anything to the socket) -- same
+        safety property, same fencing, from a different observer. Deliberately
+        NOT admitted from ``sent``: that row's chat.send was acked, and
+        re-arming it would double-run Friday.
+
         Guard-fail is swallowed for the same reason as the two marks above:
         a stale caller from a superseded generation/dispatch has nothing
         further to do.
@@ -1557,7 +1694,9 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             pass
 
-    async def reset_bootstrap_for_retry(self, user_id: str, *, onboarding_generation: str) -> bool:
+    async def reset_bootstrap_for_retry(
+        self, user_id: str, *, onboarding_generation: str, expected_dispatch_id: Optional[str] = None
+    ) -> bool:
         """Admin lever: conditional ``bootstrap_state: failed -> not_started``.
 
         ``mark_bootstrap_failed`` deliberately leaves the funnel ``submitted``
@@ -1573,9 +1712,34 @@ class PaperclipRepo:
         resets so MAX_BOOTSTRAP_ATTEMPTS re-arms. The next owner
         ``/container/status`` poll re-dispatches.
 
+        *expected_dispatch_id* switches the fence from ``failed`` to a
+        specific still-``dispatched`` claim -- the EXPIRED-claim case the
+        caller (``routers/admin.py``) has already established is stale by
+        ``bootstrap_dispatcher.STALE_DISPATCH_AFTER_S``. That includes the
+        ambiguous send-attempted-but-never-acked row the dispatcher refuses
+        to touch on its own, which is exactly what this lever is for: an
+        operator accepting a possible double-delivery to recover an
+        onboarding. Pinning the dispatch_id is what keeps it from stomping a
+        FRESH claim that landed between the operator's read and this write
+        (a re-armed row re-claims on the very next poll, seconds later).
+
         Returns True if the write landed.
         """
         table = self._table()
+        values = {
+            ":ns": "not_started",
+            ":zero": 0,
+            ":u": utc_now_iso(),
+            ":gen": onboarding_generation,
+            ":submitted": "submitted",
+        }
+        if expected_dispatch_id:
+            state_condition = "bootstrap_state = :dispatched AND bootstrap_dispatch_id = :did"
+            values[":dispatched"] = "dispatched"
+            values[":did"] = expected_dispatch_id
+        else:
+            state_condition = "bootstrap_state = :failed"
+            values[":failed"] = "failed"
         try:
             await run_in_thread(
                 table.update_item,
@@ -1585,16 +1749,9 @@ class PaperclipRepo:
                     "REMOVE bootstrap_dispatch_id"
                 ),
                 ConditionExpression=(
-                    "onboarding_generation = :gen AND funnel_state = :submitted AND bootstrap_state = :failed"
+                    f"onboarding_generation = :gen AND funnel_state = :submitted AND {state_condition}"
                 ),
-                ExpressionAttributeValues={
-                    ":ns": "not_started",
-                    ":zero": 0,
-                    ":u": utc_now_iso(),
-                    ":gen": onboarding_generation,
-                    ":submitted": "submitted",
-                    ":failed": "failed",
-                },
+                ExpressionAttributeValues=values,
             )
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:

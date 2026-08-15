@@ -275,7 +275,19 @@ class Inbound(BaseModel):
     # on the integrations row; the caller supplies the asset id as the
     # resource. signing_mode is "bearer" because Meta's signature is over the
     # APP secret (verified at the edge), not anything Paperclip holds.
-    webhook_registration: Literal["guided_paste", "auto_github", "auto_vercel", "auto_google_watch", "auto_meta"]
+    # "auto_aws_eventbridge" — the backend assumes the owner's connected AWS
+    # connector role and creates an EventBridge API Destination, ALARM-only
+    # rule, and target. The Connection injects the trigger's bearer; the caller
+    # supplies a listed CloudWatch alarm ARN or the explicit all-alarms choice.
+    # Lifecycle metadata is retained for routine/disconnect cleanup.
+    webhook_registration: Literal[
+        "guided_paste",
+        "auto_github",
+        "auto_vercel",
+        "auto_google_watch",
+        "auto_meta",
+        "auto_aws_eventbridge",
+    ]
     # A NATIVE Paperclip signingMode ("hmac_sha256" | "hmac_sha1" |
     # "github_hmac" | "bearer" | "none"), passed straight through to the
     # created trigger — Paperclip verifies the provider's signature natively

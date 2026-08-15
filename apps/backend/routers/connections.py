@@ -23,7 +23,7 @@ from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import google_accounts_repo, integrations_repo
-from core.services import config_patcher
+from core.services import aws_eventbridge, config_patcher
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
@@ -732,6 +732,23 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 
 
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
+    # API Destinations live in the owner's account and retain the routine
+    # bearer in an AWS-managed connection secret. Remove them while the
+    # connector credential still exists; failing closed here preserves the
+    # status row so a later disconnect can retry cleanup.
+    if provider == "aws":
+        for binding in await integrations_repo.get_aws_eventbridge_destinations(owner_id):
+            try:
+                await aws_eventbridge.delete_alarm_destination(owner_id, binding)
+            except Exception as exc:
+                logger.warning(
+                    "failed to remove AWS EventBridge destination owner=%s binding=%s",
+                    owner_id,
+                    binding.get("trigger_public_id"),
+                    exc_info=True,
+                )
+                raise HTTPException(status_code=502, detail="aws_eventbridge_cleanup_failed") from exc
+
     # Materializer-backed providers wrote credential files onto EFS; remove
     # those first so disconnect leaves no on-disk residue. The remover deletes
     # the artifact by owner/provider and does not need the secret value.

@@ -77,6 +77,18 @@ def admin(monkeypatch):
         "routers.teams._guards.billing_repo.get_by_owner_id",
         AsyncMock(return_value={"subscription_status": "active"}),
     )
+    monkeypatch.setattr(
+        "routers.teams.work.integrations_repo.get_aws_eventbridge_destinations",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "routers.teams.work.integrations_repo.set_aws_eventbridge_destinations",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "routers.teams.work.aws_eventbridge.delete_alarm_destination",
+        AsyncMock(),
+    )
     return a
 
 
@@ -639,6 +651,46 @@ def test_trial_owner_can_still_delete_a_routine(client, admin, monkeypatch):
     admin.delete_routine.assert_awaited_once()
 
 
+def test_delete_routine_removes_managed_aws_destination_first(client, admin, monkeypatch):
+    binding = {
+        "routine_id": "r1",
+        "trigger_id": "tr_aws",
+        "trigger_public_id": "pub_1",
+        "region": "us-east-1",
+    }
+    other = {"routine_id": "r2", "trigger_id": "tr_other", "trigger_public_id": "pub_2"}
+    get_destinations = AsyncMock(return_value=[binding, other])
+    set_destinations = AsyncMock()
+    delete_destination = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.integrations_repo.get_aws_eventbridge_destinations", get_destinations)
+    monkeypatch.setattr("routers.teams.work.integrations_repo.set_aws_eventbridge_destinations", set_destinations)
+    monkeypatch.setattr("routers.teams.work.aws_eventbridge.delete_alarm_destination", delete_destination)
+
+    r = client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200
+    delete_destination.assert_awaited_once_with("o1", binding)
+    set_destinations.assert_awaited_once_with("o1", [other])
+    admin.delete_routine.assert_awaited_once()
+
+
+def test_delete_routine_aborts_when_managed_aws_cleanup_fails(client, admin, monkeypatch):
+    binding = {"routine_id": "r1", "trigger_id": "tr_aws", "trigger_public_id": "pub_1"}
+    monkeypatch.setattr(
+        "routers.teams.work.integrations_repo.get_aws_eventbridge_destinations",
+        AsyncMock(return_value=[binding]),
+    )
+    monkeypatch.setattr(
+        "routers.teams.work.aws_eventbridge.delete_alarm_destination",
+        AsyncMock(side_effect=RuntimeError("AWS unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="AWS unavailable"):
+        client.delete("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
+
+    admin.delete_routine.assert_not_awaited()
+
+
 def test_paid_owner_can_still_reactivate(client, admin, monkeypatch):
     monkeypatch.setattr(
         "routers.teams._guards.billing_repo.get_by_owner_id",
@@ -1042,6 +1094,29 @@ def test_delete_routine_trigger_is_open_to_trial(client, admin, monkeypatch):
         trigger_id="tr_1",
         session_cookie="cookie",
     )
+
+
+def test_delete_trigger_removes_only_its_managed_aws_destination(client, admin, monkeypatch):
+    target = {"routine_id": "r1", "trigger_id": "tr_1", "trigger_public_id": "pub_1"}
+    other = {"routine_id": "r1", "trigger_id": "tr_2", "trigger_public_id": "pub_2"}
+    monkeypatch.setattr(
+        "routers.teams.work.integrations_repo.get_aws_eventbridge_destinations",
+        AsyncMock(return_value=[target, other]),
+    )
+    set_destinations = AsyncMock()
+    delete_destination = AsyncMock()
+    monkeypatch.setattr("routers.teams.work.integrations_repo.set_aws_eventbridge_destinations", set_destinations)
+    monkeypatch.setattr("routers.teams.work.aws_eventbridge.delete_alarm_destination", delete_destination)
+
+    r = client.delete(
+        "/api/v1/teams/routines/r1/triggers/tr_1",
+        headers={"Authorization": "Bearer x"},
+    )
+
+    assert r.status_code == 200
+    delete_destination.assert_awaited_once_with("o1", target)
+    set_destinations.assert_awaited_once_with("o1", [other])
+    admin.delete_routine_trigger.assert_awaited_once()
 
 
 def test_rotate_routine_trigger_secret_is_open_and_returns_material(client, admin):

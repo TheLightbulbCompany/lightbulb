@@ -517,6 +517,31 @@ describe("RoutinesPanel — 'A connected app' rung (T6)", () => {
     expect(screen.getByLabelText("Search events")).toBeInTheDocument();
   });
 
+  it("assigns a connected-app automation to the selected worker", async () => {
+    connectionsData = [connection()];
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_1",
+      trigger_public_id: "pub_1",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_1",
+      guided: true,
+    });
+    const user = await openConnectedAppRung();
+
+    await user.click(screen.getByRole("button", { name: "Unassigned" }));
+    await user.click(within(screen.getByRole("option", { name: "Atlas" })).getByRole("button"));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "Stripe" }));
+    await user.click(await screen.findByRole("option", { name: "Invoice payment failed" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "stripe",
+      event_id: "invoice.payment_failed",
+      assignee_agent_id: "a2",
+    });
+  });
+
   it("typing in the search input filters events by label and id; selecting a filtered event submits its id", async () => {
     connectionsData = [connection()];
     mockAutomationsPost.mockResolvedValue({
@@ -842,6 +867,69 @@ describe("RoutinesPanel — auto_github repo picker", () => {
 
     expect(await screen.findByText(/github is not connected/i)).toBeInTheDocument();
     expect(screen.getByText("Create").closest("button")).toBeDisabled();
+  });
+});
+
+describe("RoutinesPanel — AWS alarm picker", () => {
+  beforeEach(() => {
+    mockAutomationsGet.mockReset();
+    mockAutomationsPost.mockReset();
+    mockAutomationsPut.mockReset();
+    mockMutate.mockReset();
+    routinesData = { routines: [routine()] };
+    agentsData = { agents: AGENTS };
+    connectionsData = [
+      {
+        provider: "aws",
+        display_name: "AWS",
+        acquisition: "aws_sts",
+        status: "connected",
+        can_trigger: ["Alarm entered ALARM"],
+        inbound: {
+          webhook_registration: "auto_aws_eventbridge",
+          events: [{ id: "cloudwatch.alarm", label: "Alarm entered ALARM" }],
+        },
+      },
+    ];
+    mockAutomationsGet.mockResolvedValue([
+      { id: "*", label: "All CloudWatch alarms" },
+      {
+        id: "arn:aws:cloudwatch:us-east-1:123456789012:alarm:api-errors",
+        label: "api-errors",
+      },
+    ]);
+    mockAutomationsPost.mockResolvedValue({
+      routine_id: "rt_aws",
+      trigger_public_id: "pub_aws",
+      proxy_url: "https://api-dev.isol8.co/api/v1/hooks/t/owner_1/pub_aws",
+      guided: false,
+      resource: "*",
+    });
+  });
+
+  it("lists CloudWatch alarms and submits the selected alarm resource", async () => {
+    const user = userEvent.setup();
+    render(<RoutinesPanel />);
+    await user.click(screen.getByRole("button", { name: "New automation" }));
+    await user.click(screen.getByRole("radio", { name: /A connected app/ }));
+    await user.click(screen.getAllByRole("combobox")[0]);
+    await user.click(await screen.findByRole("option", { name: "AWS" }));
+    await user.click(await screen.findByRole("option", { name: "Alarm entered ALARM" }));
+
+    await waitFor(() =>
+      expect(mockAutomationsGet).toHaveBeenCalledWith("/automations/providers/aws/resources"),
+    );
+    expect(screen.getByText("CloudWatch alarm")).toBeInTheDocument();
+    await user.click(screen.getAllByRole("combobox")[1]);
+    await user.click(await screen.findByRole("option", { name: "All CloudWatch alarms" }));
+    await user.click(screen.getByText("Create"));
+
+    await waitFor(() => expect(mockAutomationsPost).toHaveBeenCalledTimes(1));
+    expect(mockAutomationsPost).toHaveBeenCalledWith("/automations/from-integration", {
+      provider: "aws",
+      event_id: "cloudwatch.alarm",
+      resource: "*",
+    });
   });
 });
 

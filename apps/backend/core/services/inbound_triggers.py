@@ -56,6 +56,15 @@ header copy. If the ARM fails the Vercel webhook is deleted (best-effort)
 before the routine is unwound — never leave a live webhook pointed at a
 trigger armed with a random secret. The webhook id is likewise not stored.
 
+``webhook_registration: "auto_aws_eventbridge"`` (AWS): the backend assumes
+the owner's Settings AWS connector role, creates an EventBridge Connection
+whose API-key value is the trigger's one-time bearer, then creates an API
+Destination and an ALARM-only CloudWatch state-change rule. The caller picks a
+live alarm ARN or the explicit all-alarms resource. Lifecycle names plus the
+routine and trigger ids are stored on the secret-free AWS integration row so
+routine deletion, disconnect, and account wipe remove the external resources
+before dropping the credential.
+
 ``webhook_registration: "auto_google_watch"`` (Google): auto like GitHub —
 the trigger's one-time ``secretMaterial.webhookSecret`` becomes the Google
 push channel's token — but Google channels EXPIRE (≤7 days), so the watch
@@ -140,7 +149,7 @@ from core.config import settings
 from core.observability.product_analytics import capture_product_event
 from core.repositories import google_accounts_repo, integrations_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services import google_watch
+from core.services import aws_eventbridge, google_watch
 from core.services.agent_routine_provisioning import _build_routine_body
 from core.services.credentials import integration_secret_store, registry
 from core.services.credentials.materializers.base import atomic_write, owner_efs_root
@@ -791,6 +800,19 @@ async def _seed_trigger_routine(
         if not vercel_token:
             raise ValueError("Vercel is not connected — connect it in the Integrations tab first")
 
+    # EventBridge API Destinations are created in the owner's connected AWS
+    # account. Listing first proves the connection is usable and validates the
+    # alarm ARN before any Paperclip resources exist.
+    if registration == "auto_aws_eventbridge":
+        if not resource:
+            raise ValueError("auto_aws_eventbridge needs a CloudWatch alarm")
+        try:
+            alarm_resources = await aws_eventbridge.list_alarm_resources(owner_id)
+        except LookupError as exc:
+            raise ValueError("AWS is not connected — connect it in the Integrations tab first") from exc
+        if resource not in {row["id"] for row in alarm_resources}:
+            raise ValueError("That CloudWatch alarm is not in your connected AWS account")
+
     # auto_meta preconditions, same posture: fail before anything exists. The
     # asset must be numeric AND present in the owner's live asset list — that
     # membership check is the ownership fence (nothing else stops an owner
@@ -949,9 +971,13 @@ async def _seed_trigger_routine(
             # APP secret, so the trigger's own secret is what the app-level
             # ingress injects as the bearer AFTER verifying that signature.
             webhook_secret: str | None = None
-            if registration in ("auto_github", "auto_google_watch", "owner_setup", "auto_meta") or (
-                registration == "guided_paste" and inbound.signing_mode == "bearer"
-            ):
+            if registration in (
+                "auto_github",
+                "auto_google_watch",
+                "owner_setup",
+                "auto_meta",
+                "auto_aws_eventbridge",
+            ) or (registration == "guided_paste" and inbound.signing_mode == "bearer"):
                 material = trigger_resp.get("secretMaterial") if isinstance(trigger_resp, dict) else None
                 webhook_secret = material.get("webhookSecret") if isinstance(material, dict) else None
                 if not webhook_secret:
@@ -962,7 +988,7 @@ async def _seed_trigger_routine(
             # response. Absent means the trigger can never be armed, same
             # severity as no publicId.
             trigger_id: str | None = None
-            if registration == "auto_vercel":
+            if registration in ("auto_vercel", "auto_aws_eventbridge"):
                 trigger_id = trigger.get("id") if isinstance(trigger, dict) else None
                 if not trigger_id:
                     raise RuntimeError("create_routine_trigger returned no trigger.id")
@@ -977,6 +1003,53 @@ async def _seed_trigger_routine(
             raise
 
         proxy_url = f"{settings.PUBLIC_API_BASE}/api/v1/hooks/t/{owner_id}/{public_id}"
+
+        if registration == "auto_aws_eventbridge":
+            assert resource and webhook_secret and trigger_id  # narrowed by the pre-checks above
+            binding: dict[str, str] | None = None
+            try:
+                binding = await aws_eventbridge.register_alarm_destination(
+                    owner_id,
+                    trigger_public_id=public_id,
+                    endpoint=proxy_url,
+                    webhook_secret=webhook_secret,
+                    alarm_resource=resource,
+                )
+                binding.update({"routine_id": routine_id, "trigger_id": trigger_id})
+                destinations = await integrations_repo.get_aws_eventbridge_destinations(owner_id)
+                destinations.append(binding)
+                await integrations_repo.set_aws_eventbridge_destinations(owner_id, destinations)
+            except Exception:
+                if binding is not None:
+                    try:
+                        await aws_eventbridge.delete_alarm_destination(owner_id, binding)
+                    except Exception:
+                        logger.warning(
+                            "inbound_triggers: failed AWS destination rollback owner=%s trigger=%s",
+                            owner_id,
+                            public_id,
+                            exc_info=True,
+                        )
+                await _rollback_routine(
+                    admin, routine_id=routine_id, cookie=cookie, owner_id=owner_id, provider_key=provider_key
+                )
+                raise
+            logger.info(
+                "inbound_triggers: seeded auto_aws_eventbridge routine=%s trigger=%s owner=%s alarm=%s",
+                routine_id,
+                public_id,
+                owner_id,
+                resource,
+            )
+            return {
+                "routine_id": routine_id,
+                "trigger_public_id": public_id,
+                "proxy_url": proxy_url,
+                "guided": False,
+                "instructions": None,
+                "secret_hint": None,
+                "resource": resource,
+            }
 
         if registration == "guided_paste":
             logger.info(

@@ -875,6 +875,7 @@ const AUTO_RESOURCE_NOUNS: Record<string, { label: string; plural: string }> = {
   auto_github: { label: "Repository", plural: "repositories" },
   auto_vercel: { label: "Project", plural: "projects" },
   auto_google_watch: { label: "Google account", plural: "accounts" },
+  auto_aws_eventbridge: { label: "CloudWatch alarm", plural: "alarms" },
   "auto_meta:meta_ads": { label: "Page", plural: "Pages" },
   "auto_meta:instagram": { label: "Instagram account", plural: "accounts" },
 };
@@ -1063,8 +1064,8 @@ function CreateRoutineDialog({
     useState<RoutineTriggerSecretMaterial | null>(null);
 
   // "A connected app" rung state — a provider + one of its events, submitted
-  // straight to POST /automations/from-integration (no title/assignee/
-  // description: the registry template supplies all of that server-side).
+  // straight to POST /automations/from-integration. The registry supplies
+  // title/description; the owner may select the deliberate worker.
   const [connProvider, setConnProvider] = useState<string | null>(null);
   const [connEventId, setConnEventId] = useState<string | null>(null);
   const [connResult, setConnResult] = useState<FromIntegrationResult | null>(
@@ -1169,7 +1170,7 @@ function CreateRoutineDialog({
 
   // "A connected app" — one call seeds BOTH the routine and its trigger from
   // the registry template (core/services/inbound_triggers.py), so none of
-  // the title/assignee/description fields the other two rungs use apply here.
+  // the title/description fields the other two rungs use apply here.
   async function submitConnectedApp() {
     if (!connProvider || !connEventId) return;
     setSubmitting(true);
@@ -1183,6 +1184,7 @@ function CreateRoutineDialog({
         ...(connResource ? { resource: connResource } : {}),
         // Only the owner_setup shape (gmail.message) carries a topic.
         ...(isOwnerSetup && connTopic.trim() ? { topic: connTopic.trim() } : {}),
+        ...(agentId ? { assignee_agent_id: agentId } : {}),
       };
       const result = (await automationsApi.post(
         "/automations/from-integration",
@@ -1507,9 +1509,7 @@ function CreateRoutineDialog({
             })}
           </div>
         </div>
-        {/* Title/Assignee only apply to the schedule/webhook rungs — the
-            connected-app rung's registry template supplies both server-side
-            (POST /automations/from-integration). */}
+        {/* The connected-app registry supplies its title and description. */}
         {rung !== "connected_app" && (
           <>
             <label className="block">
@@ -1541,6 +1541,18 @@ function CreateRoutineDialog({
 
         {rung === "connected_app" && (
           <>
+            <div className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Assignee</span>
+              <div className="mt-1">
+                <AssigneePicker
+                  agents={agents}
+                  selectedAgentId={agentId}
+                  onChange={setAgentId}
+                  variant="inline"
+                  className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+                />
+              </div>
+            </div>
             <label className="block">
               <span className="text-sm text-[var(--ink-soft)]">
                 Connected app

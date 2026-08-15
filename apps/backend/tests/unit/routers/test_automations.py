@@ -255,6 +255,27 @@ class TestVercelResources:
         assert response.json()["detail"] == "unknown_provider"
 
 
+class TestAwsResources:
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_alarm_resources", new_callable=AsyncMock)
+    async def test_lists_cloudwatch_alarms(self, mock_alarms, async_client):
+        mock_alarms.return_value = [
+            {"id": "*", "label": "All CloudWatch alarms"},
+            {"id": "arn:aws:cloudwatch:us-east-1:123:alarm:api", "label": "api"},
+        ]
+        response = await async_client.get("/api/v1/automations/providers/aws/resources")
+        assert response.status_code == 200
+        assert response.json() == mock_alarms.return_value
+        mock_alarms.assert_awaited_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    @patch("routers.automations.list_alarm_resources", new_callable=AsyncMock)
+    async def test_aws_not_connected_404s(self, mock_alarms, async_client):
+        mock_alarms.side_effect = LookupError("AWS is not connected")
+        response = await async_client.get("/api/v1/automations/providers/aws/resources")
+        assert response.status_code == 404
+
+
 class TestSetWebhookSecret:
     """Verification is native in Paperclip now — arming a trigger means
     resolving public_id -> Paperclip's internal trigger id

@@ -97,7 +97,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
-from core.services import clerk_admin
+from core.services import aws_eventbridge, clerk_admin
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -515,6 +515,19 @@ async def preview_wipe(owner_id: str) -> WipeReport:
     # Credential + identity leftovers. A preview that omits these tells an
     # admin the credentials survive — the impression this report exists to
     # correct. All read-only.
+    integration_rows = await integrations_repo.list_for_owner(owner_id)
+    aws_destinations = next(
+        (row.get("aws_eventbridge_destinations") or [] for row in integration_rows if row.get("provider") == "aws"),
+        [],
+    )
+    _preview_step(
+        steps,
+        system="aws_eventbridge_destinations",
+        action="delete_alarm_destination",
+        exists=bool(aws_destinations),
+        detail_if_exists=f"{len(aws_destinations)} managed API Destination(s)",
+        detail_if_absent="no managed API Destinations",
+    )
     secret_names = await list_owner_secret_names(owner_id)
     _preview_step(
         steps,
@@ -524,8 +537,6 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         detail_if_exists=f"{len(secret_names)} secret(s): BYOK keys, integration creds, OAuth apps",
         detail_if_absent="no owner secrets",
     )
-
-    integration_rows = await integrations_repo.list_for_owner(owner_id)
     _preview_step(
         steps,
         system="integrations",
@@ -870,23 +881,51 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     # at an owner that no longer existed. Unconditional and idempotent —
     # each no-ops on an empty set.
 
+    # EventBridge Connections retain the routine bearer in the owner's AWS
+    # account. Remove those resources while the connector credential and
+    # lifecycle row still exist. If cleanup fails, preserve both below so a
+    # repeated wipe can retry rather than permanently orphaning the secret.
+    aws_destination_cleanup_ok = True
+
     async def _s9f() -> str:
+        nonlocal aws_destination_cleanup_ok
+        try:
+            destinations = await integrations_repo.get_aws_eventbridge_destinations(owner_id)
+            for destination in destinations:
+                await aws_eventbridge.delete_alarm_destination(owner_id, destination)
+        except Exception:
+            aws_destination_cleanup_ok = False
+            raise
+        return f"deleted {len(destinations)} managed API Destination(s)"
+
+    await _step(
+        steps,
+        system="aws_eventbridge_destinations",
+        action="delete_alarm_destination",
+        fn=_s9f,
+    )
+
+    async def _s9g() -> str:
+        if not aws_destination_cleanup_ok:
+            raise RuntimeError("preserved owner secrets because AWS destination cleanup failed")
         names = await delete_owner_secrets(owner_id)
         return f"deleted {len(names)} owner secret(s) (BYOK keys, integration creds, OAuth apps)"
 
-    await _step(steps, system="owner_secrets", action="delete_owner_secrets", fn=_s9f)
+    await _step(steps, system="owner_secrets", action="delete_owner_secrets", fn=_s9g)
 
-    async def _s9g() -> str:
+    async def _s9h() -> str:
+        if not aws_destination_cleanup_ok:
+            raise RuntimeError("preserved integration rows because AWS destination cleanup failed")
         providers = await integrations_repo.delete_all_for_owner(owner_id)
         return f"deleted {len(providers)} integration row(s): {', '.join(providers) or 'none'}"
 
-    await _step(steps, system="integrations", action="delete_all_for_owner", fn=_s9g)
+    await _step(steps, system="integrations", action="delete_all_for_owner", fn=_s9h)
 
     # Deletes OUR stored tokens. It does NOT revoke the grant upstream at
     # OpenAI — there is no call to an OpenAI revocation endpoint anywhere in
     # this codebase, so the grant stays live on their side until it expires
     # or the human revokes it in their OpenAI account settings.
-    async def _s9h() -> str:
+    async def _s9i() -> str:
         await revoke_user_oauth(user_id=owner_id)
         # The coding-harness grant is a SECOND, independent token row under
         # a suffixed key ({owner}#harness) — the bare-key deletion above
@@ -896,19 +935,19 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
         await revoke_user_oauth(user_id=owner_id, purpose=PURPOSE_HARNESS)
         return "stored chatgpt oauth tokens deleted, provider + harness rows (grant NOT revoked upstream at OpenAI)"
 
-    await _step(steps, system="oauth_tokens", action="revoke_user_oauth", fn=_s9h)
+    await _step(steps, system="oauth_tokens", action="revoke_user_oauth", fn=_s9i)
 
-    async def _s9i() -> str:
+    async def _s9j() -> str:
         addresses = await agent_email_repo.delete_all_for_owner(owner_id)
         return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
 
-    await _step(steps, system="agent_email_addresses", action="delete_all_for_owner", fn=_s9i)
+    await _step(steps, system="agent_email_addresses", action="delete_all_for_owner", fn=_s9j)
 
-    async def _s9j() -> str:
+    async def _s9k() -> str:
         slug = await company_slug_repo.delete_for_owner(owner_id)
         return f"released slug {slug}" if slug else "no slug reservation"
 
-    await _step(steps, system="company_slug", action="delete_for_owner", fn=_s9j)
+    await _step(steps, system="company_slug", action="delete_for_owner", fn=_s9k)
 
     # --- Step 10 (spec #12): Clerk user -- ALWAYS LAST ---------------------
     # Deliberately unconditional and unguarded by any row read above:

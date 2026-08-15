@@ -2274,14 +2274,19 @@ class TestDisconnectAws:
 
     @pytest.mark.asyncio
     @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.aws_eventbridge")
     @patch("routers.connections.MATERIALIZER_REMOVERS")
     @patch("routers.connections.config_patcher")
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     async def test_disconnect_aws_drops_secret_and_status(
-        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_aip, async_client
+        self, mock_repo, mock_store, mock_patcher, mock_removers, mock_eventbridge, mock_aip, async_client
     ):
         mock_repo.delete = AsyncMock()
+        mock_repo.get_aws_eventbridge_destinations = AsyncMock(
+            return_value=[{"trigger_public_id": "pub_1", "region": "us-east-1"}]
+        )
+        mock_eventbridge.delete_alarm_destination = AsyncMock()
         mock_store.delete = AsyncMock()
         mock_store.get = AsyncMock(
             return_value={"role_arn": "arn:aws:iam::123456789012:role/ro", "external_id": "e", "region": "us-east-1"}
@@ -2298,6 +2303,28 @@ class TestDisconnectAws:
         # the vend endpoint 401s the container's next fetch. Status row too.
         mock_store.delete.assert_awaited_once_with("user_test_123", "aws")
         mock_repo.delete.assert_awaited_once_with("user_test_123", "aws")
+        mock_eventbridge.delete_alarm_destination.assert_awaited_once_with(
+            "user_test_123", {"trigger_public_id": "pub_1", "region": "us-east-1"}
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.aws_eventbridge")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_disconnect_aws_preserves_connection_when_destination_cleanup_fails(
+        self, mock_repo, mock_store, mock_eventbridge, async_client
+    ):
+        mock_repo.get_aws_eventbridge_destinations = AsyncMock(return_value=[{"trigger_public_id": "pub_1"}])
+        mock_eventbridge.delete_alarm_destination = AsyncMock(side_effect=RuntimeError("AWS unavailable"))
+        mock_store.delete = AsyncMock()
+        mock_repo.delete = AsyncMock()
+
+        resp = await async_client.delete("/api/v1/connections/aws")
+
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "aws_eventbridge_cleanup_failed"
+        mock_store.delete.assert_not_awaited()
+        mock_repo.delete.assert_not_awaited()
 
 
 class TestAwsCredentialsEndpoint:

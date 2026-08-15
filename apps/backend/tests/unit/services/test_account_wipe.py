@@ -64,6 +64,7 @@ EXPECTED_ORDER = [
     # Secrets Manager, their agent email addresses still routed inbound SES
     # mail, and their company slug stayed reserved forever. All BEFORE
     # clerk_user, which stays last so nothing regrows.
+    "aws_eventbridge_destinations",
     "owner_secrets",
     "integrations",
     "oauth_tokens",
@@ -184,7 +185,18 @@ def wipe_mocks():
     # real, so all must be stubbed or the suite makes live AWS calls.
     owner_secrets_list = AsyncMock(return_value=["isol8/dev/user-keys/user_abc123/anthropic"])
     owner_secrets_delete = AsyncMock(return_value=["isol8/dev/user-keys/user_abc123/anthropic"])
-    integrations_list = AsyncMock(return_value=[{"owner_id": "user_abc123", "provider": "slack"}])
+    integrations_list = AsyncMock(
+        return_value=[
+            {"owner_id": "user_abc123", "provider": "slack"},
+            {
+                "owner_id": "user_abc123",
+                "provider": "aws",
+                "aws_eventbridge_destinations": [{"trigger_public_id": "pub_1"}],
+            },
+        ]
+    )
+    aws_destinations_get = AsyncMock(return_value=[])
+    aws_destination_delete = AsyncMock(return_value=None)
     integrations_delete = AsyncMock(return_value=["slack"])
     oauth_revoke = AsyncMock(return_value=None)
     agent_email_query = AsyncMock(return_value=[{"owner_id": "user_abc123", "address": "friday@acme.isol8.co"}])
@@ -224,6 +236,11 @@ def wipe_mocks():
         ("core.services.account_wipe.list_owner_secret_names", owner_secrets_list),
         ("core.services.account_wipe.delete_owner_secrets", owner_secrets_delete),
         ("core.services.account_wipe.integrations_repo.list_for_owner", integrations_list),
+        (
+            "core.services.account_wipe.integrations_repo.get_aws_eventbridge_destinations",
+            aws_destinations_get,
+        ),
+        ("core.services.account_wipe.aws_eventbridge.delete_alarm_destination", aws_destination_delete),
         ("core.services.account_wipe.integrations_repo.delete_all_for_owner", integrations_delete),
         ("core.services.account_wipe.revoke_user_oauth", oauth_revoke),
         ("core.services.account_wipe.agent_email_repo.query_by_owner", agent_email_query),
@@ -260,6 +277,8 @@ def wipe_mocks():
             agent_keys_list=agent_keys_list,
             agent_keys_delete=agent_keys_delete,
             owner_secrets_delete=owner_secrets_delete,
+            aws_destinations_get=aws_destinations_get,
+            aws_destination_delete=aws_destination_delete,
             integrations_delete=integrations_delete,
             oauth_revoke=oauth_revoke,
             agent_email_delete=agent_email_delete,
@@ -549,6 +568,7 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     wipe_mocks.billing_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.user_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.agent_keys_delete.side_effect = RuntimeError("sm down")
+    wipe_mocks.aws_destinations_get.side_effect = RuntimeError("aws down")
     wipe_mocks.owner_secrets_delete.side_effect = RuntimeError("sm down")
     wipe_mocks.integrations_delete.side_effect = RuntimeError("ddb down")
     wipe_mocks.oauth_revoke.side_effect = RuntimeError("openai down")
@@ -569,6 +589,22 @@ async def test_clerk_delete_still_runs_when_every_other_step_fails(wipe_mocks):
     assert report.steps[-1].system == "clerk_user"
     assert report.steps[-1].status == "ok"
     wipe_mocks.clerk_delete.assert_awaited_once_with(OWNER_ID)
+
+
+@pytest.mark.asyncio
+async def test_wipe_preserves_aws_credential_and_rows_when_destination_cleanup_fails(wipe_mocks):
+    binding = {"trigger_public_id": "pub_1", "region": "us-east-1"}
+    wipe_mocks.aws_destinations_get.return_value = [binding]
+    wipe_mocks.aws_destination_delete.side_effect = RuntimeError("EventBridge unavailable")
+
+    report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    by_system = {step.system: step for step in report.steps}
+    assert by_system["aws_eventbridge_destinations"].status == "failed"
+    assert by_system["owner_secrets"].status == "failed"
+    assert by_system["integrations"].status == "failed"
+    wipe_mocks.owner_secrets_delete.assert_not_awaited()
+    wipe_mocks.integrations_delete.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

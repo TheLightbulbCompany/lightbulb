@@ -56,6 +56,48 @@ Resources:
                 sts:ExternalId: !Ref ExternalId
       ManagedPolicyArns:
         - !Ref ManagedPolicyArn
+      Policies:
+        - PolicyName: Isol8EventBridgeDestinationSetup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt Isol8EventBridgeInvokeRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: events.amazonaws.com
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName: apidestinations.events.amazonaws.com
+      Tags:
+        - Key: ManagedBy
+          Value: isol8
+
+  Isol8EventBridgeInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: isol8-eventbridge-api-destination
+      Description: >-
+        Allows EventBridge to invoke only API Destinations created by Isol8.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeIsol8ApiDestinations
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:InvokeApiDestination
+                Resource: !Sub arn:${AWS::Partition}:events:*:${AWS::AccountId}:api-destination/isol8-*/*
       Tags:
         - Key: ManagedBy
           Value: isol8
@@ -66,3 +108,6 @@ Outputs:
       ARN of the created connector role — paste this back into Isol8 to
       complete the AWS connection (aws-complete).
     Value: !GetAtt Isol8ReadOnlyRole.Arn
+  EventBridgeInvokeRoleArn:
+    Description: Role EventBridge assumes to invoke Isol8 API Destinations.
+    Value: !GetAtt Isol8EventBridgeInvokeRole.Arn

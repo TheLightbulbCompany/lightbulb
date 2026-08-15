@@ -148,6 +148,25 @@ async def set_meta_webhook_bindings(owner_id: str, provider: str, bindings: list
     )
 
 
+async def get_aws_eventbridge_destinations(owner_id: str) -> list[dict]:
+    """Secret-free lifecycle records for the owner's alarm destinations."""
+
+    row = await get(owner_id, "aws")
+    return list((row or {}).get("aws_eventbridge_destinations") or [])
+
+
+async def set_aws_eventbridge_destinations(owner_id: str, destinations: list[dict]) -> None:
+    """Persist managed resource names so disconnect can remove them first."""
+
+    now = int(time.time())
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": "aws"},
+        UpdateExpression="SET aws_eventbridge_destinations = :destinations, updated_at = :now",
+        ExpressionAttributeValues={":destinations": destinations, ":now": now},
+    )
+
+
 async def scan_all() -> list[dict]:
     """Every row in the table, paginated.
 

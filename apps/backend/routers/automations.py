@@ -48,6 +48,7 @@ from core.services.inbound_triggers import (
     list_vercel_projects,
     seed_trigger_routine,
 )
+from core.services.aws_eventbridge import list_alarm_resources
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from routers import paperclip_trigger_proxy
@@ -148,6 +149,7 @@ async def provider_resources(
         "google": list_google_accounts,
         "meta_ads": list_meta_pages,
         "instagram": list_instagram_accounts,
+        "aws": list_alarm_resources,
     }.get(provider)
     if lister is None:
         raise HTTPException(status_code=404, detail="unknown_provider")

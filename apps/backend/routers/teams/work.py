@@ -13,7 +13,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends
 
-from core.repositories import billing_repo
+from core.repositories import billing_repo, integrations_repo
+from core.services import aws_eventbridge
 from core.services.agent_routine_provisioning import NIGHTLY_CEO_ROUTINE_TITLE
 
 from . import agents as _agents
@@ -34,6 +35,34 @@ router = APIRouter()
 _ctx = _agents._ctx
 
 logger = logging.getLogger(__name__)
+
+
+async def _remove_managed_aws_destinations(
+    ctx: TeamsContext,
+    *,
+    routine_id: str,
+    trigger_id: str | None = None,
+) -> None:
+    """Remove API Destinations owned by a routine or one of its triggers.
+
+    External cleanup and the lifecycle-row update both happen before the
+    Paperclip archive/delete. A failure leaves the automation intact so the
+    owner can retry instead of orphaning an AWS connection that still carries
+    its bearer secret.
+    """
+
+    destinations = await integrations_repo.get_aws_eventbridge_destinations(ctx.owner_id)
+    matches = [
+        row
+        for row in destinations
+        if row.get("routine_id") == routine_id and (trigger_id is None or row.get("trigger_id") == trigger_id)
+    ]
+    if not matches:
+        return
+    for binding in matches:
+        await aws_eventbridge.delete_alarm_destination(ctx.owner_id, binding)
+    remaining = [row for row in destinations if row not in matches]
+    await integrations_repo.set_aws_eventbridge_destinations(ctx.owner_id, remaining)
 
 
 async def _is_nightly_ceo_routine(ctx: TeamsContext, routine_id: str) -> bool:
@@ -237,6 +266,7 @@ async def delete_routine(routine_id: str, ctx: TeamsContext = Depends(_ctx)):
         # best-effort (see docstring). A silent failure would let a later
         # reprovision re-create the routine the owner deleted.
         await billing_repo.set_nightly_ceo_opted_out(ctx.owner_id, True)
+    await _remove_managed_aws_destinations(ctx, routine_id=routine_id)
     result = await _agents._admin().delete_routine(
         routine_id=routine_id,
         session_cookie=ctx.session_cookie,
@@ -396,6 +426,7 @@ async def delete_routine_trigger(
     (durable / propagated on this stop direction).
     """
     is_nightly = await _is_nightly_ceo_routine(ctx, routine_id)
+    await _remove_managed_aws_destinations(ctx, routine_id=routine_id, trigger_id=trigger_id)
     result = await _agents._admin().delete_routine_trigger(
         trigger_id=trigger_id,
         session_cookie=ctx.session_cookie,

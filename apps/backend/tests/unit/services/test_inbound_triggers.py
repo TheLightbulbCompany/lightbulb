@@ -257,6 +257,112 @@ async def test_seed_trigger_routine_posthog_missing_secret_material_rolls_back()
 _GH_SECRET = {"webhookUrl": "https://pc/hooks/x", "webhookSecret": "pcsec_1"}
 
 
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_aws_registers_and_assigns_worker():
+    admin = _fake_admin(secret_material=_GH_SECRET, trigger_id="trigger_aws")
+    admin.list_agents = AsyncMock(
+        return_value=[{"id": "friday_1", "role": "ceo"}, {"id": "forge_1", "role": "general"}]
+    )
+    p_repo, p_cookie, p_client = _env(admin)
+    binding = {
+        "connection_name": "isol8-x-connection",
+        "destination_name": "isol8-x-destination",
+        "rule_name": "isol8-x-alarm",
+        "region": "us-east-1",
+        "resource": "*",
+        "trigger_public_id": "pub_1",
+    }
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch(
+            "core.services.inbound_triggers.aws_eventbridge.list_alarm_resources",
+            AsyncMock(return_value=[{"id": "*", "label": "All CloudWatch alarms"}]),
+        ),
+        patch(
+            "core.services.inbound_triggers.aws_eventbridge.register_alarm_destination",
+            AsyncMock(return_value=binding),
+        ) as register,
+        patch(
+            "core.services.inbound_triggers.integrations_repo.get_aws_eventbridge_destinations",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.inbound_triggers.integrations_repo.set_aws_eventbridge_destinations",
+            AsyncMock(),
+        ) as persist,
+    ):
+        out = await seed_trigger_routine(
+            "owner_1", "aws", "cloudwatch.alarm", resource="*", assignee_agent_id="forge_1"
+        )
+
+    assert out["guided"] is False
+    assert out["resource"] == "*"
+    assert admin.create_routine.await_args.kwargs["body"]["assigneeAgentId"] == "forge_1"
+    assert binding["routine_id"] == "rt_1"
+    assert binding["trigger_id"] == "trigger_aws"
+    register.assert_awaited_once_with(
+        "owner_1",
+        trigger_public_id="pub_1",
+        endpoint=out["proxy_url"],
+        webhook_secret="pcsec_1",
+        alarm_resource="*",
+    )
+    persist.assert_awaited_once_with("owner_1", [binding])
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_aws_persistence_failure_unwinds_everything():
+    admin = _fake_admin(routine_id="rt_aws", secret_material=_GH_SECRET, trigger_id="trigger_aws")
+    p_repo, p_cookie, p_client = _env(admin)
+    binding = {
+        "connection_name": "c",
+        "destination_name": "d",
+        "rule_name": "r",
+        "region": "us-east-1",
+    }
+    with (
+        p_repo,
+        p_cookie,
+        p_client,
+        patch(
+            "core.services.inbound_triggers.aws_eventbridge.list_alarm_resources",
+            AsyncMock(return_value=[{"id": "*", "label": "All CloudWatch alarms"}]),
+        ),
+        patch(
+            "core.services.inbound_triggers.aws_eventbridge.register_alarm_destination",
+            AsyncMock(return_value=binding),
+        ),
+        patch(
+            "core.services.inbound_triggers.integrations_repo.get_aws_eventbridge_destinations",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.inbound_triggers.integrations_repo.set_aws_eventbridge_destinations",
+            AsyncMock(side_effect=RuntimeError("ddb down")),
+        ),
+        patch(
+            "core.services.inbound_triggers.aws_eventbridge.delete_alarm_destination",
+            AsyncMock(),
+        ) as delete_destination,
+        pytest.raises(RuntimeError, match="ddb down"),
+    ):
+        await seed_trigger_routine("owner_1", "aws", "cloudwatch.alarm", resource="*")
+
+    delete_destination.assert_awaited_once_with("owner_1", binding)
+    admin.delete_routine.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_seed_trigger_routine_auto_aws_requires_alarm_before_create():
+    admin = _fake_admin(secret_material=_GH_SECRET)
+    p_repo, p_cookie, p_client = _env(admin)
+    with p_repo, p_cookie, p_client, pytest.raises(ValueError, match="needs a CloudWatch alarm"):
+        await seed_trigger_routine("owner_1", "aws", "cloudwatch.alarm")
+    admin.create_routine.assert_not_awaited()
+
+
 def _gh_token_patch(token="gh_tok_1"):
     credential = {"token": token} if token else None
     return patch(

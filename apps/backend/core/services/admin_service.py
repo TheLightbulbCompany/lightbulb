@@ -749,7 +749,10 @@ async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
 
     images.sort(key=lambda d: d.get("imagePushedAt") or 0, reverse=True)
 
-    capped = min(max(limit, 1), 100)
+    # Build the FULL newest-first row set before capping. The pin-or-newer
+    # truncation below needs to find the pinned tag, and the pin can sit
+    # outside the newest `limit` images once several builds land after a
+    # promotion — capping first would hide it and defeat the filter.
     rows: list[dict[str, Any]] = []
     seen_tags: set[str] = set()
     for img in images:
@@ -768,6 +771,31 @@ async def list_extended_image_tags(*, limit: int = 25) -> list[dict[str, Any]]:
                     "pushed_at": pushed_iso,
                 }
             )
-            if len(rows) >= capped:
-                return rows
-    return rows
+
+    # PIN OR NEWER. Rolling one owner BACKWARDS is not a per-owner action --
+    # a rollback is a pin flip in openclaw-version.json, applied fleet-wide --
+    # so older tags are only noise here, and noise on a force-roll control is
+    # how an admin picks the wrong image. Rows are newest-first, so everything
+    # up to and including the pinned prod tag is "pin or newer".
+    #
+    # If the pin is NOT in the listing (expired, deleted, or an ECR page
+    # bound), keep the full list rather than truncating to nothing: losing the
+    # lever entirely is worse than showing extra tags.
+    pin_index = next((i for i, r in enumerate(rows) if r["tag"] == CURRENT_PROD_TAG), None)
+    if pin_index is not None:
+        rows = rows[: pin_index + 1]
+    else:
+        logger.warning(
+            "list_extended_image_tags: pinned prod tag %s not found in ECR listing; returning unfiltered tags",
+            CURRENT_PROD_TAG,
+        )
+
+    # The pinned row must SURVIVE the cap. It is the frontend's default
+    # selection, and if `limit` is smaller than the number of builds pushed
+    # since the promotion the pin would be capped out -- the picker would then
+    # fall back to defaulting to the newest image, reintroducing exactly the
+    # accidental-version-change this filter exists to prevent.
+    capped = min(max(limit, 1), 100)
+    if pin_index is not None and pin_index >= capped:
+        return rows[: capped - 1] + [rows[pin_index]]
+    return rows[:capped]

@@ -827,3 +827,113 @@ def test_current_image_tags_resolve_from_single_source():
     pinned = json.loads((repo_root / "openclaw-version.json").read_text())
     assert admin_service.CURRENT_DEV_TAG == pinned["dev"]["tag"]
     assert admin_service.CURRENT_PROD_TAG == pinned["prod"]["tag"]
+
+
+# --- available-images list: PIN OR NEWER -----------------------------------
+#
+# The admin image picker feeds "Apply now", which force-rolls the owner onto
+# whatever is selected. Listing every tag ever pushed put older images one
+# click from a prod owner, and rolling a SINGLE owner backwards is not a
+# per-owner action anyway -- a rollback is a pin flip in openclaw-version.json
+# applied fleet-wide. So the list is truncated at the pinned prod tag.
+
+
+def _ecr_page(entries):
+    """entries: list of (tag, pushed_at). Newest-first is NOT assumed."""
+    return {
+        "imageDetails": [
+            {"imageDigest": f"sha256:{tag}", "imagePushedAt": pushed, "imageTags": [tag]} for tag, pushed in entries
+        ]
+    }
+
+
+def _patch_ecr(monkeypatch, page):
+    import boto3
+
+    class _Client:
+        def describe_images(self, **kwargs):
+            return page
+
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: _Client())
+
+
+@pytest.mark.asyncio
+async def test_available_images_truncates_at_the_pinned_prod_tag(monkeypatch):
+    from datetime import datetime, timezone
+
+    from core.services import admin_service
+
+    def dt(day):
+        return datetime(2026, 7, day, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(admin_service, "CURRENT_PROD_TAG", "v-pinned")
+    _patch_ecr(
+        monkeypatch,
+        _ecr_page(
+            [
+                ("v-newer-2", dt(28)),
+                ("v-newer-1", dt(27)),
+                ("v-pinned", dt(26)),
+                ("v-older-1", dt(25)),
+                ("v-older-2", dt(24)),
+            ]
+        ),
+    )
+
+    rows = await admin_service.list_extended_image_tags(limit=25)
+    tags = [r["tag"] for r in rows]
+
+    assert tags == ["v-newer-2", "v-newer-1", "v-pinned"]
+    assert "v-older-1" not in tags, "rolling one owner backwards is a pin flip, not a per-owner action"
+    assert "v-pinned" in tags, "the pinned image must remain selectable -- it is the default"
+
+
+@pytest.mark.asyncio
+async def test_available_images_keeps_everything_when_the_pin_is_missing(monkeypatch):
+    """The pin can be absent (tag expired/deleted, or beyond the page bound).
+    Truncating to nothing would take the lever away entirely, which is worse
+    than showing extra tags."""
+    from datetime import datetime, timezone
+
+    from core.services import admin_service
+
+    monkeypatch.setattr(admin_service, "CURRENT_PROD_TAG", "v-not-in-ecr")
+    _patch_ecr(
+        monkeypatch,
+        _ecr_page(
+            [
+                ("v-a", datetime(2026, 7, 28, tzinfo=timezone.utc)),
+                ("v-b", datetime(2026, 7, 27, tzinfo=timezone.utc)),
+            ]
+        ),
+    )
+
+    rows = await admin_service.list_extended_image_tags(limit=25)
+    assert [r["tag"] for r in rows] == ["v-a", "v-b"]
+
+
+@pytest.mark.asyncio
+async def test_available_images_always_keeps_the_pin_within_the_cap(monkeypatch):
+    """The pin is the frontend's DEFAULT selection, so it must survive the cap.
+
+    If several builds land after a promotion, a small `limit` would cap the pin
+    out of the list -- and the picker would fall back to defaulting to the
+    newest image, reintroducing the accidental-version-change this filtering
+    exists to prevent.
+    """
+    from datetime import datetime, timezone
+
+    from core.services import admin_service
+
+    monkeypatch.setattr(admin_service, "CURRENT_PROD_TAG", "v-pinned")
+    entries = [(f"v-new-{i}", datetime(2026, 7, 28, 12, i, tzinfo=timezone.utc)) for i in range(8)]
+    entries.append(("v-pinned", datetime(2026, 7, 20, tzinfo=timezone.utc)))
+    entries.append(("v-older", datetime(2026, 7, 19, tzinfo=timezone.utc)))
+    _patch_ecr(monkeypatch, _ecr_page(entries))
+
+    rows = await admin_service.list_extended_image_tags(limit=3)
+    tags = [r["tag"] for r in rows]
+
+    assert len(tags) == 3
+    assert "v-pinned" in tags, "the default selection must never be capped out"
+    assert "v-older" not in tags

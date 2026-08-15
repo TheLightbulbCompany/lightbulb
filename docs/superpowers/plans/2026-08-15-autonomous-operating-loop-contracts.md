@@ -38,9 +38,10 @@ file with the plan when the goal closes.
 - **Trigger:** `0 8 * * *`.
 - **Variables:** `GTM_GOAL_ID`, `MONTHLY_SPEND_CAP_USD=2000`.
 - **Outcome:** Advance the single current company constraint.
-- **Inputs:** active goal and projects, company attention/decisions, open work,
-  latest Gauge/Tally/Vera artifacts, current failures, and unresolved child
-  work. Use company search; do not re-discover old context from scratch.
+- **Inputs:** active goal and projects, authorized decision queues/triage, open
+  work, latest Gauge/Tally/Vera artifacts, current failures, and unresolved
+  child work. The unified attention feed is board-only. Use company search; do
+  not re-discover old context from scratch.
 - **Autonomous authority:** choose one executable priority; set issue priority
   and status; assign one bounded `todo` child to the competent specialist;
   close stale duplicate work; comment the why-now evidence.
@@ -63,7 +64,9 @@ file with the plan when the goal closes.
 - **Outcome:** Publish one prioritized operating plan for the next seven days.
 - **Inputs:** the current week's Gauge scorecard, Tally snapshot, Vera health
   report, Forge reliability/engineering outcomes, Pulse artifacts, customer
-  threads, and accepted/rejected/expired decision statistics by `ruleKey`.
+  threads, and each specialist's cited own-origin accepted/rejected/expired
+  decision statistics by `ruleKey`. Friday cannot read another agent's private
+  origin-scoped decision statistics directly.
 - **Autonomous authority:** reconcile evidence, select the company constraint,
   create/update a small set of owned issues, and retire work contradicted by
   current evidence.

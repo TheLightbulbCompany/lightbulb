@@ -76,6 +76,21 @@ pub async fn bootstrap_desktop_node_host(
     )
     .await?;
 
+    start_from_pair(&cli_id, pair_resp, cli_client_id, state_dir, binary).await
+}
+
+/// The post-pair bootstrap leg: device-token provider + loopback WSS proxy +
+/// openclaw subprocess. Split from [`bootstrap_desktop_node_host`] because
+/// `/pair` is the ONLY leg that needs a webview Clerk JWT — an app relaunch
+/// replays this leg from PERSISTED pair state (see [`crate::pair_state`]),
+/// so the desktop-node surface comes up with no webview involved.
+pub async fn start_from_pair(
+    cli_id: &crate::keychain::DeviceIdentity,
+    pair_resp: PairResponse,
+    cli_client_id: String,
+    state_dir: PathBuf,
+    binary: PathBuf,
+) -> Result<DesktopNodeHostHandles, String> {
     // 3. Build the device-token provider and start the loopback WSS proxy. The
     //    provider is invoked on every upstream-open (per reconnect), so each
     //    reconnect signs a FRESH short-lived device token with the CLI device

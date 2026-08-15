@@ -55,7 +55,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     wsUrl: WS_URL,
     uuid: () => crypto.randomUUID(),
   });
-  const { isConnected, setNodeConnected, isParked, park, unpark, onEvent, onChatMessage } = connection;
+  const { isConnected, setNodeStatus, isParked, park, unpark, onEvent, onChatMessage } = connection;
   const { requestWake } = useContainerWake();
 
   // ---- Idle park / presence wake ----
@@ -168,7 +168,11 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     let unlisten: (() => void) | null = null;
     tauri.event
       .listen("node:status", (event: { payload: string }) => {
-        setNodeConnected(event.payload === "connected");
+        // Raw status string from the Rust node client ("connecting" |
+        // "connected" | "reconnecting" | "error" | "disconnected") — the
+        // "error" case renders a visible failing pill instead of silently
+        // looking like "no node at all".
+        setNodeStatus(event.payload);
       })
       .then((fn: () => void) => {
         unlisten = fn;
@@ -176,7 +180,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return () => {
       unlisten?.();
     };
-  }, [setNodeConnected]);
+  }, [setNodeStatus]);
 
   useEffect(() => {
     return subscribeDesktopPermissions(() =>

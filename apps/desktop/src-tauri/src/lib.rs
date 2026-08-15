@@ -5,6 +5,7 @@ pub mod keychain;
 mod node_client;
 mod node_invoke;
 pub mod pair_client;
+pub mod pair_state;
 pub mod proxy;
 pub mod screen;
 pub mod subprocess;
@@ -36,7 +37,9 @@ pub struct AuthState {
     /// a fresh JWT arrives so the next reconnect uses current auth.
     ///
     /// Doubles as the "bootstrap completed" sentinel — only populated AFTER
-    /// `run_bootstrap` returns Ok. If bootstrap fails on the first call (a
+    /// `run_bootstrap` returns Ok, or after the launch-time
+    /// `start_node_host_from_persisted` path brings the node host up from
+    /// persisted pair state. If bootstrap fails on the first call (a
     /// transient `/desktop/pair` 5xx, a Keychain permission prompt, or a
     /// missing sidecar binary), this stays `None` so the next
     /// `send_auth_token` retries bootstrap rather than dropping straight to
@@ -317,8 +320,6 @@ async fn run_bootstrap(
     display_name: &str,
     permissions: Option<DesktopPermissions>,
 ) -> Result<(), String> {
-    let _ = display_name; // reserved for telemetry hooks
-
     let jwt_snapshot = jwt_arc
         .read()
         .map(|g| g.clone())
@@ -337,27 +338,7 @@ async fn run_bootstrap(
         .map_err(|e| format!("app_data_dir: {e}"))?;
     let state_dir = app_data.join("openclaw-state");
 
-    // The launcher shim is registered as `bin/isol8-browser-service` in
-    // `tauri.conf.json` (externalBin). Tauri's bundler finds
-    // `bin/isol8-browser-service-<target-triple>` at build time, strips
-    // the triple, and places the file in the `.app` at
-    // `Contents/MacOS/isol8-browser-service` — alongside the main Tauri
-    // executable. Dev builds replicate the layout next to
-    // `target/debug/<exe>`. So we resolve via current_exe().parent().
-    //
-    // `isol8-browser-service` reads `ISOL8_PROXY_PORT` and dials loopback
-    // plaintext WS — what `spawn_subprocess` is designed to talk to.
-    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    let parent = exe
-        .parent()
-        .ok_or_else(|| "current_exe has no parent".to_string())?;
-    let binary = parent.join("isol8-browser-service");
-    if !binary.exists() {
-        return Err(format!(
-            "isol8-browser-service shim not found at {}",
-            binary.display()
-        ));
-    }
+    let binary = resolve_node_host_binary()?;
 
     log(&format!(
         "[bootstrap] api_base={} state_dir={:?} binary={:?}",
@@ -382,9 +363,53 @@ async fn run_bootstrap(
         handles.proxy_handle.local_port()
     ));
 
-    // Stash on state so the handles outlive the spawned task. We grab the
-    // state lazily here because there's no `State<'_, AuthState>` in this
-    // async context.
+    // Persist the pair essentials so the NEXT app launch can start the node
+    // host without waiting for the webview to deliver a Clerk JWT (see
+    // start_node_host_from_persisted). Non-fatal: a failed write only means
+    // no standalone start next launch — this session is unaffected.
+    if let Err(e) = pair_state::save(
+        &app_data,
+        &pair_state::PairState::from_pair_response(&handles.pair_response, display_name),
+    ) {
+        log(&format!(
+            "[bootstrap] failed to persist pair state (standalone relaunch start disabled): {e}"
+        ));
+    }
+
+    stash_handles(app, handles);
+
+    Ok(())
+}
+
+/// Resolve the launcher shim registered as `bin/isol8-browser-service` in
+/// `tauri.conf.json` (externalBin). Tauri's bundler finds
+/// `bin/isol8-browser-service-<target-triple>` at build time, strips the
+/// triple, and places the file in the `.app` at
+/// `Contents/MacOS/isol8-browser-service` — alongside the main Tauri
+/// executable. Dev builds replicate the layout next to
+/// `target/debug/<exe>`. So we resolve via current_exe().parent().
+///
+/// `isol8-browser-service` reads `ISOL8_PROXY_PORT` and dials loopback
+/// plaintext WS — what `spawn_subprocess` is designed to talk to.
+fn resolve_node_host_binary() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let parent = exe
+        .parent()
+        .ok_or_else(|| "current_exe has no parent".to_string())?;
+    let binary = parent.join("isol8-browser-service");
+    if !binary.exists() {
+        return Err(format!(
+            "isol8-browser-service shim not found at {}",
+            binary.display()
+        ));
+    }
+    Ok(binary)
+}
+
+/// Stash bootstrap handles on `AuthState` so the proxy and subprocess
+/// outlive the task that created them. We grab the state lazily because
+/// there's no `State<'_, AuthState>` in the async contexts that call this.
+fn stash_handles(app: &tauri::AppHandle, handles: DesktopNodeHostHandles) {
     if let Some(state) = app.try_state::<AuthState>() {
         // Publish gateway_token BEFORE storing pair_response (we move it next).
         // start_node_host snapshots gateway_token on each reconnect, so the
@@ -402,8 +427,123 @@ async fn run_bootstrap(
             *g = Some(handles.pair_response);
         }
     }
+}
 
-    Ok(())
+/// Launch-time standalone start: if a previous `/pair` persisted its state
+/// and the Keychain still holds the matching device keys, bring up the FULL
+/// desktop-node surface (loopback proxy + openclaw subprocess + Mac node
+/// client) immediately — no webview, no Clerk. Every credential involved is
+/// self-minted from the Keychain keys per connect attempt.
+///
+/// The webview Clerk path (`send_auth_token` → bootstrap) remains the ONLY
+/// pairing path: it runs the FIRST pair (no persisted state yet) and the
+/// re-pair after the persisted state goes stale (Keychain wiped → device-id
+/// mismatch → we discard the file here and return `Ok(false)`).
+///
+/// Returns `Ok(true)` if the node host was started from persisted state,
+/// `Ok(false)` if there was nothing (valid) persisted — the normal first-run
+/// case, NOT an error.
+async fn start_node_host_from_persisted(app: &tauri::AppHandle) -> Result<bool, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?;
+    let Some(persisted) = pair_state::load(&app_data) else {
+        return Ok(false);
+    };
+
+    // The Keychain is the source of truth for identity. If its entries were
+    // wiped, load_or_generate just minted FRESH keys whose derived device
+    // ids can't match what we paired with — discard the stale state and let
+    // the webview /pair path re-pair with the new keys.
+    let mac_id = keychain::load_or_generate(keychain::KeychainSlot::Mac, KEYCHAIN_SERVICE)?;
+    let cli_id = keychain::load_or_generate(keychain::KeychainSlot::Cli, KEYCHAIN_SERVICE)?;
+    if !persisted.matches_identities(&mac_id.public_key_pem, &cli_id.public_key_pem) {
+        log("[setup] persisted pair state does not match Keychain identities; discarding");
+        pair_state::clear(&app_data);
+        return Ok(false);
+    }
+
+    // Claim the bootstrap slot so a webview JWT arriving mid-start defers to
+    // us (AuthAction::WaitForBootstrap) instead of double-bootstrapping.
+    {
+        let state = app
+            .try_state::<AuthState>()
+            .ok_or_else(|| "AuthState not managed".to_string())?;
+        let mut in_flight = state
+            .bootstrap_in_flight
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if *in_flight {
+            // A webview bootstrap beat us to it; defer to that attempt.
+            return Ok(false);
+        }
+        *in_flight = true;
+    }
+
+    let result = start_from_persisted_state(app, persisted, cli_id, app_data).await;
+
+    // Clear the in-flight flag on BOTH outcomes — a stuck flag would
+    // dead-end every future send_auth_token in WaitForBootstrap. (Cleared
+    // after gateway_url publication; the transient completed+in-flight
+    // window resolves to Rotate, per decide_auth_action.)
+    if let Some(state) = app.try_state::<AuthState>() {
+        if let Ok(mut in_flight) = state.bootstrap_in_flight.lock() {
+            *in_flight = false;
+        }
+    }
+
+    result.map(|()| true)
+}
+
+/// The persisted-state twin of `run_bootstrap`'s success path: replay the
+/// post-pair bootstrap leg, stash handles, publish `gateway_url`, start the
+/// Mac node client.
+async fn start_from_persisted_state(
+    app: &tauri::AppHandle,
+    persisted: pair_state::PairState,
+    cli_id: keychain::DeviceIdentity,
+    app_data: std::path::PathBuf,
+) -> Result<(), String> {
+    let state_dir = app_data.join("openclaw-state");
+    let binary = resolve_node_host_binary()?;
+    let display_name = persisted.display_name.clone();
+
+    log(&format!(
+        "[setup] starting node host from persisted pair state (device_id_mac={} device_id_cli={})",
+        persisted.device_id_mac, persisted.device_id_cli
+    ));
+
+    let handles = bootstrap::start_from_pair(
+        &cli_id,
+        persisted.to_pair_response(),
+        "node-host".to_string(),
+        state_dir,
+        binary,
+    )
+    .await?;
+
+    stash_handles(app, handles);
+
+    // Publish the gateway URL with NO token baked in — the node client's
+    // per-attempt token provider self-mints the $connect token, so nothing
+    // on this path ever depends on a webview JWT. Publishing also flips
+    // send_auth_token into its rotate-only branch, so a later webview JWT
+    // just refreshes the URL cell instead of re-bootstrapping.
+    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
+    let shared_url = Arc::new(RwLock::new(format!(
+        "{}/?clientId=openclaw-macos",
+        ws_url
+    )));
+    if let Some(state) = app.try_state::<AuthState>() {
+        if let Ok(mut handle_guard) = state.gateway_url.lock() {
+            *handle_guard = Some(shared_url.clone());
+        }
+    }
+
+    start_node_host(app, shared_url, &display_name)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 async fn start_node_host(
@@ -446,14 +586,19 @@ async fn start_node_host(
     // just the CLI one — and the Mac device is registered there with
     // clientId=openclaw-macos.
     //
-    // Falls back to the URL token when the pair response is not available
-    // (nothing to mint against), rather than hard-failing node startup.
-    let mint_inputs = app.try_state::<AuthState>().and_then(|s| {
-        s.pair_response.lock().ok().and_then(|g| {
-            g.as_ref()
-                .map(|p| (p.device_id_mac.clone(), p.owner_id.clone()))
+    // No webview-token fallback: both callers (post-/pair bootstrap and the
+    // persisted-state launch path) guarantee pair_response is populated, and
+    // a $connect on a webview JWT recreates the 403 loop this provider
+    // exists to kill — so a missing pair response is a hard error.
+    let (device_id_mac, owner_id) = app
+        .try_state::<AuthState>()
+        .and_then(|s| {
+            s.pair_response.lock().ok().and_then(|g| {
+                g.as_ref()
+                    .map(|p| (p.device_id_mac.clone(), p.owner_id.clone()))
+            })
         })
-    });
+        .ok_or("no pair response — node host cannot self-authenticate")?;
 
     let mut client = node_client::NodeClient::with_shared_url(
         gateway_url,
@@ -462,25 +607,20 @@ async fn start_node_host(
         gateway_token,
     );
 
-    match mint_inputs {
-        Some((device_id_mac, owner_id)) => {
-            let key_pem = identity.private_key_pem.clone();
-            client.set_token_provider(Arc::new(move || {
-                // 90s lifetime matches the CLI node-host (#1181): long enough
-                // to absorb clock skew, short enough that a leaked token is
-                // near-worthless.
-                match device_token::mint_device_token(&key_pem, &device_id_mac, &owner_id, 90) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        log(&format!("[node] device-token mint failed: {e}"));
-                        String::new()
-                    }
-                }
-            }));
-            log("[node] using self-minted device token for $connect");
+    let key_pem = identity.private_key_pem.clone();
+    client.set_token_provider(Arc::new(move || {
+        // 90s lifetime matches the CLI node-host (#1181): long enough
+        // to absorb clock skew, short enough that a leaked token is
+        // near-worthless.
+        match device_token::mint_device_token(&key_pem, &device_id_mac, &owner_id, 90) {
+            Ok(t) => t,
+            Err(e) => {
+                log(&format!("[node] device-token mint failed: {e}"));
+                String::new()
+            }
         }
-        None => log("[node] no pair response yet — falling back to webview-supplied token"),
-    }
+    }));
+    log("[node] using self-minted device token for $connect");
 
     // Flip the tray/renderer status ONLY when the node client emits a real
     // transition. Previously we said "connected" right after start() returned,
@@ -1054,6 +1194,25 @@ end tell"#,
             }
 
             tray::create_tray(app.handle())?;
+
+            // Start the node host from persisted pair state, if any — so a
+            // backgrounded launch (login item, relaunch after an update)
+            // brings up the full desktop-node surface without waiting for
+            // the webview to resolve a Clerk session. First run (nothing
+            // persisted) is a silent no-op; the webview pair path handles it.
+            let node_start_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match start_node_host_from_persisted(&node_start_handle).await {
+                    Ok(true) => log("[setup] node host started from persisted pair state"),
+                    Ok(false) => {
+                        log("[setup] no persisted pair state; waiting for webview sign-in to pair")
+                    }
+                    Err(e) => {
+                        log(&format!("[setup] persisted-state node start failed: {e}"));
+                        update_node_status(&node_start_handle, "error");
+                    }
+                }
+            });
 
             // Handle deep links (isol8:// protocol). This fires when the app
             // is already running and a cross-process deep link is delivered

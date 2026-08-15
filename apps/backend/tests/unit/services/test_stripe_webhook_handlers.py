@@ -1366,6 +1366,14 @@ async def test_subscription_deleted_refreshes_owner_facts(facts_mock):
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
         ),
+        # Teardown re-reads the row through core.services.entitlement_teardown
+        # (it must: the caller's snapshot predates the cancellation write, and
+        # the shared status is derived from BOTH providers). No Apple status
+        # here, so the owner is unentitled and teardown proceeds.
+        patch(
+            "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "canceled"}),
+        ),
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={"owner_id": "org_x", "owner_type": "org", "stripe_customer_id": "cus_x"}
@@ -1396,6 +1404,14 @@ async def test_subscription_deleted_resets_plan_to_standard(facts_mock):
         patch(
             "core.services.paperclip_provisioning.build_paperclip_provisioning",
             AsyncMock(side_effect=RuntimeError("skip paperclip teardown")),
+        ),
+        # Teardown re-reads the row through core.services.entitlement_teardown
+        # (it must: the caller's snapshot predates the cancellation write, and
+        # the shared status is derived from BOTH providers). No Apple status
+        # here, so the owner is unentitled and teardown proceeds.
+        patch(
+            "core.services.entitlement_teardown.billing_repo.get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "org_x", "subscription_status": "canceled"}),
         ),
     ):
         repo.get_by_owner_id = AsyncMock(

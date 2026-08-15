@@ -94,7 +94,7 @@ async def has_event(event_id: str) -> bool:
     return response.get("Item") is not None
 
 
-async def record_event_or_skip(event_id: str, *, source: str) -> WebhookDedupResult:
+async def record_event_or_skip(event_id: str, *, source: str, ttl_seconds: int | None = None) -> WebhookDedupResult:
     """Conditionally record a webhook event_id.
 
     Returns RECORDED on the first call for a given event_id. Returns
@@ -105,6 +105,11 @@ async def record_event_or_skip(event_id: str, *, source: str) -> WebhookDedupRes
         event_id: provider-issued event id (Stripe `evt_*`, Clerk uuid).
         source: free-form tag stored alongside the row for debugging.
             Does NOT affect dedup keying -- event_id is the sole key.
+        ttl_seconds: override the default 30-day retention. Dedup rows only need
+            to outlive a provider's retry window, but this table is also used
+            for markers whose correctness depends on retention (apple_iap's
+            revocation tombstone must outlive the transaction's paid-through
+            date, which can exceed 30 days).
     """
     now = int(time.time())
     try:
@@ -113,7 +118,7 @@ async def record_event_or_skip(event_id: str, *, source: str) -> WebhookDedupRes
                 "event_id": event_id,
                 "source": source,
                 "recorded_at": now,
-                "ttl": now + _TTL_SECONDS,
+                "ttl": now + (ttl_seconds if ttl_seconds is not None else _TTL_SECONDS),
             },
             ConditionExpression="attribute_not_exists(event_id)",
         )

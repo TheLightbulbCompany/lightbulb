@@ -282,16 +282,32 @@ def _revoked_key(original_transaction_id: str) -> str:
     return f"apple_revoked:{original_transaction_id}"
 
 
-async def _mark_revoked(original_transaction_id: str) -> None:
+#: Margin on top of the transaction's own paid-through date. Clock skew between
+#: Apple and us is small, but a tombstone that expires even slightly early
+#: reopens the replay it exists to close.
+_TOMBSTONE_MARGIN_SECONDS = 7 * 24 * 60 * 60
+
+
+async def _mark_revoked(original_transaction_id: str, expires_at_ms: int | None = None) -> None:
     """Remember that this transaction was revoked while nothing was linked to it.
 
-    Stored in the webhook-dedup table because the shape is identical — a keyed
-    marker with a 30-day TTL — and that TTL is the right length by construction:
-    the product is monthly, so past ~31 days the transaction's own expiresDate
-    has elapsed and ``_status_for`` refuses it anyway. The tombstone only has to
-    cover the remainder of a paid period.
+    Stored in the webhook-dedup table because the shape is identical: a keyed
+    marker with a TTL.
+
+    The TTL must outlive the transaction's PAID-THROUGH date, not the table's
+    default. The tombstone stops a replay of the pre-revocation JWS, and that
+    JWS stays grantable until its own expiresDate passes (after which
+    ``_status_for`` refuses it regardless). A monthly StoreKit period can run 31
+    days, so the generic 30-day retention could drop the marker while the
+    original blob was still live — leaving exactly the gap this closes.
     """
-    await webhook_dedup.record_event_or_skip(_revoked_key(original_transaction_id), source="apple-iap-revoked")
+    ttl = None
+    if expires_at_ms is not None:
+        remaining = int(expires_at_ms / 1000) - int(time.time()) + _TOMBSTONE_MARGIN_SECONDS
+        ttl = max(remaining, 0) or None
+    await webhook_dedup.record_event_or_skip(
+        _revoked_key(original_transaction_id), source="apple-iap-revoked", ttl_seconds=ttl
+    )
 
 
 async def _clear_revoked(original_transaction_id: str, *, best_effort: bool = True) -> None:
@@ -742,7 +758,7 @@ async def _apply_verified_notification(
         # be granted the subscription they were just refunded for. Leave a
         # tombstone that `link_purchase` consults instead.
         if subscription.status == "canceled":
-            await _mark_revoked(subscription.original_transaction_id)
+            await _mark_revoked(subscription.original_transaction_id, subscription.expires_at_ms)
             # The GSI is eventually consistent, so "no row" can simply mean the
             # link that just happened has not propagated. Acking here would drop
             # the revocation permanently — Apple does not redeliver an accepted
@@ -805,6 +821,16 @@ async def _apply_verified_notification(
         # SAME originalTransactionId, so a tombstone left by an earlier refund
         # would otherwise refuse the owner's genuine new purchase forever.
         await _clear_revoked(subscription.original_transaction_id)
+    else:
+        # Apple ended it. Whether that ends the ENTITLEMENT depends on the other
+        # provider, so the decision is deferred to the shared derived status
+        # rather than made from this notification. Until this existed the Apple
+        # path wrote "canceled" and stopped: an Apple-only owner's container
+        # kept running after their last entitlement ended, and its agents kept
+        # spending on inference indefinitely.
+        from core.services.entitlement_teardown import teardown_if_unentitled
+
+        await teardown_if_unentitled(owner_id, trigger=f"apple_{(notification_type or 'unknown').lower()}")
     logger.info(
         "apple_iap.notification_applied owner_id=%s type=%s status=%s",
         owner_id,

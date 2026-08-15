@@ -1180,3 +1180,61 @@ async def test_a_stripe_write_cannot_roll_back_an_apple_renewal(dynamodb_table):
     row = await billing_repo.get_by_owner_id("user_renew")
     assert row["apple_last_signed_date"] == 9_000
     assert row["apple_expires_at"] == 9_000
+
+
+@pytest.mark.asyncio
+async def test_an_apple_write_cannot_revert_a_concurrent_provider_change(dynamodb_table):
+    """provider_choice belongs to NO billing provider, so no cross-provider
+    compare-and-set would ever have covered it. A whole-item write restored it
+    from the snapshot anyway — which can send a paying owner back to
+    provider_required, or silently undo the inference provider they picked."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_pc", "cus_pc")
+    await billing_repo.set_provider_choice(
+        "user_pc", provider_choice="bedrock_claude", byo_provider=None, requires_reprovision=False
+    )
+
+    real_get = billing_repo.get_by_owner_id
+    interleaved = {"done": False}
+
+    async def _get_then_change_provider(owner_id, **kwargs):
+        row = await real_get(owner_id, **kwargs)
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            billing_repo.get_by_owner_id = real_get
+            await billing_repo.set_provider_choice(
+                "user_pc", provider_choice="chatgpt_oauth", byo_provider=None, requires_reprovision=False
+            )
+            billing_repo.get_by_owner_id = _get_then_change_provider
+        return row
+
+    billing_repo.get_by_owner_id = _get_then_change_provider
+    try:
+        await billing_repo.set_apple_subscription(
+            "user_pc", original_transaction_id="2000000000000040", status="active", expires_at=None
+        )
+    finally:
+        billing_repo.get_by_owner_id = real_get
+
+    row = await billing_repo.get_by_owner_id("user_pc")
+    assert row["provider_choice"] == "chatgpt_oauth", "the Apple write rolled back an unrelated field"
+    assert row["apple_subscription_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_a_removed_field_is_actually_removed(dynamodb_table):
+    """The diff write has to express REMOVE, not just SET — cancellation clears
+    trial_end, and a lingering countdown misreports the account."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_rm", "cus_rm")
+    await billing_repo.set_subscription(
+        owner_id="user_rm", subscription_id="sub_t", status="trialing", trial_end=1_700_000_000
+    )
+    assert (await billing_repo.get_by_owner_id("user_rm"))["trial_end"] == 1_700_000_000
+
+    await billing_repo.set_subscription(owner_id="user_rm", subscription_id=None, status="canceled")
+
+    row = await billing_repo.get_by_owner_id("user_rm")
+    assert "trial_end" not in row

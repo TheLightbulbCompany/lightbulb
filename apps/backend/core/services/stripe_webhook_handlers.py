@@ -1093,53 +1093,15 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
     except Exception:
         logger.exception("Failed to reset plan to standard on cancel for owner %s", account["owner_id"])
 
-    # Refresh the owner-facts file before teardown: teardown is best-effort
-    # and may be delayed or fail, and a still-running container's agents must
-    # not keep reporting an active paid plan. Status rides as an override —
-    # same-process pinning that outranks any row read. Internally best-effort.
-    from core.services.owner_facts import write_owner_facts
+    # Owner-facts refresh + container teardown + Paperclip disable, but ONLY if
+    # nothing else is still paying. Stripe ending is no longer the same question
+    # as the entitlement ending: an owner can hold a live Apple subscription on
+    # the same row, in which case the shared status stays active and tearing
+    # their container down would take away exactly what they are still paying
+    # for — with no further webhook coming to put it back.
+    from core.services.entitlement_teardown import teardown_if_unentitled
 
-    await write_owner_facts(account["owner_id"], account_overrides={"subscription_status": "canceled"})
-
-    # Tear down the user's container — they no longer have an active
-    # subscription. Best-effort; log and continue on failure so we
-    # don't 500 the webhook back to Stripe.
-    try:
-        from core.containers import get_ecs_manager
-
-        await get_ecs_manager().delete_user_service(account["owner_id"])
-    except Exception:
-        logger.exception(
-            "Container teardown on subscription.deleted failed for owner %s",
-            account["owner_id"],
-        )
-
-    # Disable Paperclip for this owner with a 30-day grace window —
-    # T13's cleanup cron purges the Paperclip-side artifacts after
-    # the grace elapses. Only THIS user is disabled; if they own a
-    # multi-member org the other members keep access until their
-    # own subscriptions cancel (or the org is deleted in Clerk).
-    from core.services.paperclip_provisioning import (
-        build_paperclip_provisioning,
-        close_paperclip_provisioning,
-    )
-
-    provisioning = None
-    try:
-        provisioning = await build_paperclip_provisioning()
-        await provisioning.disable(user_id=account["owner_id"])
-        put_metric(
-            "paperclip.webhook.disable",
-            dimensions={"trigger": "subscription_deleted"},
-        )
-    except Exception:
-        logger.exception(
-            "Paperclip disable on subscription.deleted failed for owner %s",
-            account["owner_id"],
-        )
-    finally:
-        if provisioning is not None:
-            await close_paperclip_provisioning(provisioning)
+    await teardown_if_unentitled(account["owner_id"], trigger="subscription_deleted")
     return None
 
 

@@ -54,6 +54,16 @@ def _product_id(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_teardown(monkeypatch):
+    """Revocations now run entitlement teardown, which reads DynamoDB and talks
+    to ECS + Paperclip. Stubbed by default so the mapping tests stay hermetic;
+    the teardown tests assert against it explicitly."""
+    import core.services.entitlement_teardown as teardown
+
+    monkeypatch.setattr(teardown, "teardown_if_unentitled", AsyncMock(return_value=False))
+
+
+@pytest.fixture(autouse=True)
 def _no_revocation_tombstone(monkeypatch):
     """Default: this transaction was not revoked before linking.
 
@@ -1513,3 +1523,120 @@ async def test_a_failed_tombstone_delete_is_tolerated_once_the_row_is_updated(mo
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
     ):
         assert await apple_iap.apply_notification("signed") == ("user_1", "active")
+
+
+# ---------------------------------------------------------------------------
+# Apple revocation has to reach the runtime, not just the row. Before this the
+# notification path wrote "canceled" and stopped: an Apple-only owner's
+# container kept running, and its agents kept spending on inference.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_apple_revocation_runs_entitlement_teardown(monkeypatch):
+    import core.services.entitlement_teardown as teardown
+
+    ran = AsyncMock(return_value=True)
+    monkeypatch.setattr(teardown, "teardown_if_unentitled", ran)
+
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="REFUND"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        assert await apple_iap.apply_notification("signed") == ("user_1", "canceled")
+
+    ran.assert_awaited_once()
+    assert ran.await_args.args[0] == "user_1"
+
+
+@pytest.mark.asyncio
+async def test_a_renewal_does_not_run_teardown(monkeypatch):
+    """Only a revoking outcome asks the question — a renewal must never even
+    approach the teardown path."""
+    import core.services.entitlement_teardown as teardown
+
+    ran = AsyncMock(return_value=False)
+    monkeypatch.setattr(teardown, "teardown_if_unentitled", ran)
+
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="DID_RENEW"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.apply_notification("signed")
+
+    ran.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_tombstone_outlives_the_transactions_paid_period(monkeypatch):
+    """The tombstone stops a replay of the pre-revocation JWS, and that JWS
+    stays grantable until its own expiresDate. A monthly StoreKit period can run
+    31 days, so the dedup table's generic 30-day retention could drop the marker
+    while the original blob was still live."""
+    marked = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "record_event_or_skip", marked)
+
+    thirty_one_days_out = int(time.time() * 1000) + 31 * 24 * 60 * 60 * 1000
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="REFUND"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(expiresDate=thirty_one_days_out),
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        with pytest.raises(AppleIapError):
+            await apple_iap.apply_notification("signed")
+
+    ttl = marked.await_args.kwargs["ttl_seconds"]
+    assert ttl > 31 * 24 * 60 * 60, "tombstone would expire while the JWS is still grantable"
+
+
+@pytest.mark.asyncio
+async def test_a_tombstone_for_an_already_expired_transaction_uses_the_default(monkeypatch):
+    """Nothing to outlive — the transaction's own expiry already refuses it, so
+    a negative remainder must not become a zero or negative TTL."""
+    marked = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "record_event_or_skip", marked)
+
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="REFUND"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(expiresDate=1_000),
+    )
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        with pytest.raises(AppleIapError):
+            await apple_iap.apply_notification("signed")
+
+    ttl = marked.await_args.kwargs["ttl_seconds"]
+    assert ttl is None or ttl > 0

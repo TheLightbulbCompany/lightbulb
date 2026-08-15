@@ -234,6 +234,72 @@ class CrossProviderWriteConflict(Exception):
     """
 
 
+async def _write_changed_fields(
+    owner_id: str,
+    before: dict,
+    after: dict,
+    *,
+    condition: str,
+    values: dict,
+) -> None:
+    """Persist ONLY what ``after`` changed relative to ``before``.
+
+    A whole-item ``PutItem`` rewrites every attribute, including ones this
+    caller never looked at — so any field another writer changed between the
+    read and the write is silently restored from the stale snapshot. Widening
+    the compare-and-set to cover each such field in turn is whack-a-mole; three
+    separate review findings landed that way (Stripe status, then the Apple
+    watermark and expiry, then ``provider_choice``, which no billing writer
+    owns at all and which reverting can send a paying owner back to
+    ``provider_required``).
+
+    Writing a diff removes the class instead of the instances: a field nobody
+    touched is not in the expression, so nobody can roll it back. The
+    cross-provider condition still rides along, because the DERIVED status in
+    the diff was computed from the snapshot and is only valid if the other
+    provider has not moved.
+
+    Every attribute goes through ``ExpressionAttributeNames``. Several plausible
+    column names here are DynamoDB reserved words, and a reserved word in a raw
+    update expression fails the whole call.
+    """
+    sets: list[str] = []
+    removes: list[str] = []
+    names: dict[str, str] = {}
+    update_values = dict(values)
+
+    for key in set(before) | set(after):
+        if key == "owner_id":
+            continue  # the partition key is not updatable
+        placeholder = f"#f{len(names)}"
+        if key not in after:
+            names[placeholder] = key
+            removes.append(placeholder)
+        elif key not in before or before[key] != after[key]:
+            names[placeholder] = key
+            update_values[f":v{len(update_values)}"] = after[key]
+            sets.append(f"{placeholder} = :v{len(update_values) - 1}")
+
+    if not sets and not removes:
+        return
+
+    expression = ""
+    if sets:
+        expression += "SET " + ", ".join(sets)
+    if removes:
+        expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
+
+    kwargs: dict = {
+        "Key": {"owner_id": owner_id},
+        "UpdateExpression": expression,
+        "ConditionExpression": condition,
+        "ExpressionAttributeNames": names,
+    }
+    if update_values:
+        kwargs["ExpressionAttributeValues"] = update_values
+    await run_in_thread(_get_table().update_item, **kwargs)
+
+
 async def _put_with_apple_cas(owner_id: str, mutate) -> dict | None:
     """Read-modify-write the billing row, asserting Apple's status held still.
 
@@ -255,17 +321,12 @@ async def _put_with_apple_cas(owner_id: str, mutate) -> dict | None:
         values: dict = {}
         condition = _unchanged_since_read(existing, _APPLE_OWNED, values)
 
+        before = dict(existing)
         mutate(existing)
         existing["updated_at"] = utc_now_iso()
 
-        kwargs: dict = {"Item": existing, "ConditionExpression": condition}
-        # DynamoDB rejects an empty ExpressionAttributeValues, and the
-        # attribute_not_exists form binds no values at all.
-        if values:
-            kwargs["ExpressionAttributeValues"] = values
-
         try:
-            await run_in_thread(_get_table().put_item, **kwargs)
+            await _write_changed_fields(owner_id, before, existing, condition=condition, values=values)
         except ClientError as e:
             if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
@@ -364,6 +425,9 @@ async def _try_set_apple_subscription(
     # this very field — the condition is about the pre-write state.
     cas_values: dict = {}
     cross_provider = _unchanged_since_read(existing, _STRIPE_OWNED, cas_values)
+    # Snapshot BEFORE any mutation, so the write below can be a diff rather than
+    # a whole-item replace — see _write_changed_fields.
+    before = dict(existing)
 
     existing["apple_original_transaction_id"] = original_transaction_id
     # Must run BEFORE Apple's status joins the row, while the shared field
@@ -386,8 +450,6 @@ async def _try_set_apple_subscription(
     if signed_date is not None:
         existing["apple_last_signed_date"] = signed_date
     existing["updated_at"] = utc_now_iso()
-
-    table = _get_table()
 
     # The watermark comparison is a CONDITION on the write, not a check the
     # caller makes first. Callers read the row through an eventually-consistent
@@ -427,14 +489,14 @@ async def _try_set_apple_subscription(
     conditions.append(cross_provider)
     values.update(cas_values)
 
-    kwargs: dict = {
-        "Item": existing,
-        "ConditionExpression": " AND ".join(conditions),
-        "ExpressionAttributeValues": values,
-    }
-
     try:
-        await run_in_thread(table.put_item, **kwargs)
+        await _write_changed_fields(
+            owner_id,
+            before,
+            existing,
+            condition=" AND ".join(conditions),
+            values=values,
+        )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise

@@ -187,6 +187,21 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   linked them to the measurable goal through the project goal picker, set four
   active and two planned states, and verified IDs/status/links through a
   post-save authenticated list read.
+- 2026-08-15: Friday delegation-boundary PR #1796 is open at head
+  `424aa6ced1373c945407e0148a406f382e2501da`. Backend CI run `31868710323`
+  passed; Claude review passed with no correctness findings. `@codex review`
+  was requested but the connector declined because its review quota was
+  exhausted. The PR remains unmerged and undeployed.
+- 2026-08-15: Agent-facing Paperclip primitives PR #1797 is open at head
+  `98863f3fcb2e4ea8458fafccc527fb92bfa987e0`. Local evidence is 6,470 unit
+  tests passed with 7 skipped, 94 focused proxy tests passed, and 5 frontend
+  primitive tests passed. Claude review passed; `@codex review` was requested
+  but quota-blocked. The deployed Paperclip fork proves the unified attention
+  feed is board-only, so the skill documents decisions/queues as agent inputs
+  to attention rather than falsely claiming an agent-read API.
+- 2026-08-15: No external platform-ops token-removal PR was visible yet. A
+  tested local fallback exists at `d172f4069` but is intentionally unpushed;
+  it must not be published while the founder's external agent owns that work.
 
 ## Founder actions
 

@@ -1,3 +1,4 @@
+import { useAuth } from "@clerk/clerk-expo";
 import Feather from "@expo/vector-icons/Feather";
 import { router } from "expo-router";
 import { useEffect, useRef, useState, type ReactElement } from "react";
@@ -15,6 +16,7 @@ import { usePulse } from "../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../config/theme";
 import {
   formatPrice,
+  isFreeToHire,
   listingByline,
   listingSummary,
   useMarketplaceSearch,
@@ -89,6 +91,7 @@ function ListingRow({ item }: { item: Listing }) {
 
 export default function MarketplacePanel() {
   const { state, search } = useMarketplaceSearch();
+  const { userId } = useAuth();
   const [query, setQuery] = useState("");
 
   // Debounce keystrokes → one search per 300ms of quiet. The ref keeps the
@@ -122,7 +125,9 @@ export default function MarketplacePanel() {
   } else if (state.kind === "loading") {
     body = <SkeletonRows />;
   } else {
-    const items = state.items;
+    // Free hires only on the phone — a paid row here would be a storefront
+    // shelf with no in-app way to buy. See isFreeToHire.
+    const items = state.items.filter((l) => isFreeToHire(l, userId));
     body = (
       <FlatList
         data={items}

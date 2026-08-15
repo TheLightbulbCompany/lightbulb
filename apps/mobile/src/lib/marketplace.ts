@@ -100,6 +100,28 @@ export function listingByline(listing: Pick<Listing, "seller_display_name">): st
   return name && name.length > 0 ? name : "Community member";
 }
 
+/**
+ * Can this listing be hired from the phone? Mobile deploys FREE agents only —
+ * a paid hire would mean initiating a purchase from inside the app, which is
+ * the guideline 3.1.1 line #1643 pulled the whole marketplace back over. The
+ * seller of a paid listing still deploys their own for free (backend
+ * seller-self bypass), so their rows stay visible and hireable.
+ *
+ * Used both to filter search results and to gate the detail screen's primary
+ * action — a deep link can land on a paid listing search never showed.
+ *
+ * ponytail: price + seller only. The search payload carries no entitlement
+ * flag, so a paid listing the viewer already BOUGHT (which deploys free) stays
+ * hidden on mobile until the payload carries one.
+ */
+export function isFreeToHire(
+  listing: Pick<Listing, "price_cents" | "seller_id">,
+  userId: string | null | undefined,
+): boolean {
+  if (!listing.price_cents || listing.price_cents <= 0) return true;
+  return userId != null && listing.seller_id === userId;
+}
+
 // ---------------------------------------------------------------------------
 // Shared api-client hook (getTokenRef; built once)
 // ---------------------------------------------------------------------------
@@ -205,23 +227,6 @@ export class MissingCredentialsError extends Error {
   }
 }
 
-/**
- * Raised when the deploy 403s specifically because the caller is not entitled
- * to a PAID listing (no purchase row, and not the seller) — backend detail
- * "purchase required to deploy this listing" (marketplace_listings.py:393).
- *
- * This is the ONLY 403 that should route the buyer to Stripe checkout. The
- * other deploy 403 — "Organization admin access required" (require_org_admin)
- * — must NOT trigger checkout, because checkout runs the same admin guard and
- * would 403 identically; it surfaces as a plain error instead.
- */
-export class PurchaseRequiredError extends Error {
-  constructor() {
-    super("purchase_required");
-    this.name = "PurchaseRequiredError";
-  }
-}
-
 export function useDeployListing() {
   const api = useMarketplaceClient();
   return useCallback(
@@ -242,17 +247,9 @@ export function useDeployListing() {
             throw new MissingCredentialsError(b.missing ?? []);
           }
         }
-        // 403 with the purchase-required detail → not entitled to a paid
-        // listing; distinguish from the org-admin 403 by the detail string.
-        if (err instanceof ApiError && err.status === 403) {
-          const detail = (err.body as { detail?: unknown } | null)?.detail;
-          if (
-            typeof detail === "string" &&
-            detail.toLowerCase().includes("purchase required")
-          ) {
-            throw new PurchaseRequiredError();
-          }
-        }
+        // Every other failure — including the backend's own paid-listing 403,
+        // which the free-only client filter should have made unreachable —
+        // surfaces with the server's detail string. Nothing routes to Stripe.
         throw err;
       }
     },
@@ -260,32 +257,6 @@ export function useDeployListing() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Checkout (paid) — D1: NO in-app Stripe. Returns a Stripe-hosted URL the
-// caller opens in the SYSTEM BROWSER via Linking.openURL.
-// ---------------------------------------------------------------------------
-
-const WEB_ORIGIN = "https://isol8.co";
-
-export function useCheckoutListing() {
-  const api = useMarketplaceClient();
-  return useCallback(
-    async (listingId: string): Promise<string> => {
-      const body = (await api.post("/marketplace/checkout", {
-        listing_id: listingId,
-        // Stripe substitutes {CHECKOUT_SESSION_ID}; the web /deploy-success
-        // page then fires the authenticated deploy after the webhook grants
-        // the entitlement.
-        success_url: `${WEB_ORIGIN}/deploy-success?listing_id=${encodeURIComponent(
-          listingId,
-        )}&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${WEB_ORIGIN}/chat`,
-      })) as { checkout_url?: string };
-      if (!body.checkout_url) {
-        throw new Error("No checkout URL returned");
-      }
-      return body.checkout_url;
-    },
-    [api],
-  );
-}
+// No checkout hook lives here on purpose. Mobile hires free agents only; a
+// paid hire is a web-app flow. Re-adding one puts a Stripe handoff back one
+// import away from a screen.

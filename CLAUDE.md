@@ -233,8 +233,10 @@ you cannot guess from the filename:
   row (watch loop in `service-stack.ts`) and takes the ECS leg over on
   error or after its tick backstop — custody never depends on a client poll.
 - `paperclip_provisioning.py` — owns `provision_org`, which seeds Friday + Atlas.
-- `config_patcher.py` — EFS-safe JSON deep-merge under NFS-compatible
-  `fcntl.lockf` (not `flock`).
+- `config_patcher.py` — EFS-safe JSON deep-merge. `openclaw.json` writers take
+  the persistent `.isol8-guard` and select the lock protocol recorded in
+  `.isol8-protocol`; backend-only files use NFS-compatible `fcntl.lockf` (not
+  `flock`).
 - `clerk_admin.py` — Clerk REST wrapper for the admin surface. New Clerk calls
   **should** go through here, but two predate it and still hit `api.clerk.com`
   inline via httpx: `routers/billing.py` and `routers/desktop_auth.py`. A
@@ -472,7 +474,14 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 ### Config Patching Notes
 
 - `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
-- `fcntl.lockf()` for file locking (not `flock()` -- incompatible with NFS)
+- `openclaw.json.lock` starts as the backend's legacy persistent `fcntl`
+  sidecar. A subsequent boot-recovery rollout takes the persistent
+  `.isol8-guard`, publishes a resumable `.isol8-protocol` transition, removes
+  the legacy inode, and then backend hot patches use OpenClaw's ephemeral
+  `O_EXCL` protocol. Never unlink the sidecar outside that one-time guarded
+  transition.
+- Backend-only EFS files use `fcntl.lockf()` (not `flock()` -- incompatible
+  with NFS).
 - `chown` to UID 1000 after write (OpenClaw runs as node)
 
 ---

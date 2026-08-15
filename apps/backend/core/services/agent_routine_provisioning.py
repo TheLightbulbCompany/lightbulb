@@ -73,10 +73,14 @@ NIGHTLY_CEO_ROUTINE_CRON = "0 8 * * *"
 # AGENTS.md keys the self-agenda branch on it AND on the server-controlled
 # ``originKind == "routine_execution"`` (which a teammate cannot forge).
 NIGHTLY_CEO_ROUTINE_DESCRIPTION = (
-    "[NIGHTLY-CEO-LOOP] Scheduled nightly wake — you are explicitly authorized "
-    "ON THIS ISSUE to review the company backlog and self-assign ONE task you "
-    "can complete now, execute it, then exit. ONE task per wake — do not invent "
-    "new work. If nothing is doable, do nothing and exit."
+    "[NIGHTLY-CEO-LOOP] Scheduled company-control wake. Advance ONE existing "
+    "company constraint using CEO work only: set or clarify priority, synthesize "
+    "existing evidence, resolve or reroute a blocker, verify a claimed outcome, "
+    "or delegate one bounded specialist issue. Never self-assign or execute "
+    "specialist work. Use only current goals, issues, and already-approved "
+    "direction; do not invent work or take external, irreversible, financial, "
+    "legal, or reputation-bearing action. If no constraint is actionable, record "
+    "NO-EXECUTABLE-COMPANY-CONSTRAINT and exit."
 )
 
 

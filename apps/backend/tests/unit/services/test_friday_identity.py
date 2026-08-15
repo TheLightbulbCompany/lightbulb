@@ -963,15 +963,24 @@ def _personal_profile():
     }
 
 
-def test_agents_md_contains_nightly_section_and_dual_condition():
+def test_agents_md_contains_company_control_wake_and_dual_condition():
     agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
     assert "## Nightly self-directed wake" in agents_md
     # BOTH server-verified conditions must be present (originKind + marker).
     assert "routine_execution" in agents_md
     assert "[NIGHTLY-CEO-LOOP]" in agents_md
-    # The one-task cost bound, stated in the loop.
-    assert "ONE task per" in agents_md
-    assert "do not invent new work" in agents_md.lower() or "never invent work" in agents_md.lower()
+    # The wake advances one company constraint through CEO work. It must not
+    # reintroduce the arbitrary-specialist checkout that contradicted the
+    # delegation boundary.
+    assert "Choose ONE company constraint" in agents_md
+    assert "Delegate specialist execution" in agents_md
+    assert "delegation is the action" in agents_md
+    assert "never checkout" in agents_md
+    assert "keep THIS parent non-terminal" in agents_md
+    assert "child's completion wakes you" in agents_md
+    assert "Pick ONE task you can complete right now" not in agents_md
+    assert "NIGHTLY-TASK-TAKEN:" not in agents_md
+    assert "Never invent work" in agents_md
 
 
 # ---------------------------------------------------------------------------
@@ -1046,6 +1055,59 @@ async def test_heal_seeded_files_resolves_the_ceo_by_role_not_position():
     assert "## Webchat sessions (no run id)" in content
 
 
+class _FleetHealWs:
+    """Path-aware EFS fake for the complete public heal chain."""
+
+    def __init__(self, agents_md):
+        self.config = _config_with_agents(("uuid-atlas", "general"), ("uuid-friday", "ceo"))
+        self.files = {
+            "workspace-uuid-friday/AGENTS.md": agents_md,
+            "workspace-uuid-friday/USER.md": "# USER.md\n\nOwner-authored facts.\n",
+            "workspace-uuid-friday/SOUL.md": "# SOUL.md\n" + friday_identity._SELF_GROUNDING_SECTION,
+        }
+        self.writes = []
+
+    def read_openclaw_config(self, user_id):
+        return self.config
+
+    def read_file(self, user_id, path):
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return self.files[path]
+
+    def write_file(self, user_id, path, content):
+        self.files[path] = content
+        self.writes.append((path, content))
+
+
+@pytest.mark.asyncio
+async def test_fleet_heal_rewrites_exact_legacy_nightly_section_once():
+    """The image-apply entry point reaches the CEO workspace, performs the
+    exact legacy rewrite, preserves surrounding owner content, and is
+    idempotent on a later fleet apply."""
+    legacy = (
+        "# AGENTS.md — Friday's Playbook\n"
+        "\nOwner policy before the seeded section.\n"
+        + friday_identity._LEGACY_NIGHTLY_WAKE_SECTION
+        + friday_identity._WEBCHAT_SECTION
+        + "\nOwner policy after the seeded section.\n"
+    )
+    ws = _FleetHealWs(legacy)
+
+    await friday_identity.heal_seeded_files(owner_id="user_abc", workspace=ws)
+
+    assert [path for path, _ in ws.writes] == ["workspace-uuid-friday/AGENTS.md"]
+    healed = ws.files["workspace-uuid-friday/AGENTS.md"]
+    assert friday_identity._LEGACY_NIGHTLY_WAKE_SECTION not in healed
+    assert friday_identity._NIGHTLY_WAKE_SECTION in healed
+    assert "Owner policy before the seeded section." in healed
+    assert "Owner policy after the seeded section." in healed
+    assert friday_identity._WEBCHAT_SECTION in healed
+
+    await friday_identity.heal_seeded_files(owner_id="user_abc", workspace=ws)
+    assert len(ws.writes) == 1
+
+
 @pytest.mark.asyncio
 async def test_heal_seeded_files_skips_when_no_ceo_in_config():
     ws = _HealWs("# AGENTS.md\n", _config_with_agents(("uuid-atlas", "general")))
@@ -1067,12 +1129,13 @@ def test_agents_md_wake_reason_list_includes_issue_assigned():
     assert "issue_assigned" in agents_md
 
 
-def test_agents_md_nightly_overrides_never_look_for_unassigned_work():
+def test_agents_md_nightly_limits_self_direction_to_company_control():
     agents_md = friday_identity._render_templates(_personal_profile())["AGENTS.md"]
-    # The section explicitly frames itself as the exception to the no-unassigned
-    # rule that stands on every other wake.
-    assert "never look for unassigned work" in agents_md
-    assert "This is the ONE wake where you may survey unassigned work" in agents_md
+    compact = " ".join(agents_md.split())
+    assert "This is the ONE wake where you may survey company state" in compact
+    assert "not random backlog execution" in compact
+    assert "perform a specialist's primary" in compact
+    assert "reversible delegation" in compact
 
 
 def test_soul_md_has_no_nightly_logic():
@@ -1106,6 +1169,42 @@ def test_migrate_add_nightly_section_appends_when_absent():
     # Second run is a no-op (heading already present).
     changed_again = friday_identity._migrate_add_nightly_section(workspace, "user_abc", "friday-uuid")
     assert changed_again is False
+
+
+def test_migrate_nightly_section_replaces_only_exact_legacy_block():
+    before = (
+        "# AGENTS.md — Friday's Playbook\n"
+        "\nOwner-authored preface.\n" + friday_identity._LEGACY_NIGHTLY_WAKE_SECTION + "\nOwner-authored footer.\n"
+    )
+    ws = _MigrationWs(before)
+
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is True
+
+    _, healed = ws.written
+    assert healed == before.replace(
+        friday_identity._LEGACY_NIGHTLY_WAKE_SECTION,
+        friday_identity._NIGHTLY_WAKE_SECTION,
+        1,
+    )
+    assert "Owner-authored preface." in healed
+    assert "Owner-authored footer." in healed
+    assert friday_identity._LEGACY_NIGHTLY_WAKE_SECTION not in healed
+
+    ws.written = None
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is False
+    assert ws.written is None
+
+
+def test_migrate_nightly_section_preserves_owner_edited_heading_block():
+    edited = friday_identity._LEGACY_NIGHTLY_WAKE_SECTION.replace(
+        "2. **Review the backlog.**",
+        "2. **Review the owner's curated queue.**",
+    )
+    ws = _MigrationWs("# AGENTS.md\n\nOwner preface.\n" + edited + "\nOwner footer.\n")
+
+    assert friday_identity._migrate_add_nightly_section(ws, "user_abc", "friday-uuid") is False
+    assert ws.written is None
+    assert "Review the owner's curated queue" in ws.content
 
 
 def test_migrate_add_nightly_section_noop_when_no_file():

@@ -13,6 +13,7 @@ from core.services.agent_routine_provisioning import (
     create_agent_routines,
     create_enabled_schedule_routine,
 )
+from core.services.friday_identity import _render_templates
 
 
 def test_dormant_trigger_body_is_always_disabled():
@@ -179,6 +180,36 @@ async def test_duplicate_spec_in_same_batch_creates_once():
 # ---------------------------------------------------------------------------
 # The single ENABLED path — paid nightly CEO routine (issue #1273).
 # ---------------------------------------------------------------------------
+
+
+def test_fresh_friday_identity_and_routine_share_company_control_contract():
+    """The two prompts land in the same run context. Pin their shared outcome
+    so one cannot regress to arbitrary specialist execution independently."""
+    agents_md = _render_templates(
+        {
+            "kind": "personal",
+            "owner_display": "Sam",
+            "first_name_or_fallback": "Sam",
+            "full_name": "Sam Rivers",
+            "email": "sam@example.com",
+        }
+    )["AGENTS.md"]
+
+    assert "ONE existing company constraint" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
+    assert "Never self-assign or execute specialist work" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
+    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" in NIGHTLY_CEO_ROUTINE_DESCRIPTION
+    assert "Choose ONE company constraint" in agents_md
+    assert "delegation is the action" in agents_md
+    assert "NO-EXECUTABLE-COMPANY-CONSTRAINT" in agents_md
+
+    contradictory_phrases = (
+        "review the company backlog and self-assign ONE task",
+        "Pick ONE task you can complete right now",
+        "checkout <issueId>",
+    )
+    for phrase in contradictory_phrases:
+        assert phrase not in NIGHTLY_CEO_ROUTINE_DESCRIPTION
+        assert phrase not in agents_md
 
 
 def test_enabled_trigger_body_is_enabled():

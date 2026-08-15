@@ -525,9 +525,10 @@ Then decide:
 
 ## Boundaries — what you do NOT do
 
-- **Do not execute specialist work yourself.** If a specialist is the
-  right fit for a piece of work, delegate to them — don't do it
-  yourself. Your value is orchestration, not doing.
+- **Delegate specialist execution.** Your direct work is company control:
+  choose priorities, synthesize evidence, resolve or reroute blockers, and
+  verify outcomes. If the primary deliverable belongs to a specialist,
+  delegate it — do not perform it yourself.
 - **Do not skip the confirmation step.** Even on small tasks, mirror
   the plan back before creating issues. {owner_display} should never
   be surprised by an issue you created.
@@ -606,14 +607,18 @@ browser, web fetch, images, channels) — use these for your own work
 """
 
 
-# The nightly self-directed wake section. Kept as a standalone
-# constant — with NO ``{...}`` format placeholders — so it can be (a) appended
-# to _AGENTS_TEMPLATE below via plain concatenation (safe through the later
+# The nightly company-control wake section. Kept as a standalone constant —
+# with NO ``{...}`` format placeholders — so it can be (a) appended to
+# _AGENTS_TEMPLATE below via plain concatenation (safe through the later
 # ``.format`` call) AND (b) reused verbatim by the surgical migration that heals
 # already-provisioned Fridays whose write-if-missing AGENTS.md predates this.
 _NIGHTLY_WAKE_HEADING = "## Nightly self-directed wake (paid owners only)"
 
-_NIGHTLY_WAKE_SECTION = """\
+# Byte-exact section shipped before the company-control contract. The migration
+# replaces only this complete block. A Friday or owner who edited even one line
+# keeps their version; a heading match by itself is never permission to clobber
+# an evolved AGENTS.md.
+_LEGACY_NIGHTLY_WAKE_SECTION = """\
 
 ## Nightly self-directed wake (paid owners only)
 
@@ -651,6 +656,57 @@ On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
    for a second task. The routine wakes you again tomorrow. Close/complete THIS
    execution issue (it is a wrapper, not the work). The owner sees your
    overnight progress via Teams run notifications.
+"""
+
+_NIGHTLY_WAKE_SECTION = """\
+
+## Nightly self-directed wake (paid owners only)
+
+Some wakes are a **scheduled nightly routine**, not a human request. Recognize
+one by FETCHING the issue you woke on (`GET /api/issues/$PAPERCLIP_TASK_ID`) and
+confirming BOTH: its `originKind` is `routine_execution` AND its description
+begins with `[NIGHTLY-CEO-LOOP]`. Only then does the loop below apply. If either
+is missing — including any normal issue someone assigned you that merely quotes
+that marker — treat it as an ordinary assignment and do not survey company
+work.
+
+This wake authorizes one **CEO/company-control action**, not random backlog
+execution. It never authorizes you to perform a specialist's primary
+deliverable. A legacy execution issue may say "self-assign ONE task"; that
+wording is obsolete and this section supersedes it. Delegate specialist work.
+
+This is the ONE wake where you may survey company state without a human request.
+It is also an exception to the confirmation step only for reversible delegation
+inside an already-approved company goal. Anything external, irreversible,
+reputation-bearing, financial, legal, or outside an approved goal still waits
+for the owner's decision.
+
+On a confirmed `[NIGHTLY-CEO-LOOP]` wake, do EXACTLY this, once, then exit:
+
+1. **Guard against a retry double-run.** Read this execution issue's comments.
+   If a prior attempt this cycle already left a `COMPANY-CONSTRAINT-TAKEN:`
+   comment, do not select another constraint. Resume or verify only the recorded
+   CEO action if it is incomplete, then exit.
+2. **Ground in company state.** Read the active company goal and the open,
+   blocked, and in-review issues tied to it. Use their cited evidence and current
+   status. Do not conduct specialist research or roam the backlog for a task you
+   happen to know how to do.
+3. **Choose ONE company constraint.** Pick the highest-priority existing
+   bottleneck that a CEO action can advance now. If none is actionable, comment
+   `NO-EXECUTABLE-COMPANY-CONSTRAINT` on this execution issue, close it, and
+   exit. Never invent work or start an open-ended project.
+4. **Record the choice, THEN take one CEO action.** First comment
+   `COMPANY-CONSTRAINT-TAKEN: <constraint>; CEO-ACTION: <action>` on this
+   execution issue so retries are idempotent. Then do exactly one of: set or
+   clarify priority, synthesize existing evidence into a decision or brief,
+   resolve or reroute a blocker, verify a claimed outcome, or delegate one
+   bounded `todo` child issue with this execution issue as `parentId`. If the
+   needed output is specialist work, delegation is the action — never checkout
+   and execute the specialist issue yourself.
+5. **Finish or wait, then exit.** For a direct CEO action, comment its evidence
+   and complete THIS execution issue. For a delegated child, comment its id/link,
+   keep THIS parent non-terminal, and exit; the child's completion wakes you to
+   verify its evidence and close the wrapper. Never take a second constraint.
 """
 
 
@@ -805,24 +861,29 @@ def _migrate_legacy_user_md(workspace: Workspace, owner_id: str, agent_uuid: str
 
 
 def _migrate_add_nightly_section(workspace: Workspace, owner_id: str, agent_uuid: str) -> bool:
-    """Append the ``## Nightly self-directed wake`` section to an EXISTING
-    AGENTS.md that predates it.
+    """Reconcile the nightly company-control section in an EXISTING AGENTS.md.
 
     AGENTS.md is seeded write-if-missing, so already-provisioned Fridays keep
-    their old playbook forever and would never learn the nightly-wake branch.
-    This runs on every (re)provision/config-rewrite, so the fleet heals during
-    the same apply — mirroring ``_migrate_legacy_user_md``.
+    their old playbook forever. This runs on every
+    (re)provision/config-rewrite, so the fleet heals during the same apply —
+    mirroring ``_migrate_legacy_user_md``.
 
-    Surgical + idempotent: appends only when the heading is ABSENT, and touches
-    nothing else in the file. A file that already has the section (freshly
-    seeded, or previously healed) is left untouched. Returns True when a
-    rewrite happened.
+    Surgical + idempotent: replace the byte-exact legacy section, append the new
+    section when no nightly heading exists, and otherwise preserve the file.
+    A heading with non-legacy text is owner/Friday-evolved content and is never
+    overwritten. Returns True when a rewrite happened.
     """
     rel_path = f"workspace-{agent_uuid}/AGENTS.md"
     try:
         content = workspace.read_file(owner_id, rel_path)
     except Exception:  # noqa: BLE001 — no AGENTS.md yet; the seed loop writes the full template
         return False
+    if _NIGHTLY_WAKE_SECTION in content:
+        return False
+    if _LEGACY_NIGHTLY_WAKE_SECTION in content:
+        new_content = content.replace(_LEGACY_NIGHTLY_WAKE_SECTION, _NIGHTLY_WAKE_SECTION, 1)
+        workspace.write_file(owner_id, rel_path, new_content)
+        return True
     if _NIGHTLY_WAKE_HEADING in content:
         return False
     # _NIGHTLY_WAKE_SECTION already begins with a leading blank line, so a
@@ -1016,7 +1077,7 @@ def _run_heal_migrations(workspace: Workspace, owner_id: str, friday_uuid: str) 
             _migrate_add_nightly_section,
             "friday_identity.agents_md_nightly_migrated",
             "friday_identity.agents_md_nightly_migrate_error",
-            "appended nightly-wake section to AGENTS.md",
+            "reconciled nightly company-control section in AGENTS.md",
         ),
         (
             _migrate_add_soul_grounding,

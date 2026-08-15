@@ -28,8 +28,8 @@ is complete.
 | Session | Environment | 2026-08-15 evidence |
 |---|---|---|
 | `isol8-founder` | production | Authenticated as Isol8 Admin; `/settings/connections?connected=google` rendered the founder integration inventory. |
-| `isol8-publisher` | production | Authenticated; `/chat?panel=teams-routines` rendered a company with 11 agents. Account/company identity still needs explicit UI confirmation before publisher mutations. |
-| `isol8-dev` | development | Session rendered the public landing page with Log in / Sign up, so authenticated dev state is not currently proven. Reauthenticate or create an allowed `+clerk_test` dev account before mutations. |
+| `isol8-publisher` | production | Authenticated as the same Isol8 Admin founder company. The visible Marketplace `My listings` view reports 0 active listings and 0 total installs, while the eight curated packages are owned by a different seller identity with byline `@isol8`. Reauthenticate this session as that seller before any vNext listing mutation. |
+| `isol8-dev` | development | Session rendered the public landing page and was advanced only to the Clerk sign-up form. Automated credential entry was refused under the founder credential boundary, so authenticated dev state is not proven; the founder must complete one allowed `+clerk_test` sign-in before clean-company UI mutations. |
 
 ## Founder integration baseline
 
@@ -187,11 +187,13 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   linked them to the measurable goal through the project goal picker, set four
   active and two planned states, and verified IDs/status/links through a
   post-save authenticated list read.
-- 2026-08-15: Friday delegation-boundary PR #1796 is open at head
-  `424aa6ced1373c945407e0148a406f382e2501da`. Backend CI run `31868710323`
-  passed; Claude review passed with no correctness findings. `@codex review`
-  was requested but the connector declined because its review quota was
-  exhausted. The PR remains unmerged and undeployed.
+- 2026-08-15: Friday delegation-boundary PR #1796 passed primary review,
+  Backend CI run `31868710323`, and Claude review. `@codex review` was
+  requested but the connector declined because its review quota was
+  exhausted. PR #1796 was squash-merged as
+  `75ecfa8716320f21a39932ab5cb2ec96a268f974`; deploy run `31871896168` is
+  in progress. Do not claim production deployment until that exact run
+  succeeds.
 - 2026-08-15: Agent-facing Paperclip primitives PR #1797 is open at head
   `98863f3fcb2e4ea8458fafccc527fb92bfa987e0`. Local evidence is 6,470 unit
   tests passed with 7 skipped, 94 focused proxy tests passed, and 5 frontend
@@ -203,12 +205,14 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   tested local fallback exists at `d172f4069` but is intentionally unpushed;
   it must not be published while the founder's external agent owns that work.
 - 2026-08-15: Agent provenance and symmetric lifecycle PR #1799 is open at
-  head `c6059f3aa3893c2e5b2af3cd64dbc1165f786cee`. Local verification: 6,472
-  backend unit tests passed with 7 skipped; router chaos suite 272 passed with
-  282 skipped; 298 focused backend tests passed; 24 focused frontend tests and
-  frontend type-check passed; Ruff and diff-check passed. `@codex review` was
-  requested in comment `5301001137`. Backend, frontend, and Claude checks were
-  running at record time; the PR remains unmerged and undeployed.
+  head `c46e40901120984db81361bf1e8842f4c39fb74f`. Primary review found and
+  fixed two asymmetries: approval-driven hires omitted `listing_id` and were
+  stamped Custom, and a deletion retry could not converge when OpenClaw had
+  already removed the runtime agent. The focused post-fix service suite passed
+  87 tests; Ruff, format-check, and diff-check passed. Frontend CI and Claude
+  review passed on the new head; full Backend CI remains in progress.
+  `@codex review` was re-requested in comment `5301140224`; the PR remains
+  unmerged and undeployed.
 - 2026-08-15: AWS-integration CloudWatch alarm transport PR #1801 is open at
   head `d0d38f61f`. It creates an ALARM-only EventBridge API Destination in the
   owner's connected region through the existing Settings AWS role, persists
@@ -222,6 +226,11 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   `@codex review` was requested in comment `5301117545`. The PR remains
   unmerged and no live alarm delivery is claimed until deploy, connector-stack
   update, UI creation, and a controlled CloudWatch transition all pass.
+- 2026-08-15: The production seller ownership check used the visible
+  Marketplace drawer. The logged-in founder identity owns zero listings; the
+  live Vera, Tally, Stitch, Pulse, Lens, Thread, Ora, and Echo packages render
+  with byline `@isol8` under another seller identity. Existing immutable
+  versions cannot be revised from the current session.
 
 ## Founder actions
 

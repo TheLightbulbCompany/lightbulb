@@ -113,8 +113,18 @@ def _adopt_legacy_status(row: dict) -> None:
     """
     if row.get("apple_subscription_status"):
         return
-    if not row.get("stripe_subscription_status") and row.get("subscription_status"):
-        row["stripe_subscription_status"] = row["subscription_status"]
+    existing = row.get("subscription_status")
+    # "trial_local" is NOT a Stripe status. It is written by
+    # create_trial_local_if_absent for a card-less free tier with no Stripe
+    # object behind it at all, and it is the status of the row in the ORDINARY
+    # first-Apple-purchase flow — so adopting it invents a phantom Stripe trial
+    # on almost every IAP customer. _STATUS_RANK puts trial_local above
+    # "canceled", so that phantom then outranks Apple's own expiry: the shared
+    # status stays trial_local, teardown_if_unentitled reads it as still
+    # entitled and skips cancellation entirely, and the billing surfaces show a
+    # lapsed subscriber as being back on the free plan.
+    if existing and existing != "trial_local" and not row.get("stripe_subscription_status"):
+        row["stripe_subscription_status"] = existing
 
 
 def _effective_status(row: dict, *, prefer: str | None = None) -> tuple[str | None, str | None]:

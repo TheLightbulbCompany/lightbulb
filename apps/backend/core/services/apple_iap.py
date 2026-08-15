@@ -278,6 +278,51 @@ def _grace_period_expiry(data) -> int | None:
     return int(expires)
 
 
+async def _convert_trial_if_needed(
+    owner_id: str, *, before_status: str | None, subscription: AppleSubscription
+) -> None:
+    """Finish the job a purchase actually started, for an owner coming off the
+    free tier.
+
+    Recording the Apple subscription is NOT the whole transition, and stopping
+    there left the customer paid-up and still blocked:
+
+    1. A ``trial_local`` row deliberately carries no ``provider_choice`` — the
+       free tier resolves its provider as a config-path mode at provision time.
+       The moment the derived status leaves ``trial_local``, provision_gate's
+       trial short-circuit stops applying and the very next check is
+       ``provider_choice is None`` → ``provider_required``. Mobile renders that
+       as an outbound "manage on the web" handoff, so the paywall's own success
+       path hands the buyer a dead end seconds after taking their money.
+    2. The RUNNING container is still the locked-down trial box. Without the
+       cold reprovision, a paying customer keeps the trial's config and its
+       single capped inference profile.
+
+    Bedrock is the provider chosen here because it is the one the trial was
+    already running on, and because it needs nothing from the customer — the
+    App Store sheet has no provider picker and adding one would put a second
+    decision in front of a purchase. It is changeable in-app afterwards.
+    """
+    if before_status != "trial_local" or subscription.status != "active":
+        return
+
+    try:
+        await billing_repo.set_provider_choice(owner_id, provider_choice="bedrock_claude", byo_provider=None)
+    except Exception:
+        # A missing provider_choice is what produces the dead end above, so a
+        # failure here is worth shouting about — but not worth failing the link
+        # over, since the subscription IS recorded and the status path can
+        # recover once a provider exists.
+        logger.exception("apple_iap.trial_conversion_provider_failed owner_id=%s", owner_id)
+
+    try:
+        from core.services.stripe_webhook_handlers import start_trial_conversion
+
+        await start_trial_conversion(owner_id, subscription.original_transaction_id)
+    except Exception:
+        logger.exception("apple_iap.trial_conversion_dispatch_failed owner_id=%s", owner_id)
+
+
 def _revoked_key(original_transaction_id: str) -> str:
     return f"apple_revoked:{original_transaction_id}"
 
@@ -589,6 +634,11 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         )
         raise AppleIapError("this Apple transaction was refunded or revoked and cannot be linked")
 
+    # Captured BEFORE the write: the conversion below keys on where the owner
+    # was, and set_apple_subscription moves them off it.
+    before = await billing_repo.get_by_owner_id(owner_id)
+    before_status = (before or {}).get("subscription_status")
+
     written = await billing_repo.set_apple_subscription(
         owner_id,
         original_transaction_id=subscription.original_transaction_id,
@@ -623,6 +673,7 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
             return replace(subscription, status=authoritative)
         # No billing row, or the row is bound to a different Apple transaction.
         raise AppleIapError(f"could not link this transaction to owner {owner_id}")
+    await _convert_trial_if_needed(owner_id, before_status=before_status, subscription=subscription)
     logger.info(
         # environment is logged because a "sandbox" grant is a REAL plan given
         # away for free — expected from TestFlight testers, and the only way to
@@ -816,6 +867,15 @@ async def _apply_verified_notification(
             signed_date,
         )
         return None
+    if subscription.status == "active":
+        # The SUBSCRIBED notification can beat the client's link call (or the
+        # app can die before making it), so the conversion has to be reachable
+        # from here too. start_trial_conversion single-flights on the
+        # transaction id, so whichever path arrives first runs it exactly once.
+        await _convert_trial_if_needed(
+            owner_id, before_status=row.get("subscription_status"), subscription=subscription
+        )
+
     if subscription.status != "canceled":
         # Apple says this subscription is live again — a resubscribe reuses the
         # SAME originalTransactionId, so a tombstone left by an earlier refund

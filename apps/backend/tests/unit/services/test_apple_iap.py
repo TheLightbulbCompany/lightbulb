@@ -54,6 +54,20 @@ def _product_id(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_trial_conversion(monkeypatch):
+    """link_purchase now reads the row before writing (to see whether this
+    purchase converts an owner off the free tier) and may dispatch a container
+    reprovision. Both are stubbed by default so the mapping tests stay
+    hermetic; the conversion tests say the interesting thing explicitly."""
+    # No row -> before_status is None -> _convert_trial_if_needed returns
+    # immediately. The function itself is deliberately NOT replaced: stubbing it
+    # would mean the conversion tests below could only ever assert against a
+    # mock of the thing they exist to exercise.
+    monkeypatch.setattr(apple_iap.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", AsyncMock())
+
+
+@pytest.fixture(autouse=True)
 def _no_teardown(monkeypatch):
     """Revocations now run entitlement teardown, which reads DynamoDB and talks
     to ECS + Paperclip. Stubbed by default so the mapping tests stay hermetic;
@@ -1640,3 +1654,121 @@ async def test_a_tombstone_for_an_already_expired_transaction_uses_the_default(m
 
     ttl = marked.await_args.kwargs["ttl_seconds"]
     assert ttl is None or ttl > 0
+
+
+# ---------------------------------------------------------------------------
+# Trial → paid. The ORDINARY purchase: a trial_local owner hits a cap, buys on
+# the paywall, and must end up with a working paid container — not a "pick a
+# provider on the web" card seconds after being charged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buying_off_the_free_tier_persists_a_provider_and_reprovisions(monkeypatch):
+    """A trial_local row deliberately has no provider_choice. The moment the
+    derived status leaves trial_local, provision_gate's trial short-circuit
+    stops applying and the next check is `provider_choice is None` →
+    provider_required, which mobile renders as an outbound web handoff. And the
+    running container is still the locked-down trial box."""
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "trial_local"}),
+    )
+    provider = AsyncMock()
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
+
+    started: list[tuple] = []
+
+    async def _start(owner_id, flight_key):
+        started.append((owner_id, flight_key))
+        return True
+
+    import core.services.stripe_webhook_handlers as swh
+
+    monkeypatch.setattr(swh, "start_trial_conversion", _start)
+
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    # Bedrock: what the trial already ran on, and it asks the buyer for nothing
+    # — the App Store sheet has no provider picker.
+    assert provider.await_args.kwargs["provider_choice"] == "bedrock_claude"
+    # And the trial container is rolled, or the customer keeps the capped box.
+    assert started == [("user_1", "2000000000000001")]
+
+
+@pytest.mark.asyncio
+async def test_an_owner_who_already_had_a_plan_is_not_reconverted(monkeypatch):
+    """Only the free-tier transition converts. Re-running it for an existing
+    paid owner would overwrite a provider they chose and cold-roll a container
+    that is already correct."""
+    monkeypatch.setattr(
+        apple_iap.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(
+            return_value={"owner_id": "user_1", "subscription_status": "active", "provider_choice": "chatgpt_oauth"}
+        ),
+    )
+    provider = AsyncMock()
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
+
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_subscribed_notification_can_convert_when_it_beats_the_link(monkeypatch):
+    """The webhook can arrive before the client's link call, or the app can die
+    before making it. start_trial_conversion single-flights on the transaction
+    id, so whichever path lands first runs it exactly once."""
+    provider = AsyncMock()
+    monkeypatch.setattr(apple_iap.billing_repo, "set_provider_choice", provider)
+
+    started: list[tuple] = []
+
+    async def _start(owner_id, flight_key):
+        started.append((owner_id, flight_key))
+        return True
+
+    import core.services.stripe_webhook_handlers as swh
+
+    monkeypatch.setattr(swh, "start_trial_conversion", _start)
+
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1", "subscription_status": "trial_local"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.apply_notification("signed")
+
+    assert provider.await_args.kwargs["provider_choice"] == "bedrock_claude"
+    assert started == [("user_1", "2000000000000001")]

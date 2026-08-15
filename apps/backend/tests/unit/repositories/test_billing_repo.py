@@ -992,13 +992,31 @@ async def test_free_tier_names_no_management_source(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_trial_local_if_absent("user_free", "personal")
-    await billing_repo.set_apple_subscription(
-        "user_free", original_transaction_id="2000000000000013", status="canceled", expires_at=None
-    )
 
     row = await billing_repo.get_by_owner_id("user_free")
     assert row["subscription_status"] == "trial_local"
     assert row.get("subscription_source") is None
+    assert billing_repo._effective_status(row) == ("trial_local", None)
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_apple_purchase_does_not_hand_back_the_free_tier(dynamodb_table):
+    """An owner who converted off the free tier and then let Apple lapse is
+    CANCELED, not back on trial_local. Reverting would return the free
+    allowance on every buy-then-cancel cycle, and would leave
+    teardown_if_unentitled treating a lapsed subscriber as still entitled."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_trial_local_if_absent("user_lapsed", "personal")
+    await billing_repo.set_apple_subscription(
+        "user_lapsed", original_transaction_id="2000000000000013", status="active", expires_at=None
+    )
+    await billing_repo.set_apple_subscription(
+        "user_lapsed", original_transaction_id="2000000000000013", status="canceled", expires_at=None
+    )
+
+    row = await billing_repo.get_by_owner_id("user_lapsed")
+    assert row["subscription_status"] == "canceled"
 
 
 @pytest.mark.asyncio
@@ -1238,3 +1256,29 @@ async def test_a_removed_field_is_actually_removed(dynamodb_table):
 
     row = await billing_repo.get_by_owner_id("user_rm")
     assert "trial_end" not in row
+
+
+@pytest.mark.asyncio
+async def test_a_free_tier_row_does_not_gain_a_phantom_stripe_trial(dynamodb_table):
+    """trial_local is the ORDINARY state of a first Apple purchase, and it is
+    not a Stripe status — nothing Stripe wrote it. Adopting it invents a
+    subscription that outranks Apple's own expiry, so the owner never gets torn
+    down and shows as back on the free plan instead of lapsed."""
+    from core.repositories import billing_repo
+    from core.services.entitlement_teardown import still_entitled
+
+    await billing_repo.create_trial_local_if_absent("user_conv", "personal")
+    await billing_repo.set_apple_subscription(
+        "user_conv", original_transaction_id="2000000000000050", status="active", expires_at=None
+    )
+
+    row = await billing_repo.get_by_owner_id("user_conv")
+    assert row.get("stripe_subscription_status") in (None, ""), "invented a Stripe subscription"
+
+    # And when Apple ends, the owner is genuinely unentitled.
+    await billing_repo.set_apple_subscription(
+        "user_conv", original_transaction_id="2000000000000050", status="canceled", expires_at=None
+    )
+    row = await billing_repo.get_by_owner_id("user_conv")
+    assert row["subscription_status"] == "canceled"
+    assert still_entitled(row) is False

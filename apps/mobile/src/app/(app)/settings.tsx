@@ -297,7 +297,7 @@ export default function Settings() {
   // then require the account email typed back (same guard as the backend),
   // then run the server-side teardown and sign out. Org members get the
   // backend's 403 message (workspace deletion is support-only).
-  const confirmDeleteAccount = useCallback(() => {
+  const promptDeleteAccount = useCallback(() => {
     Alert.alert(
       "Delete account",
       "This permanently deletes your account, agents, workspace, and data. It cannot be undone.",
@@ -349,6 +349,38 @@ export default function Settings() {
       ],
     );
   }, [api, email, signOut]);
+
+  const confirmDeleteAccount = useCallback(() => {
+    // An Apple subscription OUTLIVES the account. `wipe_account` deletes the
+    // Stripe customer, the billing row and the Clerk user — it cannot touch
+    // StoreKit, which only the customer can cancel from iOS Settings. Delete
+    // without cancelling and Apple keeps charging for a subscription that now
+    // entitles nothing, and the appAccountToken binding means the purchase
+    // cannot be restored onto a replacement account either. So say so, and put
+    // the cancellation one tap away, BEFORE the irreversible step.
+    const source = state.kind === "ready" ? state.account.subscription_source : null;
+    if (isAppleManaged(source)) {
+      Alert.alert(
+        "Cancel your subscription first",
+        "Your subscription is billed through your Apple Account. Deleting this account does NOT cancel it — Apple will keep charging you, and the purchase can't be moved to a new account. Cancel in iOS Settings first.",
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Open iOS Settings",
+            onPress: () => void openSubscriptionManagement({
+              source,
+              portalUrl: null,
+              openAppleSubscriptions: deepLinkToSubscriptions,
+            }).catch(() => {}),
+          },
+          { text: "Delete anyway", style: "destructive", onPress: () => promptDeleteAccount() },
+        ],
+      );
+      return;
+    }
+    promptDeleteAccount();
+  }, [state, promptDeleteAccount]);
+
 
   /**
    * Send the subscriber to whichever system actually bills them. The Stripe

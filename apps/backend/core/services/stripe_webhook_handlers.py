@@ -273,6 +273,35 @@ def dispatch_metronome_provisioning(owner_id: str) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+async def start_trial_conversion(owner_id: str, flight_key: str) -> bool:
+    """Begin the trial→paid conversion for one owner, at most once.
+
+    The claim/stamp/dispatch/rollback dance below is provider-AGNOSTIC despite
+    living in a Stripe-named module — it turns the locked-down trial container
+    into a paid one, which has nothing to do with who took the money. Apple IAP
+    needs exactly the same thing on its own purchase path, so this is the seam
+    rather than a second copy of the sequence.
+
+    ``flight_key`` single-flights the entry: the Stripe path passes the
+    subscription id (several events arrive per change, unordered), the Apple
+    path the originalTransactionId (a link call and a SUBSCRIBED notification
+    describe the same purchase). Returns True iff this caller ran it.
+    """
+    if not await _claim_conversion_entry(owner_id, flight_key):
+        return False
+    try:
+        await _stamp_conversion_dispatch(owner_id)
+        asyncio.create_task(run_conversion_reprovision(owner_id))
+        return True
+    except Exception:
+        logger.exception("Trial-conversion dispatch failed for owner %s", owner_id)
+        # Free the claim so a sibling event or redelivery can retry a
+        # conversion that never got as far as the stamp. If the stamp DID land,
+        # the conversion_pending self-heal is the recovery path either way.
+        await _rollback_conversion_entry(owner_id, flight_key)
+        return False
+
+
 async def run_conversion_reprovision(owner_id: str) -> None:
     """Reprovision a converted owner's container off the trial shape, then
     release the row. asyncio.create_task target — never raises.

@@ -31,6 +31,21 @@ beforeEach(() => {
 });
 
 describe("AgentOrgControls", () => {
+  it("shows backend-authored marketplace provenance", () => {
+    render(
+      <AgentOrgControls
+        agent={{
+          ...BOB,
+          origin: "Marketplace",
+          marketplace: { listingId: "listing-1", slug: "forge", version: 3, seller: "seller-1" },
+        }}
+        agents={AGENTS}
+      />,
+    );
+    expect(screen.getByText("Marketplace")).toBeInTheDocument();
+    expect(screen.getByText("forge v3 · seller-1")).toBeInTheDocument();
+  });
+
   it("changes reports-to via setReportsTo(agentId, managerId)", async () => {
     setReportsTo.mockResolvedValue(undefined);
     render(<AgentOrgControls agent={BOB} agents={AGENTS} />);

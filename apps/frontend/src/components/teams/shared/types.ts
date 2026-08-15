@@ -724,6 +724,14 @@ export interface CompanyAgent {
    *  locked — undeletable, meta read-only. Determined from persisted
    *  seeded-agent IDs by the BFF, never from role/name. */
   seeded?: boolean;
+  /** Backend-authored install source. Seller artifacts cannot set this. */
+  origin?: "Seed" | "Marketplace" | "Custom";
+  marketplace?: {
+    listingId: string;
+    slug: string;
+    version: number;
+    seller: string;
+  };
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ def client(teams_ctx, monkeypatch):
     async def fake_ctx():
         return teams_ctx
 
+    monkeypatch.setattr(agents_mod, "_load_agent_sidecars", AsyncMock(return_value={}))
     app.dependency_overrides[agents_mod._ctx] = fake_ctx
     try:
         yield TestClient(app)
@@ -58,7 +59,7 @@ def test_list_agents_calls_upstream_with_user_session(client, monkeypatch):
     )
     assert r.status_code == 200
     # Every item is stamped with a ``seeded`` flag (False here — no seeded ids).
-    assert r.json() == {"agents": [{"id": "a1", "seeded": False}]}
+    assert r.json() == {"agents": [{"id": "a1", "seeded": False, "origin": "Custom"}]}
     admin.list_agents.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie-value",
@@ -77,7 +78,47 @@ def test_list_agents_stamps_seeded_flag(client, monkeypatch):
     assert r.status_code == 200
     by_id = {a["id"]: a for a in r.json()["agents"]}
     assert by_id["friday_id"]["seeded"] is True
+    assert by_id["friday_id"]["origin"] == "Seed"
     assert by_id["user_id"]["seeded"] is False
+    assert by_id["user_id"]["origin"] == "Custom"
+
+
+def test_list_agents_stamps_complete_marketplace_provenance(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(return_value={"agents": [{"id": "agent_market"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "get_seeded_agent_ids", AsyncMock(return_value=set()))
+    monkeypatch.setattr(
+        agents_mod,
+        "_load_agent_sidecars",
+        AsyncMock(
+            return_value={
+                "agent_market": {
+                    "listing_id": "listing-123",
+                    "template_slug": "forge",
+                    "template_version": 4,
+                    "seller_id": "seller-456",
+                }
+            }
+        ),
+    )
+
+    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200
+    assert r.json()["agents"][0] == {
+        "id": "agent_market",
+        "seeded": False,
+        "origin": "Marketplace",
+        "marketplace": {
+            "listingId": "listing-123",
+            "slug": "forge",
+            "version": 4,
+            "seller": "seller-456",
+        },
+    }
 
 
 def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
@@ -239,9 +280,9 @@ def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeyp
     )
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(
-        agents_mod,
-        "_decrypt_service_token",
-        AsyncMock(return_value="decrypted-token"),
+        agents_mod.service_token,
+        "mint",
+        MagicMock(return_value="fresh-token"),
     )
     monkeypatch.setattr(
         agents_mod,
@@ -326,29 +367,27 @@ def test_patch_agent_drops_null_for_non_reports_to_fields(client, monkeypatch):
 def test_delete_agent_rejects_seeded(client, monkeypatch):
     """The REST delete path must refuse seeded agents (Friday/Atlas) — same
     guard as the OpenClaw gateway path. 403, upstream delete NOT called."""
-    admin = MagicMock()
-    admin.delete_agent = AsyncMock(return_value={})
     from routers.teams import agents as agents_mod
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    delete_everywhere = AsyncMock(return_value={})
+    monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
     monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=True))
 
     r = client.delete("/api/v1/teams/agents/friday_id", headers={"Authorization": "Bearer x"})
     assert r.status_code == 403
-    admin.delete_agent.assert_not_awaited()
+    delete_everywhere.assert_not_awaited()
 
 
 def test_delete_agent_allows_non_seeded(client, monkeypatch):
-    admin = MagicMock()
-    admin.delete_agent = AsyncMock(return_value={"ok": True})
     from routers.teams import agents as agents_mod
 
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    delete_everywhere = AsyncMock(return_value={"deleted": True})
+    monkeypatch.setattr(agents_mod, "delete_agent_everywhere", delete_everywhere)
     monkeypatch.setattr(agents_mod, "is_seeded_agent", AsyncMock(return_value=False))
 
     r = client.delete("/api/v1/teams/agents/a_user", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    admin.delete_agent.assert_awaited_once()
+    delete_everywhere.assert_awaited_once_with(owner_id="o1", agent_id="a_user")
 
 
 def test_legacy_runs_alias_proxies_heartbeat_run(client, monkeypatch):

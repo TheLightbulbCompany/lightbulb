@@ -47,6 +47,9 @@ export function AgentOrgControls({
   const seeded = isSeededAgent(agent);
   const paused = agent.status === "paused";
   const errored = agent.status === "error";
+  const marketplaceLabel = agent.marketplace
+    ? `${agent.marketplace.slug} v${agent.marketplace.version} · ${agent.marketplace.seller}`
+    : null;
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -59,6 +62,16 @@ export function AgentOrgControls({
 
   return (
     <div className="flex flex-col gap-6">
+      <section className="editorial-card p-4 flex flex-col gap-1">
+        <span className="text-xs uppercase tracking-wide text-[var(--mute)]">Origin</span>
+        <span className="text-sm font-medium text-[var(--ink)]">{agent.origin ?? "Custom"}</span>
+        {marketplaceLabel ? (
+          <span className="text-xs text-[var(--mute)]" title={`Listing ${agent.marketplace?.listingId}`}>
+            {marketplaceLabel}
+          </span>
+        ) : null}
+      </section>
+
       {/* Reporting line — editable here */}
       <section className="editorial-card p-4 flex flex-col gap-2">
         <h3 className="font-editorial-serif text-lg">Reports to</h3>

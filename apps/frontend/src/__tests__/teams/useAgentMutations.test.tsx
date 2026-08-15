@@ -4,20 +4,17 @@ import { renderHook, act } from "@testing-library/react";
 
 const patch = vi.fn();
 const post = vi.fn();
-const callRpc = vi.fn();
+const del = vi.fn();
 const swrMutate = vi.fn();
 
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: vi.fn(), post, patch, del: vi.fn() }),
-}));
-vi.mock("@/hooks/useGatewayRpc", () => ({
-  useGatewayRpcMutation: () => callRpc,
+  useTeamsApi: () => ({ read: vi.fn(), post, patch, del }),
 }));
 vi.mock("swr", async (orig) => ({ ...(await orig<object>()), useSWRConfig: () => ({ mutate: swrMutate }) }));
 
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 
-beforeEach(() => { patch.mockReset(); post.mockReset(); callRpc.mockReset(); swrMutate.mockReset(); });
+beforeEach(() => { patch.mockReset(); post.mockReset(); del.mockReset(); swrMutate.mockReset(); });
 
 describe("useAgentMutations", () => {
   it("setReportsTo PATCHes reportsTo and revalidates list + detail keys", async () => {
@@ -60,14 +57,13 @@ describe("useAgentMutations", () => {
     expect(swrMutate).toHaveBeenCalledWith("/teams/agents/a1");
   });
 
-  it("remove deletes via gateway RPC and optimistically drops the agent without refetching", async () => {
-    callRpc.mockResolvedValue({});
+  it("remove uses the unified lifecycle endpoint and drops the completed agent", async () => {
+    del.mockResolvedValue({});
     const { result } = renderHook(() => useAgentMutations());
     await act(async () => { await result.current.remove("a1"); });
-    expect(callRpc).toHaveBeenCalledWith("agents.delete", { agentId: "a1", deleteFiles: true });
+    expect(del).toHaveBeenCalledWith("/agents/a1");
 
-    // List cache: optimistic removal with NO revalidation — a blind refetch
-    // would race the backend's post-ack Paperclip cascade and resurrect the row.
+    // The backend returns only after every lifecycle surface is reconciled.
     const listCall = swrMutate.mock.calls.find((c) => c[0] === "/teams/agents");
     expect(listCall).toBeTruthy();
     expect(listCall![2]).toEqual({ revalidate: false });

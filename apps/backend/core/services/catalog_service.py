@@ -398,6 +398,7 @@ class CatalogService:
         container_ip: str,
         container_token: str,
         new_agent_id: str | None = None,
+        listing_id: str | None = None,
         seller_id: str | None = None,
     ) -> dict[str, Any]:
         """Deploy a pre-fetched artifact (tarball + slice + manifest) into the
@@ -427,13 +428,10 @@ class CatalogService:
                 deploys pass Paperclip's freshly-minted UUID so the two
                 systems share the same id. Defaults to a locally-generated
                 ``agent_<hex>`` UUID for direct callers.
-            seller_id: the listing's seller, recorded on the ``.template``
-                sidecar so install idempotency can tell two sellers' listings
-                with the SAME slug apart (slugs are not unique). NOT the
-                listing_id — republish mints a new listing_id for the same
-                slug, and the slug-level match is deliberate republish
-                idempotency. Optional: non-marketplace callers (agent
-                builder) have no seller.
+            listing_id / seller_id: canonical marketplace identity recorded on
+                the ``.template`` sidecar. Both are supplied by the trusted
+                listing row, never the seller artifact. Direct callers such as
+                agent builder omit them and therefore remain Custom.
 
         Rollback posture: a failed step lets the exception propagate to
         the caller, which is the marketplace deploy router — the owner of
@@ -501,10 +499,9 @@ class CatalogService:
         # "not installed"), and a non-timeout failure runs
         # ``unwind_partial_deploy``, which unlinks the sidecar FIRST — before
         # the two correlated, best-effort removals that can both fail and leave
-        # the ``agents.list`` entry standing. Neither covers the Teams REST
-        # delete (``routers/teams/agents.py``), which drops only the Paperclip
-        # row and leaves both the sidecar and the config entry behind; that
-        # predates this ordering and is not fixed by it.
+        # the ``agents.list`` entry standing. The Teams lifecycle endpoint also
+        # removes the sidecar and persisted config before dropping Paperclip,
+        # so the normal owner-facing delete converges on the same invariant.
         #
         # ``manifest["version"]`` is sourced from the listing row's
         # ``manifest_json`` column (boto3 returns DDB Numbers as ``Decimal``), or
@@ -525,6 +522,7 @@ class CatalogService:
                 "template_slug": slug,
                 "template_version": template_version,
                 "deployed_at": utc_now_iso(),
+                **({"listing_id": listing_id} if listing_id else {}),
                 # Slug + seller is the install identity (slugs are not unique
                 # across sellers); ids let the unwind remove this deploy's
                 # appended cron jobs.
@@ -729,6 +727,19 @@ class CatalogService:
             "version": manifest.get("version", 1),
             "agent_id": new_agent_id,
             "name": manifest.get("name", slug),
+            "origin": "Marketplace" if listing_id and seller_id else "Custom",
+            **(
+                {
+                    "marketplace": {
+                        "listingId": listing_id,
+                        "slug": slug,
+                        "version": template_version,
+                        "seller": seller_id,
+                    }
+                }
+                if listing_id and seller_id
+                else {}
+            ),
             "skills_added": list(agent_entry.get("skills") or []),
             # OpenClaw plugin entries live at ``plugins.entries.{name}``;
             # the top-level keys (``slots``/``entries``) are structural
@@ -984,6 +995,10 @@ class CatalogService:
                         "agent_id": agent_id,
                         "template_slug": sidecar.get("template_slug"),
                         "template_version": sidecar.get("template_version"),
+                        # Canonical ID is absent from legacy sidecars. Those
+                        # installs remain usable for idempotency but are not
+                        # strong enough evidence for Marketplace provenance.
+                        "listing_id": sidecar.get("listing_id"),
                         # None for legacy sidecars written before the field
                         # existed — install idempotency falls back to
                         # slug-only matching for those.

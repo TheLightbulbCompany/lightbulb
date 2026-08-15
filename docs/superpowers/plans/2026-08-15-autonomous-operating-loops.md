@@ -107,43 +107,39 @@ using a shared CLI credential.
 
 ## AWS and platform operations decision
 
-There are two distinct AWS-related capabilities and they must not be conflated.
-
 The Settings AWS connection materializes an `isol8-connector` AWS CLI profile
 through `credential_process`, giving the container short-lived credentials for
 the owner-selected ViewOnly, ReadOnly, or PowerUser tier. This is the normal
-marketplace capability for Forge operating a buyer's AWS account and for Tally
-reading buyer-authorized cost data. The founder connection has already proven it
-can query Cost Explorer.
+capability for Forge operating AWS and for Tally reading buyer-authorized cost
+data. The founder connection has already proven it can query Cost Explorer.
 
 The existing `platform_ops` token predates the current Platform Operations
 agent. It was designed on 2026-06-30 for Friday and the admin operator console,
-specifically because Isol8's AWS account is a shared multi-tenant platform
-account. The design rejected broad agent AWS access to that account and instead
-exposed a curated, redacted, founder-only read surface: `/ops/fleet`,
-`/ops/deploys`, `/ops/alarms`, and selected admin diagnostics. The implementation
-shipped the API and token but never delivered the token to a container.
+but its agent path was never delivered to a container. The founder has decided
+not to create a second agent-authentication rail for operations.
 
-Decision gate:
+Remove the agent-facing `platform_ops` plumbing:
 
-1. Marketplace Forge always uses the Settings AWS connection for the buyer's
-   account. A `platform_ops` credential is never part of a listing.
-2. Before choosing the founder path, verify only the connected role's account ID
-   and permission tier. Do not retrieve or display credentials.
-3. If it points at Isol8's shared production account with broad ReadOnly or
-   PowerUser access, use the curated `platform_ops` surface for Forge platform
-   diagnosis instead of normalizing broad account access as the loop contract.
-4. If the connected role is genuinely least-privilege for the required
-   CloudWatch/ECS/cost reads, use the Settings connection and leave
-   `platform_ops` unwired.
-5. If `platform_ops` is used, deliver it only as a founder-container secret and
-   add its JWT shape to transcript redaction in the same change.
+1. Delete the platform-ops token mint/verify service and `/ops/token` endpoint.
+2. Remove token acceptance from `/ops/*` and the curated `/admin/*` reads.
+3. Remove `PLATFORM_OPS_OWNER_ID`, `PLATFORM_OPS_TOKEN_KEY`, the signing secret,
+   task environment wiring, and obsolete GitHub/CDK inputs.
+4. Keep human operator endpoints only where the admin UI still calls them, and
+   protect those endpoints exclusively with Clerk platform-admin auth. Delete
+   any unused duplicate ops route instead of retaining an orphaned API.
+5. Delete the token-specific tests and replace them with admin-auth and
+   unauthenticated-denial coverage for any retained routes.
 
-The AWS connection is outbound access; it does not make CloudWatch push alarm
-state into a routine. The reliability routine therefore still needs inbound
-delivery. For Isol8's own alarms, provision an EventBridge API Destination that
-POSTs signed alarm events to the routine webhook. Marketplace Forge ships the
-routine dormant and identifies EventBridge setup as an arming prerequisite.
+Forge and Tally use only the Settings AWS integration. The integration tier and
+role remain the owner's explicit choice; this plan does not add a hidden
+founder credential or a marketplace-only exception.
+
+The AWS connection is outbound access; it does not by itself push CloudWatch
+alarm transitions into a routine. Alarm registration belongs to the AWS
+integration setup: configure an EventBridge API Destination to POST signed alarm
+events to the routine webhook when the connected role permits it. Otherwise the
+marketplace routine remains dormant with an explicit one-time AWS setup step.
+This uses the AWS integration and AWS event system, not a platform-ops token.
 
 ## Lobster workflow decision
 
@@ -252,16 +248,35 @@ worth another run. Do not double inference on every high-volume event.
 
 ## Finite GTM projects
 
-Continuous routines do not replace finite launch work. Friday creates a project
-hierarchy and assigns ordinary issues for:
+These are not routines. Use the Paperclip hierarchy deliberately:
 
-1. A professionally edited 45-second GitHub-issue-to-artifact demo.
-2. The first 50 evidence-backed prospects and ten founder contacts per day.
-3. Five technical articles based on verified Isol8 engineering work.
-4. Sentry, Linear, Stripe, and relevant integration-directory submissions.
-5. A public read-only company board suitable for customer inspection.
-6. Show HN preparation and launch-day operations.
-7. Founder interviews and calls.
+- **Goal:** the measurable 90-day business outcome. The initial goal is to
+  reach 50 paying customers and at least 65% `signup_started -> chat_completed`
+  activation, retaining the D30 and D60 checkpoints from the GTM plan.
+- **Projects:** finite initiatives that can be completed and closed.
+- **Issues:** assigned pieces of project work with an artifact, reviewer, and
+  completion state.
+- **Routines:** recurring operating mechanisms attached to the same goal and,
+  where useful, a project. They continue after a project milestone closes.
+
+Create these projects under the GTM goal:
+
+1. **Demo and public proof:** professionally edited 45-second
+   GitHub-issue-to-artifact demo plus the public read-only company board.
+2. **First outbound cohort:** 50 evidence-backed prospects, ten founder contacts
+   per day, reply review, and a written motion retrospective.
+3. **Technical launch content:** the first five verified engineering articles.
+4. **Integration directories:** Sentry, Linear, Stripe, and other relevant
+   directory submissions.
+5. **Show HN launch:** launch asset preparation, launch-day operation, and
+   response follow-up.
+6. **Customer discovery:** founder interviews, calls, and synthesized findings.
+
+The recurring Pulse outbound routine supplies prospects after the first cohort;
+the project closes when the first 50 and its learning review are complete. The
+weekly content routine continues after the five-piece launch project closes.
+Demo production, directory submission, Show HN, and interviews never become
+routines merely because they contain several tasks.
 
 Pulse and Gauge support these projects, but the founder owns early calls,
 launch positioning, and the learning from the first outbound cohort.
@@ -273,6 +288,8 @@ launch positioning, and the learning from the first outbound cohort.
 - Approve this roster, routine table, and runtime boundaries.
 - Record current agent IDs, open issues, routines, integration assignments, and
   durable artifacts before mutation.
+- Create the Paperclip GTM goal and six finite projects; link later routines to
+  the goal without turning the projects themselves into routines.
 - Treat routine-native reviewer support as a dependency owned by its current PR.
 - Confirm marketplace automation packaging is deployed. PR #1793 is deployed.
 
@@ -301,10 +318,10 @@ Use separate worktrees and PRs:
 2. Agent-facing Paperclip skill coverage for attention, decision queues,
    decision effects, `ruleKey` statistics, company search, and extraction.
 3. Friday identity contradiction and heal migration.
-4. EventBridge API Destination for Isol8 CloudWatch alarm delivery.
-5. Routine-native reviewer support from the separate owner.
-
-Resolve the founder AWS/platform-ops decision gate before adding token delivery.
+4. Remove the agent-facing platform-ops token/auth/config/secret plumbing while
+   preserving still-used human admin diagnostics behind Clerk admin auth.
+5. AWS-integration alarm registration through EventBridge API Destination.
+6. Routine-native reviewer support from the separate owner.
 
 Exit: dev proves all primitives through the same UI and container paths a
 customer uses; tests and Codex review are clean; deployments are watched.
@@ -409,11 +426,12 @@ web fetch/search and connected CLIs cover the first versions.
 - Every routine has external proof, a KPI, recovery, and a bounded stop.
 - Paperclip attention, decisions, decision statistics, and company search are
   usable by the fleet.
-- Marketplace Forge diagnoses through the Settings AWS connection. Founder
-  Forge uses the least-privilege result of the documented AWS/platform-ops gate;
-  no marketplace package contains a founder platform-ops token.
+- Forge and Tally use the Settings AWS integration. The agent-facing
+  platform-ops token, auth path, configuration, and secret plumbing are gone;
+  retained human operator endpoints require Clerk platform-admin auth.
 - Target marketplace packages do not carry the legacy Lobster orchestration.
 - The weekly scorecard reports activation, attributed acquisition, paid state,
   onboarding blockers, cost per active container, and current priority.
-- Finite GTM projects have owners, evidence-backed tasks, and completion state.
+- The 90-day GTM goal carries its activation and customer targets; all six
+  finite GTM projects have owners, evidence-backed issues, and completion state.
 - Founder attention is limited to genuine authority and learning edges.

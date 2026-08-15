@@ -130,13 +130,34 @@ describe("AssigneePicker", () => {
     await user.click(screen.getByRole("button", { name: /Unassigned/i }));
     await user.type(await screen.findByRole("combobox"), "Sat");
 
-    await user.pointer({
-      keys: "[MouseLeft>]",
-      target: screen.getByRole("button", { name: "Saturday" }),
-    });
+    await user.click(screen.getByRole("button", { name: "Saturday" }));
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("ag_3");
+  });
+
+  it("marks the keyboard-active option selected for combobox semantics", async () => {
+    const user = userEvent.setup();
+    render(
+      <AssigneePicker
+        agents={agents}
+        selectedAgentId="ag_1"
+        onChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Friday/i }));
+    const search = await screen.findByRole("combobox");
+    await user.type(search, "Mon");
+    await user.keyboard("{ArrowDown}");
+
+    expect(screen.getByRole("option", { name: "Monday" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("option", { name: /No assignee/i })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
   });
 
   it("selects the first filtered match with ArrowDown and Enter", async () => {

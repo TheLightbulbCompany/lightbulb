@@ -3,6 +3,7 @@
 import {
   useId,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent,
   type MouseEvent,
@@ -54,6 +55,7 @@ export function AssigneePicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
+  const mouseDownCommittedRef = useRef(false);
   const listboxId = useId();
 
   // People are only offered when the host wired an onUserChange handler.
@@ -139,6 +141,14 @@ export function AssigneePicker({
     // Commit before the search input blurs and the portal can rerender under
     // the pointer. Touch and assistive clicks still use the click handler.
     event.preventDefault();
+    mouseDownCommittedRef.current = true;
+    handleSelectOption(option);
+  };
+  const handleOptionClick = (option: AssigneeOption) => {
+    if (mouseDownCommittedRef.current) {
+      mouseDownCommittedRef.current = false;
+      return;
+    }
     handleSelectOption(option);
   };
   const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -169,6 +179,7 @@ export function AssigneePicker({
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
+    if (next) mouseDownCommittedRef.current = false;
     if (!next) {
       setQuery("");
       setActiveIndex(-1);
@@ -224,7 +235,7 @@ export function AssigneePicker({
           <li
             id={`${listboxId}-option-0`}
             role="option"
-            aria-selected={selectedAgentId === null && selectedUserId === null}
+            aria-selected={activeIndex === 0}
           >
             <button
               type="button"
@@ -232,7 +243,7 @@ export function AssigneePicker({
               onMouseDown={(event) =>
                 handleOptionMouseDown(event, { kind: "clear" })
               }
-              onClick={() => handleSelectOption({ kind: "clear" })}
+              onClick={() => handleOptionClick({ kind: "clear" })}
               onMouseEnter={() => setActiveIndex(0)}
               className={cn(
                 "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]",
@@ -260,13 +271,13 @@ export function AssigneePicker({
                 id={`${listboxId}-option-${optionIndex}`}
                 key={agent.id}
                 role="option"
-                aria-selected={selectedAgentId === agent.id}
+                aria-selected={activeIndex === optionIndex}
               >
                 <button
                   type="button"
                   tabIndex={-1}
                   onMouseDown={(event) => handleOptionMouseDown(event, option)}
-                  onClick={() => handleSelectOption(option)}
+                  onClick={() => handleOptionClick(option)}
                   onMouseEnter={() => setActiveIndex(optionIndex)}
                   className={cn(
                     "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]",
@@ -298,13 +309,13 @@ export function AssigneePicker({
                     id={`${listboxId}-option-${optionIndex}`}
                     key={member.userId}
                     role="option"
-                    aria-selected={selectedUserId === member.userId}
+                    aria-selected={activeIndex === optionIndex}
                   >
                     <button
                       type="button"
                       tabIndex={-1}
                       onMouseDown={(event) => handleOptionMouseDown(event, option)}
-                      onClick={() => handleSelectOption(option)}
+                      onClick={() => handleOptionClick(option)}
                       onMouseEnter={() => setActiveIndex(optionIndex)}
                       className={cn(
                         "w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deeper)]",

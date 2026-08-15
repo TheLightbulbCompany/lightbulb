@@ -635,6 +635,32 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   Playwright's request context with `Accept-Encoding: identity`, indicating a
   proxy response-header/body encoding defect rather than a Paperclip contract
   failure. Track that defect independently; it did not alter any roster state.
+- 2026-08-15: Paperclip `.3` production promotion PR #1827 changed only
+  `prod.tag` to `cb7a8b2c-8f19fb0` and merged as
+  `b4da187d7080231b95fba26e6f3daf3dd0ad54b6`. Deploy run `31913815482`
+  completed successfully. Production Paperclip server revision 32 references
+  the exact `.3` image and reports a completed 1/1 rollout with zero pending.
+  One-shot migrate revision 25 ran as task
+  `5913236d95634f72818e877d6bbc4fb9` and exited 0; its CloudWatch log records
+  passing migration safety checks and `No pending migrations` because server
+  startup had already auto-applied migration 0218.
+- 2026-08-15: The authenticated production customer-proxy smoke passed for
+  company `1071914e-6b9a-4351-a1d6-58bffe2e30f1`. The exact baseline was the
+  expected 11-agent founder roster. A disposable direct `openclaw_gateway`
+  create returned 201 with agent `7b47c5c6-2f87-44de-9d2f-c550d7572ddc`;
+  changed-payload replay and replay-only recovery both returned 200 with that
+  same ID and the original name. A fresh replay-only key returned structured
+  409 `agent_create_idempotency_replay_miss`; missing and oversized keys both
+  returned 422. Cleanup returned 200, and an exact sorted-ID comparison proved
+  all 11 baseline agents were restored. Request IDs are retained in the goal
+  transcript; no Clerk token or adapter credential was printed.
+- 2026-08-15: Isol8 caller PR #1812 was rebased onto production-promotion main
+  and force-with-lease pushed at `c90b17844d5852f906f660ba980ba750e9e2ac96`.
+  Post-rebase focused verification is 289 passed; full backend unit verification
+  is 6661 passed and 7 skipped. The PR remains draft while fresh-head GitHub CI,
+  Claude review, and an independent read-only audit settle. The required
+  `@codex review` was requested again; connector review quota may still prevent
+  a verdict.
 
 ## Founder actions
 

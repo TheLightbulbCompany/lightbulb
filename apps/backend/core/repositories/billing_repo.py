@@ -171,6 +171,93 @@ def _apply_effective_status(row: dict, *, prefer: str) -> None:
         row["subscription_source"] = source
 
 
+# Every setter here is a read-then-whole-item PutItem, so it derives the shared
+# status from a snapshot that may be stale by the time it writes — and then
+# replaces the WHOLE item, restoring the other provider's overwritten field
+# along with it. Two providers writing at once is enough:
+#
+#   Stripe reads {stripe: active, apple: active}
+#   Apple  reads {stripe: active, apple: active}
+#   Apple  writes {apple: canceled, stripe: active}   -> derived "active"
+#   Stripe writes {stripe: canceled, apple: active}   -> derived "active"
+#
+# Both subscriptions have ended and the row says active, with a phantom live
+# provider that nothing will ever clear. Splitting the field per provider is
+# what made this reachable: before it, the second write simply won.
+#
+# So each setter asserts the OTHER provider's status is still what it read, and
+# retries against fresh state when it is not. Cheap because the conflict needs
+# simultaneous dual-provider webhooks for one owner.
+_CAS_ATTEMPTS = 4
+
+
+def _unchanged_since_read(row: dict, field: str, values: dict) -> str:
+    """Condition asserting ``field`` still holds the value ``row`` was read with."""
+    seen = row.get(field)
+    if seen is None:
+        return f"attribute_not_exists({field})"
+    values[":cas_seen"] = seen
+    return f"{field} = :cas_seen"
+
+
+class CrossProviderWriteConflict(Exception):
+    """Lost the cross-provider compare-and-set too many times running.
+
+    Raised rather than silently returning, because the callers are webhook
+    handlers: Stripe and Apple both redeliver on a 5xx, so failing loudly gets
+    the update applied later, while swallowing it drops a cancellation on the
+    floor and leaves someone with access they stopped paying for.
+    """
+
+
+async def _put_with_apple_cas(owner_id: str, mutate) -> dict | None:
+    """Read-modify-write the billing row, asserting Apple's status held still.
+
+    The Stripe half of the compare-and-set described above. ``mutate(row)``
+    applies the Stripe-owned changes in place; everything about reading,
+    conditioning, retrying and publishing is identical for both Stripe setters,
+    so it lives here rather than being copied into each.
+
+    Returns None only when there is no billing row — the existing "a stray
+    webhook must not upsert a phantom row" contract both setters already had.
+    """
+    for attempt in range(_CAS_ATTEMPTS):
+        existing = await get_by_owner_id(owner_id)
+        if existing is None:
+            return None
+
+        # Read BEFORE mutate, so the condition describes the row we based the
+        # derived status on rather than the one we are about to write.
+        values: dict = {}
+        condition = _unchanged_since_read(existing, "apple_subscription_status", values)
+
+        mutate(existing)
+        existing["updated_at"] = utc_now_iso()
+
+        kwargs: dict = {"Item": existing, "ConditionExpression": condition}
+        # DynamoDB rejects an empty ExpressionAttributeValues, and the
+        # attribute_not_exists form binds no values at all.
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
+
+        try:
+            await run_in_thread(_get_table().put_item, **kwargs)
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            logger.info(
+                "billing_repo.stripe_cas_retry owner_id=%s attempt=%s — Apple wrote underneath us",
+                owner_id,
+                attempt + 1,
+            )
+            continue
+
+        publish_status_changed(owner_id)
+        return existing
+
+    raise CrossProviderWriteConflict(f"stripe write for {owner_id} lost the cross-provider CAS {_CAS_ATTEMPTS} times")
+
+
 async def set_apple_subscription(
     owner_id: str,
     *,
@@ -213,9 +300,46 @@ async def set_apple_subscription(
         # Never "" — it keys a GSI, and DynamoDB rejects the whole PutItem.
         raise ValueError("original_transaction_id must be non-empty (it keys a GSI)")
 
+    for attempt in range(_CAS_ATTEMPTS):
+        written = await _try_set_apple_subscription(
+            owner_id,
+            original_transaction_id=original_transaction_id,
+            status=status,
+            expires_at=expires_at,
+            signed_date=signed_date,
+        )
+        if written is not _CAS_LOST:
+            return written  # type: ignore[return-value]
+        logger.info(
+            "billing_repo.apple_cas_retry owner_id=%s attempt=%s — Stripe wrote underneath us",
+            owner_id,
+            attempt + 1,
+        )
+    raise CrossProviderWriteConflict(f"apple write for {owner_id} lost the cross-provider CAS {_CAS_ATTEMPTS} times")
+
+
+#: Sentinel distinguishing "lost the cross-provider CAS, retry" from None,
+#: which means "deliberately not applied" and must never be retried.
+_CAS_LOST = object()
+
+
+async def _try_set_apple_subscription(
+    owner_id: str,
+    *,
+    original_transaction_id: str,
+    status: str,
+    expires_at: int | None,
+    signed_date: int | None,
+):
+    """One attempt. Returns the row, None (do not retry), or ``_CAS_LOST``."""
     existing = await get_by_owner_id(owner_id)
     if existing is None:
         return None
+
+    # Captured from the row AS READ, before _adopt_legacy_status can write to
+    # this very field — the condition is about the pre-write state.
+    cas_values: dict = {}
+    cross_provider = _unchanged_since_read(existing, "stripe_subscription_status", cas_values)
 
     existing["apple_original_transaction_id"] = original_transaction_id
     # Must run BEFORE Apple's status joins the row, while the shared field
@@ -273,22 +397,46 @@ async def set_apple_subscription(
     conditions.append("(attribute_not_exists(apple_original_transaction_id) OR apple_original_transaction_id = :otid)")
     values[":otid"] = original_transaction_id
 
-    kwargs: dict = {"Item": existing}
-    if conditions:
-        kwargs["ConditionExpression"] = " AND ".join(conditions)
-        kwargs["ExpressionAttributeValues"] = values
+    # Cross-provider compare-and-set. Without it this whole-item write puts back
+    # the Stripe status from our snapshot, silently resurrecting a subscription
+    # Stripe cancelled a moment ago.
+    conditions.append(cross_provider)
+    values.update(cas_values)
+
+    kwargs: dict = {
+        "Item": existing,
+        "ConditionExpression": " AND ".join(conditions),
+        "ExpressionAttributeValues": values,
+    }
 
     try:
         await run_in_thread(table.put_item, **kwargs)
     except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # DynamoDB does not say WHICH condition failed, so re-read and ask our
+        # own fences directly. If they still refuse, the write was deliberately
+        # rejected and must NOT be retried — retrying a stale notification is
+        # how an expiry gets undone. Anything else means only the cross-provider
+        # value moved, which is exactly what a retry fixes.
+        fresh = await get_by_owner_id(owner_id)
+        if fresh is None:
+            return None
+        bound_to = fresh.get("apple_original_transaction_id")
+        if bound_to is not None and bound_to != original_transaction_id:
+            logger.info(
+                "billing_repo.apple_write_rejected owner_id=%s — row bound to a different transaction",
+                owner_id,
+            )
+            return None
+        if signed_date is not None and (fresh.get("apple_last_signed_date") or 0) > signed_date:
             logger.info(
                 "billing_repo.apple_write_stale owner_id=%s signed_date=%s — newer already applied",
                 owner_id,
                 signed_date,
             )
             return None
-        raise
+        return _CAS_LOST
 
     publish_status_changed(owner_id)
     return existing
@@ -659,33 +807,27 @@ async def set_subscription(
     ``set_team_subscription`` separately/afterward to (re)populate seat
     fields for live per-seat subs.
     """
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
 
-    existing["stripe_subscription_id"] = subscription_id
-    # Stripe's own status, recorded alongside the shared one so the two
-    # providers can be COMBINED rather than overwriting each other (see
-    # _effective_status). Without this the shared field is last-writer-wins and
-    # an Apple expiry cancels a live Stripe subscription — or vice versa.
-    existing["stripe_subscription_status"] = status
-    _apply_effective_status(existing, prefer="stripe")
-    # Always overwrite trial_end so a cancellation (trial_end=None) actually
-    # clears the field (otherwise a stale trial countdown lingers after
-    # subscription.deleted).
-    if trial_end is not None:
-        existing["trial_end"] = trial_end
-    else:
-        existing.pop("trial_end", None)
-    if clear_seat_fields:
-        existing.pop("subscription_item_id", None)
-        existing.pop("seat_count", None)
-    existing["updated_at"] = utc_now_iso()
+    def _mutate(existing: dict) -> None:
+        existing["stripe_subscription_id"] = subscription_id
+        # Stripe's own status, recorded alongside the shared one so the two
+        # providers can be COMBINED rather than overwriting each other (see
+        # _effective_status). Without this the shared field is last-writer-wins
+        # and an Apple expiry cancels a live Stripe subscription — or vice versa.
+        existing["stripe_subscription_status"] = status
+        _apply_effective_status(existing, prefer="stripe")
+        # Always overwrite trial_end so a cancellation (trial_end=None) actually
+        # clears the field (otherwise a stale trial countdown lingers after
+        # subscription.deleted).
+        if trial_end is not None:
+            existing["trial_end"] = trial_end
+        else:
+            existing.pop("trial_end", None)
+        if clear_seat_fields:
+            existing.pop("subscription_item_id", None)
+            existing.pop("seat_count", None)
 
-    table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
-    publish_status_changed(owner_id)
-    return existing
+    return await _put_with_apple_cas(owner_id, _mutate)
 
 
 async def set_team_subscription(
@@ -703,24 +845,18 @@ async def set_team_subscription(
     billing row exists, so a stray team webhook can never upsert a phantom
     ``{owner_id, ...}`` row with no stripe_customer_id.
     """
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
 
-    existing["stripe_subscription_id"] = subscription_id
-    # Same derivation as set_subscription — this is a Stripe writer too, and
-    # writing the shared field directly would make it last-writer-wins against
-    # Apple for any org that also has an IAP subscription on the row.
-    existing["stripe_subscription_status"] = status
-    _apply_effective_status(existing, prefer="stripe")
-    existing["subscription_item_id"] = subscription_item_id
-    existing["seat_count"] = seat_count
-    existing["updated_at"] = utc_now_iso()
+    def _mutate(existing: dict) -> None:
+        existing["stripe_subscription_id"] = subscription_id
+        # Same derivation as set_subscription — this is a Stripe writer too, and
+        # writing the shared field directly would make it last-writer-wins
+        # against Apple for any org that also has an IAP subscription.
+        existing["stripe_subscription_status"] = status
+        _apply_effective_status(existing, prefer="stripe")
+        existing["subscription_item_id"] = subscription_item_id
+        existing["seat_count"] = seat_count
 
-    table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
-    publish_status_changed(owner_id)
-    return existing
+    return await _put_with_apple_cas(owner_id, _mutate)
 
 
 _VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth"})

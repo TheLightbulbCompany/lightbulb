@@ -783,3 +783,82 @@ async def test_mobile_web_checkout_mints_fresh_when_the_marker_cannot_be_retriev
 
     session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
     assert session.id == "cs_new"
+
+
+# ---------------------------------------------------------------------------
+# Environment fallback. App Review buys with SANDBOX transactions against the
+# PRODUCTION backend, so pinning one environment fails the very submission
+# this feature exists to pass.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_transaction_verifies_against_a_production_backend(monkeypatch):
+    """The App Review case. A production-pinned verifier rejects the reviewer's
+    own purchase, and the submission fails for a reason no log makes obvious."""
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ENVIRONMENT", "production")
+
+    prod = SimpleNamespace(
+        verify_and_decode_signed_transaction=lambda _: (_ for _ in ()).throw(ValueError("wrong environment"))
+    )
+    sandbox = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    built: list[str] = []
+
+    def _fake_verifier(environment_name: str = ""):
+        built.append(environment_name)
+        return prod if environment_name == "production" else sandbox
+
+    with (
+        patch.object(apple_iap, "_verifier", _fake_verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert result.status == "active"
+    # Configured environment first — the common case must not pay for the rare one.
+    assert built == ["production", "sandbox"]
+
+
+def test_the_configured_environment_is_tried_first_and_alone_when_it_works():
+    """The fallback must not double every verification in steady state."""
+    built: list[str] = []
+
+    def _fake_verifier(environment_name: str = ""):
+        built.append(environment_name)
+        return SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+
+    with patch.object(apple_iap, "_verifier", _fake_verifier):
+        apple_iap.verify_transaction("jws")
+
+    assert built == ["sandbox"]
+
+
+def test_an_unbuildable_fallback_does_not_break_the_working_environment(monkeypatch):
+    """Sandbox needs no APPLE_IAP_APP_APPLE_ID and production does, so on a dev
+    backend the production fallback cannot be constructed. That must be skipped,
+    not raised — otherwise dev can verify nothing at all."""
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ENVIRONMENT", "sandbox")
+
+    def _fake_verifier(environment_name: str = ""):
+        if environment_name == "production":
+            raise AppleIapNotConfigured("APPLE_IAP_APP_APPLE_ID is required for the production environment")
+        return SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+
+    with patch.object(apple_iap, "_verifier", _fake_verifier):
+        assert apple_iap.verify_transaction("jws").status == "active"
+
+
+def test_an_unconfigured_primary_still_raises_not_configured():
+    """Feature-off must stay a 503, not become a generic rejection."""
+
+    def _fake_verifier(environment_name: str = ""):
+        raise AppleIapNotConfigured("Apple IAP is off in this environment")
+
+    with patch.object(apple_iap, "_verifier", _fake_verifier):
+        with pytest.raises(AppleIapNotConfigured):
+            apple_iap.verify_transaction("jws")

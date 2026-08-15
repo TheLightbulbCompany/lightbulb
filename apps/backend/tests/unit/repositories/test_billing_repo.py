@@ -1018,3 +1018,118 @@ async def test_team_seat_writes_go_through_the_same_derivation(dynamodb_table):
     row = await billing_repo.get_by_owner_id("org_1")
     assert row["stripe_subscription_status"] == "canceled"
     assert row["subscription_status"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# Cross-provider atomicity. Both setters read the row, derive the shared status
+# from that snapshot, and re-put the WHOLE item — so a concurrent write by the
+# other provider is restored from the stale snapshot along with everything else.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apple_write_cannot_resurrect_a_stripe_cancellation(dynamodb_table):
+    """The phantom-active row: both subscriptions end, the row says active.
+
+    Apple reads {stripe: active}, Stripe cancels, Apple writes its whole item
+    back — carrying the pre-cancellation Stripe status with it.
+    """
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_race", "cus_race")
+    await billing_repo.set_subscription(owner_id="user_race", subscription_id="sub_x", status="active")
+    await billing_repo.set_apple_subscription(
+        "user_race", original_transaction_id="2000000000000020", status="active", expires_at=None
+    )
+
+    # Apple's read happens here...
+    real_get = billing_repo.get_by_owner_id
+    interleaved = {"done": False}
+
+    async def _get_then_let_stripe_cancel(owner_id, **kwargs):
+        row = await real_get(owner_id, **kwargs)
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            # ...and Stripe's cancellation lands before Apple writes.
+            billing_repo.get_by_owner_id = real_get
+            await billing_repo.set_subscription(owner_id="user_race", subscription_id=None, status="canceled")
+            billing_repo.get_by_owner_id = _get_then_let_stripe_cancel
+        return row
+
+    billing_repo.get_by_owner_id = _get_then_let_stripe_cancel
+    try:
+        await billing_repo.set_apple_subscription(
+            "user_race", original_transaction_id="2000000000000020", status="canceled", expires_at=None
+        )
+    finally:
+        billing_repo.get_by_owner_id = real_get
+
+    row = await billing_repo.get_by_owner_id("user_race")
+    assert row["stripe_subscription_status"] == "canceled"
+    assert row["apple_subscription_status"] == "canceled"
+    assert row["subscription_status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_stripe_write_cannot_resurrect_an_apple_expiry(dynamodb_table):
+    """The mirror image, with Stripe as the stale writer."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_race2", "cus_race2")
+    await billing_repo.set_apple_subscription(
+        "user_race2", original_transaction_id="2000000000000021", status="active", expires_at=None
+    )
+    await billing_repo.set_subscription(owner_id="user_race2", subscription_id="sub_y", status="active")
+
+    real_get = billing_repo.get_by_owner_id
+    interleaved = {"done": False}
+
+    async def _get_then_let_apple_expire(owner_id, **kwargs):
+        row = await real_get(owner_id, **kwargs)
+        if not interleaved["done"]:
+            interleaved["done"] = True
+            billing_repo.get_by_owner_id = real_get
+            await billing_repo.set_apple_subscription(
+                "user_race2", original_transaction_id="2000000000000021", status="canceled", expires_at=None
+            )
+            billing_repo.get_by_owner_id = _get_then_let_apple_expire
+        return row
+
+    billing_repo.get_by_owner_id = _get_then_let_apple_expire
+    try:
+        await billing_repo.set_subscription(owner_id="user_race2", subscription_id=None, status="canceled")
+    finally:
+        billing_repo.get_by_owner_id = real_get
+
+    row = await billing_repo.get_by_owner_id("user_race2")
+    assert row["apple_subscription_status"] == "canceled"
+    assert row["stripe_subscription_status"] == "canceled"
+    assert row["subscription_status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_apple_notification_is_still_refused_not_retried(dynamodb_table):
+    """The retry must not become a way around the watermark: an out-of-order
+    notification has to keep losing however many times it is re-attempted."""
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("user_wm", "cus_wm")
+    await billing_repo.set_apple_subscription(
+        "user_wm",
+        original_transaction_id="2000000000000022",
+        status="canceled",
+        expires_at=None,
+        signed_date=2_000,
+    )
+
+    result = await billing_repo.set_apple_subscription(
+        "user_wm",
+        original_transaction_id="2000000000000022",
+        status="active",
+        expires_at=None,
+        signed_date=1_000,
+    )
+
+    assert result is None
+    row = await billing_repo.get_by_owner_id("user_wm")
+    assert row["apple_subscription_status"] == "canceled"

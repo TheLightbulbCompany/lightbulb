@@ -119,9 +119,9 @@ _REVOKING_TYPES = frozenset({"EXPIRED", "REFUND", "REVOKE"})
 _GRACE_TYPES = frozenset({"DID_FAIL_TO_RENEW"})
 
 
-@lru_cache(maxsize=1)
-def _verifier():
-    """Build the SignedDataVerifier once.
+@lru_cache(maxsize=4)
+def _verifier(environment_name: str = ""):
+    """Build a SignedDataVerifier for one Apple environment.
 
     Cached because constructing it parses Apple's root certificates, and because
     a per-request rebuild would make every verification pay that cost on the
@@ -129,6 +129,11 @@ def _verifier():
     a backend booted without Apple settings (local dev, unit tests, any env
     before the Paid Apps Agreement is active) still starts — the router turns
     that into a 503 rather than a 500.
+
+    ``environment_name`` defaults to the configured one; :func:`_verify_signed`
+    passes the other explicitly. A verifier is bound to ONE environment and
+    rejects the other's transactions outright, which matters more than it
+    sounds — see that function.
     """
     # APPLE_IAP_PRODUCT_ID is required here, NOT merely checked per-transaction.
     # The rollout wires the bundle id and certs in a separate step from the
@@ -154,7 +159,8 @@ def _verifier():
     if not root_certs:
         raise AppleIapNotConfigured(f"no Apple root certificates found in {certs_dir}")
 
-    environment = Environment.PRODUCTION if settings.APPLE_IAP_ENVIRONMENT == "production" else Environment.SANDBOX
+    resolved = environment_name or settings.APPLE_IAP_ENVIRONMENT
+    environment = Environment.PRODUCTION if resolved == "production" else Environment.SANDBOX
 
     # SignedDataVerifier compares this against Apple's NUMERIC appAppleId, so a
     # string never matches and every production notification fails verification
@@ -171,7 +177,7 @@ def _verifier():
             raise AppleIapNotConfigured(f"APPLE_IAP_APP_APPLE_ID must be numeric, got {raw_app_id!r}") from e
     # Apple requires it in production; sandbox tolerates its absence.
     if environment == Environment.PRODUCTION and app_apple_id is None:
-        raise AppleIapNotConfigured("APPLE_IAP_APP_APPLE_ID is required when APPLE_IAP_ENVIRONMENT=production")
+        raise AppleIapNotConfigured("APPLE_IAP_APP_APPLE_ID is required for the production environment")
 
     return SignedDataVerifier(
         root_certificates=root_certs,
@@ -180,6 +186,57 @@ def _verifier():
         bundle_id=settings.APPLE_IAP_BUNDLE_ID,
         app_apple_id=app_apple_id,
     )
+
+
+def _verify_signed(method: str, blob: str):
+    """Verify a JWS against the configured environment, then the other one.
+
+    A SignedDataVerifier is bound to ONE environment and rejects the other's
+    payloads as unverifiable, which would be fine if traffic were segregated by
+    deployment — and it is not. **App Review tests every submission with SANDBOX
+    transactions, sent to the PRODUCTION backend.** Pinning production to
+    `production` alone therefore rejects the reviewer's own purchase and fails
+    the submission this whole feature exists to pass. TestFlight has the same
+    shape: sandbox transactions against whichever backend the build points at.
+
+    So the configured environment is tried first (the common case, one call) and
+    the other only as a fallback. Trying both is not a weakening: each verifier
+    still enforces the full chain, bundle id, and app id — the environment is
+    the only thing that differs, and Apple stamps it inside the signed payload.
+
+    A fallback verifier that cannot be BUILT (production needs
+    APPLE_IAP_APP_APPLE_ID, sandbox does not) is skipped rather than raised, or
+    a dev backend with no app id configured could never verify anything.
+    """
+    primary = settings.APPLE_IAP_ENVIRONMENT or "sandbox"
+    fallback = "sandbox" if primary == "production" else "production"
+
+    # Not configured at all is a 503, and only the PRIMARY gets to say so.
+    try:
+        return getattr(_verifier(primary), method)(blob)
+    except AppleIapNotConfigured:
+        raise
+    except Exception as e:  # noqa: BLE001 — any verifier failure is a rejection
+        first_error = e
+
+    # Reached only when the configured environment rejected the payload, so the
+    # steady-state path builds and calls exactly ONE verifier.
+    other = _fallback_verifier(fallback)
+    if other is not None:
+        try:
+            return getattr(other, method)(blob)
+        except Exception:  # noqa: BLE001 — report the primary's error, not this one
+            pass
+
+    raise AppleIapError(f"signed payload failed verification: {first_error}")
+
+
+def _fallback_verifier(environment_name: str):
+    """The other environment's verifier, or None when it cannot be built."""
+    try:
+        return _verifier(environment_name)
+    except AppleIapNotConfigured:
+        return None
 
 
 def _status_for(
@@ -263,12 +320,7 @@ def verify_transaction(signed_transaction: str) -> AppleSubscription:
     Raises AppleIapError when the signature, chain, bundle id, environment, or
     product id does not check out.
     """
-    try:
-        payload = _verifier().verify_and_decode_signed_transaction(signed_transaction)
-    except AppleIapNotConfigured:
-        raise
-    except Exception as e:  # noqa: BLE001 — any verifier failure is a rejection
-        raise AppleIapError(f"signed transaction failed verification: {e}") from e
+    payload = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
     return _subscription_from_transaction(payload, None)
 
 
@@ -373,7 +425,7 @@ async def apply_notification(signed_payload: str) -> tuple[str, str] | None:
       ended. An older signedDate than the one already applied is dropped.
     """
     try:
-        notification = _verifier().verify_and_decode_notification(signed_payload)
+        notification = _verify_signed("verify_and_decode_notification", signed_payload)
     except AppleIapNotConfigured:
         raise
     except Exception as e:  # noqa: BLE001
@@ -430,7 +482,7 @@ async def _apply_verified_notification(
         return None
 
     try:
-        transaction = _verifier().verify_and_decode_signed_transaction(signed_transaction)
+        transaction = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
     except Exception as e:  # noqa: BLE001
         raise AppleIapError(f"notification transaction failed verification: {e}") from e
 

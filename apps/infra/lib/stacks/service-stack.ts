@@ -1253,6 +1253,31 @@ export class ServiceStack extends cdk.Stack {
           ? (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD ?? "")
           : (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV ??
               "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"),
+      // Apple IAP. Every one of these is REQUIRED for core/services/apple_iap
+      // to build a verifier at all — with any of them missing the link and
+      // notification endpoints answer 503, so a completed StoreKit purchase
+      // never grants a plan and renewals are never recorded. They are plain env
+      // vars, not secrets: the bundle/product/app ids are public (they ship in
+      // the binary and the App Store listing), and the actual trust anchor is
+      // the certificate directory below.
+      APPLE_IAP_BUNDLE_ID: "co.isol8.mobile",
+      // Must match the product created in App Store Connect EXACTLY, and the
+      // SKU the app requests (EXPO_PUBLIC_APPLE_IAP_PRODUCT_ID in eas.json). A
+      // transaction naming anything else is refused rather than granted.
+      APPLE_IAP_PRODUCT_ID: "co.isol8.mobile.plan.monthly",
+      // Numeric App Store app id — the same ascAppId eas.json submits against.
+      // Apple compares it numerically; the backend converts and rejects a
+      // non-numeric value as misconfiguration.
+      APPLE_IAP_APP_APPLE_ID: "6788944100",
+      // The PRIMARY environment only. Both are accepted at verification time
+      // (see apple_iap._verify_signed) because App Review and TestFlight send
+      // SANDBOX transactions to whichever backend the build points at —
+      // including production.
+      APPLE_IAP_ENVIRONMENT: env === "prod" ? "production" : "sandbox",
+      // Apple's root CAs, baked into the backend image. The chain is PINNED to
+      // these, so a missing or wrong directory disables the feature rather than
+      // weakening it.
+      APPLE_IAP_ROOT_CERTS_DIR: "/app/certs/apple",
       EFS_MOUNT_PATH: "/mnt/efs/users",
       EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
       ECS_CLUSTER_ARN: props.container.cluster.clusterArn,

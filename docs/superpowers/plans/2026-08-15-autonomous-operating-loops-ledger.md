@@ -611,6 +611,30 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   the PR unmerged until the authenticated dev proxy create/replay/replay-miss
   smoke passes, the Paperclip image is separately promoted and migrated in
   production, and deployed production behavior is verified.
+- 2026-08-15: The authenticated dev public-proxy idempotency smoke passed for
+  company `af1534e9-3b59-495d-ab38-701bb212d21f` (`Codex Loops 20260815`).
+  The authoritative pre-test Paperclip roster contained exactly five agents:
+  Friday, Atlas, and the three previously recorded pre-fix Forge orphans. A
+  direct `openclaw_gateway` create with one `Idempotency-Key` returned `201`
+  and agent `69f3680e-447d-4061-9595-6cf26f08733c` (request
+  `5833cbfd-d798-4540-98ea-89f42327cc97`). Replaying the same key with a
+  changed name and adapter payload returned `200`, the same agent ID, and the
+  original name (request `74df967a-bf38-4c93-9529-4ae2733b354a`). A fresh
+  key with `Idempotency-Replay-Only: true` returned structured `409`
+  `agent_create_idempotency_replay_miss` (request
+  `c908c23b-5f24-464e-b5db-9a9da5fbc4de`); replay-only without a key and a
+  256-character key both returned `422`. Deleting the one disposable agent
+  returned `200` (request `d23c20e2-8a89-4ec3-850c-d6d7da99cc67`), and an
+  exact sorted-ID comparison proved the five-agent baseline was restored.
+  The first probe mistakenly used Paperclip's host-local `process` adapter;
+  Isol8 rejected every such request with `403 Adapter not permitted` before
+  mutation, and the baseline stayed exact. The corrected smoke used
+  `openclaw_gateway`, which is the Isol8 customer-agent runtime.
+  Browser `fetch` of the larger agent-list response separately reproduced
+  `ERR_CONTENT_DECODING_FAILED`; the same public endpoint succeeded through
+  Playwright's request context with `Accept-Encoding: identity`, indicating a
+  proxy response-header/body encoding defect rather than a Paperclip contract
+  failure. Track that defect independently; it did not alter any roster state.
 
 ## Founder actions
 

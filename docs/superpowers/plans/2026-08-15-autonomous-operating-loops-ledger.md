@@ -203,7 +203,13 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   exhausted. PR #1796 was squash-merged as
   `75ecfa8716320f21a39932ab5cb2ec96a268f974`; deploy run `31871896168`
   completed successfully, including the production service and final Vercel
-  jobs.
+  jobs. The deployment alone did not mutate the already-provisioned founder
+  workspace. The production admin `Regenerate config` flow then succeeded
+  while restoring runtime `skills` and `wizard` subtrees. Read-only ECS proof
+  showed the legacy `pick ONE task ... execute it` text absent and the new
+  `CEO/company-control action`, `COMPANY-CONSTRAINT-TAKEN`, and
+  `NO-EXECUTABLE-COMPANY-CONSTRAINT` anchors present in Friday's live
+  `AGENTS.md`.
 - 2026-08-15: Agent-facing Paperclip primitives PR #1797 was built at head
   `98863f3fcb2e4ea8458fafccc527fb92bfa987e0`. Local evidence is 6,470 unit
   tests passed with 7 skipped, 94 focused proxy tests passed, and 5 frontend

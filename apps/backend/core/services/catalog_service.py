@@ -309,7 +309,8 @@ def _remap_cron_jobs_for_deploy(
     ``createdAtMs``, and ``updatedAtMs`` already stripped (by
     ``catalog_slice.filter_cron_jobs_for_agent``). For each remaining
     template entry, we set:
-      - a fresh ``id`` (random UUID)
+      - a stable per-agent/index ``id`` (UUIDv5), so a retry after the cron
+        write but before the deploy completion marker upserts the same job
       - the deployer's new ``agentId``
       - ``delivery.accountId`` rewritten to the new agent id — OpenClaw's
         per-agent channel routing convention pairs ``accountId`` with
@@ -340,11 +341,11 @@ def _remap_cron_jobs_for_deploy(
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     owner_id_lower = owner_id.lower()
     out: list[dict] = []
-    for job in template_jobs:
+    for index, job in enumerate(template_jobs):
         if not isinstance(job, dict):
             continue
         new_job = copy.deepcopy(job)
-        new_job["id"] = str(uuid.uuid4())
+        new_job["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"isol8:cron:v1:{new_agent_id}:{index}"))
         new_job["agentId"] = new_agent_id
         new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"
         new_job["createdAtMs"] = now_ms

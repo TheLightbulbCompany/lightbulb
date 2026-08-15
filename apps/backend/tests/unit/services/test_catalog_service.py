@@ -14,6 +14,7 @@ import os
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+import asyncio  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import tarfile  # noqa: E402
@@ -696,6 +697,67 @@ async def test_deploy_carries_cron_jobs_with_remapped_id_and_agent():
     # pull exactly these jobs back out of cron/jobs.json.
     sidecar = ws.write_template_sidecar.call_args.kwargs["content"]
     assert sidecar["cron_job_ids"] == [job["id"]]
+
+
+def test_cron_job_ids_are_stable_for_deploy_recovery():
+    from core.services.catalog_service import _remap_cron_jobs_for_deploy
+
+    template = [{"name": "Morning brief", "schedule": {"kind": "cron", "expr": "0 9 * * *"}}]
+    first = _remap_cron_jobs_for_deploy(template, new_agent_id="agent_abc", owner_id="owner")
+    second = _remap_cron_jobs_for_deploy(template, new_agent_id="agent_abc", owner_id="owner")
+
+    assert first[0]["id"] == second[0]["id"]
+    assert (
+        first[0]["id"] != _remap_cron_jobs_for_deploy(template, new_agent_id="agent_other", owner_id="owner")[0]["id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_crash_after_cron_append_retries_without_duplicate(monkeypatch):
+    import core.services.catalog_service as catalog_module
+    import core.services.config_patcher as config_patcher
+
+    jobs_by_id: dict[str, dict] = {}
+
+    async def _upsert(_owner_id: str, jobs: list[dict]):
+        for job in jobs:
+            jobs_by_id[job["id"]] = job
+
+    async def _no_reconcile(_owner_id: str):
+        return None
+
+    monkeypatch.setattr(config_patcher, "append_cron_jobs", _upsert)
+    monkeypatch.setattr(catalog_module, "reconcile_integrations", _no_reconcile)
+
+    svc, workspace, _aux, _pair, _gw = _make_service()
+    workspace.mark_template_install_complete.side_effect = [asyncio.CancelledError(), None]
+    slice_ = _slice_with_agent(cron_jobs=[{"name": "Morning brief", "schedule": {"kind": "cron", "expr": "0 9 * * *"}}])
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.deploy_from_artifact(
+            owner_id="owner",
+            slug="demo",
+            manifest={"name": "Demo", "version": 1},
+            slice_=slice_,
+            tar_bytes=b"<gz>",
+            container_ip="10.0.0.1",
+            container_token="tok",
+            new_agent_id="agent_abc",
+        )
+
+    await svc.deploy_from_artifact(
+        owner_id="owner",
+        slug="demo",
+        manifest={"name": "Demo", "version": 1},
+        slice_=slice_,
+        tar_bytes=b"<gz>",
+        container_ip="10.0.0.1",
+        container_token="tok",
+        new_agent_id="agent_abc",
+    )
+
+    assert len(jobs_by_id) == 1
+    workspace.mark_template_install_complete.assert_called_with("owner", "agent_abc")
 
 
 @pytest.mark.asyncio

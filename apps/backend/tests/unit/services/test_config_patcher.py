@@ -778,6 +778,25 @@ async def test_append_cron_jobs_extends_existing_file(cron_efs_dir):
 
 
 @pytest.mark.asyncio
+async def test_append_cron_jobs_replay_upserts_same_id_without_duplicate(cron_efs_dir):
+    from core.services.config_patcher import append_cron_jobs
+
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "stable", "agentId": "agent_abc", "name": "First"}],
+    )
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "stable", "agentId": "agent_abc", "name": "Recovered"}],
+    )
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    with open(jobs_path) as f:
+        data = json.load(f)
+    assert data["jobs"] == [{"id": "stable", "agentId": "agent_abc", "name": "Recovered"}]
+
+
+@pytest.mark.asyncio
 async def test_remove_cron_jobs_removes_only_the_named_ids(cron_efs_dir):
     """The deploy-unwind path: a failed deploy's appended jobs come back out
     by id, leaving every other job untouched."""

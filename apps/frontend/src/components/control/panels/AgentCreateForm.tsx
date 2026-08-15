@@ -25,8 +25,28 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
   // upgrade instead of rendering an error the user can do nothing about.
   const [atAgentLimit, setAtAgentLimit] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
   const callRpc = useGatewayRpcMutation();
   const { upgradeToUltra } = useBilling();
+
+  // Mirrors UltraUpgradeRow in app/settings/page.tsx. Swallowing a failure
+  // matters more here than there: this button is the ONLY way past the wall the
+  // user just hit, so an inert click with no feedback strands them.
+  const handleUpgrade = useCallback(async () => {
+    capture("billing_ultra_upgrade_clicked", { source: "agent_limit" });
+    setUpgradeError(null);
+    setUpgrading(true);
+    try {
+      // The fresh-checkout path redirects away and never returns; the in-place
+      // swap resolves here. Clear the spinner either way.
+      await upgradeToUltra();
+    } catch {
+      setUpgradeError("Couldn't start the upgrade. Please try again.");
+    } finally {
+      setUpgrading(false);
+    }
+  }, [upgradeToUltra]);
 
   const normalizedId = normalizeAgentId(name);
   const clientError = validateAgentName(name, existingNames);
@@ -130,16 +150,17 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
       {atAgentLimit && (
         <div className="rounded-md border border-border bg-muted/40 p-3 space-y-2">
           <p className="text-xs text-muted-foreground">{error}</p>
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => {
-              capture("billing_ultra_upgrade_clicked", { source: "agent_limit" });
-              void upgradeToUltra();
-            }}
-          >
-            Upgrade to Ultra Pro
+          <Button type="button" size="sm" disabled={upgrading} onClick={handleUpgrade}>
+            {upgrading ? (
+              <>
+                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                Starting upgrade…
+              </>
+            ) : (
+              "Upgrade to Ultra Pro"
+            )}
           </Button>
+          {upgradeError && <p className="text-xs text-red-500">{upgradeError}</p>}
         </div>
       )}
 

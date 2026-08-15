@@ -16,6 +16,8 @@ whose purpose is founder learning or reputation.
 ## Business situation and constraint
 
 - Product is in production; distribution and paying usage are near zero.
+- Isol8 is bootstrapped. Total company operating spend must remain at or below
+  `$2,000/month`; no agent may authorize new spend.
 - The activation north star is `signup_started -> chat_completed`.
 - `onboarding_ready` is infrastructure success, not activation.
 - Acquisition is attributed with persistent `first_touch_utm_*` properties.
@@ -241,7 +243,7 @@ require buyer timezone confirmation before arming.
 | 10 | Vera | Revenue recovery | Stripe payment/cancel/refund events | Recovery action or governed decision | Final Stripe object state and recovered revenue |
 | 11 | Gauge | Activation exception watch | Filtered PostHog webhook | Diagnosed blocker and assigned issue | Browser PostHog events plus CloudWatch direction |
 | 12 | Gauge | Activation and GTM scorecard | Weekly schedule | Funnel, attribution, blockers, next constraint | PostHog browser events and first-touch properties |
-| 13 | Tally | Finance snapshot | Weekly schedule | Spend/revenue/margin/cash-freshness snapshot | AWS, Stripe, usage counters; stale cash refusal |
+| 13 | Tally | Finance snapshot | Weekly schedule | Spend/revenue/margin/budget/cash-freshness snapshot | Known spend vs `$2,000` cap, AWS, Stripe, usage counters; stale/incomplete-data refusal |
 
 ### Review policy
 
@@ -370,6 +372,13 @@ Exit: seven installed, six active, no active Custom agent.
 - Create all 13 routine rows and every required trigger while paused.
 - Add integration variables, thresholds, repository names, ICP, cash amount,
   and cash date without storing credentials in descriptions.
+- Set `MONTHLY_SPEND_CAP_USD=2000`. Tally reports month-to-date known spend,
+  projected month-end spend, remaining headroom, and source coverage. It warns
+  when projected spend exceeds the cap or known spend reaches 80% of it.
+- Keep `CASH_ON_HAND_USD`, `CASH_AS_OF`, and
+  `FIXED_MONTHLY_COMMITTED_SPEND_USD` as founder-supplied variables. Tally must
+  not state runway or total operating burn when cash is stale, fixed costs are
+  missing, or the connected sources do not cover the whole company.
 - Add GitHub's `opened|reopened` action fence as the first instruction.
 - Configure PostHog filtering and stable escalation `ruleKey` values.
 - Ensure every routine names a work product or legitimate null result.
@@ -431,7 +440,10 @@ poll that creates empty wakes and unnecessary inference cost.
 1. At the final Gmail step, complete any Google reauthentication or consent that
    the existing logged-in browser session cannot satisfy without credentials.
 2. Complete credentials and sign-ins personally.
-3. Approve legal, financial, and reputation-learning decisions when surfaced.
+3. Supply cash-on-hand, its as-of date, and known non-AWS monthly commitments
+   before relying on runway or total-burn reporting.
+4. Approve legal, financial, new-spend, and reputation-learning decisions when
+   surfaced.
 
 Browser/Chromium repair is not a prerequisite for these loops because direct
 web fetch/search and connected CLIs cover the first versions.
@@ -451,7 +463,8 @@ web fetch/search and connected CLIs cover the first versions.
   retained human operator endpoints require Clerk platform-admin auth.
 - Target marketplace packages do not carry the legacy Lobster orchestration.
 - The weekly scorecard reports activation, attributed acquisition, paid state,
-  onboarding blockers, cost per active container, and current priority.
+  onboarding blockers, cost per active container, known spend against the
+  `$2,000/month` ceiling, source coverage, and current priority.
 - The 90-day GTM goal carries its activation and customer targets; all six
   finite GTM projects have owners, evidence-backed issues, and completion state.
 - Founder attention is limited to genuine authority and learning edges.

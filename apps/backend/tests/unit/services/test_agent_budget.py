@@ -93,3 +93,33 @@ async def test_missing_billing_row_still_enforces(monkeypatch):
     )
     with pytest.raises(HTTPException):
         await enforce_agent_budget("owner")
+
+
+# ---------------------------------------------------------------------------
+# count_paperclip_agents_for_owner — terminated agents are not live agents
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terminated_agents_do_not_consume_budget(monkeypatch):
+    """Rejecting a marketplace hire TERMINATES its pre-created agent rather
+    than deleting it, and Paperclip's company listing returns terminated rows.
+
+    Counting them would let a few rejected hires permanently eat an owner's
+    plan budget and lock them out of agents they are entitled to — a false
+    refusal, the worse direction for a limit to be wrong in.
+    """
+    from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
+
+    roster = [
+        {"id": "1", "status": "idle"},
+        {"id": "2", "status": "running"},
+        {"id": "3", "status": "terminated"},
+        {"id": "4", "status": "terminated"},
+        {"id": "5"},  # no status key at all — counts, absence is not termination
+    ]
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.fetch_paperclip_agents_for_owner",
+        AsyncMock(return_value=roster),
+    )
+    assert await count_paperclip_agents_for_owner("owner") == 3

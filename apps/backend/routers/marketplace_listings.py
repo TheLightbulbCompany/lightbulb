@@ -40,6 +40,7 @@ from core.services import (
 )
 from core.services.agent_budget import enforce_agent_budget
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
+from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from core.services.agent_routine_provisioning import create_agent_routines
 from core.services.catalog_service import (
     CatalogService,
@@ -660,7 +661,19 @@ async def deploy_listing(
         # (the provision path sizes their container by plan).
         company = (listing.get("manifest_json") or {}).get("company") or {}
         agent_count = int(company.get("agent_count", 0) or 0)
-        needs_ultra = company.get("min_plan") != "standard" or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS
+        # The package's own size is not the whole story: company_deploy_service
+        # ADDS its agents to the existing team rather than replacing it, so a
+        # standard owner already holding 8 agents could take a "standard"
+        # 5-agent package and land at 13 on the small box. Budget the SUM.
+        # A 0 from the count is undeterminable (Paperclip unreachable), not an
+        # empty roster — it drops out of the check rather than reading as "no
+        # existing agents", matching the fail-open posture everywhere else.
+        existing_agents = await count_paperclip_agents_for_owner(owner_id)
+        needs_ultra = (
+            company.get("min_plan") != "standard"
+            or agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS
+            or (existing_agents > 0 and existing_agents + agent_count > COMPANY_STANDARD_PLAN_MAX_AGENTS)
+        )
         if needs_ultra:
             account = await billing_repo.get_by_owner_id(owner_id)
             if (account or {}).get("plan") != "ultra_pro":

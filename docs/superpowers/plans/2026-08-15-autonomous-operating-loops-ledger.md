@@ -488,6 +488,23 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   `Paused` and `No runs yet`. The initial plain variable names were correctly
   removed by Paperclip's `syncRoutineVariablesWithTemplate`; definitions must
   be referenced as `{{NAME}}`, a constraint the UI currently does not explain.
+- 2026-08-15: Bounded reads of the exact production routine-detail responses
+  verified the hidden execution fields for both Friday routines. Each is
+  `paused`, assigned to Friday `d94a4048-8ab7-4ad9-84b1-df777dc93a35`, has
+  `consecutiveFailureCount=0`, `concurrencyPolicy=coalesce_if_active`,
+  `catchUpPolicy=skip_missed`, and an enabled schedule trigger with the
+  recorded cron and `America/Aruba` timezone. The daily and weekly variable
+  definitions and defaults match the values above. `executionPolicy` and
+  `parentIssueId` are still null because no reviewer stage or permanent parent
+  is configured. `autoPauseEnabled` and `autoPauseThreshold` are also null,
+  which is inheritance rather than disabled behavior: pinned Paperclip commit
+  `57d4d68e` resolves null routine values through instance general settings
+  (`server/src/services/routine-circuit-breaker.ts:48-51`), whose normalized
+  defaults are enabled with threshold three
+  (`server/src/services/instance-settings.ts:197-217`). The customer proxy
+  returns `403 Route not permitted` for the instance-general-settings route,
+  so this evidence proves the pinned effective default path but does not claim
+  a customer-visible per-routine override.
 - 2026-08-15: Customer-path setup also exposed two remaining routine-editor
   gaps. PR #1794 made `executionPolicy` pass through the BFF, but neither the
   create nor edit UI presents a routine reviewer, so Gauge cannot yet be set as
@@ -514,9 +531,23 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   `63673393c2fa4771b5e0095149faee1a` for service
   `openclaw-user_3Hwnrt08fmjmk5c46lV1BzQQEfo-00fb1677f007`, started at the
   first attempt and still `RUNNING` with health `UNKNOWN`; the dev backend and
-  Paperclip tasks were healthy. This is a cold-container readiness boundary,
-  not a partially created source agent. Retry only after the same task is
-  demonstrably ready.
+  Paperclip tasks were healthy. The customer sidebar still showed only the
+  seed roster, so the retry was deferred until that exact task was
+  demonstrably ready. The later cross-system audit below supersedes the
+  initial inference that no Paperclip-side mutation occurred.
+- 2026-08-15: The same dev task and its OpenClaw container later reported
+  `HEALTHY`, and one bounded customer-path retry completed. It exposed a more
+  serious split state: the sidebar showed only `Forge 3`, while the
+  authenticated teams-agent response contained `Forge`, `Forge 2`, and
+  `Forge 3`. Their creation order matches the two earlier connection-refused
+  responses and the later successful pairing. CloudWatch confirms both failed
+  requests reached Paperclip create before failing in `pair_with_openclaw`;
+  the third completed OpenClaw pairing, device approval, and API-key setup.
+  The current interceptor deliberately returns `ok:false` without reconciling
+  the already-created Paperclip record, and its unit test pins that orphan
+  behavior. Sanitized issue #1809 records the blocker. Do not create further
+  target agents in production until one logical create converges to one
+  Paperclip and one OpenClaw identity across retries.
 
 ## Founder actions
 

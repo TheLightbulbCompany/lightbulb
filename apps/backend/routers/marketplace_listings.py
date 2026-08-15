@@ -819,6 +819,10 @@ async def deploy_listing(
             # Nothing was installed this call, so there is nothing new to warn
             # about — the warnings belong to the deploy that actually ran.
             "warnings": [],
+            # Pending automations are NOT of that kind: they describe the
+            # agent's standing state, not this call's work, and a heal after a
+            # lost response is exactly when the buyer never saw the list.
+            "automations_pending": _pending_automations((listing.get("manifest_json") or {}).get("routines") or []),
             "already_installed": True,
         }
 

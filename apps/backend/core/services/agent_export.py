@@ -1137,19 +1137,27 @@ _TRIGGER_PORTABLE_KEYS = ("cronExpression", "timezone")
 def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     """Strip a Paperclip RoutineDetail down to its buyer-portable shape.
 
-    One entry per trigger (the routine's title/description are repeated per
-    trigger so the deploy side can recreate one routine+trigger per entry), in
-    one of two shapes:
+    Two shapes, decided per ROUTINE:
 
-    - schedule -> ``{title, description, cron, timezone}``, recreated DORMANT
-      on the buyer.
-    - webhook  -> ``{title, description, kind: "webhook", provider, event_id}``,
-      a REQUIREMENT the buyer arms themselves. The live trigger never ports:
-      its resource (repo / project / Page / mailbox) is the SELLER's, and a
-      deploy must not silently arm a trigger the buyer didn't ask for. The
-      ``(provider, event_id)`` pair is recovered by inverting the seed's title
-      rendering (``inbound_triggers.automation_from_title``); a title nothing
-      in the registry renders is dropped rather than guessed at.
+    - A **seeded automation** — its title inverts through the registry
+      (``inbound_triggers.automation_from_title``) — ports as the single
+      requirement ``{title, kind: "webhook", provider, event_id}``, whatever
+      triggers it carries. The buyer arms it themselves: the live trigger's
+      resource (repo / project / Page / mailbox) is the SELLER's, and a deploy
+      must not silently arm a trigger the buyer didn't ask for.
+
+      It carries NO description and NONE of its schedules, because both are
+      seller-instance state. The seed interpolates the concrete account, proxy
+      URL and watch state-file path into the description, and the manifest is
+      served publicly by ``GET /marketplace/listings/{id}`` — so copying it
+      would publish the seller's own mailbox and endpoint. Its schedule
+      triggers are the watch's twice-weekly self-renewal, which on a buyer
+      would re-arm a watch that does not exist. Only the title ports, and that
+      is rendered from the registry, not from the seller.
+
+    - Anything else — one ``{title, description, cron, timezone}`` per schedule
+      trigger (title/description repeated per trigger so the deploy side can
+      recreate one routine+trigger per entry), recreated DORMANT on the buyer.
 
     ``None`` when the routine is archived, belongs to another agent, or has no
     portable trigger at all.
@@ -1176,27 +1184,19 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     triggers = detail.get("triggers")
     if not isinstance(triggers, list):
         return None
+
+    # A seeded automation ports as a requirement and nothing else — see the
+    # docstring for why its description and schedules stay behind.
+    automation = automation_from_title(title)
+    if automation is not None:
+        provider, event_id = automation
+        return {"_entries": [{"title": title, "kind": "webhook", "provider": provider, "event_id": event_id}]}
+
     out: list[dict] = []
     for trig in triggers:
         if not isinstance(trig, dict):
             continue
-        kind = trig.get("kind")
-        if kind == "webhook":
-            automation = automation_from_title(title)
-            if automation is None:
-                continue
-            provider, event_id = automation
-            out.append(
-                {
-                    "title": title,
-                    "description": description if isinstance(description, str) else "",
-                    "kind": "webhook",
-                    "provider": provider,
-                    "event_id": event_id,
-                }
-            )
-            continue
-        if kind != "schedule":
+        if trig.get("kind") != "schedule":
             continue
         cron = trig.get("cronExpression")
         if not isinstance(cron, str) or not cron:
@@ -1226,12 +1226,13 @@ async def capture_agent_routines(
     """Capture an agent's Paperclip routines into a buyer-portable list.
 
     Entries are either a schedule (``{title, description, cron, timezone}``) or
-    a webhook requirement (``{title, description, kind: "webhook", provider,
-    event_id}``) — see ``_portable_routine_from_detail`` for why webhooks ship
-    as requirements and never as live triggers. All company/agent/instance ids
-    and revision fields are stripped (mirrors ``filter_cron_jobs_for_agent``).
-    Both the cron and the trigger kind live on the routine's *triggers*, so we
-    read each routine's detail (which carries them) to pull them.
+    an automation requirement (``{title, kind: "webhook", provider, event_id}``
+    — no description, it is seller-instance state) — see
+    ``_portable_routine_from_detail`` for why a seeded automation ships as a
+    requirement and never as a live trigger. All company/agent/instance ids and
+    revision fields are stripped (mirrors ``filter_cron_jobs_for_agent``). Both
+    the cron and the trigger kind live on the routine's *triggers*, so we read
+    each routine's detail (which carries them) to pull them.
 
     Best-effort: any failure (Paperclip down, no company, malformed shape) logs
     and returns ``[]`` so routine capture never fails the export. The fetcher is

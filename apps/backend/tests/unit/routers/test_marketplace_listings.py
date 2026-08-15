@@ -715,6 +715,44 @@ def test_deploy_of_an_already_installed_listing_returns_the_existing_agent(
     mock_boto.assert_not_called()
 
 
+@patch("routers.marketplace_listings.get_workspace")
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.boto3.client")
+@patch("routers.marketplace_listings.get_catalog_service")
+@patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
+def test_a_healed_retry_still_reports_the_automations_that_need_wiring(
+    mock_get_published, mock_get_catalog, mock_boto, mock_create_pc, mock_get_workspace, client
+):
+    """The lost-response retry is EXACTLY the case where the buyer never saw
+    the wiring list. Pending automations describe the agent's standing state,
+    not this call's work, so unlike ``warnings`` they ride the healed response
+    too — otherwise the agent silently never fires."""
+    listing = _published_listing(price_cents=0)
+    listing["manifest_json"] = {
+        "name": "Demo Agent",
+        "routines": [
+            {"title": "Nightly", "cron": "0 6 * * *"},
+            {
+                "title": "Stripe: Charge refunded",
+                "kind": "webhook",
+                "provider": "stripe",
+                "event_id": "charge.refunded",
+            },
+        ],
+    }
+    mock_get_published.return_value = listing
+    mock_get_catalog.return_value = _catalog_with_install()
+    mock_get_workspace.return_value = _workspace_with_agents("agent_first")
+
+    resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["already_installed"] is True
+    assert body["automations_pending"] == [
+        {"provider": "stripe", "event_id": "charge.refunded", "needs_resource": False}
+    ]
+
+
 @patch(
     "routers.marketplace_listings.container_repo.get_by_owner_id",
     new_callable=AsyncMock,

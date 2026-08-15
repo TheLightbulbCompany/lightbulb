@@ -110,9 +110,13 @@ function FreeDeployButton({
         const body = await resp.json().catch(() => ({}));
         throw structuredDeployError(body?.detail, resp.status);
       }
-      const body = (await resp.json()) as { agent_uuid?: string };
+      const body = (await resp.json()) as { agent_uuid?: string; automations_pending?: unknown[] };
       const params = new URLSearchParams({ listing_id: listingId });
       if (body.agent_uuid) params.set("agent_uuid", body.agent_uuid);
+      // The deploy already ran here, so the success page won't re-run it and
+      // can't learn the count on its own — carry it, or a storefront buyer
+      // never hears that their agent still needs wiring.
+      if (body.automations_pending?.length) params.set("pending", String(body.automations_pending.length));
       window.location.href = `/marketplace/deploy-success?${params.toString()}`;
     } catch (e) {
       const de = e as DeployError;

@@ -1184,12 +1184,89 @@ async def test_capture_routines_carries_webhook_triggers_as_requirements():
     assert out == [
         {
             "title": "GitHub: Issue opened or changed",
-            "description": "triage it",
             "kind": "webhook",
             "provider": "github",
             "event_id": "issues",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_never_publishes_a_seeded_automations_description():
+    """The seed patches the seller's own Google account, proxy URL and watch
+    state-file path INTO the routine description — and manifest.json is served
+    publicly by ``GET /marketplace/listings/{id}``. Routine capture runs after
+    the tarball safety scan, so nothing else would catch it: the requirement
+    carries the registry-rendered title and nothing of the seller's."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Google: Calendar changed",
+                "description": (
+                    "Every run, FIRST do maintenance: read "
+                    "/home/node/.openclaw/google-watch/pub_seller123.json ... "
+                    "--address https://hooks.isol8.co/t/pub_seller123 -a seller@acme.com"
+                ),
+                "triggers": [
+                    {"kind": "webhook"},
+                    # The self-renewal the google shapes attach as a SECOND
+                    # trigger on the SAME routine. Exporting it as an ordinary
+                    # schedule would recreate a dormant routine on the buyer
+                    # that re-arms a watch they do not have — and carry the
+                    # same description with it.
+                    {"kind": "schedule", "cronExpression": "0 6 * * 1,4", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Google: Calendar changed",
+            "kind": "webhook",
+            "provider": "google",
+            "event_id": "calendar.changed",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
+    assert "pub_seller123" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_ports_a_poll_automation_as_a_requirement_too():
+    """The poll shape has no webhook trigger at all — just the */10 cron — but
+    its description still names the seller's mailbox, and recreating the cron
+    on a buyer polls an account they never connected. Recognition is by TITLE,
+    so it lands as a requirement like every other seeded automation."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Google: New email (checked on a schedule)",
+                "description": "watch seller@acme.com for new mail",
+                "triggers": [{"kind": "schedule", "cronExpression": "*/10 * * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Google: New email (checked on a schedule)",
+            "kind": "webhook",
+            "provider": "google",
+            "event_id": "gmail.poll",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
 
 
 @pytest.mark.asyncio

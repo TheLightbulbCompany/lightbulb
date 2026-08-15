@@ -54,7 +54,9 @@ function DeploySuccessInner() {
     "idle" | "deploying" | "ready" | "entitlement_pending" | "in_progress" | "error"
   >(initialAgentUuid ? "ready" : "idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [automationsPending, setAutomationsPending] = useState(0);
+  // ?pending= is set by BuyButton, which ran the deploy itself — on that path
+  // this page never sees the response, so the count has to ride the redirect.
+  const [automationsPending, setAutomationsPending] = useState(Number(params.get("pending")) || 0);
   const [errorRetryable, setErrorRetryable] = useState(true);
   const [detail, setDetail] = useState<ListingDetailResponse | null>(null);
 

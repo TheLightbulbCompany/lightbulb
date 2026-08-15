@@ -1343,11 +1343,13 @@ async def test_an_ordinary_description_ports_intact():
 
 
 @pytest.mark.asyncio
-async def test_capture_routines_ports_a_poll_automation_as_a_requirement_too():
-    """The poll shape has no webhook trigger at all — just the */10 cron — but
-    its description still names the seller's mailbox, and recreating the cron
-    on a buyer polls an account they never connected. Recognition is by TITLE,
-    so it lands as a requirement like every other seeded automation."""
+async def test_a_registry_title_alone_does_not_make_a_routine_an_automation():
+    """A title is guessable as well as editable — nothing stops a seller
+    titling an ordinary cron exactly like a registry automation. Classifying
+    on the title would publish it as a setup task the buyer cannot complete
+    and throw the real schedule away, so the webhook trigger is the only
+    signal. Its description is still scrubbed, which is what keeps the
+    schedule-only poll shape safe without a title rule."""
     fetch = _StubRoutineFetch(
         [
             {
@@ -1366,12 +1368,37 @@ async def test_capture_routines_ports_a_poll_automation_as_a_requirement_too():
     assert out == [
         {
             "title": "Google: New email (checked on a schedule)",
-            "kind": "webhook",
-            "provider": "google",
-            "event_id": "gmail.poll",
+            "description": "",
+            "cron": "*/10 * * * *",
+            "timezone": "UTC",
         }
     ]
     assert "seller@acme.com" not in json.dumps(out)
+
+
+@pytest.mark.asyncio
+async def test_a_credential_in_a_description_is_not_published_either():
+    """The persona pattern set is not only PII — it carries
+    ``hardcoded-secret``/``aws-secret-key``/``provider-token`` too, and
+    routine capture is appended after ``safety_flags`` are generated, so a
+    credential here would not even reach moderation. Any flag drops the
+    text."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Nightly push",
+                "description": 'upload the report using api_key = "sk-live-abcdefghijklmnopqrstuvwxyz0123"',
+                "triggers": [{"kind": "schedule", "cronExpression": "0 6 * * *", "timezone": "UTC"}],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out[0]["description"] == ""
 
 
 @pytest.mark.asyncio

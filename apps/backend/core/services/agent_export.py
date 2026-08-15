@@ -1134,30 +1134,29 @@ _ROUTINE_PORTABLE_KEYS = ("title", "description")
 _TRIGGER_PORTABLE_KEYS = ("cronExpression", "timezone")
 
 
-# The PII patterns from the publish safety scan, by flag name. Routine
-# capture runs AFTER scan_tarball, so a routine description is the one
-# seller-authored string that reaches the public manifest unscanned.
-_PII_FLAGS = frozenset({"email-address", "phone-number"})
-
-
 def _publishable_description(description: object) -> str:
     """A routine description safe to put in a public manifest, else ``""``.
 
     ``manifest.json`` is served by ``GET /marketplace/listings/{id}``, so a
-    description carrying the seller's own email or phone number is a
-    publish-time leak. The seed writes the owner's Google account into every
-    google routine's description, and a seller can rename a routine (a
-    title-only edit) out of every structural check — so the text gets scanned
-    on its own, with the same patterns the tarball already goes through
-    rather than a second set of regexes.
+    description is the one seller-authored string that reaches the public
+    without passing the tarball's safety scan — routine capture is appended
+    after ``export_agent_from_efs`` has already produced ``safety_flags``, so
+    a finding here would not even reach moderation. It gets the same patterns
+    the tarball does rather than a second set of regexes.
+
+    ANY flag drops the text, not just the PII ones: the persona set also
+    carries ``hardcoded-secret``, ``aws-secret-key`` and ``provider-token``,
+    and a credential in a public manifest is worse than a lost prompt. The
+    seed's own google descriptions trip ``email-address`` (they interpolate
+    the owner's account), which is the case this started from.
 
     Dropping the description costs the buyer that routine's prompt. Keeping it
-    costs the seller their inbox.
+    costs the seller their inbox or their key.
     """
     if not isinstance(description, str) or not description:
         return ""
     flags = marketplace_safety.scan({"routine-description": description.encode()}, format="persona")
-    return "" if any(f.pattern in _PII_FLAGS for f in flags) else description
+    return "" if flags else description
 
 
 def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
@@ -1165,13 +1164,11 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
 
     Two shapes, decided per ROUTINE:
 
-    - A **seeded automation** — it carries a webhook trigger, or its title
-      inverts through the registry (``inbound_triggers.automation_from_title``)
-      — ports as the single requirement ``{title, kind: "webhook", provider,
-      event_id}``, whatever else it carries. The buyer arms it themselves: the
-      live trigger's resource (repo / project / Page / mailbox) is the
-      SELLER's, and a deploy must not silently arm a trigger the buyer didn't
-      ask for.
+    - A **seeded automation** — it carries a webhook trigger — ports as the
+      single requirement ``{title, kind: "webhook", provider, event_id}``,
+      whatever else it carries. The buyer arms it themselves: the live
+      trigger's resource (repo / project / Page / mailbox) is the SELLER's,
+      and a deploy must not silently arm a trigger the buyer didn't ask for.
 
       It carries NO description and NONE of its schedules, because both are
       seller-instance state. The seed interpolates the concrete account, proxy
@@ -1182,11 +1179,17 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
       would re-arm a watch that does not exist. Only the title ports, and that
       is rendered from the registry, not from the seller.
 
-      Recognition leads with the TRIGGER because a title is mutable: renaming
-      a routine is a title-only edit the detail panel supports, so a
-      title-keyed rule alone would hand a renamed watch to the schedule
-      branch. The title only names WHICH automation, and a webhook routine
-      whose title no longer inverts ports nothing at all.
+      Recognition is the TRIGGER alone, because a title is both mutable and
+      guessable: renaming a routine is a title-only edit the detail panel
+      supports, and nothing stops a seller titling an ordinary cron exactly
+      like a registry automation. The title only names WHICH automation, and
+      a webhook routine whose title no longer inverts ports nothing at all.
+
+      A schedule-only seeded automation (the gmail poll shape) therefore
+      ports as an ordinary routine rather than a requirement. That costs the
+      buyer a checklist row, not their safety: the description still goes
+      through ``_publishable_description``, which is what keeps the seller's
+      mailbox out of it.
 
     - Anything else — one ``{title, description, cron, timezone}`` per schedule
       trigger (title/description repeated per trigger so the deploy side can
@@ -1224,15 +1227,16 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     # A seeded automation ports as a requirement and nothing else — see the
     # docstring for why its description and schedules stay behind.
     #
-    # The TRIGGER decides, not the title. Renaming a routine is a title-only
-    # edit the detail panel supports, so a title-keyed rule would hand a
-    # renamed Google watch straight to the schedule branch below — its
-    # renewal schedule and its seller-bound description with it. A webhook
-    # trigger is not editable that way. The title only names WHICH automation:
-    # when it no longer inverts we port nothing, rather than porting a
-    # requirement we cannot name or a schedule we know is machinery.
-    automation = automation_from_title(title)
-    if any(isinstance(t, dict) and t.get("kind") == "webhook" for t in triggers) or automation is not None:
+    # The TRIGGER decides, and only the trigger. A title is neither necessary
+    # nor sufficient: it is editable (renaming a Google watch would otherwise
+    # send it to the schedule branch below, renewal cron and seller-bound
+    # description included), and it is guessable (a seller's ordinary cron
+    # titled "GitHub: Issue opened or changed" would otherwise be published as
+    # a setup task the buyer can't complete, its real schedule discarded).
+    # The title's only job is naming WHICH automation, and a webhook routine
+    # it cannot name ports nothing rather than a requirement without a subject.
+    if any(isinstance(t, dict) and t.get("kind") == "webhook" for t in triggers):
+        automation = automation_from_title(title)
         if automation is None:
             return None
         provider, event_id = automation

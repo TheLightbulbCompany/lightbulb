@@ -1467,6 +1467,34 @@ async def _intercept_agents_create(
         else None
     )
 
+    # Plan agent budget. This path CONSUMES the RPC (it never forwards to the
+    # gateway), so a refusal has to be delivered as an error ``res`` frame on the
+    # original req id — raising here would leave the frontend waiting forever on
+    # a request nobody is going to answer. Checked before the Paperclip mint so a
+    # refusal leaves no row behind.
+    from fastapi import HTTPException as _HTTPException
+
+    from core.services.agent_budget import enforce_agent_budget
+
+    try:
+        await enforce_agent_budget(owner_id)
+    except _HTTPException as exc:
+        management_api = await get_management_api_client()
+        await management_api.send_message_async(
+            connection_id,
+            {
+                "type": "res",
+                "id": req_id,
+                "ok": False,
+                "error": {
+                    "code": "agent_budget_exceeded",
+                    "message": str(exc.detail),
+                    "details": {"reason": "agent_budget_exceeded"},
+                },
+            },
+        )
+        return True
+
     paperclip_agent = await create_paperclip_for_chat(
         creator_user_id=user_id,
         owner_id=owner_id,

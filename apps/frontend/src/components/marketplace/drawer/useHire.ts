@@ -127,8 +127,20 @@ export function useHire() {
         // deploy_listing docstring:
         const detail =
           err instanceof ApiError && err.status === 409
-            ? (err.body as { detail?: { error?: string; retry_after_s?: number } } | null)?.detail
+            ? (err.body as { detail?: { error?: string; retry_after_s?: number } | string } | null)
+                ?.detail
             : undefined;
+
+        // The agent-budget refusal is a 409 whose detail is a plain STRING (the
+        // sentence to show), not the {error} object the deploy-claim 409s use.
+        // It must be handled before those, and it must NOT reach the generic
+        // "please try again" tail: retrying is exactly what can never work
+        // here, which is the same wall the missing_credentials branch below
+        // exists to remove.
+        if (typeof detail === "string") {
+          showErrorToast(detail);
+          return;
+        }
 
         // deploy_in_progress: the buyer's OWN hire of THIS listing is still
         // running. "Couldn't hire… try again" would be the same lie this

@@ -782,3 +782,65 @@ async def test_rollback_unwinds_the_container_side_too(get_catalog, delete_pc):
 
     assert catalog.unwind_partial_deploy.await_args.kwargs["new_agent_id"] == _AGENT_ID
     delete_pc.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# create_hire_approval — the plan agent budget
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_over_budget_owner_does_not_get_an_agent_minted(monkeypatch):
+    """The fifth agent-creation path.
+
+    ``/recommend`` is container-authenticated, so Friday reaches this headlessly
+    and it mints a REAL Paperclip agent before any human approves anything. An
+    over-budget owner must not get one — and the refusal must not raise, or the
+    whole recommend response fails instead of degrading.
+    """
+    minted = False
+
+    async def _never(**_kw):
+        nonlocal minted
+        minted = True
+        raise AssertionError("must not mint an agent for an over-budget owner")
+
+    monkeypatch.setattr(
+        "core.services.agent_budget.is_at_agent_budget",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
+        AsyncMock(return_value="company-1"),
+    )
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace", _never)
+
+    result = await marketplace_hire.create_hire_approval(owner_id="owner", issue_id="issue-1", listing=_LISTING)
+
+    assert result is None
+    assert minted is False
+
+
+@pytest.mark.asyncio
+async def test_under_budget_owner_proceeds_past_the_gate(monkeypatch):
+    """The gate must not be a wall: an owner under budget still reaches the mint."""
+    reached = False
+
+    async def _mint(**_kw):
+        nonlocal reached
+        reached = True
+        raise RuntimeError("stop here — reaching the mint is what this asserts")
+
+    monkeypatch.setattr(
+        "core.services.agent_budget.is_at_agent_budget",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner",
+        AsyncMock(return_value="company-1"),
+    )
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace", _mint)
+
+    with pytest.raises(RuntimeError):
+        await marketplace_hire.create_hire_approval(owner_id="owner", issue_id="issue-1", listing=_LISTING)
+    assert reached is True

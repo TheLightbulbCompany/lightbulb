@@ -44,7 +44,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -100,6 +100,14 @@ class AppleSubscription:
     #: UUID form of an owner id (see :func:`owner_account_token`), not the owner
     #: id itself, because StoreKit only accepts a UUID here.
     owner_hint: str | None
+    #: Which Apple environment signed this. A "sandbox" grant is a real plan
+    #: given away free, so it is logged at link time — see _verify_signed for
+    #: why that is accepted rather than gated.
+    environment: str = "sandbox"
+    #: When Apple SIGNED this payload — not when the purchase happened. Re-fetching
+    #: a transaction re-signs it, so a replayed old blob carries an old value and
+    #: loses the watermark comparison to any notification that came after it.
+    signed_date_ms: int | None = None
 
 
 # Notification types that GRANT or KEEP access. Apple sends SUBSCRIBED on the
@@ -188,21 +196,38 @@ def _verifier(environment_name: str = ""):
     )
 
 
-def _verify_signed(method: str, blob: str):
+def _verify_signed(method: str, blob: str) -> tuple[object, str]:
     """Verify a JWS against the configured environment, then the other one.
+
+    Returns ``(payload, environment_name)`` — the environment MATTERS to the
+    caller and must not be dropped, because a sandbox purchase costs nothing.
 
     A SignedDataVerifier is bound to ONE environment and rejects the other's
     payloads as unverifiable, which would be fine if traffic were segregated by
     deployment — and it is not. **App Review tests every submission with SANDBOX
     transactions, sent to the PRODUCTION backend.** Pinning production to
     `production` alone therefore rejects the reviewer's own purchase and fails
-    the submission this whole feature exists to pass. TestFlight has the same
-    shape: sandbox transactions against whichever backend the build points at.
+    the submission this whole feature exists to pass.
 
-    So the configured environment is tried first (the common case, one call) and
-    the other only as a fallback. Trying both is not a weakening: each verifier
-    still enforces the full chain, bundle id, and app id — the environment is
-    the only thing that differs, and Apple stamps it inside the signed payload.
+    Verifying both is not itself a weakening — each verifier still enforces the
+    full chain, bundle id, and app id.
+
+    **A sandbox transaction does grant a real plan here, and that is a
+    deliberate decision, not an oversight.** A sandbox purchase costs the buyer
+    nothing, and TestFlight builds run sandbox StoreKit against the PRODUCTION
+    api — so anyone who can install the TestFlight build can grant themselves
+    the paid plan. The control for that is DISTRIBUTION, not code: the
+    TestFlight link is kept to trusted testers rather than handed to real users.
+    That was chosen over the alternatives (a per-account allowlist, or a flag
+    opened only for the review window) because both put a footgun in the deploy
+    path — forget to set them and App Review's own purchase fails, which is a
+    rejection — while the risk they remove is one a distribution rule removes
+    just as well.
+
+    If the TestFlight link is ever made public, this stops being safe and the
+    grant needs gating again. ``environment`` is carried on the returned
+    subscription and logged at link time precisely so free grants are visible
+    if that happens.
 
     A fallback verifier that cannot be BUILT (production needs
     APPLE_IAP_APP_APPLE_ID, sandbox does not) is skipped rather than raised, or
@@ -213,7 +238,7 @@ def _verify_signed(method: str, blob: str):
 
     # Not configured at all is a 503, and only the PRIMARY gets to say so.
     try:
-        return getattr(_verifier(primary), method)(blob)
+        return getattr(_verifier(primary), method)(blob), primary
     except AppleIapNotConfigured:
         raise
     except Exception as e:  # noqa: BLE001 — any verifier failure is a rejection
@@ -224,7 +249,7 @@ def _verify_signed(method: str, blob: str):
     other = _fallback_verifier(fallback)
     if other is not None:
         try:
-            return getattr(other, method)(blob)
+            return getattr(other, method)(blob), fallback
         except Exception:  # noqa: BLE001 — report the primary's error, not this one
             pass
 
@@ -280,7 +305,9 @@ def _status_for(
     raise AppleIapError(f"unhandled notification type: {notification_type}")
 
 
-def _subscription_from_transaction(transaction, notification_type: str | None) -> AppleSubscription:
+def _subscription_from_transaction(
+    transaction, notification_type: str | None, environment: str = "sandbox"
+) -> AppleSubscription:
     """Project a verified transaction payload onto :class:`AppleSubscription`."""
     original_transaction_id = getattr(transaction, "originalTransactionId", None)
     if not original_transaction_id:
@@ -311,6 +338,8 @@ def _subscription_from_transaction(transaction, notification_type: str | None) -
         expires_at_ms=expires_at_ms,
         status=_status_for(notification_type, revoked=revoked, expires_at_ms=expires_at_ms),
         owner_hint=getattr(transaction, "appAccountToken", None) or None,
+        environment=environment,
+        signed_date_ms=getattr(transaction, "signedDate", None),
     )
 
 
@@ -320,8 +349,8 @@ def verify_transaction(signed_transaction: str) -> AppleSubscription:
     Raises AppleIapError when the signature, chain, bundle id, environment, or
     product id does not check out.
     """
-    payload = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
-    return _subscription_from_transaction(payload, None)
+    payload, environment = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
+    return _subscription_from_transaction(payload, None, environment)
 
 
 async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubscription:
@@ -389,17 +418,44 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
         original_transaction_id=subscription.original_transaction_id,
         status=subscription.status,
         expires_at=subscription.expires_at_ms,
+        # The JWS signing time, so the LINK path shares the notification
+        # watermark instead of bypassing it. Without this, an owner who was
+        # refunded could re-POST the transaction they still hold — signature and
+        # account token both still valid, `revocationDate` absent because the
+        # blob predates the refund — and flip their own row back to active.
+        # StoreKit re-signs on every fetch, so a genuine restore carries a fresh
+        # value and only a replayed old blob loses the comparison.
+        signed_date=subscription.signed_date_ms,
     )
     if written is None:
-        # Either no billing row, or the conditional write refused because this
-        # row is already bound to a different Apple transaction. Both mean the
-        # link did not happen, and neither should read as success.
+        # The write was refused. That is not automatically a failure: it also
+        # happens when a server notification for this same subscription already
+        # landed with a later signedDate, which is the ordinary race between the
+        # client's link call and Apple's SUBSCRIBED webhook.
+        current = await billing_repo.get_by_owner_id(owner_id)
+        if current and current.get("apple_original_transaction_id") == subscription.original_transaction_id:
+            # Apple's own notification is authoritative over the client's
+            # snapshot, so report ITS status rather than the JWS's. A refunded
+            # owner replaying an old blob lands here and is told "canceled".
+            authoritative = current.get("apple_subscription_status") or subscription.status
+            logger.info(
+                "apple_iap.link_superseded owner_id=%s original_transaction_id=%s status=%s",
+                owner_id,
+                subscription.original_transaction_id,
+                authoritative,
+            )
+            return replace(subscription, status=authoritative)
+        # No billing row, or the row is bound to a different Apple transaction.
         raise AppleIapError(f"could not link this transaction to owner {owner_id}")
     logger.info(
-        "apple_iap.linked owner_id=%s original_transaction_id=%s status=%s",
+        # environment is logged because a "sandbox" grant is a REAL plan given
+        # away for free — expected from TestFlight testers, and the only way to
+        # notice if the TestFlight link ever leaks.
+        "apple_iap.linked owner_id=%s original_transaction_id=%s status=%s environment=%s",
         owner_id,
         subscription.original_transaction_id,
         subscription.status,
+        subscription.environment,
     )
     return subscription
 
@@ -425,7 +481,7 @@ async def apply_notification(signed_payload: str) -> tuple[str, str] | None:
       ended. An older signedDate than the one already applied is dropped.
     """
     try:
-        notification = _verify_signed("verify_and_decode_notification", signed_payload)
+        notification, _environment = _verify_signed("verify_and_decode_notification", signed_payload)
     except AppleIapNotConfigured:
         raise
     except Exception as e:  # noqa: BLE001
@@ -482,7 +538,7 @@ async def _apply_verified_notification(
         return None
 
     try:
-        transaction = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
+        transaction, _tx_environment = _verify_signed("verify_and_decode_signed_transaction", signed_transaction)
     except Exception as e:  # noqa: BLE001
         raise AppleIapError(f"notification transaction failed verification: {e}") from e
 

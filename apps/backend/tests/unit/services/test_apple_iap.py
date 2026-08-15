@@ -27,6 +27,9 @@ def _transaction(**overrides):
         # it, because it is the only cross-account fence that is not a race.
         # Derived, not pasted, so the fixture cannot drift from the algorithm.
         appAccountToken=apple_iap.owner_account_token("user_1"),
+        # When Apple SIGNED this blob. StoreKit re-signs on every fetch, so a
+        # genuine restore is recent and only a replayed old copy is stale.
+        signedDate=1_700_000_500_000,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -499,7 +502,7 @@ async def test_link_rejects_a_transaction_purchased_by_another_account():
 
 @pytest.mark.asyncio
 async def test_link_fails_loudly_when_the_conditional_write_refuses():
-    """A refused write means the row is already bound to another transaction.
+    """A refused write on a row bound to ANOTHER transaction is a real failure.
     Returning success there would tell a customer they are subscribed when
     nothing was recorded."""
     verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
@@ -511,9 +514,76 @@ async def test_link_fails_loudly_when_the_conditional_write_refuses():
             AsyncMock(return_value=None),
         ),
         patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value=None)),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(return_value={"owner_id": "user_1", "apple_original_transaction_id": "SOMEONE_ELSE"}),
+        ),
     ):
         with pytest.raises(AppleIapError, match="could not link"):
             await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+
+@pytest.mark.asyncio
+async def test_a_refunded_owner_cannot_replay_their_old_transaction():
+    """The replay: after a REFUND cancels the entitlement, the owner still holds
+    the original JWS. Its signature and account token are still valid and its
+    `revocationDate` is absent — the blob predates the refund — so re-POSTing it
+    used to flip the row back to active and hand back a subscription that had
+    been paid back.
+
+    The write now carries the JWS signing time, so the old blob loses the
+    watermark to the refund notification, and the reply reports Apple's status
+    rather than the stale payload's."""
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        # Refused: a REFUND notification already landed with a later signedDate.
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value=None)) as set_sub,
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_owner_id",
+            AsyncMock(
+                return_value={
+                    "owner_id": "user_1",
+                    "apple_original_transaction_id": "2000000000000001",
+                    "apple_subscription_status": "canceled",
+                }
+            ),
+        ),
+    ):
+        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    # Apple's status wins over the replayed payload's "active".
+    assert result.status == "canceled"
+    # And the watermark was actually supplied, which is what refused the write.
+    assert set_sub.await_args.kwargs["signed_date"] == 1_700_000_500_000
+
+
+@pytest.mark.asyncio
+async def test_the_link_path_supplies_the_jws_signing_time_as_a_watermark():
+    """Without it the link path bypasses the out-of-order fence entirely — the
+    condition is skipped when signed_date is None."""
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})
+        ) as set_sub,
+    ):
+        await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert set_sub.await_args.kwargs["signed_date"] == 1_700_000_500_000
 
 
 @pytest.mark.asyncio
@@ -862,3 +932,44 @@ def test_an_unconfigured_primary_still_raises_not_configured():
     with patch.object(apple_iap, "_verifier", _fake_verifier):
         with pytest.raises(AppleIapNotConfigured):
             apple_iap.verify_transaction("jws")
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_transaction_grants_a_real_plan_deliberately(monkeypatch):
+    """Pins a DECISION, not just behaviour.
+
+    A sandbox purchase is free and TestFlight runs sandbox StoreKit against the
+    production api, so this hands the paid plan to anyone who can install the
+    TestFlight build. That is accepted because the TestFlight link is kept to
+    trusted testers — the control is distribution, not code. A per-account
+    allowlist and a review-window flag were both considered and rejected: each
+    fails App Review's own sandbox purchase if someone forgets to set it.
+
+    If this test is ever failing because a gate was added, the TestFlight link
+    had better not be public any more.
+    """
+    monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_ENVIRONMENT", "production")
+
+    prod = SimpleNamespace(
+        verify_and_decode_signed_transaction=lambda _: (_ for _ in ()).throw(ValueError("wrong environment"))
+    )
+    sandbox = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+
+    def _fake_verifier(environment_name: str = ""):
+        return prod if environment_name == "production" else sandbox
+
+    with (
+        patch.object(apple_iap, "_verifier", _fake_verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        result = await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    assert result.status == "active"
+    # Carried so the log line can name it — the only way a leaked TestFlight
+    # link would be visible.
+    assert result.environment == "sandbox"

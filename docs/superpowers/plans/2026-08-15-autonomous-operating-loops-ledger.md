@@ -568,6 +568,49 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   to the final provider-transport phase alongside Gmail Pub/Sub. The Forge
   reliability routine may be created paused, but its alarm trigger must not be
   armed and #1801 is not a current critical-path dependency.
+- 2026-08-15: Paperclip fork PR #20 added durable, company-scoped retry safety
+  to direct `POST /api/companies/:companyId/agents` using one canonical
+  `Idempotency-Key`; `Idempotency-Replay-Only` is only a boolean mode on that
+  same key. The keyed operation is serialized with a database advisory lock,
+  interrupted completion resumes from the original immutable payload, the
+  recovery payload is scrubbed after completion, and hard agent deletion
+  cascades the mapping. The exact Linux embedded-Postgres route suite passed
+  8/8 in release dry-run `31908477835`; the run's one unrelated general-shard
+  failure was traced to pre-existing built-in-routine reset logic outside the
+  PR diff. PR #20 merged as
+  `cb7a8b2cf09a4611bbe1fa6fcd8d4c6520a07dc7`; tag
+  `v2026.813-isol8.3` built successfully in fork run `31909010497` with source
+  image digest
+  `sha256:dc60cc996871e8fd665c109231f4c758bd643411015602230380967a99acea36`.
+  Upstream Paperclip master has no equivalent direct-agent implementation; its
+  stale PR #6586 and issue #4780 concern only the separate agent-hire endpoint.
+- 2026-08-15: Isol8 source-pin PR #1821 merged as
+  `8f19fb0c813882d242b7de79ed5cb320466bc514`. Extended-image build run
+  `31909513242` succeeded and published ECR tag `cb7a8b2c-8f19fb0`, OCI index
+  digest
+  `sha256:0bc2eed759450cc6503284c0d2b46b834bedbbe6d6043d3115f15b20deef5dee`.
+  Dev-only promotion PR #1822 changed only `dev.tag`, passed Claude review,
+  and merged as `5d346db8311b0c08b783961c81e77f3636f84caf`; deploy run
+  `31910018997` completed successfully with no failed job. Dev Paperclip server
+  revision 35 and migrate revision 28 both reference the exact ECR tag. The
+  one-shot migrate task
+  `58b9306942874f5d980d5a4120136573` exited 0; it reported no pending
+  migrations because the server task has `PAPERCLIP_MIGRATION_AUTO_APPLY`
+  enabled and had already applied the schema. ECS then reported revision 35
+  `COMPLETED`, one running, zero pending, and `api-dev.isol8.co/health` returned
+  200 with request ID `9e93b0de-8c83-492d-8e03-cad31c78f52a`. Production
+  remains on prior tag `556cd64e-b1650ae`, server revision 31, with rollout
+  completed.
+- 2026-08-15: Companion Isol8 caller PR #1812 remains draft at head
+  `592f4d507cbcfad4e4a5f2fa98d9c8fea065beed`. It derives stable,
+  credential-free server-side intent keys across chat, Teams, marketplace,
+  approval pre-create, Atlas builder, and seed paths; exact-cap retries use the
+  same key in replay-only mode and continue idempotent pairing/install healing.
+  Backend CI run `31908901270` passed in 31m32s and Claude review run
+  `31908901274` passed; `@codex review` was requested but quota-blocked. Keep
+  the PR unmerged until the authenticated dev proxy create/replay/replay-miss
+  smoke passes, the Paperclip image is separately promoted and migrated in
+  production, and deployed production behavior is verified.
 
 ## Founder actions
 

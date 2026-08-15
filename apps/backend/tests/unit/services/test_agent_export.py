@@ -1172,7 +1172,14 @@ async def test_capture_routines_carries_webhook_triggers_as_requirements():
                 "assigneeAgentId": "agent-uuid",
                 "title": "GitHub: Issue opened or changed",
                 "description": "triage it",
-                "triggers": [{"id": "t1", "kind": "webhook", "signingMode": "github_hmac"}],
+                "triggers": [
+                    {
+                        "id": "t1",
+                        "kind": "webhook",
+                        "signingMode": "github_hmac",
+                        "label": "GitHub: Issue opened or changed",
+                    }
+                ],
             }
         ]
     )
@@ -1209,7 +1216,7 @@ async def test_capture_routines_never_publishes_a_seeded_automations_description
                     "--address https://hooks.isol8.co/t/pub_seller123 -a seller@acme.com"
                 ),
                 "triggers": [
-                    {"kind": "webhook"},
+                    {"kind": "webhook", "label": "Google: Calendar changed"},
                     # The self-renewal the google shapes attach as a SECOND
                     # trigger on the SAME routine. Exporting it as an ordinary
                     # schedule would recreate a dormant routine on the buyer
@@ -1238,12 +1245,14 @@ async def test_capture_routines_never_publishes_a_seeded_automations_description
 
 
 @pytest.mark.asyncio
-async def test_a_renamed_watch_routine_still_ports_nothing_of_the_seller():
-    """A title is MUTABLE — the routine detail panel supports title-only
+async def test_a_renamed_watch_routine_is_still_recognised_by_its_trigger():
+    """A routine title is MUTABLE — the detail panel supports title-only
     edits. Rename a seeded Google watch and a title-keyed rule would hand it
     to the ordinary schedule branch, publishing the renewal cron plus a
-    description holding the seller's mailbox and proxy URL. The webhook
-    trigger is what a rename cannot touch, so that is what decides."""
+    description holding the seller's mailbox and proxy URL. The rename never
+    reaches the TRIGGER, whose label the seed set from the registry — so the
+    automation is still recognised, still named correctly, and still ports
+    none of the seller."""
     fetch = _StubRoutineFetch(
         [
             {
@@ -1251,7 +1260,7 @@ async def test_a_renamed_watch_routine_still_ports_nothing_of_the_seller():
                 "title": "My calendar thing",
                 "description": "read /home/node/.openclaw/google-watch/pub_seller123.json ... -a seller@acme.com",
                 "triggers": [
-                    {"kind": "webhook"},
+                    {"kind": "webhook", "label": "Google: Calendar changed"},
                     {"kind": "schedule", "cronExpression": "0 6 * * 1,4", "timezone": "UTC"},
                 ],
             }
@@ -1262,9 +1271,17 @@ async def test_a_renamed_watch_routine_still_ports_nothing_of_the_seller():
         agent_id="agent-uuid",
         fetch_routine_details=fetch,
     )
-    # Unnameable as a requirement (the title no longer inverts) and unsafe as
-    # a schedule — so it ports as nothing at all.
-    assert out == []
+    assert out == [
+        {
+            "title": "Google: Calendar changed",
+            "kind": "webhook",
+            "provider": "google",
+            "event_id": "calendar.changed",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
+    assert "pub_seller123" not in json.dumps(out)
+    assert "My calendar thing" not in json.dumps(out)
 
 
 @pytest.mark.asyncio
@@ -1420,6 +1437,74 @@ async def test_capture_routines_drops_webhook_titles_the_registry_cannot_resolve
         fetch_routine_details=fetch,
     )
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_a_hand_built_webhook_routine_keeps_its_real_schedule():
+    """The "Any other app" rung creates webhook triggers with NO label, and
+    the detail panel lets the owner add a schedule to the same routine. That
+    schedule is legitimate work — treating any webhook trigger as seeded
+    provenance would silently drop it from every hire."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "Ping me when the CRM fires",
+                "description": "Post a summary to the team channel.",
+                "triggers": [
+                    {"kind": "webhook", "signingMode": "hmac_sha256"},
+                    {"kind": "schedule", "cronExpression": "0 8 * * 1", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "Ping me when the CRM fires",
+            "description": "Post a summary to the team channel.",
+            "cron": "0 8 * * 1",
+            "timezone": "UTC",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_requirement_is_named_by_the_registry_not_by_the_seller():
+    """The seed puts the registry-rendered title on the trigger's ``label``,
+    which a routine rename never reaches. Naming the requirement from the
+    label rather than the routine's title means no seller-authored string
+    reaches the public manifest at all — and the rename still resolves."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "assigneeAgentId": "agent-uuid",
+                "title": "seller@acme.com's issue triage",
+                "description": "triage it",
+                "triggers": [
+                    {"kind": "webhook", "label": "GitHub: Issue opened or changed"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == [
+        {
+            "title": "GitHub: Issue opened or changed",
+            "kind": "webhook",
+            "provider": "github",
+            "event_id": "issues",
+        }
+    ]
+    assert "seller@acme.com" not in json.dumps(out)
 
 
 @pytest.mark.asyncio

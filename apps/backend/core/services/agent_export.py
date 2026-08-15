@@ -1164,11 +1164,12 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
 
     Two shapes, decided per ROUTINE:
 
-    - A **seeded automation** — it carries a webhook trigger — ports as the
-      single requirement ``{title, kind: "webhook", provider, event_id}``,
-      whatever else it carries. The buyer arms it themselves: the live
-      trigger's resource (repo / project / Page / mailbox) is the SELLER's,
-      and a deploy must not silently arm a trigger the buyer didn't ask for.
+    - A **seeded automation** — it carries a webhook trigger whose ``label``
+      inverts through the registry — ports as the single requirement
+      ``{title, kind: "webhook", provider, event_id}``, whatever else it
+      carries. The buyer arms it themselves: the live trigger's resource
+      (repo / project / Page / mailbox) is the SELLER's, and a deploy must not
+      silently arm a trigger the buyer didn't ask for.
 
       It carries NO description and NONE of its schedules, because both are
       seller-instance state. The seed interpolates the concrete account, proxy
@@ -1179,17 +1180,20 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
       would re-arm a watch that does not exist. Only the title ports, and that
       is rendered from the registry, not from the seller.
 
-      Recognition is the TRIGGER alone, because a title is both mutable and
-      guessable: renaming a routine is a title-only edit the detail panel
-      supports, and nothing stops a seller titling an ordinary cron exactly
-      like a registry automation. The title only names WHICH automation, and
-      a webhook routine whose title no longer inverts ports nothing at all.
+      Recognition is the trigger LABEL, because the routine's own title is
+      both mutable and guessable: renaming a routine is a title-only edit the
+      detail panel supports, and nothing stops a seller titling an ordinary
+      cron exactly like a registry automation. A rename never reaches a
+      trigger, and the user-authored webhook path ("Any other app" in
+      ``RoutinesPanel``) sets no label at all — so a hand-built webhook
+      routine falls through to the schedule branch and keeps its real
+      scheduled work.
 
-      A schedule-only seeded automation (the gmail poll shape) therefore
-      ports as an ordinary routine rather than a requirement. That costs the
-      buyer a checklist row, not their safety: the description still goes
-      through ``_publishable_description``, which is what keeps the seller's
-      mailbox out of it.
+      A schedule-only seeded automation (the gmail poll shape) likewise ports
+      as an ordinary routine rather than a requirement. That costs the buyer a
+      checklist row, not their safety: the description still goes through
+      ``_publishable_description``, which is what keeps the seller's mailbox
+      out of it.
 
     - Anything else — one ``{title, description, cron, timezone}`` per schedule
       trigger (title/description repeated per trigger so the deploy side can
@@ -1227,20 +1231,28 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     # A seeded automation ports as a requirement and nothing else — see the
     # docstring for why its description and schedules stay behind.
     #
-    # The TRIGGER decides, and only the trigger. A title is neither necessary
-    # nor sufficient: it is editable (renaming a Google watch would otherwise
-    # send it to the schedule branch below, renewal cron and seller-bound
-    # description included), and it is guessable (a seller's ordinary cron
-    # titled "GitHub: Issue opened or changed" would otherwise be published as
-    # a setup task the buyer can't complete, its real schedule discarded).
-    # The title's only job is naming WHICH automation, and a webhook routine
-    # it cannot name ports nothing rather than a requirement without a subject.
-    if any(isinstance(t, dict) and t.get("kind") == "webhook" for t in triggers):
-        automation = automation_from_title(title)
+    # It identifies itself on its TRIGGER, not on the routine: the seed passes
+    # the registry-rendered title as the webhook trigger's ``label``, and the
+    # user-authored path ("Any other app") sets none. That is the only signal
+    # here that is neither editable nor guessable — a routine rename is a
+    # title-only edit that never reaches a trigger, and a seller titling an
+    # ordinary cron "GitHub: Issue opened or changed" does not acquire a
+    # labelled webhook trigger by doing so.
+    #
+    # The label is also what the requirement is NAMED by. It came from the
+    # registry, so unlike the routine's own title it cannot carry seller text
+    # into a public manifest.
+    for trig in triggers:
+        if not isinstance(trig, dict) or trig.get("kind") != "webhook":
+            continue
+        label = trig.get("label")
+        automation = automation_from_title(label) if isinstance(label, str) else None
         if automation is None:
-            return None
+            # A webhook the owner built themselves. It has no requirement to
+            # express, but it may carry real scheduled work — fall through.
+            continue
         provider, event_id = automation
-        return {"_entries": [{"title": title, "kind": "webhook", "provider": provider, "event_id": event_id}]}
+        return {"_entries": [{"title": label, "kind": "webhook", "provider": provider, "event_id": event_id}]}
 
     out: list[dict] = []
     for trig in triggers:

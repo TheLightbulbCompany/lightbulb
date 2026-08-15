@@ -14,7 +14,6 @@ import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
-import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
@@ -29,6 +28,7 @@ import { Monogram, StatusDot } from "@/components/agents/AgentIdentity";
 import { fromInstalledAgent } from "@/lib/agentDesign";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
+import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
@@ -91,7 +91,6 @@ export function ChatLayout({
   const { user } = useUser();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { account, isSubscribed } = useBilling();
-  const { nodeConnected } = useGateway();
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6")
   // — the raw ARN's last segment is an opaque random suffix.
@@ -290,25 +289,7 @@ export function ChatLayout({
           )}
 
           {/* Node Status */}
-          {nodeConnected && (
-            <div style={{
-              padding: '4px 12px',
-              fontSize: '12px',
-              color: '#16a34a',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-            }}>
-              <span style={{
-                width: '6px',
-                height: '6px',
-                borderRadius: '50%',
-                backgroundColor: '#16a34a',
-                display: 'inline-block',
-              }} />
-              Local tools available
-            </div>
-          )}
+          <NodeStatusPill />
 
           {/* ONE sidebar body regardless of view: the roster + CompanyNav cover
               both chat and control. The view is derived from ?panel (selecting

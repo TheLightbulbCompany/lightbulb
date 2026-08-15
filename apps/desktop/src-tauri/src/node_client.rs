@@ -607,7 +607,9 @@ fn raw_public_key_from_pem(public_key_pem: &str) -> Result<[u8; 32], String> {
 /// `sha256(rawPub).hex()` — same formula upstream uses to mint
 /// `deviceId`. The signed connect's `device.id` MUST equal this so the
 /// upstream container can look up the paired entry by deviceId.
-fn derive_device_id(public_key_pem: &str) -> Result<String, String> {
+/// `pub(crate)` because `pair_state::matches_identities` uses the same
+/// derivation to detect a Keychain/persisted-state mismatch.
+pub(crate) fn derive_device_id(public_key_pem: &str) -> Result<String, String> {
     let raw = raw_public_key_from_pem(public_key_pem)?;
     let mut hasher = Sha256::new();
     hasher.update(raw);

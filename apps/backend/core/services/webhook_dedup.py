@@ -81,6 +81,19 @@ async def delete_event(event_id: str) -> None:
     _table().delete_item(Key={"event_id": event_id})
 
 
+async def has_event(event_id: str) -> bool:
+    """Whether `event_id` is currently recorded, WITHOUT claiming it.
+
+    `record_event_or_skip` answers the same question but takes the key as a side
+    effect, which is wrong for callers that only want to read — a marker written
+    by one flow and consulted by another (see apple_iap's revocation tombstone).
+    Strongly consistent, because the caller is deciding entitlement and an
+    eventually-consistent miss would grant it.
+    """
+    response = _table().get_item(Key={"event_id": event_id}, ConsistentRead=True)
+    return response.get("Item") is not None
+
+
 async def record_event_or_skip(event_id: str, *, source: str) -> WebhookDedupResult:
     """Conditionally record a webhook event_id.
 

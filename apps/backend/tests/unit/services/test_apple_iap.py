@@ -51,6 +51,19 @@ def _product_id(monkeypatch):
     monkeypatch.setattr(apple_iap.settings, "APPLE_IAP_PRODUCT_ID", "co.isol8.mobile.plan.monthly")
 
 
+@pytest.fixture(autouse=True)
+def _no_revocation_tombstone(monkeypatch):
+    """Default: this transaction was not revoked before linking.
+
+    link_purchase consults the dedup table for that marker, which no unit test
+    has. Stubbed to the ordinary answer here so the tombstone tests can say the
+    interesting one explicitly rather than every other test tripping over it.
+    """
+    monkeypatch.setattr(apple_iap.webhook_dedup, "has_event", AsyncMock(return_value=False))
+    monkeypatch.setattr(apple_iap.webhook_dedup, "record_event_or_skip", AsyncMock())
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", AsyncMock())
+
+
 # ---------------------------------------------------------------------------
 # Status mapping
 # ---------------------------------------------------------------------------
@@ -752,7 +765,12 @@ async def test_mobile_web_checkout_returns_the_already_open_session(monkeypatch)
     monkeypatch.setattr(
         billing_service.stripe.checkout.Session,
         "retrieve",
-        lambda _id: {"status": "open", "id": "cs_open", "url": "https://checkout.stripe.com/c/pay/cs_open"},
+        lambda _id: {
+            "status": "open",
+            "id": "cs_open",
+            "url": "https://checkout.stripe.com/c/pay/cs_open",
+            "metadata": {"purpose": "mobile_web_checkout"},
+        },
     )
     built = AsyncMock()
     monkeypatch.setattr(billing_service, "_build_subscription_checkout", built)
@@ -973,3 +991,185 @@ async def test_a_sandbox_transaction_grants_a_real_plan_deliberately(monkeypatch
     # Carried so the log line can name it — the only way a leaked TestFlight
     # link would be visible.
     assert result.environment == "sandbox"
+
+
+# ---------------------------------------------------------------------------
+# A revocation that lands BEFORE the purchase is ever linked. There is no row,
+# so there is no watermark for a later link to lose against.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_refund_for_an_unlinked_purchase_leaves_a_tombstone(monkeypatch):
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="REFUND"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    marked = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "record_event_or_skip", marked)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        assert await apple_iap.apply_notification("signed") is None
+
+    keys = [c.args[0] if c.args else c.kwargs.get("event_id") for c in marked.await_args_list]
+    assert "apple_revoked:2000000000000001" in keys
+
+
+@pytest.mark.asyncio
+async def test_a_tombstoned_transaction_cannot_be_linked_afterwards(monkeypatch):
+    """The whole point: refunded before linking, then linked. Without the
+    tombstone this grants the subscription the money was returned for."""
+    monkeypatch.setattr(apple_iap.webhook_dedup, "has_event", AsyncMock(return_value=True))
+    verifier = SimpleNamespace(verify_and_decode_signed_transaction=lambda _: _transaction())
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock()) as set_sub,
+    ):
+        with pytest.raises(AppleIapError, match="refunded or revoked"):
+            await apple_iap.link_purchase(owner_id="user_1", signed_transaction="jws")
+
+    set_sub.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_resubscribe_clears_the_tombstone(monkeypatch):
+    """A resubscribe reuses the SAME originalTransactionId, so a tombstone that
+    never cleared would refuse a paying customer forever."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="SUBSCRIBED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    cleared = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", cleared)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.apply_notification("signed")
+
+    keys = [c.args[0] if c.args else c.kwargs.get("event_id") for c in cleared.await_args_list]
+    assert "apple_revoked:2000000000000001" in keys
+
+
+@pytest.mark.asyncio
+async def test_an_expiry_does_not_clear_the_tombstone(monkeypatch):
+    """Only a LIVE state may clear it. Clearing on any applied notification
+    would let the EXPIRED that follows a refund reopen the replay."""
+    verifier = SimpleNamespace(
+        verify_and_decode_notification=lambda _: _notification(notificationType="EXPIRED"),
+        verify_and_decode_signed_transaction=lambda _: _transaction(),
+    )
+    cleared = AsyncMock()
+    monkeypatch.setattr(apple_iap.webhook_dedup, "delete_event", cleared)
+
+    with (
+        patch.object(apple_iap, "_verifier", return_value=verifier),
+        patch.object(
+            apple_iap.billing_repo,
+            "get_by_apple_original_transaction_id",
+            AsyncMock(return_value={"owner_id": "user_1"}),
+        ),
+        patch.object(apple_iap.billing_repo, "set_apple_subscription", AsyncMock(return_value={"owner_id": "user_1"})),
+    ):
+        await apple_iap.apply_notification("signed")
+
+    keys = [c.args[0] if c.args else c.kwargs.get("event_id") for c in cleared.await_args_list]
+    assert "apple_revoked:2000000000000001" not in keys
+
+
+# ---------------------------------------------------------------------------
+# The pending-checkout marker is shared across flows, so "open" is not enough.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_mobile_flow_never_reuses_another_flows_session(monkeypatch):
+    """An abandoned Ultra session is $150. Handing it back to someone who tapped
+    a $50 flat-plan button charges them for line items the app never quoted."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "pending_checkout_session_id": "cs_ultra"}),
+    )
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session,
+        "retrieve",
+        lambda _id: {
+            "status": "open",
+            "id": "cs_ultra",
+            "url": "https://checkout.stripe.com/c/pay/cs_ultra",
+            "metadata": {"purpose": "ultra"},
+        },
+    )
+    expired: list[str] = []
+    monkeypatch.setattr(
+        billing_service.stripe.checkout.Session, "expire", lambda _id: expired.append(_id) or {"status": "expired"}
+    )
+
+    async def _fake_build(**_):
+        return SimpleNamespace(id="cs_mobile", url="https://checkout.stripe.com/c/pay/cs_mobile")
+
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", _fake_build)
+    monkeypatch.setattr(billing_service.billing_repo, "try_claim_checkout_slot", AsyncMock(return_value="tok"))
+    monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", AsyncMock())
+
+    session = await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    assert session.id == "cs_mobile"
+    # And the other one is dead, or both would stay completable.
+    assert expired == ["cs_ultra"]
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_session_that_completes_mid_expire_stops_the_flow(monkeypatch):
+    """The thin race: it completes between retrieve and expire. Minting anyway
+    would leave the owner charged twice."""
+    from core.services import billing_service
+
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat")
+    monkeypatch.setattr(
+        billing_service.billing_repo,
+        "get_by_owner_id",
+        AsyncMock(return_value={"owner_id": "user_1", "pending_checkout_session_id": "cs_flat"}),
+    )
+    states = iter(
+        [
+            {"status": "open", "id": "cs_flat", "metadata": {"purpose": "flat_fee"}},
+            {"status": "complete", "id": "cs_flat"},
+        ]
+    )
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", lambda _id: next(states))
+
+    def _expire_fails(_id):
+        raise billing_service.stripe.error.InvalidRequestError("already completed", param="id")
+
+    monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", _expire_fails)
+    built = AsyncMock()
+    monkeypatch.setattr(billing_service, "_build_subscription_checkout", built)
+
+    with pytest.raises(billing_service.BillingServiceError, match="already_subscribed"):
+        await billing_service.create_mobile_web_checkout(owner_id="user_1")
+
+    built.assert_not_awaited()

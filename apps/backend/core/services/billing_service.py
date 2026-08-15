@@ -530,12 +530,22 @@ async def _build_subscription_checkout(
 
 
 async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | None:
-    """The owner's still-open Checkout Session, or None if there isn't one.
+    """The owner's still-open MOBILE Checkout Session, or None if there is none.
 
     Reads the ``pending_checkout_session_id`` marker and asks Stripe what it
     actually is, because the marker alone cannot say: it is written at create
     time and nothing clears it when a session expires or completes. The
     session's LIVE status is the truth, so a stale marker self-heals into None.
+
+    **The marker is shared by every checkout flow** — the flat browser checkout,
+    the Ultra checkout and this one all write it — so "an open session exists"
+    is a different question from "an open session for what this caller sells".
+    Reusing on status alone handed the mobile caller whichever session happened
+    to be open: an owner who abandoned an Ultra session ($150) and then tapped
+    the mobile paywall's flat option ($50) would be sent back to the Ultra page
+    and charged for line items the app never quoted. A session for anything else
+    is expired and replaced, the way the web route already treats a provider or
+    credit-amount switch.
 
     Raises ``already_subscribed:checkout_completed`` when the pending session is
     already paid. The subscription exists at Stripe but the webhook has not
@@ -556,10 +566,31 @@ async def _open_pending_checkout(owner_id: str) -> stripe.checkout.Session | Non
         return None
 
     status = pending.get("status")
-    if status == "open":
-        return pending
     if status == "complete":
         raise BillingServiceError("already_subscribed:checkout_completed")
+    if status != "open":
+        return None
+
+    # Read the purpose off the SESSION rather than a stored column: one source
+    # of truth, no migration, and the same dict the grant webhook reads.
+    purpose = (pending.get("metadata") or {}).get("purpose")
+    if purpose == "mobile_web_checkout":
+        return pending
+
+    # Someone else's open session. Expire it before minting ours, or both stay
+    # completable and the owner can be charged twice.
+    logger.info("Pending checkout session %s is for %s, not mobile — expiring it", pending_id, purpose)
+    try:
+        with timing("stripe.api.latency", {"op": "checkout.session.expire"}):
+            stripe.checkout.Session.expire(pending_id)
+    except stripe.error.InvalidRequestError:
+        # Thin race: it can complete between retrieve and expire (checkout
+        # finishing in a browser tab). Minting a fresh session here would leave
+        # BOTH chargeable — re-check and stop unless it genuinely expired.
+        with timing("stripe.api.latency", {"op": "checkout.session.retrieve"}):
+            recheck = stripe.checkout.Session.retrieve(pending_id)
+        if recheck.get("status") != "expired":
+            raise BillingServiceError("already_subscribed:checkout_completed") from None
     return None
 
 

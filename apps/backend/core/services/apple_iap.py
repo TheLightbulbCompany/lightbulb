@@ -196,6 +196,34 @@ def _verifier(environment_name: str = ""):
     )
 
 
+def _revoked_key(original_transaction_id: str) -> str:
+    return f"apple_revoked:{original_transaction_id}"
+
+
+async def _mark_revoked(original_transaction_id: str) -> None:
+    """Remember that this transaction was revoked while nothing was linked to it.
+
+    Stored in the webhook-dedup table because the shape is identical — a keyed
+    marker with a 30-day TTL — and that TTL is the right length by construction:
+    the product is monthly, so past ~31 days the transaction's own expiresDate
+    has elapsed and ``_status_for`` refuses it anyway. The tombstone only has to
+    cover the remainder of a paid period.
+    """
+    await webhook_dedup.record_event_or_skip(_revoked_key(original_transaction_id), source="apple-iap-revoked")
+
+
+async def _clear_revoked(original_transaction_id: str) -> None:
+    """Drop the tombstone when Apple says this subscription is live again.
+
+    A resubscribe reuses the SAME originalTransactionId, so without this a
+    refunded owner who later genuinely pays again would be refused forever.
+    """
+    try:
+        await webhook_dedup.delete_event(_revoked_key(original_transaction_id))
+    except Exception:  # noqa: BLE001 — best effort; a stale tombstone only ever over-refuses
+        logger.exception("apple_iap.revoked_clear_failed original_transaction_id=%s", original_transaction_id)
+
+
 def _verify_signed(method: str, blob: str) -> tuple[object, str]:
     """Verify a JWS against the configured environment, then the other one.
 
@@ -413,6 +441,18 @@ async def link_purchase(*, owner_id: str, signed_transaction: str) -> AppleSubsc
     if existing is not None and existing.get("owner_id") != owner_id:
         raise AppleIapError("this Apple subscription is already linked to another account")
 
+    # A revocation that arrived while nothing was linked leaves no row and so no
+    # watermark for the write below to lose against. Without this check, an
+    # owner refunded before linking could link afterwards and be handed the
+    # subscription their money was returned for.
+    if await webhook_dedup.has_event(_revoked_key(subscription.original_transaction_id)):
+        logger.warning(
+            "apple_iap.link_refused_revoked owner_id=%s original_transaction_id=%s",
+            owner_id,
+            subscription.original_transaction_id,
+        )
+        raise AppleIapError("this Apple transaction was refunded or revoked and cannot be linked")
+
     written = await billing_repo.set_apple_subscription(
         owner_id,
         original_transaction_id=subscription.original_transaction_id,
@@ -554,11 +594,20 @@ async def _apply_verified_notification(
     if row is None:
         # The purchase was never linked — the app died between StoreKit
         # returning and POST /billing/apple/link landing. The client's restore
-        # path recovers this; there is nothing to update now.
+        # path recovers this; there is no row to update now.
+        #
+        # A REVOKING one cannot simply be dropped, though. The owner still holds
+        # the pre-revocation JWS, and with no row there is no watermark for a
+        # later link write to lose against — so they could link afterwards and
+        # be granted the subscription they were just refunded for. Leave a
+        # tombstone that `link_purchase` consults instead.
+        if subscription.status == "canceled":
+            await _mark_revoked(subscription.original_transaction_id)
         logger.warning(
-            "apple_iap.notification_unlinked original_transaction_id=%s type=%s",
+            "apple_iap.notification_unlinked original_transaction_id=%s type=%s status=%s",
             subscription.original_transaction_id,
             notification_type,
+            subscription.status,
         )
         return None
 
@@ -589,6 +638,11 @@ async def _apply_verified_notification(
             signed_date,
         )
         return None
+    if subscription.status != "canceled":
+        # Apple says this subscription is live again — a resubscribe reuses the
+        # SAME originalTransactionId, so a tombstone left by an earlier refund
+        # would otherwise refuse the owner's genuine new purchase forever.
+        await _clear_revoked(subscription.original_transaction_id)
     logger.info(
         "apple_iap.notification_applied owner_id=%s type=%s status=%s",
         owner_id,

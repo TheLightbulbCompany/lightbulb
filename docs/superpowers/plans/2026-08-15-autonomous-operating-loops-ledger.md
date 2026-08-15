@@ -213,6 +213,15 @@ tests, Codex review, merge SHA, deploy run, UI proof, and runtime proof.
   review passed on the new head; full Backend CI remains in progress.
   `@codex review` was re-requested in comment `5301140224`; the PR remains
   unmerged and undeployed.
+- 2026-08-15: Read-only ECS inspection found 19 top-level agent workspaces but
+  only 11 live OpenClaw agent entries. The eight unreferenced directories are
+  five 88-KB UUID-keyed Jarvis remnants plus `workspace-jarvis` (436 KB),
+  `workspace-product-analytics-scorecard` (76 KB), and
+  `workspace-platform-ops-reliability` (44 KB). None has a `.template`
+  marketplace sidecar. PR #1799 correctly prevents this leak for future
+  exact-ID deletions; it does not guess that an unreferenced historical
+  workspace is disposable. Preserve these paths until one explicit destructive
+  founder approval authorizes the bounded one-time cleanup.
 - 2026-08-15: AWS-integration CloudWatch alarm transport PR #1801 is open at
   head `d0d38f61f`. It creates an ALARM-only EventBridge API Destination in the
   owner's connected region through the existing Settings AWS role, persists
@@ -242,3 +251,6 @@ authority.
   relying on it.
 - Cash, cash as-of date, and fixed non-AWS monthly commitments remain required
   before Tally may calculate runway or complete operating burn.
+- Eight unreferenced legacy agent workspaces require one bounded destructive
+  cleanup approval after the target roster is live; the exact paths and sizes
+  are recorded above.

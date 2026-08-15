@@ -538,6 +538,15 @@ export class ContainerStack extends cdk.Stack {
     // Startup command — almost everything (apt packages, pip, npm globals,
     // gh, uv) is baked into the extended OpenClaw image. The boot sequence:
     //
+    // Step 0 (lock recovery): remove OpenClaw's config-mutation sidecar before
+    // any OpenClaw process starts. A task can die after creating the sidecar
+    // but before writing its JSON ownership payload, leaving a zero-byte lock
+    // that upstream deliberately cannot reclaim. Per-owner ECS services use
+    // SINGLE_WRITER_DEPLOYMENT_CONFIG, so ECS stops the previous task before
+    // this replacement starts; at this point no live OpenClaw process can own
+    // the sidecar. Fail closed if the fixed path is not a regular, non-symlink
+    // file rather than deleting an unexpected filesystem object.
+    //
     // Step A (migration): rename a legacy real `~/.openclaw/browser`
     // directory aside. This handles the first boot per per-user EFS
     // access point after this change deploys — without it, Step B's
@@ -586,6 +595,9 @@ export class ContainerStack extends cdk.Stack {
     // `real-dir/target -> ...` rather than replacing `real-dir`),
     // shipping a no-op that LOOKS deployed.
     const startupCommand = [
+      // Step 0 — recover a sidecar stranded by a terminated prior task. The
+      // `-L` arm catches broken symlinks, which `-e` alone would miss.
+      "if [ -e /home/node/.openclaw/openclaw.json.lock ] || [ -L /home/node/.openclaw/openclaw.json.lock ]; then [ -f /home/node/.openclaw/openclaw.json.lock ] && [ ! -L /home/node/.openclaw/openclaw.json.lock ] || { echo '[boot] FATAL: openclaw.json.lock is not a regular file'; exit 1; }; rm -f /home/node/.openclaw/openclaw.json.lock || exit 1; fi",
       // Step A — migration. POSIX-sh: `[ ... ]`, `&&`, `$(...)`,
       // and `{ ... ; }` are all portable to `sh -c`. The trailing
       // `; ` inside `{ ... ; }` is required by POSIX shell syntax.

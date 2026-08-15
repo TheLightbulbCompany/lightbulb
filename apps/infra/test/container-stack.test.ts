@@ -222,10 +222,11 @@ describe("ContainerStack — dev", () => {
           Name: "openclaw",
           // ECS Command array for command=["sh","-c",<startupCommand>]
           // renders as exactly those three array elements in synthesized
-          // CFN. Three ordered segments separated by `.*`:
-          //   1) the archive-rename guard for a legacy REAL directory
-          //   2) the actual mv to a timestamped archive path
-          //   3) mkdir + symlink to ephemeral /tmp/openclaw-browser
+          // CFN. Four ordered segments separated by `.*`:
+          //   1) stale config-lock recovery before any OpenClaw process starts
+          //   2) the archive-rename guard for a legacy REAL directory
+          //   3) the actual mv to a timestamped archive path
+          //   4) mkdir + symlink to ephemeral /tmp/openclaw-browser
           //      then `exec` into the baked local-sqlite boot chain, which
           //      owns doctor + gateway as a litestream-supervised child.
           Command: [
@@ -237,10 +238,34 @@ describe("ContainerStack — dev", () => {
               // Step B silently nest the symlink inside the legacy real
               // directory. `\\|` escapes the regex alternation operator
               // so we match a literal `|`.
-              "^\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
+              "^if \\[ -e /home/node/\\.openclaw/openclaw\\.json\\.lock \\] \\|\\| \\[ -L /home/node/\\.openclaw/openclaw\\.json\\.lock \\].*"
+              + "\\[ -f /home/node/\\.openclaw/openclaw\\.json\\.lock \\] && \\[ ! -L /home/node/\\.openclaw/openclaw\\.json\\.lock \\].*"
+              + "rm -f /home/node/\\.openclaw/openclaw\\.json\\.lock \\|\\| exit 1; fi; "
+              + "\\[ -e /home/node/\\.openclaw/browser \\] && \\[ ! -L /home/node/\\.openclaw/browser \\].*"
               + "mv /home/node/\\.openclaw/browser /home/node/\\.openclaw/browser\\.efs-archive-.*\\|\\| exit 1.*"
               + "mkdir -p /tmp/openclaw-browser \\|\\| exit 1.*"
               + "ln -sfn /tmp/openclaw-browser /home/node/\\.openclaw/browser \\|\\| exit 1.*"
+              + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
+            ),
+          ],
+        }),
+      ]),
+    });
+  });
+
+  test("openclaw container clears only a regular config lock before gateway startup", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-openclaw",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "openclaw",
+          Command: [
+            "sh",
+            "-c",
+            Match.stringLikeRegexp(
+              "^if .*openclaw\\.json\\.lock.*"
+              + "\\[ -f /home/node/\\.openclaw/openclaw\\.json\\.lock \\] && \\[ ! -L /home/node/\\.openclaw/openclaw\\.json\\.lock \\].*"
+              + "rm -f /home/node/\\.openclaw/openclaw\\.json\\.lock \\|\\| exit 1.*"
               + "exec /usr/local/bin/isol8-local-sqlite-boot\\.sh$",
             ),
           ],

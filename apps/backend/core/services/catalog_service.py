@@ -976,6 +976,32 @@ class CatalogService:
 
     # ---- deployed ----
 
+    def live_install_for_agent(self, owner_id: str, agent_id: str) -> dict[str, Any] | None:
+        """Return a committed container install for ``agent_id``, if one exists.
+
+        The sidecar is written before the gateway registration, so neither it
+        nor ``agents.list`` is sufficient alone. Their intersection is the
+        durable boundary used by retrying deploy callers.
+        """
+        sidecar = self._workspace.read_template_sidecar(owner_id, agent_id)
+        if not isinstance(sidecar, dict):
+            return None
+
+        config = self._workspace.read_openclaw_config(owner_id) or {}
+        registered = {
+            agent.get("id") for agent in ((config.get("agents") or {}).get("list") or []) if isinstance(agent, dict)
+        }
+        if agent_id not in registered:
+            return None
+
+        return {
+            "agent_id": agent_id,
+            "template_slug": sidecar.get("template_slug"),
+            "template_version": sidecar.get("template_version"),
+            "listing_id": sidecar.get("listing_id"),
+            "seller_id": sidecar.get("seller_id"),
+        }
+
     def list_deployed_for_user(self, owner_id: str) -> list[dict[str, Any]]:
         """Scan the owner's workspaces for .template sidecars; return provenance.
 

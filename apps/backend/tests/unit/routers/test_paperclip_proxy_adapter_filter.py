@@ -63,14 +63,15 @@ def test_agent_hire_with_non_gateway_adapter_is_blocked():
     assert _blocked("POST", "api/companies/c1/agent-hires", body)
 
 
-def test_create_agent_with_gateway_adapter_is_allowed():
+def test_direct_create_agent_with_gateway_adapter_is_blocked():
+    """Creation is Isol8-owned even when the adapter itself is safe."""
     body = json.dumps({"name": "x", "adapterType": "openclaw_gateway"}).encode()
-    assert not _blocked("POST", "api/companies/c1/agents", body)
+    assert _blocked("POST", "api/companies/c1/agents", body)
 
 
-def test_agent_hire_with_gateway_adapter_is_allowed():
+def test_direct_agent_hire_with_gateway_adapter_is_blocked():
     body = json.dumps({"adapterType": "openclaw_gateway"}).encode()
-    assert not _blocked("POST", "api/companies/c1/agent-hires", body)
+    assert _blocked("POST", "api/companies/c1/agent-hires", body)
 
 
 def test_present_but_non_gateway_adapter_blocked_on_any_write_route():
@@ -266,9 +267,9 @@ def test_compressed_request_body_is_rejected():
 
 @pytest.mark.parametrize("encoding", [None, "", "identity"])
 def test_uncompressed_encodings_pass(encoding):
-    # A normal (unencoded) gateway write must still go through.
+    # A normal (unencoded) update to an existing gateway agent still passes.
     body = json.dumps({"adapterType": "openclaw_gateway"}).encode()
-    _assert_paperclip_request_allowed("POST", "api/companies/c1/agents", body, content_encoding=encoding)
+    _assert_paperclip_request_allowed("PATCH", "api/agents/a1", body, content_encoding=encoding)
 
 
 # ---------------------------------------------------------------

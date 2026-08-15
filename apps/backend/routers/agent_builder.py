@@ -286,20 +286,26 @@ async def _register_built_agent(
         raise HTTPException(status_code=503, detail="paperclip unavailable — retry the build in a moment") from exc
 
     # 4. Deploy the snapshot into the container (write files + register live in
-    #    openclaw.json). Roll back the orphan Paperclip agent on any failure —
-    #    same envelope as the marketplace deploy path.
+    #    openclaw.json). A response can be lost after the first attempt commits;
+    #    the stable Paperclip key then returns the same UUID. Reconcile that
+    #    existing install instead of appending its cron jobs a second time.
     catalog = get_catalog_service()
+    existing_install = catalog.live_install_for_agent(owner_id, new_agent_id)
+    install_already_committed = isinstance(existing_install, dict)
     try:
-        deploy_result = await catalog.deploy_from_artifact(
-            owner_id=owner_id,
-            slug=_slugify(payload.name),
-            manifest=package.manifest,
-            slice_=slice_,
-            tar_bytes=package.tarball_bytes,
-            new_agent_id=new_agent_id,
-            container_ip=container_ip,
-            container_token=container_token,
-        )
+        if install_already_committed:
+            deploy_result = {"agent_id": new_agent_id}
+        else:
+            deploy_result = await catalog.deploy_from_artifact(
+                owner_id=owner_id,
+                slug=_slugify(payload.name),
+                manifest=package.manifest,
+                slice_=slice_,
+                tar_bytes=package.tarball_bytes,
+                new_agent_id=new_agent_id,
+                container_ip=container_ip,
+                container_token=container_token,
+            )
 
         # Register the new agent's operator device into the running container's
         # paired.json + bind its authToken to the gateway token, so its first
@@ -316,6 +322,22 @@ async def _register_built_agent(
             ip=container_ip,
         )
     except Exception as exc:  # noqa: BLE001 — roll back the orphan, re-raise
+        if install_already_committed:
+            logger.exception(
+                "register_built_agent: reconciliation failed for committed agent %s owner=%s staging=%s; "
+                "preserving the existing install",
+                new_agent_id,
+                owner_id,
+                payload.staging_agent_id,
+            )
+            if isinstance(exc, HTTPException):
+                raise
+            reason = f"{type(exc).__name__}: {exc}"[:300]
+            raise HTTPException(
+                status_code=502,
+                detail=f"reconcile existing container install failed ({reason}) — retry in a moment",
+            ) from exc
+
         logger.exception(
             "register_built_agent: deploy failed for owner=%s staging=%s — rolling back %s",
             owner_id,
@@ -364,7 +386,8 @@ async def _register_built_agent(
 
     # Committed: the deploy + pairing envelope above survived. Emitting from
     # inside deploy_from_artifact counted builds the rollback had undone.
-    emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
+    if not install_already_committed:
+        emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
 
     # Surface sanitizer-dropped keys so Atlas learns its bundle emitted
     # non-schema config instead of the loss dying in a CloudWatch warn.

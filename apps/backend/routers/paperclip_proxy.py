@@ -417,6 +417,11 @@ _BLOCKED_ROUTES: tuple[tuple[frozenset[str] | None, re.Pattern[str]], ...] = (
     ({"DELETE"}, re.compile(r"^api/companies/[^/]+/?$")),
     (None, re.compile(r"^api/companies/import")),
     (None, re.compile(r"^api/companies/[^/]+/imports(?:/|$)")),
+    # Agent creation must pass through an Isol8-owned BFF so the owner-wide
+    # budget cap and server-derived idempotency key are enforced. The raw
+    # Paperclip route has neither control and would let any authenticated owner
+    # bypass both simply by supplying the otherwise-safe gateway adapter.
+    ({"POST"}, re.compile(r"^api/companies/[^/]+/(?:agents|agent-hires)/?$")),
     # claude_local-only subprocess login (trailing-slash-safe).
     (None, re.compile(r"^api/agents/[^/]+/claude-login/?$")),
     # Config-revision rollback restores a STORED adapterConfig snapshot with no

@@ -850,6 +850,35 @@ def test_list_deployed_for_user_keyed_by_owner_id():
     ]
 
 
+def test_live_install_for_agent_requires_sidecar_and_registered_agent():
+    workspace = MagicMock()
+    workspace.read_template_sidecar.return_value = {
+        "template_slug": "lex",
+        "template_version": 2,
+        "listing_id": "listing_1",
+    }
+    workspace.read_openclaw_config.return_value = {"agents": {"list": [{"id": "other"}, {"id": "agent_abc"}]}}
+    svc = CatalogService(
+        workspace=workspace,
+        apply_deploy_aux_mutations=AsyncMock(),
+        pair_fn=AsyncMock(),
+    )
+
+    assert svc.live_install_for_agent("org_xyz", "agent_abc") == {
+        "agent_id": "agent_abc",
+        "template_slug": "lex",
+        "template_version": 2,
+        "listing_id": "listing_1",
+        "seller_id": None,
+    }
+
+    workspace.read_openclaw_config.return_value = {"agents": {"list": [{"id": "other"}]}}
+    assert svc.live_install_for_agent("org_xyz", "agent_abc") is None
+
+    workspace.read_template_sidecar.return_value = None
+    assert svc.live_install_for_agent("org_xyz", "agent_abc") is None
+
+
 @pytest.mark.asyncio
 async def test_deploy_coerces_decimal_version_in_sidecar():
     """Regression for the dev-tested marketplace deploy 500: boto3 returns

@@ -368,8 +368,12 @@ file with the plan when the goal closes.
 
 1. Tally snapshot, Gauge scorecard/exception, Friday daily/weekly.
 2. Vera customer health/revenue recovery/support on-demand, then Forge GitHub
-   and CloudWatch.
+   and an on-demand CloudWatch diagnostic read through the existing Settings
+   AWS connection. This does not arm the reliability webhook.
 3. Pulse community/content/prospecting.
-4. Gmail Pub/Sub last: create the Google topic/grant, create the automation,
+4. EventBridge last: only after the non-transport loops pass, decide whether to
+   deploy the API Destination, apply the connector-stack update, deliver one
+   controlled ALARM transition, and then arm the reliability webhook.
+5. Gmail Pub/Sub last: create the Google topic/grant, create the automation,
    add the OIDC push subscription, send one controlled support message, verify
    the Gmail history/message/thread path, then arm. Never fall back to polling.

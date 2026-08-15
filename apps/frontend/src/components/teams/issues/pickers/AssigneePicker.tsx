@@ -1,6 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import {
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { User } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -30,6 +37,11 @@ export interface AssigneePickerProps {
   className?: string;
 }
 
+type AssigneeOption =
+  | { kind: "clear" }
+  | { kind: "agent"; id: string }
+  | { kind: "member"; id: string };
+
 export function AssigneePicker({
   agents,
   selectedAgentId,
@@ -42,6 +54,9 @@ export function AssigneePicker({
 }: AssigneePickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const mouseDownCommittedRef = useRef(false);
+  const listboxId = useId();
 
   // People are only offered when the host wired an onUserChange handler.
   const peopleEnabled = onUserChange !== undefined && members.length > 0;
@@ -90,6 +105,41 @@ export function AssigneePicker({
         )
       : members
     : [];
+  const options: AssigneeOption[] = [
+    { kind: "clear" },
+    ...visibleAgents.map((agent) => ({ kind: "agent" as const, id: agent.id })),
+    ...visibleMembers.map((member) => ({ kind: "member" as const, id: member.userId })),
+  ];
+
+  const initialActiveIndex = (queryValue: string) => {
+    const normalizedQuery = queryValue.trim().toLowerCase();
+    if (normalizedQuery) {
+      const hasAgentMatch = orderedAgents.some((agent) =>
+        agent.name.toLowerCase().includes(normalizedQuery),
+      );
+      const hasMemberMatch =
+        peopleEnabled &&
+        members.some((member) =>
+          `${member.name ?? ""} ${member.email ?? ""}`
+            .toLowerCase()
+            .includes(normalizedQuery),
+        );
+      return hasAgentMatch || hasMemberMatch ? 1 : -1;
+    }
+
+    const selectedAgentIndex = orderedAgents.findIndex(
+      (agent) => agent.id === selectedAgentId,
+    );
+    if (selectedAgentIndex >= 0) return selectedAgentIndex + 1;
+
+    const selectedMemberIndex = peopleEnabled
+      ? members.findIndex((member) => member.userId === selectedUserId)
+      : -1;
+    if (selectedMemberIndex >= 0) {
+      return orderedAgents.length + selectedMemberIndex + 1;
+    }
+    return 0;
+  };
 
   // Picking an agent clears any human assignee, and vice versa — the two are
   // mutually exclusive. The host wires that clear via the change handlers
@@ -99,11 +149,75 @@ export function AssigneePicker({
     onChange(agentId);
     setOpen(false);
     setQuery("");
+    setActiveIndex(-1);
   };
   const handleSelectMember = (userId: string | null) => {
     onUserChange?.(userId);
     setOpen(false);
     setQuery("");
+    setActiveIndex(-1);
+  };
+  const handleSelectOption = (option: AssigneeOption) => {
+    if (option.kind === "agent") handleSelectAgent(option.id);
+    else if (option.kind === "member") handleSelectMember(option.id);
+    else if (selectedUserId !== null) handleSelectMember(null);
+    else handleSelectAgent(null);
+  };
+  const handleOptionMouseDown = (
+    event: MouseEvent<HTMLButtonElement>,
+    option: AssigneeOption,
+  ) => {
+    if (event.button !== 0) return;
+    // Commit before the search input blurs and the portal can rerender under
+    // the pointer. Touch and assistive clicks still use the click handler.
+    event.preventDefault();
+    mouseDownCommittedRef.current = true;
+    handleSelectOption(option);
+  };
+  const handleOptionClick = (option: AssigneeOption) => {
+    if (mouseDownCommittedRef.current) {
+      mouseDownCommittedRef.current = false;
+      return;
+    }
+    handleSelectOption(option);
+  };
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      setQuery("");
+      setActiveIndex(-1);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => {
+        const firstIndex = q && options.length > 1 ? 1 : 0;
+        if (event.key === "ArrowUp") {
+          return current <= firstIndex ? options.length - 1 : current - 1;
+        }
+        if (current < firstIndex || current >= options.length - 1) return firstIndex;
+        return current + 1;
+      });
+      return;
+    }
+    if (event.key === "Enter" && activeIndex >= 0) {
+      event.preventDefault();
+      const option = options[activeIndex];
+      if (option) handleSelectOption(option);
+    }
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) {
+      mouseDownCommittedRef.current = false;
+      setActiveIndex(initialActiveIndex(query));
+    }
+    if (!next) {
+      setQuery("");
+      setActiveIndex(-1);
+    }
   };
 
   const triggerClass =
@@ -112,7 +226,7 @@ export function AssigneePicker({
       : "inline-flex items-center gap-2 text-sm hover:underline";
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -135,24 +249,40 @@ export function AssigneePicker({
         <input
           autoFocus
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActiveIndex(initialActiveIndex(e.target.value));
+          }}
+          onKeyDown={handleSearchKeyDown}
           placeholder={peopleEnabled ? "Search agents & people..." : "Search agents..."}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-activedescendant={
+            activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined
+          }
           className="w-full px-2 py-1.5 text-xs bg-transparent outline-none mb-1 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--forest)]"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
-        <ul className="max-h-56 overflow-y-auto" role="listbox">
+        <ul id={listboxId} className="max-h-56 overflow-y-auto" role="listbox">
           <li
+            id={`${listboxId}-option-0`}
             role="option"
-            aria-selected={selectedAgentId === null && selectedUserId === null}
+            aria-selected={activeIndex === 0}
           >
             <button
               type="button"
-              onClick={() => {
-                // Clear whichever kind is set so both end up null.
-                if (selectedUserId !== null) handleSelectMember(null);
-                else handleSelectAgent(null);
-              }}
-              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
+              tabIndex={-1}
+              onMouseDown={(event) =>
+                handleOptionMouseDown(event, { kind: "clear" })
+              }
+              onClick={() => handleOptionClick({ kind: "clear" })}
+              onMouseEnter={() => setActiveIndex(0)}
+              className={cn(
+                "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]",
+                activeIndex === 0 && "bg-[var(--cream-deeper)]",
+              )}
               style={{ color: "var(--mute)" }}
             >
               No assignee
@@ -167,21 +297,32 @@ export function AssigneePicker({
               Agents
             </li>
           )}
-          {visibleAgents.map((agent) => (
-            <li
-              key={agent.id}
-              role="option"
-              aria-selected={selectedAgentId === agent.id}
-            >
-              <button
-                type="button"
-                onClick={() => handleSelectAgent(agent.id)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]"
+          {visibleAgents.map((agent, index) => {
+            const optionIndex = index + 1;
+            const option: AssigneeOption = { kind: "agent", id: agent.id };
+            return (
+              <li
+                id={`${listboxId}-option-${optionIndex}`}
+                key={agent.id}
+                role="option"
+                aria-selected={activeIndex === optionIndex}
               >
-                {agent.name}
-              </button>
-            </li>
-          ))}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onMouseDown={(event) => handleOptionMouseDown(event, option)}
+                  onClick={() => handleOptionClick(option)}
+                  onMouseEnter={() => setActiveIndex(optionIndex)}
+                  className={cn(
+                    "w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--cream-deeper)]",
+                    activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
+                  )}
+                >
+                  {agent.name}
+                </button>
+              </li>
+            );
+          })}
           {peopleEnabled && (
             <>
               <li
@@ -191,25 +332,39 @@ export function AssigneePicker({
               >
                 People
               </li>
-              {visibleMembers.map((member) => (
-                <li
-                  key={member.userId}
-                  role="option"
-                  aria-selected={selectedUserId === member.userId}
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleSelectMember(member.userId)}
-                    className="w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deeper)]"
+              {visibleMembers.map((member, index) => {
+                const optionIndex = visibleAgents.length + index + 1;
+                const option: AssigneeOption = {
+                  kind: "member",
+                  id: member.userId,
+                };
+                return (
+                  <li
+                    id={`${listboxId}-option-${optionIndex}`}
+                    key={member.userId}
+                    role="option"
+                    aria-selected={activeIndex === optionIndex}
                   >
-                    <Identity
-                      name={member.name ?? member.email ?? member.userId}
-                      avatarUrl={member.imageUrl}
-                      size="xs"
-                    />
-                  </button>
-                </li>
-              ))}
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      onMouseDown={(event) => handleOptionMouseDown(event, option)}
+                      onClick={() => handleOptionClick(option)}
+                      onMouseEnter={() => setActiveIndex(optionIndex)}
+                      className={cn(
+                        "w-full text-left px-2 py-1.5 rounded hover:bg-[var(--cream-deeper)]",
+                        activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
+                      )}
+                    >
+                      <Identity
+                        name={member.name ?? member.email ?? member.userId}
+                        avatarUrl={member.imageUrl}
+                        size="xs"
+                      />
+                    </button>
+                  </li>
+                );
+              })}
               {visibleMembers.length === 0 && (
                 <li className="px-2 py-1.5 text-xs" style={{ color: "var(--mute)" }}>
                   No people

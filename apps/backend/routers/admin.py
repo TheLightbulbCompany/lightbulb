@@ -1,11 +1,8 @@
 """Admin dashboard router — /api/v1/admin/*
 
-Every endpoint is gated by Depends(require_platform_admin), except a
-curated set of READ endpoints on require_admin_read_access (see
-core/services/admin_access.py) which additionally accept the founder
-agent's platform_ops token. The token can inspect debug state but never
-mutate; /admin/me (the frontend admin gate) and the posthog timeline
-(session-replay links are for humans) stay Clerk-only.
+Every endpoint is gated by Depends(require_platform_admin). The surface is for
+human Isol8 operators authenticated by Clerk; customer agents do not receive a
+parallel credential path into platform administration.
 Mutation endpoints are wrapped with @audit_admin_action so a row lands
 in DDB synchronously (fail-closed). Container + billing actions also
 accept an Idempotency-Key header to short-circuit double clicks.
@@ -45,7 +42,6 @@ from core.services.account_wipe import (
     resolve_account_emails,
     wipe_account,
 )
-from core.services.admin_access import require_admin_read_access
 from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
@@ -135,7 +131,7 @@ async def admin_me(auth: AuthContext = Depends(require_platform_admin)):
     "/system/health",
     description="Platform health: container fleet counts, upstream probes, background-task state, recent errors.",
 )
-async def admin_system_health(auth: AuthContext = Depends(require_admin_read_access)):
+async def admin_system_health(auth: AuthContext = Depends(require_platform_admin)):
     return await system_health.get_system_health()
 
 
@@ -148,7 +144,7 @@ async def admin_actions_audit(
     admin_user_id: str | None = Query(None),
     limit: int = Query(50, le=200),
     cursor: str | None = Query(None),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     try:
         return await admin_service.get_actions_audit(
@@ -176,7 +172,7 @@ async def admin_list_users(
     container_status: str | None = Query(None),
     cursor: str | None = Query(None),
     limit: int = Query(50, le=200),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.list_users(q=q, limit=limit, cursor=cursor)
 
@@ -187,7 +183,7 @@ async def admin_list_users(
 )
 async def admin_user_overview(
     user_id: str,
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_overview(user_id)
 
@@ -200,7 +196,7 @@ async def admin_user_agents(
     user_id: str,
     cursor: str | None = Query(None),
     limit: int = Query(50, le=200),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.list_user_agents(user_id, cursor=cursor, limit=limit)
 
@@ -212,7 +208,7 @@ async def admin_user_agents(
 async def admin_agent_detail(
     user_id: str,
     agent_id: str,
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     result = await admin_service.get_agent_detail(user_id, agent_id)
     if isinstance(result, dict) and result.get("error") == "container_not_running":
@@ -242,7 +238,7 @@ async def admin_user_logs(
     hours: int = Query(24, le=168),
     limit: int = Query(20, le=100),
     cursor: str | None = Query(None),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_logs(user_id, level=level, hours=hours, limit=limit, cursor=cursor)
 
@@ -256,7 +252,7 @@ async def admin_user_cloudwatch_url(
     start: str = Query(...),
     end: str = Query(...),
     level: str = Query("ERROR"),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return {"url": admin_service.get_cloudwatch_url(user_id, start=start, end=end, level=level)}
 
@@ -534,7 +530,7 @@ async def admin_container_reapply_config(
 )
 async def admin_user_provisioning(
     user_id: str,
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_provisioning(user_id)
 

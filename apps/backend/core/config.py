@@ -382,14 +382,6 @@ class Settings(BaseSettings):
     # route 503s, so a half-configured environment can never complete a
     # handshake and start receiving events it cannot verify.
     META_WEBHOOK_VERIFY_TOKEN: str = ""
-    # --- Platform Ops (operator console + owner-scoped ops API) ---
-    # The founder's owner_id (user_* or org_*). The platform_ops token's
-    # `sub` must equal this; it gates the agent path on /ops/*.
-    PLATFORM_OPS_OWNER_ID: str = ""
-    # Dedicated HS256 key for signing/verifying platform_ops tokens. Distinct
-    # from PAPERCLIP_SERVICE_TOKEN_KEY so ops tokens are independently
-    # revocable. Populated from Secrets Manager + KMS by the CDK service stack.
-    PLATFORM_OPS_TOKEN_KEY: str = ""
     # Clerk publishable key (the same value the frontend uses as
     # NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY). The paperclip-proxy bootstrap page
     # renders inline JS that loads the Clerk SDK and handshakes a session

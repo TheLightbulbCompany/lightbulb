@@ -24,13 +24,12 @@ describe("IntegrationsPanel", () => {
 
   it("puts Google accounts above the provider catalog, not below it", () => {
     connections.push({ provider: "google", status: "connected" });
-    const { container } = render(<IntegrationsPanel />);
+    render(<IntegrationsPanel />);
     const google = screen.getByTestId("google-accounts");
     const list = screen.getByTestId("connections-list");
     expect(
       google.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(container).toBeTruthy();
   });
 
   it("hides Google accounts until Google is connected", () => {

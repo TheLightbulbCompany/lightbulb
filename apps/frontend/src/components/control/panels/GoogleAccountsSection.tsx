@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiError, useGoogleAccounts } from "@/hooks/useGoogleAccounts";
@@ -72,17 +72,6 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
   // Track which row (keyed by email or agent id) is mid-request so spinners
   // stay row-local.
   const [busyKey, setBusyKey] = useState<string | null>(null);
-
-  // How many agents act as each account. Shown on the account row so
-  // Disconnect is never a blind action — removing an account silently strips
-  // the gog-account block from every agent bound to it.
-  const agentsPerAccount = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const email of Object.values(assignments)) {
-      counts[email] = (counts[email] ?? 0) + 1;
-    }
-    return counts;
-  }, [assignments]);
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusyKey(key);
@@ -159,7 +148,12 @@ export function GoogleAccountsSection({ canManage }: GoogleAccountsSectionProps)
               <ul className="mt-3 divide-y divide-[var(--edge)] overflow-hidden rounded border border-[var(--edge)]">
                 {accounts.map((account) => {
                   const busy = busyKey === account.email;
-                  const used = agentsPerAccount[account.email] ?? 0;
+                  // How many agents act as this account, so Disconnect is
+                  // never blind — it strips the gog-account block from every
+                  // agent bound to it.
+                  const used = Object.values(assignments).filter(
+                    (email) => email === account.email,
+                  ).length;
                   return (
                     <li
                       key={account.email}

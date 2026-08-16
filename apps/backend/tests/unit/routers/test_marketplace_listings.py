@@ -149,6 +149,8 @@ def test_search_endpoint_passes_through_to_service(mock_search, unauth_client):
         limit=10,
         seller_id=None,
         category=None,
+        free_only=False,
+        viewer_id=None,
         include_unpublished=False,
         status_in=None,
     )
@@ -168,6 +170,8 @@ def test_search_endpoint_works_without_query(mock_search, unauth_client):
         limit=24,
         seller_id=None,
         category=None,
+        free_only=False,
+        viewer_id=None,
         include_unpublished=False,
         status_in=None,
     )
@@ -2028,6 +2032,48 @@ def test_search_category_filter_passes_through(mock_search, unauth_client):
     assert resp.status_code == 200
     call_kwargs = mock_search.call_args.kwargs
     assert call_kwargs["category"] == "engineering"
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_free_only_passes_through(mock_search, unauth_client):
+    """The mobile marketplace's free-only browse wires through to the service.
+
+    It has to be pushed down rather than filtered client-side: the service
+    applies it before the ranked limit slice, so free listings below a window
+    full of paid ones still surface. Default stays off for every other caller.
+    """
+    mock_search.return_value = []
+    resp = unauth_client.get("/api/v1/marketplace/listings/search?free_only=true")
+    assert resp.status_code == 200
+    assert mock_search.call_args.kwargs["free_only"] is True
+    # Anonymous: nobody's own listings to spare, so the body is URL-derived
+    # and a shared cache may hold it.
+    assert mock_search.call_args.kwargs["viewer_id"] is None
+    assert resp.headers["Cache-Control"] == "public, max-age=60"
+
+    unauth_client.get("/api/v1/marketplace/listings/search")
+    assert mock_search.call_args.kwargs["free_only"] is False
+
+
+@patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)
+def test_search_free_only_spares_the_caller_their_own_paid_rows(mock_search, authed_client_factory):
+    """An authed free_only read is caller-dependent, so it must not be shared-cached.
+
+    The caller's own paid listings deploy free (seller-self bypass) and stay
+    in their results; serving that body to the next viewer from a CDN would
+    put a paid row on someone else's phone.
+    """
+    mock_search.return_value = []
+    tc = authed_client_factory("u_seller", "seller@example.com")
+    resp = tc.get("/api/v1/marketplace/listings/search?free_only=true")
+    assert resp.status_code == 200, resp.text
+    assert mock_search.call_args.kwargs["viewer_id"] == "u_seller"
+    assert resp.headers["Cache-Control"] == "private, max-age=60"
+
+    # Without free_only the body is caller-independent again.
+    resp = tc.get("/api/v1/marketplace/listings/search")
+    assert mock_search.call_args.kwargs["viewer_id"] is None
+    assert resp.headers["Cache-Control"] == "public, max-age=60"
 
 
 @patch("routers.marketplace_listings.marketplace_search.search", new_callable=AsyncMock)

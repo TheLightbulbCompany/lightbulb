@@ -11,7 +11,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,10 +22,9 @@ import { usePulse } from "../../../../components/chat/usePulse";
 import { colors, fonts, radii, spacing, type } from "../../../../config/theme";
 import {
   formatPrice,
+  isFreeToHire,
   listingByline,
   MissingCredentialsError,
-  PurchaseRequiredError,
-  useCheckoutListing,
   useDeployListing,
   useListingDetail,
   type ListingDetail,
@@ -94,15 +92,14 @@ export default function ListingDetailScreen() {
   const { userId } = useAuth();
   const { state, load } = useListingDetail(id);
   const deploy = useDeployListing();
-  const checkout = useCheckoutListing();
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Ref-latch against double-tap (deploy/checkout are non-idempotent — a
-  // re-tap mints a second agent / a second Stripe session). Mirrors the
-  // agents.create latch: checked + set synchronously before any await.
+  // Ref-latch against double-tap (deploy is non-idempotent — a re-tap mints a
+  // second agent). Mirrors the agents.create latch: checked + set
+  // synchronously before any await.
   const busyRef = useRef(false);
   const [busy, setBusy] = useState(false);
 
@@ -131,68 +128,25 @@ export default function ListingDetailScreen() {
     }
   }, []);
 
-  // Primary action. Branches on ENTITLEMENT, not just price, so a buyer who
-  // already owns a paid listing (or the seller of their own paid listing) is
-  // NOT routed back through Stripe checkout and charged a second time:
-  //
-  //   • free OR seller-self → deploy directly, in-app, never any checkout.
-  //   • paid + not-seller → attempt the in-app deploy FIRST. The backend runs
-  //     its own entitlement check, so an owner (holding a purchase row)
-  //     deploys for free. A deploy NEVER charges. Only a genuine
-  //     PurchaseRequiredError (403 "purchase required") falls through to
-  //     Stripe checkout in the system browser. Any other error (incl. the
-  //     org-admin 403, which checkout would also reject) surfaces as an error.
+  // The only action on this screen: an in-app deploy, which never charges.
+  // It is rendered exclusively for listings isFreeToHire() accepts, so no tap
+  // here can reach a purchase.
   const onPrimary = useCallback(
     async (detail: ListingDetail) => {
       if (busyRef.current) return;
       busyRef.current = true;
       setBusy(true);
       try {
-        const { listing } = detail;
-        const free = !listing.price_cents || listing.price_cents <= 0;
-        const isSeller = userId != null && listing.seller_id === userId;
-
-        if (!free && !isSeller) {
-          // Deploy-first: entitled owners deploy without a charge; only the
-          // not-entitled path hands off to checkout.
-          try {
-            await deploy(listing.listing_id);
-            notifyDeployed(detail);
-            return;
-          } catch (err) {
-            if (!(err instanceof PurchaseRequiredError)) {
-              notifyDeployError(err);
-              return;
-            }
-            // Not entitled → fall through to Stripe checkout below.
-          }
-          try {
-            const url = await checkout(listing.listing_id);
-            // D1: NO in-app Stripe. Hand the Stripe-hosted URL to the system
-            // browser; the web /deploy-success page completes the purchase.
-            await Linking.openURL(url);
-          } catch (err) {
-            Alert.alert(
-              "Couldn’t start checkout",
-              err instanceof Error ? err.message : String(err),
-            );
-          }
-          return;
-        }
-
-        // Free listing or seller-self deploy: fully in-app, never any charge.
-        try {
-          await deploy(listing.listing_id);
-          notifyDeployed(detail);
-        } catch (err) {
-          notifyDeployError(err);
-        }
+        await deploy(detail.listing.listing_id);
+        notifyDeployed(detail);
+      } catch (err) {
+        notifyDeployError(err);
       } finally {
         busyRef.current = false;
         setBusy(false);
       }
     },
-    [deploy, checkout, userId, notifyDeployed, notifyDeployError],
+    [deploy, notifyDeployed, notifyDeployError],
   );
 
   let body: ReactElement;
@@ -220,11 +174,11 @@ export default function ListingDetailScreen() {
     const { listing, manifest } = state.detail;
     headerTitle = listing.name;
     const free = !listing.price_cents || listing.price_cents <= 0;
-    const isSeller = userId != null && listing.seller_id === userId;
-    // In-app deploy with no possible charge: free listings, or the seller
-    // deploying their own listing (backend seller-self bypass). Paid listings
-    // for non-sellers show "Get" — deploy-first, checkout only if unentitled.
-    const deployOnly = free || isSeller;
+    // Hireable from the phone: free listings, or the seller deploying their
+    // own (backend seller-self bypass) — both are in-app deploys with no
+    // possible charge. Anything else is web-only; search filters those out,
+    // but a deep link can still land here.
+    const deployable = isFreeToHire(listing, userId);
     const requirements = manifest?.requirements ?? [];
     const description =
       manifest?.description?.trim() || listing.description_md.trim();
@@ -280,32 +234,31 @@ export default function ListingDetailScreen() {
           )}
         </View>
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryButton,
-            busy && styles.primaryButtonDisabled,
-            pressed && !busy && styles.pressed,
-          ]}
-          onPress={() => void onPrimary(state.detail)}
-          disabled={busy}
-          accessibilityRole="button"
-          accessibilityLabel={
-            deployOnly ? "Deploy to my workspace" : "Get this agent"
-          }
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color={colors.white} />
-          ) : (
-            <Text style={styles.primaryButtonText}>
-              {deployOnly ? "Deploy to my workspace" : "Get"}
-            </Text>
-          )}
-        </Pressable>
-
-        {!deployOnly && (
-          <Text style={styles.checkoutNote}>
-            Free if you already own this. Otherwise checkout opens securely in
-            your browser.
+        {deployable ? (
+          <Pressable
+            style={({ pressed }) => [
+              styles.primaryButton,
+              busy && styles.primaryButtonDisabled,
+              pressed && !busy && styles.pressed,
+            ]}
+            onPress={() => void onPrimary(state.detail)}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel="Deploy to my workspace"
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color={colors.white} />
+            ) : (
+              <Text style={styles.primaryButtonText}>
+                Deploy to my workspace
+              </Text>
+            )}
+          </Pressable>
+        ) : (
+          // Plain text on purpose — no button, no link, nothing that starts a
+          // purchase from inside the app.
+          <Text style={styles.webOnlyNote}>
+            Paid agents are hired from the web app at isol8.co.
           </Text>
         )}
       </ScrollView>
@@ -441,7 +394,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: colors.white,
   },
-  checkoutNote: {
+  webOnlyNote: {
     fontFamily: fonts.dmSans,
     fontSize: 12,
     lineHeight: 16,

@@ -435,16 +435,72 @@ async def test_completion_observer_no_longer_touches_the_pending_brief():
 
 
 @pytest.mark.asyncio
-async def test_ack_bookkeeping_failure_never_marks_a_delivered_kickoff_failed():
+async def test_ack_bookkeeping_failure_never_marks_a_delivered_kickoff_failed(monkeypatch):
     """Everything after the ack is bookkeeping. A DDB blip there must not
     reach the failure classifier — it would mark a DELIVERED kickoff failed
     and hand it to a recovery path as if it were retryable."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0))
     onboarding = _onboarding()
     repo = _fake_repo(onboarding=onboarding)
     repo.mark_bootstrap_sent = AsyncMock(side_effect=RuntimeError("ddb throttled"))
     _, _, pool, _ = await _run(onboarding, repo=repo)
 
     pool.send_rpc.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sent_stamp_is_retried_through_a_transient_write_failure(monkeypatch):
+    """The sent stamp is the ONLY durable record that this kickoff was
+    delivered. Dropping it on the first DDB blip leaves a row that reads as an
+    unacked send — which the staleness rule settles `failed` and an admin reset
+    would re-deliver. So it retries instead of being swallowed."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0, 0))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=[RuntimeError("throttled"), RuntimeError("throttled"), None])
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    assert repo.mark_bootstrap_sent.await_count == 3  # landed on the third try
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unrecordable_delivery_is_loud_and_still_sweeps_the_brief(monkeypatch):
+    """The double-fault: acked delivery AND every sent-stamp write fails. There
+    is no second durable place to record it (the table that would hold it is
+    the one failing), so the guarantee is: never re-armed, never classified
+    failed by THIS dispatch, and never silent — an operator must see it before
+    reaching for the reset lever that would double-deliver."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0))
+    metrics: list[str] = []
+    monkeypatch.setattr(bootstrap_dispatcher, "put_metric", lambda name, **kw: metrics.append(name))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=RuntimeError("ddb down"))
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    assert repo.mark_bootstrap_sent.await_count == 3  # ladder (2) + final attempt
+    assert metrics == ["bootstrap.ack_unrecorded"]
+    # No failure classification, no re-arm, and the delivered-brief sweep still
+    # runs — it is guarded separately from the stamp.
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_pending_brief_sweep_failure_does_not_undo_the_sent_stamp():
+    """The two ack-time writes are independently guarded: delivery happened
+    either way, so one failing must never skip or reverse the other."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.delete_pending_brief = AsyncMock(side_effect=RuntimeError("ddb throttled"))
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    repo.mark_bootstrap_sent.assert_awaited_once()
     repo.mark_bootstrap_failed.assert_not_awaited()
     repo.rearm_bootstrap_dispatch.assert_not_awaited()
 

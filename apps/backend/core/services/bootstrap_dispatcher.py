@@ -194,6 +194,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from core.gateway.connection_pool import GatewayReconnectThrottled
+from core.observability.metrics import put_metric
 from core.repositories.paperclip_repo import BootstrapClaimResult
 from core.services.onboarding_brief import build_first_run_message
 
@@ -226,6 +227,13 @@ _CONNECT_RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 30, 30, 30, 30, 30)
 # Shared with the admin lever (``routers/admin.py``'s reset-bootstrap), which
 # must refuse a claim this rule would still consider live.
 STALE_DISPATCH_AFTER_S = 600
+
+# Retry ladder for the ``sent`` stamp (~7.5s total). Short and bounded: it runs
+# inline in the dispatch task, after delivery, so it must not hold the task open
+# for minutes -- but it must outlast a DDB blip, because losing this write turns
+# a KNOWN-delivered kickoff into a row that reads as an unacked send (terminal,
+# and admin-retryable into a double delivery). See ``_settle_ack``.
+_ACK_STAMP_RETRY_DELAYS_S: tuple[float, ...] = (0.5, 2, 5)
 
 # Recorded on ``bootstrap_last_error`` by the staleness rule. Written for a
 # human (the admin surface renders it verbatim), so they say what happened and
@@ -412,6 +420,36 @@ async def _recover_stale_dispatch(repo, onboarding: dict, *, owner_id: str) -> b
     return False
 
 
+async def _stamp_sent_with_retry(repo, row_user_id: str, *, owner_id: str, generation: str, dispatch_id: str) -> bool:
+    """Advance the row to ``sent``, retrying transient write failures.
+
+    Same ladder-then-final-attempt shape as ``_ensure_connection_with_retry``.
+    Returns whether the stamp landed. A guard-fail (the row moved on) is NOT a
+    failure here -- ``mark_bootstrap_sent`` swallows it, which is correct: the
+    row has an owner other than us and there is nothing to retry.
+    """
+    for attempt, delay_s in enumerate(_ACK_STAMP_RETRY_DELAYS_S, start=1):
+        try:
+            await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
+            return True
+        except Exception as e:  # noqa: BLE001 — retryable until the ladder is spent
+            logger.warning(
+                "bootstrap_dispatcher: sent stamp failed for %s (attempt %d/%d, retrying in %.1fs): %s",
+                owner_id,
+                attempt,
+                len(_ACK_STAMP_RETRY_DELAYS_S) + 1,
+                delay_s,
+                e,
+            )
+            await asyncio.sleep(delay_s)
+    try:
+        await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
+        return True
+    except Exception:  # noqa: BLE001 — the caller decides what an unrecorded delivery means
+        logger.exception("bootstrap_dispatcher: sent stamp exhausted its retries for %s", owner_id)
+        return False
+
+
 async def _settle_ack(repo, row_user_id: str, *, owner_id: str, generation: str, dispatch_id: str) -> None:
     """Ack-time bookkeeping. NEVER raises.
 
@@ -419,19 +457,49 @@ async def _settle_ack(repo, row_user_id: str, *, owner_id: str, generation: str,
     kickoff is delivered — so a failure in it must never reach the dispatch
     failure classifier, which would mark a delivered kickoff ``failed`` (and,
     worse, hand it to a recovery path as if it were retryable).
+
+    The ``sent`` stamp is RETRIED rather than dropped on the first error,
+    because it is the only durable record that this kickoff was delivered: a
+    row that loses it reads — to the staleness rule, to the admin lever, to a
+    human — exactly like a send that was never acked, which is terminal and
+    admin-retryable into a DOUBLE delivery. A DDB blip must not be able to
+    cost that.
+
+    If the ladder is exhausted anyway, the delivery is UNRECORDED and there is
+    no second durable place to put it (the table that would hold it is the one
+    that just failed), so this ends in a loud ERROR plus the
+    ``bootstrap.ack_unrecorded`` metric — the signal an operator needs BEFORE
+    pressing reset. Two things still catch that case in practice: the
+    run-completion observer resolves the row on ``chat.final``
+    (``mark_bootstrap_delivered`` accepts a still-``dispatched`` row), and the
+    staleness rule's own ``failed`` reason says in as many words that a retry
+    may double-deliver.
     """
+    if not await _stamp_sent_with_retry(
+        repo, row_user_id, owner_id=owner_id, generation=generation, dispatch_id=dispatch_id
+    ):
+        put_metric("bootstrap.ack_unrecorded")
+        logger.error(
+            "bootstrap_dispatcher: UNRECORDED DELIVERY for %s dispatch_id=%s — the kickoff WAS acked by "
+            "OpenClaw but bootstrap_state could not be advanced to 'sent'. If the run does not complete, "
+            "staleness recovery will read this row as an unacked send and settle it 'failed'; an admin "
+            "reset would DOUBLE-DELIVER Friday's kickoff.",
+            owner_id,
+            dispatch_id,
+        )
+
+    # DELIVERY, not completion, is what retires the pending-brief sentinel: the
+    # kickoff carrying that brief has been accepted, so the item can never be
+    # looked at again, and one that outlives this moment would silently block
+    # the owner's next brief (its put-if-absent key) — e.g. after a reprovision.
+    # It used to be swept from the run-completion observer, which never fired at
+    # all if the run never terminated. Normally the drain has already deleted it
+    # and this is a no-op. Guarded separately from the stamp above: delivery
+    # happened either way, so one failing must not skip the other.
     try:
-        await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
-        # DELIVERY, not completion, is what retires the pending-brief sentinel:
-        # the kickoff carrying that brief has been accepted, so the item can
-        # never be looked at again, and one that outlives this moment would
-        # silently block the owner's next brief (its put-if-absent key) — e.g.
-        # after a reprovision. It used to be swept from the run-completion
-        # observer, which never fired at all if the run never terminated.
-        # Normally the drain has already deleted it and this is a no-op.
         await repo.delete_pending_brief(owner_id)
     except Exception:  # noqa: BLE001 — post-delivery bookkeeping must never fail the dispatch
-        logger.exception("bootstrap_dispatcher: ack bookkeeping failed for %s dispatch_id=%s", owner_id, dispatch_id)
+        logger.exception("bootstrap_dispatcher: pending-brief sweep failed for %s", owner_id)
 
 
 async def _resolve_default_agent_id(owner_id: str) -> str | None:

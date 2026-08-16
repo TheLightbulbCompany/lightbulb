@@ -42,6 +42,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # gog-builder stage for the version-pin rationale.
 COPY --from=gog-builder /go/bin/gog /usr/local/bin/gog
 
+# litestream — the OAuth seed harvest (oauth_service.harvest_rotated_oauth_seed)
+# restores the default agent's DB from its S3 replica to read the rotated
+# ChatGPT tokens back before a wipe destroys them. Version + sha pinned in
+# LOCKSTEP with apps/infra/openclaw/Dockerfile: the restore must speak the same
+# replica format the fleet's containers write.
+ARG LITESTREAM_VERSION=0.5.15
+ARG LITESTREAM_SHA256=839a68e69d111409262775bed78ba9f73f0835cfd23d8c128da21eedaedb50ba
+RUN set -eux; \
+    curl -fsSL -o /tmp/litestream.tgz \
+      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-x86_64.tar.gz"; \
+    echo "${LITESTREAM_SHA256}  /tmp/litestream.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/litestream.tgz -C /usr/local/bin litestream; \
+    rm /tmp/litestream.tgz; \
+    litestream version
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

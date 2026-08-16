@@ -256,8 +256,8 @@ export class ServiceStack extends cdk.Stack {
     // wipe/reprovision and agent-delete flows must prefix-delete
     // s3://isol8-{env}-openclaw-replicas/{owner}/..., or the next boot's
     // restore resurrects pre-wipe state (sessions, device trust, auth rows
-    // with live OAuth tokens). List+Delete only — the backend never reads
-    // replica bytes.
+    // with live OAuth tokens). List+Delete only across the bucket — the
+    // backend's sole READ is the statement below.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaLifecycle",
@@ -270,6 +270,24 @@ export class ServiceStack extends cdk.Stack {
         sid: "LitestreamReplicaDelete",
         actions: ["s3:DeleteObject"],
         resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*`],
+      }),
+    );
+    // The one read path: the OAuth seed harvest litestream-restores the
+    // DEFAULT agent's auth-store DB right before the prefix delete, to copy
+    // the rotated ChatGPT refresh token back to DynamoDB
+    // (oauth_service.harvest_rotated_oauth_seed) — without it, every
+    // wipe-and-reprovision re-stages a spent seed. Scoped to that single
+    // database's key shape (<owner>/agents/main/agent/openclaw-agent.sqlite/
+    // <level>/<txid>.ltx), so the backend cannot read session/state DBs or
+    // any non-default agent's replica. It still spans owners: the shared
+    // backend role serves every tenant, the same floor as the delete grant
+    // and the DynamoDB grants — per-tenant narrowing would need per-tenant
+    // roles, which this service does not have.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "LitestreamReplicaAuthDbRead",
+        actions: ["s3:GetObject"],
+        resources: [`arn:aws:s3:::isol8-${env}-openclaw-replicas/*/agents/main/agent/openclaw-agent.sqlite/*`],
       }),
     );
 

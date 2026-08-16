@@ -4096,17 +4096,58 @@ async def test_reprovision_for_user_scales_to_zero_then_full_reprovision(manager
 
 
 @pytest.mark.asyncio
-async def test_wait_for_service_drained_returns_true_when_zero(manager, mock_ecs_client):
-    """Returns True as soon as the service reports 0 running + 0 pending."""
+async def test_wait_for_service_drained_returns_true_when_no_tasks(manager, mock_ecs_client):
+    """No task records at all (never started / long expired) — drained."""
+    mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+    assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_true_when_all_tasks_stopped(manager, mock_ecs_client):
+    mock_ecs_client.list_tasks.side_effect = lambda **kw: (
+        {"taskArns": ["arn:task/1"]} if kw.get("desiredStatus") == "STOPPED" else {"taskArns": []}
+    )
+    mock_ecs_client.describe_tasks.return_value = {"tasks": [{"lastStatus": "STOPPED"}]}
+    assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_not_fooled_by_stopping_task(manager, mock_ecs_client):
+    """A task in STOPPING is NOT drained, whatever the service counts say.
+
+    runningCount hits 0 the moment the task leaves RUNNING, but it then sits
+    in STOPPING for up to its 120s stopTimeout while litestream performs the
+    final replica sync. Draining on counts let the replica-prefix delete and
+    the OAuth seed harvest act on a replica missing that final sync — the
+    harvest would then write a rotated-past-the-seed but already-SPENT
+    refresh token back to DDB."""
     mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 0, "pendingCount": 0}]}
+    mock_ecs_client.list_tasks.side_effect = lambda **kw: (
+        {"taskArns": ["arn:task/1"]} if kw.get("desiredStatus") == "STOPPED" else {"taskArns": []}
+    )
+    mock_ecs_client.describe_tasks.return_value = {"tasks": [{"lastStatus": "STOPPING"}]}
+    with patch("core.containers.ecs_manager.asyncio.sleep", new=AsyncMock()):
+        assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is False
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_drained_service_record_gone_reads_drained(manager, mock_ecs_client):
+    """ServiceNotFound = ECS garbage-collected the service record, long after
+    its tasks stopped — a retried wipe must not hang on it."""
+    mock_ecs_client.list_tasks.side_effect = ClientError(
+        {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}}, "ListTasks"
+    )
     assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is True
 
 
 @pytest.mark.asyncio
 async def test_wait_for_service_drained_times_out_returns_false(manager, mock_ecs_client):
-    """If the service never drains, returns False so the caller proceeds rather
+    """If the task never stops, returns False so the caller proceeds rather
     than wedging an admin reprovision on a task that refuses to stop."""
-    mock_ecs_client.describe_services.return_value = {"services": [{"runningCount": 1, "pendingCount": 0}]}
+    mock_ecs_client.list_tasks.side_effect = lambda **kw: (
+        {"taskArns": ["arn:task/1"]} if kw.get("desiredStatus") == "RUNNING" else {"taskArns": []}
+    )
+    mock_ecs_client.describe_tasks.return_value = {"tasks": [{"lastStatus": "RUNNING"}]}
     with patch("core.containers.ecs_manager.asyncio.sleep", new=AsyncMock()):
         assert await manager._wait_for_service_drained("user_test_123", timeout_s=9.0) is False
 

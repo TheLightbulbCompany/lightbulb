@@ -12,6 +12,19 @@ import pytest
 from core.services import litestream_replicas
 
 
+@pytest.fixture(autouse=True)
+def no_harvest(monkeypatch):
+    """delete_replica_prefix runs the OAuth seed harvest before a full-owner
+    delete (it late-imports from oauth_service, so patch the source module).
+    Keep it inert here — these tests cover the prefix lifecycle; the harvest
+    has its own suite (test_oauth_seed_harvest.py)."""
+    from core.services import oauth_service
+
+    mock = AsyncMock(return_value=False)
+    monkeypatch.setattr(oauth_service, "harvest_rotated_oauth_seed", mock)
+    return mock
+
+
 @pytest.mark.asyncio
 async def test_noop_when_bucket_unset(monkeypatch):
     monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "", raising=False)
@@ -79,6 +92,43 @@ async def test_per_object_delete_errors_are_failures(monkeypatch):
     }
     with patch("boto3.client", return_value=s3):
         assert await litestream_replicas.delete_replica_prefix("org_1") is False
+
+
+@pytest.mark.asyncio
+async def test_full_owner_delete_harvests_oauth_seed_first(monkeypatch, no_harvest):
+    """The full-owner prefix delete destroys the ONLY backend-reachable copy of
+    the rotated ChatGPT refresh token (the default agent's DB replica), so the
+    harvest must run before it — or the next provision stages a spent seed."""
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate.return_value = iter([{}])
+    with patch("boto3.client", return_value=s3):
+        assert await litestream_replicas.delete_replica_prefix("org_1") is True
+    no_harvest.assert_awaited_once_with(owner_id="org_1")
+
+
+@pytest.mark.asyncio
+async def test_agent_scoped_delete_does_not_harvest(monkeypatch, no_harvest):
+    """Deleting one agent's prefix leaves the default agent's store alive —
+    nothing is being lost, so no harvest."""
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate.return_value = iter([{}])
+    with patch("boto3.client", return_value=s3):
+        assert await litestream_replicas.delete_replica_prefix("org_1", agent_id="agent-x") is True
+    no_harvest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_harvest_failure_never_blocks_the_delete(monkeypatch, no_harvest):
+    """Best-effort: the wipe's primary operation already succeeded, so a broken
+    harvest (S3 hiccup, corrupt replica) must not abort the cleanup."""
+    monkeypatch.setattr(litestream_replicas.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    no_harvest.side_effect = RuntimeError("restore blew up")
+    s3 = MagicMock()
+    s3.get_paginator.return_value.paginate.return_value = iter([{}])
+    with patch("boto3.client", return_value=s3):
+        assert await litestream_replicas.delete_replica_prefix("org_1") is True
 
 
 @pytest.mark.asyncio

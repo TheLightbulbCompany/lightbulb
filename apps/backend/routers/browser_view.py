@@ -11,13 +11,19 @@ it is not in the task's portMappings and has no public route. The frontend's
 noVNC client (@novnc/novnc, in the workspace's browser panel) connects here and
 we relay RFB frames byte-for-byte to the owner's container.
 
-Auth is the Clerk ``__session`` cookie, validated per upgrade — browsers cannot
-attach an Authorization header to a JS-initiated WebSocket open, so the cookie
-is the only credential channel (same constraint, and same solution, as
-``paperclip_proxy.proxy_ws``). Owner scoping is the whole fence: the container
-is resolved from the authenticated identity via ``resolve_owner_id``, never
-from anything the client sends, so there is no cross-tenant parameter to get
-wrong.
+Auth: browsers cannot attach an Authorization header to a JS-initiated
+WebSocket open, and this route is served on its own CloudFront host
+(``bv[-env].isol8.co`` — the API host is an API Gateway HTTP API, which cannot
+pass WebSocket upgrades at all), where the Clerk session cookie does not
+follow. The credential therefore rides the ``Sec-WebSocket-Protocol`` header:
+the panel offers ``["binary", <clerk jwt>]``, we validate the JWT entry and
+accept ``"binary"`` — a browser fails the connection outright if it offered
+subprotocols and the server selects none, which is why ``binary`` must be
+echoed rather than the connection accepted bare. The ``__session`` cookie
+remains a fallback for same-host callers (tests, future cookie-domain
+setups). Owner scoping is the whole fence: the container is resolved from the
+authenticated identity via ``resolve_owner_id``, never from anything the
+client sends, so there is no cross-tenant parameter to get wrong.
 
 The container IP is resolved per connection through Cloud Map
 (``resolve_running_container``) and never cached — the service is long-lived
@@ -51,16 +57,32 @@ _WS_MAX_FRAME_SIZE = 10 * 1024 * 1024
 @router.websocket("/ws")
 async def browser_view_ws(websocket: WebSocket) -> None:
     """Bidirectional relay: owner's noVNC client <-> their container's websockify."""
-    # ---- Auth: Clerk session cookie on the upgrade frame ----
-    clerk_token = websocket.cookies.get(_CLERK_SESSION_COOKIE)
-    if not clerk_token:
+    # ---- Auth: JWT via subprotocol (cross-host), cookie as fallback ----
+    # A JWT is a syntactically valid RFC 6455 subprotocol token (base64url
+    # alphabet + dots, no commas), so it travels intact in the offer list.
+    # Anything that isn't "binary" is treated as a candidate credential; the
+    # first one that decodes wins. The offer list is attacker-controlled by
+    # construction — a candidate that fails to decode is simply skipped, and
+    # decoding is the same Clerk JWKS validation the cookie path uses.
+    offered = websocket.scope.get("subprotocols") or []
+    candidates = [p for p in offered if p != "binary"]
+    cookie_token = websocket.cookies.get(_CLERK_SESSION_COOKIE)
+    if cookie_token:
+        candidates.append(cookie_token)
+    if not candidates:
         await websocket.close(code=4401, reason="Missing session credential")
         return
-    try:
-        payload = await _decode_token(clerk_token)
-    except Exception as e:  # noqa: BLE001 - opaque to caller; we close.
-        logger.warning("browser_view_ws: invalid Clerk token: %s", e)
-        await websocket.close(code=4401, reason="Invalid Clerk token")
+
+    payload = None
+    for candidate in candidates:
+        try:
+            payload = await _decode_token(candidate)
+            break
+        except Exception:  # noqa: BLE001 - try the next candidate; we close below.
+            continue
+    if payload is None:
+        logger.warning("browser_view_ws: no offered credential decoded")
+        await websocket.close(code=4401, reason="Invalid session credential")
         return
 
     user_id = payload.get("sub")
@@ -94,19 +116,19 @@ async def browser_view_ws(websocket: WebSocket) -> None:
     upstream_url = f"ws://{ip}:6080/"
 
     try:
-        # Connect upstream FIRST, echoing the client's offered subprotocols
-        # (noVNC offers none by default; older clients offer "binary"), then
-        # accept the client with whatever websockify actually selected — so
-        # both legs agree without this relay hardcoding a protocol list.
-        offered = websocket.scope.get("subprotocols") or []
+        # Upstream gets ONLY "binary" (when offered) — never the credential
+        # subprotocol, which must not leave this process. Client is accepted
+        # with "binary" for the same reason it was offered: a browser that
+        # offered subprotocols fails the connection if the server selects none.
+        binary_offered = "binary" in offered
         async with ws_connect(
             upstream_url,
-            subprotocols=offered or None,
+            subprotocols=["binary"] if binary_offered else None,
             max_size=_WS_MAX_FRAME_SIZE,
             open_timeout=10,
             close_timeout=5,
         ) as upstream:
-            await websocket.accept(subprotocol=upstream.subprotocol)
+            await websocket.accept(subprotocol="binary" if binary_offered else upstream.subprotocol)
 
             async def client_to_upstream() -> None:
                 try:

@@ -19,6 +19,7 @@
 // in the connected state exists for exactly that moment.
 
 import type { IDockviewPanelProps } from "dockview-react";
+import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chrome, RotateCcw } from "lucide-react";
 
@@ -26,9 +27,20 @@ import { BACKEND_URL } from "@/lib/api";
 
 type ViewState = "connecting" | "connected" | "disconnected";
 
-const WS_URL = `${BACKEND_URL.replace(/^http/, "ws")}/browser-view/ws`;
+// The relay lives on its own CloudFront host (bv[-env].isol8.co), NOT the api
+// host — api[-env].isol8.co is an API Gateway HTTP API, which cannot pass
+// WebSocket upgrades (api-stack.ts, BrowserViewDistribution). Local dev has no
+// CloudFront in front of uvicorn, so localhost connects straight through.
+function browserViewWsUrl(): string {
+  const url = new URL(BACKEND_URL);
+  if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+    url.hostname = url.hostname.replace(/^api(-|\.)/, "bv$1");
+  }
+  return `${url.origin.replace(/^http/, "ws")}${url.pathname}/browser-view/ws`;
+}
 
 export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElement {
+  const { getToken } = useAuth();
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<ViewState>("connecting");
   // Bumping this re-runs the connect effect — the Retry button, and nothing
@@ -47,10 +59,20 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
     setState("connecting");
 
     // Dynamic import: @novnc/novnc is ESM that touches browser globals at
-    // module scope — importing it during SSR/prerender would throw.
-    void import("@novnc/novnc").then(({ default: RFB }) => {
+    // module scope — importing it during SSR/prerender would throw. The token
+    // rides the Sec-WebSocket-Protocol offer next to "binary" (the relay's
+    // cross-host auth channel — the bv host never sees the Clerk cookie, and
+    // a JS WebSocket cannot carry an Authorization header). The relay accepts
+    // "binary"; the token never becomes the selected protocol.
+    void Promise.all([import("@novnc/novnc"), getToken()]).then(([{ default: RFB }, token]) => {
       if (cancelled || !mountRef.current) return;
-      rfb = new RFB(mountRef.current, WS_URL);
+      if (!token) {
+        setState("disconnected");
+        return;
+      }
+      rfb = new RFB(mountRef.current, browserViewWsUrl(), {
+        wsProtocols: ["binary", token],
+      });
       // Scale the container's fixed 1280x800 display to whatever size this
       // dock panel currently has, rather than scrollbars/cropping.
       rfb.scaleViewport = true;
@@ -71,7 +93,9 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
         // Already closed — noVNC throws on double-disconnect.
       }
     };
-  }, [attempt]);
+    // getToken is identity-stable from Clerk; listed for lint-completeness,
+    // not as a real retrigger.
+  }, [attempt, getToken]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 

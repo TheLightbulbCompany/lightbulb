@@ -17,6 +17,7 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
+from core.services.config_schema import gate_config
 from core.services.efs_file_lock import get_file_lock, openclaw_config_sidecar_lock
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
@@ -2199,7 +2200,17 @@ async def write_openclaw_config(
         acp_enabled=acp_enabled,
     )
 
+    # Full-file write — this path does NOT go through config_patcher._locked_rmw,
+    # so it carries its own schema gate (issue #941). Audit-only on purpose: the
+    # input here is our own generator, whose output the chaos suite already
+    # validates against the same vendored schema in CI, so a violation means the
+    # schema or the generator drifted and we want the alarm, not a provisioning
+    # outage on top of it.
+    # Inside the thread, not on the event loop: validating a real config against
+    # the ~280 KB schema is non-trivial CPU, and every other gate call site runs
+    # inside `asyncio.to_thread` already (config_patcher._do_rmw).
     def _write() -> None:
+        gate_config(config, owner_id=user_id, context="write_openclaw_config")
         config_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = f"{config_path}.lock"
         # This generator is also used by update paths while the owner task is

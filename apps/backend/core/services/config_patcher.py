@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from core.config import settings
 from core.containers.config import memory_plugin_entries, workflow_plugin_entries
+from core.services.config_schema import ConfigSchemaError, gate_config
 from core.services.efs_file_lock import (
     chown_uid_1000_best_effort,
     get_file_lock,
@@ -96,6 +97,8 @@ async def _locked_rmw(
     owner_id: str,
     mutate_fn: Callable[[dict], bool],
     log_context: str,
+    *,
+    enforce_schema: bool = False,
 ) -> None:
     """Locked read-modify-write skeleton for openclaw.json on EFS.
 
@@ -106,10 +109,20 @@ async def _locked_rmw(
     ``mutate_fn`` returns True if the config was modified and a write is
     needed, or False to signal a no-op (skip backup + write entirely).
 
-    On a write, takes a .bak backup, validates serializability, atomically
-    renames a tempfile into place, and chowns to uid/gid 1000 if running
-    as root. Releases the lock in a finally block. Logs success with
-    ``log_context``.
+    On a write, takes a .bak backup, validates serializability AND the merged
+    document against the vendored OpenClaw schema, atomically renames a
+    tempfile into place, and chowns to uid/gid 1000 if running as root.
+    Releases the lock in a finally block. Logs success with ``log_context``.
+
+    This is the ONLY chokepoint every config writer passes through, which is why
+    the schema gate lives here rather than in each caller (issue #941 — a
+    schema-invalid config persists silently and crash-loops the container at its
+    next restart). ``enforce_schema=True`` rejects a violating write outright;
+    otherwise the gate follows ``settings.OPENCLAW_CONFIG_SCHEMA_MODE``, which
+    defaults to audit. Callers merging UNTRUSTED input must pass
+    ``enforce_schema=True`` — see ``apply_deploy_aux_mutations``. A rejection
+    surfaces as ``ConfigPatchError`` and happens BEFORE the .bak + rename, so
+    the on-disk config is untouched.
 
     Locking uses the shared two-layer discipline (see ``efs_file_lock``): a
     per-owner in-process ``threading.Lock`` serializes threads in this worker,
@@ -133,6 +146,13 @@ async def _locked_rmw(
             changed = mutate_fn(current)
             if not changed:
                 return  # no-op: skip backup + write
+
+            # Gate BEFORE the backup + rename so a rejected write leaves both
+            # openclaw.json and openclaw.json.bak exactly as they were.
+            try:
+                gate_config(current, owner_id=owner_id, context=log_context, enforce=enforce_schema)
+            except ConfigSchemaError as exc:
+                raise ConfigPatchError(str(exc)) from exc
 
             shutil.copy2(config_path, backup_path)
             json.dumps(current)  # validate serializable
@@ -710,6 +730,11 @@ async def apply_deploy_aux_mutations(
         _mutate,
         f"deploy aux merge agent_entry={bool(agent_entry)} plugins={bool(plugins_patch)} "
         f"mcp={bool(mcp_patch)} skills={bool(skills_patch)}",
+        # The only writer merging UNTRUSTED input: these subtrees come from a
+        # marketplace seller's openclaw-slice.json. A slice that would not load
+        # is rejected rather than audited — the buyer loses a deploy, not their
+        # container at its next restart.
+        enforce_schema=True,
     )
 
 

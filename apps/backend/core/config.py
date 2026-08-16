@@ -305,6 +305,13 @@ class Settings(BaseSettings):
     # truth and the app renders the localized price off the product itself.
     APPLE_IAP_PRODUCT_ID: str = ""
 
+    # openclaw.json schema gate (core/services/config_schema.py). "audit" logs
+    # + meters violations and lets the write through; "enforce" rejects it.
+    # Default audit because a wrong vendored schema would otherwise brick config
+    # delivery fleet-wide — untrusted marketplace slices are enforced regardless
+    # of this knob, so the risky input never rides on the default.
+    OPENCLAW_CONFIG_SCHEMA_MODE: str = "audit"
+
     # Marketplace (set by CDK ServiceStack — empty default lets the backend
     # boot in non-marketplace contexts like local unit tests).
     MARKETPLACE_LISTINGS_TABLE: str = ""

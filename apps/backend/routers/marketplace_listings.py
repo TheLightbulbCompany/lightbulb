@@ -9,6 +9,7 @@ we don't need an external SaaS index.
 import asyncio
 import json
 import logging
+from decimal import Decimal
 from typing import Annotated
 
 import boto3
@@ -129,7 +130,7 @@ async def _recreate_routines_for_buyer(
             # re-syncs {{NAME}} references in the description as required
             # defaultless variables and the dormant schedule trigger 422s,
             # rolling back the whole deploy.
-            "variables": r.get("variables") if isinstance(r.get("variables"), list) else None,
+            "variables": _json_safe_variables(r.get("variables")),
         }
         for r in manifest_routines
         if isinstance(r, dict) and r.get("title") and r.get("cron")
@@ -160,6 +161,29 @@ async def _recreate_routines_for_buyer(
         )
     finally:
         await http.aclose()
+
+
+def _json_safe_variables(raw: object) -> list[dict] | None:
+    """Manifest variables with DDB ``Decimal`` defaults coerced to int/float.
+
+    The manifest rides ``manifest_json`` in DynamoDB and boto3 returns every
+    DDB Number as ``Decimal``, which the admin client's ``json.dumps`` refuses
+    — the same write-boundary coercion ``catalog_service`` does for
+    ``manifest["version"]``. Integral values stay ints so Paperclip's number
+    variables round-trip exactly.
+    """
+    if not isinstance(raw, list):
+        return None
+    out: list[dict] = []
+    for var in raw:
+        if not isinstance(var, dict):
+            continue
+        safe = dict(var)
+        default = safe.get("defaultValue")
+        if isinstance(default, Decimal):
+            safe["defaultValue"] = int(default) if default == default.to_integral_value() else float(default)
+        out.append(safe)
+    return out or None
 
 
 def _pending_automations(manifest_routines: list) -> list[dict]:

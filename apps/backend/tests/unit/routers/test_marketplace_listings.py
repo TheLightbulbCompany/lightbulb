@@ -2883,3 +2883,25 @@ async def test_recreate_routines_never_arms_a_webhook_entry():
             ],
         )
     mock_create.assert_not_awaited()
+
+
+def test_json_safe_variables_coerces_ddb_decimals():
+    """Manifest numbers come back from DynamoDB as Decimal; the admin client's
+    json.dumps refuses them (rolled back a prod deploy). Integral Decimals
+    stay ints so Paperclip number variables round-trip exactly."""
+    from decimal import Decimal
+
+    from routers.marketplace_listings import _json_safe_variables
+
+    out = _json_safe_variables(
+        [
+            {"name": "DAILY_PROSPECT_LIMIT", "type": "number", "defaultValue": Decimal("10"), "required": True},
+            {"name": "RATE", "type": "number", "defaultValue": Decimal("2.5"), "required": True},
+            {"name": "ICP", "type": "text", "defaultValue": "founders", "required": True},
+        ]
+    )
+    assert out[0]["defaultValue"] == 10 and isinstance(out[0]["defaultValue"], int)
+    assert out[1]["defaultValue"] == 2.5 and isinstance(out[1]["defaultValue"], float)
+    assert out[2]["defaultValue"] == "founders"
+    assert _json_safe_variables(None) is None
+    assert _json_safe_variables([]) is None

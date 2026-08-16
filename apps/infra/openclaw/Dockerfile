@@ -99,23 +99,41 @@ USER root
 # Dropped from upstream extended image: build-essential, make (build-only).
 # Keeps git/curl/wget/gnupg — runtime tools (skills shell out, clawhub uses git).
 #
-# xvfb/x11vnc/novnc/websockify back the container browser live view. This is
-# upstream's own recipe for a watchable headful browser — see their
-# scripts/docker/sandbox/Dockerfile.browser, which installs exactly these
-# alongside chromium. We do NOT use their sandbox feature: it spawns a sibling
-# container via `docker run` (src/agents/sandbox/browser.ts), and Fargate has
-# no Docker daemon. We run the same processes in this one container instead,
-# which also means no CDP relay — their relay exists only to cross the
-# container boundary ours does not have.
+# The VNC/display packages back the container browser live view (the workspace
+# Browser panel). Two generations coexist here so one image tag serves both
+# boot commands during the transition — the same decoupling that let the
+# original xvfb layer ship ahead of its DISPLAY flip:
 #
-# Installing these is inert until DISPLAY is set on the task definition; see
-# the display block in container-stack.ts startupCommand.
+#   current: tigervnc (Xvnc = X server + VNC server in ONE resident process,
+#            with native client-driven SetDesktopSize resize — the thing
+#            x11vnc cannot do, and what lets the dock panel resize the actual
+#            display) + matchbox (kiosk window manager: every window
+#            borderless-fullscreen, re-fit on display resize — without it
+#            Chrome floats at its default size on a black root window)
+#   legacy:  xvfb + x11vnc (+ socat spawn-per-connection), kept until no
+#            pinned tag's boot command references them, then removable
+#
+# Upstream's sandbox recipe (scripts/docker/sandbox/Dockerfile.browser) uses
+# the xvfb+x11vnc generation; we do NOT use their sandbox feature — it spawns
+# a sibling container via `docker run`, and Fargate has no Docker daemon. We
+# run the processes in this one container, which also drops their CDP relay
+# (it exists only to cross a container boundary ours does not have).
+#
+# Debian ships TigerVNC's server binary as Xtigervnc; the boot command guards
+# on and launches /usr/bin/Xvnc, so pin that name to a real path via the
+# update-alternatives symlink the package installs (asserted by the ln -sf
+# below in case the alternatives link ever changes shape).
+#
+# All of this is inert until DISPLAY is set on the task definition; see the
+# display block in container-stack.ts startupCommand.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ffmpeg jq ripgrep tmux poppler-utils \
       socat python3-pip sqlite3 python3 \
       curl wget ca-certificates gnupg git unzip \
       xvfb x11vnc novnc websockify \
-    && rm -rf /var/lib/apt/lists/*
+      tigervnc-standalone-server matchbox-window-manager \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/Xtigervnc /usr/bin/Xvnc
 
 # ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
 RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" -o /tmp/awscliv2.zip && \

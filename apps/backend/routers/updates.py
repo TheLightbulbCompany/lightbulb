@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.auth import (
@@ -14,8 +14,10 @@ from core.auth import (
     require_platform_admin,
     resolve_owner_id,
 )
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, update_repo
+from core.services.admin_audit import audit_admin_action
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import (
     TASK_DEFINITION_REFRESH_KIND,
@@ -174,9 +176,11 @@ async def admin_create_update(
     description="Deep-merges the patch into the owner's openclaw.json on EFS. "
     "OpenClaw file watcher hot-reloads immediately. Zero downtime for hot-reloadable fields.",
 )
+@audit_admin_action("config.patch", target_param="owner_id", redact_paths=["patch"])
 async def patch_single_config(
     owner_id: str,
     body: ConfigPatchRequest,
+    request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
     # Platform-admin only: the owner_id comes from the path, so any non-admin
@@ -195,15 +199,42 @@ async def patch_single_config(
     "/config",
     summary="Patch ALL users' configs (fleet-wide)",
     description="Deep-merges the patch into every active owner's openclaw.json. "
-    "Runs in the request — for large fleets, consider using the async update system instead.",
+    "Runs in the request — for large fleets, consider using the async update system instead. "
+    "Requires the header `X-Confirm-Fleet-Patch: <ENVIRONMENT>` (e.g. 'prod'; 'local' when "
+    "ENVIRONMENT is unset) — typing the environment name is the confirmation step for the "
+    "fleet's most destructive endpoint.",
+    responses={428: {"description": "Missing or wrong X-Confirm-Fleet-Patch header"}},
 )
+@audit_admin_action("config.patch_fleet", target_user_id_override="__fleet__", redact_paths=["patch"])
 async def patch_fleet_config(
     body: ConfigPatchRequest,
+    request: Request,
     auth: AuthContext = Depends(require_platform_admin),
+    x_confirm_fleet_patch: str = Header(default=""),
 ):
     # Platform-admin only: this deep-merges into EVERY active owner's config,
     # so it must never be reachable by an ordinary authenticated user. (The
     # prior is_org_context-only guard passed personal-context callers through.)
+    #
+    # Typed confirmation: admin-ness alone is not intent. The caller must name
+    # the environment they believe they are pointed at, which is what makes a
+    # dev-shaped curl fired at api.isol8.co fail instead of rewriting every
+    # production container's config. Raised INSIDE the handler on purpose so
+    # @audit_admin_action still records the refused attempt (result="error").
+    # `or "local"`: ENVIRONMENT is unset on a laptop, and comparing against ""
+    # would make the *absent* header the passing case — the confirmation must
+    # never be satisfiable by sending nothing.
+    expected = settings.ENVIRONMENT or "local"
+    if x_confirm_fleet_patch != expected:
+        raise HTTPException(
+            status_code=428,
+            detail=(
+                "Fleet config patch rewrites EVERY owner's openclaw.json. "
+                f"Resend with header 'X-Confirm-Fleet-Patch: {expected}' to confirm "
+                "you mean this environment."
+            ),
+        )
+
     put_metric("update.fleet_patch.invoked")
 
     # Scan all owners from billing-accounts

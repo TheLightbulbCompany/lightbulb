@@ -1,4 +1,5 @@
-"""Authorization wiring for the container-config patch routes in routers/updates.py.
+"""Authorization + audit + confirmation wiring for the container-config patch
+routes in routers/updates.py.
 
 Regression for the personal-context auth-bypass: both ``PATCH /container/config``
 (fleet) and ``PATCH /container/config/{owner_id}`` (per-owner, owner from the
@@ -10,11 +11,21 @@ deep-merge config into another tenant's (or every tenant's) openclaw.json.
 The fix gates both routes with ``require_platform_admin`` (the @isol8.co gate)
 and removes the org-admin branch. These tests assert that wiring directly off the
 FastAPI route definitions so the bypass can't silently return.
+
+Issue #743 (a) added the two remaining fences on the same routes:
+  * ``@audit_admin_action`` on BOTH — the fleet patch was the single most
+    destructive endpoint in the product and left no trace in admin_actions.
+  * A typed confirmation header on the FLEET route only —
+    ``X-Confirm-Fleet-Patch: <ENVIRONMENT>``, 428 when absent or wrong.
 """
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
 from fastapi.dependencies.utils import get_flat_dependant
 
-from core.auth import get_current_user, require_platform_admin
+from core.auth import AuthContext, get_current_user, require_platform_admin
+from core.services.config_patcher import ConfigPatchError
 from routers.updates import router
 
 
@@ -56,3 +67,174 @@ def test_config_routes_do_not_use_get_current_user_directly():
         flat_calls = [d.call for d in get_flat_dependant(route.dependant).dependencies]
         assert get_current_user in flat_calls
         assert require_platform_admin in flat_calls
+
+
+# ---------------------------------------------------------------------------
+# Audit trail + fleet confirmation header (issue #743 item (a))
+# ---------------------------------------------------------------------------
+
+FLEET_PATH = "/api/v1/container/config"
+SINGLE_PATH = "/api/v1/container/config/u_target"
+# settings.ENVIRONMENT is unset under pytest, so the handler's expected
+# confirmation value is its "local" fallback.
+CONFIRM = {"X-Confirm-Fleet-Patch": "local"}
+
+
+@pytest.fixture
+def admin_env(app):
+    """Platform admin (@isol8.co) for require_platform_admin."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture(autouse=True)
+def mock_audit_repo():
+    """Patch the audit repo — the decorator writes synchronously on every call."""
+    with patch("core.repositories.admin_actions_repo.create", new=AsyncMock(return_value={})) as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_patcher():
+    with patch("routers.updates.patch_openclaw_config", new=AsyncMock(return_value=None)) as mock:
+        yield mock
+
+
+@pytest.fixture
+def one_owner_fleet():
+    """billing-accounts scan yields exactly one owner."""
+    with (
+        patch("core.dynamodb.get_table"),
+        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [{"owner_id": "o1"}]})),
+    ):
+        yield
+
+
+@pytest.fixture
+def two_owner_fleet():
+    """billing-accounts scan yields two owners (for partial-failure cases)."""
+    with (
+        patch("core.dynamodb.get_table"),
+        patch(
+            "core.dynamodb.run_in_thread",
+            new=AsyncMock(return_value={"Items": [{"owner_id": "o1"}, {"owner_id": "o2"}]}),
+        ),
+    ):
+        yield
+
+
+class TestFleetPatchConfirmationHeader:
+    """PATCH /container/config refuses to touch the fleet without a typed confirmation."""
+
+    @pytest.mark.asyncio
+    async def test_428_without_header(self, async_client, admin_env, mock_patcher, one_owner_fleet):
+        res = await async_client.patch(FLEET_PATH, json={"patch": {"agents": {"x": 1}}})
+        assert res.status_code == 428
+        assert "X-Confirm-Fleet-Patch" in res.json()["detail"]
+        # Nothing was written — the refusal happens before the owner scan.
+        mock_patcher.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_428_with_wrong_environment(self, async_client, admin_env, mock_patcher, one_owner_fleet):
+        res = await async_client.patch(
+            FLEET_PATH,
+            json={"patch": {"agents": {"x": 1}}},
+            headers={"X-Confirm-Fleet-Patch": "prod"},
+        )
+        assert res.status_code == 428
+        mock_patcher.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_proceeds_with_correct_header(self, async_client, admin_env, mock_patcher, one_owner_fleet):
+        res = await async_client.patch(
+            FLEET_PATH,
+            json={"patch": {"agents": {"x": 1}}},
+            headers=CONFIRM,
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["patched"] == 1
+        assert body["failed"] == 0
+        mock_patcher.assert_awaited_once_with("o1", {"agents": {"x": 1}})
+
+    @pytest.mark.asyncio
+    async def test_header_does_not_substitute_for_admin(self, async_client, mock_patcher, one_owner_fleet):
+        """A correct confirmation header from a non-admin is still a 403 —
+        the header is an intent check, never an authorization one."""
+        res = await async_client.patch(FLEET_PATH, json={"patch": {}}, headers=CONFIRM)
+        assert res.status_code == 403
+        mock_patcher.assert_not_awaited()
+
+
+class TestConfigPatchAuditTrail:
+    """Both patch routes append to admin_actions."""
+
+    @pytest.mark.asyncio
+    async def test_fleet_patch_writes_audit_row(
+        self, async_client, admin_env, mock_audit_repo, mock_patcher, one_owner_fleet
+    ):
+        res = await async_client.patch(FLEET_PATH, json={"patch": {"agents": {"x": 1}}}, headers=CONFIRM)
+        assert res.status_code == 200
+        mock_audit_repo.assert_awaited_once()
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "config.patch_fleet"
+        assert kwargs["target_user_id"] == "__fleet__"
+        assert kwargs["admin_user_id"] == "user_test_123"
+        assert kwargs["result"] == "success"
+        # Patch contents may carry secrets — redacted like /admin/users/{id}/config.
+        assert kwargs["payload"] == {"patch": "***redacted***"}
+
+    @pytest.mark.asyncio
+    async def test_refused_fleet_patch_is_also_audited(
+        self, async_client, admin_env, mock_audit_repo, mock_patcher, one_owner_fleet
+    ):
+        """A rejected attempt at the fleet is exactly what the trail is for."""
+        res = await async_client.patch(FLEET_PATH, json={"patch": {}})
+        assert res.status_code == 428
+        mock_audit_repo.assert_awaited_once()
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "config.patch_fleet"
+        assert kwargs["result"] == "error"
+        assert kwargs["http_status"] == 428
+
+    @pytest.mark.asyncio
+    async def test_partly_failed_fleet_patch_is_not_audited_as_success(
+        self, async_client, admin_env, mock_audit_repo, two_owner_fleet
+    ):
+        """The handler swallows per-owner failures and still returns 200, so
+        "handler returned normally" must not be the audit verdict — a fleet
+        mutation that half-applied cannot read clean in the trail."""
+        with patch(
+            "routers.updates.patch_openclaw_config",
+            new=AsyncMock(side_effect=[None, ConfigPatchError("no config file")]),
+        ):
+            res = await async_client.patch(FLEET_PATH, json={"patch": {"agents": {"x": 1}}}, headers=CONFIRM)
+
+        # Response shape is unchanged — partial failure is still a 200 + counts.
+        assert res.status_code == 200
+        assert res.json()["patched"] == 1
+        assert res.json()["failed"] == 1
+
+        kwargs = mock_audit_repo.await_args.kwargs
+        # Exactly "error", not merely non-success: the audit UI narrows any
+        # other label to "success" (frontend _lib/narrow.ts), so a well-meaning
+        # "partial" would render this green.
+        assert kwargs["result"] == "error"
+        assert kwargs["error_message"] == "1 of 2 targets failed"
+        # The response really was a 200; the row carries both facts.
+        assert kwargs["http_status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_single_patch_writes_audit_row(self, async_client, admin_env, mock_audit_repo, mock_patcher):
+        res = await async_client.patch(SINGLE_PATH, json={"patch": {"agents": {"x": 1}}})
+        assert res.status_code == 200
+        mock_audit_repo.assert_awaited_once()
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["action"] == "config.patch"
+        # Target is the owner from the PATH, not the calling admin.
+        assert kwargs["target_user_id"] == "u_target"
+        assert kwargs["admin_user_id"] == "user_test_123"
+        assert kwargs["payload"] == {"patch": "***redacted***"}

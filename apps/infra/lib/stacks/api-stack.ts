@@ -327,7 +327,14 @@ export class ApiStack extends cdk.Stack {
                   const srcDir = path.join(__dirname, "..", "..", "lambda", "websocket-authorizer");
                   execSync(`pip3 install -r ${srcDir}/requirements.txt -t ${outputDir} -q`, { stdio: "inherit" });
                   for (const f of fs.readdirSync(srcDir)) {
-                    fs.copyFileSync(path.join(srcDir, f), path.join(outputDir, f));
+                    // Files only: backend pytest imports index.py in place
+                    // (tests/unit/test_ws_authorizer_*.py) and leaves a
+                    // __pycache__/ dir behind; copyFileSync throws EISDIR on
+                    // it, silently demoting every synth to the docker path.
+                    const src = path.join(srcDir, f);
+                    if (fs.statSync(src).isFile()) {
+                      fs.copyFileSync(src, path.join(outputDir, f));
+                    }
                   }
                   return true;
                 } catch {
@@ -346,6 +353,14 @@ export class ApiStack extends cdk.Stack {
         CLERK_JWKS_URL: isProd
           ? "https://clerk.isol8.co/.well-known/jwks.json"
           : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
+        // SEC-8 token-origin fence — same allowlist + mode as the backend
+        // task (service-stack.ts). azp is the origin that MINTED the token;
+        // native (mobile/desktop-node) tokens carry no azp and always pass.
+        // Ships in audit mode; flip to "enforce" once AzpMismatch is clean.
+        CLERK_AUTHORIZED_PARTIES: isProd
+          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+        CLERK_AZP_MODE: "audit",
         // Owner row holding paired_devices[deviceId].publicKey for device-key
         // WS-upgrade auth. Read via a non-VPC boto3 GetItem (public DDB endpoint,
         // same shape as the Secrets Manager call the authorizer already makes).

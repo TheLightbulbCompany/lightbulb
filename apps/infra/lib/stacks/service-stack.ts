@@ -1169,6 +1169,22 @@ export class ServiceStack extends cdk.Stack {
       WS_ENFORCE_INTERNAL_SECRET: "true",
       WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
       CORS_ORIGINS: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+      // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
+      // backend validates the `azp` (authorized party) claim against this
+      // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
+      // MINT origin, not the calling origin: admin-host sessions call the API
+      // via server actions (no CORS), the paperclip-proxy bootstrap page
+      // handshakes Clerk sessions on the company.isol8.co hosts, and
+      // localhost frontends point at the dev API during development. Native
+      // (mobile) tokens carry no azp and always pass.
+      // Rollout: ships in audit mode (log + metric, never
+      // reject); flip CLERK_AZP_MODE to "enforce" per env once the
+      // auth.azp.mismatch metric shows zero legitimate mismatches.
+      CLERK_AUTHORIZED_PARTIES:
+        env === "prod"
+          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+      CLERK_AZP_MODE: "audit",
       // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
       // encrypt operator device seeds + gateway tokens at rest. Reuses the
       // same CMK as the BYOK Fernet layer since the blast radius is the same

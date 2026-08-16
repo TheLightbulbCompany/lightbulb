@@ -671,6 +671,30 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
   });
 });
 
+describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
+  // Clerk session tokens carry no `aud`; the token-origin fence is the azp
+  // allowlist. Pin the per-env origins and the audit rollout default — a
+  // dropped var here silently disables the check (backend treats empty as
+  // off), and a premature "enforce" would reject before audit validated the
+  // list in the wild.
+  test.each([
+    ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
+    ["prod", "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+  ] as const)("%s backend gets azp allowlist in audit mode", (envName, parties) => {
+    const template = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "CLERK_AUTHORIZED_PARTIES", Value: parties }),
+            Match.objectLike({ Name: "CLERK_AZP_MODE", Value: "audit" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+});
+
 describe("ServiceStack — Metronome per-env wiring", () => {
   // METRONOME_LIFECYCLE_ENABLED is GONE (it defaulted false and gated only the
   // ledger-CREATING paths, never the ones that depend on a ledger, so any

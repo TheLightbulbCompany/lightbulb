@@ -1033,7 +1033,7 @@ async def set_openclaw_config_path(
 
 
 async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
-    """Atomically append cron jobs to ``{owner_id}/cron/jobs.json``.
+    """Atomically upsert cron jobs into ``{owner_id}/cron/jobs.json``.
 
     Lives in a separate file from openclaw.json (see ``config.cron.store``
     in OpenClaw's schema, default ``~/.openclaw/cron/jobs.json``), so it
@@ -1076,7 +1076,20 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
             jobs = data.get("jobs")
             if not isinstance(jobs, list):
                 jobs = []
-            jobs.extend(copy.deepcopy(j) for j in new_jobs)
+            existing_by_id = {
+                job.get("id"): index
+                for index, job in enumerate(jobs)
+                if isinstance(job, dict) and isinstance(job.get("id"), str)
+            }
+            for new_job in new_jobs:
+                copied = copy.deepcopy(new_job)
+                job_id = copied.get("id") if isinstance(copied, dict) else None
+                if isinstance(job_id, str) and job_id in existing_by_id:
+                    jobs[existing_by_id[job_id]] = copied
+                else:
+                    if isinstance(job_id, str):
+                        existing_by_id[job_id] = len(jobs)
+                    jobs.append(copied)
             data["jobs"] = jobs
             data.setdefault("version", 1)
 

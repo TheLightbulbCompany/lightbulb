@@ -722,6 +722,24 @@ class Workspace:
         sidecar.write_text(json.dumps(content))
         self._chown_for_access_point(sidecar, user_id)
 
+    def mark_template_install_complete(self, user_id: str, agent_id: str) -> None:
+        """Atomically mark a sidecar after every deploy step has completed."""
+        sidecar = self.user_path(user_id) / f"workspace-{agent_id}" / ".template"
+        content = json.loads(sidecar.read_text())
+        if not isinstance(content, dict):
+            raise ValueError("template sidecar must contain a JSON object")
+        content["install_state"] = "complete"
+        content["completed_at"] = utc_now_iso()
+
+        pending = sidecar.with_name(".template.complete.tmp")
+        try:
+            pending.write_text(json.dumps(content))
+            self._chown_for_access_point(pending, user_id)
+            os.replace(pending, sidecar)
+            self._chown_for_access_point(sidecar, user_id)
+        finally:
+            pending.unlink(missing_ok=True)
+
     def remove_template_sidecar(self, user_id: str, agent_id: str) -> None:
         """Delete an agent's `.template` sidecar. Missing file is a no-op.
 

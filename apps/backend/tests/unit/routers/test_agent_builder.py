@@ -15,6 +15,8 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from core.services import agent_export  # noqa: E402
+from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL  # noqa: E402
+from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss  # noqa: E402
 from routers import agent_builder  # noqa: E402
 
 OWNER = "org_abc"
@@ -108,6 +110,156 @@ def test_register_happy_path(
     assert "Summarizes contracts" in (minted_meta.capabilities or "")
     # No reports_to in the body → defaulted to the apex CEO (Friday).
     assert mock_create_pc.await_args.kwargs["reports_to"] == "friday-uuid"
+    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:agent-builder:")
+
+
+@patch("routers.agent_builder.emit_agent_deployed")
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.container_repo.try_claim_owner_deploy",
+    new_callable=AsyncMock,
+    return_value=("claim-token", None),
+)
+@patch("routers.agent_builder.is_at_agent_budget", new_callable=AsyncMock, return_value=False)
+@patch("routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_retry_of_same_staging_build_reuses_key_after_display_metadata_changes(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_catalog,
+    mock_resolve_ceo,
+    _at_budget,
+    _claim,
+    _release,
+    mock_emit,
+    client,
+):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.side_effect = [
+        {"id": "same-agent-uuid", "name": "Lex"},
+        {"id": "same-agent-uuid", "name": "Renamed Lex"},
+    ]
+    mock_resolve_ceo.return_value = "friday-uuid"
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.live_install_for_agent.side_effect = [None, {"agent_id": "same-agent-uuid"}]
+    catalog.deploy_from_artifact = AsyncMock(return_value={"agent_id": "same-agent-uuid"})
+    mock_get_catalog.return_value = catalog
+
+    first = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+    second = client.post(
+        URL,
+        json={**BODY, "name": "Renamed Lex", "reports_to": "different-manager"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    first_key = mock_create_pc.await_args_list[0].kwargs["idempotency_key"]
+    second_key = mock_create_pc.await_args_list[1].kwargs["idempotency_key"]
+    assert first_key == second_key
+    assert mock_create_pc.await_args_list[0].kwargs["idempotency_replay_only"] is False
+    assert mock_create_pc.await_args_list[1].kwargs["idempotency_replay_only"] is False
+    catalog.deploy_from_artifact.assert_awaited_once()
+    assert catalog.live_install_for_agent.call_count == 2
+    mock_emit.assert_called_once()
+
+
+@patch("routers.agent_builder.emit_agent_deployed")
+@patch("routers.agent_builder.ensure_operator_device_paired", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock, return_value="friday")
+@patch("routers.agent_builder.delete_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_catalog_service")
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_committed_install_reconciliation_failure_preserves_install(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_get_catalog,
+    mock_delete_pc,
+    _mock_ceo,
+    mock_pair,
+    mock_emit,
+    client,
+):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_create_pc.return_value = {"id": "same-agent-uuid", "name": "Lex"}
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    catalog = MagicMock()
+    catalog.live_install_for_agent.return_value = {"agent_id": "same-agent-uuid"}
+    catalog.deploy_from_artifact = AsyncMock()
+    catalog.unwind_partial_deploy = AsyncMock()
+    mock_get_catalog.return_value = catalog
+    mock_pair.side_effect = RuntimeError("device registration unavailable")
+
+    response = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert response.status_code == 502
+    assert "reconcile existing container install failed" in response.json()["detail"]
+    catalog.deploy_from_artifact.assert_not_awaited()
+    catalog.unwind_partial_deploy.assert_not_awaited()
+    mock_delete_pc.assert_not_awaited()
+    mock_emit.assert_not_called()
+
+
+@patch("routers.agent_builder.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch(
+    "routers.agent_builder.container_repo.try_claim_owner_deploy",
+    new_callable=AsyncMock,
+    return_value=("claim-token", None),
+)
+@patch("routers.agent_builder.is_at_agent_budget", new_callable=AsyncMock, return_value=True)
+@patch("routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock)
+@patch("routers.agent_builder.get_ecs_manager")
+@patch("routers.agent_builder.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.agent_builder.agent_export.export_built_agent_from_staging")
+@patch("routers.agent_builder.container_repo.get_by_owner_id", new_callable=AsyncMock)
+def test_exact_cap_builder_retry_is_replay_only_and_cannot_create(
+    mock_get_container,
+    mock_export,
+    mock_create_pc,
+    mock_get_ecs,
+    mock_resolve_ceo,
+    _at_budget,
+    _claim,
+    release,
+    client,
+):
+    mock_get_container.return_value = {"hook_token": TOKEN, "gateway_token": "gw-token"}
+    mock_export.return_value = _pkg()
+    mock_resolve_ceo.return_value = "friday-uuid"
+    ecs = MagicMock()
+    ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "gw-token"}, "10.0.0.1"))
+    mock_get_ecs.return_value = ecs
+    mock_create_pc.side_effect = PaperclipAgentCreateReplayMiss(
+        "agent create replay missed",
+        409,
+        {"code": "agent_create_idempotency_replay_miss"},
+    )
+
+    response = client.post(URL, json=BODY, headers={"Authorization": f"Bearer {TOKEN}"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == AGENT_BUDGET_EXCEEDED_DETAIL
+    assert mock_create_pc.await_args.kwargs["idempotency_replay_only"] is True
+    assert mock_create_pc.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:agent-builder:")
+    release.assert_awaited_once()
 
 
 @patch("routers.agent_builder.agent_export.resolve_apex_ceo_agent_id", new_callable=AsyncMock)

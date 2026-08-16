@@ -38,7 +38,7 @@ from core.services import (
     seller_display,
     seller_profile,
 )
-from core.services.agent_budget import enforce_agent_budget
+from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from core.services.agent_routine_provisioning import create_agent_routines
@@ -54,6 +54,8 @@ from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
 )
+from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
+from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
@@ -846,18 +848,16 @@ async def deploy_listing(
             "already_installed": True,
         }
 
-    # Plan agent budget. The company branch above has its own Ultra gate (it
-    # sizes by the PACKAGE's agent_count); this is the one-agent path, which
-    # adds exactly one to the live roster and so uses the same budget every
-    # other create path does.
+    # Plan agent budget. The company branch above has its own Ultra gate. At
+    # the cap, this one-agent path may only replay the same logical install;
+    # Paperclip atomically refuses a missing operation key.
     #
     # Placed AFTER the already-installed short-circuit above, not before it: a
     # deploy whose response was lost leaves the owner installed but retrying,
     # and gating first would answer that retry with "upgrade to Ultra" for an
     # agent they already have and that this call would not create. The retry
-    # must still heal into the existing install. Placed BEFORE the claim below
-    # so a refusal never has to unwind a held claim.
-    await enforce_agent_budget(owner_id)
+    # must still heal into the existing install.
+    at_agent_budget = await is_at_agent_budget(owner_id)
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
@@ -965,7 +965,19 @@ async def deploy_listing(
                 role=None,
                 meta=meta,
                 reports_to=reports_to,
+                idempotency_key=build_agent_create_idempotency_key(
+                    operation="marketplace-deploy",
+                    owner_id=owner_id,
+                    intent={
+                        "listingId": listing["listing_id"],
+                        "reportsTo": reports_to,
+                        "version": int(listing.get("version", 1) or 1),
+                    },
+                ),
+                idempotency_replay_only=at_agent_budget,
             )
+        except PaperclipAgentCreateReplayMiss as exc:
+            raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL) from exc
         except Exception as exc:
             logger.exception(
                 "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",

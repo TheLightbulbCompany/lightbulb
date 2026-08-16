@@ -18,6 +18,7 @@ path's boolean refusal is in test_marketplace_hire.py.
 """
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 os.environ.setdefault("WS_MANAGEMENT_API_URL", "https://stub-management-api.local")
@@ -27,24 +28,32 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
-_OVER_BUDGET = AsyncMock(side_effect=HTTPException(status_code=409, detail="This workspace is at its 10-agent limit."))
+
+def _replay_miss():
+    from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
+
+    return PaperclipAgentCreateReplayMiss(
+        "replay miss",
+        status_code=409,
+        body='{"code":"agent_create_idempotency_replay_miss"}',
+    )
 
 
 @pytest.mark.asyncio
-async def test_chat_create_refuses_over_budget_without_minting():
+async def test_chat_create_at_cap_allows_only_an_existing_operation():
     """The /chat path CONSUMES the RPC, so its refusal must be an error ``res``
     frame on the original req id — raising would hang the frontend on a request
     nobody answers. The frontend keys the upgrade card off ``code``.
     """
     from routers.websocket_chat import _intercept_agents_create
 
-    mint = AsyncMock()
+    mint = AsyncMock(side_effect=_replay_miss())
     mgmt = MagicMock()
     mgmt.send_message = MagicMock()
     mgmt.send_message_async = AsyncMock(side_effect=mgmt.send_message)
 
     with (
-        patch("core.services.agent_budget.enforce_agent_budget", new=_OVER_BUDGET),
+        patch("core.services.agent_budget.is_at_agent_budget", new=AsyncMock(return_value=True)),
         patch("routers.websocket_chat.create_paperclip_for_chat", new=mint),
         patch(
             "routers.websocket_chat.get_management_api_client",
@@ -62,7 +71,8 @@ async def test_chat_create_refuses_over_budget_without_minting():
         )
 
     assert consumed is True, "must consume the RPC, not fall through to the gateway"
-    mint.assert_not_awaited()
+    mint.assert_awaited_once()
+    assert mint.await_args.kwargs["idempotency_replay_only"] is True
     frame = mgmt.send_message.call_args[0][1]
     assert frame["ok"] is False
     assert frame["id"] == "r1"
@@ -70,39 +80,55 @@ async def test_chat_create_refuses_over_budget_without_minting():
 
 
 @pytest.mark.asyncio
-async def test_teams_rest_create_refuses_over_budget_before_minting(monkeypatch):
-    """Refused before the service token is minted and before Paperclip is
-    touched, so a refusal leaves nothing to reconcile."""
+async def test_teams_rest_create_at_cap_allows_only_an_existing_operation(monkeypatch):
     from routers.teams import agents as teams_agents
 
     admin = MagicMock()
-    admin.create_agent = AsyncMock()
+    admin.create_agent = AsyncMock(side_effect=_replay_miss())
     monkeypatch.setattr(teams_agents, "_admin", lambda: admin)
     monkeypatch.setattr(teams_agents, "_resolve_owner_id", lambda _ctx: "owner")
     monkeypatch.setattr(teams_agents, "_creator_user_id", lambda _ctx: "user")
-    monkeypatch.setattr(teams_agents, "enforce_agent_budget", _OVER_BUDGET)
+    monkeypatch.setattr(teams_agents, "is_at_agent_budget", AsyncMock(return_value=True))
+    monkeypatch.setattr(teams_agents, "_user_session", AsyncMock(return_value="cookie"))
+    monkeypatch.setattr(teams_agents.service_token, "mint", lambda _owner_id: "token")
 
-    body = MagicMock(name="Helper", role="engineer")
+    body = SimpleNamespace(
+        name="Helper",
+        role="engineer",
+        title=None,
+        capabilities=None,
+        reports_to=None,
+        budget_monthly_cents=0,
+    )
     with pytest.raises(HTTPException) as exc:
-        await teams_agents.create_agent(body, MagicMock())
+        await teams_agents.create_agent(body, SimpleNamespace(company_id="company"))
 
     assert exc.value.status_code == 409
-    admin.create_agent.assert_not_awaited()
+    admin.create_agent.assert_awaited_once()
+    assert admin.create_agent.await_args.kwargs["idempotency_replay_only"] is True
 
 
 @pytest.mark.asyncio
-async def test_atlas_bridge_refuses_over_budget_before_claiming(monkeypatch):
-    """The Atlas bridge is the path Atlas reaches headlessly. Refused before the
-    owner-wide deploy claim, so a refusal never has to unwind a held claim."""
+async def test_atlas_bridge_threads_cap_state_into_the_claimed_operation(monkeypatch):
     from routers import agent_builder
 
-    claim = AsyncMock()
-    monkeypatch.setattr(agent_builder, "enforce_agent_budget", _OVER_BUDGET)
+    claim = AsyncMock(return_value=("claim", None))
+    release = AsyncMock()
+    register = AsyncMock(side_effect=HTTPException(status_code=409, detail="at limit"))
+    monkeypatch.setattr(agent_builder, "is_at_agent_budget", AsyncMock(return_value=True))
     monkeypatch.setattr(agent_builder, "_require_hook_token", AsyncMock(return_value={}))
     monkeypatch.setattr(agent_builder.container_repo, "try_claim_owner_deploy", claim)
+    monkeypatch.setattr(agent_builder.container_repo, "release_owner_deploy_claim", release)
+    monkeypatch.setattr(agent_builder, "_register_built_agent", register)
 
     with pytest.raises(HTTPException) as exc:
-        await agent_builder.register_built_agent("owner", MagicMock(), MagicMock())
+        await agent_builder.register_built_agent(
+            "owner",
+            SimpleNamespace(staging_agent_id="staging-1"),
+            MagicMock(),
+        )
 
     assert exc.value.status_code == 409
-    claim.assert_not_awaited()
+    claim.assert_awaited_once()
+    assert register.await_args.kwargs["idempotency_replay_only"] is True
+    release.assert_awaited_once()

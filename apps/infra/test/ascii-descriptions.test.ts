@@ -21,18 +21,37 @@ import { Isol8Stage } from "../lib/isol8-stage";
 
 const ASCII_RE = /^[\x00-\x7F]*$/;
 
+// EC2's SG-description constraint is NARROWER than ASCII: the allowed set is
+// exactly `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`. An ASCII-only check waved through
+// a "->" description that CloudFormation then rejected at deploy time
+// (isol8-dev-network UPDATE_FAILED, 2026-08-16) -- the exact class this file
+// exists to catch at synth time instead.
+const EC2_SG_DESC_RE = /^[a-zA-Z0-9. _\-:\/()#,@\[\]+=&;{}!$*]*$/;
+
 function assertAscii(template: Template, resourceType: string, descKey: string) {
+  // SG rule descriptions get the narrower EC2 charset; everything else the
+  // original ASCII rule. Inline SG-resource ingress/egress rules also carry
+  // Description fields nested in arrays, checked below.
+  const re = resourceType.startsWith("AWS::EC2::SecurityGroup") ? EC2_SG_DESC_RE : ASCII_RE;
+  const check = (desc: unknown, logicalId: string, where: string) => {
+    if (typeof desc === "string" && !re.test(desc)) {
+      const offending = [...desc].find((c) => !re.test(c));
+      throw new Error(
+        `${resourceType} ${logicalId} has a char EC2/ASCII rejects (${JSON.stringify(offending)}) in ${where}: ${JSON.stringify(desc)}`,
+      );
+    }
+  };
   const resources = template.findResources(resourceType);
   for (const [logicalId, body] of Object.entries(resources)) {
-    const desc = (body as any).Properties?.[descKey];
-    if (typeof desc === "string" && !ASCII_RE.test(desc)) {
-      const offending = [...desc].find((c) => c.charCodeAt(0) > 127);
-      const codePoint = offending
-        ? offending.charCodeAt(0).toString(16)
-        : "?";
-      throw new Error(
-        `${resourceType} ${logicalId} has non-ASCII char (U+${codePoint}) in ${descKey}: ${JSON.stringify(desc)}`,
-      );
+    const props = (body as any).Properties ?? {};
+    check(props[descKey], logicalId, descKey);
+    // AWS::EC2::SecurityGroup inlines its rules — the "->" that broke the
+    // 2026-08-16 dev deploy lived in SecurityGroupIngress[].Description,
+    // which the top-level descKey check never saw.
+    for (const ruleKey of ["SecurityGroupIngress", "SecurityGroupEgress"]) {
+      for (const rule of props[ruleKey] ?? []) {
+        check(rule?.Description, logicalId, `${ruleKey}[].Description`);
+      }
     }
   }
 }

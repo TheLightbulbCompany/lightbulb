@@ -166,7 +166,7 @@ export class NetworkStack extends cdk.Stack {
     this.albSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(this.vpc.vpcCidrBlock),
       ec2.Port.tcp(8081),
-      "CloudFront VPC origin -> browser-view relay (path-capped by listener rule)",
+      "CloudFront VPC origin to browser-view relay (path-capped by listener rule)",
     );
   }
 }

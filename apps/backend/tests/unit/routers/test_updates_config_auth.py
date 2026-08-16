@@ -25,6 +25,7 @@ import pytest
 from fastapi.dependencies.utils import get_flat_dependant
 
 from core.auth import AuthContext, get_current_user, require_platform_admin
+from core.services.config_patcher import ConfigPatchError
 from routers.updates import router
 
 
@@ -112,6 +113,19 @@ def one_owner_fleet():
         yield
 
 
+@pytest.fixture
+def two_owner_fleet():
+    """billing-accounts scan yields two owners (for partial-failure cases)."""
+    with (
+        patch("core.dynamodb.get_table"),
+        patch(
+            "core.dynamodb.run_in_thread",
+            new=AsyncMock(return_value={"Items": [{"owner_id": "o1"}, {"owner_id": "o2"}]}),
+        ),
+    ):
+        yield
+
+
 class TestFleetPatchConfirmationHeader:
     """PATCH /container/config refuses to touch the fleet without a typed confirmation."""
 
@@ -185,6 +199,30 @@ class TestConfigPatchAuditTrail:
         assert kwargs["action"] == "config.patch_fleet"
         assert kwargs["result"] == "error"
         assert kwargs["http_status"] == 428
+
+    @pytest.mark.asyncio
+    async def test_partly_failed_fleet_patch_is_not_audited_as_success(
+        self, async_client, admin_env, mock_audit_repo, two_owner_fleet
+    ):
+        """The handler swallows per-owner failures and still returns 200, so
+        "handler returned normally" must not be the audit verdict — a fleet
+        mutation that half-applied cannot read clean in the trail."""
+        with patch(
+            "routers.updates.patch_openclaw_config",
+            new=AsyncMock(side_effect=[None, ConfigPatchError("no config file")]),
+        ):
+            res = await async_client.patch(FLEET_PATH, json={"patch": {"agents": {"x": 1}}}, headers=CONFIRM)
+
+        # Response shape is unchanged — partial failure is still a 200 + counts.
+        assert res.status_code == 200
+        assert res.json()["patched"] == 1
+        assert res.json()["failed"] == 1
+
+        kwargs = mock_audit_repo.await_args.kwargs
+        assert kwargs["result"] != "success"
+        assert kwargs["error_message"] == "1 of 2 targets failed"
+        # The response really was a 200; the row carries both facts.
+        assert kwargs["http_status"] == 200
 
     @pytest.mark.asyncio
     async def test_single_patch_writes_audit_row(self, async_client, admin_env, mock_audit_repo, mock_patcher):

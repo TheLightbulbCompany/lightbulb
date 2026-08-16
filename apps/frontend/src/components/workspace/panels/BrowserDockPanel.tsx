@@ -83,6 +83,11 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
       rfb.addEventListener("disconnect", () => {
         if (!cancelled) setState("disconnected");
       });
+    }).catch(() => {
+      // getToken() rejecting (expired session, network blip) or the dynamic
+      // import failing must land on the disconnected state — leaving the
+      // spinner up hides the Retry button behind a failure it can't see.
+      if (!cancelled) setState("disconnected");
     });
 
     return () => {

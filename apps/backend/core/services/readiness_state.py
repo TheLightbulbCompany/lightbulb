@@ -151,6 +151,8 @@ async def resolve_onboarding_state(owner_id: str) -> dict:
             "bootstrap_state": "not_started",
             "bootstrap_dispatch_id": None,
             "bootstrap_dispatched_at": None,
+            "bootstrap_send_attempted_at": None,
+            "bootstrap_sent_at": None,
             "bootstrap_delivered_at": None,
             "bootstrap_attempts": 0,
             "bootstrap_last_error": None,

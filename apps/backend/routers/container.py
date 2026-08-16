@@ -540,10 +540,17 @@ async def container_status(
     # dict compute_status already consumed -- zero extra reads) keeps the
     # overwhelming majority of polls from even scheduling a no-op task; the
     # dispatcher's atomic claim remains the real single-fire fence (INV-5).
+    #
+    # "dispatched" is admitted alongside "not_started" so the dispatcher's
+    # lazy staleness expiry can run at all: a claim whose process died mid
+    # -window is only findable by a poll that actually calls in, and this poll
+    # is the one place that already holds the row. The dispatcher returns on a
+    # comparison for a FRESH claim (the overwhelming majority), so admitting
+    # it costs nothing per poll and no extra reads.
     if (
         contract["runtime_phase"] in ("starting", "ready")
         and onboarding.get("funnel_state") == "submitted"
-        and (onboarding.get("bootstrap_state") or "not_started") == "not_started"
+        and (onboarding.get("bootstrap_state") or "not_started") in ("not_started", "dispatched")
     ):
         asyncio.create_task(maybe_dispatch_bootstrap(owner_id, onboarding=onboarding))
 

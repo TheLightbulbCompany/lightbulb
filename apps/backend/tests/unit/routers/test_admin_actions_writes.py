@@ -598,12 +598,20 @@ class TestProvisionRetry:
 class TestResetBootstrap:
     """POST /api/v1/admin/users/{user_id}/provisioning/reset-bootstrap.
 
-    Re-arms a permanently-failed onboarding kickoff: conditional
-    bootstrap_state failed->not_started fenced on onboarding_generation.
+    Re-arms a stuck onboarding kickoff: conditional bootstrap_state
+    ->not_started fenced on onboarding_generation. Accepts a `failed` row at
+    any age, and a `dispatched` row whose claim has EXPIRED (the dispatcher's
+    own staleness threshold) — but never one still in flight.
     """
 
     @staticmethod
-    def _company(*, bootstrap_state="failed", onboarding_generation="01G"):
+    def _company(
+        *,
+        bootstrap_state="failed",
+        onboarding_generation="01G",
+        dispatched_at=None,
+        dispatch_id=None,
+    ):
         from datetime import datetime, timezone
 
         from core.repositories.paperclip_repo import PaperclipCompany
@@ -621,7 +629,15 @@ class TestResetBootstrap:
             funnel_state="submitted",
             bootstrap_state=bootstrap_state,
             onboarding_generation=onboarding_generation,
+            bootstrap_dispatched_at=dispatched_at,
+            bootstrap_dispatch_id=dispatch_id,
         )
+
+    @staticmethod
+    def _dispatched_ago(seconds):
+        from datetime import datetime, timedelta, timezone
+
+        return datetime.now(timezone.utc) - timedelta(seconds=seconds)
 
     @staticmethod
     def _mock_repo(company, *, reset_result=True):
@@ -658,7 +674,9 @@ class TestResetBootstrap:
         with patch("routers.admin._paperclip_repo", return_value=repo):
             res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
         assert res.status_code == 409
-        repo.reset_bootstrap_for_retry.assert_awaited_once_with("u_target", onboarding_generation="01G")
+        repo.reset_bootstrap_for_retry.assert_awaited_once_with(
+            "u_target", onboarding_generation="01G", expected_dispatch_id=None
+        )
 
     @pytest.mark.asyncio
     async def test_200_when_reset_lands(self, async_client, admin_env, mock_audit_repo):
@@ -668,7 +686,72 @@ class TestResetBootstrap:
             res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
         assert res.status_code == 200
         assert res.json()["ok"] is True
-        repo.reset_bootstrap_for_retry.assert_awaited_once_with("u_target", onboarding_generation="01G")
+        repo.reset_bootstrap_for_retry.assert_awaited_once_with(
+            "u_target", onboarding_generation="01G", expected_dispatch_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_200_for_an_expired_dispatched_claim(self, async_client, admin_env, mock_audit_repo):
+        """The stuck-'dispatched' case this lever exists for — including the
+        ambiguous send-attempted-never-acked row the dispatcher refuses to
+        retry on its own. The write is fenced on the observed dispatch_id so a
+        claim landing between the operator's read and this write survives."""
+        from core.services.bootstrap_dispatcher import STALE_DISPATCH_AFTER_S
+
+        company = self._company(
+            bootstrap_state="dispatched",
+            dispatched_at=self._dispatched_ago(STALE_DISPATCH_AFTER_S + 60),
+            dispatch_id="dead-claim-1",
+        )
+        repo = self._mock_repo(company, reset_result=True)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 200
+        repo.reset_bootstrap_for_retry.assert_awaited_once_with(
+            "u_target", onboarding_generation="01G", expected_dispatch_id="dead-claim-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_409_for_a_dispatch_still_in_flight(self, async_client, admin_env):
+        """A live claim must not be resettable mid-flight: the next poll would
+        dispatch a SECOND kickoff. The connect ladder alone runs ~3 minutes."""
+        company = self._company(
+            bootstrap_state="dispatched",
+            dispatched_at=self._dispatched_ago(30),
+            dispatch_id="live-claim-1",
+        )
+        repo = self._mock_repo(company)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 409
+        assert "still in flight" in res.json()["detail"]
+        repo.reset_bootstrap_for_retry.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_409_for_a_dispatched_row_with_no_dispatch_id(self, async_client, admin_env):
+        """Nothing to fence the write on — refuse rather than write unfenced."""
+        from core.services.bootstrap_dispatcher import STALE_DISPATCH_AFTER_S
+
+        company = self._company(
+            bootstrap_state="dispatched",
+            dispatched_at=self._dispatched_ago(STALE_DISPATCH_AFTER_S + 60),
+            dispatch_id=None,
+        )
+        repo = self._mock_repo(company)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 409
+        repo.reset_bootstrap_for_retry.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_409_for_a_sent_row(self, async_client, admin_env):
+        """`sent` means the kickoff WAS delivered; a reset would double-run it."""
+        company = self._company(bootstrap_state="sent")
+        repo = self._mock_repo(company)
+        with patch("routers.admin._paperclip_repo", return_value=repo):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/reset-bootstrap")
+        assert res.status_code == 409
+        repo.reset_bootstrap_for_retry.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_audit_row_written(self, async_client, admin_env, mock_audit_repo):

@@ -109,9 +109,13 @@ mechanism to keep alive. A ``dispatched`` row older than
 * **No ``bootstrap_send_attempted_at`` -> PROVABLY UNSENT.** The claimant
   died before writing anything to the socket, so a fresh dispatch cannot
   double-run Friday. Re-armed to ``not_started``
-  (``rearm_bootstrap_dispatch``, conditional on the row still being
-  ``dispatched`` under the SAME ``bootstrap_dispatch_id``, so a live
-  claimant can never be stomped) and re-claimed by THIS same call.
+  (``rearm_bootstrap_dispatch``) and re-claimed by THIS same call. Both
+  recovery writes carry the fence for what they concluded from a stale READ,
+  not just generation + ``bootstrap_dispatch_id``: the re-arm requires the
+  write-ahead stamp to still be ABSENT, the failed-settle requires no ack
+  (``only_if_unacked``). That is what makes the rule safe against a claimant
+  that was merely SLOW rather than dead and woke up mid-window — without it,
+  it could send while this poll re-armed and re-claimed underneath it.
 * **``bootstrap_send_attempted_at`` set, never acked -> AMBIGUOUS.** The
   send may already have been accepted by OpenClaw. Exactly the case the
   post-connect classifier already refuses to re-arm, so it is NOT re-sent:
@@ -358,9 +362,14 @@ async def _recover_stale_dispatch(repo, onboarding: dict, *, owner_id: str) -> b
 
     Both writes are conditional on the row still being ``dispatched`` under
     the SAME ``bootstrap_dispatch_id`` this dict was read at, so two
-    concurrent pollers cannot both act, and a claim that landed in between
-    (impossible in practice, but the fence is free) is never stomped. The
-    time threshold -- not the fence -- is what proves the claimant is gone.
+    concurrent pollers cannot both act. Each also carries the fence for the
+    thing it just concluded from a STALE read: the re-arm requires
+    ``bootstrap_send_attempted_at`` to still be absent, the failed-settle
+    requires no ack (``only_if_unacked``). The time threshold says the
+    claimant is *probably* dead; those two clauses are what make it safe when
+    it was merely SLOW and woke up mid-window -- otherwise a live claimant
+    could send while this poll re-armed and re-claimed underneath it, running
+    Friday twice.
     """
     if not is_dispatch_stale(onboarding.get("bootstrap_dispatched_at")):
         return False
@@ -416,6 +425,11 @@ async def _recover_stale_dispatch(repo, onboarding: dict, *, owner_id: str) -> b
         onboarding_generation=generation,
         dispatch_id=dispatch_id,
         reason=_STALE_ATTEMPTED_ERROR if attempted else _STALE_UNSENT_CAPPED_ERROR,
+        # A claim we judged dead may be merely SLOW and land its ack in the
+        # window between the read above and this write. Refuse to settle a row
+        # that acked in the meantime — mislabelling a DELIVERED kickoff failed
+        # is what would invite an admin reset into a double delivery.
+        only_if_unacked=True,
     )
     return False
 

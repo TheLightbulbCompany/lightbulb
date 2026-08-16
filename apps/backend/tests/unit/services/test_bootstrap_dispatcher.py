@@ -296,6 +296,9 @@ async def test_expired_claim_after_a_send_attempt_marks_failed_and_never_resends
     assert failed.kwargs["dispatch_id"] == "dead-claim-1"
     assert "ack never recorded" in failed.kwargs["reason"]
     assert "admin reset" in failed.kwargs["reason"]
+    # Fenced against the claim acking between the read above and this write —
+    # settling a DELIVERED row failed is what would invite a double delivery.
+    assert failed.kwargs["only_if_unacked"] is True
 
     repo.rearm_bootstrap_dispatch.assert_not_awaited()
     repo.claim_bootstrap_dispatch.assert_not_awaited()

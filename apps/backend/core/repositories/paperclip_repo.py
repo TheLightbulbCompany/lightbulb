@@ -1603,7 +1603,13 @@ class PaperclipRepo:
             pass
 
     async def mark_bootstrap_failed(
-        self, user_id: str, *, onboarding_generation: str, dispatch_id: str, reason: str
+        self,
+        user_id: str,
+        *,
+        onboarding_generation: str,
+        dispatch_id: str,
+        reason: str,
+        only_if_unacked: bool = False,
     ) -> None:
         """Conditional ``bootstrap_state: dispatched|sent -> failed``, fenced the
         same way as ``mark_bootstrap_delivered`` (generation + dispatch_id +
@@ -1616,8 +1622,23 @@ class PaperclipRepo:
         it later by resetting ``bootstrap_state`` back to ``not_started``.
         Guard-fail is swallowed for the same reason as
         ``mark_bootstrap_delivered``.
+
+        *only_if_unacked* narrows the write to a claim that has NOT recorded a
+        chat.send ack -- the fence the dispatcher's staleness recovery needs.
+        Its counterpart to the re-arm's race: a claimant that is merely SLOW
+        can complete its send and stamp ``sent`` in the window between the
+        recovery poll's read and this write, and marking THAT row failed would
+        both mislabel a delivered kickoff and invite an admin reset into a
+        double delivery. The completion observer (the other caller) must not
+        set this: resolving a ``sent`` row on a terminal ``chat.error`` is
+        exactly its job.
         """
         table = self._table()
+        # attribute_not_exists rather than a state check: bootstrap_sent_at and
+        # bootstrap_state="sent" are written together, so its absence IS "no ack
+        # recorded" -- and it stays true even if some later writer moves the
+        # state without clearing the stamp.
+        unacked_clause = " AND attribute_not_exists(bootstrap_sent_at)" if only_if_unacked else ""
         try:
             await run_in_thread(
                 table.update_item,
@@ -1625,7 +1646,7 @@ class PaperclipRepo:
                 UpdateExpression=("SET bootstrap_state = :failed, bootstrap_last_error = :err, updated_at = :u"),
                 ConditionExpression=(
                     "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND "
-                    "(bootstrap_state = :dispatched OR bootstrap_state = :sent)"
+                    f"(bootstrap_state = :dispatched OR bootstrap_state = :sent){unacked_clause}"
                 ),
                 ExpressionAttributeValues={
                     ":failed": "failed",
@@ -1669,6 +1690,19 @@ class PaperclipRepo:
         NOT admitted from ``sent``: that row's chat.send was acked, and
         re-arming it would double-run Friday.
 
+        ``attribute_not_exists(bootstrap_send_attempted_at)`` makes
+        "nothing was sent" a property of the WRITE, not just of the caller's
+        earlier read. Without it there is a real double-send: a claimant that
+        is merely SLOW (not dead) can stamp its write-ahead and issue chat.send
+        in the window between a recovery poll reading the row and re-arming it
+        -- the re-arm would still land, the poll would re-claim, and Friday
+        would run twice. Both legitimate callers satisfy the clause by
+        construction: the in-dispatch transient re-arm only fires with
+        ``connected is False`` (the stamp is written after the connect), and
+        the staleness recovery only takes this branch when the stamp is absent.
+        ``claim_bootstrap_dispatch`` REMOVEs the stamp, so a re-armed row is
+        re-armable again on its next attempt.
+
         Guard-fail is swallowed for the same reason as the two marks above:
         a stale caller from a superseded generation/dispatch has nothing
         further to do.
@@ -1680,7 +1714,8 @@ class PaperclipRepo:
                 Key={"user_id": user_id},
                 UpdateExpression=("SET bootstrap_state = :not_started, bootstrap_last_error = :err, updated_at = :u"),
                 ConditionExpression=(
-                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND bootstrap_state = :dispatched"
+                    "onboarding_generation = :gen AND bootstrap_dispatch_id = :did AND "
+                    "bootstrap_state = :dispatched AND attribute_not_exists(bootstrap_send_attempted_at)"
                 ),
                 ExpressionAttributeValues={
                     ":not_started": "not_started",

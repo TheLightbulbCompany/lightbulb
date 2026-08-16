@@ -219,7 +219,10 @@ class TestConfigPatchAuditTrail:
         assert res.json()["failed"] == 1
 
         kwargs = mock_audit_repo.await_args.kwargs
-        assert kwargs["result"] != "success"
+        # Exactly "error", not merely non-success: the audit UI narrows any
+        # other label to "success" (frontend _lib/narrow.ts), so a well-meaning
+        # "partial" would render this green.
+        assert kwargs["result"] == "error"
         assert kwargs["error_message"] == "1 of 2 targets failed"
         # The response really was a 200; the row carries both facts.
         assert kwargs["http_status"] == 200

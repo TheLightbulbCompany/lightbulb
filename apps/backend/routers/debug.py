@@ -1,8 +1,8 @@
 """
 Dev-only container provisioning endpoints.
 
-Bypasses Stripe for local testing — served only in dev/local/test
-(see ``assert_debug_enabled``), refused everywhere else.
+Bypasses Stripe for local testing — served only when ENVIRONMENT is
+dev/local/test or unset (see ``assert_debug_enabled``), refused everywhere else.
 """
 
 import logging
@@ -71,7 +71,7 @@ async def require_non_production() -> None:
     operation_id="debug_provision_container",
     dependencies=[Depends(require_non_production)],
     responses={
-        403: {"description": "Not available outside dev/local/test"},
+        403: {"description": "Not available outside dev/local/test (or unset)"},
         409: {"description": "Container already running"},
         503: {"description": "Provisioning failed"},
     },
@@ -141,7 +141,7 @@ async def provision_container(
     operation_id="debug_redeploy_container",
     dependencies=[Depends(require_non_production)],
     responses={
-        403: {"description": "Not available outside dev/local/test"},
+        403: {"description": "Not available outside dev/local/test (or unset)"},
         404: {"description": "No container found"},
         503: {"description": "Redeploy failed"},
     },
@@ -196,7 +196,7 @@ async def redeploy_container(
     operation_id="debug_remove_container",
     dependencies=[Depends(require_non_production)],
     responses={
-        403: {"description": "Not available outside dev/local/test"},
+        403: {"description": "Not available outside dev/local/test (or unset)"},
         404: {"description": "No container found"},
     },
 )
@@ -228,7 +228,7 @@ async def remove_container(
     ),
     operation_id="debug_delete_user_data",
     responses={
-        403: {"description": "Not available outside dev/local/test"},
+        403: {"description": "Not available outside dev/local/test (or unset)"},
     },
 )
 async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
@@ -434,7 +434,7 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     operation_id="debug_efs_exists",
     responses={
         400: {"description": "Path outside the workspace mount root"},
-        403: {"description": "Not available outside dev/local/test"},
+        403: {"description": "Not available outside dev/local/test (or unset)"},
     },
 )
 async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
@@ -468,7 +468,7 @@ async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
     ),
     operation_id="debug_ddb_rows",
     responses={
-        403: {"description": "Not available outside dev/local/test"},
+        403: {"description": "Not available outside dev/local/test (or unset)"},
     },
 )
 async def ddb_rows(

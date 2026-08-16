@@ -380,6 +380,13 @@ async def search_listings(
         default=None,
         description="Optional category filter, compared case-insensitively against listing.category.",
     ),
+    free_only: bool = Query(
+        default=False,
+        description=(
+            "Keep only free listings (price_cents absent or <= 0), applied before the limit"
+            " slice. The mobile app passes this — iOS hires free agents only."
+        ),
+    ),
     status_in: str | None = Query(
         default=None,
         description=(
@@ -429,6 +436,7 @@ async def search_listings(
         limit=limit,
         seller_id=seller_id,
         category=category,
+        free_only=free_only,
         include_unpublished=include_unpublished,
         status_in=status_list,
     )

@@ -125,8 +125,10 @@ export default function MarketplacePanel() {
   } else if (state.kind === "loading") {
     body = <SkeletonRows />;
   } else {
-    // Free hires only on the phone — a paid row here would be a storefront
-    // shelf with no in-app way to buy. See isFreeToHire.
+    // Belt on the server's free_only filter (which is what actually keeps
+    // free listings from being truncated away by the ranked limit). This
+    // only bites if the app outruns a backend that ignores the param — a
+    // paid row must never reach a shelf with no in-app way to buy.
     const items = state.items.filter((l) => isFreeToHire(l, userId));
     body = (
       <FlatList

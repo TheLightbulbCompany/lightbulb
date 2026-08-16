@@ -119,6 +119,7 @@ async def search(
     limit: int = 24,
     seller_id: str | None = None,
     category: str | None = None,
+    free_only: bool = False,
     include_unpublished: bool = False,
     status_in: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -135,6 +136,12 @@ async def search(
         category: Optional category filter (e.g., "operations", "sales").
             Compared case-insensitively against the listing's "category"
             field. Drives the Browse view's category-chip filtering.
+        free_only: Keep only listings that cost nothing (price_cents absent
+            or <= 0). Applied BEFORE the limit slice — a client that drops
+            paid rows from the returned page instead would lose the free
+            listings that ranked below the cut, with no way to page for
+            them. The mobile marketplace passes this: iOS hires free agents
+            only (no in-app storefront), so paid rows are not results there.
         include_unpublished: If True, return draft/review/retired/taken_down
             rows in addition to published. Caller must enforce auth (only
             seller-scoped reads should set this — the marketplace drawer's
@@ -186,6 +193,8 @@ async def search(
     if category:
         cat_lower = category.lower()
         candidates = [li for li in candidates if str(li.get("category", "")).lower() == cat_lower]
+    if free_only:
+        candidates = [li for li in candidates if int(li.get("price_cents") or 0) <= 0]
     if status_in:
         # Run BEFORE the limit slice — otherwise a seller with >limit rows
         # in unrelated statuses ahead of the matching ones loses them to

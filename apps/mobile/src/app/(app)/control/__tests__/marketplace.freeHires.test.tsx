@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react-native";
 import { Alert } from "react-native";
 
 // The phone hires FREE agents only. #1643 pulled the whole marketplace off iOS
@@ -19,6 +19,23 @@ jest.mock("@clerk/clerk-expo", () => ({
 
 jest.mock("expo-crypto", () => ({
   randomUUID: () => "00000000-0000-4000-8000-000000000000",
+}));
+
+// This suite pulls in the real @isol8/shared + lib/marketplace graph (for the
+// free_only assertion below). On a cold transform cache — i.e. CI — that lands
+// on whichever test renders first and blows the 5s default.
+jest.setTimeout(20000);
+
+// Records every REST path the real search hook builds (see the free_only test).
+const mockGetPaths: string[] = [];
+jest.mock("@isol8/shared", () => ({
+  ...jest.requireActual("@isol8/shared"),
+  createApiClient: () => ({
+    get: async (path: string) => {
+      mockGetPaths.push(path);
+      return { items: [] };
+    },
+  }),
 }));
 
 function makeListing(over: Record<string, unknown> = {}) {
@@ -142,5 +159,23 @@ describe("data layer", () => {
   it("exposes no checkout hook — a Stripe handoff is one import away", () => {
     const lib = jest.requireActual("../../../../lib/marketplace");
     expect(Object.keys(lib)).not.toContain("useCheckoutListing");
+  });
+
+  it("asks the server for free listings only", async () => {
+    // The filter has to run before the backend's ranked limit slice. Trimming
+    // paid rows off the returned page instead would drop the free listings
+    // that ranked below the cut, unreachable without pagination.
+    const { useMarketplaceSearch } = jest.requireActual<
+      typeof import("../../../../lib/marketplace")
+    >("../../../../lib/marketplace");
+
+    const { result } = await renderHook(() => useMarketplaceSearch());
+    await act(() => result.current.search(""));
+    await act(() => result.current.search("butler"));
+
+    expect(mockGetPaths).toEqual([
+      "/marketplace/listings/search?free_only=true",
+      "/marketplace/listings/search?free_only=true&q=butler",
+    ]);
   });
 });

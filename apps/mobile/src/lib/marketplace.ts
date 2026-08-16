@@ -107,12 +107,14 @@ export function listingByline(listing: Pick<Listing, "seller_display_name">): st
  * seller of a paid listing still deploys their own for free (backend
  * seller-self bypass), so their rows stay visible and hireable.
  *
- * Used both to filter search results and to gate the detail screen's primary
- * action — a deep link can land on a paid listing search never showed.
+ * The search list is filtered server-side (free_only, applied before the
+ * ranked limit slice); this gates the detail screen's primary action, where a
+ * deep link can land on a paid listing search never showed, and doubles as a
+ * belt over the returned rows.
  *
- * ponytail: price + seller only. The search payload carries no entitlement
- * flag, so a paid listing the viewer already BOUGHT (which deploys free) stays
- * hidden on mobile until the payload carries one.
+ * ponytail: price + seller only. Neither payload carries an entitlement flag,
+ * so a paid listing the viewer already BOUGHT (which deploys free) stays
+ * hidden on mobile until one of them does.
  */
 export function isFreeToHire(
   listing: Pick<Listing, "price_cents" | "seller_id">,
@@ -153,9 +155,12 @@ export function useMarketplaceSearch() {
       const seq = ++seqRef.current;
       setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
       const q = query.trim();
+      // free_only is applied server-side, BEFORE the ranked top-N slice.
+      // Dropping paid rows from the returned page instead would silently
+      // lose the free listings that ranked below the cut.
       const path = q
-        ? `/marketplace/listings/search?q=${encodeURIComponent(q)}`
-        : "/marketplace/listings/search";
+        ? `/marketplace/listings/search?free_only=true&q=${encodeURIComponent(q)}`
+        : "/marketplace/listings/search?free_only=true";
       try {
         const body = (await api.get(path)) as { items?: Listing[] };
         if (seqRef.current !== seq) return;

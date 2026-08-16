@@ -1933,16 +1933,30 @@ def build_openclaw_config_dict(
             # Chrome CDP on port 18800" — the exact error our containers
             # throw). We had only `enabled` + `noSandbox` of it.
             #
-            # headless: upstream's default is FALSE. We were getting headless
-            # only via the implicit fallback ("local managed profiles fall
-            # back to headless on Linux when both DISPLAY and WAYLAND_DISPLAY
-            # are unset"). That happens to hold today — neither var is set in
-            # container-stack.ts or the Dockerfile — but it makes a load-
-            # bearing property depend on the ABSENCE of env vars, and any
-            # future image that sets DISPLAY (xvfb, a GUI dep pulling one in)
-            # silently launches a headful Chrome with no X server. Upstream's
-            # recipe sets it explicitly; so do we.
-            "headless": True,
+            # headless: upstream's default is FALSE, and this key is set
+            # explicitly rather than left to the implicit fallback ("local
+            # managed profiles fall back to headless on Linux when both DISPLAY
+            # and WAYLAND_DISPLAY are unset"). Leaving it implicit would make a
+            # load-bearing property depend on the ABSENCE of an env var.
+            #
+            # That absence is no longer true anywhere: every container now runs
+            # headful on the Xvfb display so the browser can be watched and
+            # driven from the workspace panel.
+            #
+            # BOTH HALVES ARE REQUIRED, and neither is sufficient alone —
+            # upstream's resolveManagedBrowserHeadlessMode (extensions/browser/
+            # src/browser/config.ts) evaluates its linux-no-DISPLAY branch
+            # BEFORE this configured value:
+            #   - headless False with no DISPLAY  -> forced back to headless
+            #   - DISPLAY set with headless True  -> stays headless, Xvfb idles
+            # The matching DISPLAY lives on the task definition in
+            # container-stack.ts.
+            #
+            # Note this only reaches a container when openclaw.json is
+            # (re)written — a provision or a config patch. Existing containers
+            # keep headless until then, which is also the rollback: revert this
+            # to True and the next config write puts them back.
+            "headless": False,
             # executablePath: upstream's recipe pins the binary rather than
             # relying on auto-detection. Ours resolves through
             # findChromeExecutableLinux()'s candidate list, where

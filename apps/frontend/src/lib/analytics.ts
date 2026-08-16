@@ -90,6 +90,7 @@ export type AnalyticsEvent =
   // Container / control panel
   | "control_panel_opened"
   | "file_browser_opened"
+  | "browser_view_opened"
   | "teams_degraded_notice_shown"
   | "update_applied"
   | "update_scheduled"

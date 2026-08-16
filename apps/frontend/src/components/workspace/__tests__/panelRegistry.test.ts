@@ -131,7 +131,23 @@ describe("panelRegistry", () => {
 
   it("registers exactly the component keys the shell's components map will have", () => {
     expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["chat", "control", "file-viewer", "missing", "teams"].sort(),
+      ["browser", "chat", "control", "file-viewer", "missing", "teams"].sort(),
     );
+  });
+
+  it("resolves the browser panel as a parameterless singleton", () => {
+    // One container = one Xvfb display = one browser panel. A second open must
+    // resolve to the SAME panelId so dockview focuses the existing panel
+    // instead of mounting a second VNC session against the same framebuffer.
+    const desc = describePanel("browser", {});
+    expect(desc).toEqual({
+      panelId: "browser",
+      component: "browser",
+      title: "Browser",
+      params: {},
+    });
+    // Params the URL happens to carry must not leak into the descriptor —
+    // they'd change the persisted layout blob for no behavioral reason.
+    expect(describePanel("browser", { agent: "agent_x" })).toEqual(desc);
   });
 });

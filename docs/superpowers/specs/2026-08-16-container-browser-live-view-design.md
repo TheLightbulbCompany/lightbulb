@@ -66,6 +66,10 @@ an assumption and is marked as such in §7.
 | E17 | The base image is `node:24-bookworm-slim`; our extended image is built on it and already has apt layers | fork `Dockerfile:192`; `apps/infra/openclaw/Dockerfile:84, 22, 101` |
 | E18 | Xvfb is **not** guaranteed present in the base — it sits behind the fork's `OPENCLAW_INSTALL_BROWSER` build arg, and our extended image installs its own Chromium instead | fork `Dockerfile:283-297`; `apps/infra/openclaw/Dockerfile:226, 257-261` |
 | E19 | Workspace panels are a fixed registry of four | `apps/frontend/src/components/workspace/panelComponents.ts` — `chat`, `teams`, `control`, `file-viewer` |
+| E20 | **Step 0 passed.** Chromium launches cleanly in a live prod container and CDP answers | measured 2026-08-16 via `ecs execute-command` on prod task `0459161c`: `/json/version` → `Chrome/149.0.7827.55`, `webSocketDebuggerUrl` present |
+| E21 | `.config` is `node:node` (uid 1000) on a live prod container — the reported permission blocker is gone | same session: `drwxr-xr-x. 2 node node … /home/node/.openclaw/.config` |
+| E22 | Per-user containers idle at ~4-6% CPU but **peak at 45-89% of the single vCPU hourly**, on both a user and an org container | CloudWatch `AWS/ECS` `CPUUtilization`, 1h periods, 2026-08-15→16, services `openclaw-user_3Ht8A88…` and `openclaw-org_3H3viGAf…` |
+| E23 | Memory is not the constraint: ~14% average, 24% peak of 4 GB (≈560 MB / ≈950 MB) | CloudWatch `AWS/ECS` `MemoryUtilization`, same window and service |
 
 ---
 
@@ -116,11 +120,21 @@ CLI token store, and the mcporter OAuth vault at once.
 
 ## 4. Design
 
-### 4.0 Step 0 — prove Chromium launches at all (gate, not code)
+### 4.0 Step 0 — prove Chromium launches at all — ✅ PASSED 2026-08-16
 
 **Nothing in this spec is worth building if the container's Chromium does not
-start.** This step ships no code. It is an empirical check on a live container,
-and it gates everything after it.
+start.** This step ships no code. It was an empirical check on a live container,
+and it gated everything after it.
+
+**Result: passed** (E20, E21). On prod task `0459161c`, `.config` is
+`node:node` and Chromium launched clean on the first attempt, with CDP
+answering `Chrome/149.0.7827.55`. The reported launch blocker is not present on
+current containers. The test process was killed afterward.
+
+This does **not** retroactively prove the crashpad diagnosis in §7.1 was the
+correct root cause — only that whatever the cause was, the symptom is gone on
+containers provisioned under the current code. That distinction still matters if
+it ever regresses. Original procedure retained below for that case.
 
 ```
 aws ecs execute-command --cluster <cluster> --task <task> --container openclaw --interactive \
@@ -161,16 +175,28 @@ Insert **before** the terminal `exec` line (E10 — nothing may follow it):
 /usr/local/bin/isol8-display-boot.sh || exit 1
 ```
 
-The script starts three background processes and returns:
+**The three processes split across two lifetimes**, and the measured CPU
+numbers (E22) are why — see §7.2. Only the display starts at boot:
 
-| process | bind | why |
-|---|---|---|
-| `Xvfb :1 -screen 0 1280x800x24 -ac -nolisten tcp` | no TCP | the virtual display |
-| `x11vnc -display :1 -rfbport 5900 -shared -forever -rfbauth <pwfile> -localhost` | loopback only | `-localhost` means only websockify can reach it |
-| `websockify --web /usr/share/novnc/ 0.0.0.0:6080 localhost:5900` | container IP | the only port the backend talks to; bind pinned explicitly rather than relying on the default |
+| process | when | bind | why |
+|---|---|---|---|
+| `Xvfb :1 -screen 0 1280x800x24 -ac -nolisten tcp` | **boot** | no TCP | Chrome must have a display to attach to *at launch*; an X server that nobody is drawing on costs almost nothing idle |
+| `x11vnc -display :1 -rfbport 5900 -shared -forever -rfbauth <pwfile> -localhost` | **on demand** | loopback only | polls the framebuffer for damage — the expensive one; `-localhost` means only websockify can reach it |
+| `websockify --web /usr/share/novnc/ 0.0.0.0:6080 localhost:5900` | **on demand** | container IP | the only port the backend talks to; bind pinned explicitly rather than relying on the default |
 
-These are backgrounded, so they survive the shell being replaced by the
-subsequent `exec` — they are separate processes, not shell jobs.
+Xvfb is backgrounded from the boot script, so it survives the shell being
+replaced by the subsequent `exec` — it is a separate process, not a shell job.
+
+x11vnc and websockify are started when the owner **opens the panel** and stopped
+when they close it (or on an idle timeout). Steady-state cost of the feature is
+then zero for the overwhelming majority of containers, which nobody is watching
+at any given moment. Start/stop is driven over the existing gateway RPC — the
+backend already holds `operator.admin` on every pooled connection (E16), so this
+needs no new control channel.
+
+This is a deliberate asymmetry, not an oversight: the display must be eager
+because Chrome's headless-vs-headful decision is made once at launch, while the
+capture stack can be lazy because nothing depends on it until a human looks.
 
 The VNC password is generated per boot and never leaves the container. It is a
 defence-in-depth layer behind the real fence (§6), not the fence itself.
@@ -280,30 +306,66 @@ during provisioning at `ecs_manager.py:3596`.
 - `ensure_xdg_dirs` runs at provision time, so any container provisioned before
   it shipped has never had the fix applied regardless of whether it is correct.
 
-Handling: §4.0 makes this an **empirical gate**, not an assumption. We verify
-Chromium launches on a live container before building anything on top of it. If
-it still fails, the fallback is to point Chrome's XDG at container-local
-storage — note that this is *narrower* than upstream's `HOME=/tmp` move, which
+Handling: §4.0 made this an **empirical gate**, not an assumption — and the gate
+**passed** (E20, E21). `.config` is `node:node` on a live prod container and
+Chromium launches clean. So the design proceeds on measured fact rather than on
+the diagnosis being right, which was the entire point of gating it.
+
+The diagnosis itself remains unproven and should stay written that way: a
+correct prediction is not a proof of mechanism, and the fix and the observation
+are separated by a fleet-wide reprovision that could have changed other things.
+If the symptom ever returns, re-run §4.0 rather than trusting this section.
+
+If it does fail in future, the fallback is to point Chrome's XDG at
+container-local storage — note that this is *narrower* than upstream's `HOME=/tmp` move, which
 we cannot do (§3), and it must be scoped to the browser without disturbing gog's
 keyring, which genuinely needs EFS (`container-stack.ts` env comment).
 
 Do **not** re-add `--disable-breakpad` / `--crash-dumps-dir`; those were tested
 in-container and produced a byte-identical failure (`config.py:1954-1966`).
 
-### 7.2 Resource cost — an open decision for the founder
+### 7.2 Resource cost — measured, and it splits cleanly
 
-Xvfb + **headful** Chromium + x11vnc + websockify, on a 1 vCPU / 4 GB box (E13),
-sharing with the gateway. Headful Chrome is materially heavier than the headless
-process running there today.
+Measured on two live prod containers (a personal one and an org one) over
+2026-08-15→16:
 
-Upstream's own entrypoint sets `--renderer-process-limit=2`, `--disable-gpu`,
-`--disable-software-rasterizer` and `--disable-dev-shm-usage` precisely because
-this is tight; we should carry those across. Our config already caps tabs
-aggressively (`config.py:1920` — 4 tabs, 30-minute idle) for the same reason.
+- **Memory is a non-issue.** ~14% average, 24% peak of 4 GB — roughly 560 MB
+  used against 3+ GB free (E23). Headful Chrome, Xvfb, x11vnc and websockify
+  together add on the order of 400-700 MB. Comfortable.
+- **CPU is the real constraint.** Containers idle at ~4-6% of their single vCPU
+  but **peak at 45-89% hourly, already, today** (E22) — on both containers, with
+  no display stack running at all. One org container averaged 24% for a full
+  hour with an 89% peak.
 
-If 1 vCPU proves insufficient, the bump to 2 vCPU is **a pricing decision, not a
-config one** — container size is the billing plan. This spec does not decide it.
-Measure during Step 0 and §8.
+So the headroom at peak is thin before we add anything, and the cost profile of
+the three processes is very uneven: an idle Xvfb is nearly free, while x11vnc
+polls the framebuffer for damage and is the genuine CPU consumer, proportional
+to how much the screen is changing.
+
+**That asymmetry is what §4.2's split buys.** Running the capture stack only
+while a human has the panel open confines the expensive part to exactly the
+window where someone is watching — and during which the agent is typically
+*waiting on that human* rather than competing for CPU. Steady state for every
+unwatched container is unchanged from today.
+
+Carry across upstream's cost flags regardless: `--renderer-process-limit=2`,
+`--disable-gpu`, `--disable-software-rasterizer`, `--disable-dev-shm-usage`.
+Our config already caps tabs aggressively (`config.py:1920` — 4 tabs, 30-minute
+idle) for the same reason.
+
+**Why this is not merely a performance concern.** CPU starvation on this
+container class has a documented failure mode: it surfaces as SQLite
+`database is locked` errors, not as slowness, and it previously forced
+`cpuCoreRatio` down from 0.9 to 0.12. A live view that saturates the vCPU would
+therefore not degrade gracefully — it would look like data-layer corruption.
+That is the argument for on-demand over always-on, and for watching this metric
+in dev before prod.
+
+**Remaining open decision:** whether a *watched* container still fits in 1 vCPU.
+The split makes this plausible but does not prove it. Measure during §8 with a
+real browsing session under live view. If it does not fit, the bump to 2 vCPU is
+**a pricing decision, not a config one** — container size is the billing plan.
+This spec does not decide that.
 
 ### 7.3 The display stack is unsupervised — known ceiling
 
@@ -353,7 +415,7 @@ after.
 
 ## 9. Sequencing
 
-1. Step 0 gate (§4.0) — no code.
+1. ~~Step 0 gate (§4.0)~~ — **done 2026-08-16, passed.**
 2. Image + display boot script (§4.1, §4.2), behind no flag; harmless while
    `headless` is still `true`, since nothing connects to the display.
 3. Config flip + the `config.py` comment rewrite (§4.3), with the rollback lever

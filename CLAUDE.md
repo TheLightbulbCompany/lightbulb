@@ -475,11 +475,12 @@ The provision gate (`core/services/provision_gate.py`) blocks chat when subscrip
 
 - `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
 - `openclaw.json.lock` starts as the backend's legacy persistent `fcntl`
-  sidecar. A subsequent boot-recovery rollout takes the persistent
-  `.isol8-guard`, publishes a resumable `.isol8-protocol` transition, removes
-  the legacy inode, and then backend hot patches use OpenClaw's ephemeral
-  `O_EXCL` protocol. Never unlink the sidecar outside that one-time guarded
-  transition.
+  sidecar. Boot recovery takes the persistent `.isol8-guard`, publishes a
+  resumable `.isol8-protocol` transition, removes the legacy inode, and then
+  backend hot patches use OpenClaw's ephemeral `O_EXCL` protocol. Never unlink
+  the sidecar outside boot recovery while holding that guard. After the
+  transition, boot recovery also removes an ephemeral sidecar abandoned by a
+  crashed backend or the stopped prior OpenClaw task.
 - Backend-only EFS files use `fcntl.lockf()` (not `flock()` -- incompatible
   with NFS).
 - `chown` to UID 1000 after write (OpenClaw runs as node)

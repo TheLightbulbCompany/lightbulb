@@ -285,6 +285,12 @@ class TestContainerForceApplyImageUpdate:
 
     _CREATED = {"owner_id": "u_target", "update_id": "upd_123", "status": "pending"}
 
+    def test_config_lock_refresh_is_a_conflicting_task_definition_roll(self):
+        from core.services.update_service import TASK_DEFINITION_REFRESH_CHANGE
+        from routers.admin import _rolls_task_def
+
+        assert _rolls_task_def({TASK_DEFINITION_REFRESH_CHANGE: True}) is True
+
     @pytest.mark.asyncio
     async def test_happy_path(self, async_client, admin_env):
         with (

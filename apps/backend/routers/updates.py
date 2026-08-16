@@ -15,9 +15,15 @@ from core.auth import (
     resolve_owner_id,
 )
 from core.observability.metrics import put_metric
-from core.repositories import update_repo
+from core.repositories import container_repo, update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
-from core.services.update_service import apply_update, queue_fleet_image_update
+from core.services.update_service import (
+    TASK_DEFINITION_REFRESH_KIND,
+    apply_update,
+    queue_fleet_image_update,
+    queue_fleet_task_definition_refresh,
+    queue_task_definition_refresh_for_owner,
+)
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -40,7 +46,10 @@ class ApplyRequest(BaseModel):
 
 class AdminUpdateRequest(BaseModel):
     owner_id: str = Field(..., description="Owner ID or 'all' for fleet-wide")
-    update_type: str = Field(..., description="Type of update (e.g. 'image_update', 'container_resize')")
+    update_type: str = Field(
+        ...,
+        description="Type of update (e.g. 'image_update', 'container_resize', 'task_definition_refresh')",
+    )
     description: str = Field(..., description="Human-readable description")
     changes: dict = Field(default_factory=dict, description="Change payload")
     force_by: Optional[str] = Field(default=None, description="ISO timestamp deadline")
@@ -110,7 +119,7 @@ async def apply_or_schedule_update(
     "/updates",
     summary="Admin: create updates",
     description=(
-        "Create a pending update for a specific owner or all owners (fleet-wide image update). "
+        "Create an update for a specific owner, or a fleet image/base-task-definition rollout. "
         "Platform-admin only: targets arbitrary owner_ids (incl. 'all'), so leaving it open to any "
         "signed-in user would let a non-admin queue updates for anyone else's container. The earlier "
         "is_org_context-only guard was effectively unauthenticated in personal context."
@@ -126,6 +135,22 @@ async def admin_create_update(
             raise HTTPException(status_code=400, detail="changes.new_image is required for fleet image updates")
         count = await queue_fleet_image_update(new_image, body.description)
         return {"status": "queued", "count": count}
+
+    if body.owner_id == "all" and body.update_type == TASK_DEFINITION_REFRESH_KIND:
+        queued, skipped = await queue_fleet_task_definition_refresh(body.description)
+        return {"status": "scheduled", "queued": queued, "skipped": skipped}
+
+    if body.update_type == TASK_DEFINITION_REFRESH_KIND:
+        # Single-owner refresh: same eligibility/conflict rules and change
+        # marker as the fleet path — a bare create here would queue a row the
+        # apply path treats as a no-op.
+        row = await container_repo.get_by_owner_id(body.owner_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="No container for owner")
+        item = await queue_task_definition_refresh_for_owner(row, description=body.description)
+        if item is None:
+            return {"status": "skipped", "reason": "container ineligible or task-definition change already in flight"}
+        return {"status": "created", "update": item}
 
     # Single owner update
     item = await update_repo.create(

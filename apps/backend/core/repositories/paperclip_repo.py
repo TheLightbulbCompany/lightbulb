@@ -1518,7 +1518,7 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
 
-    async def mark_bootstrap_sent(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
+    async def mark_bootstrap_sent(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> bool:
         """Conditional ``bootstrap_state: dispatched -> sent`` (+
         ``bootstrap_sent_at``), written the instant the chat.send RPC returns
         its ack. Fenced exactly like ``mark_bootstrap_delivered``.
@@ -1531,7 +1531,13 @@ class PaperclipRepo:
 
         Guard-fail is swallowed for the same reason as the marks below -- and
         one more: the send ALREADY happened, so a bookkeeping loss must never
-        surface as a dispatch failure.
+        surface as a dispatch failure. It is REPORTED, though: returns whether
+        the transition landed, because "the row moved on under this claim"
+        (a stale-claim recovery already settled it ``failed``, an admin reset,
+        a superseded generation) and "delivery is now recorded" are opposite
+        situations, and only the caller can decide what the first one means.
+        Swallowing them into one silent ``None`` is what let an acked kickoff
+        sit in ``failed`` with nobody warned.
         """
         table = self._table()
         try:
@@ -1550,8 +1556,9 @@ class PaperclipRepo:
                     ":dispatched": "dispatched",
                 },
             )
+            return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
+            return False
 
     async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
         """Conditional ``bootstrap_state: dispatched|sent -> delivered``, fenced
@@ -1781,7 +1788,12 @@ class PaperclipRepo:
                 Key={"user_id": user_id},
                 UpdateExpression=(
                     "SET bootstrap_state = :ns, bootstrap_attempts = :zero, updated_at = :u "
-                    "REMOVE bootstrap_dispatch_id"
+                    # The retired attempt's per-attempt stamps go with it. The
+                    # next claim would clear them anyway, but between the reset
+                    # and that claim an operator reading the admin page would
+                    # see "send attempted at ..." on a not_started row and draw
+                    # the wrong conclusion about what is in flight.
+                    "REMOVE bootstrap_dispatch_id, bootstrap_send_attempted_at, bootstrap_sent_at"
                 ),
                 ConditionExpression=(
                     f"onboarding_generation = :gen AND funnel_state = :submitted AND {state_condition}"

@@ -54,7 +54,9 @@ def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1
         return_value=(claim_result, dispatch_id if claim_result is BootstrapClaimResult.WON else None)
     )
     repo.mark_bootstrap_send_attempted = AsyncMock(return_value=True)
-    repo.mark_bootstrap_sent = AsyncMock()
+    # Both stamps report whether their CAS landed — "no exception" is not the
+    # same as "recorded", and the dispatcher acts on the difference.
+    repo.mark_bootstrap_sent = AsyncMock(return_value=True)
     repo.mark_bootstrap_delivered = AsyncMock()
     repo.mark_bootstrap_failed = AsyncMock()
     repo.rearm_bootstrap_dispatch = AsyncMock()
@@ -462,12 +464,35 @@ async def test_sent_stamp_is_retried_through_a_transient_write_failure(monkeypat
     monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0, 0))
     onboarding = _onboarding()
     repo = _fake_repo(onboarding=onboarding)
-    repo.mark_bootstrap_sent = AsyncMock(side_effect=[RuntimeError("throttled"), RuntimeError("throttled"), None])
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=[RuntimeError("throttled"), RuntimeError("throttled"), True])
     _, _, pool, _ = await _run(onboarding, repo=repo)
 
     assert repo.mark_bootstrap_sent.await_count == 3  # landed on the third try
     repo.delete_pending_brief.assert_awaited_once_with("user_owner")
     repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_sent_stamp_is_reported_not_read_as_recorded(monkeypatch):
+    """A CAS that comes back REFUSED (the row moved on under this claim — a
+    stale-claim recovery already settled it, an admin reset) is not an
+    exception, but the delivery is just as unrecorded. Reading the swallowed
+    guard-fail as success is what left an acked kickoff sitting in `failed`
+    with nobody warned. Retrying is pointless — a CAS that failed on state
+    cannot succeed on a second try — so it reports immediately instead."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0))
+    metrics: list[str] = []
+    monkeypatch.setattr(bootstrap_dispatcher, "put_metric", lambda name, **kw: metrics.append(name))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(return_value=False)
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    assert repo.mark_bootstrap_sent.await_count == 1  # refused, not retried
+    assert metrics == ["bootstrap.ack_unrecorded"]
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
 
 
 @pytest.mark.asyncio

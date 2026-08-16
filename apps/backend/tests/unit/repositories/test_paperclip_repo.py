@@ -1147,11 +1147,26 @@ async def test_send_attempted_then_sent_walks_the_ladder(repo):
     assert attempted.bootstrap_send_attempted_at is not None
     assert attempted.bootstrap_sent_at is None
 
-    await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    assert await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
     sent = await repo.get("u1")
     assert sent.bootstrap_state == "sent"
     assert sent.bootstrap_sent_at is not None
     assert sent.funnel_state == "submitted"  # completion, not delivery, completes the funnel
+
+
+async def test_sent_returns_false_when_the_row_moved_on_under_the_claim(repo):
+    """The ack landed but the row was already settled by a stale-claim
+    recovery. The caller must be able to TELL — reading the swallowed
+    guard-fail as success is what let a delivered kickoff sit in `failed`
+    with no warning and an admin reset waiting to double-deliver."""
+    dispatch_id = await _claimed(repo)
+    await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    await repo.mark_bootstrap_failed(
+        "u1", onboarding_generation="01G", dispatch_id=dispatch_id, reason="assumed dead", only_if_unacked=True
+    )
+
+    assert not await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    assert (await repo.get("u1")).bootstrap_state == "failed"  # not silently re-opened
 
 
 async def test_send_attempted_returns_false_when_the_claim_moved_on(repo):
@@ -1252,6 +1267,11 @@ async def test_a_new_claim_clears_the_previous_attempts_stamps(repo):
     dispatch_id = await _claimed(repo)
     await repo.mark_bootstrap_send_attempted("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
     assert await repo.reset_bootstrap_for_retry("u1", onboarding_generation="01G", expected_dispatch_id=dispatch_id)
+    # Cleared by the reset itself, not merely by the next claim: between the two
+    # an operator reading "send attempted at ..." on a not_started row would
+    # misread what is in flight.
+    assert (await repo.get("u1")).bootstrap_send_attempted_at is None
+
     _, second_id = await repo.claim_bootstrap_dispatch("u1", onboarding_generation="01G")
     reclaimed = await repo.get("u1")
     assert second_id != dispatch_id

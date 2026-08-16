@@ -438,14 +438,24 @@ async def _stamp_sent_with_retry(repo, row_user_id: str, *, owner_id: str, gener
     """Advance the row to ``sent``, retrying transient write failures.
 
     Same ladder-then-final-attempt shape as ``_ensure_connection_with_retry``.
-    Returns whether the stamp landed. A guard-fail (the row moved on) is NOT a
-    failure here -- ``mark_bootstrap_sent`` swallows it, which is correct: the
-    row has an owner other than us and there is nothing to retry.
+    Returns whether the stamp actually LANDED — which is not the same as "no
+    exception". The two ways to miss are handled differently:
+
+    * **The write failed** (throttle, timeout, transport) — retryable, so it
+      rides the ladder.
+    * **The write was REFUSED by its own guard** (``mark_bootstrap_sent``
+      returns False: the row moved on under this claim — a stale-claim
+      recovery already settled it ``failed``, an admin reset, a superseded
+      generation). A CAS that failed on STATE cannot be fixed by trying it
+      again, so this returns immediately — but it returns *False*, because the
+      delivery is just as unrecorded as an outright failure and the caller's
+      loud "unrecorded delivery" path is exactly what that row needs.
     """
     for attempt, delay_s in enumerate(_ACK_STAMP_RETRY_DELAYS_S, start=1):
         try:
-            await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
-            return True
+            return bool(
+                await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
+            )
         except Exception as e:  # noqa: BLE001 — retryable until the ladder is spent
             logger.warning(
                 "bootstrap_dispatcher: sent stamp failed for %s (attempt %d/%d, retrying in %.1fs): %s",
@@ -457,8 +467,9 @@ async def _stamp_sent_with_retry(repo, row_user_id: str, *, owner_id: str, gener
             )
             await asyncio.sleep(delay_s)
     try:
-        await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
-        return True
+        return bool(
+            await repo.mark_bootstrap_sent(row_user_id, onboarding_generation=generation, dispatch_id=dispatch_id)
+        )
     except Exception:  # noqa: BLE001 — the caller decides what an unrecorded delivery means
         logger.exception("bootstrap_dispatcher: sent stamp exhausted its retries for %s", owner_id)
         return False
@@ -479,9 +490,11 @@ async def _settle_ack(repo, row_user_id: str, *, owner_id: str, generation: str,
     admin-retryable into a DOUBLE delivery. A DDB blip must not be able to
     cost that.
 
-    If the ladder is exhausted anyway, the delivery is UNRECORDED and there is
-    no second durable place to put it (the table that would hold it is the one
-    that just failed), so this ends in a loud ERROR plus the
+    If the stamp does not land — the ladder is exhausted, or the write is
+    REFUSED because the row moved on under this claim (a stale-claim recovery
+    settled it, an admin reset) — the delivery is UNRECORDED, and there is no
+    second durable place to put it (the table that would hold it is the one
+    that just failed or disowned us), so this ends in a loud ERROR plus the
     ``bootstrap.ack_unrecorded`` metric — the signal an operator needs BEFORE
     pressing reset. Two things still catch that case in practice: the
     run-completion observer resolves the row on ``chat.final``
@@ -495,9 +508,10 @@ async def _settle_ack(repo, row_user_id: str, *, owner_id: str, generation: str,
         put_metric("bootstrap.ack_unrecorded")
         logger.error(
             "bootstrap_dispatcher: UNRECORDED DELIVERY for %s dispatch_id=%s — the kickoff WAS acked by "
-            "OpenClaw but bootstrap_state could not be advanced to 'sent'. If the run does not complete, "
-            "staleness recovery will read this row as an unacked send and settle it 'failed'; an admin "
-            "reset would DOUBLE-DELIVER Friday's kickoff.",
+            "OpenClaw but bootstrap_state could not be advanced to 'sent' (write failed, or refused "
+            "because the row moved on under this claim). The row therefore reads as an unacked send: "
+            "staleness recovery will settle it 'failed', and an admin reset would DOUBLE-DELIVER "
+            "Friday's kickoff. Do not reset this row.",
             owner_id,
             dispatch_id,
         )

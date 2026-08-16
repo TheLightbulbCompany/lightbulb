@@ -100,14 +100,14 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     expect(screen.queryByText(/Current period spend/i)).not.toBeInTheDocument();
   });
 
-  it("org status chip renders the shared statusChipLabel (planLabel), not a bespoke raw-enum read", () => {
+  it("org status chip renders the humanized planLabel, not the raw enum", () => {
     // Regression guard for the org-context status chip: it used to render
-    // `{subscriptionStatus}` directly. That's identical output to
-    // `statusChipLabel` for non-trial_local statuses like "past_due" (planLabel
-    // passes them through unchanged), so this doesn't flip the DOM text —
-    // it pins the chip to the same shared variable + guard the personal card
-    // uses (:504-507), so the two can't drift if planLabel ever grows a new
-    // mapping (the trial_local case orgs structurally can't hit today).
+    // `{subscriptionStatus}` directly under `textTransform: capitalize`,
+    // which can't fix an underscore — "past_due" rendered "Past_due" (only
+    // the first character capitalizes; there's no whitespace word boundary).
+    // Routing through the shared `statusChipLabel`/`planLabel` — the same
+    // source the personal card uses (:504-507) — humanizes the underscore
+    // away so the chip reads "Past due".
     billing.isSubscribed = true;
     billing.account = {
       is_subscribed: true,
@@ -125,7 +125,8 @@ describe("BillingPanel — org context seat-vs-flat branch", () => {
     render(<SettingsPage />);
 
     expect(screen.getByText("Isol8 plan")).toBeInTheDocument();
-    expect(screen.getByText("past_due")).toBeInTheDocument();
+    expect(screen.getByText("Past due")).toBeInTheDocument();
+    expect(screen.queryByText("past_due")).not.toBeInTheDocument();
   });
 
   it("real seat-sub org (is_seat_subscription: true, subscribed) renders TeamBillingCard", () => {

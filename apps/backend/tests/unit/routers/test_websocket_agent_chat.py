@@ -370,7 +370,9 @@ class TestProcessAgentChatBackground:
         assert sent_msg["message"] == "Waking your agent — this takes about a minute."
         assert sent_msg["agent_id"] == "luna"
         # Distinct reason so dashboards separate "asleep" from "never had one".
-        mock_metric.assert_any_call("chat.error", dimensions={"reason": "container_waking"})
+        # `reclassified` is on EVERY chat.error emitter — dropping it here would
+        # fork the metric identity and hide this reason from reason-keyed queries.
+        mock_metric.assert_any_call("chat.error", dimensions={"reason": "container_waking", "reclassified": "false"})
         # General-session send: no session_id key stamped (demux reads absent
         # as the null/General session).
         assert "session_id" not in sent_msg

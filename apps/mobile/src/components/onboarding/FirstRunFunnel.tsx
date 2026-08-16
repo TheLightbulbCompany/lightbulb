@@ -20,6 +20,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -38,13 +39,25 @@ import { writeFirstRun } from "../../lib/firstRun";
 type Path = "new" | "grow";
 /** "noIdea" = they tapped "I don't know yet — you pick": submit with no input. */
 type Mode = "idea" | "noIdea";
-// DEPLOY-SKEW SHIM — see the web funnel for the full reasoning. The endpoint
-// is durable intake, so there is nothing to wait out; but a build shipped
-// before the backend rollout still meets an OLD backend that 409s "not_ready"
-// (or 202s with no recognised status) for the first ~30s of a signup. DELETE
-// once the durable-intake backend is deployed everywhere.
-const SKEW_RETRY_MS = 3000;
-const SKEW_RETRIES = 2;
+
+// After this many CONSECUTIVE failed submits carrying the same upstream
+// error, the generic "Couldn't save that just yet. Retry" line — which
+// implies a transient problem — gives way to a persistent error state that
+// shows the upstream detail and points at support. A different error (or a
+// success) resets the streak. Mirrors the web funnel's FirstRunSteps.
+const PERSISTENT_FAILURE_THRESHOLD = 3;
+
+/** Best-effort upstream detail for a failed submit: FastAPI's body.detail,
+ * else the error message, else the HTTP status. Mirrors the web funnel's. */
+function extractErrorDetail(err: unknown): string {
+  if (err instanceof ApiError) {
+    const detail = (err.body as { detail?: unknown } | null)?.detail;
+    if (typeof detail === "string" && detail.length > 0) return detail;
+    return err.message || `HTTP ${err.status}`;
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return "Unknown error";
+}
 
 export function FirstRunFunnel() {
   const insets = useSafeAreaInsets();
@@ -63,6 +76,18 @@ export function FirstRunFunnel() {
   const [state, setState] = useState<"idle" | "submitting" | "error">("idle");
   // Which submission the user made, so Retry replays the same one.
   const [mode, setMode] = useState<Mode>("idea");
+  // Consecutive-failure tracking for the persistent-error switch. One
+  // completed submit() that lands in state "error" == one failure; the
+  // streak only grows while the upstream detail stays the same.
+  const [failure, setFailure] = useState<{ detail: string; streak: number } | null>(null);
+
+  const recordFailure = useCallback((errorDetail: string) => {
+    setFailure((prev) =>
+      prev && prev.detail === errorDetail
+        ? { detail: errorDetail, streak: prev.streak + 1 }
+        : { detail: errorDetail, streak: 1 },
+    );
+  }, []);
 
   const submit = useCallback(
     async (submitMode: Mode) => {
@@ -72,35 +97,26 @@ export function FirstRunFunnel() {
       if (!noIdea && input.trim().length < 3) return;
       setState("submitting");
       try {
-        for (let attempt = 0; ; attempt++) {
-          let resp: unknown;
-          try {
-            // No input at all on the "you pick" button: the absent idea IS the
-            // signal, and BRIEF.md tells Friday to choose one.
-            resp = await api.post("/onboarding/brief", {
-              path,
-              input: noIdea ? undefined : input.trim(),
-              detail:
-                !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
-            });
-          } catch (err) {
-            const httpStatus = err instanceof ApiError ? err.status : undefined;
-            if (httpStatus === 409 && attempt < SKEW_RETRIES) {
-              await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
-              continue;
-            }
-            throw err;
-          }
-          const status = (resp as { status?: string } | null)?.status;
-          if (status === "staged" || status === "already_submitted") break;
-          if (attempt < SKEW_RETRIES) {
-            await new Promise((r) => setTimeout(r, SKEW_RETRY_MS));
-            continue;
-          }
+        // No input at all on the "you pick" button: the absent idea IS the
+        // signal, and BRIEF.md tells Friday to choose one.
+        const resp = await api.post("/onboarding/brief", {
+          path,
+          input: noIdea ? undefined : input.trim(),
+          detail:
+            !noIdea && path === "new" && detail.trim() ? detail.trim() : undefined,
+        });
+        const status = (resp as { status?: string } | null)?.status;
+        if (status !== "staged" && status !== "already_submitted") {
           // Never dismiss the funnel over an answer that was never saved.
+          recordFailure(
+            typeof (resp as { detail?: unknown } | null)?.detail === "string"
+              ? (resp as { detail: string }).detail
+              : `Unexpected response: ${JSON.stringify(resp) ?? "empty"}`,
+          );
           setState("error");
           return;
         }
+        setFailure(null);
         // Intake is durable server-side the moment this resolves; the seeding
         // it drives is server-owned. `briefSubmitted` is written here purely
         // as an optimistic pre-poll paint (dismisses the funnel THIS
@@ -110,11 +126,12 @@ export function FirstRunFunnel() {
           briefSubmitted: true,
           path: path ?? undefined,
         });
-      } catch {
+      } catch (err) {
+        recordFailure(extractErrorDetail(err));
         setState("error");
       }
     },
-    [api, user, path, input, detail],
+    [api, user, path, input, detail, recordFailure],
   );
 
   // The funnel replaces the whole tab shell and has no skip (committed front
@@ -249,14 +266,35 @@ export function FirstRunFunnel() {
                 </Text>
               </View>
             )}
-            {state === "error" && (
+            {state === "error" && failure && (
               <View style={styles.errorBlock}>
-                <Text style={styles.errorText}>
-                  Couldn’t save that just yet.{" "}
-                  <Text style={styles.retryLink} onPress={() => void submit(mode)}>
-                    Retry
+                {failure.streak >= PERSISTENT_FAILURE_THRESHOLD ? (
+                  // Persistent failure: the same upstream error N times in a
+                  // row is not transient — stop implying a retry will fix it.
+                  // Show the upstream detail and route to support instead.
+                  <View style={styles.escalatedBlock}>
+                    <Text style={styles.errorText}>We couldn’t save your brief.</Text>
+                    <Text style={styles.errorDetail}>{failure.detail}</Text>
+                    <Text style={styles.errorText}>
+                      Please{" "}
+                      <Text
+                        style={styles.inlineLink}
+                        accessibilityRole="link"
+                        onPress={() => void Linking.openURL("mailto:support@isol8.co")}
+                      >
+                        contact support
+                      </Text>{" "}
+                      and we’ll get it sorted.
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={styles.errorText}>
+                    Couldn’t save that just yet.{" "}
+                    <Text style={styles.inlineLink} onPress={() => void submit(mode)}>
+                      Retry
+                    </Text>
                   </Text>
-                </Text>
+                )}
                 <Pressable
                   style={({ pressed }) => [
                     styles.signOutButton,
@@ -365,13 +403,24 @@ const styles = StyleSheet.create({
   },
   inputMultiline: { minHeight: 112, textAlignVertical: "top" },
   errorBlock: { gap: spacing.sm, alignItems: "flex-start" },
+  // Tighter than errorBlock: the persistent-failure copy is one paragraph in
+  // three parts, not three separate affordances (web: space-y-1.5).
+  escalatedBlock: { gap: spacing.xs, alignItems: "flex-start" },
   errorText: {
     fontFamily: fonts.dmSans,
     fontSize: 13,
     lineHeight: 18,
     color: colors.danger,
   },
-  retryLink: { textDecorationLine: "underline", color: colors.danger },
+  // The upstream detail is diagnostic, not the message — muted and smaller so
+  // it reads as the cause rather than competing with the copy around it.
+  errorDetail: {
+    fontFamily: fonts.dmSans,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.mute,
+  },
+  inlineLink: { textDecorationLine: "underline", color: colors.danger },
   // Matches ProvisionGate's Interstitial signOut recipe; the negative left
   // margin flushes the label under the error text while keeping the padded
   // tap target.

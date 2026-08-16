@@ -161,7 +161,8 @@ RUN ln -s /usr/local/bin/notesmd-cli /usr/local/bin/obsidian-cli
 RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | sh
 
 # ---- Layer 8: Node packages ----
-# All globals install with --ignore-scripts (faster, no build deps).
+# Globals install with --ignore-scripts (faster, no build deps) EXCEPT the three
+# below that fetch a native binary in postinstall (claude-code, xurl, opencode).
 # qmd was previously installed here; removed 2026-05-02. qmd's
 # better-sqlite3 store on EFS deadlocked the gateway's V8 main thread
 # (`rpc_wait_bit_killable` — Linux NFS client retries forever).
@@ -185,9 +186,17 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
-      @anthropic-ai/claude-code @google/gemini-cli \
+      @google/gemini-cli \
       mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
+
+# Claude Code: the ACP coding harness for bedrock_claude owners (see backend
+# _build_bedrock_acp_harness_env). Its platform binary arrives via a postinstall
+# hook, so like xurl and opencode below it stays outside the --ignore-scripts
+# install above — with scripts skipped the `claude` wrapper is present but every
+# invocation dies with "claude native binary not installed", so the harness could
+# never launch. The smoke test fails the build if the binary didn't materialize.
+RUN npm i -g @anthropic-ai/claude-code && claude --version >/dev/null
 
 # xurl downloads its native Go binary in npm postinstall. Keep it outside the
 # --ignore-scripts global install above; otherwise the JS wrapper is present but

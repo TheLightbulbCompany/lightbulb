@@ -44,6 +44,10 @@ import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { describeCron } from "@/components/teams/shared/cron-readable";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
 import {
+  routineReviewerAgentId,
+  withRoutineReviewer,
+} from "@/components/teams/panels/routineExecutionPolicy";
+import {
   SIGNING_MODE_OPTIONS,
   REPLAY_WINDOW_SIGNING_MODES,
   DEFAULT_REPLAY_WINDOW_SEC,
@@ -429,6 +433,10 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
     : null;
   const assigneeName =
     routine.assignee?.name ?? assigneeAgent?.name ?? routine.assigneeAgentId ?? null;
+  const reviewerAgentId = routineReviewerAgentId(routine.executionPolicy);
+  const reviewerAgent = reviewerAgentId
+    ? agents.find((agent) => agent.id === reviewerAgentId)
+    : null;
 
   return (
     <div
@@ -791,6 +799,27 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
               </span>
             )}
           </PropertyRow>
+          <PropertyRow label="Reviewer">
+            {reviewerAgent ? (
+              <Link
+                href={agentInspectorUrl(reviewerAgent.id)}
+                prefetch={false}
+                onClick={(e) =>
+                  handleShellLinkClick(e, agentInspectorUrl(reviewerAgent.id))
+                }
+                className="hover:underline"
+                style={{ color: "var(--ink)" }}
+              >
+                {reviewerAgent.name}
+              </Link>
+            ) : reviewerAgentId ? (
+              <span style={{ color: "var(--ink)" }}>{reviewerAgentId}</span>
+            ) : (
+              <span data-empty="true" style={EMPTY_DASH_STYLE}>
+                —
+              </span>
+            )}
+          </PropertyRow>
           <PropertyRow label="Created">
             {routine.createdAt ? (
               <time dateTime={routine.createdAt} style={{ color: "var(--mute)" }}>
@@ -941,6 +970,7 @@ interface RoutineEditBody {
   priority?: string;
   status?: string;
   variables?: RoutineVariable[];
+  execution_policy?: RoutineDetail["executionPolicy"];
 }
 
 // A local, editable copy of a routine variable — every field is a string in the
@@ -1033,6 +1063,10 @@ function EditRoutineDialog({
   const [assigneeAgentId, setAssigneeAgentId] = useState<string | null>(
     routine.assigneeAgentId ?? null,
   );
+  const [loadedExecutionPolicy] = useState(() => routine.executionPolicy ?? null);
+  const [reviewerAgentId, setReviewerAgentId] = useState<string | null>(() =>
+    routineReviewerAgentId(loadedExecutionPolicy),
+  );
   const [priority, setPriority] = useState<string>(routine.priority ?? "medium");
   const [status, setStatus] = useState<string>(routine.status ?? "active");
   const [vars, setVars] = useState<VarDraft[]>(() =>
@@ -1064,6 +1098,16 @@ function EditRoutineDialog({
 
   const namedVars = vars.filter((v) => v.name.trim() !== "");
   const canSave = title.trim() !== "";
+  const reviewerAgents = agents.filter(
+    (agent) =>
+      agent.id === reviewerAgentId ||
+      (agent.id !== assigneeAgentId && agent.status !== "terminated"),
+  );
+
+  function selectAssignee(nextAgentId: string | null) {
+    setAssigneeAgentId(nextAgentId);
+    if (nextAgentId === reviewerAgentId) setReviewerAgentId(null);
+  }
 
   // Send only fields the user actually changed. The backend gates any body that
   // (re-)asserts status:"active" as a fireability-increasing edit, so a benign
@@ -1087,6 +1131,12 @@ function EditRoutineDialog({
     if (status !== (routine.status ?? "active")) body.status = status;
     const nextVars = namedVars.map(fromDraft);
     if (!variablesEqual(nextVars, loadedVarsSnapshot)) body.variables = nextVars;
+    if (reviewerAgentId !== routineReviewerAgentId(loadedExecutionPolicy)) {
+      body.execution_policy = withRoutineReviewer(
+        loadedExecutionPolicy,
+        reviewerAgentId,
+      );
+    }
     await onSave(body);
   }
 
@@ -1127,8 +1177,21 @@ function EditRoutineDialog({
             <AssigneePicker
               agents={agents}
               selectedAgentId={assigneeAgentId}
-              onChange={setAssigneeAgentId}
+              onChange={selectAssignee}
               variant="inline"
+              className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+            />
+          </div>
+        </div>
+        <div className="block">
+          <span className="text-sm text-[var(--ink-soft)]">Reviewer</span>
+          <div className="mt-1">
+            <AssigneePicker
+              agents={reviewerAgents}
+              selectedAgentId={reviewerAgentId}
+              onChange={setReviewerAgentId}
+              variant="inline"
+              noun="reviewer"
               className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
             />
           </div>

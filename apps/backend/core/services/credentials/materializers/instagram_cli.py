@@ -56,9 +56,13 @@ def _skill_dir(owner_id: str) -> Path:
 
 
 def _fetch_identity(token: str) -> dict:
+    # Bearer header, not ?access_token= — Graph accepts either, and a token in the
+    # query string ends up in every log of the request URL (httpx's own INFO line,
+    # any intermediary's access log). Same posture as gog_cli's profile fetch.
     resp = httpx.get(
         _GRAPH_ME_URL,
-        params={"fields": "user_id,username", "access_token": token},
+        params={"fields": "user_id,username"},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=15,
     )
     resp.raise_for_status()

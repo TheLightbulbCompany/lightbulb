@@ -747,6 +747,11 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
     # ago -- it would read funnel_state "not_started" and silently skip the
     # kickoff, which is precisely the miss the old router avoided by passing
     # this same dict. Every value here is one we just wrote or just read.
+    #
+    # Deliberately carries no bootstrap_dispatched_at/_dispatch_id: this fast
+    # path cannot expire a stale claim (the dispatcher's staleness rule refuses
+    # to act on a claim it cannot date -- fail closed), and it does not need to.
+    # The /container/status poll passes the full row and is the recovery path.
     from core.services.bootstrap_dispatcher import maybe_dispatch_bootstrap
 
     await maybe_dispatch_bootstrap(

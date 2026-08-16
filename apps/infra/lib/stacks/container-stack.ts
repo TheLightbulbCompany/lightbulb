@@ -14,6 +14,7 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
+import { openclawConfigLockRecoveryCommand } from "../openclaw-config-lock-recovery";
 
 // Single source of truth for the pinned OpenClaw container image.
 // Bump openclaw-version.json at the repo root to upgrade.
@@ -538,6 +539,18 @@ export class ContainerStack extends cdk.Stack {
     // Startup command — almost everything (apt packages, pip, npm globals,
     // gh, uv) is baked into the extended OpenClaw image. The boot sequence:
     //
+    // Step 0 (lock recovery): perform the one-time transition away from the
+    // backend's retired permanent-fcntl sidecar. The helper takes the backend's
+    // persistent recovery guard, publishes a resumable protocol marker, then
+    // fcntl-locks and identity-checks the legacy sidecar before unlinking it.
+    // Thus a backend hot patch cannot open/wait on an inode that recovery
+    // detaches from the pathname. Per-user service updates use
+    // SINGLE_WRITER_DEPLOYMENT_CONFIG (min=0/max=100), so the old OpenClaw task
+    // is fully stopped before this command runs. Later boots use the completed
+    // marker to recover a sidecar abandoned by either O_EXCL writer while the
+    // same guard still excludes every prepared backend writer. Unexpected
+    // filesystem objects and a still-held legacy fcntl lock fail closed.
+    //
     // Step A (migration): rename a legacy real `~/.openclaw/browser`
     // directory aside. This handles the first boot per per-user EFS
     // access point after this change deploys — without it, Step B's
@@ -586,6 +599,9 @@ export class ContainerStack extends cdk.Stack {
     // `real-dir/target -> ...` rather than replacing `real-dir`),
     // shipping a no-op that LOOKS deployed.
     const startupCommand = [
+      // Step 0 — recover only while holding the same guard every backend
+      // config writer takes. Python + fcntl are present in the pinned image.
+      openclawConfigLockRecoveryCommand(),
       // Step A — migration. POSIX-sh: `[ ... ]`, `&&`, `$(...)`,
       // and `{ ... ; }` are all portable to `sh -c`. The trailing
       // `; ` inside `{ ... ; }` is required by POSIX shell syntax.
@@ -667,6 +683,33 @@ export class ContainerStack extends cdk.Stack {
       // dir holding a symlink, which works but re-migrates on every task start.
       "[ -e /home/node/.xurl ] && [ ! -L /home/node/.xurl ] && { mv /home/node/.xurl /home/node/.xurl.efs-archive-$(date +%s) || exit 1; }",
       "ln -sfn /home/node/.openclaw/.xurl /home/node/.xurl || exit 1",
+      // Step C4 — virtual display backing the browser live view.
+      //
+      // Gated entirely on DISPLAY, which this task definition does NOT set
+      // yet. That is deliberate: the image can ship xvfb ahead of the headful
+      // config flip and change nothing until DISPLAY arrives, so the two
+      // deploys are independent and either can roll back alone.
+      //
+      // ONLY Xvfb starts here. x11vnc + websockify — the framebuffer-polling
+      // half that actually costs CPU — start on demand when an owner opens the
+      // live-view panel. Per-user containers already peak at 45-89% of their
+      // single vCPU with none of this running (CloudWatch, 2026-08-15/16), so
+      // the capture stack must not be a permanent tax on containers nobody is
+      // watching.
+      //
+      // Eager display + lazy capture is not an oversight, and the asymmetry
+      // cannot be removed: OpenClaw decides headless-vs-headful ONCE, at Chrome
+      // launch, from whether DISPLAY resolves — extensions/browser/src/browser/
+      // config.ts resolveManagedBrowserHeadlessMode evaluates its
+      // linux-no-DISPLAY branch BEFORE the configured browser.headless value.
+      // A display started after Chrome is useless to the Chrome already running.
+      //
+      // Fail loudly rather than at first browser use: DISPLAY set on an image
+      // without Xvfb launches a headful Chrome against no X server, and surfaces
+      // as upstream's "No DISPLAY/X server was detected" at the first browser
+      // tool call — arbitrarily long after boot and nowhere near the cause.
+      '[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ] || { echo "[boot] FATAL: DISPLAY is set but Xvfb is missing. Pin a tag built from a commit whose apps/infra/openclaw/Dockerfile installs xvfb."; exit 1; }',
+      '[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac -nolisten tcp & }',
       // Step C3/D — legacy-state migration (doctor --fix) then gateway
       // launch. BOTH are owned by the baked boot script: it restores hot
       // SQLite state from S3 (or migrates it off EFS on the first cutover

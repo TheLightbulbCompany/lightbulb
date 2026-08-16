@@ -593,7 +593,12 @@ DEPLOY_CLAIM_STALE_S = 720
 _DEPLOY_CLAIM_KEY = "__deploy__"
 
 
-async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str | None, str | None]:
+async def try_claim_owner_deploy(
+    owner_id: str,
+    *,
+    listing_id: str,
+    fail_open: bool = True,
+) -> tuple[str | None, str | None]:
     """Take an exclusive lease on "this owner has an agent install in flight".
 
     FENCED — every path that installs a marketplace/built agent WORKSPACE into
@@ -604,6 +609,11 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
     so approving three in a row is the same three-in-nine-seconds shape as the
     incident), and Atlas registering an agent it built
     (``routers/agent_builder.register_built_agent``).
+
+    ``marketplace_hire.create_hire_approval`` also takes this claim before its
+    Paperclip pre-create and approval reconciliation. It installs no workspace,
+    but must serialize with those paths so concurrent recommendations cannot
+    file duplicate approvals for one logical hire.
 
     NOT FENCED — ``company_deploy_service.run_company_deploy``, deliberately. It
     creates and pairs N agents in one background run, so its wall clock is N x a
@@ -676,19 +686,13 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
     in the condition is a ValidationException, which the fail-open below would
     have quietly turned into "no fence at all".
 
-    **Fails OPEN, and never raises.** Any fault admits the deploy (returning a
-    token that fences nothing, since no claim was stored). Losing dedupe costs a
-    duplicate agent the owner can delete; failing closed would block a
-    legitimate hire — including a paid one — on a transient fault. Same
-    reasoning as ``try_consume_daily_email_send``. The handler is deliberately
-    ``Exception``-wide, not ``ClientError``: it briefly caught only the latter,
-    which left every ``BotoCoreError`` (``EndpointConnectionError``,
-    ``ConnectTimeoutError``, credential-resolution failures — none of which
-    carry an ``Error`` code) propagating out of a call whose docstring promised
-    they could not. That stranded ``marketplace_hire.deploy_for_approval``'s
-    already-approved agent: the raise escaped BEFORE its rollback envelope, so
-    an idle agent with no workspace stayed in the roster with no route left to
-    install it.
+    **Never raises.** Workspace installs use the default ``fail_open=True``:
+    any fault admits the deploy with a token that fences nothing. The brief
+    approval-precreation critical section passes ``fail_open=False`` because a
+    duplicate Paperclip approval is durable user-visible state and the caller
+    can safely degrade to no recommendation until DynamoDB recovers. The handler
+    is deliberately ``Exception``-wide so ``BotoCoreError`` subclasses without
+    an AWS error code cannot escape either policy.
     """
     table = _get_table()
     now = int(time.time())
@@ -726,22 +730,24 @@ async def try_claim_owner_deploy(owner_id: str, *, listing_id: str) -> tuple[str
         # exactly like a transient fault, and a ValidationException here means
         # the fence is off for every deploy until someone notices.
         logger.error(
-            "try_claim_owner_deploy: DDB fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            "try_claim_owner_deploy: DDB fault (%s: %s) for owner=%s listing=%s — %s",
             e.response["Error"].get("Code"),
             e.response["Error"].get("Message"),
             owner_id,
             listing_id,
+            "admitting UNFENCED" if fail_open else "refusing while the claim is unprovable",
         )
-        return token, None  # fail open — see docstring
+        return (token, None) if fail_open else (None, None)
     except Exception as e:  # noqa: BLE001 — fail open on ANY fault; see docstring
         logger.error(
-            "try_claim_owner_deploy: fault (%s: %s) for owner=%s listing=%s — admitting the deploy UNFENCED",
+            "try_claim_owner_deploy: fault (%s: %s) for owner=%s listing=%s — %s",
             type(e).__name__,
             e,
             owner_id,
             listing_id,
+            "admitting UNFENCED" if fail_open else "refusing while the claim is unprovable",
         )
-        return token, None
+        return (token, None) if fail_open else (None, None)
 
 
 def _held_listing_id(raw_item: dict | None) -> str | None:

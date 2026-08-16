@@ -66,10 +66,9 @@ Notable deviations from the original plan template:
   - ``create_agent`` sends ``adapterType`` as a top-level field separate
     from ``adapterConfig`` — they are distinct fields per
     ``createAgentSchema``.
-  - Paperclip does not honor ``Idempotency-Key`` headers today (no
-    middleware/route handler reads it). The client still forwards the
-    header when callers provide one so that future Paperclip-side
-    support can be picked up without changes here.
+  - Agent-create idempotency uses one canonical ``Idempotency-Key`` header.
+    Cap-safe recovery adds ``Idempotency-Replay-Only: true`` without changing
+    that logical operation key.
 
 **Important: ``PAPERCLIP_AUTH_DISABLE_SIGN_UP=true``.**
 
@@ -89,6 +88,7 @@ calls ``sign_up_user``; it relies on this network-level closure.
 
 from __future__ import annotations
 
+import json as json_lib
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
@@ -145,6 +145,19 @@ def _extract_session_cookie(resp: httpx.Response) -> Optional[str]:
     return None
 
 
+def _paperclip_error_code(body: Any) -> str | None:
+    """Return a structured Paperclip error code without text matching."""
+
+    try:
+        payload = json_lib.loads(body) if isinstance(body, str) else body
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("code")
+    return code if isinstance(code, str) else None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -168,6 +181,10 @@ class PaperclipApiError(Exception):
         # Auto-classify retryability: 5xx + 429 are retryable, everything
         # else (4xx state errors) is not.
         self.retryable: bool = status_code >= 500 or status_code == 429
+
+
+class PaperclipAgentCreateReplayMiss(PaperclipApiError):
+    """Replay-only create found no prior operation for its stable key."""
 
 
 class PaperclipAdminClient:
@@ -195,6 +212,7 @@ class PaperclipAdminClient:
         self,
         session_cookie: str,
         idempotency_key: Optional[str] = None,
+        idempotency_replay_only: bool = False,
     ) -> dict[str, str]:
         """Build request headers.
 
@@ -231,6 +249,8 @@ class PaperclipAdminClient:
             headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
+        if idempotency_replay_only:
+            headers["Idempotency-Replay-Only"] = "true"
         return headers
 
     async def _send(self, send: Callable[[], Awaitable[httpx.Response]]) -> httpx.Response:
@@ -254,12 +274,17 @@ class PaperclipAdminClient:
         json: dict,
         session_cookie: str,
         idempotency_key: Optional[str] = None,
+        idempotency_replay_only: bool = False,
     ) -> dict:
         resp = await self._send(
             lambda: self._http.post(
                 path,
                 json=json,
-                headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+                headers=self._headers(
+                    session_cookie,
+                    idempotency_key=idempotency_key,
+                    idempotency_replay_only=idempotency_replay_only,
+                ),
             )
         )
         if resp.status_code >= 500:
@@ -617,6 +642,7 @@ class PaperclipAdminClient:
         reports_to: Optional[str] = None,
         budget_monthly_cents: int = 0,
         idempotency_key: Optional[str] = None,
+        idempotency_replay_only: bool = False,
     ) -> dict:
         """Create an agent (employee) inside a company.
 
@@ -642,12 +668,29 @@ class PaperclipAdminClient:
             body["reportsTo"] = reports_to
         if budget_monthly_cents:
             body["budgetMonthlyCents"] = budget_monthly_cents
-        return await self._post(
-            f"/api/companies/{company_id}/agents",
-            json=body,
-            session_cookie=session_cookie,
-            idempotency_key=idempotency_key,
-        )
+        if idempotency_replay_only:
+            if not idempotency_key:
+                raise ValueError("idempotency_replay_only requires idempotency_key")
+        try:
+            return await self._post(
+                f"/api/companies/{company_id}/agents",
+                json=body,
+                session_cookie=session_cookie,
+                idempotency_key=idempotency_key,
+                idempotency_replay_only=idempotency_replay_only,
+            )
+        except PaperclipApiError as exc:
+            if (
+                idempotency_replay_only
+                and exc.status_code == 409
+                and _paperclip_error_code(exc.body) == "agent_create_idempotency_replay_miss"
+            ):
+                raise PaperclipAgentCreateReplayMiss(
+                    str(exc),
+                    status_code=exc.status_code,
+                    body=exc.body,
+                ) from exc
+            raise
 
     async def create_agent_api_key(
         self,

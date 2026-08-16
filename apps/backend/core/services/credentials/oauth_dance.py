@@ -231,6 +231,10 @@ async def exchange(state: str, code: str, *, redirect_uri: str) -> tuple[str, st
         )
         if long_lived is not None:
             url, params = long_lived
+            # GET with the secret in the query string is what Meta documents for
+            # both grants (no POST/form-body variant is offered), so it stays a
+            # GET. The reason that no longer leaks it: configure_logging pins the
+            # httpx logger to WARNING, which drops the request-URL INFO line.
             ll = await http.get(url, params=params)
             ll.raise_for_status()
             upgraded = ll.json()

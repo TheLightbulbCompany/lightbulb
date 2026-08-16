@@ -3,7 +3,13 @@
 // Used by AssigneePicker to bubble up frequently-picked agents.
 
 export const RECENT_ASSIGNEES_KEY = "isol8.teams.recent-assignees";
+export const RECENT_REVIEWERS_KEY = "isol8.teams.recent-reviewers";
 const MAX_RECENT = 5;
+export type RecentAgentRole = "assignee" | "reviewer";
+
+function storageKey(role: RecentAgentRole): string {
+  return role === "reviewer" ? RECENT_REVIEWERS_KEY : RECENT_ASSIGNEES_KEY;
+}
 
 function isBrowser(): boolean {
   try {
@@ -28,11 +34,12 @@ function isBrowser(): boolean {
 // let it block the actual assignment PATCH.
 
 /** Returns most-recent-first, capped at 5. Empty on SSR or any storage failure. */
-export function getRecentAssignees(): string[] {
+export function getRecentAssignees(role: RecentAgentRole = "assignee"): string[] {
   if (!isBrowser()) return [];
+  const key = storageKey(role);
   let raw: string | null;
   try {
-    raw = localStorage.getItem(RECENT_ASSIGNEES_KEY);
+    raw = localStorage.getItem(key);
   } catch {
     // Storage read blocked. Best-effort: pretend empty.
     return [];
@@ -41,25 +48,26 @@ export function getRecentAssignees(): string[] {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) {
-      safeRemove();
+      safeRemove(key);
       return [];
     }
     return parsed.filter((x): x is string => typeof x === "string");
   } catch {
     // Storage corrupted (different code version, foreign tab, etc.).
-    safeRemove();
+    safeRemove(key);
     return [];
   }
 }
 
 /** Add `id` to the front, dedupe, cap at 5. No-op on SSR or any storage failure. */
-export function trackRecentAssignee(id: string): void {
+export function trackRecentAssignee(id: string, role: RecentAgentRole = "assignee"): void {
   if (!isBrowser()) return;
-  const current = getRecentAssignees().filter((x) => x !== id);
+  const key = storageKey(role);
+  const current = getRecentAssignees(role).filter((x) => x !== id);
   current.unshift(id);
   const next = current.slice(0, MAX_RECENT);
   try {
-    localStorage.setItem(RECENT_ASSIGNEES_KEY, JSON.stringify(next));
+    localStorage.setItem(key, JSON.stringify(next));
   } catch {
     // Storage write blocked — best-effort.
   }
@@ -67,9 +75,9 @@ export function trackRecentAssignee(id: string): void {
 
 /** removeItem can throw in the same scenarios as getItem/setItem; never let
  * the corruption-recovery path itself throw and block the caller. */
-function safeRemove(): void {
+function safeRemove(key: string): void {
   try {
-    localStorage.removeItem(RECENT_ASSIGNEES_KEY);
+    localStorage.removeItem(key);
   } catch {
     // Storage delete blocked — give up, return [] anyway.
   }

@@ -24,6 +24,10 @@ from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import service_token
 from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.paperclip_agent_idempotency import (
+    build_agent_create_idempotency_key,
+    paperclip_agent_intent,
+)
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_adapter_config import (
     OPENCLAW_GATEWAY_TYPE,
@@ -266,6 +270,7 @@ async def create_paperclip_for_chat(
     role: str | None,
     model: str | None,
     meta: PaperclipMeta | None = None,
+    idempotency_replay_only: bool = False,
 ) -> dict:
     """Create a Paperclip agent invoked from /chat WS RPC interception.
 
@@ -313,19 +318,24 @@ async def create_paperclip_for_chat(
             service_token=service_token.mint(owner_id),
             user_id=creator_user_id,
         )
-        # No idempotency_key: keying on (creator_user_id, name) returns a
-        # stale (potentially deleted) record if the same friendly name is
-        # reused within Paperclip's 24h dedupe window — same regression
-        # class as memory feedback_stripe_idempotency_with_stable_keys.
-        # Paperclip's create_agent treats idempotency_key as Optional, so
-        # dropping it is safe.
         fields = resolve_create_agent_fields(role=role, meta=meta)
+        idempotency_key = build_agent_create_idempotency_key(
+            operation="chat",
+            owner_id=owner_id,
+            intent=paperclip_agent_intent(
+                name=name,
+                adapter_type=OPENCLAW_GATEWAY_TYPE,
+                **fields,
+            ),
+        )
         return await admin_client.create_agent(
             company_id=company_id,
             name=name,
             adapter_type=OPENCLAW_GATEWAY_TYPE,
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
+            idempotency_key=idempotency_key,
+            idempotency_replay_only=idempotency_replay_only,
             **fields,
         )
     finally:
@@ -386,6 +396,8 @@ async def create_paperclip_for_marketplace(
     role: str | None,
     meta: PaperclipMeta | None = None,
     reports_to: str | None = None,
+    idempotency_key: str,
+    idempotency_replay_only: bool = False,
 ) -> dict:
     """Create a Paperclip agent for a marketplace install.
 
@@ -411,6 +423,8 @@ async def create_paperclip_for_marketplace(
     ``reports_to``: optional Paperclip agent id the new hire reports to
         (its manager in the org chart, chosen by the buyer at Hire time).
         None leaves the new agent unparented, matching Paperclip's default.
+    ``idempotency_key``: stable identity of the marketplace, approval, or
+        builder operation. The caller owns that business identity.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
     company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
@@ -439,6 +453,8 @@ async def create_paperclip_for_marketplace(
             adapter_config=adapter_config,
             session_cookie=admin_cookie,
             reports_to=reports_to,
+            idempotency_key=idempotency_key,
+            idempotency_replay_only=idempotency_replay_only,
             **fields,
         )
     finally:

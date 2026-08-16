@@ -49,7 +49,13 @@ export type Lifecycle =
   | "ready";
 
 export type FunnelState = "not_started" | "submitted" | "complete";
-export type BootstrapState = "not_started" | "dispatched" | "delivered" | "failed";
+/**
+ * `dispatched` is CLAIMED, `sent` is DELIVERED (OpenClaw acked the chat.send),
+ * `delivered` is COMPLETED (Friday's run reached chat.final). Mirrors
+ * `BootstrapState` in apps/backend/core/repositories/paperclip_repo.py — keep
+ * the two in lockstep.
+ */
+export type BootstrapState = "not_started" | "dispatched" | "sent" | "delivered" | "failed";
 
 export interface StatusContract {
   owner_id?: string;

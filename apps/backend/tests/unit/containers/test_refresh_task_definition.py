@@ -60,6 +60,9 @@ async def test_refresh_registers_new_taskdef_with_hook_token_env(monkeypatch):
     assert "OPENCLAW_HOOK_TOKEN" in env_names
     token_entry = next(e for e in cd["environment"] if e["name"] == "OPENCLAW_HOOK_TOKEN")
     assert token_entry["value"] == "freshly-set"
+    assert [e for e in cd["environment"] if e["name"] == "ISOL8_CONFIG_LOCK_PROTOCOL"] == [
+        {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"}
+    ]
 
     # Verify the service was updated to the new revision.
     fake_ecs.update_service.assert_called_once()
@@ -94,6 +97,7 @@ async def test_refresh_strips_stale_paperclip_env_keeps_others(monkeypatch):
         {"name": "PAPERCLIP_API_URL", "value": "http://paperclip.internal"},
         {"name": "CODEX_HOME", "value": "/mnt/efs/codex"},
         {"name": "OPENCLAW_HOOK_TOKEN", "value": "stale-token"},
+        {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "stale-value"},
     ]
 
     fake_ecs = MagicMock()
@@ -136,6 +140,9 @@ async def test_refresh_strips_stale_paperclip_env_keeps_others(monkeypatch):
     # The hook token is re-injected with the fresh value (not the stale one).
     token_entry = next(e for e in cd["environment"] if e["name"] == "OPENCLAW_HOOK_TOKEN")
     assert token_entry["value"] == "freshly-set"
+    assert [e for e in cd["environment"] if e["name"] == "ISOL8_CONFIG_LOCK_PROTOCOL"] == [
+        {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"}
+    ]
 
 
 @pytest.mark.asyncio

@@ -781,6 +781,25 @@ async def test_append_cron_jobs_extends_existing_file(cron_efs_dir):
 
 
 @pytest.mark.asyncio
+async def test_append_cron_jobs_replay_upserts_same_id_without_duplicate(cron_efs_dir):
+    from core.services.config_patcher import append_cron_jobs
+
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "stable", "agentId": "agent_abc", "name": "First"}],
+    )
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "stable", "agentId": "agent_abc", "name": "Recovered"}],
+    )
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    with open(jobs_path) as f:
+        data = json.load(f)
+    assert data["jobs"] == [{"id": "stable", "agentId": "agent_abc", "name": "Recovered"}]
+
+
+@pytest.mark.asyncio
 async def test_remove_cron_jobs_removes_only_the_named_ids(cron_efs_dir):
     """The deploy-unwind path: a failed deploy's appended jobs come back out
     by id, leaving every other job untouched."""
@@ -2041,11 +2060,10 @@ async def test_replace_provider_block_creates_web_search_path_when_missing(efs_d
 
 @pytest.mark.asyncio
 async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
-    """Two layers of the shared lock must hold: the per-file threading.Lock
-    serializes same-process ``asyncio.to_thread`` writers, and the fcntl lock
-    lives on a SEPARATE .lock file so the atomic os.rename (inode swap) can't
-    discard it. With the old no-op lock (fcntl on the swapped inode, no thread
-    gate) concurrent read-modify-writes drop each other's appends.
+    """The thread gate plus sidecar protocol must survive data-inode swaps.
+
+    With the old no-op lock (fcntl on the swapped data inode, no thread gate),
+    concurrent read-modify-writes dropped each other's appends.
     """
     import asyncio
 
@@ -2056,5 +2074,8 @@ async def test_concurrent_writers_serialize_and_survive_inode_swap(efs_dir):
         cfg = json.load(f)
     got = sorted(entry["id"] for entry in cfg["plugins"]["list"])
     assert got == list(range(n)), f"lost concurrent appends: {len(got)}/{n} landed"
-    # The lock is a dedicated sibling file, never openclaw.json itself.
-    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))
+    # Phase-one rollout preserves the legacy persistent sidecar until boot
+    # recovery publishes the protocol marker. This keeps backend mutations
+    # available while every backend replica learns the recovery guard.
+    assert os.path.isfile(os.path.join(efs_dir, "user_1", "openclaw.json.lock"))
+    assert os.path.exists(os.path.join(efs_dir, "user_1", "openclaw.json.lock.isol8-guard"))

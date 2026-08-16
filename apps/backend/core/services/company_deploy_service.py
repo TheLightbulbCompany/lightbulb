@@ -264,6 +264,11 @@ async def _run_company_deploy(*, owner_id: str, tar_bytes: bytes, created: list[
                 service_token=service_token.mint(owner_id),
                 user_id=owner_id,
             )
+            # Deliberately omit agent-create idempotency here. Company deploy
+            # still starts an untracked background task per POST; two workers
+            # replaying one agent id could race, and one rollback could delete
+            # the other's live install. This path needs a durable deployment
+            # operation claim before per-agent replay is safe.
             pc = await admin.create_agent(
                 session_cookie=cookie,
                 company_id=company_id,

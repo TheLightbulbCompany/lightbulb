@@ -75,7 +75,14 @@ function seedReads(overrides: Record<string, ReadStub> = {}) {
       mutate,
     },
     "/agents": {
-      data: { agents: [{ id: "ag_1", name: "Friday" }] },
+      data: {
+        agents: [
+          { id: "ag_1", name: "Friday" },
+          { id: "ag_2", name: "Atlas" },
+          { id: "ag_3", name: "Gauge" },
+          { id: "ag_4", name: "Tally" },
+        ],
+      },
       isLoading: false,
       error: undefined,
       mutate,
@@ -281,6 +288,142 @@ describe("RoutineDetailPanel — editable (A2)", () => {
     expect(body.title).toBe("Nightly digest renamed");
     expect(body).not.toHaveProperty("status");
     expect(body).not.toHaveProperty("priority");
+    expect(body).not.toHaveProperty("execution_policy");
+  });
+
+  it("edits the stored reviewer while preserving unrelated policy fields", async () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Reviewed digest",
+          status: "active",
+          assigneeAgentId: "ag_1",
+          executionPolicy: {
+            mode: "normal",
+            commentRequired: false,
+            stages: [
+              {
+                id: "stage-review",
+                type: "review",
+                approvalsNeeded: 1,
+                participants: [
+                  {
+                    id: "participant-review",
+                    type: "agent",
+                    agentId: "ag_2",
+                    userId: null,
+                  },
+                ],
+              },
+              {
+                id: "stage-approval",
+                type: "approval",
+                approvalsNeeded: 1,
+                participants: [
+                  {
+                    id: "participant-approval",
+                    type: "agent",
+                    agentId: "ag_4",
+                    userId: null,
+                  },
+                ],
+              },
+            ],
+          },
+          triggers: [],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    await user.click(within(dialog).getByRole("button", { name: "Atlas" }));
+    await user.click(await screen.findByText("Gauge"));
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    const [path, body] = patch.mock.calls[0];
+    expect(path).toBe("/routines/r1");
+    expect(body).toEqual({
+      execution_policy: expect.objectContaining({
+        commentRequired: false,
+        stages: [
+          expect.objectContaining({
+            id: "stage-review",
+            type: "review",
+            participants: [expect.objectContaining({ agentId: "ag_3" })],
+          }),
+          {
+            id: "stage-approval",
+            type: "approval",
+            approvalsNeeded: 1,
+            participants: [
+              {
+                id: "participant-approval",
+                type: "agent",
+                agentId: "ag_4",
+                userId: null,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+  });
+
+  it("sends explicit null when the reviewer is removed from a reviewer-only policy", async () => {
+    seedReads({
+      "/routines/r1": {
+        data: {
+          id: "r1",
+          title: "Reviewed digest",
+          status: "active",
+          assigneeAgentId: "ag_1",
+          executionPolicy: {
+            mode: "normal",
+            stages: [
+              {
+                id: "stage-review",
+                type: "review",
+                approvalsNeeded: 1,
+                participants: [
+                  {
+                    id: "participant-review",
+                    type: "agent",
+                    agentId: "ag_2",
+                    userId: null,
+                  },
+                ],
+              },
+            ],
+          },
+          triggers: [],
+        },
+        isLoading: false,
+        error: undefined,
+        mutate,
+      },
+    });
+    const user = userEvent.setup();
+    render(<RoutineDetailPanel routineId="r1" />);
+    await user.click(screen.getByRole("button", { name: /edit automation/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    await user.click(within(dialog).getByRole("button", { name: "Atlas" }));
+    await user.click(await screen.findByRole("button", { name: "No reviewer" }));
+    await user.click(within(dialog).getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("/routines/r1", {
+        execution_policy: null,
+      }),
+    );
   });
 
   it("sends only { enabled: false } when a trigger is disabled without other edits", async () => {

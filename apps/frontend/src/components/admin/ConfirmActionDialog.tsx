@@ -47,13 +47,16 @@ export function ConfirmActionDialog({
   const [typed, setTyped] = React.useState("");
   const [wrongAttempts, setWrongAttempts] = React.useState(0);
   const [busy, setBusy] = React.useState(false);
+  const [mismatchError, setMismatchError] = React.useState(false);
+  const inputRef = React.useRef<HTMLInputElement>(null);
 
   const locked = wrongAttempts >= MAX_WRONG_ATTEMPTS;
-  const matches = typed === confirmText;
-  // Confirm is enabled once any text is typed so a wrong submission counts
-  // toward the 3-attempt lockout; matches-only enabling would make the
-  // lockout unreachable. The click handler validates the value.
-  const confirmDisabled = locked || busy || typed.length === 0;
+  // Not disabled on an empty/untyped field: Chrome autofill writes the
+  // input's DOM value without firing React's synthetic change event, so
+  // `typed` can stay "" while the field visibly shows the right value.
+  // Gating on `typed` would leave the button dead with zero feedback.
+  // Validation happens at click time, read straight from the DOM.
+  const confirmDisabled = locked || busy;
 
   // Reset typed/error state on close (lockout persists for component lifetime).
   function handleOpenChange(next: boolean) {
@@ -61,6 +64,7 @@ export function ConfirmActionDialog({
     setOpen(next);
     if (!next) {
       setTyped("");
+      setMismatchError(false);
     }
   }
 
@@ -71,11 +75,18 @@ export function ConfirmActionDialog({
 
     if (locked || busy) return;
 
-    if (!matches) {
+    // Read from the DOM, not React state -- this is the one value autofill
+    // can't lie to us about.
+    const domValue = inputRef.current?.value ?? "";
+    if (domValue !== typed) setTyped(domValue);
+
+    if (domValue !== confirmText) {
       setWrongAttempts((n) => n + 1);
+      setMismatchError(true);
       return;
     }
 
+    setMismatchError(false);
     setBusy(true);
     try {
       await onConfirm();
@@ -109,15 +120,27 @@ export function ConfirmActionDialog({
             Locked. Reload the page to try again.
           </p>
         ) : (
-          <Input
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={confirmText}
-            autoComplete="off"
-            spellCheck={false}
-            disabled={busy}
-            aria-label={`Type ${confirmText} to confirm`}
-          />
+          <div className="space-y-2">
+            <Input
+              ref={inputRef}
+              value={typed}
+              onChange={(e) => {
+                setTyped(e.target.value);
+                setMismatchError(false);
+              }}
+              placeholder={confirmText}
+              autoComplete="off"
+              name="confirm-phrase"
+              spellCheck={false}
+              disabled={busy}
+              aria-label={`Type ${confirmText} to confirm`}
+            />
+            {mismatchError ? (
+              <p role="alert" className="text-sm text-red-400">
+                Type the exact id to confirm — autofill doesn&apos;t count.
+              </p>
+            ) : null}
+          </div>
         )}
 
         <AlertDialogFooter>

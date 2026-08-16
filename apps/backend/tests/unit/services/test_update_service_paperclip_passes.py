@@ -320,6 +320,44 @@ async def test_retry_pass_list_failure_does_not_raise():
 # ----------------------------------------------------------------------
 
 
+async def test_run_scheduled_worker_applies_due_task_refreshes_sequentially(monkeypatch):
+    events: list[str] = []
+
+    async def apply(owner_id, _update_id):
+        events.append(f"start:{owner_id}")
+        await update_service.asyncio.sleep(0)
+        events.append(f"end:{owner_id}")
+        return True
+
+    class _StopLoop(Exception):
+        pass
+
+    async def stop_after_first(awaitable, **_kwargs):
+        awaitable.close()
+        raise _StopLoop()
+
+    monkeypatch.setattr(
+        update_service.update_repo,
+        "get_due_scheduled",
+        AsyncMock(
+            return_value=[
+                {"owner_id": "owner-a", "update_id": "upd-a"},
+                {"owner_id": "owner-b", "update_id": "upd-b"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(update_service, "apply_update", apply)
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
+    monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
+    monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", AsyncMock())
+    monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
+
+    with pytest.raises(_StopLoop):
+        await update_service.run_scheduled_worker()
+
+    assert events == ["start:owner-a", "end:owner-a", "start:owner-b", "end:owner-b"]
+
+
 async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
     monkeypatch,
 ):
@@ -349,6 +387,8 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
+    recover = AsyncMock()
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", recover)
     monkeypatch.setattr(
         update_service.update_repo,
         "get_due_scheduled",
@@ -361,6 +401,7 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
 
     assert retry_calls == 1, "retry pass must run every iteration"
     assert purge_calls == 1, "purge pass must run on first iteration (last_purge_pass_at=0)"
+    recover.assert_awaited_once()
 
 
 async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
@@ -413,6 +454,7 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     monkeypatch.setattr(
         update_service.update_repo,
         "get_due_scheduled",

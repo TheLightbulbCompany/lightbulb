@@ -142,7 +142,7 @@ export interface AdminApiError {
 }
 
 // ---------------------------------------------------------------------------
-// Platform-ops envelope (mirrors the backend Ops DTO in routers/ops.py)
+// Admin diagnostics envelope (mirrors the backend Ops DTO in routers/ops.py)
 // ---------------------------------------------------------------------------
 
 export interface OpsEnvelope<T> {
@@ -419,6 +419,10 @@ export interface AdminProvisioning {
     bootstrap_last_error?: string | null;
     bootstrap_dispatch_id?: string | null;
     bootstrap_dispatched_at?: string | null;
+    /** Write-ahead of chat.send. Set with no `bootstrap_sent_at` on a stuck
+     * row = the send may already have been accepted (never auto-retried). */
+    bootstrap_send_attempted_at?: string | null;
+    bootstrap_sent_at?: string | null;
     bootstrap_delivered_at?: string | null;
     created_at?: string | null;
     updated_at?: string | null;
@@ -570,7 +574,7 @@ export async function listAvailableImages(
 }
 
 // ---------------------------------------------------------------------------
-// Platform-ops reads (fleet + deploys)
+// Admin diagnostic reads (fleet, deployments, and alarms)
 // ---------------------------------------------------------------------------
 
 export async function getFleet(token: string): Promise<OpsEnvelope<FleetData> | null> {
@@ -584,4 +588,3 @@ export async function getDeploys(token: string): Promise<OpsEnvelope<DeployRow[]
 export async function getAlarms(token: string): Promise<OpsEnvelope<AlarmRow[]> | null> {
   return adminFetch<OpsEnvelope<AlarmRow[]>>(token, "/ops/alarms");
 }
-

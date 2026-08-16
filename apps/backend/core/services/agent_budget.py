@@ -1,8 +1,7 @@
-"""The per-owner agent budget — the plan limit, and the one guard every
-agent-creation path calls.
+"""The per-owner agent budget — the plan limit shared by every create path.
 
-**Why a shared guard rather than a check per router.** Agents arrive from four
-independent paths, and a limit enforced on some of them is not a limit:
+**Why a shared decision rather than a check per router.** Agents arrive from
+four independent paths, and a limit enforced on some of them is not a limit:
 
 1. ``routers/websocket_chat._intercept_agents_create`` — the /chat ``agents.create`` RPC.
 2. ``routers/teams/agents.create_agent`` — the Teams Inbox REST endpoint.
@@ -67,11 +66,11 @@ AGENT_BUDGET_EXCEEDED_DETAIL = (
 async def is_at_agent_budget(owner_id: str) -> bool:
     """True when ``owner_id`` may NOT create another agent.
 
-    The decision half, split out from ``enforce_agent_budget`` because not every
-    caller can answer with an HTTP status. ``marketplace_hire.create_hire_approval``
-    runs inside the ``/recommend`` response and its established contract is to
-    return None and stay "degraded-but-useful" rather than fail the whole call,
-    so it needs the boolean.
+    Callers use this decision before Paperclip create. At the cap they send the
+    same logical key in replay-only mode, which heals an interrupted create but
+    cannot mint an eleventh agent. ``marketplace_hire.create_hire_approval``
+    returns None on a replay miss to preserve its established
+    "degraded-but-useful" recommendation contract.
 
     False (allow) on every unreadable input — see the fail-open note above.
     """
@@ -112,11 +111,11 @@ async def is_at_agent_budget(owner_id: str) -> bool:
 
 
 async def enforce_agent_budget(owner_id: str) -> None:
-    """Raise 409 if creating one more agent would put ``owner_id`` over budget.
+    """Legacy HTTP convenience wrapper around ``is_at_agent_budget``.
 
-    Returns None (allow) when the owner is on a plan without the cap, when they
-    are still under it, or when the live count cannot be determined. Never
-    raises anything but ``HTTPException``.
+    New create paths need replay-only recovery at the cap and therefore call
+    the boolean decision directly. Keep this wrapper for compatibility with
+    older callers and its focused contract tests.
 
     409 (not 402) matches the existing over-budget refusal in
     ``routers/marketplace_listings`` — "Requires Ultra Pro" — so clients see one

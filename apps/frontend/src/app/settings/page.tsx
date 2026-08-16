@@ -460,10 +460,10 @@ function BillingPanel() {
             <div>
               <div className="settings-card-title">
                 Isol8 plan
-                {subscriptionStatus && (
+                {statusChipLabel && (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "var(--forest)", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    {subscriptionStatus}
+                    {statusChipLabel}
                   </span>
                 )}
               </div>

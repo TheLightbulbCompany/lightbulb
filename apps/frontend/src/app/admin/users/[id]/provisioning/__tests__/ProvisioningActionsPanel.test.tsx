@@ -83,7 +83,21 @@ describe("ProvisioningActionsPanel", () => {
     expect(mockRetryProvision).not.toHaveBeenCalled();
   });
 
-  it("disables reset bootstrap unless bootstrapState is failed", () => {
+  it("enables reset bootstrap for a dispatched row — expiry is the server's call", () => {
+    // The stuck-claim case the lever now recovers. Whether the claim is
+    // actually EXPIRED needs the timestamp + threshold, which only the server
+    // has; a live one comes back 409 rather than being guessed at here.
+    render(
+      <ProvisioningActionsPanel
+        userId={USER_ID}
+        bootstrapState="dispatched"
+        containerStatus="running"
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^reset bootstrap$/i })).toBeEnabled();
+  });
+
+  it("disables reset bootstrap unless bootstrapState is failed or dispatched", () => {
     const { rerender } = render(
       <ProvisioningActionsPanel
         userId={USER_ID}

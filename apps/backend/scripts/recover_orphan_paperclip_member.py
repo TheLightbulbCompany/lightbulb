@@ -28,8 +28,10 @@ from dataclasses import dataclass, field
 import boto3
 
 # Bootstrap admins that must NEVER be deleted (they own the
-# PaperclipAdminClient session; deleting one breaks provisioning).
-BOOTSTRAP_EMAILS = {"admin@isol8.co", "admin+paperclip@isol8.co"}
+# PaperclipAdminClient session; deleting one breaks provisioning). Imported,
+# not re-declared — see the constant's own comment for why both addresses
+# are in it.
+from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS
 
 ACCOUNT_ID = "877352799272"
 REGION = "us-east-1"

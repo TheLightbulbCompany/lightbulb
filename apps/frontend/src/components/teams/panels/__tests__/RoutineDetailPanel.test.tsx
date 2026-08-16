@@ -46,6 +46,18 @@ describe("RoutineDetailPanel", () => {
         title: "Nightly digest",
         status: "active",
         assigneeAgentId: "ag_1",
+        executionPolicy: {
+          mode: "normal",
+          stages: [
+            {
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [
+                { type: "agent", agentId: "ag_2", userId: null },
+              ],
+            },
+          ],
+        },
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-02T00:00:00Z",
         triggers: [
@@ -61,7 +73,12 @@ describe("RoutineDetailPanel", () => {
       error: undefined,
     };
     reads["/agents"] = {
-      data: { agents: [{ id: "ag_1", name: "Friday" }] },
+      data: {
+        agents: [
+          { id: "ag_1", name: "Friday" },
+          { id: "ag_2", name: "Atlas" },
+        ],
+      },
       isLoading: false,
       error: undefined,
     };
@@ -77,8 +94,10 @@ describe("RoutineDetailPanel", () => {
     );
 
     // Status swatch surfaces a real label (not an --edge pill).
-    const propLabels = screen.getAllByText(/^(Status|Assignee|Created|Updated)$/);
-    expect(propLabels.length).toBe(4);
+    const propLabels = screen.getAllByText(
+      /^(Status|Assignee|Reviewer|Created|Updated)$/,
+    );
+    expect(propLabels.length).toBe(5);
     expect(screen.getByText("Active")).toBeInTheDocument();
 
     // Assignee resolves to the agent name via the /agents roster and links to
@@ -86,6 +105,10 @@ describe("RoutineDetailPanel", () => {
     expect(screen.getByRole("link", { name: "Friday" })).toHaveAttribute(
       "href",
       "/chat?panel=agent-inspector&agent=ag_1",
+    );
+    expect(screen.getByRole("link", { name: "Atlas" })).toHaveAttribute(
+      "href",
+      "/chat?panel=agent-inspector&agent=ag_2",
     );
 
     // Schedule + run history rendered.

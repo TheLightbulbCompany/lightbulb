@@ -74,7 +74,6 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
       paperclipServiceTokenKey: `isol8/${environment}/paperclip_service_token_key`,
       paperclipEventsWebhookSecret: `isol8/${environment}/paperclip_events_webhook_secret`,
-      platformOpsTokenKey: `isol8/${environment}/platform_ops_token_key`,
       gogKeyringPassword: `isol8/${environment}/gog-keyring-password`,
       metronomeApiKey: `isol8/${environment}/metronome_api_key`,
       metronomeWebhookSecret: `isol8/${environment}/metronome_webhook_secret`,
@@ -110,6 +109,27 @@ const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
 
 describe("ServiceStack — clean handoff / rolling deploy", () => {
   const template = SERVICE_TEMPLATE_DEV;
+
+  test("does not wire the retired platform-ops owner or token into backend tasks", () => {
+    const taskDefinitions = template.findResources("AWS::ECS::TaskDefinition");
+    const rendered = JSON.stringify(taskDefinitions);
+    expect(rendered).not.toContain("PLATFORM_OPS_OWNER_ID");
+    expect(rendered).not.toContain("PLATFORM_OPS_TOKEN_KEY");
+    expect(rendered).not.toContain("platform_ops_token_key");
+  });
+
+  test("retains AWS reads required by the human operator console", () => {
+    const policies = {
+      ...template.findResources("AWS::IAM::Policy"),
+      ...template.findResources("AWS::IAM::ManagedPolicy"),
+    };
+    const rendered = JSON.stringify(policies);
+    expect(rendered).toContain("ecs:DescribeServices");
+    expect(rendered).toContain("ecs:ListServices");
+    expect(rendered).toContain("cloudformation:DescribeStacks");
+    expect(rendered).toContain("cloudformation:ListStacks");
+    expect(rendered).toContain("cloudwatch:DescribeAlarms");
+  });
 
   test("backend service uses rolling deploy that starts new before stopping old", () => {
     // At desiredCount=1, MinimumHealthyPercent=100 forces ECS to keep the old
@@ -648,6 +668,30 @@ describe("ServiceStack — provisioning executor (state machine, live)", () => {
         expect.stringContaining("isol8-dev-alerts-page"),
       ]);
     }
+  });
+});
+
+describe("ServiceStack — Clerk azp (SEC-8) per-env wiring", () => {
+  // Clerk session tokens carry no `aud`; the token-origin fence is the azp
+  // allowlist. Pin the per-env origins and the audit rollout default — a
+  // dropped var here silently disables the check (backend treats empty as
+  // off), and a premature "enforce" would reject before audit validated the
+  // list in the wild.
+  test.each([
+    ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
+    ["prod", "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+  ] as const)("%s backend gets azp allowlist in audit mode", (envName, parties) => {
+    const template = envName === "dev" ? SERVICE_TEMPLATE_DEV : buildServiceStack("prod");
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "CLERK_AUTHORIZED_PARTIES", Value: parties }),
+            Match.objectLike({ Name: "CLERK_AZP_MODE", Value: "audit" }),
+          ]),
+        }),
+      ]),
+    });
   });
 });
 

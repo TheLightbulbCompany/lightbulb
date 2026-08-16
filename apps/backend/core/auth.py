@@ -137,6 +137,28 @@ def _find_rsa_key(jwks: dict, kid: str) -> dict | None:
     return None
 
 
+def _check_authorized_party(payload: dict) -> None:
+    """SEC-8: verify the token's `azp` claim against known frontend origins.
+
+    Clerk session tokens carry NO `aud` claim — `azp` (authorized party, the
+    origin that minted the token) is Clerk's documented equivalent check.
+    Native-app tokens (mobile) legitimately lack `azp`, so an absent claim
+    passes, matching Clerk's own SDK semantics. An empty allowlist disables
+    the check (local/CI).
+
+    In audit mode a mismatch is logged + metered but never rejected; enforce
+    mode rejects with 401. Flip via CLERK_AZP_MODE once audit is clean.
+    """
+    azp = payload.get("azp")
+    parties = settings.clerk_authorized_parties_list
+    if not azp or not parties or azp in parties:
+        return
+    put_metric("auth.azp.mismatch", dimensions={"mode": settings.CLERK_AZP_MODE})
+    logger.warning("JWT azp %r not in CLERK_AUTHORIZED_PARTIES (mode=%s)", azp, settings.CLERK_AZP_MODE)
+    if settings.CLERK_AZP_MODE == "enforce":
+        raise HTTPException(status_code=401, detail="Invalid token origin")
+
+
 async def _decode_token(token: str) -> dict:
     """Fetch JWKS, find the matching RSA key, and decode the JWT.
 
@@ -151,14 +173,15 @@ async def _decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token headers")
 
     public_key = jwt.PyJWK(rsa_key).key
-    return jwt.decode(
+    payload = jwt.decode(
         token,
         public_key,
         algorithms=["RS256"],
-        audience=settings.CLERK_AUDIENCE,
         issuer=settings.CLERK_ISSUER,
         leeway=30,  # tolerate 30s clock skew
     )
+    _check_authorized_party(payload)
+    return payload
 
 
 def _extract_org_claims(payload: dict) -> dict:

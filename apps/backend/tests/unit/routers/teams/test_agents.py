@@ -145,6 +145,7 @@ def test_create_agent_synthesizes_adapter_config(client, monkeypatch):
     assert r.status_code == 200
     call = admin.create_agent.await_args
     assert call.kwargs["adapter_type"] == "openclaw_gateway"
+    assert call.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:teams:")
     adapter_cfg = dict(call.kwargs["adapter_config"])
     # devicePrivateKeyPem is a freshly-minted ed25519 key (non-deterministic),
     # so assert it's a valid PEM separately and compare the stable fields.

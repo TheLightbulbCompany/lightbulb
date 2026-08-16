@@ -28,12 +28,14 @@ from pydantic import BaseModel, Field
 from core.containers import get_ecs_manager
 from core.repositories import container_repo
 from core.services import agent_export
-from core.services.agent_budget import enforce_agent_budget
+from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 from core.services.catalog_service import emit_agent_deployed, get_catalog_service
+from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
 )
+from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing
 from core.services.paperclip_openclaw_pairing import ensure_operator_device_paired
 
@@ -126,12 +128,9 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     """
     auth_container = await _require_hook_token(owner_id, request)
 
-    # Plan agent budget, BEFORE the deploy claim and the Paperclip mint. Atlas
-    # recruits on its own initiative from inside the container, so this bridge —
-    # not the /chat interception — is where its creates are countable. Refusing
-    # here costs nothing to undo; refusing after the mint would leave a Paperclip
-    # row with no container-side agent.
-    await enforce_agent_budget(owner_id)
+    # An exact-cap retry may recover this staging operation's existing UUID;
+    # Paperclip atomically refuses replay-only when the key is absent.
+    at_agent_budget = await is_at_agent_budget(owner_id)
 
     # ``listing_id`` is a diagnostics label on this claim, not a key (the claim
     # is owner-wide) — tag it so a held claim reads as an Atlas build in the log.
@@ -139,9 +138,10 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     claim_token, held = await container_repo.try_claim_owner_deploy(owner_id, listing_id=claim_label)
     if not claim_token:
         # Same split as the marketplace route: a refusal by THIS build is
-        # "already running, don't retry" (retrying registers a second copy —
-        # there is no idempotency check on this path); a refusal by a different
-        # install is "retry after a beat".
+        # "already running" because the first attempt still owns the container
+        # mutation. A refusal by a different install is "retry after a beat";
+        # once this claim clears, the stable Paperclip key safely resumes this
+        # staging operation instead of minting a second roster row.
         raise HTTPException(
             status_code=409,
             detail=(
@@ -157,7 +157,12 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
     # down the ``__cause__`` chain the release walks.
     deploy_cause: BaseException | None = None
     try:
-        return await _register_built_agent(owner_id=owner_id, payload=payload, auth_container=auth_container)
+        return await _register_built_agent(
+            owner_id=owner_id,
+            payload=payload,
+            auth_container=auth_container,
+            idempotency_replay_only=at_agent_budget,
+        )
     except Exception as exc:
         deploy_cause = exc
         raise
@@ -167,7 +172,13 @@ async def register_built_agent(owner_id: str, payload: RegisterBuiltAgentRequest
         )
 
 
-async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentRequest, auth_container: dict) -> dict:
+async def _register_built_agent(
+    *,
+    owner_id: str,
+    payload: RegisterBuiltAgentRequest,
+    auth_container: dict,
+    idempotency_replay_only: bool = False,
+) -> dict:
     """The registration itself, run under the caller's deploy claim."""
     # 1. Snapshot the staging workspace Atlas built. The built agent is
     #    self-describing — its slice comes from the staging dir's OWN
@@ -251,8 +262,19 @@ async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentReq
             role=None,
             meta=meta,
             reports_to=reports_to,
+            idempotency_key=build_agent_create_idempotency_key(
+                operation="agent-builder",
+                owner_id=owner_id,
+                # The staging workspace is the durable build identity. A retry
+                # with edited display metadata must resume this build, not mint
+                # a second roster row.
+                intent={"stagingAgentId": payload.staging_agent_id},
+            ),
+            idempotency_replay_only=idempotency_replay_only,
         )
         new_agent_id = paperclip_agent["id"]
+    except PaperclipAgentCreateReplayMiss as exc:
+        raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL) from exc
     except Exception as exc:  # noqa: BLE001 — mint failure / malformed response
         logger.exception(
             "register_built_agent: Paperclip mint failed for owner=%s staging=%s",
@@ -264,20 +286,26 @@ async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentReq
         raise HTTPException(status_code=503, detail="paperclip unavailable — retry the build in a moment") from exc
 
     # 4. Deploy the snapshot into the container (write files + register live in
-    #    openclaw.json). Roll back the orphan Paperclip agent on any failure —
-    #    same envelope as the marketplace deploy path.
+    #    openclaw.json). A response can be lost after the first attempt commits;
+    #    the stable Paperclip key then returns the same UUID. Reconcile that
+    #    existing install instead of appending its cron jobs a second time.
     catalog = get_catalog_service()
+    existing_install = catalog.live_install_for_agent(owner_id, new_agent_id)
+    install_already_committed = isinstance(existing_install, dict)
     try:
-        deploy_result = await catalog.deploy_from_artifact(
-            owner_id=owner_id,
-            slug=_slugify(payload.name),
-            manifest=package.manifest,
-            slice_=slice_,
-            tar_bytes=package.tarball_bytes,
-            new_agent_id=new_agent_id,
-            container_ip=container_ip,
-            container_token=container_token,
-        )
+        if install_already_committed:
+            deploy_result = {"agent_id": new_agent_id}
+        else:
+            deploy_result = await catalog.deploy_from_artifact(
+                owner_id=owner_id,
+                slug=_slugify(payload.name),
+                manifest=package.manifest,
+                slice_=slice_,
+                tar_bytes=package.tarball_bytes,
+                new_agent_id=new_agent_id,
+                container_ip=container_ip,
+                container_token=container_token,
+            )
 
         # Register the new agent's operator device into the running container's
         # paired.json + bind its authToken to the gateway token, so its first
@@ -294,6 +322,22 @@ async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentReq
             ip=container_ip,
         )
     except Exception as exc:  # noqa: BLE001 — roll back the orphan, re-raise
+        if install_already_committed:
+            logger.exception(
+                "register_built_agent: reconciliation failed for committed agent %s owner=%s staging=%s; "
+                "preserving the existing install",
+                new_agent_id,
+                owner_id,
+                payload.staging_agent_id,
+            )
+            if isinstance(exc, HTTPException):
+                raise
+            reason = f"{type(exc).__name__}: {exc}"[:300]
+            raise HTTPException(
+                status_code=502,
+                detail=f"reconcile existing container install failed ({reason}) — retry in a moment",
+            ) from exc
+
         logger.exception(
             "register_built_agent: deploy failed for owner=%s staging=%s — rolling back %s",
             owner_id,
@@ -342,7 +386,8 @@ async def _register_built_agent(*, owner_id: str, payload: RegisterBuiltAgentReq
 
     # Committed: the deploy + pairing envelope above survived. Emitting from
     # inside deploy_from_artifact counted builds the rollback had undone.
-    emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
+    if not install_already_committed:
+        emit_agent_deployed(owner_id=owner_id, slug=_slugify(payload.name), agent_id=new_agent_id)
 
     # Surface sanitizer-dropped keys so Atlas learns its bundle emitted
     # non-schema config instead of the loss dying in a CloudWatch warn.

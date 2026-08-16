@@ -836,15 +836,34 @@ def test_export_scan_skips_oversized_and_binary_files(fake_efs):
 
 
 def test_export_safety_flag_schema(fake_efs, tmp_path):
-    """SafetyFlag is JSON-serializable (dataclass-as-dict). Manifest
-    consumers (frontend + admin preview) read pattern/severity/file/line/snippet."""
+    """SafetyFlag is JSON-serializable (dataclass-as-dict). Manifest consumers
+    read pattern/severity/file/line — and NOT snippet, which never reaches a
+    manifest (see the leak test below)."""
     seller_id, agent_id, agent_dir = fake_efs
     (agent_dir / "USER.md").write_text("alice@example.com\n", encoding="utf-8")
     pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
     flags = pkg.manifest.get("safety_flags", [])
     assert flags, "expected at least one flag"
     f = flags[0]
-    assert {"pattern", "severity", "file", "line", "snippet"}.issubset(f.keys())
+    assert {"pattern", "severity", "file", "line"}.issubset(f.keys())
+
+
+def test_export_manifest_never_carries_snippets(fake_efs):
+    """The manifest is uploaded to S3 + persisted on the DDB listing row, and
+    served verbatim by the UNAUTHENTICATED listing-detail route under a public
+    cache header. ``snippet`` is 80 raw chars of the seller's source line — by
+    construction the field most likely to hold a credential — so it must never
+    ride into a manifest.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "MEMORY.md").write_text("key AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
+    (agent_dir / "USER.md").write_text("- Email: alice@example.com\n", encoding="utf-8")
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    flags = pkg.manifest.get("safety_flags", [])
+    assert flags, "expected at least one flag"
+    assert all("snippet" not in f for f in flags), flags
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(pkg.manifest)
+    assert "alice@example.com" not in json.dumps(pkg.manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +920,18 @@ def test_enumerate_for_preview_carries_safety_flags(fake_efs, tmp_path):
     preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
     flags = preview["safety_flags"]
     assert any(f["pattern"] == "email-address" for f in flags)
+
+
+def test_enumerate_for_preview_keeps_snippets(fake_efs):
+    """The preview is authenticated + seller-scoped and shows the seller their
+    OWN workspace lines so they can fix a finding before submit. It is never
+    persisted, so — unlike the manifest — it keeps ``snippet``.
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    (agent_dir / "USER.md").write_text("Email: alice@example.com\n", encoding="utf-8")
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    flag = next(f for f in preview["safety_flags"] if f["pattern"] == "email-address")
+    assert "alice@example.com" in flag["snippet"]
 
 
 # ---------------------------------------------------------------------------
@@ -1713,3 +1744,75 @@ def test_export_strips_package_json_declaring_openclaw_extensions(fake_efs):
     names = _list_tar_names(pkg.tarball_bytes)
     pkg_members = [n for n in names if n.rsplit("/", 1)[-1] == "package.json"]
     assert pkg_members == ["./clean/package.json"], names
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_ports_variable_definitions_with_defaults():
+    """Variable definitions (with defaults) ride each schedule entry — without
+    them, Paperclip re-syncs {{NAME}} references as required defaultless
+    variables and the buyer-side dormant schedule trigger 422s."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "id": "routine-uuid",
+                "assigneeAgentId": "agent-uuid",
+                "title": "Finance snapshot",
+                "description": "Cap is {{MONTHLY_SPEND_CAP_USD}}.",
+                "variables": [
+                    {
+                        "name": "MONTHLY_SPEND_CAP_USD",
+                        "type": "number",
+                        "defaultValue": 2000,
+                        "required": True,
+                        "instanceOnlyNoise": "drop-me",
+                    }
+                ],
+                "triggers": [
+                    {"kind": "schedule", "cronExpression": "0 7 * * 1", "timezone": "America/Aruba"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert len(out) == 1
+    assert out[0]["variables"] == [
+        {"name": "MONTHLY_SPEND_CAP_USD", "type": "number", "defaultValue": 2000, "required": True}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_drops_routine_when_variable_default_is_unsafe():
+    """A variable default that fails the safety scan takes the routine with it
+    — porting without the default recreates the 422, porting without the
+    variable ships a contract referencing an input the buyer lacks."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "id": "routine-uuid",
+                "assigneeAgentId": "agent-uuid",
+                "title": "Leaky",
+                "description": "Uses {{TOKEN}}.",
+                "variables": [
+                    {
+                        "name": "TOKEN",
+                        "type": "text",
+                        "defaultValue": "AKIAABCDEFGHIJKLMNOP secret",
+                        "required": True,
+                    }
+                ],
+                "triggers": [
+                    {"kind": "schedule", "cronExpression": "0 7 * * 1", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == []

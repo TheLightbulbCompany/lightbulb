@@ -12,13 +12,9 @@ Covers seven GET endpoints on the future ``routers/admin.py`` module:
 
 Each endpoint is a thin wrapper around an ``admin_service.*`` method, so we
 patch ``routers.admin.admin_service.<method>`` and assert the call args + that
-the response body mirrors the service result. Auth is gated by
-``Depends(require_platform_admin)`` (posthog) or the dual-auth
-``require_admin_read_access`` (the rest — see core/services/admin_access.py);
-tests flip the email domain gate by re-binding both hooks in
-``app.dependency_overrides`` to present an AuthContext whose email does (or
-doesn't) end with ``@isol8.co``. The platform_ops-token side of the read
-surface is covered in test_admin_read_ops_token.py.
+the response body mirrors the service result. Every endpoint is gated by
+``Depends(require_platform_admin)``; tests exercise admitted and denied Clerk
+AuthContexts through the shared ``get_current_user`` dependency.
 """
 
 import os
@@ -26,8 +22,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.auth import AuthContext, get_current_user, require_platform_admin
-from core.services.admin_access import require_admin_read_access
+from core.auth import AuthContext, get_current_user
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -38,19 +33,15 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 def _admit_test_user(app):
-    """Present an @isol8.co caller on both the Clerk-only and read-surface hooks."""
+    """Present an @isol8.co caller to the Clerk platform-admin gate."""
     ctx = AuthContext(user_id="user_test_123", email="admin@isol8.co")
     app.dependency_overrides[get_current_user] = lambda: ctx
-    app.dependency_overrides[require_admin_read_access] = lambda: ctx
 
 
 def _deny_all_admins(app):
     """Present a non-@isol8.co caller => 403 from the platform-admin gate."""
     ctx = AuthContext(user_id="user_test_123", email="user@example.com")
     app.dependency_overrides[get_current_user] = lambda: ctx
-    # Run the real platform-admin gate so the deny path (403 + detail) is
-    # exercised on the read surface rather than stubbed.
-    app.dependency_overrides[require_admin_read_access] = lambda: require_platform_admin(ctx)
 
 
 # ---------------------------------------------------------------------------

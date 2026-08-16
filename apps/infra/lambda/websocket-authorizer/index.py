@@ -36,6 +36,15 @@ logger.setLevel(logging.INFO)
 # Clerk configuration from environment
 CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "")
 CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
+# SEC-8 token-origin fence. Clerk session tokens carry NO `aud` claim; the
+# origin check is `azp` (authorized party — the frontend origin that minted
+# the token). Comma-separated allowlist; empty disables the check. Native-app
+# tokens have no `azp` and always pass (Clerk SDK semantics).
+CLERK_AUTHORIZED_PARTIES = frozenset(
+    p.strip() for p in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",") if p.strip()
+)
+# "audit" → log + EMF metric on mismatch, never deny; "enforce" → deny.
+CLERK_AZP_MODE = os.environ.get("CLERK_AZP_MODE", "audit")
 
 # Paperclip service-token configuration
 SERVICE_TOKEN_KIND = "paperclip_service"
@@ -279,6 +288,23 @@ def _try_device_token(token: str) -> Optional[dict]:
         return None
 
 
+def _azp_allowed(payload: dict) -> bool:
+    """SEC-8: check the Clerk token's `azp` claim against known origins.
+
+    Returns False only on a mismatch while CLERK_AZP_MODE=enforce. A missing
+    `azp` (native apps) or an empty allowlist passes; an audit-mode mismatch
+    logs + emits the AzpMismatch EMF metric but still passes.
+    """
+    azp = payload.get("azp")
+    if not azp or not CLERK_AUTHORIZED_PARTIES or azp in CLERK_AUTHORIZED_PARTIES:
+        return True
+    logger.warning(
+        f"JWT azp {azp!r} not in CLERK_AUTHORIZED_PARTIES (mode={CLERK_AZP_MODE})"
+    )
+    _emit_metric("AzpMismatch", 1)
+    return CLERK_AZP_MODE != "enforce"
+
+
 def handler(event: dict, context: Any) -> dict:
     """
     Lambda authorizer handler for WebSocket API.
@@ -351,9 +377,14 @@ def handler(event: dict, context: Any) -> dict:
             options={
                 "verify_exp": True,
                 "verify_iss": True,
-                "verify_aud": False,  # Clerk doesn't use audience
+                # Clerk session tokens carry no `aud`; the origin check is the
+                # `azp` claim, validated below (SEC-8).
+                "verify_aud": False,
             }
         )
+
+        if not _azp_allowed(payload):
+            return generate_policy("unauthorized", "Deny", method_arn)
 
         # Extract user and org info
         user_id = payload.get("sub")

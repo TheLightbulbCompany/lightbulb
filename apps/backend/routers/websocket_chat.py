@@ -43,7 +43,11 @@ from core.services.operator_proxy import (
 )
 from core.services.paperclip_adapter_config import PAPERCLIP_OPERATOR_CLIENT_ID
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
+from core.services.paperclip_admin_client import (
+    PaperclipAdminClient,
+    PaperclipAgentCreateReplayMiss,
+    PaperclipApiError,
+)
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_chat,
@@ -1469,18 +1473,23 @@ async def _intercept_agents_create(
         else None
     )
 
-    # Plan agent budget. This path CONSUMES the RPC (it never forwards to the
-    # gateway), so a refusal has to be delivered as an error ``res`` frame on the
-    # original req id — raising here would leave the frontend waiting forever on
-    # a request nobody is going to answer. Checked before the Paperclip mint so a
-    # refusal leaves no row behind.
-    from fastapi import HTTPException as _HTTPException
+    # At the plan cap, Paperclip is allowed to replay this exact logical create
+    # but atomically refuses a missing key. That lets a lost-response retry heal
+    # its original UUID without opening an 11th roster slot.
+    from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 
-    from core.services.agent_budget import enforce_agent_budget
-
+    at_agent_budget = await is_at_agent_budget(owner_id)
     try:
-        await enforce_agent_budget(owner_id)
-    except _HTTPException as exc:
+        paperclip_agent = await create_paperclip_for_chat(
+            creator_user_id=user_id,
+            owner_id=owner_id,
+            name=name,
+            role=role,
+            model=model,
+            meta=meta,
+            idempotency_replay_only=at_agent_budget,
+        )
+    except PaperclipAgentCreateReplayMiss:
         management_api = await get_management_api_client()
         await management_api.send_message_async(
             connection_id,
@@ -1490,21 +1499,12 @@ async def _intercept_agents_create(
                 "ok": False,
                 "error": {
                     "code": "agent_budget_exceeded",
-                    "message": str(exc.detail),
+                    "message": AGENT_BUDGET_EXCEEDED_DETAIL,
                     "details": {"reason": "agent_budget_exceeded"},
                 },
             },
         )
         return True
-
-    paperclip_agent = await create_paperclip_for_chat(
-        creator_user_id=user_id,
-        owner_id=owner_id,
-        name=name,
-        role=role,
-        model=model,
-        meta=meta,
-    )
 
     # pair_with_openclaw issues both agents.create and agents.update RPCs
     # to the gateway, registering the agent under its Paperclip UUID
@@ -2237,7 +2237,7 @@ async def _process_agent_chat_background(
                 from core.services import container_wake as _cw
 
                 await _cw.request_wake_silent(owner_id)
-                put_metric("chat.error", dimensions={"reason": "container_waking"})
+                put_metric("chat.error", dimensions={"reason": "container_waking", "reclassified": "false"})
                 logger.info(
                     "[%s] chat.send: container stopped (scaled to zero) for owner=%s — wake dispatched",
                     user_id,
@@ -2255,7 +2255,7 @@ async def _process_agent_chat_background(
                 )
                 return
 
-            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+            put_metric("chat.error", dimensions={"reason": "container_unreachable", "reclassified": "false"})
             logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
             await management_api.send_message_async(
                 connection_id,
@@ -2269,7 +2269,7 @@ async def _process_agent_chat_background(
             return
 
         if not ip:
-            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+            put_metric("chat.error", dimensions={"reason": "container_unreachable", "reclassified": "false"})
             logger.warning("[%s] chat.send FAIL: no IP for owner=%s (container starting)", user_id, owner_id)
             await management_api.send_message_async(
                 connection_id,
@@ -2372,7 +2372,7 @@ async def _process_agent_chat_background(
         # can't keep talking through the gateway indefinitely.
         gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id, session_key=session_key)
         if gate.get("blocked"):
-            put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
+            put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked"), "reclassified": "false"})
             logger.info(
                 "[%s] chat.send BLOCKED agent=%s code=%s",
                 user_id,
@@ -2484,19 +2484,19 @@ async def _process_agent_chat_background(
 
     except asyncio.TimeoutError:
         chat_err = "RPC timed out"
-        put_metric("chat.error", dimensions={"reason": "timeout"})
+        put_metric("chat.error", dimensions={"reason": "timeout", "reclassified": "false"})
         logger.error("[%s] chat.send TIMEOUT agent=%s", user_id, agent_id)
     except ConnectionError as e:
         chat_err = str(e)
-        put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+        put_metric("chat.error", dimensions={"reason": "container_unreachable", "reclassified": "false"})
         logger.error("[%s] chat.send CONNECT FAIL agent=%s: %s", user_id, agent_id, e)
     except RuntimeError as e:
         chat_err = str(e)
-        put_metric("chat.error", dimensions={"reason": "gateway_error"})
+        put_metric("chat.error", dimensions={"reason": "gateway_error", "reclassified": "false"})
         logger.error("[%s] chat.send GATEWAY ERROR agent=%s: %s", user_id, agent_id, e)
     except Exception as e:
         chat_err = str(e)
-        put_metric("chat.error", dimensions={"reason": "unknown"})
+        put_metric("chat.error", dimensions={"reason": "unknown", "reclassified": "false"})
         logger.error("[%s] chat.send FAIL agent=%s: %s", user_id, agent_id, e)
     else:
         return  # success — no error to report
@@ -2624,7 +2624,7 @@ async def _process_agent_abort_background(
         # own terminal will never reach us. Synthesize the aborted terminal so
         # the client unblocks (runId adoption recovers it if the run is in fact
         # still alive after a transient failure).
-        put_metric("chat.error", dimensions={"reason": "abort_failed"})
+        put_metric("chat.error", dimensions={"reason": "abort_failed", "reclassified": "false"})
         logger.warning(
             "[%s] chat.abort FAIL agent=%s: %s — sending synthetic aborted terminal",
             user_id,
@@ -2709,7 +2709,7 @@ async def _process_agent_steer_background(
         steer_reason = await trial_cap.trial_block_reason(owner_id)
         if steer_reason is not None:
             gate = provision_gate.gate_for_trial_reason(steer_reason, owner_role="admin")
-            put_metric("chat.error", dimensions={"reason": steer_reason})
+            put_metric("chat.error", dimensions={"reason": steer_reason, "reclassified": "false"})
             logger.info("[%s] chat.steer BLOCKED (%s) agent=%s", user_id, steer_reason, agent_id)
             await management_api.send_message_async(
                 connection_id,
@@ -2741,7 +2741,7 @@ async def _process_agent_steer_background(
         )
         logger.info("[%s] chat.steer SENT agent=%s", user_id, agent_id)
     except Exception as e:
-        put_metric("chat.error", dimensions={"reason": "steer_failed"})
+        put_metric("chat.error", dimensions={"reason": "steer_failed", "reclassified": "false"})
         logger.warning("[%s] chat.steer FAIL agent=%s: %s", user_id, agent_id, e)
         try:
             await management_api.send_message_async(

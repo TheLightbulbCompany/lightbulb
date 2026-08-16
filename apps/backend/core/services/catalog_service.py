@@ -309,7 +309,8 @@ def _remap_cron_jobs_for_deploy(
     ``createdAtMs``, and ``updatedAtMs`` already stripped (by
     ``catalog_slice.filter_cron_jobs_for_agent``). For each remaining
     template entry, we set:
-      - a fresh ``id`` (random UUID)
+      - a stable per-agent/index ``id`` (UUIDv5), so a retry after the cron
+        write but before the deploy completion marker upserts the same job
       - the deployer's new ``agentId``
       - ``delivery.accountId`` rewritten to the new agent id — OpenClaw's
         per-agent channel routing convention pairs ``accountId`` with
@@ -340,11 +341,11 @@ def _remap_cron_jobs_for_deploy(
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     owner_id_lower = owner_id.lower()
     out: list[dict] = []
-    for job in template_jobs:
+    for index, job in enumerate(template_jobs):
         if not isinstance(job, dict):
             continue
         new_job = copy.deepcopy(job)
-        new_job["id"] = str(uuid.uuid4())
+        new_job["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"isol8:cron:v1:{new_agent_id}:{index}"))
         new_job["agentId"] = new_agent_id
         new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"
         new_job["createdAtMs"] = now_ms
@@ -522,6 +523,7 @@ class CatalogService:
                 "template_slug": slug,
                 "template_version": template_version,
                 "deployed_at": utc_now_iso(),
+                "install_state": "installing",
                 **({"listing_id": listing_id} if listing_id else {}),
                 # Slug + seller is the install identity (slugs are not unique
                 # across sellers); ids let the unwind remove this deploy's
@@ -721,6 +723,12 @@ class CatalogService:
                 "deploy: ACP enable failed for %s; agent deployed without harness delegation",
                 owner_id,
             )
+
+        # This is the commit record for retrying callers. The early sidecar and
+        # agents.list entry are intentionally only a discoverable PARTIAL
+        # footprint; pairing can persist them before aux config and cron jobs
+        # land. A marker failure propagates so the caller unwinds the install.
+        self._workspace.mark_template_install_complete(owner_id, new_agent_id)
 
         return {
             "slug": slug,
@@ -975,6 +983,32 @@ class CatalogService:
         return True
 
     # ---- deployed ----
+
+    def live_install_for_agent(self, owner_id: str, agent_id: str) -> dict[str, Any] | None:
+        """Return a committed container install for ``agent_id``, if one exists.
+
+        The sidecar is written before the gateway registration, so neither it
+        nor ``agents.list`` is sufficient alone. Their intersection is the
+        durable boundary used by retrying deploy callers.
+        """
+        sidecar = self._workspace.read_template_sidecar(owner_id, agent_id)
+        if not isinstance(sidecar, dict) or sidecar.get("install_state") != "complete":
+            return None
+
+        config = self._workspace.read_openclaw_config(owner_id) or {}
+        registered = {
+            agent.get("id") for agent in ((config.get("agents") or {}).get("list") or []) if isinstance(agent, dict)
+        }
+        if agent_id not in registered:
+            return None
+
+        return {
+            "agent_id": agent_id,
+            "template_slug": sidecar.get("template_slug"),
+            "template_version": sidecar.get("template_version"),
+            "listing_id": sidecar.get("listing_id"),
+            "seller_id": sidecar.get("seller_id"),
+        }
 
     def list_deployed_for_user(self, owner_id: str) -> list[dict[str, Any]]:
         """Scan the owner's workspaces for .template sidecars; return provenance.

@@ -1,10 +1,11 @@
 """Tests for the provision.gate.blocked{code} metric emission.
 
-A blocked gate must emit BOTH a dimensionless ``provision.gate.blocked``
-(matched by the W64 spike alarm, which queries the {env,service} stream) and
-a ``provision.gate.blocked{code}`` (per-reason breakdown). An allowed gate
-(returns None) emits nothing. Mirrors the mocking patterns in
-``test_provision_gate.py`` / ``test_provision_gate_credits.py``.
+A blocked gate emits EXACTLY ONE ``provision.gate.blocked{code}``. ``put_metric``
+publishes the {env,service} rollup from that same record, which is what the W64
+spike alarm reads, so the extra dimensionless emission this used to make would
+now count every block twice and halve W64's threshold. An allowed gate (returns
+None) emits nothing. Mirrors the mocking patterns in ``test_provision_gate.py``
+/ ``test_provision_gate_credits.py``.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -31,15 +32,11 @@ async def test_blocked_gate_emits_metric_with_code():
     assert gate is not None
     assert gate.code == "subscription_required"
     calls = [c for c in mock_put.call_args_list if c.args and c.args[0] == "provision.gate.blocked"]
-    # Two emissions: one dimensionless (for the W64 total alarm) + one coded
-    # (for the per-code breakdown). EMF = one stream per full dim set, so the
-    # alarm querying {env,service} needs the dimensionless stream to exist.
+    # ONE emission. put_metric adds the {env,service} rollup W64 reads, so a
+    # second dimensionless call would land on that same identity and count
+    # every block twice.
     dims = [c.kwargs.get("dimensions") for c in calls]
-    assert None in dims, "expected a dimensionless emission for the alarm"
-    assert {"code": gate.code} in dims, "expected a coded emission for the breakdown"
-    # Exactly one of each — no double-emit.
-    assert dims.count(None) == 1
-    assert dims.count({"code": gate.code}) == 1
+    assert dims == [{"code": gate.code}]
 
 
 @pytest.mark.asyncio

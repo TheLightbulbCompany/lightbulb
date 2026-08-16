@@ -65,13 +65,18 @@ describe("NetworkStack — browser-view listener", () => {
     });
   });
 
-  test("ALB security group admits the VPC CIDR on 8081 only for the relay", () => {
+  test("ALB security group admits ONLY the VPC CIDR on 8081", () => {
+    // The source matters as much as the port: an ingress of 0.0.0.0/0 here
+    // would satisfy a port-only assertion while exposing the listener to the
+    // internet. The CIDR is a same-stack reference to the VPC resource, so it
+    // renders as Fn::GetAtt [Vpc, CidrBlock] — pin exactly that shape.
     template.hasResourceProperties("AWS::EC2::SecurityGroup", {
       SecurityGroupIngress: Match.arrayWith([
         Match.objectLike({
           FromPort: 8081,
           ToPort: 8081,
           IpProtocol: "tcp",
+          CidrIp: { "Fn::GetAtt": [Match.stringLikeRegexp("^Vpc"), "CidrBlock"] },
         }),
       ]),
     });

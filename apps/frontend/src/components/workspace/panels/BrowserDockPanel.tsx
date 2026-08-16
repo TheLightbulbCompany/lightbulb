@@ -24,20 +24,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Chrome, RotateCcw } from "lucide-react";
 
 import { BACKEND_URL } from "@/lib/api";
+import { browserViewWsUrl } from "./browserViewUrl";
 
 type ViewState = "connecting" | "connected" | "disconnected";
-
-// The relay lives on its own CloudFront host (bv[-env].isol8.co), NOT the api
-// host — api[-env].isol8.co is an API Gateway HTTP API, which cannot pass
-// WebSocket upgrades (api-stack.ts, BrowserViewDistribution). Local dev has no
-// CloudFront in front of uvicorn, so localhost connects straight through.
-function browserViewWsUrl(): string {
-  const url = new URL(BACKEND_URL);
-  if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
-    url.hostname = url.hostname.replace(/^api(-|\.)/, "bv$1");
-  }
-  return `${url.origin.replace(/^http/, "ws")}${url.pathname}/browser-view/ws`;
-}
 
 export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElement {
   const { getToken } = useAuth();
@@ -70,7 +59,7 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
         setState("disconnected");
         return;
       }
-      rfb = new RFB(mountRef.current, browserViewWsUrl(), {
+      rfb = new RFB(mountRef.current, browserViewWsUrl(BACKEND_URL), {
         wsProtocols: ["binary", token],
       });
       // Scale the container's fixed 1280x800 display to whatever size this

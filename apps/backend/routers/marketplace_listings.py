@@ -9,6 +9,7 @@ we don't need an external SaaS index.
 import asyncio
 import json
 import logging
+from decimal import Decimal
 from typing import Annotated
 
 import boto3
@@ -33,12 +34,13 @@ from core.services import (
     company_deploy_service,
     curator,
     marketplace_hire,
+    marketplace_safety,
     marketplace_search,
     marketplace_service,
     seller_display,
     seller_profile,
 )
-from core.services.agent_budget import enforce_agent_budget
+from core.services.agent_budget import AGENT_BUDGET_EXCEEDED_DETAIL, is_at_agent_budget
 from core.services.company_package import COMPANY_STANDARD_PLAN_MAX_AGENTS
 from core.services.paperclip_openclaw_pairing import count_paperclip_agents_for_owner
 from core.services.agent_routine_provisioning import create_agent_routines
@@ -54,6 +56,8 @@ from core.services.paperclip_agent_lifecycle import (
     create_paperclip_for_marketplace,
     delete_paperclip_for_marketplace,
 )
+from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
+from core.services.paperclip_agent_idempotency import build_agent_create_idempotency_key
 from core.services.paperclip_meta import derive_from_listing, read_from_agent_entry
 from core.services.paperclip_openclaw_pairing import (
     ensure_operator_device_paired,
@@ -122,6 +126,11 @@ async def _recreate_routines_for_buyer(
             # as UTC, so a routine the seller set for 9am local fired at the
             # wrong hour the moment the buyer enabled it.
             "timezone": r.get("timezone"),
+            # Variable definitions (with defaults) — without them, Paperclip
+            # re-syncs {{NAME}} references in the description as required
+            # defaultless variables and the dormant schedule trigger 422s,
+            # rolling back the whole deploy.
+            "variables": _json_safe_variables(r.get("variables")),
         }
         for r in manifest_routines
         if isinstance(r, dict) and r.get("title") and r.get("cron")
@@ -152,6 +161,29 @@ async def _recreate_routines_for_buyer(
         )
     finally:
         await http.aclose()
+
+
+def _json_safe_variables(raw: object) -> list[dict] | None:
+    """Manifest variables with DDB ``Decimal`` defaults coerced to int/float.
+
+    The manifest rides ``manifest_json`` in DynamoDB and boto3 returns every
+    DDB Number as ``Decimal``, which the admin client's ``json.dumps`` refuses
+    — the same write-boundary coercion ``catalog_service`` does for
+    ``manifest["version"]``. Integral values stay ints so Paperclip's number
+    variables round-trip exactly.
+    """
+    if not isinstance(raw, list):
+        return None
+    out: list[dict] = []
+    for var in raw:
+        if not isinstance(var, dict):
+            continue
+        safe = dict(var)
+        default = safe.get("defaultValue")
+        if isinstance(default, Decimal):
+            safe["defaultValue"] = int(default) if default == default.to_integral_value() else float(default)
+        out.append(safe)
+    return out or None
 
 
 def _pending_automations(manifest_routines: list) -> list[dict]:
@@ -228,6 +260,20 @@ def _compact_items(items: list[dict]) -> list[dict]:
         }
         for item in items
     ]
+
+
+def _public_row(listing: dict) -> dict:
+    """Listing row with safety-scan snippets stripped from ``manifest_json``.
+
+    The row itself is returned by the UNAUTHENTICATED search + detail routes
+    under ``Cache-Control: public``, and it carries the whole manifest — so
+    the read side has to scrub what already-published (immutable) artifacts
+    persisted before the write-side strip landed. Returns the original object
+    untouched when there is nothing to strip, so clean rows aren't copied.
+    """
+    manifest = listing.get("manifest_json")
+    scrubbed = marketplace_safety.manifest_without_snippets(manifest)
+    return listing if scrubbed is manifest else {**listing, "manifest_json": scrubbed}
 
 
 def _fetch_agent_artifact(listing: dict) -> tuple[bytes, dict]:
@@ -380,6 +426,14 @@ async def search_listings(
         default=None,
         description="Optional category filter, compared case-insensitively against listing.category.",
     ),
+    free_only: bool = Query(
+        default=False,
+        description=(
+            "Keep only listings that cost the caller nothing — free rows, plus the caller's"
+            " own paid rows (which deploy free). Applied before the limit slice. The mobile"
+            " app passes this — iOS hires free agents only."
+        ),
+    ),
     status_in: str | None = Query(
         default=None,
         description=(
@@ -410,10 +464,17 @@ async def search_listings(
     include_unpublished = (
         seller_id is not None and auth is not None and seller_id == auth.user_id and status_in is not None
     )
+    # free_only spares the caller their OWN paid listings, so the response
+    # depends on who asked, not just on the URL.
+    viewer_id = auth.user_id if (free_only and auth is not None) else None
     if include_unpublished:
         # Seller-scoped reads can include drafts/review/retired rows that
         # must never be cached by a CDN — those are private to the seller.
         response.headers["Cache-Control"] = "private, max-age=0, no-store"
+    elif viewer_id:
+        # Caller-dependent body: a shared cache would hand one seller's paid
+        # rows to the next viewer. The browser may still hold its own copy.
+        response.headers["Cache-Control"] = "private, max-age=60"
     else:
         response.headers["Cache-Control"] = "public, max-age=60"
     # Push status_in down to the search service so it's applied BEFORE the
@@ -429,6 +490,8 @@ async def search_listings(
         limit=limit,
         seller_id=seller_id,
         category=category,
+        free_only=free_only,
+        viewer_id=viewer_id,
         include_unpublished=include_unpublished,
         status_in=status_list,
     )
@@ -437,7 +500,7 @@ async def search_listings(
         # extra round trip whose output the compact projection drops anyway.
         return {"items": _compact_items(items)}
     await seller_display.attach_seller_names(items)
-    return {"items": items}
+    return {"items": [_public_row(i) for i in items]}
 
 
 @router.get("/featured-listings")
@@ -472,7 +535,7 @@ async def featured_listings(
         return {"items": []}
     items = await marketplace_search.search(query=None, format=format, limit=limit, seller_id=curator_id)
     await seller_display.attach_seller_names(items)
-    return {"items": items}
+    return {"items": [_public_row(i) for i in items]}
 
 
 @router.get("/me/installed-templates")
@@ -575,7 +638,9 @@ async def get_listing(listing_id: str, response: Response):
             )
             manifest = None
 
-    return {"listing": listing, "manifest": manifest}
+    # Both copies of the manifest reach this unauthenticated, publicly-cached
+    # response — the S3 one and the one carried on the row.
+    return {"listing": _public_row(listing), "manifest": marketplace_safety.manifest_without_snippets(manifest)}
 
 
 def _fetch_company_tar(*, s3_prefix: str, listing_id) -> bytes:
@@ -846,18 +911,16 @@ async def deploy_listing(
             "already_installed": True,
         }
 
-    # Plan agent budget. The company branch above has its own Ultra gate (it
-    # sizes by the PACKAGE's agent_count); this is the one-agent path, which
-    # adds exactly one to the live roster and so uses the same budget every
-    # other create path does.
+    # Plan agent budget. The company branch above has its own Ultra gate. At
+    # the cap, this one-agent path may only replay the same logical install;
+    # Paperclip atomically refuses a missing operation key.
     #
     # Placed AFTER the already-installed short-circuit above, not before it: a
     # deploy whose response was lost leaves the owner installed but retrying,
     # and gating first would answer that retry with "upgrade to Ultra" for an
     # agent they already have and that this call would not create. The retry
-    # must still heal into the existing install. Placed BEFORE the claim below
-    # so a refusal never has to unwind a held claim.
-    await enforce_agent_budget(owner_id)
+    # must still heal into the existing install.
+    at_agent_budget = await is_at_agent_budget(owner_id)
 
     # Exclusive claim for the whole deploy, OWNER-WIDE (not per-listing). The
     # sidecar read above is a READ, not a lock: two OVERLAPPING deploys can both
@@ -965,7 +1028,19 @@ async def deploy_listing(
                 role=None,
                 meta=meta,
                 reports_to=reports_to,
+                idempotency_key=build_agent_create_idempotency_key(
+                    operation="marketplace-deploy",
+                    owner_id=owner_id,
+                    intent={
+                        "listingId": listing["listing_id"],
+                        "reportsTo": reports_to,
+                        "version": int(listing.get("version", 1) or 1),
+                    },
+                ),
+                idempotency_replay_only=at_agent_budget,
             )
+        except PaperclipAgentCreateReplayMiss as exc:
+            raise HTTPException(status_code=409, detail=AGENT_BUDGET_EXCEEDED_DETAIL) from exc
         except Exception as exc:
             logger.exception(
                 "Marketplace deploy: Paperclip create failed for owner=%s listing=%s",

@@ -318,7 +318,7 @@ describe("RoutinesPanel", () => {
     expect(mockPost).not.toHaveBeenCalled();
   });
 
-  it("create flow: POST /routines (title/assignee/description) then POST the schedule trigger", async () => {
+  it("create flow sends a native reviewer policy, then attaches the schedule trigger", async () => {
     const user = userEvent.setup();
     // 1st POST returns the new routine row; 2nd POST is the trigger.
     mockPost.mockResolvedValueOnce({ id: "rt2" }).mockResolvedValueOnce({
@@ -344,6 +344,8 @@ describe("RoutinesPanel", () => {
     const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /unassigned/i }));
     await user.click(await screen.findByText("Friday"));
+    await user.click(within(dialog).getByRole("button", { name: /no reviewer/i }));
+    await user.click(await screen.findByText("Atlas"));
     fireEvent.change(screen.getByLabelText("Description"), {
       target: { value: "review last week" },
     });
@@ -365,6 +367,7 @@ describe("RoutinesPanel", () => {
       "status",
       "priority",
       "project_id",
+      "execution_policy",
     ]);
     for (const k of Object.keys(rb)) {
       expect(allowed.has(k)).toBe(true);
@@ -372,6 +375,16 @@ describe("RoutinesPanel", () => {
     expect(rb.title).toBe("Weekly review");
     expect(rb.assignee_agent_id).toBe("a1");
     expect(rb.description).toBe("review last week");
+    expect(rb.execution_policy).toMatchObject({
+      mode: "normal",
+      stages: [
+        {
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: "a2", userId: null }],
+        },
+      ],
+    });
     expect(rb).not.toHaveProperty("cron");
 
     // 2nd call: attach the schedule trigger carrying the cron expression.

@@ -1,8 +1,10 @@
 name: Claude Code Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+  # Auto-run-on-PR disabled for now — was: pull_request, types [opened,
+  # synchronize, ready_for_review, reopened]. Re-enable by restoring that
+  # trigger. workflow_dispatch keeps a manual run available in the meantime.
+  workflow_dispatch:
 
 # Supersede in-flight reviews for the same PR — `synchronize` fires on every
 # push, so without this each push stacked another review run behind the last.

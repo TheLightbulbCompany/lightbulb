@@ -14,6 +14,7 @@ submit_brief/container_status actually call this) or resolved via
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,15 +38,29 @@ def _onboarding(**overrides) -> dict:
     return base
 
 
+def _ago(seconds: float) -> str:
+    """An ISO stamp *seconds* in the past, in the shape the onboarding bridge
+    dict carries (``get_onboarding_state`` normalizes datetimes to ISO)."""
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+_STALE = bootstrap_dispatcher.STALE_DISPATCH_AFTER_S + 60
+
+
 def _fake_repo(*, claim_result=BootstrapClaimResult.WON, dispatch_id="dispatch-1", onboarding=None):
     repo = MagicMock()
     repo.get_onboarding_state = AsyncMock(return_value=onboarding or _onboarding())
     repo.claim_bootstrap_dispatch = AsyncMock(
         return_value=(claim_result, dispatch_id if claim_result is BootstrapClaimResult.WON else None)
     )
+    repo.mark_bootstrap_send_attempted = AsyncMock(return_value=True)
+    # Both stamps report whether their CAS landed — "no exception" is not the
+    # same as "recorded", and the dispatcher acts on the difference.
+    repo.mark_bootstrap_sent = AsyncMock(return_value=True)
     repo.mark_bootstrap_delivered = AsyncMock()
     repo.mark_bootstrap_failed = AsyncMock()
     repo.rearm_bootstrap_dispatch = AsyncMock()
+    repo.delete_pending_brief = AsyncMock(return_value=True)
     return repo
 
 
@@ -146,9 +161,26 @@ async def test_funnel_already_complete_is_a_noop():
 
 @pytest.mark.asyncio
 async def test_bootstrap_already_dispatched_is_a_noop():
-    """A peer already won this dispatch -- this caller must not claim again."""
+    """A peer already won this dispatch -- this caller must not claim again.
+
+    No ``bootstrap_dispatched_at`` on this fixture: a claim that cannot be
+    DATED is never treated as expired (fail closed -- see is_dispatch_stale)."""
     repo, ecs, pool, _ = await _run(_onboarding(bootstrap_state="dispatched"))
     repo.claim_bootstrap_dispatch.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_sent_is_a_noop():
+    """`sent` means the chat.send was ACKED: delivery happened and only the
+    completion bookkeeping can still be outstanding. Re-sending would
+    double-run Friday, so this state is left alone no matter how old it is."""
+    repo, ecs, pool, _ = await _run(_onboarding(bootstrap_state="sent", bootstrap_dispatched_at=_ago(_STALE)))
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_not_awaited()
     pool.send_rpc.assert_not_awaited()
 
 
@@ -206,6 +238,299 @@ async def test_claim_stale_generation_does_not_dispatch():
     repo = _fake_repo(claim_result=BootstrapClaimResult.STALE_GENERATION, onboarding=onboarding)
     _, _, pool, _ = await _run(onboarding, repo=repo)
     pool.send_rpc.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Lazy staleness expiry for a stuck `dispatched` claim.
+#
+# The claim used to be held in-process across the whole connect ladder + first
+# run, so a process death (deploy/OOM/scale-in) left the row at `dispatched`
+# FOREVER — nothing read bootstrap_dispatched_at and the admin lever was
+# fenced on `failed`. Recovery is evaluated on the poll that already reads
+# the row; the write-ahead stamp is what decides re-arm vs. terminal.
+# ---------------------------------------------------------------------------
+
+
+def _stale_dispatched(**overrides) -> dict:
+    base = dict(
+        bootstrap_state="dispatched",
+        bootstrap_dispatch_id="dead-claim-1",
+        bootstrap_dispatched_at=_ago(_STALE),
+        bootstrap_attempts=1,
+    )
+    base.update(overrides)
+    return _onboarding(**base)
+
+
+@pytest.mark.asyncio
+async def test_expired_claim_with_no_send_attempt_rearms_and_redispatches_now():
+    """PROVABLY UNSENT: no write-ahead stamp means nothing ever reached the
+    socket, so a fresh dispatch cannot double-run Friday. The SAME call that
+    expires the claim re-claims it — recovery is not deferred to a later poll
+    (that would need something to guarantee a later poll)."""
+    repo, ecs, pool, _ = await _run(_stale_dispatched())
+
+    repo.rearm_bootstrap_dispatch.assert_awaited_once()
+    rearm = repo.rearm_bootstrap_dispatch.call_args
+    assert rearm.args[0] == "creator_1"  # the ROW's PK, like every DDB write here
+    # Fenced on the DEAD claim's dispatch_id, so a live claimant can't be stomped.
+    assert rearm.kwargs["dispatch_id"] == "dead-claim-1"
+    assert rearm.kwargs["onboarding_generation"] == "01G"
+    assert "expired" in rearm.kwargs["reason"]
+
+    repo.claim_bootstrap_dispatch.assert_awaited_once_with("creator_1", onboarding_generation="01G")
+    pool.send_rpc.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expired_claim_after_a_send_attempt_marks_failed_and_never_resends():
+    """AMBIGUOUS: the write-ahead stamp is set but the ack never was, so
+    OpenClaw may already have taken the run. Re-dispatching would mint a
+    run_id it cannot dedup — the same reason the post-connect classifier
+    refuses to re-arm. Terminal + explained beats stuck forever."""
+    onboarding = _stale_dispatched(bootstrap_send_attempted_at=_ago(_STALE))
+    repo, ecs, pool, _ = await _run(onboarding)
+
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    failed = repo.mark_bootstrap_failed.call_args
+    assert failed.args[0] == "creator_1"
+    assert failed.kwargs["dispatch_id"] == "dead-claim-1"
+    assert "ack never recorded" in failed.kwargs["reason"]
+    assert "admin reset" in failed.kwargs["reason"]
+    # Fenced against the claim acking between the read above and this write —
+    # settling a DELIVERED row failed is what would invite a double delivery.
+    assert failed.kwargs["only_if_unacked"] is True
+
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fresh_dispatched_claim_is_left_completely_alone():
+    """The whole hazard of a staleness rule: expiring a claim that is merely
+    SLOW (the connect ladder alone is ~3 minutes) would double-dispatch."""
+    repo, ecs, pool, _ = await _run(_stale_dispatched(bootstrap_dispatched_at=_ago(30)))
+
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+    # And it costs nothing: no container/EFS reads on the pre-claim guard path.
+    ecs.resolve_running_container.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expired_claim_with_no_dispatch_id_is_left_alone():
+    """No fencing token (a legacy/degraded row) — leave it for the admin lever
+    rather than write unfenced."""
+    repo, ecs, pool, _ = await _run(_stale_dispatched(bootstrap_dispatch_id=None))
+
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expired_claim_out_of_attempts_is_recorded_failed_not_rearmed():
+    """The cap still bounds total dispatches (re-arming keeps the counter) —
+    but at the cap the row must land in a state a LEVER accepts. Re-arming
+    would drop it at not_started, where every later poll stands down on the
+    cap and the admin reset (failed / stale-dispatched only) can't take it."""
+    onboarding = _stale_dispatched(bootstrap_attempts=bootstrap_dispatcher.MAX_BOOTSTRAP_ATTEMPTS)
+    repo, ecs, pool, _ = await _run(onboarding)
+
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_awaited_once()
+    assert "budget is spent" in repo.mark_bootstrap_failed.call_args.kwargs["reason"]
+    repo.claim_bootstrap_dispatch.assert_not_awaited()
+    pool.send_rpc.assert_not_awaited()
+
+
+def test_is_dispatch_stale_accepts_both_shapes_and_fails_closed():
+    """The admin lever reads a ``datetime`` off the dataclass, the dispatcher
+    an ISO string off the bridge dict — one threshold, one parser."""
+    stale_dt = datetime.now(timezone.utc) - timedelta(seconds=_STALE)
+    assert bootstrap_dispatcher.is_dispatch_stale(stale_dt) is True
+    assert bootstrap_dispatcher.is_dispatch_stale(stale_dt.isoformat()) is True
+    assert bootstrap_dispatcher.is_dispatch_stale(_ago(30)) is False
+    # Naive stamps are read as UTC, not as local time.
+    assert bootstrap_dispatcher.is_dispatch_stale(stale_dt.replace(tzinfo=None)) is True
+    # Undatable == not stale.
+    assert bootstrap_dispatcher.is_dispatch_stale(None) is False
+    assert bootstrap_dispatcher.is_dispatch_stale("") is False
+    assert bootstrap_dispatcher.is_dispatch_stale("not-a-timestamp") is False
+
+
+# ---------------------------------------------------------------------------
+# The three-stamp ladder: claimed -> send attempted -> sent (acked).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_is_write_ahead_stamped_then_acked_in_order():
+    """Stamp 2 goes down BEFORE the RPC (it is the only evidence of which side
+    of the socket write a dying process was on), stamp 3 immediately after the
+    ack. Order is the whole point — asserting both calls happened would pass
+    on the version of this that stamps nothing until the end."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    pool = _fake_pool()
+    order: list[str] = []
+    repo.mark_bootstrap_send_attempted = AsyncMock(side_effect=lambda *a, **k: order.append("attempted") or True)
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=lambda *a, **k: order.append("sent"))
+    pool.send_rpc = AsyncMock(side_effect=lambda **k: order.append("send_rpc"))
+
+    await _run(onboarding, repo=repo, pool=pool)
+
+    assert order == ["attempted", "send_rpc", "sent"]
+    assert repo.mark_bootstrap_send_attempted.call_args.args[0] == "creator_1"
+    assert repo.mark_bootstrap_send_attempted.call_args.kwargs == {
+        "onboarding_generation": "01G",
+        "dispatch_id": "dispatch-1",
+    }
+    assert repo.mark_bootstrap_sent.call_args.kwargs == {
+        "onboarding_generation": "01G",
+        "dispatch_id": "dispatch-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_lost_claim_at_the_write_ahead_stamp_refuses_to_send():
+    """A False return means the row moved on under this claim (superseded
+    generation, admin reset, a stale-claim recovery) — sending anyway would be
+    a second kickoff on a row someone else now owns."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_send_attempted = AsyncMock(return_value=False)
+    pool = _fake_pool()
+    _, _, pool, _ = await _run(onboarding, repo=repo, pool=pool)
+
+    pool.send_rpc.assert_not_awaited()
+    pool.clear_active_run.assert_called_once()
+    pool.unregister_run_completion_callback.assert_called_once()
+    repo.mark_bootstrap_sent.assert_not_awaited()
+    repo.mark_bootstrap_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ack_retires_the_pending_brief():
+    """DELIVERY, not completion, is what the pending-brief sweep depends on:
+    the kickoff carrying that brief has been accepted. Hanging it off the
+    run-completion observer meant a run that never terminated never swept it,
+    and the leftover put-if-absent key silently blocks the owner's NEXT brief."""
+    repo, ecs, pool, _ = await _run()
+
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
+    # Completion has not happened yet — the sweep did not wait for it.
+    repo.mark_bootstrap_delivered.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completion_observer_no_longer_touches_the_pending_brief():
+    repo, ecs, pool, _ = await _run()
+    repo.delete_pending_brief.reset_mock()
+
+    callback = pool.register_run_completion_callback.call_args.args[2]
+    await callback("final", {"runId": "r1"})
+
+    repo.mark_bootstrap_delivered.assert_awaited_once()
+    repo.delete_pending_brief.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ack_bookkeeping_failure_never_marks_a_delivered_kickoff_failed(monkeypatch):
+    """Everything after the ack is bookkeeping. A DDB blip there must not
+    reach the failure classifier — it would mark a DELIVERED kickoff failed
+    and hand it to a recovery path as if it were retryable."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=RuntimeError("ddb throttled"))
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    pool.send_rpc.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sent_stamp_is_retried_through_a_transient_write_failure(monkeypatch):
+    """The sent stamp is the ONLY durable record that this kickoff was
+    delivered. Dropping it on the first DDB blip leaves a row that reads as an
+    unacked send — which the staleness rule settles `failed` and an admin reset
+    would re-deliver. So it retries instead of being swallowed."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0, 0))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=[RuntimeError("throttled"), RuntimeError("throttled"), True])
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    assert repo.mark_bootstrap_sent.await_count == 3  # landed on the third try
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
+    repo.mark_bootstrap_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_sent_stamp_is_reported_not_read_as_recorded(monkeypatch):
+    """A CAS that comes back REFUSED (the row moved on under this claim — a
+    stale-claim recovery already settled it, an admin reset) is not an
+    exception, but the delivery is just as unrecorded. Reading the swallowed
+    guard-fail as success is what left an acked kickoff sitting in `failed`
+    with nobody warned. Retrying is pointless — a CAS that failed on state
+    cannot succeed on a second try — so it reports immediately instead."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0))
+    metrics: list[str] = []
+    monkeypatch.setattr(bootstrap_dispatcher, "put_metric", lambda name, **kw: metrics.append(name))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(return_value=False)
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    assert repo.mark_bootstrap_sent.await_count == 1  # refused, not retried
+    assert metrics == ["bootstrap.ack_unrecorded"]
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_unrecordable_delivery_is_loud_and_still_sweeps_the_brief(monkeypatch):
+    """The double-fault: acked delivery AND every sent-stamp write fails. There
+    is no second durable place to record it (the table that would hold it is
+    the one failing), so the guarantee is: never re-armed, never classified
+    failed by THIS dispatch, and never silent — an operator must see it before
+    reaching for the reset lever that would double-deliver."""
+    monkeypatch.setattr(bootstrap_dispatcher, "_ACK_STAMP_RETRY_DELAYS_S", (0, 0))
+    metrics: list[str] = []
+    monkeypatch.setattr(bootstrap_dispatcher, "put_metric", lambda name, **kw: metrics.append(name))
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.mark_bootstrap_sent = AsyncMock(side_effect=RuntimeError("ddb down"))
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    assert repo.mark_bootstrap_sent.await_count == 3  # ladder (2) + final attempt
+    assert metrics == ["bootstrap.ack_unrecorded"]
+    # No failure classification, no re-arm, and the delivered-brief sweep still
+    # runs — it is guarded separately from the stamp.
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
+    repo.delete_pending_brief.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_pending_brief_sweep_failure_does_not_undo_the_sent_stamp():
+    """The two ack-time writes are independently guarded: delivery happened
+    either way, so one failing must never skip or reverse the other."""
+    onboarding = _onboarding()
+    repo = _fake_repo(onboarding=onboarding)
+    repo.delete_pending_brief = AsyncMock(side_effect=RuntimeError("ddb throttled"))
+    _, _, pool, _ = await _run(onboarding, repo=repo)
+
+    repo.mark_bootstrap_sent.assert_awaited_once()
+    repo.mark_bootstrap_failed.assert_not_awaited()
+    repo.rearm_bootstrap_dispatch.assert_not_awaited()
 
 
 # --- claim keys off the ROW's user_id; session/member off onboarding_submitted_by ---

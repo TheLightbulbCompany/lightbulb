@@ -210,3 +210,12 @@ def test_patch_project_accepts_status_and_goal_ids():
     }
     with pytest.raises(ValidationError):
         PatchProjectBody(status="frozen")
+
+
+def test_patch_project_accepts_lead_agent_id():
+    from routers.teams.schemas import PatchProjectBody
+
+    body = PatchProjectBody(lead_agent_id="a" * 8)
+    assert body.model_dump(exclude_unset=True, by_alias=True) == {
+        "leadAgentId": "a" * 8,
+    }

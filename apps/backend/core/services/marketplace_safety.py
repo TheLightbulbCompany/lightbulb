@@ -545,6 +545,46 @@ def has_blocking_credential_findings(flags: Iterable[SafetyFlag]) -> bool:
     return any(f.pattern in _BLOCKING_CREDENTIAL_PATTERNS and f.severity == "high" for f in flags)
 
 
+# ---------------------------------------------------------------------------
+# Publishable (snippet-free) flag shapes
+#
+# ``snippet`` is 80 raw characters of the seller's own source line. By
+# construction it is the field MOST likely to hold a credential — finding
+# secret-shaped strings is the scanner's entire job — and it also discloses a
+# private workspace's file paths + line numbers.
+#
+# It may reach LIVE, authenticated surfaces (the seller's publish preview,
+# admin review), which re-scan the artifact on demand. It must NEVER be
+# persisted into an artifact manifest: manifests are written to S3 and onto
+# the DynamoDB listing row, and both are served verbatim by the
+# UNAUTHENTICATED listing-detail + search routes under a public cache header.
+# ---------------------------------------------------------------------------
+
+
+def flags_without_snippets(flags: Iterable[dict]) -> list[dict]:
+    """Flag dicts with ``snippet`` dropped — the persistable/public shape."""
+    return [{k: v for k, v in f.items() if k != "snippet"} for f in flags if isinstance(f, dict)]
+
+
+def manifest_without_snippets(manifest):
+    """``manifest`` with every ``safety_flags[].snippet`` dropped.
+
+    Returns the SAME object when there is nothing to strip, so read paths can
+    skip copying rows that are already clean. Non-dict input passes through
+    (the listing-detail route tolerates a null/garbage manifest).
+
+    This is the read-side half of the fix: published artifacts are immutable,
+    so manifests written before the write-side strip landed keep their
+    snippets until ``scripts/scrub_manifest_snippets.py`` rewrites them.
+    """
+    if not isinstance(manifest, dict):
+        return manifest
+    flags = manifest.get("safety_flags")
+    if not isinstance(flags, list) or not any(isinstance(f, dict) and "snippet" in f for f in flags):
+        return manifest
+    return {**manifest, "safety_flags": flags_without_snippets(flags)}
+
+
 def to_rejection_notes(flags: Iterable[SafetyFlag]) -> str:
     """Format high-severity flags as rejection-note pre-fill copy."""
     high = [f for f in flags if f.severity == "high"]

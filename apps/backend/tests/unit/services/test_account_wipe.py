@@ -496,6 +496,39 @@ async def test_skips_paperclip_steps_when_no_paperclip_row(wipe_mocks):
 
 
 @pytest.mark.asyncio
+async def test_missing_paperclip_row_skip_names_the_aurora_residue(wipe_mocks, caplog):
+    """A missing DDB row is the ONLY handle on the Paperclip side, so the two
+    skipped steps must say Aurora may still hold rows — a bare
+    "no paperclip-companies row" reads as "this owner had no Paperclip side"
+    and is how orphaned companies stayed invisible. Report line AND a warning
+    log, so it's visible to an operator reading either surface."""
+    wipe_mocks.paperclip_get.return_value = None
+
+    with caplog.at_level("WARNING", logger="core.services.account_wipe"):
+        report = await wipe_account(OWNER_ID, actor_admin_id="admin_1")
+
+    by_system = {s.system: s for s in report.steps}
+    for system in ("paperclip_company", "paperclip_aurora_user"):
+        assert by_system[system].status == "skipped"
+        assert "Aurora may still hold" in by_system[system].detail
+    assert any("Aurora may still hold rows" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_preview_missing_paperclip_row_names_the_aurora_residue(wipe_mocks):
+    """Same warning on the read-only side: the preview is what an admin reads
+    BEFORE committing, so it must not promise a clean Paperclip teardown."""
+    wipe_mocks.paperclip_get.return_value = None
+
+    report = await preview_wipe(OWNER_ID)
+
+    by_system = {s.system: s for s in report.steps}
+    for system in ("paperclip_company", "paperclip_aurora_user"):
+        assert by_system[system].status == "skipped"
+        assert "Aurora may still hold" in by_system[system].detail
+
+
+@pytest.mark.asyncio
 async def test_skips_container_dependent_steps_when_no_containers_row(wipe_mocks):
     wipe_mocks.container_get.return_value = None
 

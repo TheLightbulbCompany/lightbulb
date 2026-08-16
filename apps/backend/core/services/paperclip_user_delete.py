@@ -29,10 +29,25 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Bootstrap admins that must NEVER be deleted — mirrors
-# scripts/recover_orphan_paperclip_member.py's BOOTSTRAP_EMAILS. Deleting
-# either one breaks the PaperclipAdminClient bootstrap-admin session every
-# provision call depends on.
+# THE one definition. account_wipe and scripts/recover_orphan_paperclip_member
+# import this — never re-declare the pair, or narrowing it later fixes only the
+# copy you happened to edit.
+#
+# BOTH entries stay, and the second one is not redundant: the bootstrap admin's
+# address differs PER ENVIRONMENT. Prod was renamed to the plus-addressed alias
+# so the instance_admin role can't leak into admin@isol8.co's regular Isol8
+# identity; dev still carries the bare address from before that rename (see
+# auth-stack.ts's PaperclipAdminCredentials comment, and
+# paperclip_admin_session's module docstring). The live email is in Secrets
+# Manager, not here — this set is the union that is safe in every env, and
+# deleting whichever one IS this env's bootstrap admin breaks the
+# PaperclipAdminClient session every provision call depends on.
+#
+# The cost is known and accepted: in prod, admin@isol8.co is an ordinary org
+# owner, so wiping THAT account needs a manual Aurora delete. Narrowing to the
+# live per-env address means reading the secret from inside a delete guard —
+# a read whose failure mode is "delete the bootstrap admin". Not worth it for
+# a two-element allowlist.
 BOOTSTRAP_EMAILS: frozenset[str] = frozenset({"admin@isol8.co", "admin+paperclip@isol8.co"})
 
 # Same AWS account both envs share (see core.billing.bedrock_aip.OUR_ACCOUNT_ID

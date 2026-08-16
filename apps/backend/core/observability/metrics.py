@@ -34,6 +34,21 @@ NAMESPACE = "Isol8"
 #   - tool_id: user-supplied/unbounded (key_service orphan-delete metric).
 _DENIED_DIMENSIONS = frozenset({"user_id", "container_id", "request_id", "owner_id", "admin_user_id", "tool_id"})
 
+# The fleet-wide rollup dimension set. CloudWatch treats EVERY dimension set as
+# its own metric identity, so a metric emitted only as [env, service, reason]
+# is INVISIBLE to a query for [env, service] — it is a different metric, not a
+# filtered view of the same one. Every alarm and dashboard widget in
+# observability-stack.ts binds { env, service } by default (createAlarm injects
+# exactly those two), so emitting the full set alone left those alarms watching
+# an identity nothing published: W2/W8/W10 could never fire. Emitting both sets
+# from the one record fixes that for every metric at once, present and future.
+#
+# The one trap this creates: NEVER emit the same metric twice for one event,
+# once dimensionless and once with dimensions. Both land on the rollup and the
+# event is counted twice. `provision.gate.blocked` did exactly that (to feed
+# W64 before the rollup existed) and the dimensionless call was deleted.
+_ROLLUP_KEYS = ["env", "service"]
+
 
 def _get_env() -> str:
     return (settings.ENVIRONMENT or "dev").lower()
@@ -62,13 +77,21 @@ def put_metric(
     all_dims = {"env": _get_env(), "service": "isol8-backend", **dims}
     dim_keys = list(all_dims.keys())
 
+    # Full set first (what an operator slices by: chat.error by reason,
+    # container.lifecycle.latency by op), then the fleet rollup (see
+    # _ROLLUP_KEYS). Skipped when the metric carries no extra dimensions —
+    # the two sets would be identical, and a duplicate set double-counts.
+    dimension_sets = [dim_keys]
+    if dim_keys != _ROLLUP_KEYS:
+        dimension_sets.append(_ROLLUP_KEYS)
+
     emf_line = {
         "_aws": {
             "Timestamp": int(time.time() * 1000),
             "CloudWatchMetrics": [
                 {
                     "Namespace": NAMESPACE,
-                    "Dimensions": [dim_keys],
+                    "Dimensions": dimension_sets,
                     "Metrics": [{"Name": name, "Unit": unit}],
                 }
             ],

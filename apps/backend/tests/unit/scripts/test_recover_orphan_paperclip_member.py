@@ -19,6 +19,14 @@ from scripts.recover_orphan_paperclip_member import (
 )
 
 
+def test_bootstrap_emails_is_the_single_shared_constant():
+    """One definition, imported everywhere. Three copies of this pair existed;
+    narrowing one of them would have left the others protecting the old set."""
+    from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS as canonical
+
+    assert BOOTSTRAP_EMAILS is canonical
+
+
 def test_refuses_bootstrap_admin():
     with pytest.raises(SystemExit):
         plan_recovery(

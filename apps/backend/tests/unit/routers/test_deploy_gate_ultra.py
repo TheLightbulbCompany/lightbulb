@@ -238,27 +238,53 @@ def _single_agent_listing() -> dict:
     }
 
 
+@patch("routers.marketplace_listings.container_repo.release_owner_deploy_claim", new_callable=AsyncMock)
+@patch(
+    "routers.marketplace_listings.container_repo.try_claim_owner_deploy",
+    new_callable=AsyncMock,
+    return_value=("claim", None),
+)
+@patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
+@patch("routers.marketplace_listings._fetch_agent_artifact")
 @patch("routers.marketplace_listings._live_install_of", return_value=None)
-@patch("routers.marketplace_listings.enforce_agent_budget", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.is_at_agent_budget", new_callable=AsyncMock, return_value=True)
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_single_agent_hire_is_budget_gated(mock_get_published, mock_enforce, _mock_live, admin_client):
-    """The one-agent hire path adds exactly one to the roster, so it carries the
-    same budget as every other create path."""
-    from fastapi import HTTPException
+def test_single_agent_hire_at_cap_allows_only_an_existing_operation(
+    mock_get_published,
+    mock_at_budget,
+    _mock_live,
+    mock_fetch,
+    mock_create,
+    _mock_claim,
+    mock_release,
+    admin_client,
+):
+    """At the cap, a missing operation 409s without creating another agent."""
+    from core.services.paperclip_admin_client import PaperclipAgentCreateReplayMiss
 
     mock_get_published.return_value = _single_agent_listing()
-    mock_enforce.side_effect = HTTPException(status_code=409, detail="at limit")
+    mock_fetch.return_value = (b"tar", {"agent": {"name": "Solo"}})
+    mock_create.side_effect = PaperclipAgentCreateReplayMiss(
+        "replay miss",
+        status_code=409,
+        body='{"code":"agent_create_idempotency_replay_miss"}',
+    )
 
     resp = admin_client.post("/api/v1/marketplace/listings/solo/deploy")
 
     assert resp.status_code == 409, resp.text
-    mock_enforce.assert_awaited_once()
+    mock_at_budget.assert_awaited_once()
+    mock_create.assert_awaited_once()
+    assert mock_create.await_args.kwargs["idempotency_replay_only"] is True
+    mock_release.assert_awaited_once()
 
 
 @patch("routers.marketplace_listings._live_install_of")
-@patch("routers.marketplace_listings.enforce_agent_budget", new_callable=AsyncMock)
+@patch("routers.marketplace_listings.is_at_agent_budget", new_callable=AsyncMock, return_value=True)
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
-def test_already_installed_retry_is_not_refused_at_the_limit(mock_get_published, mock_enforce, mock_live, admin_client):
+def test_already_installed_retry_is_not_refused_at_the_limit(
+    mock_get_published, mock_at_budget, mock_live, admin_client
+):
     """ORDERING GUARANTEE — the P2 regression this locks in.
 
     A deploy whose response was lost leaves the owner installed but retrying.
@@ -267,16 +293,12 @@ def test_already_installed_retry_is_not_refused_at_the_limit(mock_get_published,
     and that this call would not create. Moving the gate back above the
     short-circuit reintroduces the bug and fails here.
     """
-    from fastapi import HTTPException
-
     mock_get_published.return_value = _single_agent_listing()
     mock_live.return_value = {"agent_id": "agent-existing", "template_version": 1}
-    # Over budget: if the gate ran first, this would 409 the retry.
-    mock_enforce.side_effect = HTTPException(status_code=409, detail="at limit")
 
     resp = admin_client.post("/api/v1/marketplace/listings/solo/deploy")
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["already_installed"] is True
     assert resp.json()["agent_id"] == "agent-existing"
-    mock_enforce.assert_not_awaited()
+    mock_at_budget.assert_not_awaited()

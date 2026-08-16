@@ -12,9 +12,18 @@ describe("planLabel", () => {
     expect(planLabel("trial_local", { expired: true })).toBe("Free tier ended");
   });
 
-  it("passes other statuses through for the caller's capitalize treatment", () => {
-    expect(planLabel("active")).toBe("active");
-    expect(planLabel("trialing")).toBe("trialing");
+  it("capitalizes single-word statuses for the caller's own treatment on top", () => {
+    expect(planLabel("active")).toBe("Active");
+    expect(planLabel("trialing")).toBe("Trialing");
+  });
+
+  it("humanizes underscored multi-word statuses instead of leaking the raw enum", () => {
+    // CSS `capitalize`/`uppercase` can't fix an underscore — "past_due" under
+    // `capitalize` reads "Past_due", not "Past due". planLabel does the word
+    // split itself so every caller gets a readable label regardless of its
+    // own textTransform.
+    expect(planLabel("past_due")).toBe("Past due");
+    expect(planLabel("incomplete_expired")).toBe("Incomplete expired");
   });
 
   it("returns null for an absent status so callers can skip the chip", () => {

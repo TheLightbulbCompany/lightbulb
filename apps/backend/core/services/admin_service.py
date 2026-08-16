@@ -316,6 +316,8 @@ _PAPERCLIP_PROVISION_FIELDS = (
     "bootstrap_attempts",
     "bootstrap_dispatch_id",
     "bootstrap_dispatched_at",
+    "bootstrap_send_attempted_at",
+    "bootstrap_sent_at",
     "bootstrap_delivered_at",
     "bootstrap_last_error",
     "created_at",

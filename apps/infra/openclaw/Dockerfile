@@ -98,10 +98,23 @@ USER root
 # ---- Layer 1: runtime apt packages ----
 # Dropped from upstream extended image: build-essential, make (build-only).
 # Keeps git/curl/wget/gnupg — runtime tools (skills shell out, clawhub uses git).
+#
+# xvfb/x11vnc/novnc/websockify back the container browser live view. This is
+# upstream's own recipe for a watchable headful browser — see their
+# scripts/docker/sandbox/Dockerfile.browser, which installs exactly these
+# alongside chromium. We do NOT use their sandbox feature: it spawns a sibling
+# container via `docker run` (src/agents/sandbox/browser.ts), and Fargate has
+# no Docker daemon. We run the same processes in this one container instead,
+# which also means no CDP relay — their relay exists only to cross the
+# container boundary ours does not have.
+#
+# Installing these is inert until DISPLAY is set on the task definition; see
+# the display block in container-stack.ts startupCommand.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       ffmpeg jq ripgrep tmux poppler-utils \
       socat python3-pip sqlite3 python3 \
       curl wget ca-certificates gnupg git unzip \
+      xvfb x11vnc novnc websockify \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
@@ -161,7 +174,8 @@ RUN ln -s /usr/local/bin/notesmd-cli /usr/local/bin/obsidian-cli
 RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | sh
 
 # ---- Layer 8: Node packages ----
-# All globals install with --ignore-scripts (faster, no build deps).
+# Globals install with --ignore-scripts (faster, no build deps) EXCEPT the three
+# below that fetch a native binary in postinstall (claude-code, xurl, opencode).
 # qmd was previously installed here; removed 2026-05-02. qmd's
 # better-sqlite3 store on EFS deadlocked the gateway's V8 main thread
 # (`rpc_wait_bit_killable` — Linux NFS client retries forever).
@@ -185,9 +199,17 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 RUN npm i -g --ignore-scripts \
       clawhub openai \
       @steipete/oracle @steipete/summarize \
-      @anthropic-ai/claude-code @google/gemini-cli \
+      @google/gemini-cli \
       mcporter@0.12.0 \
       @paperclipai/mcp-server@2026.529.0
+
+# Claude Code: the ACP coding harness for bedrock_claude owners (see backend
+# _build_bedrock_acp_harness_env). Its platform binary arrives via a postinstall
+# hook, so like xurl and opencode below it stays outside the --ignore-scripts
+# install above — with scripts skipped the `claude` wrapper is present but every
+# invocation dies with "claude native binary not installed", so the harness could
+# never launch. The smoke test fails the build if the binary didn't materialize.
+RUN npm i -g @anthropic-ai/claude-code && claude --version >/dev/null
 
 # xurl downloads its native Go binary in npm postinstall. Keep it outside the
 # --ignore-scripts global install above; otherwise the JS wrapper is present but

@@ -318,3 +318,41 @@ async def test_create_enabled_schedule_routine_deletes_routine_when_trigger_fail
         routine_id=f"rid-{NIGHTLY_CEO_ROUTINE_TITLE}",
         session_cookie="cookie",
     )
+
+
+@pytest.mark.asyncio
+async def test_create_agent_routines_forwards_variable_definitions():
+    """Variable definitions ride the routine body — without them Paperclip
+    re-syncs {{NAME}} references as required defaultless variables and the
+    dormant schedule trigger 422s (rolled back marketplace deploys in prod)."""
+    admin = _admin_with_existing([])
+    variables = [{"name": "MONTHLY_SPEND_CAP_USD", "type": "number", "defaultValue": 2000, "required": True}]
+    await create_agent_routines(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="agent-uuid",
+        routines=[
+            {
+                "title": "Finance snapshot",
+                "description": "Cap {{MONTHLY_SPEND_CAP_USD}}",
+                "cron": "0 7 * * 1",
+                "variables": variables,
+            }
+        ],
+    )
+    routine_body = admin.create_routine.await_args.kwargs["body"]
+    assert routine_body["variables"] == variables
+
+
+@pytest.mark.asyncio
+async def test_create_agent_routines_omits_variables_key_when_absent():
+    admin = _admin_with_existing([])
+    await create_agent_routines(
+        admin=admin,
+        session_cookie="cookie",
+        company_id="co1",
+        agent_id="agent-uuid",
+        routines=[{"title": "Morning sweep", "description": "do it", "cron": "0 6 * * *"}],
+    )
+    assert "variables" not in admin.create_routine.await_args.kwargs["body"]

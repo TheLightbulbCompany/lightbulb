@@ -142,7 +142,7 @@ class TestGetCurrentUser:
             patch("core.auth.settings") as mock_settings,
         ):
             mock_settings.CLERK_ISSUER = TEST_ISSUER
-            mock_settings.CLERK_AUDIENCE = None
+            mock_settings.clerk_authorized_parties_list = []
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "test-key-id", "alg": "RS256"}
             mock_decode.return_value = payload
@@ -163,7 +163,7 @@ class TestGetCurrentUser:
             patch("core.auth.settings") as mock_settings,
         ):
             mock_settings.CLERK_ISSUER = TEST_ISSUER
-            mock_settings.CLERK_AUDIENCE = None
+            mock_settings.clerk_authorized_parties_list = []
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "test-key-id", "alg": "RS256"}
             mock_decode.side_effect = jwt.ExpiredSignatureError("Token expired")
@@ -184,7 +184,7 @@ class TestGetCurrentUser:
             patch("core.auth.settings") as mock_settings,
         ):
             mock_settings.CLERK_ISSUER = TEST_ISSUER
-            mock_settings.CLERK_AUDIENCE = None
+            mock_settings.clerk_authorized_parties_list = []
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "test-key-id", "alg": "RS256"}
             mock_decode.side_effect = jwt.InvalidAudienceError("Invalid claims")
@@ -204,7 +204,7 @@ class TestGetCurrentUser:
             patch("core.auth.settings") as mock_settings,
         ):
             mock_settings.CLERK_ISSUER = TEST_ISSUER
-            mock_settings.CLERK_AUDIENCE = None
+            mock_settings.clerk_authorized_parties_list = []
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "unknown-key-id", "alg": "RS256"}
 
@@ -263,7 +263,7 @@ class TestGetCurrentUser:
             patch("core.auth.settings") as mock_settings,
         ):
             mock_settings.CLERK_ISSUER = TEST_ISSUER
-            mock_settings.CLERK_AUDIENCE = None
+            mock_settings.clerk_authorized_parties_list = []
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "test-key-id", "alg": "RS256"}
             mock_decode.return_value = payload
@@ -299,7 +299,7 @@ class TestGetCurrentUser:
             patch("core.auth.settings") as mock_settings,
         ):
             mock_settings.CLERK_ISSUER = TEST_ISSUER
-            mock_settings.CLERK_AUDIENCE = None
+            mock_settings.clerk_authorized_parties_list = []
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "test-key-id", "alg": "RS256"}
             mock_decode.return_value = payload

@@ -251,6 +251,42 @@ async def test_a_non_clienterror_boto_fault_also_fails_open(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_client_error_fails_closed_when_requested(dynamodb_table):
+    """Approval pre-creation cannot guess whether an exclusive claim exists."""
+    from core.repositories import container_repo
+
+    spy = MagicMock()
+    spy.update_item.side_effect = ClientError(
+        {"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"
+    )
+    with patch.object(container_repo, "_get_table", return_value=spy):
+        token, held = await container_repo.try_claim_owner_deploy(
+            "org_1", listing_id="approval:issue-1", fail_open=False
+        )
+
+    assert token is None
+    assert held is None
+
+
+@pytest.mark.asyncio
+async def test_generic_fault_fails_closed_when_requested(dynamodb_table):
+    """The fail-closed choice covers non-ClientError failures too."""
+    from botocore.exceptions import EndpointConnectionError
+
+    from core.repositories import container_repo
+
+    spy = MagicMock()
+    spy.update_item.side_effect = EndpointConnectionError(endpoint_url="https://dynamodb.us-east-1.amazonaws.com")
+    with patch.object(container_repo, "_get_table", return_value=spy):
+        token, held = await container_repo.try_claim_owner_deploy(
+            "org_1", listing_id="approval:issue-1", fail_open=False
+        )
+
+    assert token is None
+    assert held is None
+
+
+@pytest.mark.asyncio
 async def test_a_timed_out_deploy_holds_the_claim_until_the_lease_expires(dynamodb_table):
     """THE FIX: a client-side timeout must NOT hand the claim to the next hire.
 

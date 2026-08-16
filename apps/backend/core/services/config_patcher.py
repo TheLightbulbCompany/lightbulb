@@ -17,6 +17,7 @@ from core.services.efs_file_lock import (
     chown_uid_1000_best_effort,
     get_file_lock,
     open_lock_fd,
+    openclaw_config_sidecar_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ async def _locked_rmw(
     """Locked read-modify-write skeleton for openclaw.json on EFS.
 
     Resolves the owner's config path, raises ConfigPatchError if missing,
-    acquires an exclusive fcntl.lockf on openclaw.json, reads + parses JSON,
+    acquires the guarded rollout-aware sidecar, reads + parses JSON, and
     invokes ``mutate_fn(current)`` to apply per-call mutation logic in place.
 
     ``mutate_fn`` returns True if the config was modified and a write is
@@ -111,12 +112,11 @@ async def _locked_rmw(
     ``log_context``.
 
     Locking uses the shared two-layer discipline (see ``efs_file_lock``): a
-    per-owner in-process ``threading.Lock`` serializes threads in this worker
-    (POSIX ``fcntl`` is process-scoped, so it alone can't), and an exclusive
-    ``fcntl.lockf`` on a SEPARATE ``openclaw.json.lock`` file guards
-    cross-process writers. The file lock is deliberately NOT on openclaw.json
-    itself — the atomic ``os.rename`` swaps that inode out, so a lock held on
-    it would not fence a racing rename.
+    per-owner in-process ``threading.Lock`` serializes threads in this worker,
+    then ``openclaw_config_sidecar_lock`` preserves the legacy fcntl protocol
+    until boot recovery publishes the transition marker, after which it uses
+    pinned OpenClaw's ephemeral ``O_EXCL`` protocol. The sidecar is separate
+    from openclaw.json because the atomic ``os.rename`` swaps the data inode.
     """
     config_dir = os.path.join(_efs_mount_path, owner_id)
     config_path = os.path.join(config_dir, "openclaw.json")
@@ -126,10 +126,7 @@ async def _locked_rmw(
     def _do_rmw():
         if not os.path.exists(config_path):
             raise ConfigPatchError(f"Config not found for owner {owner_id}")
-        lock_fd = open_lock_fd(config_dir, lock_path)
-        try:
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-
+        with openclaw_config_sidecar_lock(config_dir, lock_path):
             with open(config_path, "r") as f:
                 current = json.load(f)
 
@@ -149,11 +146,7 @@ async def _locked_rmw(
             except Exception:
                 os.unlink(tmp_path)
                 raise
-
             logger.info("openclaw.json for owner %s: %s", owner_id, log_context)
-        finally:
-            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
 
     def _do_rmw_locked():
         with get_file_lock(lock_path):
@@ -529,7 +522,7 @@ async def append_to_openclaw_config_list(
     - If `path` doesn't exist, create nested dicts as needed and initialize the
       list with `[value]`.
     - If the list already contains `value`, this is a no-op (dedup).
-    - Acquires the same fcntl.lockf exclusive lock on openclaw.json as
+    - Acquires the same OpenClaw-compatible sidecar as
       `patch_openclaw_config` to serialize concurrent writes.
     """
     if not path:
@@ -566,7 +559,8 @@ async def remove_from_openclaw_config_list(
     - If `path` doesn't exist or isn't a list, no-op (no error).
     - Predicate-match approach supports both string matching (e.g. allowFrom)
       and structural matching (e.g. bindings dict entries).
-    - Acquires the same fcntl.lockf exclusive lock as append_to_openclaw_config_list.
+    - Acquires the same OpenClaw-compatible sidecar as
+      append_to_openclaw_config_list.
     """
     if not path:
         raise ConfigPatchError("path must not be empty")
@@ -822,7 +816,7 @@ async def delete_openclaw_config_path(
     - If the parent dict is empty after removal, it is left as `{}` rather
       than being pruned recursively. OpenClaw treats empty dicts the same
       as missing keys for `channels.*.accounts`.
-    - Acquires the same fcntl.lockf exclusive lock as the other helpers.
+    - Acquires the same OpenClaw-compatible sidecar as the other helpers.
     """
     if not path:
         raise ConfigPatchError("path must not be empty")
@@ -1006,7 +1000,7 @@ async def set_openclaw_config_path(
     - If an intermediate segment exists but is not a dict, it is replaced
       with a dict (consistent with treating the path as authoritative).
     - No-op if the leaf already equals `value` (skips write + chokidar reload).
-    - Same fcntl.lockf exclusive lock as the other helpers.
+    - Same OpenClaw-compatible sidecar as the other helpers.
 
     Used for "replace this entire subtree" semantics that deep-merge cannot
     express (e.g. PUT /integrations/mcp/servers wipes any server not in the
@@ -1033,7 +1027,7 @@ async def set_openclaw_config_path(
 
 
 async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
-    """Atomically append cron jobs to ``{owner_id}/cron/jobs.json``.
+    """Atomically upsert cron jobs into ``{owner_id}/cron/jobs.json``.
 
     Lives in a separate file from openclaw.json (see ``config.cron.store``
     in OpenClaw's schema, default ``~/.openclaw/cron/jobs.json``), so it
@@ -1076,7 +1070,20 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
             jobs = data.get("jobs")
             if not isinstance(jobs, list):
                 jobs = []
-            jobs.extend(copy.deepcopy(j) for j in new_jobs)
+            existing_by_id = {
+                job.get("id"): index
+                for index, job in enumerate(jobs)
+                if isinstance(job, dict) and isinstance(job.get("id"), str)
+            }
+            for new_job in new_jobs:
+                copied = copy.deepcopy(new_job)
+                job_id = copied.get("id") if isinstance(copied, dict) else None
+                if isinstance(job_id, str) and job_id in existing_by_id:
+                    jobs[existing_by_id[job_id]] = copied
+                else:
+                    if isinstance(job_id, str):
+                        existing_by_id[job_id] = len(jobs)
+                    jobs.append(copied)
             data["jobs"] = jobs
             data.setdefault("version", 1)
 

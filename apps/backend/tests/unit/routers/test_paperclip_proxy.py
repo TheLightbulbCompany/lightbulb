@@ -20,6 +20,7 @@ would mostly verify mocks against mocks.
 
 from __future__ import annotations
 
+import gzip
 import json
 import time
 
@@ -300,6 +301,7 @@ def test_filter_response_headers_drops_set_cookie_and_content_length():
     headers = httpx.Headers(
         [
             ("content-length", "123"),
+            ("content-encoding", "gzip"),
             ("set-cookie", "session=abc"),
             ("transfer-encoding", "chunked"),
             ("content-type", "text/html"),
@@ -307,9 +309,76 @@ def test_filter_response_headers_drops_set_cookie_and_content_length():
     )
     out = _filter_response_headers(headers)
     assert "content-length" not in {k.lower() for k in out}
+    assert "content-encoding" not in {k.lower() for k in out}
     assert "set-cookie" not in {k.lower() for k in out}
     assert "transfer-encoding" not in {k.lower() for k in out}
     assert out.get("content-type") == "text/html"
+
+
+def test_http_proxy_drops_encoding_after_httpx_decodes_upstream_gzip(monkeypatch):
+    """The browser must not decode the JSON body a second time.
+
+    ``httpx`` decompresses a gzip response before the proxy reads
+    ``upstream.content`` but retains the upstream header. This exercises the
+    route boundary to keep the body and response headers in agreement.
+    """
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.test")
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_proxy", email="user@example.com")
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return SimpleNamespace(
+                status="active",
+                org_id="user_proxy",
+                paperclip_password_encrypted="unused",
+            )
+
+    async def _gzip_response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(b'{"agents":[]}'),
+            headers={"content-encoding": "gzip", "content-type": "application/json"},
+            request=request,
+        )
+
+    real_async_client = httpx.AsyncClient
+
+    class _MockAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003 - mirrors httpx constructor
+            kwargs["transport"] = httpx.MockTransport(_gzip_response)
+            self._client = real_async_client(*args, **kwargs)
+
+        async def __aenter__(self):
+            await self._client.__aenter__()
+            return self
+
+        async def __aexit__(self, *args) -> None:  # noqa: ANN002 - mirrors context manager
+            await self._client.__aexit__(*args)
+
+        async def request(self, *args, **kwargs):  # noqa: ANN002, ANN003 - mirrors httpx client
+            return await self._client.request(*args, **kwargs)
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+    monkeypatch.setattr(proxy_mod, "is_trusted", lambda _cookies, _user_id: "session=trusted")
+    monkeypatch.setattr(proxy_mod.httpx, "AsyncClient", _MockAsyncClient)
+
+    app = _build_http_app()
+    client = TestClient(app)
+    response = client.get("/api/companies/company/agents", cookies={"isol8_paperclip": cookie})
+
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") is None
+    assert response.json() == {"agents": []}
 
 
 # ---------------------------------------------------------------

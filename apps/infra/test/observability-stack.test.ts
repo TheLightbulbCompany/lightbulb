@@ -135,6 +135,107 @@ function buildTemplate(envName: "dev" | "prod"): Template {
 // a prod-only compile/synth break fails the suite instead of the deploy.
 const PROD_TEMPLATE = buildTemplate("prod");
 
+// ---------------------------------------------------------------------------
+// Emitter registry — the dimension sets the backend actually publishes
+// ---------------------------------------------------------------------------
+
+/**
+ * Every Isol8-namespace metric an alarm in this stack binds, mapped to the
+ * EXTRA dimension key sets its backend emitter publishes (env + service are
+ * on everything and are excluded here).
+ *
+ * Why this exists: CloudWatch treats each dimension set as a separate metric
+ * identity, not a filterable view. An alarm bound to a set no emitter produces
+ * receives zero datapoints and, with NOT_BREACHING, sits green forever. Three
+ * alarms (W2, W8, W10) shipped that way and were discovered only by reading
+ * the code. `put_metric` now always emits an [env, service] rollup alongside
+ * the full set, so the empty set below is universally valid; anything else has
+ * to match an emitter exactly.
+ *
+ * Maintenance: grep the metric name in apps/backend for its put_metric /
+ * timing / gauge call and copy the dimension keys. A new alarm on a metric
+ * that is not listed fails this test — which is the point: if you cannot name
+ * the emitter, the alarm has nothing to watch.
+ */
+const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
+  "auth.jwks.refresh": [["status"]],
+  "auth.jwt.fail": [["reason"]],
+  "auth.org_admin.denied": [[]],
+  "billing.pricing.missing_model": [[]],
+  "channel.configure": [["provider", "status"]],
+  "channel.rpc": [["provider", "status"]],
+  "chat.e2e.latency": [[]],
+  "chat.error": [["reason", "reclassified"]],
+  "chat.message.count": [[]],
+  "chat.session_usage.fetch.error": [[]],
+  "container.efs.access_point": [["op", "status"]],
+  "container.error_state": [[]],
+  "container.lifecycle.latency": [["op"]],
+  "container.provision": [["status"]],
+  "container.task_def.register": [["status"]],
+  "debug.endpoint.prod_hit": [["endpoint"]],
+  "gateway.cold_start.count": [["outcome"]],
+  "gateway.cold_start.latency": [[]],
+  "gateway.connection": [["event"], ["active_runs", "event"], ["error_class", "event"]],
+  "gateway.connection.open": [[]],
+  "gateway.frontend.prune": [[]],
+  "gateway.health_check.timeout": [[]],
+  "gateway.rpc.error": [["method"]],
+  "gateway.running.count": [[]],
+  "marketplace.path_traversal_attempt": [[]],
+  "metronome.gate.refresh_error": [[]],
+  "metronome.webhook": [["result"], ["blocked", "result"]],
+  "operator.upstream.closed": [[]],
+  "paperclip.upstream.error": [["kind"]],
+  "provision.gate.blocked": [["code"]],
+  "stripe.api.latency": [["op"]],
+  "stripe.webhook.received": [["event_type"]],
+  "stripe.webhook.sig_fail": [[]],
+  "update.fleet_patch.invoked": [[]],
+  "update.scheduled_worker.error": [[]],
+  "update.scheduled_worker.heartbeat": [[]],
+  "webhook.clerk.sig_fail": [[]],
+  "workspace.file.write.error": [[]],
+  "workspace.path_traversal.attempt": [[]],
+};
+
+type MetricBinding = { alarm: string; metricName: string; extraDims: string[] };
+
+/**
+ * Every Isol8-namespace metric an alarm binds, from BOTH shapes CloudFormation
+ * renders: a plain metric alarm (Namespace/MetricName/Dimensions at the top
+ * level) and a metric-math alarm (nested under Metrics[].MetricStat.Metric —
+ * where W1 and W10 live). Search-expression alarms carry no MetricStat and are
+ * skipped: they match on dimension VALUES, so there is no set to check.
+ */
+function isol8MetricBindings(template: Template): MetricBinding[] {
+  const bindings: MetricBinding[] = [];
+  for (const [logicalId, res] of Object.entries(
+    template.findResources("AWS::CloudWatch::Alarm"),
+  ) as [string, any][]) {
+    const props = res.Properties ?? {};
+    const alarm =
+      typeof props.AlarmName === "string" ? props.AlarmName : logicalId;
+    const collect = (namespace: any, metricName: any, dimensions: any) => {
+      if (namespace !== "Isol8" || typeof metricName !== "string") return;
+      bindings.push({
+        alarm,
+        metricName,
+        extraDims: (dimensions ?? [])
+          .map((d: any) => d.Name)
+          .filter((k: string) => k !== "env" && k !== "service")
+          .sort(),
+      });
+    };
+    collect(props.Namespace, props.MetricName, props.Dimensions);
+    for (const m of props.Metrics ?? []) {
+      const metric = m.MetricStat?.Metric;
+      if (metric) collect(metric.Namespace, metric.MetricName, metric.Dimensions);
+    }
+  }
+  return bindings;
+}
+
 describe("ObservabilityStack", () => {
   let template: Template;
 
@@ -248,6 +349,58 @@ describe("ObservabilityStack", () => {
           Match.objectLike({ Name: "TargetGroup" }),
         ]),
       });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Alarm <-> emitter dimension contract
+  // -------------------------------------------------------------------
+
+  test("every Isol8-namespace alarm binds a dimension set an emitter publishes", () => {
+    const bindings = isol8MetricBindings(template);
+    // Anti-vacuity: a CloudFormation shape change that stops the walker from
+    // finding anything would otherwise make this test pass on an empty list.
+    expect(bindings.length).toBeGreaterThan(30);
+
+    const offenders = bindings
+      .map((b) => {
+        const emitted = EMITTED_DIMENSION_SETS[b.metricName];
+        if (!emitted) {
+          return `${b.alarm}: no emitter registered for "${b.metricName}"`;
+        }
+        // The [env, service] rollup is emitted for every metric, so an alarm
+        // that adds no dimensions of its own is always watching real data.
+        if (b.extraDims.length === 0) return null;
+        const matches = emitted.some(
+          (set) => [...set].sort().join(",") === b.extraDims.join(","),
+        );
+        return matches
+          ? null
+          : `${b.alarm}: binds "${b.metricName}" {${b.extraDims.join(", ")}} ` +
+              `but emitters publish ${JSON.stringify(emitted)}`;
+      })
+      .filter(Boolean);
+
+    expect(offenders).toEqual([]);
+  });
+
+  // The three alarms issue #1486 found dead. They are correct BECAUSE
+  // put_metric emits the [env, service] rollup — pin the binding so a future
+  // "let me add a dimension to this alarm" quietly kills them again.
+  test("W2/W8/W10 watch the env+service rollup, with no extra dimensions", () => {
+    const rollupOnly = isol8MetricBindings(template).filter(
+      (b) =>
+        ["container.lifecycle.latency", "gateway.rpc.error", "chat.error"].includes(
+          b.metricName,
+        ),
+    );
+    expect(rollupOnly.map((b) => b.metricName).sort()).toEqual([
+      "chat.error",
+      "container.lifecycle.latency",
+      "gateway.rpc.error",
+    ]);
+    for (const b of rollupOnly) {
+      expect(b.extraDims).toEqual([]);
     }
   });
 

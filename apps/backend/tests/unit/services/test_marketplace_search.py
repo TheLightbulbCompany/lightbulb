@@ -752,3 +752,108 @@ async def test_seller_scoped_bypasses_cache(monkeypatch):
         "cache-bypass branch must not write its scan into _CACHE — the public path stays bounded by the 60s TTL."
     )
     assert table.scan.call_count == 2, "public reads after a bypass must hit the warm cache, not re-scan"
+
+
+@pytest.mark.asyncio
+async def test_free_only_filter_runs_before_limit(monkeypatch):
+    """``free_only`` must be applied BEFORE the limit slice.
+
+    The mobile marketplace hires free agents only. Dropping the paid rows
+    from the returned page instead would hand the phone an empty list
+    whenever paid listings fill the ranked window — the free rows sitting
+    just below the cut are undiscoverable, with no pagination to reach them.
+
+    Setup: 30 paid rows ranked ahead of 1 free row, ``limit=10``.
+    """
+    items: list[dict] = []
+    for i in range(30):
+        items.append(
+            {
+                "listing_id": f"l_paid_{i}",
+                "slug": f"paid-{i}",
+                "name": f"Paid {i}",
+                "status": "published",
+                "format": "openclaw",
+                "tags": [],
+                "version": 1,
+                "description_md": "",
+                # Newer than the free row, so a published_at-desc sort puts
+                # every paid row ahead of it.
+                "published_at": f"2026-05-{(i % 28) + 1:02d}T00:00:00Z",
+                "price_cents": 1000,
+            }
+        )
+    items.append(
+        {
+            "listing_id": "l_free",
+            "slug": "free-row",
+            "name": "Free Row",
+            "status": "published",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "published_at": "2026-04-01T00:00:00Z",
+            "price_cents": 0,
+        }
+    )
+
+    table = MagicMock()
+    table.scan.return_value = {"Items": items}
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
+
+    # Without the filter the free row never reaches the page — that is the
+    # whole reason this cannot be done client-side.
+    unfiltered = await marketplace_search.search(query=None, limit=10)
+    assert "free-row" not in {li["slug"] for li in unfiltered}
+
+    results = await marketplace_search.search(query=None, free_only=True, limit=10)
+    assert [li["slug"] for li in results] == ["free-row"], (
+        "free_only must filter BEFORE the limit slice — otherwise the free "
+        "row is lost to the 30 paid rows ranked ahead of it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_free_only_keeps_the_viewers_own_paid_listings(monkeypatch):
+    """A seller's own paid row deploys free (seller-self bypass), so a
+    free-to-the-caller filter must not hide it — and must still hide it from
+    everyone else."""
+    items = [
+        {
+            "listing_id": "l_mine",
+            "slug": "mine",
+            "name": "Mine",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "published_at": "2026-05-01T00:00:00Z",
+            "price_cents": 1000,
+        },
+    ]
+    table = MagicMock()
+    table.scan.return_value = {"Items": items}
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
+
+    mine = await marketplace_search.search(query=None, free_only=True, viewer_id="u_seller")
+    assert [li["slug"] for li in mine] == ["mine"]
+
+    someone_else = await marketplace_search.search(query=None, free_only=True, viewer_id="u_other")
+    assert someone_else == []
+
+    anonymous = await marketplace_search.search(query=None, free_only=True)
+    assert anonymous == []
+
+
+@pytest.mark.asyncio
+async def test_free_only_treats_missing_price_as_free(mock_table):
+    """The canned LISTINGS carry no ``price_cents`` at all.
+
+    Absent means free everywhere else in the stack (the mobile price badge,
+    the deploy entitlement check), so the filter must not read it as paid.
+    """
+    results = await marketplace_search.search(query=None, free_only=True)
+    assert [li["slug"] for li in results] == ["redis-tool", "sql-formatter", "postgres-helper"]

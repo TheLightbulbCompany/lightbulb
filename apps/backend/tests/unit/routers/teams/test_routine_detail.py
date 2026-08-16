@@ -35,11 +35,29 @@ def client(teams_ctx):
 
 def test_get_routine_forwards(client, monkeypatch):
     admin = MagicMock()
-    admin.get_routine = AsyncMock(return_value={"id": "r1", "title": "Nightly digest", "status": "active"})
+    policy = {
+        "mode": "normal",
+        "stages": [
+            {"type": "review", "participants": [{"type": "agent", "agentId": "ag_2"}]},
+        ],
+    }
+    admin.get_routine = AsyncMock(
+        return_value={
+            "id": "r1",
+            "title": "Nightly digest",
+            "status": "active",
+            "executionPolicy": policy,
+        }
+    )
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     r = client.get("/api/v1/teams/routines/r1", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    assert r.json() == {"id": "r1", "title": "Nightly digest", "status": "active"}
+    assert r.json() == {
+        "id": "r1",
+        "title": "Nightly digest",
+        "status": "active",
+        "executionPolicy": policy,
+    }
     admin.get_routine.assert_awaited_once_with(routine_id="r1", session_cookie="cookie")

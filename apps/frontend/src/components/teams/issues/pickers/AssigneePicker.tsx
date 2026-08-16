@@ -34,6 +34,9 @@ export interface AssigneePickerProps {
   /** Display variant: `"row"` is the IssueProperties left-aligned style; `"inline"` is
    * the IssueHeader chip style (sits next to status + priority pickers). */
   variant?: "row" | "inline";
+  /** Noun used by empty/search copy. Routine forms reuse the same
+   * company-agent picker for their reviewer. */
+  noun?: "assignee" | "reviewer";
   className?: string;
 }
 
@@ -50,6 +53,7 @@ export function AssigneePicker({
   selectedUserId = null,
   onUserChange,
   variant = "row",
+  noun = "assignee",
   className,
 }: AssigneePickerProps) {
   const [open, setOpen] = useState(false);
@@ -75,16 +79,20 @@ export function AssigneePicker({
     : selectedMember
       ? selectedMember.name ?? selectedMember.email ?? "Unknown member"
       : selectedAgentId
-        ? "Unknown agent"
+        ? noun === "reviewer"
+          ? "Unknown reviewer"
+          : "Unknown agent"
         : selectedUserId
           ? "Unknown member"
-          : "Unassigned";
+          : noun === "reviewer"
+            ? "No reviewer"
+            : "Unassigned";
   const hasAssignee = Boolean(selectedAgent || selectedMember);
 
   // Merge recent + remainder so frequently-picked bubble up. Recent ids
   // that no longer match an active agent are dropped.
   const orderedAgents = useMemo(() => {
-    const recent = getRecentAssignees();
+    const recent = getRecentAssignees(noun);
     const byId = new Map(agents.map((a) => [a.id, a]));
     const recentlyPicked = recent
       .map((id) => byId.get(id))
@@ -92,7 +100,7 @@ export function AssigneePicker({
     const recentSet = new Set(recentlyPicked.map((a) => a.id));
     const rest = agents.filter((a) => !recentSet.has(a.id));
     return [...recentlyPicked, ...rest];
-  }, [agents]);
+  }, [agents, noun]);
 
   const q = query.trim().toLowerCase();
   const visibleAgents = q
@@ -145,7 +153,7 @@ export function AssigneePicker({
   // mutually exclusive. The host wires that clear via the change handlers
   // (selecting an agent sends assigneeUserId: null and conversely).
   const handleSelectAgent = (agentId: string | null) => {
-    if (agentId !== null) trackRecentAssignee(agentId);
+    if (agentId !== null) trackRecentAssignee(agentId, noun);
     onChange(agentId);
     setOpen(false);
     setQuery("");
@@ -254,7 +262,13 @@ export function AssigneePicker({
             setActiveIndex(initialActiveIndex(e.target.value));
           }}
           onKeyDown={handleSearchKeyDown}
-          placeholder={peopleEnabled ? "Search agents & people..." : "Search agents..."}
+          placeholder={
+            noun === "reviewer"
+              ? "Search reviewers..."
+              : peopleEnabled
+                ? "Search agents & people..."
+                : "Search agents..."
+          }
           role="combobox"
           aria-autocomplete="list"
           aria-controls={listboxId}
@@ -285,7 +299,7 @@ export function AssigneePicker({
               )}
               style={{ color: "var(--mute)" }}
             >
-              No assignee
+              No {noun}
             </button>
           </li>
           {peopleEnabled && (

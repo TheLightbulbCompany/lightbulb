@@ -1,11 +1,8 @@
 """Admin dashboard router — /api/v1/admin/*
 
-Every endpoint is gated by Depends(require_platform_admin), except a
-curated set of READ endpoints on require_admin_read_access (see
-core/services/admin_access.py) which additionally accept the founder
-agent's platform_ops token. The token can inspect debug state but never
-mutate; /admin/me (the frontend admin gate) and the posthog timeline
-(session-replay links are for humans) stay Clerk-only.
+Every endpoint is gated by Depends(require_platform_admin). The surface is for
+human Isol8 operators authenticated by Clerk; customer agents do not receive a
+parallel credential path into platform administration.
 Mutation endpoints are wrapped with @audit_admin_action so a row lands
 in DDB synchronously (fail-closed). Container + billing actions also
 accept an Idempotency-Key header to short-circuit double clicks.
@@ -45,13 +42,17 @@ from core.services.account_wipe import (
     resolve_account_emails,
     wipe_account,
 )
-from core.services.admin_access import require_admin_read_access
 from core.services.admin_audit import audit_admin_action, extract_client_ip
 from core.services.admin_service import resolve_admin_owner_id
+from core.services.bootstrap_dispatcher import STALE_DISPATCH_AFTER_S, is_dispatch_stale
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
 from core.services.provision_dispatch import dispatch_provision
-from core.services.update_service import apply_update, reapply_owner_config
+from core.services.update_service import (
+    TASKDEF_ROLL_CHANGE_KEYS,
+    apply_update,
+    reapply_owner_config,
+)
 from schemas.config import ConfigPatchRequest
 
 logger = logging.getLogger(__name__)
@@ -107,18 +108,15 @@ class QueueImageUpdateRequest(BaseModel):
     # change that also wires the worker to honor it.
 
 
-# apply_update feeds these changes.* fields to resize_user_container, which
-# re-registers the per-user ECS task definition. Two in-flight updates that both
-# carry any of them race on the task-def (last writer wins the image/size), so
-# the force-apply guard treats a row carrying any of them as a conflict —
-# regardless of its update_type label (a paperclip_provision retry or a pure
-# config_patch hot-reload carries none of these and is not a conflict).
-_TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory")
-
-
 def _rolls_task_def(changes: object) -> bool:
-    """True if a pending update's ``changes`` would re-register the ECS task def."""
-    return isinstance(changes, dict) and any(k in changes for k in _TASKDEF_ROLL_CHANGE_KEYS)
+    """True if a pending update's ``changes`` would re-register the ECS task def.
+
+    The force-apply guard treats a row carrying any task-def-rolling key as a
+    conflict regardless of its update_type label (a paperclip_provision retry
+    or a pure config_patch hot-reload carries none and is not a conflict).
+    The key set is owned by update_service.TASKDEF_ROLL_CHANGE_KEYS.
+    """
+    return isinstance(changes, dict) and any(k in changes for k in TASKDEF_ROLL_CHANGE_KEYS)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +133,7 @@ async def admin_me(auth: AuthContext = Depends(require_platform_admin)):
     "/system/health",
     description="Platform health: container fleet counts, upstream probes, background-task state, recent errors.",
 )
-async def admin_system_health(auth: AuthContext = Depends(require_admin_read_access)):
+async def admin_system_health(auth: AuthContext = Depends(require_platform_admin)):
     return await system_health.get_system_health()
 
 
@@ -148,7 +146,7 @@ async def admin_actions_audit(
     admin_user_id: str | None = Query(None),
     limit: int = Query(50, le=200),
     cursor: str | None = Query(None),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     try:
         return await admin_service.get_actions_audit(
@@ -176,7 +174,7 @@ async def admin_list_users(
     container_status: str | None = Query(None),
     cursor: str | None = Query(None),
     limit: int = Query(50, le=200),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.list_users(q=q, limit=limit, cursor=cursor)
 
@@ -187,7 +185,7 @@ async def admin_list_users(
 )
 async def admin_user_overview(
     user_id: str,
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_overview(user_id)
 
@@ -200,7 +198,7 @@ async def admin_user_agents(
     user_id: str,
     cursor: str | None = Query(None),
     limit: int = Query(50, le=200),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.list_user_agents(user_id, cursor=cursor, limit=limit)
 
@@ -212,7 +210,7 @@ async def admin_user_agents(
 async def admin_agent_detail(
     user_id: str,
     agent_id: str,
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     result = await admin_service.get_agent_detail(user_id, agent_id)
     if isinstance(result, dict) and result.get("error") == "container_not_running":
@@ -242,7 +240,7 @@ async def admin_user_logs(
     hours: int = Query(24, le=168),
     limit: int = Query(20, le=100),
     cursor: str | None = Query(None),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_logs(user_id, level=level, hours=hours, limit=limit, cursor=cursor)
 
@@ -256,7 +254,7 @@ async def admin_user_cloudwatch_url(
     start: str = Query(...),
     end: str = Query(...),
     level: str = Query("ERROR"),
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return {"url": admin_service.get_cloudwatch_url(user_id, start=start, end=end, level=level)}
 
@@ -534,7 +532,7 @@ async def admin_container_reapply_config(
 )
 async def admin_user_provisioning(
     user_id: str,
-    auth: AuthContext = Depends(require_admin_read_access),
+    auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_provisioning(user_id)
 
@@ -582,11 +580,15 @@ async def admin_provision_retry(
 @router.post(
     "/users/{user_id}/provisioning/reset-bootstrap",
     description=(
-        "Re-arm a permanently-failed onboarding kickoff: conditional "
-        "bootstrap_state failed->not_started fenced on the row's current "
-        "onboarding_generation, resetting the attempt counter. The next "
-        "owner /container/status poll re-dispatches the kickoff (delivery "
-        "needs the owner's chat surface online). Idempotency-Key supported."
+        "Re-arm a stuck onboarding kickoff: conditional bootstrap_state "
+        "->not_started fenced on the row's current onboarding_generation, "
+        "resetting the attempt counter. Accepts a 'failed' row at any age, "
+        "and a 'dispatched' row whose claim has EXPIRED (its process died "
+        "mid-dispatch) — including the ambiguous send-attempted-never-acked "
+        "case the dispatcher will not retry on its own, which may "
+        "double-deliver. Refuses a dispatch still in flight. The next owner "
+        "/container/status poll re-dispatches the kickoff (delivery needs "
+        "the owner's chat surface online). Idempotency-Key supported."
     ),
 )
 @idempotency()
@@ -601,12 +603,40 @@ async def admin_reset_bootstrap(
     company = await repo.get(owner_id)
     if company is None:
         raise HTTPException(status_code=404, detail="No Paperclip company row for this owner")
-    if company.bootstrap_state != "failed" or not company.onboarding_generation:
+    if not company.onboarding_generation:
+        raise HTTPException(status_code=409, detail="Row carries no onboarding_generation — nothing to reset")
+    # A still-'dispatched' row is resettable ONLY once its claim is provably
+    # dead by the SAME threshold the dispatcher's lazy expiry uses — resetting
+    # a live claim mid-flight would let the next poll dispatch a second
+    # kickoff. Fencing the write on the observed dispatch_id closes the
+    # read-then-write window (a re-armed row re-claims on the next poll,
+    # seconds later).
+    expected_dispatch_id = None
+    if company.bootstrap_state == "dispatched":
+        if not is_dispatch_stale(company.bootstrap_dispatched_at):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Bootstrap dispatch is still in flight (claimed under "
+                    f"{STALE_DISPATCH_AFTER_S // 60} minutes ago) — refusing to reset"
+                ),
+            )
+        expected_dispatch_id = company.bootstrap_dispatch_id
+        if not expected_dispatch_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Dispatched row carries no bootstrap_dispatch_id to fence the reset on",
+            )
+    elif company.bootstrap_state != "failed":
         raise HTTPException(
             status_code=409,
-            detail=f"Bootstrap is '{company.bootstrap_state}', not 'failed' — nothing to reset",
+            detail=f"Bootstrap is '{company.bootstrap_state}', not 'failed' or an expired 'dispatched' — nothing to reset",
         )
-    landed = await repo.reset_bootstrap_for_retry(owner_id, onboarding_generation=company.onboarding_generation)
+    landed = await repo.reset_bootstrap_for_retry(
+        owner_id,
+        onboarding_generation=company.onboarding_generation,
+        expected_dispatch_id=expected_dispatch_id,
+    )
     if not landed:
         raise HTTPException(
             status_code=409,

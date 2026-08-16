@@ -3,6 +3,69 @@
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
+
+from routers.debug import assert_debug_enabled
+
+
+class TestDebugEnvironmentAllowlist:
+    """The /debug gate is an allowlist (issue #743 item (c)).
+
+    It used to test ``ENVIRONMENT == "prod"``, which fails OPEN for every
+    value nobody remembered to add — ``staging`` is a legal deployed value
+    (core/config.py) with no stage today, so the exposure was latent rather
+    than theoretical. Four call sites now route through one guard.
+    """
+
+    @pytest.mark.parametrize("env", ["dev", "local", "test", ""])
+    def test_allowed_environments_pass(self, env):
+        with patch("routers.debug.settings") as mock_settings:
+            mock_settings.ENVIRONMENT = env
+            assert_debug_enabled() is None
+
+    @pytest.mark.parametrize("env", ["staging", "prod"])
+    def test_non_sandbox_environments_are_refused(self, env):
+        with patch("routers.debug.settings") as mock_settings:
+            mock_settings.ENVIRONMENT = env
+            with pytest.raises(HTTPException) as exc:
+                assert_debug_enabled()
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method,path,params",
+        [
+            # Dependency-guarded surface (require_non_production)
+            ("post", "/api/v1/debug/provision", None),
+            # Inline call-sites, one per endpoint metric label
+            ("delete", "/api/v1/debug/user-data", None),
+            ("get", "/api/v1/debug/efs-exists", {"path": "/mnt/efs/users/user_test_123"}),
+            ("get", "/api/v1/debug/ddb-rows", {"owner_id": "user_test_123"}),
+        ],
+    )
+    async def test_every_surface_refuses_staging(self, async_client, method, path, params):
+        with patch("routers.debug.settings") as mock_settings:
+            mock_settings.ENVIRONMENT = "staging"
+            res = await getattr(async_client, method)(path, params=params)
+        assert res.status_code == 403, f"{method.upper()} {path} served in staging"
+
+    @pytest.mark.asyncio
+    async def test_dev_still_reaches_the_handler(self, async_client, tmp_path, monkeypatch):
+        """Sanity check on the other side of the allowlist: dev is unaffected."""
+        from core.containers import get_workspace
+
+        ws = get_workspace()
+        monkeypatch.setattr(ws, "_mount", tmp_path)
+        (tmp_path / "user_test_123").mkdir()
+
+        with patch("routers.debug.settings") as mock_settings:
+            mock_settings.ENVIRONMENT = "dev"
+            res = await async_client.get(
+                "/api/v1/debug/efs-exists",
+                params={"path": str(tmp_path / "user_test_123")},
+            )
+        assert res.status_code == 200
+        assert res.json() == {"exists": True}
 
 
 class TestDeleteUserData:
@@ -664,6 +727,15 @@ class TestDdbRows:
             "/api/v1/debug/ddb-rows",
             params={"owner_id": "user_someone_else"},
         )
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_ddb_rows_disabled_in_staging(self, async_client):
+        """`staging` is a legal deployed ENVIRONMENT with no stage today — the
+        old `== "prod"` blacklist would have served it the full debug surface."""
+        with patch("routers.debug.settings") as mock_settings:
+            mock_settings.ENVIRONMENT = "staging"
+            res = await async_client.get("/api/v1/debug/ddb-rows", params={"owner_id": "user_test_123"})
         assert res.status_code == 403
 
     @pytest.mark.asyncio

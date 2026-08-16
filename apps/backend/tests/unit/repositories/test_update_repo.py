@@ -83,6 +83,24 @@ async def test_create_with_force_by(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_create_scheduled_is_atomic(dynamodb_table):
+    from core.repositories import update_repo
+
+    result = await update_repo.create(
+        owner_id="user_1",
+        update_type="task_definition_refresh",
+        description="Refresh from base",
+        changes={"refresh_from_base": True},
+        scheduled_at="2026-08-15T12:00:00+00:00",
+    )
+
+    assert result["status"] == "scheduled"
+    assert result["scheduled_at"] == "2026-08-15T12:00:00+00:00"
+    stored = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": result["update_id"]})["Item"]
+    assert stored["status"] == "scheduled"
+
+
+@pytest.mark.asyncio
 async def test_get_pending(dynamodb_table):
     from core.repositories import update_repo
 
@@ -263,6 +281,74 @@ async def test_get_due_scheduled_empty(dynamodb_table):
 
     due = await update_repo.get_due_scheduled()
     assert due == []
+
+
+@pytest.mark.asyncio
+async def test_apply_claim_takeover_fences_target_and_terminal_writes(dynamodb_table):
+    from core.repositories import update_repo
+
+    item = await update_repo.create(
+        "user_1",
+        "task_definition_refresh",
+        "Refresh",
+        {"refresh_from_base": True},
+        scheduled_at="2026-08-15T00:00:00+00:00",
+    )
+    first = await update_repo.claim_apply("user_1", item["update_id"], "claim-old")
+    assert first is not None
+    assert first["status"] == "applying"
+
+    # Fresh claims are exclusive.
+    assert await update_repo.claim_apply("user_1", item["update_id"], "claim-rival") is None
+
+    dynamodb_table.update_item(
+        Key={"owner_id": "user_1", "update_id": item["update_id"]},
+        UpdateExpression="SET apply_claimed_at = :stale",
+        ExpressionAttributeValues={":stale": 1},
+    )
+    stale = await update_repo.list_stale_applying("task_definition_refresh", stale_before_epoch=2)
+    assert [row["update_id"] for row in stale] == [item["update_id"]]
+
+    claimed = await update_repo.claim_stale_apply(
+        "user_1",
+        item["update_id"],
+        "claim-new",
+        stale_before_epoch=2,
+    )
+    assert claimed is not None
+    assert claimed["apply_claim_id"] == "claim-new"
+    assert await update_repo.heartbeat_apply("user_1", item["update_id"], "claim-old") is False
+    assert await update_repo.set_apply_target("user_1", item["update_id"], "claim-old", "arn:target-old") is False
+    assert await update_repo.set_apply_target("user_1", item["update_id"], "claim-new", "arn:target") is True
+    assert (
+        await update_repo.finish_claimed_apply(
+            "user_1", item["update_id"], "claim-old", status="failed", failure_reason="late"
+        )
+        is False
+    )
+    assert await update_repo.finish_claimed_apply("user_1", item["update_id"], "claim-new", status="applied") is True
+
+    stored = dynamodb_table.get_item(Key={"owner_id": "user_1", "update_id": item["update_id"]})["Item"]
+    assert stored["status"] == "applied"
+    assert stored["target_task_definition_arn"] == "arn:target"
+
+
+@pytest.mark.asyncio
+async def test_list_stale_applying_includes_legacy_row_without_lease(dynamodb_table):
+    from core.repositories import update_repo
+
+    dynamodb_table.put_item(
+        Item={
+            "owner_id": "legacy",
+            "update_id": "refresh-1",
+            "update_type": "task_definition_refresh",
+            "status": "applying",
+            "changes": {"refresh_from_base": True},
+        }
+    )
+
+    stale = await update_repo.list_stale_applying("task_definition_refresh", stale_before_epoch=2)
+    assert [row["update_id"] for row in stale] == ["refresh-1"]
 
 
 @pytest.mark.asyncio

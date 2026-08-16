@@ -33,4 +33,10 @@ describe("AuthStack — gog file-keyring password secret", () => {
     // so there must be no RotationSchedule attached to it.
     template.resourceCountIs("AWS::SecretsManager::RotationSchedule", 0);
   });
+
+  test("does not retain the retired platform-ops signing secret or export", () => {
+    const rendered = JSON.stringify(template.toJSON());
+    expect(rendered).not.toContain("platform_ops_token_key");
+    expect(rendered).not.toContain("PlatformOpsTokenKey");
+  });
 });

@@ -247,6 +247,74 @@ describe("layoutStorage", () => {
     expect(clean.activeGroup).toBe("group-2");
   });
 
+  // --- dead-agent chat panels ------------------------------------------
+  // A wipe/reprovision leaves the persisted layout pointing at agent ids that
+  // no longer exist. Pruning them is roster-gated: an in-flight roster must
+  // NEVER be read as "these agents are gone".
+
+  function chatLayout(): SerializedDockview {
+    return {
+      grid: {
+        root: {
+          type: "branch",
+          size: 800,
+          data: [
+            { type: "leaf", size: 400, data: { id: "g1", views: ["chat:dead"], activeView: "chat:dead" } },
+            { type: "leaf", size: 400, data: { id: "g2", views: ["chat:live"], activeView: "chat:live" } },
+          ],
+        },
+        height: 600,
+        width: 800,
+        orientation: "HORIZONTAL" as SerializedDockview["grid"]["orientation"],
+      },
+      panels: {
+        "chat:dead": { id: "chat:dead", contentComponent: "chat", params: { agentId: "dead" } },
+        "chat:live": { id: "chat:live", contentComponent: "chat", params: { agentId: "live" } },
+      },
+      activeGroup: "g1",
+    } as unknown as SerializedDockview;
+  }
+
+  it("sanitizer prunes chat panels whose agent is absent from a loaded roster", () => {
+    const clean = sanitizeLayout(chatLayout(), ["live"]);
+
+    expect(Object.keys(clean.panels)).toEqual(["chat:live"]);
+    // Grid mirrors the drop: g1 is gone and the branch collapsed to g2.
+    expect(clean.grid.root.type).toBe("leaf");
+    expect((clean.grid.root as unknown as { data: { id: string } }).data.id).toBe("g2");
+    expect(clean.activeGroup).toBe("g2");
+  });
+
+  it("sanitizer never prunes on an unknown roster (undefined or empty)", () => {
+    // THE trap: the roster is empty for the whole first paint. Pruning on it
+    // would nuke every chat panel on every reload.
+    for (const roster of [undefined, []]) {
+      const clean = sanitizeLayout(chatLayout(), roster);
+      expect(Object.keys(clean.panels).sort()).toEqual(["chat:dead", "chat:live"]);
+    }
+  });
+
+  it("sanitizer keeps the default-agent sentinel panel (it resolves at render time)", () => {
+    const dirty = leafLayout(["chat:__default__"], "chat:__default__", {
+      "chat:__default__": {
+        id: "chat:__default__",
+        contentComponent: "chat",
+        params: { agentId: "__default__" },
+      },
+    });
+    const clean = sanitizeLayout(dirty, ["live"]);
+    expect(clean.panels["chat:__default__"]).toBeDefined();
+  });
+
+  it("readLayout forwards the roster and reads back null when nothing survives", () => {
+    writeLayout("u1", chatLayout());
+    expect(Object.keys(readLayout("u1")?.panels ?? {}).sort()).toEqual(["chat:dead", "chat:live"]);
+    expect(Object.keys(readLayout("u1", ["live"])?.panels ?? {})).toEqual(["chat:live"]);
+    // Every panel pruned -> "no saved layout", so the shell builds the default
+    // instead of restoring a grid whose views are all gone.
+    expect(readLayout("u1", ["someone-else"])).toBeNull();
+  });
+
   it("clearLayout removes only its own key", () => {
     writeLayout("u1", minimalLayout({}));
     window.localStorage.setItem("unrelated", "x");

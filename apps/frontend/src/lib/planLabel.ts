@@ -6,8 +6,14 @@
  * Settings already had this mapping inline; the two chat shells did not, which
  * is exactly the drift one shared helper prevents.
  *
- * Statuses other than the free tier pass through unchanged — callers apply
- * their own `capitalize` treatment, as Settings does.
+ * Statuses other than the free tier are humanized (underscores -> spaces,
+ * first letter capitalized) but otherwise passed through — callers may still
+ * layer their own `capitalize`/`uppercase` treatment on top, as Settings and
+ * the chat-shell badges do. The humanization step exists because CSS
+ * `text-transform` has no notion of `_`: a raw Stripe status like
+ * "past_due" rendered under `capitalize` reads "Past_due" (only the very
+ * first character gets capitalized, since there's no whitespace word
+ * boundary) instead of "Past due".
  */
 export function planLabel(
   status: string | null | undefined,
@@ -17,7 +23,8 @@ export function planLabel(
   if (status === "trial_local") {
     return opts?.expired ? "Free tier ended" : "Free tier";
   }
-  return status;
+  const spaced = status.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 /**

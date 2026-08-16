@@ -67,12 +67,6 @@ export interface SecretNames {
    */
   paperclipServiceTokenKey: string;
   /**
-   * Dedicated symmetric secret for signing/verifying platform_ops tokens.
-   * Encrypted under the same CMK as the other auth secrets, so the existing
-   * KmsDecryptForSecrets policy covers it.
-   */
-  platformOpsTokenKey: string;
-  /**
    * Bearer secret the isol8.notifications Paperclip plugin attaches to
    * POST /webhooks/paperclip-events. Same CMK, so KmsDecryptForSecrets
    * covers it.
@@ -1193,6 +1187,22 @@ export class ServiceStack extends cdk.Stack {
       WS_ENFORCE_INTERNAL_SECRET: "true",
       WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
       CORS_ORIGINS: env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+      // SEC-8 token-origin fence: Clerk session tokens carry no `aud`, so the
+      // backend validates the `azp` (authorized party) claim against this
+      // allowlist instead. Broader than CORS_ORIGINS because azp reflects the
+      // MINT origin, not the calling origin: admin-host sessions call the API
+      // via server actions (no CORS), the paperclip-proxy bootstrap page
+      // handshakes Clerk sessions on the company.isol8.co hosts, and
+      // localhost frontends point at the dev API during development. Native
+      // (mobile) tokens carry no azp and always pass.
+      // Rollout: ships in audit mode (log + metric, never
+      // reject); flip CLERK_AZP_MODE to "enforce" per env once the
+      // auth.azp.mismatch metric shows zero legitimate mismatches.
+      CLERK_AUTHORIZED_PARTIES:
+        env === "prod"
+          ? "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"
+          : "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000",
+      CLERK_AZP_MODE: "audit",
       // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
       // encrypt operator device seeds + gateway tokens at rest. Reuses the
       // same CMK as the BYOK Fernet layer since the blast radius is the same
@@ -1377,15 +1387,6 @@ export class ServiceStack extends cdk.Stack {
         props.database.marketplaceTakedownsTable.tableName,
       MARKETPLACE_SELLERS_TABLE:
         props.database.marketplaceSellersTable.tableName,
-      // Per-env owner the platform_ops agent token binds to (the founder's
-      // own owner_id). Read from the runner's secrets at synth time like the
-      // Stripe/Clerk per-env values above; the dev and prod Clerk instances
-      // mint different owner_ids for the same admin email. Empty ⇒ ops-token
-      // surface stays off in that env (fail-closed).
-      PLATFORM_OPS_OWNER_ID:
-        env === "prod"
-          ? (process.env.PLATFORM_OPS_OWNER_ID_PROD ?? "")
-          : (process.env.PLATFORM_OPS_OWNER_ID_DEV ?? ""),
       MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
       // Deterministic public S3 URL of the hosted AWS connector
       // CloudFormation template. The connections aws-setup endpoint feeds this
@@ -1506,17 +1507,6 @@ export class ServiceStack extends cdk.Stack {
           this,
           "ImportPaperclipServiceTokenKey",
           props.secretNames.paperclipServiceTokenKey,
-        ),
-      ),
-      // Dedicated symmetric secret used to sign/verify platform_ops tokens.
-      // KMS decrypt for this secret is covered by the existing
-      // `KmsDecryptForSecrets` policy below — same CMK as the other auth
-      // secrets.
-      PLATFORM_OPS_TOKEN_KEY: ecs.Secret.fromSecretsManager(
-        secretsmanager.Secret.fromSecretNameV2(
-          this,
-          "ImportPlatformOpsTokenKey",
-          props.secretNames.platformOpsTokenKey,
         ),
       ),
       // Bearer secret validated by /webhooks/paperclip-events (inbound

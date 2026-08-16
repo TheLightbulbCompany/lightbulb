@@ -102,10 +102,24 @@ def build_dormant_trigger_body(cron: str, *, timezone: str = _DEFAULT_TIMEZONE) 
     }
 
 
-def _build_routine_body(*, title: str, description: str, agent_id: str) -> dict[str, Any]:
+def _build_routine_body(
+    *,
+    title: str,
+    description: str,
+    agent_id: str,
+    variables: list[dict] | None = None,
+) -> dict[str, Any]:
     """The routine (work-spec) body. The cron is NOT here — it rides the
-    trigger created separately."""
-    return {
+    trigger created separately.
+
+    ``variables`` must ride along when the description references
+    ``{{NAME}}`` placeholders: Paperclip syncs unreferenced-but-declared
+    definitions away AND referenced-but-undeclared names into REQUIRED
+    definitions with no default — and ``assertScheduleCompatibleVariables``
+    then 422s schedule-trigger creation for any required variable without a
+    default, which rolled back entire marketplace deploys.
+    """
+    body: dict[str, Any] = {
         "title": title,
         "description": description,
         "assigneeAgentId": agent_id,
@@ -113,6 +127,9 @@ def _build_routine_body(*, title: str, description: str, agent_id: str) -> dict[
         "concurrencyPolicy": _ROUTINE_CONCURRENCY_POLICY,
         "catchUpPolicy": _ROUTINE_CATCH_UP_POLICY,
     }
+    if variables:
+        body["variables"] = variables
+    return body
 
 
 def _existing_titles_for_agent(existing_routines: Any, agent_id: str) -> set[str]:
@@ -206,7 +223,12 @@ async def create_agent_routines(
         routine = await admin.create_routine(
             session_cookie=session_cookie,
             company_id=company_id,
-            body=_build_routine_body(title=title, description=description, agent_id=agent_id),
+            body=_build_routine_body(
+                title=title,
+                description=description,
+                agent_id=agent_id,
+                variables=spec.get("variables"),
+            ),
         )
         routine_id = routine.get("id") if isinstance(routine, dict) else None
         if not routine_id:

@@ -64,6 +64,7 @@ async def test_create_paperclip_for_chat_forwards_meta_fields():
     assert kwargs["title"] == "Backend specialist"
     assert kwargs["capabilities"] == "Writes services."
     assert kwargs["icon"] == "terminal"
+    assert kwargs["idempotency_key"].startswith("isol8-agent-create:v1:chat:")
 
 
 @pytest.mark.asyncio
@@ -109,6 +110,48 @@ async def test_create_paperclip_for_chat_no_meta_keeps_existing_behavior():
 
 
 @pytest.mark.asyncio
+async def test_chat_retry_reuses_key_when_adapter_credentials_are_reminted():
+    """Volatile service/device credentials are not part of logical intent."""
+
+    mock_admin = MagicMock()
+    mock_admin.create_agent = AsyncMock(return_value={"id": "same-uuid"})
+
+    with (
+        patch("core.services.paperclip_agent_lifecycle.PaperclipRepo") as mock_repo_cls,
+        patch(
+            "core.services.paperclip_agent_lifecycle.PaperclipAdminClient",
+            return_value=mock_admin,
+        ),
+        patch(
+            "core.services.paperclip_agent_lifecycle.get_admin_session_cookie",
+            new=AsyncMock(return_value="c"),
+        ),
+        patch("core.services.paperclip_agent_lifecycle.service_token") as mock_st,
+    ):
+        mock_repo = MagicMock()
+        mock_repo.get = AsyncMock(return_value=MagicMock(company_id="co"))
+        mock_repo_cls.return_value = mock_repo
+        mock_st.mint = MagicMock(side_effect=["first-token", "second-token"])
+
+        for _ in range(2):
+            await create_paperclip_for_chat(
+                creator_user_id="member",
+                owner_id="org",
+                name="Forge",
+                role="engineer",
+                model=None,
+            )
+
+    first, second = mock_admin.create_agent.await_args_list
+    assert first.kwargs["idempotency_key"] == second.kwargs["idempotency_key"]
+    assert first.kwargs["adapter_config"]["authToken"] == "first-token"
+    assert second.kwargs["adapter_config"]["authToken"] == "second-token"
+    assert (
+        first.kwargs["adapter_config"]["devicePrivateKeyPem"] != second.kwargs["adapter_config"]["devicePrivateKeyPem"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_paperclip_for_marketplace_forwards_meta():
     """Same contract on the marketplace path: meta fields thread
     through to create_agent."""
@@ -139,9 +182,11 @@ async def test_create_paperclip_for_marketplace_forwards_meta():
             name="Ray",
             role=None,
             meta=meta,
+            idempotency_key="marketplace-install-1",
         )
 
     kwargs = mock_admin.create_agent.await_args.kwargs
     assert kwargs["role"] == "cmo"
     assert kwargs["title"] == "Marketing lead"
     assert kwargs["capabilities"] == "Campaign work."
+    assert kwargs["idempotency_key"] == "marketplace-install-1"

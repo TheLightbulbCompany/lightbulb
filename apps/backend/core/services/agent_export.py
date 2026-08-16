@@ -558,7 +558,7 @@ def _summarize_openclaw_config(agent_dir: Path) -> dict:
     }
 
 
-def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
+def _scan_tarball_for_safety_flags(tarball_bytes: bytes, *, include_snippets: bool = False) -> list[dict]:
     """Walk the snapshot tarball, partition files by safety-scan format
     (persona / openclaw / skillmd), run each bucket, return the union as
     JSON-shaped dicts ready for the manifest.
@@ -567,6 +567,12 @@ def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
     the seller can review + scrub before submit. Nothing here redacts.
     Non-text / binary files are skipped (the scanner's binary heuristic
     + size cap handles them).
+
+    ``snippet`` — the raw matching source line — is STRIPPED by default:
+    everything this feeds except the preview ends up in a manifest, and
+    manifests are served by the unauthenticated listing-detail + search
+    routes (see ``marketplace_safety.flags_without_snippets``). Only the
+    authenticated seller-preview opts back in.
     """
     persona_files: dict[str, bytes] = {}
     openclaw_files: dict[str, bytes] = {}
@@ -605,7 +611,8 @@ def _scan_tarball_for_safety_flags(tarball_bytes: bytes) -> list[dict]:
     if skillmd_files:
         flags.extend(marketplace_safety.scan(skillmd_files, format="skillmd"))
 
-    return [dataclasses.asdict(f) for f in flags]
+    dicts = [dataclasses.asdict(f) for f in flags]
+    return dicts if include_snippets else marketplace_safety.flags_without_snippets(dicts)
 
 
 def export_agent_from_efs(
@@ -1024,7 +1031,10 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str) -> dict:
     # tarball itself — just the flags. ``contents`` (the shipped-file list)
     # scopes the requirements scan below to exactly what ships.
     tarball_bytes, contents = _build_tarball(agent_dir)
-    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
+    # Snippets stay ON here and ONLY here: the preview is an authenticated,
+    # seller-scoped response showing the seller their OWN workspace lines so
+    # they can fix a finding before submit. It is never persisted.
+    safety_flags = _scan_tarball_for_safety_flags(tarball_bytes, include_snippets=True)
 
     # Surface (but do NOT block on) any credential that would survive the
     # scrub in the published slice. Preview is informational — the wizard's
@@ -1278,6 +1288,32 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     if had_description and not safe_description:
         return None
 
+    # Variable definitions ride with every schedule entry: the deploy side
+    # recreates the routine from the description, and Paperclip re-syncs any
+    # {{NAME}} the description references into a REQUIRED definition with no
+    # default — which then 422s dormant schedule-trigger creation and rolls
+    # back the whole deploy. Defaults are seller-authored text reaching the
+    # public manifest, so they go through the same scan as the description;
+    # a variable whose default cannot ship takes the routine with it (porting
+    # the variable without its default would just recreate the 422 on the
+    # buyer, and porting the routine without the variable ships a contract
+    # that references an input the buyer does not have).
+    raw_variables = detail.get("variables")
+    variables: list[dict] = []
+    if isinstance(raw_variables, list):
+        for var in raw_variables:
+            if not isinstance(var, dict) or not isinstance(var.get("name"), str):
+                continue
+            portable_var = {
+                key: var[key]
+                for key in ("name", "label", "type", "defaultValue", "required", "options")
+                if key in var and var[key] is not None
+            }
+            default = portable_var.get("defaultValue")
+            if isinstance(default, str) and default and not _is_publishable(default):
+                return None
+            variables.append(portable_var)
+
     out: list[dict] = []
     for trig in triggers:
         if not isinstance(trig, dict):
@@ -1287,14 +1323,15 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
         cron = trig.get("cronExpression")
         if not isinstance(cron, str) or not cron:
             continue
-        out.append(
-            {
-                "title": title,
-                "description": safe_description,
-                "cron": cron,
-                "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
-            }
-        )
+        entry = {
+            "title": title,
+            "description": safe_description,
+            "cron": cron,
+            "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
+        }
+        if variables:
+            entry["variables"] = variables
+        out.append(entry)
     # The caller flattens; return the first as the representative shape only if
     # there is exactly one — but routines can carry multiple schedule triggers,
     # so we hand back the full list via a thin wrapper key.

@@ -27,6 +27,27 @@ describe("ApiStack — ws-connections owner-keyed fan-out", () => {
   });
 });
 
+describe("ApiStack — WS authorizer Clerk azp (SEC-8) wiring", () => {
+  // The WS authorizer is the second door for Clerk tokens; without this env
+  // the azp check silently no-ops (empty allowlist = off). Mode pins the
+  // audit rollout default.
+  test.each([
+    ["dev", "https://dev.isol8.co,https://admin.dev.isol8.co,https://dev.company.isol8.co,http://localhost:3000"],
+    ["prod", "https://isol8.co,https://admin.isol8.co,https://company.isol8.co"],
+  ] as const)("%s authorizer gets azp allowlist in audit mode", (envName, parties) => {
+    const template = envName === "dev" ? API_TEMPLATE : synthApiStack("prod");
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: `isol8-${envName}-ws-authorizer`,
+      Environment: {
+        Variables: Match.objectLike({
+          CLERK_AUTHORIZED_PARTIES: parties,
+          CLERK_AZP_MODE: "audit",
+        }),
+      },
+    });
+  });
+});
+
 describe("ApiStack — API Gateway account CloudWatch role (access/execution logging)", () => {
   // The WS stage's accessLogSettings silently deliver NOTHING when the
   // account-level CloudWatch role is missing or points at a deleted IAM

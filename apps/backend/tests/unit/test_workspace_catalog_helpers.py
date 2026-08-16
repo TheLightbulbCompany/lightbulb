@@ -65,6 +65,23 @@ def test_read_template_sidecar_returns_none_on_corrupt_json(workspace: Workspace
     assert workspace.read_template_sidecar("user_abc", "agent_new") is None
 
 
+def test_mark_template_install_complete_preserves_sidecar_and_commits_atomically(workspace: Workspace):
+    workspace.write_template_sidecar(
+        "user_abc",
+        "agent_new",
+        {"template_slug": "demo", "cron_job_ids": ["job_1"], "install_state": "installing"},
+    )
+
+    workspace.mark_template_install_complete("user_abc", "agent_new")
+
+    sidecar = workspace.read_template_sidecar("user_abc", "agent_new")
+    assert sidecar is not None
+    assert sidecar["template_slug"] == "demo"
+    assert sidecar["cron_job_ids"] == ["job_1"]
+    assert sidecar["install_state"] == "complete"
+    assert sidecar["completed_at"]
+
+
 def test_list_workspace_agent_dirs_empty_when_missing(workspace: Workspace, tmp_path: Path):
     assert workspace.list_workspace_agent_dirs("user_abc") == []
 

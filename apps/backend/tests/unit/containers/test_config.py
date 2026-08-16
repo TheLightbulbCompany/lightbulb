@@ -1,7 +1,8 @@
 """Tests for OpenClaw container config generation."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from functools import partial
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,6 +11,12 @@ from core.containers.config import (
     DEPLOYED_UPSTREAM_VERSION,
     build_openclaw_config_dict,
     write_openclaw_config,
+)
+from core.services.efs_file_lock import (
+    OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL,
+    OPENCLAW_CONFIG_PROTOCOL_SUFFIX,
+    SidecarLockTimeoutError,
+    openclaw_config_sidecar_lock,
 )
 
 
@@ -422,6 +429,55 @@ class TestWriteOpenclawConfigAsync:
         assert cfg["browser"]["defaultProfile"] == "openclaw"
         assert "nodeHost" not in cfg
         assert cfg["gateway"]["nodes"]["browser"]["mode"] == "auto"
+        # Phase one remains on the legacy persistent sidecar until boot
+        # recovery publishes the protocol marker.
+        assert (tmp_path / "openclaw.json.lock").is_file()
+        assert (tmp_path / "openclaw.json.lock.isol8-guard").is_file()
+
+    async def test_post_transition_full_write_uses_ephemeral_sidecar(self, tmp_path):
+        out = tmp_path / "openclaw.json"
+        lock_path = tmp_path / "openclaw.json.lock"
+        (tmp_path / f"openclaw.json.lock{OPENCLAW_CONFIG_PROTOCOL_SUFFIX}").write_bytes(
+            OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL
+        )
+
+        await write_openclaw_config(
+            config_path=out,
+            gateway_token="t-ephemeral",
+            provider_choice="bedrock_claude",
+            user_id="u_1",
+            aip_arns=_AIPS,
+        )
+
+        assert json.loads(out.read_text())["gateway"]["auth"]["token"] == "t-ephemeral"
+        assert not lock_path.exists()
+
+    async def test_post_transition_full_write_waits_for_openclaw_sidecar(self, tmp_path):
+        out = tmp_path / "openclaw.json"
+        out.write_text('{"sentinel":"unchanged"}')
+        lock_path = tmp_path / "openclaw.json.lock"
+        lock_path.write_text('{"pid":123,"createdAt":"2026-08-15T00:00:00Z"}')
+        (tmp_path / f"openclaw.json.lock{OPENCLAW_CONFIG_PROTOCOL_SUFFIX}").write_bytes(
+            OPENCLAW_CONFIG_PROTOCOL_EPHEMERAL
+        )
+
+        with (
+            patch(
+                "core.containers.config.openclaw_config_sidecar_lock",
+                partial(openclaw_config_sidecar_lock, timeout_s=0),
+            ),
+            pytest.raises(SidecarLockTimeoutError, match="sidecar"),
+        ):
+            await write_openclaw_config(
+                config_path=out,
+                gateway_token="must-not-land",
+                provider_choice="bedrock_claude",
+                user_id="u_1",
+                aip_arns=_AIPS,
+            )
+
+        assert json.loads(out.read_text()) == {"sentinel": "unchanged"}
+        assert lock_path.read_text() == '{"pid":123,"createdAt":"2026-08-15T00:00:00Z"}'
 
     async def test_creates_parent_dir(self, tmp_path):
         nested = tmp_path / "a" / "b" / "openclaw.json"

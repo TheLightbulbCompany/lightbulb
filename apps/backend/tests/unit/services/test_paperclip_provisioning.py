@@ -145,16 +145,16 @@ async def test_provision_org_seeds_friday_and_atlas(monkeypatch):
     assert roles == {"ceo", "general"}
     # Idempotency keys are distinct so retries don't collide.
     assert idempotency_keys == {
-        "user_owner:main-agent",
-        "user_owner:atlas-agent",
+        "seed:friday:v1",
+        "seed:atlas:v1",
     }
 
-    # Cross-check the pairing: Friday ↔ ceo ↔ :main-agent, Atlas ↔ general ↔ :atlas-agent.
+    # Cross-check the pairing: Friday ↔ ceo and Atlas ↔ general use distinct seed keys.
     by_name = {call.kwargs["name"]: call.kwargs for call in admin.create_agent.await_args_list}
     assert by_name["Friday"]["role"] == "ceo"
-    assert by_name["Friday"]["idempotency_key"] == "user_owner:main-agent"
+    assert by_name["Friday"]["idempotency_key"] == "seed:friday:v1"
     assert by_name["Atlas"]["role"] == "general"
-    assert by_name["Atlas"]["idempotency_key"] == "user_owner:atlas-agent"
+    assert by_name["Atlas"]["idempotency_key"] == "seed:atlas:v1"
 
     # Roster metadata: the roster is Friday's delegation source of truth, so
     # both seeds must carry real titles + capabilities, and Atlas must be
@@ -406,10 +406,9 @@ async def test_provision_org_reconcile_does_not_reseed_atlas(monkeypatch):
     """Reconcile must NOT re-create Atlas when a prior failed attempt already
     seeded it.
 
-    Paperclip ignores our ``Idempotency-Key`` (see paperclip_admin_client.py:
-    no middleware/route reads it), so re-calling create_agent for Atlas on the
-    reconcile spawns a SECOND Atlas and ORPHANS the first — it drops out of
-    seeded_agent_ids, so it's no longer protected from deletion.
+    The explicit skip preserves the stored seed id and remains compatible with
+    a staged deployment where Isol8 can briefly run against an older Paperclip
+    pin that does not yet support native agent-create idempotency.
 
     Failed-row invariant this fix leans on: seeded_agent_ids on a
     status="failed" row can only ever contain Atlas. Friday's presence is

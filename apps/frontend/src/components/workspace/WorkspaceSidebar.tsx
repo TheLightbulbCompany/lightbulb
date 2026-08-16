@@ -27,7 +27,6 @@ import Link from "next/link";
 import { capture } from "@/lib/analytics";
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
-import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { buildModelNameMap, displayModelName } from "@/lib/modelDisplay";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
@@ -40,6 +39,7 @@ import { fromInstalledAgent } from "@/lib/agentDesign";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
+import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
 import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { TEAMS_PANEL_PREFIX } from "@/components/chat/InlineTeamsPanel";
 import { SessionList } from "@/components/chat/SessionList";
@@ -62,7 +62,6 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
   const { user } = useUser();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { account, isSubscribed } = useBilling();
-  const { nodeConnected } = useGateway();
   // Models catalog for the sidebar agent rows: resolves Bedrock
   // application-inference-profile ARNs to display names ("Claude Opus 4.6").
   const { data: configSnapshot } = useGatewayRpc<{ config?: unknown }>("config.get");
@@ -152,25 +151,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady }: Workspace
       )}
 
       {/* Node Status */}
-      {nodeConnected && (
-        <div style={{
-          padding: '4px 12px',
-          fontSize: '12px',
-          color: '#16a34a',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-        }}>
-          <span style={{
-            width: '6px',
-            height: '6px',
-            borderRadius: '50%',
-            backgroundColor: '#16a34a',
-            display: 'inline-block',
-          }} />
-          Local tools available
-        </div>
-      )}
+      <NodeStatusPill />
 
       {/* Co-equal create pill: New agent adds to the roster directly; New task
           routes to the Tasks panel and auto-opens its dialog via the one-shot. */}

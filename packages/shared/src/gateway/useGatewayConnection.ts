@@ -35,6 +35,13 @@ export interface GatewayConnectionOptions {
 export interface GatewayConnectionValue {
   isConnected: boolean;
   nodeConnected: boolean;
+  /**
+   * Raw desktop-node status ("disconnected" | "connecting" | "connected" |
+   * "reconnecting" | "error"). `nodeConnected` is derived (=== "connected");
+   * the extra granularity exists so the UI can render a visible failing
+   * state on "error" instead of being indistinguishable from "no node".
+   */
+  nodeStatus: string;
   error: string | null;
   reconnectAttempt: number;
   /** Fire-and-forget send; returns whether the payload was actually written
@@ -68,7 +75,7 @@ export interface GatewayConnectionValue {
    * from outside the socket (the desktop webview learns it via Tauri IPC).
    * The machine itself also sets it from `node_status` frames.
    */
-  setNodeConnected: (connected: boolean) => void;
+  setNodeStatus: (status: string) => void;
 }
 
 interface PendingRpc {
@@ -93,7 +100,8 @@ interface PendingRpc {
  */
 export function useGatewayConnection(options: GatewayConnectionOptions): GatewayConnectionValue {
   const [isConnected, setIsConnected] = useState(false);
-  const [nodeConnected, setNodeConnected] = useState(false);
+  const [nodeStatus, setNodeStatus] = useState("disconnected");
+  const nodeConnected = nodeStatus === "connected";
   const [error, setError] = useState<string | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
@@ -206,9 +214,11 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
       return;
     }
 
-    // Node status — update desktop node connection state
+    // Node status — update desktop node connection state. The backend sends
+    // "connected"/"disconnected"; the Tauri wrapper feeds the richer status
+    // vocabulary (including "error") through setNodeStatus directly.
     if (msgType === "node_status") {
-      setNodeConnected(data.status === "connected");
+      setNodeStatus(typeof data.status === "string" ? data.status : "disconnected");
       return;
     }
 
@@ -535,6 +545,7 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
     () => ({
       isConnected,
       nodeConnected,
+      nodeStatus,
       error,
       reconnectAttempt,
       send,
@@ -546,8 +557,8 @@ export function useGatewayConnection(options: GatewayConnectionOptions): Gateway
       isParked,
       park,
       unpark,
-      setNodeConnected,
+      setNodeStatus,
     }),
-    [isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect, isParked, park, unpark],
+    [isConnected, nodeConnected, nodeStatus, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect, isParked, park, unpark],
   );
 }

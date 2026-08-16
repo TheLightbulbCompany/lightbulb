@@ -19,16 +19,17 @@
 // in the connected state exists for exactly that moment.
 
 import type { IDockviewPanelProps } from "dockview-react";
+import { useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Chrome, RotateCcw } from "lucide-react";
 
 import { BACKEND_URL } from "@/lib/api";
+import { browserViewWsUrl } from "./browserViewUrl";
 
 type ViewState = "connecting" | "connected" | "disconnected";
 
-const WS_URL = `${BACKEND_URL.replace(/^http/, "ws")}/browser-view/ws`;
-
 export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElement {
+  const { getToken } = useAuth();
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<ViewState>("connecting");
   // Bumping this re-runs the connect effect — the Retry button, and nothing
@@ -47,10 +48,20 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
     setState("connecting");
 
     // Dynamic import: @novnc/novnc is ESM that touches browser globals at
-    // module scope — importing it during SSR/prerender would throw.
-    void import("@novnc/novnc").then(({ default: RFB }) => {
+    // module scope — importing it during SSR/prerender would throw. The token
+    // rides the Sec-WebSocket-Protocol offer next to "binary" (the relay's
+    // cross-host auth channel — the bv host never sees the Clerk cookie, and
+    // a JS WebSocket cannot carry an Authorization header). The relay accepts
+    // "binary"; the token never becomes the selected protocol.
+    void Promise.all([import("@novnc/novnc"), getToken()]).then(([{ default: RFB }, token]) => {
       if (cancelled || !mountRef.current) return;
-      rfb = new RFB(mountRef.current, WS_URL);
+      if (!token) {
+        setState("disconnected");
+        return;
+      }
+      rfb = new RFB(mountRef.current, browserViewWsUrl(BACKEND_URL), {
+        wsProtocols: ["binary", token],
+      });
       // Scale the container's fixed 1280x800 display to whatever size this
       // dock panel currently has, rather than scrollbars/cropping.
       rfb.scaleViewport = true;
@@ -61,6 +72,11 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
       rfb.addEventListener("disconnect", () => {
         if (!cancelled) setState("disconnected");
       });
+    }).catch(() => {
+      // getToken() rejecting (expired session, network blip) or the dynamic
+      // import failing must land on the disconnected state — leaving the
+      // spinner up hides the Retry button behind a failure it can't see.
+      if (!cancelled) setState("disconnected");
     });
 
     return () => {
@@ -71,7 +87,9 @@ export function BrowserDockPanel(_props: IDockviewPanelProps): React.ReactElemen
         // Already closed — noVNC throws on double-disconnect.
       }
     };
-  }, [attempt]);
+    // getToken is identity-stable from Clerk; listed for lint-completeness,
+    // not as a real retrigger.
+  }, [attempt, getToken]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 

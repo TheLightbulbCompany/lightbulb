@@ -151,6 +151,62 @@ def test_ws_viewer_disconnect_tears_down_upstream(monkeypatch):
         assert upstream_closed.wait(timeout=5), "upstream socket leaked after viewer disconnect"
 
 
+def test_ws_subprotocol_jwt_authenticates_and_binary_is_selected(monkeypatch):
+    """The cross-host path: credential in the subprotocol offer, no cookie.
+
+    The panel offers ["binary", <jwt>]; the relay must validate the JWT entry,
+    echo "binary" back (a browser that offered subprotocols fails the
+    connection if the server selects none), and forward ONLY "binary"
+    upstream — the credential must never leave the process.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    async def _fake_decode(token: str):
+        if token == "the.clerk.jwt":
+            return {"sub": "user_test1", "email": "t@example.com"}
+        raise ValueError("not a credential")
+
+    upstream_subprotocols: dict[str, object] = {}
+
+    class _FakeUpstreamConn:
+        subprotocol = "binary"
+
+        async def send(self, data):
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeConnect:
+        def __init__(self, *args, **kwargs):
+            upstream_subprotocols["value"] = kwargs.get("subprotocols")
+
+        async def __aenter__(self):
+            return _FakeUpstreamConn()
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    class _FakeEcs:
+        async def resolve_running_container(self, owner_id):
+            return {"status": "running"}, "10.0.0.42"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: _FakeEcs())
+    monkeypatch.setattr(mod, "ws_connect", lambda *a, **k: _FakeConnect(*a, **k))
+
+    client = TestClient(_build_app())
+    with client.websocket_connect("/ws", subprotocols=["binary", "the.clerk.jwt"]) as ws:
+        assert ws.accepted_subprotocol == "binary"
+
+    assert upstream_subprotocols["value"] == ["binary"]
+
+
 def test_ws_org_member_resolves_org_container(monkeypatch):
     """Org claims must route to the ORG's container, not a per-user lookup.
 

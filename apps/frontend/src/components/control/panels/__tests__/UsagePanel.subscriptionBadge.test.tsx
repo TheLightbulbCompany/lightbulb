@@ -50,10 +50,10 @@ describe("UsagePanel subscription badge", () => {
     expect(screen.queryByText(/trial_local/i)).not.toBeInTheDocument();
   });
 
-  it("passes other statuses through with the capitalize class intact", () => {
+  it("capitalizes other statuses via planLabel, with the capitalize class intact", () => {
     billingAccount = { subscription_status: "active" };
     render(<UsagePanel />);
-    const label = screen.getByText("active");
+    const label = screen.getByText("Active");
     expect(label.className).toContain("capitalize");
   });
 

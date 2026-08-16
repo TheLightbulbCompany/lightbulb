@@ -80,9 +80,9 @@ describe("ProfilePanel — subscription badge", () => {
   it("passes other statuses through for the uppercase CSS transform", () => {
     billing.account = { subscription_status: "active", trial_end: null };
     render(<SettingsPage />);
-    // The label itself stays "active" — settings.css's text-transform:
-    // uppercase renders it visually as ACTIVE; textContent stays lowercase.
-    expect(screen.getByText("active")).toBeInTheDocument();
+    // planLabel capitalizes the raw enum ("active" -> "Active"); settings.css's
+    // text-transform: uppercase then renders it visually as ACTIVE on top.
+    expect(screen.getByText("Active")).toBeInTheDocument();
   });
 
   it("does not shout FREE TIER — the uppercase transform is dropped for trial_local", () => {

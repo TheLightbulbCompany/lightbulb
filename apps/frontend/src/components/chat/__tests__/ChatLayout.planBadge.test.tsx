@@ -178,9 +178,9 @@ describe("ChatLayout — footer plan-badge", () => {
     expect(screen.queryByText("Free tier")).not.toBeInTheDocument();
   });
 
-  it("passes other statuses through unmapped", () => {
+  it("capitalizes other statuses via planLabel", () => {
     billingAccount = { subscription_status: "active" };
     renderShell();
-    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
   });
 });

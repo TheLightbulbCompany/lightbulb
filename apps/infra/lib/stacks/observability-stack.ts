@@ -289,41 +289,42 @@ export class ObservabilityStack extends cdk.Stack {
   }
 
   /**
-   * A Sum across every dimension set matching `filters`, whatever the metric's
-   * remaining dimensions happen to be.
+   * A Sum over the [env, service, status] rollup put_metric publishes
+   * (core/observability/metrics.py, _STATUS_ROLLUP_KEYS).
    *
    * Reach for this when an alarm cares about ONE dimension value
    * (status="error") but the emitter also tags a qualifier the alarm has no
-   * business enumerating (op, provider). A literal dimensionsMap there binds a
-   * metric identity nothing publishes -- a permanently silent alarm. The
-   * { env, service } rollup put_metric emits is no help either: it collapses
-   * the very dimension being filtered on, so it would count successes too.
+   * business enumerating (op, provider). Binding the full set literally would
+   * name a metric identity per qualifier value -- a permanently silent alarm
+   * the moment a new provider appears. The { env, service } rollup is no help
+   * either: it collapses the very dimension being filtered on, so an error
+   * alarm would count successes too.
    *
-   * `schema` must name EVERY dimension the emitter publishes -- CloudWatch
-   * matches a search schema exactly. New values of the qualifier (a fourth
-   * channel provider, a third access-point op) are picked up automatically.
+   * This was a `SUM(SEARCH(...))` metric-math expression, which reads like the
+   * natural answer and cannot work: CloudWatch rejects it with "SEARCH is not
+   * supported on Metric Alarms" and rolled this stack back on EVERY deploy,
+   * which also skipped every prod stage behind it. The limitation is at the
+   * alarm layer with no workaround, so the aggregate has to be a real published
+   * dimension set instead -- hence the emitter change rather than a cleverer
+   * expression here. New qualifier values are still picked up automatically,
+   * because they all land on the same rollup.
    */
-  private searchSum(opts: {
+  private statusSum(opts: {
     metricName: string;
-    schema: string[];
-    filters: Record<string, string>;
+    status: string;
     periodMinutes: number;
     label: string;
-  }): cloudwatch.MathExpression {
-    const terms = Object.entries({
-      env: this.envName,
-      service: "isol8-backend",
-      ...opts.filters,
-    })
-      .map(([k, v]) => `${k}="${v}"`)
-      .join(" ");
-    const seconds = opts.periodMinutes * 60;
-    return new cloudwatch.MathExpression({
-      expression:
-        `SUM(SEARCH('{Isol8,${opts.schema.join(",")}} ` +
-        `MetricName="${opts.metricName}" ${terms}', 'Sum', ${seconds}))`,
-      usingMetrics: {},
+  }): cloudwatch.Metric {
+    return new cloudwatch.Metric({
+      namespace: "Isol8",
+      metricName: opts.metricName,
+      statistic: "Sum",
       period: cdk.Duration.minutes(opts.periodMinutes),
+      dimensionsMap: {
+        env: this.envName,
+        service: "isol8-backend",
+        status: opts.status,
+      },
       label: opts.label,
     });
   }
@@ -659,10 +660,9 @@ export class ObservabilityStack extends cdk.Stack {
     this.createAlarm({
       id: "W3",
       name: "container-efs-access-point-fail",
-      metric: this.searchSum({
+      metric: this.statusSum({
         metricName: "container.efs.access_point",
-        schema: ["env", "service", "op", "status"],
-        filters: { status: "error" },
+        status: "error",
         periodMinutes: 1,
         label: "EFS access point errors (all ops)",
       }),
@@ -861,14 +861,13 @@ export class ObservabilityStack extends cdk.Stack {
 
     // W13: channel-rpc-error-rate
     // Both channel metrics are tagged { provider, status }, so the old literal
-    // { status: "error" } bound a set nothing publishes. Search across providers.
+    // { status: "error" } bound a set nothing publishes. Use the status rollup.
     this.createAlarm({
       id: "W13",
       name: "channel-rpc-error-rate",
-      metric: this.searchSum({
+      metric: this.statusSum({
         metricName: "channel.rpc",
-        schema: ["env", "service", "provider", "status"],
-        filters: { status: "error" },
+        status: "error",
         periodMinutes: 60,
         label: "Channel RPC errors (all providers)",
       }),
@@ -884,10 +883,9 @@ export class ObservabilityStack extends cdk.Stack {
     this.createAlarm({
       id: "W14",
       name: "channel-configure-fail",
-      metric: this.searchSum({
+      metric: this.statusSum({
         metricName: "channel.configure",
-        schema: ["env", "service", "provider", "status"],
-        filters: { status: "error" },
+        status: "error",
         periodMinutes: 1,
         label: "Channel configure failures (all providers)",
       }),

@@ -371,6 +371,20 @@ describe("ObservabilityStack", () => {
         // The [env, service] rollup is emitted for every metric, so an alarm
         // that adds no dimensions of its own is always watching real data.
         if (b.extraDims.length === 0) return null;
+        // Likewise the [env, service, status] rollup, emitted for any metric
+        // whose full set carries a status dimension (put_metric's
+        // _STATUS_ROLLUP_KEYS). This is what lets an error alarm aggregate
+        // across a qualifier it should not enumerate — every op, every
+        // provider — without a SEARCH expression, which CloudWatch rejects on
+        // alarms outright. Mirrors the emitter's condition exactly: the rollup
+        // exists if and only if the emitter tags status.
+        if (
+          b.extraDims.length === 1 &&
+          b.extraDims[0] === "status" &&
+          emitted.some((set) => set.includes("status"))
+        ) {
+          return null;
+        }
         const matches = emitted.some(
           (set) => [...set].sort().join(",") === b.extraDims.join(","),
         );
@@ -484,6 +498,39 @@ describe("ObservabilityStack — prod-only paths", () => {
         AlarmName: name,
         AlarmActions: [{ Ref: Match.stringLikeRegexp("^AlertsPage") }],
       });
+    }
+  });
+
+  // CloudWatch rejects SEARCH() on alarms outright -- "SEARCH is not supported
+  // on Metric Alarms" -- so a SEARCH expression here is not a degraded alarm,
+  // it is a stack that fails to deploy. It shipped once (three alarms), rolled
+  // isol8-dev-observability back on every deploy, and because the prod stages
+  // depend on dev succeeding it silently blocked prod deploys entirely.
+  //
+  // Asserted across BOTH environments and every alarm, not just the three that
+  // regressed: the cost of a wrong answer here is the whole pipeline, and
+  // nothing else in CI deploys a template to find out.
+  test("no alarm uses a SEARCH expression, in either environment", () => {
+    for (const env of ["dev", "prod"] as const) {
+      const alarms = Object.entries(
+        buildTemplate(env).findResources("AWS::CloudWatch::Alarm"),
+      );
+      // Anti-vacuity, same reasoning as the dimension-contract test below: this
+      // only inspects alarms built from metric math, so if none existed (or the
+      // rendered shape changed) it would pass by looking at nothing at all.
+      const withExpressions = alarms.filter(([, alarm]: [string, any]) =>
+        (alarm.Properties?.Metrics ?? []).some((m: any) => typeof m?.Expression === "string"),
+      );
+      expect(withExpressions.length).toBeGreaterThan(0);
+
+      const offenders = alarms
+        .filter(([, alarm]: [string, any]) =>
+          (alarm.Properties?.Metrics ?? []).some((m: any) =>
+            typeof m?.Expression === "string" && m.Expression.includes("SEARCH("),
+          ),
+        )
+        .map(([logicalId]) => `${env}:${logicalId}`);
+      expect(offenders).toEqual([]);
     }
   });
 

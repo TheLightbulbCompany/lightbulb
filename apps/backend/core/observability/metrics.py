@@ -49,6 +49,28 @@ _DENIED_DIMENSIONS = frozenset({"user_id", "container_id", "request_id", "owner_
 # W64 before the rollup existed) and the dimensionless call was deleted.
 _ROLLUP_KEYS = ["env", "service"]
 
+# The status rollup: [env, service, status], emitted whenever a metric carries a
+# `status` dimension.
+#
+# Why a THIRD set rather than a second. Several alarms need "how many errors,
+# across every value of the qualifier" — EFS access-point failures across all
+# `op`s, channel failures across all `provider`s. The full set is too narrow
+# (one identity per op/provider) and the [env, service] rollup is too wide (it
+# folds ok and error together, so an error alarm would fire on success traffic).
+# Neither published identity answers the question.
+#
+# The alternative was a `SUM(SEARCH(...))` metric-math expression in the alarm,
+# which is what observability-stack.ts originally did. CloudWatch rejects it
+# outright — "SEARCH is not supported on Metric Alarms" — and the stack rolled
+# back on every deploy. That is a platform limitation with no workaround at the
+# alarm layer, so the aggregate has to exist as a real published identity, which
+# is what this set is.
+#
+# Same no-double-count rule as _ROLLUP_KEYS: these are distinct dimension sets
+# within ONE record, so CloudWatch aggregates each independently from a single
+# value. Emitting the same event twice in two calls still double-counts.
+_STATUS_ROLLUP_KEYS = [*_ROLLUP_KEYS, "status"]
+
 
 def _get_env() -> str:
     return (settings.ENVIRONMENT or "dev").lower()
@@ -78,10 +100,13 @@ def put_metric(
     dim_keys = list(all_dims.keys())
 
     # Full set first (what an operator slices by: chat.error by reason,
-    # container.lifecycle.latency by op), then the fleet rollup (see
-    # _ROLLUP_KEYS). Skipped when the metric carries no extra dimensions —
-    # the two sets would be identical, and a duplicate set double-counts.
+    # container.lifecycle.latency by op), then the status rollup (see
+    # _STATUS_ROLLUP_KEYS), then the fleet rollup (see _ROLLUP_KEYS). Each is
+    # skipped when it would duplicate the full set — an identical set repeated
+    # in one record double-counts.
     dimension_sets = [dim_keys]
+    if "status" in dims and dim_keys != _STATUS_ROLLUP_KEYS:
+        dimension_sets.append(_STATUS_ROLLUP_KEYS)
     if dim_keys != _ROLLUP_KEYS:
         dimension_sets.append(_ROLLUP_KEYS)
 

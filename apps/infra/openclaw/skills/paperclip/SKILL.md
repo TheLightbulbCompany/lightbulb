@@ -374,7 +374,7 @@ Authorized managers can install company skills independently of hiring, then ass
 
 - Install and inspect company skills with the company skills API.
 - Assign skills to existing agents with `POST /api/agents/{agentId}/skills/sync` — the body's `mode` field (`add` / `remove` / `replace`) is required; the request 400s without it.
-- When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
+- For a new agent, put required skill keys in the role specification delegated to Atlas or choose a marketplace listing that already carries them. After governed creation, use `skills/sync` to adjust the assigned set.
 
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
@@ -413,7 +413,7 @@ For commands, response fields, and MCP tools, read:
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
-- **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
+- **Hiring**: do not call Paperclip's `/agents` or `/agent-hires` endpoints. Isol8 owns agent limits, workspaces, and approval pairing. Search the live Isol8 marketplace and send a `recommend_agents` card first. If no listing fits, delegate a role specification to Atlas; only the owner's governed Isol8 deploy or approval flow may change the roster.
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 
 This is rule #1:

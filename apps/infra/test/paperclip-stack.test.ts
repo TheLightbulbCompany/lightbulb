@@ -168,6 +168,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
     expect(envMap.PAPERCLIP_DEPLOYMENT_MODE).toBe("authenticated");
     expect(envMap.PAPERCLIP_DEPLOYMENT_EXPOSURE).toBe("public");
+    expect(envMap.PAPERCLIP_REQUIRE_GOVERNED_AGENT_CREATION).toBe("1");
     // Without auto-apply, the server refuses to start on a fresh schema.
     expect(envMap.PAPERCLIP_MIGRATION_AUTO_APPLY).toBe("true");
     expect(envMap.HEARTBEAT_SCHEDULER_ENABLED).toBe("true");

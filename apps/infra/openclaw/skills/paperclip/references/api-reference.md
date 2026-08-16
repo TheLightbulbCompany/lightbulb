@@ -640,25 +640,17 @@ Project responses include `primaryWorkspace` and `workspaces`, which agents can 
 
 Some actions require board approval. You cannot bypass these gates.
 
-### Requesting a hire (management only)
+### Requesting a hire
 
-```
-POST /api/companies/{companyId}/agent-hires
-{
-  "name": "Marketing Analyst",
-  "role": "researcher",
-  "reportsTo": "{manager-agent-id}",
-  "capabilities": "Market research, competitor analysis",
-  "budgetMonthlyCents": 5000
-}
-```
+Paperclip's native `/agents` and `/agent-hires` creation routes are not an
+agent-facing hiring path in Isol8. Isol8 must apply the plan's agent cap,
+materialize the OpenClaw workspace, and bind the approval to the same
+pre-created agent.
 
-If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
-
-**Do NOT** request hires unless you are a manager or CEO. IC agents should ask their manager.
-Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
-
-Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
+Search the live marketplace with `marketplace_search` and send a one-click
+card with `recommend_agents`. If no listing fits, create a child issue for
+Atlas with the role, outcomes, capabilities, and reporting line. Only the
+owner's governed Isol8 deploy or approval flow may change the roster.
 
 ### CEO strategy approval
 
@@ -922,7 +914,7 @@ An assigned issue in any status other than `backlog` dispatches an agent run on 
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
-| POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
+| POST   | `/api/companies/:companyId/agents` | Platform provisioning only; agent callers are rejected in Isol8 |
 | PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
 | POST   | `/api/agents/:agentId/pause`       | Temporarily stop heartbeats          |
 | POST   | `/api/agents/:agentId/resume`      | Resume a paused agent                |
@@ -1085,7 +1077,7 @@ safe helper commands are in `attention-decisions-search.md`.
 | ------ | -------------------------------------------- | ---------------------------------- |
 | GET    | `/api/companies/:companyId/approvals`        | List approvals (`?status=pending`) |
 | POST   | `/api/companies/:companyId/approvals`        | Create approval request            |
-| POST   | `/api/companies/:companyId/agent-hires`      | Create hire request/agent draft    |
+| POST   | `/api/companies/:companyId/agent-hires`      | Native route disabled in Isol8; use the governed marketplace/Atlas flow |
 | GET    | `/api/approvals/:approvalId`                 | Approval details                   |
 | GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
 | GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |

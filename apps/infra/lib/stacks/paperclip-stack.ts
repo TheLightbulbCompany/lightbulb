@@ -419,6 +419,14 @@ export class PaperclipStack extends cdk.Stack {
         // (409 built_in_agent_undeletable), so not creating them is the
         // only path. Inert on images older than isol8.5 (unread env).
         PAPERCLIP_SKIP_BUILTIN_AGENTS: "1",
+        // Isol8 owns agent caps, marketplace artifacts, approval pairing, and
+        // OpenClaw workspace provisioning. The Paperclip fork therefore
+        // accepts new agents only through the idempotent control-plane create
+        // path and requires hire approvals to reference that pre-created
+        // pending agent. This also fail-closes native imports/catalog installs
+        // and direct agent-actor hires instead of letting them bypass Isol8.
+        // Inert until the Paperclip guard image is pinned and promoted.
+        PAPERCLIP_REQUIRE_GOVERNED_AGENT_CREATION: "1",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         // Receiver URL for the bundled isol8.notifications plugin (worker env
         // passthrough in the fork's buildPluginWorkerEnv; the token half is a

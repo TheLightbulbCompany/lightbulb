@@ -135,9 +135,24 @@ async def browser_view_ws(websocket: WebSocket) -> None:
                 except Exception as e:  # noqa: BLE001 - log + bail
                     logger.warning("browser_view_ws: container→client relay error owner=%s: %s", owner_id, e)
 
-            # gather (not FIRST_COMPLETED) so an exception in one leg can't
-            # tear down the other mid-frame; the finally closes both sides.
-            await asyncio.gather(client_to_upstream(), upstream_to_client(), return_exceptions=True)
+            # FIRST_COMPLETED, deliberately unlike the paperclip relay's
+            # gather-both idiom: either leg ending means the session is dead,
+            # and a byte relay has no mid-frame worth preserving. Waiting for
+            # BOTH legs would leave the relay half-open when the viewer closes
+            # the panel (upstream_to_client blocks in `async for` until the
+            # container side speaks) — and a half-open relay here pins a live
+            # x11vnc polling the framebuffer in the owner's container, the
+            # exact CPU cost the per-connection spawn design exists to bound.
+            legs = {
+                asyncio.create_task(client_to_upstream()),
+                asyncio.create_task(upstream_to_client()),
+            }
+            _, pending = await asyncio.wait(legs, return_when=asyncio.FIRST_COMPLETED)
+            for leg in pending:
+                leg.cancel()
+            await asyncio.gather(*legs, return_exceptions=True)
+            # Falling out of the `async with` closes the upstream socket, which
+            # ends the container-side x11vnc; the finally closes the viewer.
     except Exception as e:  # noqa: BLE001 - top-level guard
         logger.warning("browser_view_ws: connection failed owner=%s ip=%s: %s", owner_id, ip, e)
     finally:

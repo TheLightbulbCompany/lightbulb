@@ -85,6 +85,72 @@ def test_ws_unreachable_container_closes_4503(monkeypatch):
     assert exc_info.value.code == 4503
 
 
+def test_ws_viewer_disconnect_tears_down_upstream(monkeypatch):
+    """Viewer closes the panel → the upstream socket must close promptly.
+
+    The failure mode this pins: with a gather-both relay, the viewer leg
+    returns on disconnect but the container leg stays blocked in ``async for``
+    until the container side speaks — which it never does unprompted — so the
+    upstream socket (and with it the per-viewer x11vnc polling the owner's
+    framebuffer) leaks until process restart. First-completed teardown is the
+    fix; this test fails with the gather-both shape.
+    """
+    import asyncio
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    import routers.browser_view as mod
+
+    upstream_closed = threading.Event()
+
+    class _FakeUpstreamConn:
+        subprotocol = None
+
+        async def send(self, data):  # viewer bytes are irrelevant here
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            # The container side never speaks unprompted — block until
+            # cancelled, exactly like a silent websockify connection.
+            await asyncio.Event().wait()
+
+    class _FakeConnect:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return _FakeUpstreamConn()
+
+        async def __aexit__(self, *exc_info):
+            upstream_closed.set()
+            return False
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_test1", "email": "t@example.com"}
+
+    class _FakeEcs:
+        async def resolve_running_container(self, owner_id):
+            return {"status": "running"}, "10.0.0.42"
+
+    monkeypatch.setattr(mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(mod, "get_ecs_manager", lambda: _FakeEcs())
+    monkeypatch.setattr(mod, "ws_connect", lambda *a, **k: _FakeConnect())
+
+    client = TestClient(_build_app())
+    with client.websocket_connect("/ws", cookies={"__session": "ok.jwt"}) as ws:
+        # Close ONLY the viewer socket, inside the context, so the ASGI app
+        # keeps running. Exiting the context instead would cancel the whole
+        # route task — the harness would then do the cleanup the route failed
+        # to do, and this test passed against the buggy gather-both shape
+        # exactly that way before this arrangement.
+        ws.close()
+        assert upstream_closed.wait(timeout=5), "upstream socket leaked after viewer disconnect"
+
+
 def test_ws_org_member_resolves_org_container(monkeypatch):
     """Org claims must route to the ORG's container, not a per-user lookup.
 

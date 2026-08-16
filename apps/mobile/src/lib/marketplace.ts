@@ -107,10 +107,11 @@ export function listingByline(listing: Pick<Listing, "seller_display_name">): st
  * seller of a paid listing still deploys their own for free (backend
  * seller-self bypass), so their rows stay visible and hireable.
  *
- * The search list is filtered server-side (free_only, applied before the
- * ranked limit slice); this gates the detail screen's primary action, where a
- * deep link can land on a paid listing search never showed, and doubles as a
- * belt over the returned rows.
+ * The search list is filtered server-side by free_only, which applies this
+ * same rule (free, or the caller's own) before the ranked limit slice. This
+ * copy gates the detail screen's primary action, where a deep link can land
+ * on a paid listing search never showed, and doubles as a belt over the rows
+ * that do come back.
  *
  * ponytail: price + seller only. Neither payload carries an entitlement flag,
  * so a paid listing the viewer already BOUGHT (which deploys free) stays

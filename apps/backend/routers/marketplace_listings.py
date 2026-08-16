@@ -383,8 +383,9 @@ async def search_listings(
     free_only: bool = Query(
         default=False,
         description=(
-            "Keep only free listings (price_cents absent or <= 0), applied before the limit"
-            " slice. The mobile app passes this — iOS hires free agents only."
+            "Keep only listings that cost the caller nothing — free rows, plus the caller's"
+            " own paid rows (which deploy free). Applied before the limit slice. The mobile"
+            " app passes this — iOS hires free agents only."
         ),
     ),
     status_in: str | None = Query(
@@ -417,10 +418,17 @@ async def search_listings(
     include_unpublished = (
         seller_id is not None and auth is not None and seller_id == auth.user_id and status_in is not None
     )
+    # free_only spares the caller their OWN paid listings, so the response
+    # depends on who asked, not just on the URL.
+    viewer_id = auth.user_id if (free_only and auth is not None) else None
     if include_unpublished:
         # Seller-scoped reads can include drafts/review/retired rows that
         # must never be cached by a CDN — those are private to the seller.
         response.headers["Cache-Control"] = "private, max-age=0, no-store"
+    elif viewer_id:
+        # Caller-dependent body: a shared cache would hand one seller's paid
+        # rows to the next viewer. The browser may still hold its own copy.
+        response.headers["Cache-Control"] = "private, max-age=60"
     else:
         response.headers["Cache-Control"] = "public, max-age=60"
     # Push status_in down to the search service so it's applied BEFORE the
@@ -437,6 +445,7 @@ async def search_listings(
         seller_id=seller_id,
         category=category,
         free_only=free_only,
+        viewer_id=viewer_id,
         include_unpublished=include_unpublished,
         status_in=status_list,
     )

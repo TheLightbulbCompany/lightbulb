@@ -125,10 +125,10 @@ export default function MarketplacePanel() {
   } else if (state.kind === "loading") {
     body = <SkeletonRows />;
   } else {
-    // Belt on the server's free_only filter (which is what actually keeps
-    // free listings from being truncated away by the ranked limit). This
-    // only bites if the app outruns a backend that ignores the param — a
-    // paid row must never reach a shelf with no in-app way to buy.
+    // Same rule the server applied via free_only (there it runs before the
+    // ranked limit, which is what keeps free listings from being truncated
+    // away). This copy only bites if the app outruns a backend that ignores
+    // the param — a paid row must never reach a shelf with no way to buy.
     const items = state.items.filter((l) => isFreeToHire(l, userId));
     body = (
       <FlatList

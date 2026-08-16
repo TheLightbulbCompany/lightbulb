@@ -815,6 +815,40 @@ async def test_free_only_filter_runs_before_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_free_only_keeps_the_viewers_own_paid_listings(monkeypatch):
+    """A seller's own paid row deploys free (seller-self bypass), so a
+    free-to-the-caller filter must not hide it — and must still hide it from
+    everyone else."""
+    items = [
+        {
+            "listing_id": "l_mine",
+            "slug": "mine",
+            "name": "Mine",
+            "status": "published",
+            "seller_id": "u_seller",
+            "format": "openclaw",
+            "tags": [],
+            "version": 1,
+            "description_md": "",
+            "published_at": "2026-05-01T00:00:00Z",
+            "price_cents": 1000,
+        },
+    ]
+    table = MagicMock()
+    table.scan.return_value = {"Items": items}
+    monkeypatch.setattr(marketplace_repo, "_listings_table", lambda: table)
+
+    mine = await marketplace_search.search(query=None, free_only=True, viewer_id="u_seller")
+    assert [li["slug"] for li in mine] == ["mine"]
+
+    someone_else = await marketplace_search.search(query=None, free_only=True, viewer_id="u_other")
+    assert someone_else == []
+
+    anonymous = await marketplace_search.search(query=None, free_only=True)
+    assert anonymous == []
+
+
+@pytest.mark.asyncio
 async def test_free_only_treats_missing_price_as_free(mock_table):
     """The canned LISTINGS carry no ``price_cents`` at all.
 

@@ -1687,32 +1687,72 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
-    async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
-        """Poll until the user's ECS service has no running or pending tasks.
+    def _tasks_fully_stopped_blocking(self, service_name: str) -> bool:
+        """Blocking: whether every task of the service has reached lastStatus
+        STOPPED — the only signal equivalent to "the container has exited".
 
-        Returns True once the service is drained, or False on timeout (the
-        caller proceeds anyway — a stuck describe is not worth wedging an
-        admin reprovision). Enforces the single-writer invariant on the
-        reprovision path, which scales to 0 and then re-creates the task; the
-        new task must not start until the old one is fully stopped, or both
-        would hold the EFS WAL database open at once.
+        Service-level counts are NOT that signal: ``runningCount`` drops the
+        moment a task leaves RUNNING, but the task then sits in STOPPING for
+        up to its 120s stopTimeout while the entrypoint (litestream) performs
+        its final replica sync — and a DELETED service describes as absent
+        while its last task is still stopping. Either window lets a caller
+        that trusted the counts race writes that have not landed yet (the
+        replica-prefix delete, the OAuth seed harvest, the single-writer
+        reprovision).
+
+        A per-user service runs at most one task and stopped-task records are
+        retained ~1h, so one unpaginated page per desiredStatus is enough.
+        ServiceNotFoundException means ECS has garbage-collected the service
+        record itself — long after its tasks stopped — and reads as drained.
+        (Residual risk: if ECS also raises it for a fresh INACTIVE service,
+        a task could still be STOPPING; the harvest's freshness check is the
+        backstop for that narrow window.) ``describe_tasks`` failures with
+        reason MISSING are expired stopped records — not running — so only
+        the returned tasks are checked.
+        """
+        arns: list[str] = []
+        for desired in ("RUNNING", "STOPPED"):
+            try:
+                resp = self._ecs.list_tasks(
+                    cluster=self._cluster,
+                    serviceName=service_name,
+                    desiredStatus=desired,
+                )
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                if code == "ServiceNotFoundException":
+                    return True
+                raise
+            arns.extend(resp.get("taskArns", []))
+        if not arns:
+            return True
+        for i in range(0, len(arns), 100):
+            desc = self._ecs.describe_tasks(cluster=self._cluster, tasks=arns[i : i + 100])
+            if any(t.get("lastStatus") != "STOPPED" for t in desc.get("tasks", [])):
+                return False
+        return True
+
+    async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
+        """Poll until every task of the user's service has actually STOPPED.
+
+        Returns True once drained, or False on timeout (the caller proceeds
+        anyway — a stuck poll is not worth wedging an admin reprovision).
+        Verifies task ``lastStatus`` rather than service running/pending
+        counts — see ``_tasks_fully_stopped_blocking`` for why the counts lie
+        during the STOPPING window. Enforces the single-writer invariant on
+        the reprovision path and the write-ordering the wipe flows depend on
+        (replica delete + OAuth seed harvest must postdate litestream's
+        final sync, which only lands when the container exits).
         """
         service_name = self._service_name(user_id)
         interval_s = 3.0
         attempts = max(1, int(timeout_s / interval_s))
         for _ in range(attempts):
             try:
-                resp = await asyncio.to_thread(
-                    self._ecs.describe_services,
-                    cluster=self._cluster,
-                    services=[service_name],
-                )
-                services = resp.get("services", [])
-                svc = services[0] if services else {}
-                if svc.get("runningCount", 0) == 0 and svc.get("pendingCount", 0) == 0:
+                if await asyncio.to_thread(self._tasks_fully_stopped_blocking, service_name):
                     return True
             except Exception:
-                logger.warning("describe_services failed while draining %s; will retry", service_name)
+                logger.warning("task-termination check failed while draining %s; will retry", service_name)
             await asyncio.sleep(interval_s)
         logger.warning(
             "Service %s did not drain within %.0fs; proceeding with reprovision",

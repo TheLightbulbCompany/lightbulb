@@ -96,12 +96,14 @@ def _real_manager() -> EcsManager:
     boto client swapped for a MagicMock — no network calls, no __init__
     dependency on ECS_CLUSTER_ARN/subnets/etc.
 
-    ``describe_services`` reports an already-drained service so
-    ``_wait_for_service_drained`` returns on its first poll — no real sleep.
+    ``list_tasks`` reports no task records so ``_wait_for_service_drained``
+    (which verifies actual task termination) returns on its first poll — no
+    real sleep.
     """
     manager = EcsManager.__new__(EcsManager)
     manager._ecs = MagicMock()
     manager._ecs.describe_services.return_value = {"services": [{"runningCount": 0, "pendingCount": 0}]}
+    manager._ecs.list_tasks.return_value = {"taskArns": []}
     manager._cluster = "arn:aws:ecs:us-east-1:1:cluster/test"
     return manager
 

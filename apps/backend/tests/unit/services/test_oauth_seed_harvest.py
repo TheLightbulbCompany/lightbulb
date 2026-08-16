@@ -10,6 +10,7 @@ OpenAI still accepts.
 
 import json
 import sqlite3
+from unittest.mock import AsyncMock, MagicMock
 
 import boto3
 import pytest
@@ -23,6 +24,19 @@ from core.services.oauth_service import (
     _read_live_profile_from_db,
     harvest_rotated_oauth_seed,
 )
+
+
+@pytest.fixture(autouse=True)
+def drained_container(monkeypatch):
+    """The harvest gates on confirmed task termination (lazy import of
+    core.containers.get_ecs_manager). Default here: terminated — the gate's
+    own behavior has a dedicated test below."""
+    from core import containers
+
+    mgr = MagicMock()
+    mgr.wait_until_drained = AsyncMock(return_value=True)
+    monkeypatch.setattr(containers, "get_ecs_manager", lambda: mgr)
+    return mgr
 
 
 @pytest.fixture
@@ -203,6 +217,27 @@ async def test_harvest_noop_when_no_replica(oauth_table, monkeypatch):
     monkeypatch.setattr(oauth_service.settings, "LITESTREAM_BUCKET", "b", raising=False)
     monkeypatch.setattr(oauth_service, "_restore_replica_db", lambda *a: None)
     assert await harvest_rotated_oauth_seed(owner_id="u_1") is False
+
+
+@pytest.mark.asyncio
+async def test_harvest_skips_when_task_termination_unconfirmed(oauth_table, monkeypatch, drained_container):
+    """The final Litestream sync lands only when the container EXITS. A replica
+    read while the task may still be stopping can hold a chain rotated past
+    the seed yet already spent (the freshness check cannot catch that), so an
+    unconfirmed stop must skip the harvest — loudly — and never touch the
+    replica or the seed."""
+    monkeypatch.setattr(oauth_service.settings, "LITESTREAM_BUCKET", "b", raising=False)
+    drained_container.wait_until_drained = AsyncMock(return_value=False)
+    restored = []
+    monkeypatch.setattr(oauth_service, "_restore_replica_db", lambda *a: restored.append(a))
+    metrics = []
+    monkeypatch.setattr(oauth_service, "put_metric", lambda name, **kw: metrics.append(name))
+
+    assert await harvest_rotated_oauth_seed(owner_id="u_1") is False
+
+    assert not restored  # replica never read
+    drained_container.wait_until_drained.assert_awaited_once_with("u_1", timeout_s=60.0)
+    assert metrics == ["oauth.seed_harvest_skipped_undrained"]
 
 
 @pytest.mark.asyncio

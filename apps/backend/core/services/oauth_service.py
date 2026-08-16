@@ -664,10 +664,32 @@ async def harvest_rotated_oauth_seed(*, owner_id: str) -> bool:
 
     Best-effort by contract: True only when a fresher credential was written.
     Every miss (no replica, no profile, non-chatgpt owner, lost race to a
-    fresh reconnect) is a logged no-op, not an error.
+    fresh reconnect, unconfirmed task termination) is a logged no-op, not an
+    error.
     """
     bucket = settings.LITESTREAM_BUCKET
     if not bucket:
+        return False
+
+    # The final Litestream sync only lands when the container EXITS — a
+    # replica read while the task is still stopping can hold a chain that is
+    # rotated past the seed yet already spent (its refresh token was used to
+    # mint the one in the unsynced tail). Confirm actual task termination
+    # (lastStatus STOPPED, not service counts — see
+    # ecs_manager._tasks_fully_stopped_blocking) before trusting the replica.
+    # Callers have normally drained already, so this returns on its first
+    # poll; when termination cannot be confirmed, skip LOUDLY and leave the
+    # seed alone — the freshness check would not catch a spent-but-newer
+    # chain.
+    from core.containers import get_ecs_manager
+
+    if not await get_ecs_manager().wait_until_drained(owner_id, timeout_s=60.0):
+        logger.error(
+            "oauth seed harvest SKIPPED for %s — task termination unconfirmed, the replica "
+            "may predate the final sync; leaving the DDB seed untouched",
+            owner_id,
+        )
+        put_metric("oauth.seed_harvest_skipped_undrained")
         return False
 
     # Restore BEFORE touching DDB: the binary check is the cheap bail for

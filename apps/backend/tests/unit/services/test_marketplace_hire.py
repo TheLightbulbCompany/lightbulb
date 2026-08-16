@@ -145,6 +145,16 @@ def _stub_listing_install_counter():
         yield m
 
 
+@pytest.fixture(autouse=True)
+def approval_install_state():
+    """Most approval-creation tests model a new, not-yet-installed agent."""
+    with patch(
+        "core.services.marketplace_hire._has_committed_marketplace_install",
+        return_value=False,
+    ) as m:
+        yield m
+
+
 @pytest.fixture
 def approval_create_claim(monkeypatch):
     """Give approval pre-creation a deterministic, held short-lived claim.
@@ -480,6 +490,81 @@ async def test_retry_reuses_the_existing_hire_approval(resolve_company, create_a
     admin.update_agent.assert_not_awaited()
     admin.create_approval.assert_not_awaited()
     assert create_agent.await_args.kwargs["idempotency_key"].startswith("isol8-agent-create:v1:marketplace-approval:")
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.paperclip_admin_session.get_admin_session_cookie", new_callable=AsyncMock)
+@patch(
+    "core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace",
+    new_callable=AsyncMock,
+)
+@patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", new_callable=AsyncMock)
+async def test_retry_after_approved_install_does_not_repark_or_refile(
+    resolve_company,
+    create_agent,
+    cookie,
+    rollback,
+    approval_create_claim,
+    approval_install_state,
+):
+    """Pending-only approval reads must not disable an already-live hire."""
+
+    resolve_company.return_value = "co_1"
+    create_agent.return_value = {"id": _AGENT_ID}
+    cookie.return_value = "ck"
+    approval_install_state.return_value = True
+    admin = MagicMock()
+    admin.list_approvals = AsyncMock(return_value=[])
+    admin.update_agent = AsyncMock()
+    admin.create_approval = AsyncMock()
+
+    with patch("core.services.paperclip_admin_client.PaperclipAdminClient", return_value=admin):
+        approval_id = await marketplace_hire.create_hire_approval(
+            owner_id="user_x",
+            issue_id="iss_1",
+            listing=_LISTING,
+        )
+
+    assert approval_id is None
+    approval_install_state.assert_called_once_with(owner_id="user_x", agent_id=_AGENT_ID)
+    admin.update_agent.assert_not_awaited()
+    admin.create_approval.assert_not_awaited()
+    rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_hire._rollback_agent", new_callable=AsyncMock)
+@patch("core.services.paperclip_admin_session.get_admin_session_cookie", new_callable=AsyncMock)
+@patch(
+    "core.services.paperclip_agent_lifecycle.create_paperclip_for_marketplace",
+    new_callable=AsyncMock,
+)
+@patch("core.services.paperclip_openclaw_pairing.resolve_company_id_for_owner", new_callable=AsyncMock)
+async def test_invalid_approval_lookup_response_preserves_replayed_agent(
+    resolve_company,
+    create_agent,
+    cookie,
+    rollback,
+    approval_create_claim,
+):
+    """Unknown approval state is not proof that the replayed UUID is disposable."""
+
+    resolve_company.return_value = "co_1"
+    create_agent.return_value = {"id": _AGENT_ID}
+    cookie.return_value = "ck"
+    admin = MagicMock()
+    admin.list_approvals = AsyncMock(return_value=None)
+
+    with patch("core.services.paperclip_admin_client.PaperclipAdminClient", return_value=admin):
+        with pytest.raises(RuntimeError, match="invalid approvals response"):
+            await marketplace_hire.create_hire_approval(
+                owner_id="user_x",
+                issue_id="iss_1",
+                listing=_LISTING,
+            )
+
+    rollback.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -112,6 +112,14 @@ def hired_agent_id_of(payload: dict | None) -> str | None:
     return agent_id if isinstance(agent_id, str) and agent_id else None
 
 
+def _has_committed_marketplace_install(*, owner_id: str, agent_id: str) -> bool:
+    """Return whether this Paperclip agent already finished container install."""
+    from core.services.catalog_service import get_catalog_service
+
+    install = get_catalog_service().live_install_for_agent(owner_id, agent_id)
+    return isinstance(install, dict)
+
+
 async def create_hire_approval(
     *, owner_id: str, issue_id: str, listing: dict, requested_by_user_id: str | None = None
 ) -> str | None:
@@ -123,8 +131,10 @@ async def create_hire_approval(
     than only in a global list the owner has no reason to open.
 
     Reuses both the agent and an already-filed approval when a caller retries
-    after losing a response. Definitive failures roll the agent back; ambiguous
-    transport/upstream failures keep it visible so the retry can reconcile.
+    after losing a response. A completed install is also terminal: a later
+    recommendation must not park the live agent or file another approval.
+    Definitive failures roll the agent back; ambiguous transport/upstream or
+    reconciliation failures keep it visible so the retry can reconcile.
     Returns the approval id, or None when the owner has no Paperclip company —
     a degraded state a recommendation must not raise on, since the listings are
     still worth returning.
@@ -205,6 +215,7 @@ async def create_hire_approval(
     operation_cause: BaseException | None = None
     http: httpx.AsyncClient | None = None
     agent_id: str | None = None
+    preserve_agent_on_failure = False
     try:
         # At the cap, only an existing operation may replay. A missing key is a
         # normal degraded recommendation, not a roster mutation or API failure.
@@ -226,6 +237,12 @@ async def create_hire_approval(
             return None
         agent_id = agent["id"]
 
+        # Until both approval state and container state have been read, this
+        # UUID may name an older successful operation. Never let a failed
+        # reconciliation delete an agent merely because the native create
+        # correctly replayed it.
+        preserve_agent_on_failure = True
+
         http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
@@ -233,7 +250,12 @@ async def create_hire_approval(
             session_cookie=cookie,
             company_id=company_id,
         )
-        approvals = approvals_payload if isinstance(approvals_payload, list) else approvals_payload.get("approvals", [])
+        if isinstance(approvals_payload, list):
+            approvals = approvals_payload
+        elif isinstance(approvals_payload, dict):
+            approvals = approvals_payload.get("approvals", [])
+        else:
+            raise RuntimeError("Paperclip returned an invalid approvals response")
         existing = next(
             (
                 approval
@@ -246,6 +268,20 @@ async def create_hire_approval(
         )
         if existing:
             return existing.get("id")
+
+        # Paperclip's approval list contains pending rows only. Once the owner
+        # approves the first request, that row disappears while the native
+        # idempotency key continues to replay the same now-live agent. The
+        # explicit completion marker plus agents.list registration is the
+        # durable boundary; status alone cannot distinguish it from a fresh
+        # idle agent.
+        if _has_committed_marketplace_install(owner_id=owner_id, agent_id=agent_id):
+            return None
+
+        # We have now proved there is neither a pending approval nor a complete
+        # install. From here this call owns an incomplete operation and may
+        # unwind it after a definitive failure.
+        preserve_agent_on_failure = False
 
         # Step 2 — park it inert before it can be assigned work or woken.
         await admin.update_agent(
@@ -268,9 +304,9 @@ async def create_hire_approval(
         operation_cause = exc
         if agent_id is not None:
             retryable = isinstance(exc, (httpx.RequestError, TimeoutError)) or bool(getattr(exc, "retryable", False))
-            if retryable:
+            if preserve_agent_on_failure or retryable:
                 logger.warning(
-                    "create_hire_approval: ambiguous failure after creating agent %s for owner=%s — preserving for retry",
+                    "create_hire_approval: ambiguous failure while reconciling agent %s for owner=%s — preserving for retry",
                     agent_id,
                     owner_id,
                 )

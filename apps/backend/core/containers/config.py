@@ -17,6 +17,7 @@ from pathlib import Path
 
 from core import openclaw_version
 from core.config import settings
+from core.services.efs_file_lock import get_file_lock, openclaw_config_sidecar_lock
 from core.services.paperclip_meta import (
     PAPERCLIP_AGENT_ROLES,
     PaperclipMeta,
@@ -2200,7 +2201,14 @@ async def write_openclaw_config(
 
     def _write() -> None:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config, indent=2))
+        lock_path = f"{config_path}.lock"
+        # This generator is also used by update paths while the owner task is
+        # still running. Take the same transition-aware sidecar as hot patches:
+        # legacy fcntl before boot recovery, OpenClaw-compatible O_EXCL after.
+        # The process-local gate additionally serializes backend threads.
+        with get_file_lock(lock_path):
+            with openclaw_config_sidecar_lock(str(config_path.parent), lock_path):
+                config_path.write_text(json.dumps(config, indent=2))
 
     await asyncio.to_thread(_write)
 

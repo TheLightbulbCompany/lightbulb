@@ -179,6 +179,10 @@ async def _provision_channel_accounts(owner_id: str) -> dict[str, dict[str, dict
         return {}
 
 
+_CONFIG_LOCK_PROTOCOL_ENV = "ISOL8_CONFIG_LOCK_PROTOCOL"
+_CONFIG_LOCK_PROTOCOL_VERSION = "guard-v1"
+
+
 def _build_per_user_environment(
     *,
     hook_token: str,
@@ -602,15 +606,25 @@ class EcsManager:
                 # is provided, inject it as OPENCLAW_HOOK_TOKEN — the helper
                 # also de-dupes any stale entry the caller supplied (matters
                 # for the backfill story).
-                base_env = list(cd_copy.get("environment") or [])
-                per_user_env = list(environment_for_task or [])
+                base_env = [
+                    entry
+                    for entry in (cd_copy.get("environment") or [])
+                    if entry.get("name") != _CONFIG_LOCK_PROTOCOL_ENV
+                ]
+                per_user_env = [
+                    entry for entry in (environment_for_task or []) if entry.get("name") != _CONFIG_LOCK_PROTOCOL_ENV
+                ]
                 if hook_token:
                     per_user_env = _build_per_user_environment(
                         hook_token=hook_token,
                         existing=per_user_env,
                     )
-                if per_user_env:
-                    cd_copy["environment"] = base_env + per_user_env
+                # Rollout handshake: the CDK base task definition is published
+                # before ServiceStack updates the backend. The new boot recovery
+                # refuses to run without this marker, which only a backend that
+                # participates in the recovery guard can add while cloning.
+                per_user_env.append({"name": _CONFIG_LOCK_PROTOCOL_ENV, "value": _CONFIG_LOCK_PROTOCOL_VERSION})
+                cd_copy["environment"] = base_env + per_user_env
             container_defs.append(cd_copy)
 
         reg_kwargs = dict(
@@ -778,11 +792,16 @@ class EcsManager:
         # curl resolve the seeded Friday identity; identity is now per-agent
         # (each agent reads its own claimed-key file), so the legacy shared env
         # must not survive a refresh and re-seed Friday's credentials fleet-wide.
-        existing_env = [e for e in existing_env if not e.get("name", "").startswith("PAPERCLIP_")]
+        existing_env = [
+            e
+            for e in existing_env
+            if not e.get("name", "").startswith("PAPERCLIP_") and e.get("name") != _CONFIG_LOCK_PROTOCOL_ENV
+        ]
         new_env = _build_per_user_environment(
             hook_token=container.get("hook_token") or "",
             existing=existing_env,
         )
+        new_env.append({"name": _CONFIG_LOCK_PROTOCOL_ENV, "value": _CONFIG_LOCK_PROTOCOL_VERSION})
         for cd in td["containerDefinitions"]:
             if cd["name"] == "openclaw":
                 cd["environment"] = new_env

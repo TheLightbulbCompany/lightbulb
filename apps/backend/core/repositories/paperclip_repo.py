@@ -1558,7 +1558,47 @@ class PaperclipRepo:
             )
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
+            # The state transition is lost, but the FACT of delivery must not
+            # be -- it is the one thing no other writer can reconstruct.
+            await self._record_late_ack(user_id, onboarding_generation=onboarding_generation, dispatch_id=dispatch_id)
             return False
+
+    async def _record_late_ack(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
+        """Stamp ``bootstrap_sent_at`` WITHOUT touching ``bootstrap_state``.
+
+        The fallback for a refused ``mark_bootstrap_sent``: the row moved on
+        under this claim (almost always the staleness rule settling it
+        ``failed`` while this very send was in flight), so the state machine's
+        ``-> sent`` edge is gone -- but "this attempt DID reach OpenClaw" is a
+        fact only this caller ever had, and losing it is what leaves an
+        operator staring at a ``failed`` row whose recorded reason says the
+        send "may" have been delivered. With the stamp, the admin surface's
+        "Sent at" tells them it certainly was.
+
+        Fenced on generation + dispatch_id ONLY -- deliberately no state
+        condition, since the point is to annotate whatever the row became. A
+        guard-fail means a different incarnation (reprovision) or a retired
+        claim (admin reset REMOVEs the dispatch_id): nothing left to annotate,
+        and the caller's ERROR log is the record. Never raises: this runs
+        after delivery, on a path that is already degraded.
+        """
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": user_id},
+                UpdateExpression="SET bootstrap_sent_at = :t, updated_at = :t",
+                ConditionExpression="onboarding_generation = :gen AND bootstrap_dispatch_id = :did",
+                ExpressionAttributeValues={
+                    ":t": utc_now_iso(),
+                    ":gen": onboarding_generation,
+                    ":did": dispatch_id,
+                },
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+        except Exception as e:  # noqa: BLE001 — best-effort annotation of an already-degraded row
+            logger.warning("_record_late_ack failed for %s: %s", user_id, e)
 
     async def mark_bootstrap_delivered(self, user_id: str, *, onboarding_generation: str, dispatch_id: str) -> None:
         """Conditional ``bootstrap_state: dispatched|sent -> delivered``, fenced

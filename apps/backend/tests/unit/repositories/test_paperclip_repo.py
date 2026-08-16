@@ -1166,7 +1166,24 @@ async def test_sent_returns_false_when_the_row_moved_on_under_the_claim(repo):
     )
 
     assert not await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
-    assert (await repo.get("u1")).bootstrap_state == "failed"  # not silently re-opened
+    settled = await repo.get("u1")
+    assert settled.bootstrap_state == "failed"  # not silently re-opened
+    # ...but the DELIVERY is still recorded against that row. It is the one
+    # fact no other writer can reconstruct, and it turns the recorded reason's
+    # "may double-deliver" into something an operator can act on.
+    assert settled.bootstrap_sent_at is not None
+
+
+async def test_a_late_ack_on_a_superseded_generation_annotates_nothing(repo):
+    """Nothing left to annotate: a reprovision minted a new incarnation, so the
+    old attempt's delivery is not a fact about THIS row."""
+    dispatch_id = await _claimed(repo)
+    await repo.put(_make_company(user_id="u1", onboarding_generation="01NEW", funnel_state="not_started"))
+
+    assert not await repo.mark_bootstrap_sent("u1", onboarding_generation="01G", dispatch_id=dispatch_id)
+    fresh = await repo.get("u1")
+    assert fresh.bootstrap_sent_at is None
+    assert fresh.onboarding_generation == "01NEW"
 
 
 async def test_send_attempted_returns_false_when_the_claim_moved_on(repo):

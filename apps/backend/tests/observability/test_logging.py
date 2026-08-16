@@ -109,9 +109,15 @@ def test_configure_logging_quiets_httpx_request_urls():
     """
     root = logging.getLogger()
     saved_handlers = root.handlers[:]
+    # configure_logging mutates three logger LEVELS as well as the root handlers
+    # ("" is the root logger), and levels are process-global — leaving them set
+    # would silently change what later tests in this session can capture.
+    saved_levels = {name: logging.getLogger(name).level for name in ("", "httpx", "httpcore")}
     try:
         configure_logging()
         assert logging.getLogger("httpx").level == logging.WARNING
         assert logging.getLogger("httpcore").level == logging.WARNING
     finally:
         root.handlers[:] = saved_handlers
+        for name, level in saved_levels.items():
+            logging.getLogger(name).setLevel(level)

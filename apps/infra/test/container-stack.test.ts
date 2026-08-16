@@ -86,6 +86,40 @@ function expectBootChainGuard(template: Template, env: "dev" | "prod"): void {
 // Mount ORDER is load-bearing — ECS mounts in literal mountPoints[] order, so
 // the EFS mount must precede the nested ephemeral mounts or EFS covers them and
 // every commit silently goes back to NFS.
+// The display block ships AHEAD of the headful config flip, so the property
+// that makes it safe to deploy is that it does NOTHING yet — hence asserting
+// the inertness, not merely the presence.
+//
+// Asserted per-environment ON PURPOSE, and `displaySet` is a parameter rather
+// than a constant because the two environments are expected to DIVERGE: dev
+// gets DISPLAY first and prod follows only after dev has been observed. A
+// shared assertion would have to be relaxed the moment that happens, which is
+// exactly when the prod invariant matters most — a DISPLAY that reaches prod
+// ahead of a prod image carrying Xvfb is a fleet-wide boot failure.
+function expectDisplayGate(
+  template: Template,
+  env: "dev" | "prod",
+  { displaySet }: { displaySet: boolean },
+): void {
+  const command = openclawStartupCommand(template, env);
+  const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ]');
+  const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY"');
+  const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
+
+  // The guard must precede the launch it protects, and both must precede the
+  // exec that replaces this shell — nothing can be appended after that.
+  expect(guard).toBeGreaterThanOrEqual(0);
+  expect(start).toBeGreaterThan(guard);
+  expect(start).toBeLessThan(boot);
+
+  // Capture starts on demand when a panel opens, never at boot: per-user
+  // containers already peak at 45-89% of their single vCPU without it.
+  expect(command).not.toContain("x11vnc");
+  expect(command).not.toContain("websockify");
+
+  expect(openclawContainerEnv(template, env).some(({ Name }) => Name === "DISPLAY")).toBe(displaySet);
+}
+
 function expectLocalSqliteLayout(template: Template, env: "dev" | "prod"): void {
   template.hasResourceProperties("AWS::S3::Bucket", {
     BucketName: `isol8-${env}-openclaw-replicas`,
@@ -261,29 +295,8 @@ describe("ContainerStack — dev", () => {
     expect(symlink).toBeLessThan(boot);
   });
 
-  // The display block ships AHEAD of the headful config flip, so the property
-  // that makes it safe to deploy is that it does NOTHING yet. Assert the
-  // inertness, not merely the presence: a stray DISPLAY on this task definition
-  // would turn every container in the fleet headful on its next deploy, and on
-  // an image without Xvfb that is a boot failure.
   test("openclaw container gates the live-view display on DISPLAY, which is not set yet", () => {
-    const command = openclawStartupCommand(template, "dev");
-    const guard = command.indexOf('[ -z "$DISPLAY" ] || [ -x /usr/bin/Xvfb ]');
-    const start = command.indexOf('[ -z "$DISPLAY" ] || { Xvfb "$DISPLAY"');
-    const boot = command.indexOf("exec /usr/local/bin/isol8-local-sqlite-boot.sh");
-
-    // The guard must precede the launch it protects, and both must precede the
-    // exec that replaces this shell — nothing can be appended after that.
-    expect(guard).toBeGreaterThanOrEqual(0);
-    expect(start).toBeGreaterThan(guard);
-    expect(start).toBeLessThan(boot);
-
-    // Capture starts on demand when a panel opens, never at boot: per-user
-    // containers already peak at 45-89% of their single vCPU without it.
-    expect(command).not.toContain("x11vnc");
-    expect(command).not.toContain("websockify");
-
-    expect(openclawContainerEnv(template, "dev").some(({ Name }) => Name === "DISPLAY")).toBe(false);
+    expectDisplayGate(template, "dev", { displaySet: false });
   });
 
   test("openclaw container performs a guarded one-time protocol transition", () => {
@@ -622,6 +635,10 @@ describe("ContainerStack — prod", () => {
   // local-sqlite shape dev does.
   test("openclaw container guards the local-sqlite boot chain before exec-ing it", () => {
     expectBootChainGuard(template, "prod");
+  });
+
+  test("openclaw container gates the live-view display on DISPLAY, which is not set yet", () => {
+    expectDisplayGate(template, "prod", { displaySet: false });
   });
 
   test("openclaw container gets the litestream replica bucket + nested local-sqlite mounts", () => {

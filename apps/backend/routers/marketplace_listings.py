@@ -124,6 +124,11 @@ async def _recreate_routines_for_buyer(
             # as UTC, so a routine the seller set for 9am local fired at the
             # wrong hour the moment the buyer enabled it.
             "timezone": r.get("timezone"),
+            # Variable definitions (with defaults) — without them, Paperclip
+            # re-syncs {{NAME}} references in the description as required
+            # defaultless variables and the dormant schedule trigger 422s,
+            # rolling back the whole deploy.
+            "variables": r.get("variables") if isinstance(r.get("variables"), list) else None,
         }
         for r in manifest_routines
         if isinstance(r, dict) and r.get("title") and r.get("cron")

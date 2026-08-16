@@ -1713,3 +1713,75 @@ def test_export_strips_package_json_declaring_openclaw_extensions(fake_efs):
     names = _list_tar_names(pkg.tarball_bytes)
     pkg_members = [n for n in names if n.rsplit("/", 1)[-1] == "package.json"]
     assert pkg_members == ["./clean/package.json"], names
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_ports_variable_definitions_with_defaults():
+    """Variable definitions (with defaults) ride each schedule entry — without
+    them, Paperclip re-syncs {{NAME}} references as required defaultless
+    variables and the buyer-side dormant schedule trigger 422s."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "id": "routine-uuid",
+                "assigneeAgentId": "agent-uuid",
+                "title": "Finance snapshot",
+                "description": "Cap is {{MONTHLY_SPEND_CAP_USD}}.",
+                "variables": [
+                    {
+                        "name": "MONTHLY_SPEND_CAP_USD",
+                        "type": "number",
+                        "defaultValue": 2000,
+                        "required": True,
+                        "instanceOnlyNoise": "drop-me",
+                    }
+                ],
+                "triggers": [
+                    {"kind": "schedule", "cronExpression": "0 7 * * 1", "timezone": "America/Aruba"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert len(out) == 1
+    assert out[0]["variables"] == [
+        {"name": "MONTHLY_SPEND_CAP_USD", "type": "number", "defaultValue": 2000, "required": True}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capture_routines_drops_routine_when_variable_default_is_unsafe():
+    """A variable default that fails the safety scan takes the routine with it
+    — porting without the default recreates the 422, porting without the
+    variable ships a contract referencing an input the buyer lacks."""
+    fetch = _StubRoutineFetch(
+        [
+            {
+                "id": "routine-uuid",
+                "assigneeAgentId": "agent-uuid",
+                "title": "Leaky",
+                "description": "Uses {{TOKEN}}.",
+                "variables": [
+                    {
+                        "name": "TOKEN",
+                        "type": "text",
+                        "defaultValue": "AKIAABCDEFGHIJKLMNOP secret",
+                        "required": True,
+                    }
+                ],
+                "triggers": [
+                    {"kind": "schedule", "cronExpression": "0 7 * * 1", "timezone": "UTC"},
+                ],
+            }
+        ]
+    )
+    out = await agent_export.capture_agent_routines(
+        owner_id="user_abc",
+        agent_id="agent-uuid",
+        fetch_routine_details=fetch,
+    )
+    assert out == []

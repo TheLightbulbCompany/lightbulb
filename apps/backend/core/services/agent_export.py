@@ -1278,6 +1278,32 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
     if had_description and not safe_description:
         return None
 
+    # Variable definitions ride with every schedule entry: the deploy side
+    # recreates the routine from the description, and Paperclip re-syncs any
+    # {{NAME}} the description references into a REQUIRED definition with no
+    # default — which then 422s dormant schedule-trigger creation and rolls
+    # back the whole deploy. Defaults are seller-authored text reaching the
+    # public manifest, so they go through the same scan as the description;
+    # a variable whose default cannot ship takes the routine with it (porting
+    # the variable without its default would just recreate the 422 on the
+    # buyer, and porting the routine without the variable ships a contract
+    # that references an input the buyer does not have).
+    raw_variables = detail.get("variables")
+    variables: list[dict] = []
+    if isinstance(raw_variables, list):
+        for var in raw_variables:
+            if not isinstance(var, dict) or not isinstance(var.get("name"), str):
+                continue
+            portable_var = {
+                key: var[key]
+                for key in ("name", "label", "type", "defaultValue", "required", "options")
+                if key in var and var[key] is not None
+            }
+            default = portable_var.get("defaultValue")
+            if isinstance(default, str) and default and not _is_publishable(default):
+                return None
+            variables.append(portable_var)
+
     out: list[dict] = []
     for trig in triggers:
         if not isinstance(trig, dict):
@@ -1287,14 +1313,15 @@ def _portable_routine_from_detail(detail: dict, agent_id: str) -> dict | None:
         cron = trig.get("cronExpression")
         if not isinstance(cron, str) or not cron:
             continue
-        out.append(
-            {
-                "title": title,
-                "description": safe_description,
-                "cron": cron,
-                "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
-            }
-        )
+        entry = {
+            "title": title,
+            "description": safe_description,
+            "cron": cron,
+            "timezone": trig.get("timezone") if isinstance(trig.get("timezone"), str) else "UTC",
+        }
+        if variables:
+            entry["variables"] = variables
+        out.append(entry)
     # The caller flattens; return the first as the representative shape only if
     # there is exactly one — but routines can carry multiple schedule triggers,
     # so we hand back the full list via a thin wrapper key.

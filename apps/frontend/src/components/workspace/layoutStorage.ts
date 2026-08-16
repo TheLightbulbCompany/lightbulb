@@ -4,7 +4,12 @@
 // persistent). NEVER call localStorage.clear() here: a key===null storage
 // event is treated as a permissions event by the gateway listeners.
 import type { SerializedDockview } from "dockview-react";
-import { PANEL_COMPONENT_KEYS, ONE_SHOT_PARAMS, RETIRED_PANEL_ALIASES } from "./panelRegistry";
+import {
+  PANEL_COMPONENT_KEYS,
+  ONE_SHOT_PARAMS,
+  RETIRED_PANEL_ALIASES,
+  DEFAULT_AGENT_SENTINEL,
+} from "./panelRegistry";
 
 const KEY_PREFIX = "isol8.workspace.layout.v1";
 
@@ -122,7 +127,22 @@ export function layoutStorageKey(scopeId: string): string {
 // is sufficient — no grid surgery needed. Also register 'unknown' in the
 // components map: the deserializer defaults a missing contentComponent to
 // the literal string 'unknown'.
-export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
+//
+// `knownAgentIds` (optional) prunes chat panels for agents that no longer
+// exist — a reprovision/wipe leaves the layout pointing at dead ids, which
+// restore as a tab the user has to close by hand (ChatPanel's "This agent no
+// longer exists."). PASS IT ONLY FROM A CALLER HOLDING A SETTLED ROSTER: an
+// empty or omitted list means "roster unknown", never "the user has no
+// agents", because pruning against an in-flight roster would delete every
+// chat panel on every restore. The non-empty check is the guard — a settled
+// roster that is genuinely empty is indistinguishable from a loading one here
+// and is treated as unknown (worst case the dead panel survives one more
+// load, which is exactly today's behaviour).
+export function sanitizeLayout(
+  raw: SerializedDockview,
+  knownAgentIds?: readonly string[],
+): SerializedDockview {
+  const knownAgents = knownAgentIds?.length ? new Set(knownAgentIds) : null;
   const rawPanels = raw.panels ?? {};
   const panels: SerializedDockview["panels"] = {};
   const renamed: Record<string, string> = {};
@@ -139,6 +159,21 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
       state.contentComponent && PANEL_COMPONENT_KEYS.has(state.contentComponent)
         ? state.contentComponent
         : "missing";
+    // Dead-agent chat panel: drop it (the existing `dropped` machinery mirrors
+    // the removal into the grid tree and collapses whatever it empties). The
+    // sentinel id resolves at render time, so it is never stale.
+    if (component === "chat" && knownAgents) {
+      const agentId = (state.params as { agentId?: unknown } | undefined)?.agentId;
+      if (
+        typeof agentId === "string"
+        && agentId !== DEFAULT_AGENT_SENTINEL
+        && !knownAgents.has(agentId)
+      ) {
+        dropped.add(id);
+        continue;
+      }
+    }
+
     let params = state.params;
     if (params) {
       params = { ...params };
@@ -172,10 +207,13 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
   let grid = raw.grid;
   let activeGroup = raw.activeGroup;
   if (Object.keys(renamed).length || dropped.size) {
-    // The root itself can only be pruned away if literally every panel in
-    // the layout got dropped, which can't happen from a duplicate-target
-    // drop (the alias target survives elsewhere) — but fall back to the
-    // original root rather than crash if it ever does.
+    // The root prunes away only if literally every panel got dropped —
+    // impossible from a duplicate-target drop (the alias target survives
+    // elsewhere), but reachable from agent pruning (a layout that is nothing
+    // but chats for deleted agents). Keep the original root rather than crash;
+    // readLayout turns the resulting empty-panels layout into a null read, so
+    // the shell builds Mission Control instead of restoring a grid whose views
+    // no longer exist.
     const migratedRoot = migrateGridNode(raw.grid.root, renamed, dropped);
     if (migratedRoot) {
       grid = { ...raw.grid, root: migratedRoot };
@@ -196,14 +234,20 @@ export function sanitizeLayout(raw: SerializedDockview): SerializedDockview {
   return clean;
 }
 
-export function readLayout(scopeId: string): SerializedDockview | null {
+export function readLayout(
+  scopeId: string,
+  knownAgentIds?: readonly string[],
+): SerializedDockview | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(layoutStorageKey(scopeId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredLayout>;
     if (parsed.version !== 1 || !parsed.layout || typeof parsed.layout !== "object") return null;
-    return sanitizeLayout(parsed.layout);
+    const clean = sanitizeLayout(parsed.layout, knownAgentIds);
+    // Nothing survived sanitizing — treat as "no saved layout" so the caller
+    // builds the default rather than restoring a grid with no panels in it.
+    return Object.keys(clean.panels ?? {}).length ? clean : null;
   } catch {
     return null;
   }

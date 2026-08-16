@@ -58,6 +58,12 @@ not block the trial-account dogfood use case, but it IS a real gap for paid
 Bedrock-managed, ChatGPT-OAuth, and BYOK accounts — those credentials
 survive a wipe today. Follow-up work, not yet built.
 
+KNOWN GAP — DDB-orphaned Paperclip state: both Paperclip steps resolve their
+targets from the ``paperclip-companies`` DDB row, so an Aurora company whose
+DDB row is missing survives the wipe. It is now reported loudly rather than
+skipped silently (``_NO_PAPERCLIP_ROW`` + a warning log) — see that constant
+for why enumerating from Aurora instead is not a safe fix.
+
 Also NOT wiped: the ``company-slugs`` table (a wiped account keeps its slug
 reservation permanently — there is no delete path, so the name can never be
 handed to another owner) and the ``agent-email-addresses`` table (once
@@ -112,6 +118,24 @@ from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_papercl
 logger = logging.getLogger(__name__)
 
 WipeStatus = Literal["ok", "skipped", "failed", "would_delete"]
+
+# Both Paperclip teardown steps resolve the company + Better Auth user from the
+# DDB paperclip-companies row and NOTHING else, so an Aurora company whose DDB
+# row never landed (partial provision, prior partial wipe, duplicate-signup
+# debris) is left behind. That is not fixable by "enumerate from Aurora
+# instead": Aurora carries no Isol8 owner id, and every Isol8 user is
+# ``membership_role='owner'`` in every company they belong to (provision_org
+# AND provision_member both invite with ``human_role="owner"``) — so an
+# email-keyed lookup cannot tell an orphaned personal company from a LIVE org
+# company the same human is a member of, and a fallback teardown built on it
+# would delete other people's companies. Until Paperclip carries an owner-id
+# attribution column, the honest move is to say so in the report instead of
+# reporting a clean skip over rows nobody looked at.
+_NO_PAPERCLIP_ROW = (
+    "no paperclip-companies row — Aurora may still hold a company + Better Auth user for this "
+    "owner (partial provision / prior partial wipe). Not resolvable from the owner id; check "
+    "Aurora by the owner's email before treating the Paperclip side as gone."
+)
 
 
 class BootstrapAccountProtectedError(Exception):
@@ -358,7 +382,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         action="delete_company",
         exists=ids.paperclip is not None,
         detail_if_exists=f"company_id={ids.paperclip.company_id}" if ids.paperclip else "",
-        detail_if_absent="no paperclip-companies row",
+        detail_if_absent=_NO_PAPERCLIP_ROW,
     )
     _preview_step(
         steps,
@@ -366,7 +390,7 @@ async def preview_wipe(owner_id: str) -> WipeReport:
         action="delete_paperclip_user",
         exists=ids.paperclip is not None,
         detail_if_exists=(f"paperclip_user_id={ids.paperclip.paperclip_user_id}" if ids.paperclip else ""),
-        detail_if_absent="no paperclip-companies row",
+        detail_if_absent=_NO_PAPERCLIP_ROW,
     )
     gate_token_hashes = owner_gate_token_hashes(ids.container)
     _preview_step(
@@ -608,7 +632,15 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
         await _step(steps, system="paperclip_company", action="delete_company", fn=_s1)
     else:
-        _skip(steps, "paperclip_company", "delete_company", "no paperclip-companies row")
+        # LOUD, not silent: the report line alone is easy to read as "this
+        # owner had no Paperclip side" when it can equally mean "the handle to
+        # it is missing". See _NO_PAPERCLIP_ROW.
+        logger.warning(
+            "account_wipe: owner=%s has no paperclip-companies row — Paperclip company + Better "
+            "Auth user teardown SKIPPED; Aurora may still hold rows for this owner",
+            owner_id,
+        )
+        _skip(steps, "paperclip_company", "delete_company", _NO_PAPERCLIP_ROW)
 
     # --- Step 2 (spec #2): Paperclip Aurora (Better Auth) user ------------
     # BootstrapUserProtectedError (the two bootstrap admin emails) is caught
@@ -623,7 +655,7 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
 
         await _step(steps, system="paperclip_aurora_user", action="delete_paperclip_user", fn=_s2)
     else:
-        _skip(steps, "paperclip_aurora_user", "delete_paperclip_user", "no paperclip-companies row")
+        _skip(steps, "paperclip_aurora_user", "delete_paperclip_user", _NO_PAPERCLIP_ROW)
 
     # --- Step 2b: bedrock-gate token rows ----------------------------------
     # The gate-tokens table is keyed on the token hash with NO owner index, so

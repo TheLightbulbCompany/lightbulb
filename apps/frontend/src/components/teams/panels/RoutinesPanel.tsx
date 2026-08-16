@@ -30,6 +30,7 @@ import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
 import { isAutoPaused } from "@/components/teams/shared/lib/routineHealth";
 import { triggerSentence } from "@/components/teams/shared/triggerSentence";
 import { SecretField } from "@/components/teams/shared/components/SecretField";
+import { withRoutineReviewer } from "@/components/teams/panels/routineExecutionPolicy";
 import {
   SIGNING_MODE_OPTIONS,
   REPLAY_WINDOW_SIGNING_MODES,
@@ -1053,6 +1054,7 @@ function CreateRoutineDialog({
     String(DEFAULT_REPLAY_WINDOW_SEC),
   );
   const [agentId, setAgentId] = useState<string | null>(null);
+  const [reviewerAgentId, setReviewerAgentId] = useState<string | null>(null);
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1149,6 +1151,14 @@ function CreateRoutineDialog({
         (!isOwnerSetup || connTopic.trim() !== "")
       : title.trim() !== "" &&
         (rung === "schedule" ? cron.trim() !== "" : replayWindowValid);
+  const reviewerAgents = agents.filter(
+    (agent) => agent.id !== agentId && agent.status !== "terminated",
+  );
+
+  function selectAssignee(nextAgentId: string | null) {
+    setAgentId(nextAgentId);
+    if (nextAgentId === reviewerAgentId) setReviewerAgentId(null);
+  }
 
   function moveRung(delta: 1 | -1) {
     const i = START_RUNGS.findIndex((r) => r.value === rung);
@@ -1234,6 +1244,9 @@ function CreateRoutineDialog({
       const routine = await post<{ id: string }>("/routines", {
         title: title.trim(),
         assignee_agent_id: agentId ?? undefined,
+        ...(reviewerAgentId
+          ? { execution_policy: withRoutineReviewer(null, reviewerAgentId) }
+          : {}),
         description: description.trim() || undefined,
         status: "active",
       });
@@ -1530,8 +1543,21 @@ function CreateRoutineDialog({
                 <AssigneePicker
                   agents={agents}
                   selectedAgentId={agentId}
-                  onChange={setAgentId}
+                  onChange={selectAssignee}
                   variant="inline"
+                  className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
+                />
+              </div>
+            </div>
+            <div className="block">
+              <span className="text-sm text-[var(--ink-soft)]">Reviewer</span>
+              <div className="mt-1">
+                <AssigneePicker
+                  agents={reviewerAgents}
+                  selectedAgentId={reviewerAgentId}
+                  onChange={setReviewerAgentId}
+                  variant="inline"
+                  noun="reviewer"
                   className="border border-[var(--edge)] rounded px-3 py-2 bg-[var(--cream)]"
                 />
               </div>

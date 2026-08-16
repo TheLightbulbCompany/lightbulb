@@ -181,6 +181,32 @@ def test_patch_routine_can_clear_the_execution_policy(client, admin, monkeypatch
     assert body == {"executionPolicy": None}
 
 
+def test_patch_routine_forwards_the_full_execution_policy(client, admin, monkeypatch):
+    """Reviewer edits are read/merge/write in the UI, so every unrelated
+    policy field in that full desired value must survive the BFF unchanged."""
+    monkeypatch.setattr(
+        "routers.teams.work._is_nightly_ceo_routine",
+        AsyncMock(return_value=False),
+    )
+    policy = {
+        "mode": "normal",
+        "commentRequired": False,
+        "stages": [
+            {"type": "review", "participants": [{"type": "agent", "agentId": "a2"}]},
+            {"type": "approval", "participants": [{"type": "agent", "agentId": "a3"}]},
+        ],
+        "authorizationPolicy": {"mode": "restricted"},
+    }
+    r = client.patch(
+        "/api/v1/teams/routines/rt_1",
+        json={"execution_policy": policy},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = admin.patch_routine.await_args.kwargs["body"]
+    assert body == {"executionPolicy": policy}
+
+
 def test_create_routine_trigger(client, admin):
     """POST /teams/routines/{id}/triggers forwards a schedule trigger
     (cron lives here, not on the routine row)."""

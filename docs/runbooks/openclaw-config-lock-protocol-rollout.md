@@ -29,7 +29,7 @@ leave deployed indefinitely.
 3. From an authenticated platform-admin session, submit to dev:
 
    ```http
-   POST /api/v1/updates
+   POST /api/v1/container/updates
    Content-Type: application/json
 
    {
@@ -57,10 +57,13 @@ by a crashed backend or the stopped prior OpenClaw task, so the original
 zero-byte-lock outage cannot recur after the transition.
 
 The backend service has desired count one. Queue only after its deployment is
-steady, and do not deploy the backend again while this fleet operation is in
-progress; that preserves rollout concurrency at one owner. The apply path also
-uses conditional per-update acquisition, so retries cannot apply the same row
-twice.
+steady. Each update carries a fenced apply lease and persists its target task
+definition before changing ECS. A replacement backend reclaims an expired
+lease and converges the service on that same ARN without
+`forceNewDeployment`, so a crash at any point cannot create a second rollout.
+Do not intentionally deploy the backend while this fleet operation is in
+progress; recovery is for unplanned turnover, not a reason to add avoidable
+churn.
 
 ## Verification and recovery
 

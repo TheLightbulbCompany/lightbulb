@@ -347,6 +347,7 @@ async def test_run_scheduled_worker_applies_due_task_refreshes_sequentially(monk
         ),
     )
     monkeypatch.setattr(update_service, "apply_update", apply)
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", AsyncMock())
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", AsyncMock())
     monkeypatch.setattr(update_service.asyncio, "wait_for", stop_after_first)
@@ -386,6 +387,8 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
+    recover = AsyncMock()
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", recover)
     monkeypatch.setattr(
         update_service.update_repo,
         "get_due_scheduled",
@@ -398,6 +401,7 @@ async def test_run_scheduled_worker_invokes_both_paperclip_passes_per_iteration(
 
     assert retry_calls == 1, "retry pass must run every iteration"
     assert purge_calls == 1, "purge pass must run on first iteration (last_purge_pass_at=0)"
+    recover.assert_awaited_once()
 
 
 async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
@@ -450,6 +454,7 @@ async def test_run_scheduled_worker_skips_purge_within_24h(monkeypatch):
 
     monkeypatch.setattr(update_service, "_paperclip_purge_pass", fake_purge)
     monkeypatch.setattr(update_service, "_paperclip_provision_retry_pass", fake_retry)
+    monkeypatch.setattr(update_service, "_recover_stale_task_definition_refreshes", AsyncMock())
     monkeypatch.setattr(
         update_service.update_repo,
         "get_due_scheduled",

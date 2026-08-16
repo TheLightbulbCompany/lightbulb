@@ -1545,6 +1545,8 @@ class EcsManager:
         new_cpu: str | None = None,
         new_memory: str | None = None,
         new_image: str | None = None,
+        *,
+        _register_only: bool = False,
     ) -> str:
         """Update a user's container with new CPU/memory/image and force redeploy.
 
@@ -1632,10 +1634,23 @@ class EcsManager:
                     reg_kwargs["containerDefinitions"],
                     prior_resp["taskDefinition"].get("containerDefinitions", []),
                 )
+                # Rows created before the per-owner Bedrock role was persisted
+                # can still be running a correctly scoped role on their live
+                # task definition. Preserve that role as the fallback instead
+                # of silently reverting the clone to the shared base role.
+                if not bedrock_task_role_arn and prior_resp["taskDefinition"].get("taskRoleArn"):
+                    reg_kwargs["taskRoleArn"] = prior_resp["taskDefinition"]["taskRoleArn"]
 
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
             new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
             logger.info("Registered resized task definition %s for user %s", new_task_def_arn, user_id)
+
+            # The durable config-lock rollout persists this ARN on its fenced
+            # pending-update row before it changes the ECS service. Keeping the
+            # registration and deployment phases separate closes the crash
+            # window where a retry could only guess which revision to resume.
+            if _register_only:
+                return new_task_def_arn
 
             # Update service to use new task def + force redeploy
             await asyncio.to_thread(
@@ -1707,31 +1722,9 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
-    async def rollout_config_lock_protocol(
-        self,
-        user_id: str,
-        *,
-        timeout_s: float = 900.0,
-        poll_interval_s: float = 15.0,
-    ) -> str:
-        """Re-register one owner from the latest base and wait for stability.
+    async def prepare_config_lock_protocol_task_definition(self, user_id: str) -> str:
+        """Register, but do not deploy, one owner's guarded base clone."""
 
-        ContainerStack updates only the CDK base task definition; existing
-        per-user clones do not inherit its startup command. This operation
-        deliberately routes through ``resize_user_container`` so the clone
-        keeps per-user env/secrets and uses ``SINGLE_WRITER_DEPLOYMENT_CONFIG``.
-        Passing the currently registered size prevents this protocol rollout
-        from accidentally resizing an owner.
-
-        The ECS waiter is part of the contract: fleet callers may bound their
-        concurrency around this method knowing a slot remains occupied until
-        the stop-first replacement is stable (or the bounded waiter fails).
-        A stopped service is already stable; its new revision runs recovery on
-        the next ordinary scale-up.
-        """
-
-        if timeout_s <= 0 or poll_interval_s <= 0:
-            raise ValueError("timeout_s and poll_interval_s must be positive")
         base_resp = await asyncio.to_thread(
             self._ecs.describe_task_definition,
             taskDefinition=self._base_task_def_family,
@@ -1749,15 +1742,107 @@ class EcsManager:
                 "CDK base task definition does not contain fail-fast config-lock recovery",
                 user_id,
             )
+
         current_size = await self.current_container_size(user_id)
         if current_size is None:
             raise EcsManagerError(f"No registered task definition for user {user_id}", user_id)
-
-        new_task_def_arn = await self.resize_user_container(
+        return await self.resize_user_container(
             user_id,
             new_cpu=current_size[0],
             new_memory=current_size[1],
+            _register_only=True,
         )
+
+    async def rollout_config_lock_protocol(
+        self,
+        user_id: str,
+        *,
+        target_task_definition_arn: str | None = None,
+        timeout_s: float = 900.0,
+        poll_interval_s: float = 15.0,
+    ) -> str:
+        """Converge one owner onto a prepared protocol task definition.
+
+        ContainerStack updates only the CDK base task definition; existing
+        per-user clones do not inherit its startup command. If no target is
+        supplied, this method prepares one from the latest base while retaining
+        the owner's current size and per-user state. Durable fleet callers pass
+        a target already persisted on their fenced update row.
+
+        ECS is updated without ``forceNewDeployment``. The task-definition ARN
+        is the desired-state idempotency key: replaying the same target after a
+        backend crash does not manufacture a second replacement deployment.
+
+        The ECS waiter is part of the contract: fleet callers may bound their
+        concurrency around this method knowing a slot remains occupied until
+        the stop-first replacement is stable (or the bounded waiter fails).
+        A stopped service is already stable; its new revision runs recovery on
+        the next ordinary scale-up.
+        """
+
+        if timeout_s <= 0 or poll_interval_s <= 0:
+            raise ValueError("timeout_s and poll_interval_s must be positive")
+
+        required_fragments = (
+            "${ISOL8_CONFIG_LOCK_PROTOCOL:-}",
+            'protocol_path = lock_path + ".isol8-protocol"',
+            "|| exit 1",
+        )
+
+        async def _describe(task_definition: str) -> dict:
+            response = await asyncio.to_thread(
+                self._ecs.describe_task_definition,
+                taskDefinition=task_definition,
+            )
+            return response.get("taskDefinition") or {}
+
+        def _openclaw_definition(task_definition: dict) -> dict:
+            definitions = task_definition.get("containerDefinitions") or []
+            return next((definition for definition in definitions if definition.get("name") == "openclaw"), {})
+
+        if target_task_definition_arn is None:
+            target_task_definition_arn = await self.prepare_config_lock_protocol_task_definition(user_id)
+
+        target = await _describe(target_task_definition_arn)
+        target_openclaw = _openclaw_definition(target)
+        target_command = " ".join(target_openclaw.get("command") or [])
+        target_env = {entry.get("name"): entry.get("value") for entry in target_openclaw.get("environment") or []}
+        if (
+            not all(fragment in target_command for fragment in required_fragments)
+            or target_env.get(_CONFIG_LOCK_PROTOCOL_ENV) != _CONFIG_LOCK_PROTOCOL_VERSION
+        ):
+            raise EcsManagerError(
+                "Target task definition does not contain the guarded config-lock protocol",
+                user_id,
+            )
+
+        # A changed taskDefinition starts a deployment by itself. Omitting
+        # forceNewDeployment makes replaying this exact target convergent.
+        await asyncio.to_thread(
+            self._ecs.update_service,
+            cluster=self._cluster,
+            service=self._service_name(user_id),
+            taskDefinition=target_task_definition_arn,
+            deploymentConfiguration=SINGLE_WRITER_DEPLOYMENT_CONFIG,
+        )
+
+        pre_wait_response = await asyncio.to_thread(
+            self._ecs.describe_services,
+            cluster=self._cluster,
+            services=[self._service_name(user_id)],
+        )
+        pre_wait_services = pre_wait_response.get("services") or []
+        desired_count = pre_wait_services[0].get("desiredCount", 0) if pre_wait_services else 0
+        if desired_count > 0:
+            await self._update_container(
+                user_id,
+                task_definition_arn=target_task_definition_arn,
+                status="provisioning",
+            )
+            asyncio.create_task(self._await_running_transition(user_id))
+        else:
+            await self._update_container(user_id, task_definition_arn=target_task_definition_arn)
+
         waiter = self._ecs.get_waiter("services_stable")
         max_attempts = max(1, math.ceil(timeout_s / poll_interval_s))
         await asyncio.to_thread(
@@ -1778,7 +1863,9 @@ class EcsManager:
             {},
         )
         actual_task_def_arn = primary.get("taskDefinition") or service.get("taskDefinition")
-        if actual_task_def_arn != new_task_def_arn:
+        if primary.get("rolloutState") == "FAILED":
+            raise EcsManagerError("Config-lock protocol rollout failed its ECS deployment", user_id)
+        if actual_task_def_arn != target_task_definition_arn:
             if actual_task_def_arn:
                 # A circuit-breaker rollback can satisfy services_stable on the
                 # prior revision. Keep the DDB pointer honest before surfacing
@@ -1788,7 +1875,14 @@ class EcsManager:
                 "Config-lock protocol rollout stabilized on a different task definition",
                 user_id,
             )
-        return new_task_def_arn
+        # Deliberately no direct status="running" write here: the
+        # _await_running_transition poller spawned above owns the
+        # provisioning -> running transition and only flips after its
+        # gateway reachability check. A direct write would change the DDB
+        # status out of "provisioning" and make that poller exit silently
+        # before the check, recording an ECS-stable but gateway-unreachable
+        # container as running.
+        return target_task_definition_arn
 
     async def _wait_for_service_drained(self, user_id: str, timeout_s: float = 90.0) -> bool:
         """Poll until the user's ECS service has no running or pending tasks.

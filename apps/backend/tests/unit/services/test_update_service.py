@@ -8,6 +8,8 @@ boot. These tests pin that the migration runs, targets the right path, and
 runs BEFORE the ECS image roll.
 """
 
+import asyncio
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,33 +17,70 @@ import pytest
 from core.services import update_service
 
 
+def _claimed_repo(update_item: dict) -> MagicMock:
+    repo = MagicMock()
+    repo.claim_apply = AsyncMock(return_value={**update_item, "status": "applying"})
+    repo.heartbeat_apply = AsyncMock(return_value=True)
+    repo.set_apply_target = AsyncMock(return_value=True)
+    repo.finish_claimed_apply = AsyncMock(return_value=True)
+    return repo
+
+
 @pytest.mark.asyncio
 async def test_queue_fleet_task_definition_refresh_is_atomic_and_skips_conflicts():
     rows = [
         {
             "owner_id": "owner-a",
+            "service_name": "service-a",
             "access_point_id": "fsap-a",
             "task_definition_arn": "arn:a",
             "status": "running",
         },
         {
             "owner_id": "owner-b",
+            "service_name": "service-b",
             "access_point_id": "fsap-b",
             "task_definition_arn": "arn:b",
             "status": "stopped",
         },
         {
             "owner_id": "owner-provisioning",
+            "service_name": "service-provisioning",
             "access_point_id": "fsap-provisioning",
             "task_definition_arn": "arn:provisioning",
             "status": "provisioning",
         },
     ]
+    rows.extend(
+        [
+            {
+                "owner_id": "owner-error",
+                "service_name": "service-error",
+                "access_point_id": "fsap-error",
+                "task_definition_arn": "arn:error",
+                "status": "error",
+            },
+            {
+                "owner_id": "owner-claimed-error",
+                "service_name": "service-claimed-error",
+                "access_point_id": "fsap-claimed-error",
+                "task_definition_arn": "arn:claimed-error",
+                "status": "error",
+                "provision_claim_id": "live-provision",
+            },
+            {
+                "owner_id": "owner-incomplete-error",
+                "service_name": "service-incomplete-error",
+                "status": "error",
+            },
+        ]
+    )
     repo = MagicMock()
     repo.get_in_flight = AsyncMock(
         side_effect=[
             [],
             [{"changes": {"new_image": "image:already-rolling"}}],
+            [],
         ]
     )
     repo.create = AsyncMock()
@@ -54,14 +93,16 @@ async def test_queue_fleet_task_definition_refresh_is_atomic_and_skips_conflicts
         container_repo.scan_all = AsyncMock(return_value=rows)
         queued, skipped = await update_service.queue_fleet_task_definition_refresh("Protocol rollout")
 
-    assert (queued, skipped) == (1, 2)
-    repo.create.assert_awaited_once_with(
-        owner_id="owner-a",
-        update_type=update_service.TASK_DEFINITION_REFRESH_KIND,
-        description="Protocol rollout",
-        changes={update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
-        scheduled_at="2026-08-15T12:00:00+00:00",
-    )
+    assert (queued, skipped) == (2, 4)
+    assert [call.kwargs["owner_id"] for call in repo.create.await_args_list] == ["owner-a", "owner-error"]
+    for call in repo.create.await_args_list:
+        assert call.kwargs == {
+            "owner_id": call.kwargs["owner_id"],
+            "update_type": update_service.TASK_DEFINITION_REFRESH_KIND,
+            "description": "Protocol rollout",
+            "changes": {update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
+            "scheduled_at": "2026-08-15T12:00:00+00:00",
+        }
 
 
 @pytest.mark.asyncio
@@ -73,25 +114,162 @@ async def test_apply_task_definition_refresh_waits_for_protocol_rollout():
         "update_type": update_service.TASK_DEFINITION_REFRESH_KIND,
         "changes": {update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
     }
-    repo = MagicMock()
-    repo.set_status_conditional = AsyncMock(return_value=True)
-    repo.mark_applied = AsyncMock(return_value=True)
+    repo = _claimed_repo(update_item)
     ecs = MagicMock()
+    ecs.prepare_config_lock_protocol_task_definition = AsyncMock(return_value="arn:new")
     ecs.rollout_config_lock_protocol = AsyncMock(return_value="arn:new")
     ecs.resize_user_container = AsyncMock()
 
     with (
         patch.object(update_service, "update_repo", repo),
-        patch("core.dynamodb.get_table", return_value=MagicMock()),
-        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is True
-    ecs.rollout_config_lock_protocol.assert_awaited_once_with(owner_id)
+    ecs.prepare_config_lock_protocol_task_definition.assert_awaited_once_with(owner_id)
+    repo.set_apply_target.assert_awaited_once()
+    ecs.rollout_config_lock_protocol.assert_awaited_once_with(
+        owner_id,
+        target_task_definition_arn="arn:new",
+    )
     ecs.resize_user_container.assert_not_awaited()
-    repo.mark_applied.assert_awaited_once_with(owner_id, update_id)
+    assert repo.finish_claimed_apply.await_args.kwargs["status"] == "applied"
+
+
+def _refresh_item(*, target: str | None = None) -> dict:
+    item = {
+        "owner_id": "owner-refresh",
+        "update_id": "upd-refresh",
+        "update_type": update_service.TASK_DEFINITION_REFRESH_KIND,
+        "changes": {update_service.TASK_DEFINITION_REFRESH_CHANGE: True},
+        "status": "applying",
+    }
+    if target is not None:
+        item["target_task_definition_arn"] = target
+    return item
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_before_register_leaves_claim_for_stale_recovery():
+    item = _refresh_item()
+    repo = _claimed_repo(item)
+    ecs = MagicMock()
+    ecs.prepare_config_lock_protocol_task_definition = AsyncMock(side_effect=asyncio.CancelledError)
+    ecs.rollout_config_lock_protocol = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await update_service._apply_claimed_update(item, "claim-old")
+
+    repo.set_apply_target.assert_not_awaited()
+    repo.finish_claimed_apply.assert_not_awaited()
+    ecs.rollout_config_lock_protocol.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refresh_crash_after_register_before_target_persist_never_touches_service():
+    item = _refresh_item()
+    repo = _claimed_repo(item)
+    repo.set_apply_target = AsyncMock(side_effect=asyncio.CancelledError)
+    ecs = MagicMock()
+    ecs.prepare_config_lock_protocol_task_definition = AsyncMock(return_value="arn:orphan")
+    ecs.rollout_config_lock_protocol = AsyncMock()
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await update_service._apply_claimed_update(item, "claim-old")
+
+    ecs.rollout_config_lock_protocol.assert_not_awaited()
+    repo.finish_claimed_apply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refresh_recovery_reuses_stored_target_after_service_update_interruption():
+    item = _refresh_item()
+    repo = _claimed_repo(item)
+    ecs = MagicMock()
+    ecs.prepare_config_lock_protocol_task_definition = AsyncMock(return_value="arn:target")
+    ecs.rollout_config_lock_protocol = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await update_service._apply_claimed_update(item, "claim-old")
+
+    repo.set_apply_target.assert_awaited_once()
+
+    reclaimed = _refresh_item(target="arn:target")
+    repo.finish_claimed_apply = AsyncMock(return_value=True)
+    ecs.prepare_config_lock_protocol_task_definition.reset_mock()
+    ecs.rollout_config_lock_protocol = AsyncMock(return_value="arn:target")
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+    ):
+        assert await update_service._apply_claimed_update(reclaimed, "claim-new") is True
+
+    ecs.prepare_config_lock_protocol_task_definition.assert_not_awaited()
+    ecs.rollout_config_lock_protocol.assert_awaited_once_with(
+        "owner-refresh",
+        target_task_definition_arn="arn:target",
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_recovery_after_stability_before_terminal_write_reuses_target():
+    item = _refresh_item(target="arn:target")
+    repo = _claimed_repo(item)
+    repo.finish_claimed_apply = AsyncMock(side_effect=asyncio.CancelledError)
+    ecs = MagicMock()
+    ecs.prepare_config_lock_protocol_task_definition = AsyncMock()
+    ecs.rollout_config_lock_protocol = AsyncMock(return_value="arn:target")
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await update_service._apply_claimed_update(item, "claim-old")
+
+    repo.finish_claimed_apply = AsyncMock(return_value=True)
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch("core.containers.get_ecs_manager", return_value=ecs),
+    ):
+        assert await update_service._apply_claimed_update(item, "claim-new") is True
+    assert ecs.rollout_config_lock_protocol.await_count == 2
+    assert all(
+        call.kwargs["target_task_definition_arn"] == "arn:target"
+        for call in ecs.rollout_config_lock_protocol.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_refresh_worker_runs_only_the_winning_reclaim():
+    stale = _refresh_item(target="arn:target")
+    lost = {**stale, "owner_id": "owner-lost", "update_id": "upd-lost"}
+    repo = MagicMock()
+    repo.list_stale_applying = AsyncMock(return_value=[stale, lost])
+    repo.claim_stale_apply = AsyncMock(side_effect=[stale, None])
+
+    with (
+        patch.object(update_service, "update_repo", repo),
+        patch.object(update_service, "_apply_claimed_update", new=AsyncMock()) as apply_claimed,
+    ):
+        await update_service._recover_stale_task_definition_refreshes()
+
+    assert repo.claim_stale_apply.await_count == 2
+    apply_claimed.assert_awaited_once()
+    assert apply_claimed.await_args.args[0] == stale
 
 
 @pytest.mark.asyncio
@@ -125,9 +303,7 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
         "changes": {"new_image": "ecr/openclaw-extended:2026.5.28-abc"},
     }
 
-    repo = MagicMock()
-    repo.set_status_conditional = AsyncMock(return_value=True)
-    repo.mark_applied = AsyncMock()
+    repo = _claimed_repo(update_item)
 
     order: list[str] = []
     ecs = MagicMock()
@@ -140,8 +316,6 @@ async def test_apply_update_migrates_removed_keys_before_image_roll():
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
         patch.object(update_service, "heal_seeded_files", heal),
-        patch("core.dynamodb.get_table", return_value=MagicMock()),
-        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
@@ -166,9 +340,7 @@ async def _apply_image_only_update(owner_id, update_id, size):
         "update_type": "image_update",
         "changes": {"new_image": "ecr/openclaw-extended:2026.6.1-abc"},
     }
-    repo = MagicMock()
-    repo.set_status_conditional = AsyncMock(return_value=True)
-    repo.mark_applied = AsyncMock()
+    repo = _claimed_repo(update_item)
 
     ecs = MagicMock()
     ecs._size_for_owner = AsyncMock(return_value=size)
@@ -178,8 +350,6 @@ async def _apply_image_only_update(owner_id, update_id, size):
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", AsyncMock()),
         patch.object(update_service, "heal_seeded_files", AsyncMock()),
-        patch("core.dynamodb.get_table", return_value=MagicMock()),
-        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
         patch("core.containers.get_workspace", return_value=MagicMock()),
     ):
@@ -222,9 +392,7 @@ async def test_apply_update_skips_migration_for_resize_only_update():
         "changes": {"new_cpu": 1024, "new_memory": 2048},
     }
 
-    repo = MagicMock()
-    repo.set_status_conditional = AsyncMock(return_value=True)
-    repo.mark_applied = AsyncMock()
+    repo = _claimed_repo(update_item)
 
     ecs = MagicMock()
     ecs.resize_user_container = AsyncMock()
@@ -235,8 +403,6 @@ async def test_apply_update_skips_migration_for_resize_only_update():
         patch.object(update_service, "update_repo", repo),
         patch.object(update_service, "migrate_removed_config_keys", migrate),
         patch.object(update_service, "heal_seeded_files", heal),
-        patch("core.dynamodb.get_table", return_value=MagicMock()),
-        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": [update_item]})),
         patch("core.containers.get_ecs_manager", return_value=ecs),
     ):
         result = await update_service.apply_update(owner_id, update_id)
@@ -248,27 +414,16 @@ async def test_apply_update_skips_migration_for_resize_only_update():
 
 
 @pytest.mark.asyncio
-async def test_apply_update_clears_stuck_row_when_refetch_empty():
-    """If the post-acquire re-fetch returns no row (should not happen with the
-    strongly-consistent read, but defensively), the row was already flipped to
-    'applying' — clear it to 'failed' so it can't wedge the owner's in-flight
-    guard and block future rolls."""
+async def test_apply_update_returns_false_when_claim_is_not_acquired():
     owner_id, update_id = "owner_x", "upd_x"
 
     repo = MagicMock()
-    # acquire -> True; the follow-up cleanup write also returns True
-    repo.set_status_conditional = AsyncMock(return_value=True)
+    repo.claim_apply = AsyncMock(return_value=None)
 
     with (
         patch.object(update_service, "update_repo", repo),
-        patch("core.dynamodb.get_table", return_value=MagicMock()),
-        patch("core.dynamodb.run_in_thread", new=AsyncMock(return_value={"Items": []})),
     ):
         result = await update_service.apply_update(owner_id, update_id)
 
     assert result is False
-    # Two writes: acquire (-> "applying") then the stuck-row cleanup (-> "failed").
-    assert repo.set_status_conditional.await_count == 2
-    cleanup = repo.set_status_conditional.await_args
-    assert cleanup.args[2] == "failed"
-    assert cleanup.args[3] == ["applying"]
+    repo.claim_apply.assert_awaited_once()

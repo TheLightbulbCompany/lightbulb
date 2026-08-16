@@ -133,6 +133,180 @@ async def set_status_conditional(
         return False
 
 
+async def claim_apply(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+) -> dict | None:
+    """Atomically claim a pending/scheduled update and return its new row.
+
+    ``apply_claim_id`` is a fencing token. Long-running callers must use the
+    claim-aware target and terminal helpers below so a worker superseded after
+    backend turnover cannot mutate the successor's row.
+    """
+
+    table = _get_table()
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    try:
+        response = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "update_id": update_id},
+            UpdateExpression=(
+                "SET #s = :applying, apply_claim_id = :claim, apply_claimed_at = :claimed, updated_at = :updated"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":applying": "applying",
+                ":claim": claim_id,
+                ":claimed": now_epoch,
+                ":updated": now_iso,
+                ":pending": "pending",
+                ":scheduled": "scheduled",
+            },
+            ConditionExpression="#s = :pending OR #s = :scheduled",
+            ReturnValues="ALL_NEW",
+        )
+        return response.get("Attributes")
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+
+
+async def claim_stale_apply(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+    *,
+    stale_before_epoch: int,
+) -> dict | None:
+    """Take over an abandoned applying row, returning the newly fenced row."""
+
+    table = _get_table()
+    now_epoch = int(time.time())
+    now_iso = utc_now_iso()
+    try:
+        response = await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "update_id": update_id},
+            UpdateExpression=("SET apply_claim_id = :claim, apply_claimed_at = :claimed, updated_at = :updated"),
+            ExpressionAttributeValues={
+                ":applying": "applying",
+                ":claim": claim_id,
+                ":claimed": now_epoch,
+                ":updated": now_iso,
+                ":stale": stale_before_epoch,
+            },
+            ConditionExpression=(
+                "#s = :applying AND (attribute_not_exists(apply_claimed_at) OR apply_claimed_at <= :stale)"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+            ReturnValues="ALL_NEW",
+        )
+        return response.get("Attributes")
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+
+
+async def heartbeat_apply(owner_id: str, update_id: str, claim_id: str) -> bool:
+    """Refresh an apply lease iff ``claim_id`` still owns the row."""
+
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "update_id": update_id},
+            UpdateExpression="SET apply_claimed_at = :claimed, updated_at = :updated",
+            ExpressionAttributeValues={
+                ":applying": "applying",
+                ":claim": claim_id,
+                ":claimed": int(time.time()),
+                ":updated": utc_now_iso(),
+            },
+            ConditionExpression="#s = :applying AND apply_claim_id = :claim",
+            ExpressionAttributeNames={"#s": "status"},
+        )
+        return True
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+
+
+async def set_apply_target(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+    task_definition_arn: str,
+) -> bool:
+    """Persist the immutable ECS target while the caller still owns the claim."""
+
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "update_id": update_id},
+            UpdateExpression="SET target_task_definition_arn = :target, updated_at = :updated",
+            ExpressionAttributeValues={
+                ":applying": "applying",
+                ":claim": claim_id,
+                ":target": task_definition_arn,
+                ":updated": utc_now_iso(),
+            },
+            ConditionExpression=(
+                "#s = :applying AND apply_claim_id = :claim AND "
+                "(attribute_not_exists(target_task_definition_arn) OR "
+                "target_task_definition_arn = :target)"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+        )
+        return True
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+
+
+async def finish_claimed_apply(
+    owner_id: str,
+    update_id: str,
+    claim_id: str,
+    *,
+    status: str,
+    failure_reason: str | None = None,
+) -> bool:
+    """Write a terminal apply result iff the caller still owns the claim."""
+
+    if status not in {"applied", "failed"}:
+        raise ValueError("claimed apply terminal status must be applied or failed")
+
+    table = _get_table()
+    now = utc_now_iso()
+    ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)
+    names = {"#s": "status", "#t": "ttl"}
+    values = {
+        ":applying": "applying",
+        ":claim": claim_id,
+        ":status": status,
+        ":now": now,
+        ":ttl": ttl_epoch,
+    }
+    set_parts = ["#s = :status", "updated_at = :now", "#t = :ttl"]
+    if status == "applied":
+        set_parts.append("applied_at = :now")
+    else:
+        set_parts.append("failure_reason = :reason")
+        values[":reason"] = (failure_reason or "")[:1000]
+
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "update_id": update_id},
+            UpdateExpression="SET " + ", ".join(set_parts),
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ConditionExpression="#s = :applying AND apply_claim_id = :claim",
+        )
+        return True
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+
+
 async def set_scheduled(
     owner_id: str,
     update_id: str,
@@ -189,6 +363,36 @@ async def get_due_scheduled() -> list[dict]:
         KeyConditionExpression=(Key("status").eq("scheduled") & Key("scheduled_at").lte(now)),
     )
     return response.get("Items", [])
+
+
+async def list_stale_applying(update_type: str, *, stale_before_epoch: int) -> list[dict]:
+    """Return every abandoned applying row of ``update_type``.
+
+    This deliberately scans rather than using ``status-index``: older applying
+    rows and force-applied rows may have no ``scheduled_at`` and therefore do
+    not exist in that GSI. The pending-updates table is TTL-bounded, and this
+    recovery pass runs once per worker tick rather than on a request hot path.
+    """
+
+    table = _get_table()
+    items: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs: dict = {
+            "FilterExpression": (
+                Attr("status").eq("applying")
+                & Attr("update_type").eq(update_type)
+                & (Attr("apply_claimed_at").not_exists() | Attr("apply_claimed_at").lte(stale_before_epoch))
+            ),
+            "ConsistentRead": True,
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.scan, **kwargs)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
 
 
 async def delete_all_for_owner(owner_id: str) -> int:

@@ -15,13 +15,14 @@ from core.auth import (
     resolve_owner_id,
 )
 from core.observability.metrics import put_metric
-from core.repositories import update_repo
+from core.repositories import container_repo, update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import (
     TASK_DEFINITION_REFRESH_KIND,
     apply_update,
     queue_fleet_image_update,
     queue_fleet_task_definition_refresh,
+    queue_task_definition_refresh_for_owner,
 )
 from schemas.config import ConfigPatchRequest
 
@@ -138,6 +139,18 @@ async def admin_create_update(
     if body.owner_id == "all" and body.update_type == TASK_DEFINITION_REFRESH_KIND:
         queued, skipped = await queue_fleet_task_definition_refresh(body.description)
         return {"status": "scheduled", "queued": queued, "skipped": skipped}
+
+    if body.update_type == TASK_DEFINITION_REFRESH_KIND:
+        # Single-owner refresh: same eligibility/conflict rules and change
+        # marker as the fleet path — a bare create here would queue a row the
+        # apply path treats as a no-op.
+        row = await container_repo.get_by_owner_id(body.owner_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="No container for owner")
+        item = await queue_task_definition_refresh_for_owner(row, description=body.description)
+        if item is None:
+            return {"status": "skipped", "reason": "container ineligible or task-definition change already in flight"}
+        return {"status": "created", "update": item}
 
     # Single owner update
     item = await update_repo.create(

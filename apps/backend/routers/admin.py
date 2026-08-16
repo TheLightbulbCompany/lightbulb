@@ -48,7 +48,7 @@ from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
 from core.services.provision_dispatch import dispatch_provision
 from core.services.update_service import (
-    TASK_DEFINITION_REFRESH_CHANGE,
+    TASKDEF_ROLL_CHANGE_KEYS,
     apply_update,
     reapply_owner_config,
 )
@@ -107,18 +107,15 @@ class QueueImageUpdateRequest(BaseModel):
     # change that also wires the worker to honor it.
 
 
-# apply_update feeds these changes.* fields to resize_user_container, which
-# re-registers the per-user ECS task definition. Two in-flight updates that both
-# carry any of them race on the task-def (last writer wins the image/size), so
-# the force-apply guard treats a row carrying any of them as a conflict —
-# regardless of its update_type label (a paperclip_provision retry or a pure
-# config_patch hot-reload carries none of these and is not a conflict).
-_TASKDEF_ROLL_CHANGE_KEYS = ("new_image", "new_cpu", "new_memory", TASK_DEFINITION_REFRESH_CHANGE)
-
-
 def _rolls_task_def(changes: object) -> bool:
-    """True if a pending update's ``changes`` would re-register the ECS task def."""
-    return isinstance(changes, dict) and any(k in changes for k in _TASKDEF_ROLL_CHANGE_KEYS)
+    """True if a pending update's ``changes`` would re-register the ECS task def.
+
+    The force-apply guard treats a row carrying any task-def-rolling key as a
+    conflict regardless of its update_type label (a paperclip_provision retry
+    or a pure config_patch hot-reload carries none and is not a conflict).
+    The key set is owned by update_service.TASKDEF_ROLL_CHANGE_KEYS.
+    """
+    return isinstance(changes, dict) and any(k in changes for k in TASKDEF_ROLL_CHANGE_KEYS)
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ import asyncio
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -2537,7 +2537,7 @@ class TestResizeUserContainer:
         """
         base_def = {
             "family": "isol8-dev-openclaw",
-            "taskRoleArn": "",
+            "taskRoleArn": "arn:aws:iam::123:role/shared-base",
             "executionRoleArn": "",
             "networkMode": "awsvpc",
             "containerDefinitions": [
@@ -2574,6 +2574,7 @@ class TestResizeUserContainer:
         prior_def = {
             **base_def,
             "family": "isol8-dev-openclaw-user",
+            "taskRoleArn": "arn:aws:iam::123:role/prior-owner",
             "containerDefinitions": [
                 {
                     "name": "openclaw",
@@ -2653,6 +2654,55 @@ class TestResizeUserContainer:
             assert len(secrets_entries) == len(secrets), "duplicate secret names registered"
             # New image still stamped on the openclaw container
             assert call_kwargs["containerDefinitions"][0]["image"] == "ecr/openclaw-extended:new"
+            assert call_kwargs["taskRoleArn"] == "arn:aws:iam::123:role/prior-owner"
+
+    @pytest.mark.asyncio
+    async def test_resize_row_task_role_wins_over_prior_revision(self, manager, mock_ecs_client):
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        row_role = "arn:aws:iam::123:role/row-owner"
+        prior_role = "arn:aws:iam::123:role/prior-owner"
+        base = mock_ecs_client.describe_task_definition.return_value["taskDefinition"]
+        prior = {**base, "taskRoleArn": prior_role}
+
+        def describe_side_effect(taskDefinition):
+            return {"taskDefinition": prior if taskDefinition == prior_arn else base}
+
+        mock_ecs_client.describe_task_definition.side_effect = describe_side_effect
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"desiredCount": 0, "deployments": []}],
+        }
+        row = _make_container_dict(task_definition_arn=prior_arn)
+        row["bedrock_role_arn"] = row_role
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=row)
+            mock_repo.update_fields = AsyncMock()
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="4096")
+
+        assert mock_ecs_client.register_task_definition.call_args.kwargs["taskRoleArn"] == row_role
+
+    @pytest.mark.asyncio
+    async def test_resize_keeps_base_task_role_when_row_and_prior_have_none(self, manager, mock_ecs_client):
+        prior_arn = "arn:aws:ecs:us-east-1:123:task-definition/isol8-dev-openclaw-user:7"
+        base = mock_ecs_client.describe_task_definition.return_value["taskDefinition"]
+        base_role = base["taskRoleArn"]
+        prior = dict(base)
+        prior.pop("taskRoleArn")
+
+        def describe_side_effect(taskDefinition):
+            return {"taskDefinition": prior if taskDefinition == prior_arn else base}
+
+        mock_ecs_client.describe_task_definition.side_effect = describe_side_effect
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"desiredCount": 0, "deployments": []}],
+        }
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(task_definition_arn=prior_arn))
+            mock_repo.update_fields = AsyncMock()
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="4096")
+
+        assert mock_ecs_client.register_task_definition.call_args.kwargs["taskRoleArn"] == base_role
 
     @pytest.mark.asyncio
     async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):
@@ -2858,6 +2908,7 @@ class TestConfigLockProtocolRollout:
     async def test_reclones_current_size_and_waits_for_service_stability(self, manager, mock_ecs_client):
         manager.current_container_size = AsyncMock(return_value=("2048", "8192"))
         manager.resize_user_container = AsyncMock(return_value="arn:task-def:new")
+        manager._update_container = AsyncMock()
         waiter = MagicMock()
         mock_ecs_client.get_waiter.return_value = waiter
         mock_ecs_client.describe_task_definition.return_value = {
@@ -2869,6 +2920,9 @@ class TestConfigLockProtocolRollout:
                             "sh",
                             "-c",
                             '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                        "environment": [
+                            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
                         ],
                     }
                 ]
@@ -2905,7 +2959,11 @@ class TestConfigLockProtocolRollout:
             "user_test_123",
             new_cpu="2048",
             new_memory="8192",
+            _register_only=True,
         )
+        update_kwargs = mock_ecs_client.update_service.call_args.kwargs
+        assert update_kwargs["taskDefinition"] == "arn:task-def:new"
+        assert "forceNewDeployment" not in update_kwargs
         mock_ecs_client.get_waiter.assert_called_once_with("services_stable")
         waiter.wait.assert_called_once_with(
             cluster=manager._cluster,
@@ -2929,6 +2987,9 @@ class TestConfigLockProtocolRollout:
                             "sh",
                             "-c",
                             '${ISOL8_CONFIG_LOCK_PROTOCOL:-} protocol_path = lock_path + ".isol8-protocol" || exit 1',
+                        ],
+                        "environment": [
+                            {"name": "ISOL8_CONFIG_LOCK_PROTOCOL", "value": "guard-v1"},
                         ],
                     }
                 ]
@@ -2957,10 +3018,10 @@ class TestConfigLockProtocolRollout:
             with pytest.raises(EcsManagerError, match="stabilized on a different task definition"):
                 await manager.rollout_config_lock_protocol("user_test_123")
 
-        manager._update_container.assert_awaited_once_with(
-            "user_test_123",
-            task_definition_arn="arn:task-def:old",
-        )
+        assert manager._update_container.await_args_list == [
+            call("user_test_123", task_definition_arn="arn:task-def:new"),
+            call("user_test_123", task_definition_arn="arn:task-def:old"),
+        ]
 
     @pytest.mark.asyncio
     async def test_requires_registered_task_definition(self, manager):

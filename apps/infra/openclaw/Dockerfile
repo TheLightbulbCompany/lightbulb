@@ -133,7 +133,11 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       xvfb x11vnc novnc websockify \
       tigervnc-standalone-server matchbox-window-manager \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/Xtigervnc /usr/bin/Xvnc
+    && ln -sf /usr/bin/Xtigervnc /usr/bin/Xvnc \
+    # ln -sf happily creates a DANGLING link if the package ever renames its
+    # binary; test -x follows the link, turning that into a failed image build
+    # here instead of a fleet-wide boot FATAL at the next deploy.
+    && test -x /usr/bin/Xvnc
 
 # ---- AWS CLI v2 (official bundled installer; apt/pip ship only v1) ----
 RUN curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.17.0.zip" -o /tmp/awscliv2.zip && \

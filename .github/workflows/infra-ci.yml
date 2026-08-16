@@ -1,0 +1,77 @@
+# =============================================================================
+# Infra CI (PRs only)
+#
+# apps/infra had NO test job. Its vitest suite (~250 assertions covering task
+# definitions, boot commands, alarm/emitter contracts) ran only on a developer's
+# machine, so a CDK change reached main having been checked by nobody.
+#
+# That is not theoretical: #1817 shipped three alarms built on a SEARCH()
+# metric-math expression, which CloudWatch rejects on alarms outright. The stack
+# rolled back on EVERY deploy, and because the prod stages depend on dev
+# succeeding, prod deploys were silently skipped for hours. CloudFormation was
+# the first thing in the pipeline to find out, because nothing before it looked.
+#
+# Synth is the point: `cdk synth` is what turns a type-correct stack into the
+# template CloudFormation will actually reject, and the suite asserts against
+# synthesized templates rather than construct objects.
+# =============================================================================
+name: Infra CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/infra/**'
+      - '.github/workflows/infra-ci.yml'
+      - 'openclaw-version.json'
+      - 'paperclip-version.json'
+      - 'pnpm-lock.yaml'
+
+# Supersede in-flight runs for the same PR. `github.ref` is refs/pull/<n>/merge
+# here (pull_request only), so the group is per-PR and PRs never cancel each
+# other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Synth & Test
+    runs-on: ubuntu-latest
+    # The suite synthesizes every stack; it runs in seconds locally, so a cap
+    # this size only catches a hang. Left explicit because an uncapped job
+    # bills GitHub's 6-hour default when a step stalls.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No `tsc --noEmit` step. The package's tsconfig also covers
+      # openclaw/plugins/**, which are OpenClaw plugin sources baked into the
+      # container image, not CDK — they import the OpenClaw plugin SDK, which
+      # is not a dependency here, so a whole-package type check fails on ~20
+      # pre-existing errors that have nothing to do with infrastructure.
+      # Narrowing that is its own change; this job exists to catch templates
+      # CloudFormation would reject, and synth is what does that.
+      - name: Run tests
+        run: pnpm --filter @isol8/infra run test
